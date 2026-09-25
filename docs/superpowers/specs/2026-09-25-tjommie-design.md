@@ -18,6 +18,8 @@ The Phase 1 spikes ran against Claude Code 2.1.280 and Codex CLI 0.155.1 while t
 5. **Codex's Windows sandbox needs no admin.** A per-thread setting, `windows.sandbox = "unelevated"`, enforces writes (inside the bot's folders allowed, outside asks). Shell commands can't reach the network from inside the Windows sandbox (TLS fails), so network commands ask for approval. Bots do web work through the browser tool or Codex's built-in web search.
 6. **Codex sign-in doesn't need a terminal.** The app-server's `account/login/start` returns OpenAI's own sign-in URL, which the app opens in the browser. Claude's sign-in opens its own `claude auth login` in a console window.
 7. **Stop and steering work on both CLIs.** Claude reads a message written mid-turn at its next step, and stops on an `interrupt` control message. Codex uses `turn/steer` and `turn/interrupt`.
+8. **Playwright MCP starts each bot's browser (spike 5).** Both CLIs drove Playwright MCP on a per-bot profile folder, and the profile kept its data. In Phase 1 the daemon doesn't run Chrome itself. "Show window" opens the bot's profile in Chrome. Phase 4's live view revisits this.
+9. **Codex's built-in extras are off for bots.** Codex 0.155.1 turns several of its own features on by default: ChatGPT apps, browser use (which drives the person's own Chrome), computer use, plugins and memories. With them on, a browsing request went to the person's real Chrome instead of the bot's own browser. Every bot thread turns them off, so bots only use Tjommie's tools.
 
 ## 1. Summary
 
@@ -289,8 +291,8 @@ Bots get only the MCP servers Tjommie attaches (this one and the browser), becau
 ### 5.7 Browser
 
 - **Playwright MCP.** Each bot with the browser on gets Playwright MCP (`@playwright/mcp`, bundled with Tjommie rather than fetched with npx) pointed at `bots\<id>\chrome-profile`. It runs headed: a real Chrome window (Edge if Chrome isn't installed), separate from the user's own Chrome. Sites you sign in to by hand in that window stay signed in.
-- **Who starts Chrome** is decided by spike 5: either Playwright MCP starts it, or the daemon does (with a debugging port) and Playwright MCP attaches. The second option lets the daemon show or close the window in Phase 1 and stream it in Phase 4.
-- **Right panel.** In Phase 1 it shows a "Show browser window" button in place of the live screen.
+- **Who starts Chrome.** Playwright MCP does, when the bot first uses its browser (spike 5). In Phase 1 the daemon doesn't run Chrome with a debugging port. Phase 4's live view and Take over revisit this.
+- **Right panel.** In Phase 1 it shows a "Show browser window" button in place of the live screen. The button opens the bot's profile in Chrome, so you can sign in to sites by hand.
 
 ### 5.8 Setup check
 
