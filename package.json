@@ -1,0 +1,25 @@
+{
+  "name": "tjommie",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "workspaces": [
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "npm run dev -w @tjommie/ui",
+    "desktop": "npm start -w @tjommie/desktop",
+    "build": "npm run build -w @tjommie/ui",
+    "lint": "npm run lint -w @tjommie/ui",
+    "typecheck": "tsc -p . && npm run typecheck -w @tjommie/ui",
+    "test": "vitest run --passWithNoTests"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.6",
+    "typescript": "^5.9.3",
+    "vitest": "^5.0.1"
+  }
+}
