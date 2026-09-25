@@ -113,13 +113,22 @@ export type ProviderSetup = z.infer<typeof ProviderSetup>;
 export const ModelInfo = z.object({ id: z.string(), label: z.string(), isDefault: z.boolean() });
 export type ModelInfo = z.infer<typeof ModelInfo>;
 
+const isTimeZone = (timeZone: string): boolean => {
+  try {
+    new Intl.DateTimeFormat("en", { timeZone });
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 // Days are 0 (Sunday) to 6 (Saturday). Times are 24-hour "HH:MM" wall-clock times in the routine's time zone.
 const routineFields = {
   name: z.string().trim().min(1).max(60),
   prompt: z.string().trim().min(1).max(10_000),
   days: z.array(z.number().int().min(0).max(6)).min(1).max(7),
   times: z.array(z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/)).min(1).max(12),
-  timeZone: z.string().min(1).max(64),
+  timeZone: z.string().min(1).max(64).refine(isTimeZone, "not an IANA time zone"),
   timeLimitMinutes: z.number().int().min(1).max(1440).nullable(),
   enabled: z.boolean(),
 };

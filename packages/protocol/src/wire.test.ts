@@ -42,6 +42,14 @@ describe("protocol for bots working together", () => {
     expect(() => RoutineInput.parse({ ...routine, times: ["24:00"] })).toThrow();
   });
 
+  it("accepts real IANA time zones and rejects unknown ones", () => {
+    const routine = { botId: "b", name: "Morning check", prompt: "Check pnet.co.za", days: [1], times: ["08:48"] };
+    expect(RoutineInput.parse({ ...routine, timeZone: "Africa/Johannesburg" }).timeZone).toBe("Africa/Johannesburg");
+    expect(() => RoutineInput.parse({ ...routine, timeZone: "Mars/Olympus" })).toThrow();
+    expect(RoutinePatch.parse({ timeZone: "Africa/Johannesburg" })).toEqual({ timeZone: "Africa/Johannesburg" });
+    expect(() => RoutinePatch.parse({ timeZone: "Mars/Olympus" })).toThrow();
+  });
+
   it("leaves unspecified routine fields out of a patch", () => {
     expect(RoutinePatch.parse({ enabled: false })).toEqual({ enabled: false });
   });
