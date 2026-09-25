@@ -85,6 +85,30 @@ describe("parsers", () => {
 });
 
 describe("setup checks", () => {
+  it("treats Claude's exit-1 signed-out JSON as a successful check", async () => {
+    cliMocks.runCli.mockImplementation(async (cmd, args) => {
+      if (cmd.file === "claude" && args[0] === "auth") {
+        return { code: 1, stdout: '{"loggedIn":false,"authMethod":"none","apiProvider":"firstParty"}', stderr: "" };
+      }
+      return successfulCliRun(cmd, args);
+    });
+    const root = tempRoot();
+    const db = openDb(join(root, "t.db"));
+    ensureAccounts(db, join(root, "accounts"));
+
+    const [claude] = await checkSetup(db);
+
+    expect(claude).toEqual({
+      provider: "claude",
+      installed: true,
+      version: "2.1.280",
+      signedIn: false,
+      account: null,
+      plan: null,
+      error: null,
+    });
+  });
+
   it("reports a CLI spawn failure", async () => {
     cliMocks.runCli.mockImplementation(async (cmd, args) => {
       if (cmd.file === "claude" && args[0] === "--version") return { code: null, stdout: "", stderr: "spawn ENOENT" };
@@ -107,7 +131,7 @@ describe("setup checks", () => {
     });
   });
 
-  it("reports non-zero status and version exits", async () => {
+  it("reports garbage status output and a non-zero version exit", async () => {
     cliMocks.runCli.mockImplementation(async (cmd, args) => {
       if (cmd.file === "claude" && args[0] === "auth") return { code: 2, stdout: "", stderr: "not signed in" };
       if (cmd.file === "codex" && args[0] === "--version") return { code: 4, stdout: "", stderr: "failed" };

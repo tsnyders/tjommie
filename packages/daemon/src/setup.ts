@@ -49,13 +49,24 @@ export function accountEnv(account: Account): Record<string, string> {
 
 export const parseVersion = (text: string): string | null => text.match(/\d+\.\d+\.\d+/)?.[0] ?? null;
 
-export function parseClaudeStatus(text: string): { signedIn: boolean; account: string | null; plan: string | null } {
+type ClaudeStatus = { signedIn: boolean; account: string | null; plan: string | null };
+
+function tryParseClaudeStatus(text: string): ClaudeStatus | null {
   try {
-    const status = JSON.parse(text) as { loggedIn?: boolean; email?: string; subscriptionType?: string };
-    return { signedIn: status.loggedIn === true, account: status.email ?? null, plan: status.subscriptionType ?? null };
+    const status = JSON.parse(text) as unknown;
+    if (!isRecord(status) || typeof status.loggedIn !== "boolean") return null;
+    return {
+      signedIn: status.loggedIn,
+      account: typeof status.email === "string" ? status.email : null,
+      plan: typeof status.subscriptionType === "string" ? status.subscriptionType : null,
+    };
   } catch {
-    return { signedIn: false, account: null, plan: null };
+    return null;
   }
+}
+
+export function parseClaudeStatus(text: string): ClaudeStatus {
+  return tryParseClaudeStatus(text) ?? { signedIn: false, account: null, plan: null };
 }
 
 const notInstalled = (provider: Provider): ProviderSetup => ({
@@ -85,8 +96,9 @@ async function claudeSetup(account: Account): Promise<ProviderSetup> {
   const [versionResult, statusResult] = await Promise.all([runCli(cmd, ["--version"], env), runCli(cmd, ["auth", "status"], env)]);
   const version = versionResult.code === 0 ? parseVersion(versionResult.stdout) : null;
   if (versionResult.code !== 0) return failedCheck("claude", null, "Claude Code version check failed");
-  if (statusResult.code !== 0) return failedCheck("claude", version, "Claude sign-in check failed");
-  return { provider: "claude", installed: true, version, ...parseClaudeStatus(statusResult.stdout), error: null };
+  const status = tryParseClaudeStatus(statusResult.stdout);
+  if (statusResult.code === null || status === null) return failedCheck("claude", version, "Claude sign-in check failed");
+  return { provider: "claude", installed: true, version, ...status, error: null };
 }
 
 async function codexSetup(account: Account): Promise<ProviderSetup> {
