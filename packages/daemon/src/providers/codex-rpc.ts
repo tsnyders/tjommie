@@ -123,11 +123,26 @@ export async function startCodexServer(
   const rpc = new JsonRpcLines((line) => child.stdin.write(`${line}\n`));
   createInterface({ input: child.stdout, crlfDelay: Infinity }).on("line", (line) => rpc.handleLine(line));
   child.stderr.resume(); // Codex logs to stderr; drain it so a full pipe can never block the process
-  child.on("exit", () => rpc.failAll(new Error("codex app-server exited")));
+  let exited = false;
+  let killTimer: NodeJS.Timeout | undefined;
+  child.on("exit", () => {
+    exited = true;
+    if (killTimer !== undefined) {
+      clearTimeout(killTimer);
+      killTimer = undefined;
+    }
+    rpc.failAll(new Error("codex app-server exited"));
+  });
   child.on("error", (error) => rpc.failAll(error));
   const close = () => {
+    if (exited || killTimer !== undefined) return;
     child.stdin.end();
-    setTimeout(() => killTree(child.pid), 3000).unref();
+    if (exited) return;
+    killTimer = setTimeout(() => {
+      killTimer = undefined;
+      if (!exited && child.exitCode === null && child.signalCode === null) killTree(child.pid);
+    }, 3000);
+    killTimer.unref();
   };
   try {
     await rpc.request(

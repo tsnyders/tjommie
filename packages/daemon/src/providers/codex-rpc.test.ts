@@ -1,5 +1,16 @@
-import { describe, expect, it } from "vitest";
-import { JsonRpcLines, RpcRemoteError } from "./codex-rpc.ts";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
+import { describe, expect, it, vi } from "vitest";
+
+const cliMocks = vi.hoisted(() => ({
+  killTree: vi.fn(),
+  spawnCli: vi.fn(),
+}));
+
+vi.mock("../cli.ts", () => cliMocks);
+
+import { JsonRpcLines, RpcRemoteError, startCodexServer } from "./codex-rpc.ts";
 
 type SentMessage = {
   id?: number | string;
@@ -13,6 +24,33 @@ function client() {
   const sent: SentMessage[] = [];
   const rpc = new JsonRpcLines((line) => sent.push(JSON.parse(line) as SentMessage));
   return { rpc, sent };
+}
+
+function fakeChild(): {
+  child: ChildProcessWithoutNullStreams;
+  stdin: PassThrough;
+  stdout: PassThrough;
+  stderr: PassThrough;
+} {
+  const stdin = new PassThrough();
+  const stdout = new PassThrough();
+  const stderr = new PassThrough();
+  const child = Object.assign(new EventEmitter(), {
+    stdin,
+    stdout,
+    stderr,
+    pid: 4321,
+    exitCode: null,
+    signalCode: null,
+  }) as unknown as ChildProcessWithoutNullStreams;
+  return { child, stdin, stdout, stderr };
+}
+
+function answerInitialize(stdin: PassThrough, stdout: PassThrough): void {
+  stdin.once("data", (chunk: Buffer) => {
+    const request = JSON.parse(chunk.toString()) as SentMessage;
+    stdout.write(`${JSON.stringify({ id: request.id, result: {} })}\n`);
+  });
 }
 
 describe("JsonRpcLines", () => {
@@ -54,6 +92,19 @@ describe("JsonRpcLines", () => {
     expect(seen).toEqual(["n:turn/started", "r:0:item/commandExecution/requestApproval"]);
   });
 
+  it("ignores JSON primitives and null", () => {
+    const { rpc } = client();
+    const seen: string[] = [];
+    rpc.onNotification = (method) => seen.push(method);
+    rpc.onRequest = (_id, method) => seen.push(method);
+
+    for (const line of ["null", "42", "true", '"text"']) {
+      expect(() => rpc.handleLine(line)).not.toThrow();
+    }
+
+    expect(seen).toEqual([]);
+  });
+
   it("writes notifications, results and errors in the app-server's shape", () => {
     const { rpc, sent } = client();
     rpc.notify("initialized");
@@ -71,5 +122,33 @@ describe("JsonRpcLines", () => {
     const pending = rpc.request("account/read", {});
     rpc.failAll(new Error("codex app-server exited"));
     await expect(pending).rejects.toThrow("exited");
+  });
+});
+
+describe("startCodexServer", () => {
+  it("cancels the delayed tree kill when the child exits", async () => {
+    vi.useFakeTimers();
+    cliMocks.killTree.mockClear();
+    cliMocks.spawnCli.mockReset();
+    const { child, stdin, stdout, stderr } = fakeChild();
+    cliMocks.spawnCli.mockReturnValue(child);
+    answerInitialize(stdin, stdout);
+
+    try {
+      const server = await startCodexServer({ file: "codex", args: [] }, {}, ".");
+      server.close();
+      expect(vi.getTimerCount()).toBe(1);
+
+      child.emit("exit", 0, null);
+      expect(vi.getTimerCount()).toBe(0);
+      await vi.advanceTimersByTimeAsync(3000);
+
+      expect(cliMocks.killTree).not.toHaveBeenCalled();
+    } finally {
+      stdin.destroy();
+      stdout.destroy();
+      stderr.destroy();
+      vi.useRealTimers();
+    }
   });
 });
