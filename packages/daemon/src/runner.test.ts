@@ -297,6 +297,77 @@ describe("Runner turn settlement", () => {
     expect(h.runner.toBot(getStoredBot(h.db, bot.id)).state).toBe("idle");
   });
 
+  it("interrupts a stopped resumed session without retrying it fresh", async () => {
+    const resumed = new FakeSession();
+    const fresh = new FakeSession();
+    const available = [resumed, fresh];
+    let nextSession = 0;
+    const h = harness(() => {
+      const session = available[nextSession++];
+      if (!session) throw new Error("Unexpected extra session");
+      return session;
+    });
+    const bot = newBot(h);
+    h.db
+      .prepare("INSERT INTO sessions (bot_id, provider, account_id, cli_session_id, updated_at) VALUES (?, ?, ?, ?, ?)")
+      .run(bot.id, "claude", "claude-main", "saved-session", "2026-09-25T10:00:00.000Z");
+    const message = h.runner.submit(bot.id, "start", []);
+    await waitFor(() => resumed.sent.length > 0);
+
+    await h.runner.stop(bot.id);
+    resumed.emit({ type: "exit", error: null });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(resumed.interrupts).toBe(1);
+    expect(h.sessions).toHaveLength(1);
+    expect(itemForMessage(h.db, message.id).status).toBe("interrupted");
+    expect(h.db.prepare("SELECT cli_session_id FROM sessions WHERE bot_id = ?").get(bot.id)).toEqual({ cli_session_id: "saved-session" });
+    expect(history(h.db, bot.id, undefined, 20).some((item) => item.kind === "notice" && item.body === "Stopped.")).toBe(true);
+  });
+
+  it("settles a successful turn as done even after a reached limit event", async () => {
+    const session = new FakeSession();
+    const h = harness(() => session);
+    const bot = newBot(h);
+    const message = h.runner.submit(bot.id, "finish this once", []);
+    await waitFor(() => session.sent.length > 0);
+
+    session.emit({ type: "limit", state: "reached", usedPercent: 100, resetsAt: "2099-09-25T10:00:00.000Z" });
+    session.emit({ type: "turn_done", ok: true, error: null });
+
+    expect(itemForMessage(h.db, message.id).status).toBe("done");
+    expect(getMessage(h.db, message.id).status).toBe("sent");
+  });
+
+  it("settles an early Stop after startup without sending and clears it before later work", async () => {
+    let releaseStart: () => void = () => {
+      throw new Error("Start did not begin");
+    };
+    const session = new FakeSession();
+    session.startPromise = new Promise<void>((resolve) => {
+      releaseStart = resolve;
+    });
+    const h = harness(() => session);
+    const bot = newBot(h);
+    const stopped = h.runner.submit(bot.id, "do not send", []);
+
+    await h.runner.stop(bot.id);
+    releaseStart();
+    await waitFor(() => itemForMessage(h.db, stopped.id).status === "interrupted", 2_000);
+
+    expect(session.interrupts).toBe(1);
+    expect(session.sent).toEqual([]);
+    expect(h.runner.toBot(getStoredBot(h.db, bot.id)).state).toBe("idle");
+    expect(h.runner.processId(bot.id)).toBe(4321);
+
+    const later = h.runner.submit(bot.id, "later work", []);
+    await waitFor(() => session.sent.length > 0);
+    session.emit({ type: "exit", error: "later failure" });
+
+    expect(itemForMessage(h.db, later.id).status).toBe("failed");
+    expect(history(h.db, bot.id, undefined, 20).find((item) => item.kind === "error" && item.data?.retryMessageId === later.id)?.body).toBe("later failure");
+  });
+
   it("fails partial assistant text and offers Retry when the CLI exits mid-turn without an error", async () => {
     const session = new FakeSession();
     const h = harness(() => session);
@@ -355,15 +426,45 @@ describe("Runner turn settlement", () => {
     setStatus(h.db, interrupted.id, "running");
     const queuedMessage = addMessage(h.db, { conversationId: bot.id, author: "you", kind: "text", body: "next", status: "queued" });
     const queued = enqueue(h.db, { botId: bot.id, source: "you", text: "next", messageId: queuedMessage.id });
+    const streaming = addMessage(h.db, { conversationId: bot.id, author: bot.id, kind: "text", body: "partial reply", status: "streaming" });
 
     h.runner.start();
     await waitFor(() => session.sent.length > 0);
 
     expect(getWorkItem(h.db, interrupted.id).status).toBe("interrupted");
     expect(getMessage(h.db, interruptedMessage.id).status).toBe("interrupted");
+    expect(getMessage(h.db, streaming.id).status).toBe("interrupted");
     expect(getWorkItem(h.db, queued.id).status).toBe("running");
     expect(session.sent[0]).toContain("next");
     expect(h.events.some((event) => event.event === "message.added" && event.data.kind === "error" && event.data.data?.retryMessageId === interruptedMessage.id)).toBe(true);
+    expect(h.events.some((event) => event.event === "message.updated" && event.data.id === streaming.id && event.data.status === "interrupted")).toBe(true);
+  });
+});
+
+describe("Runner idle shutdown", () => {
+  it("closes an idle CLI after ten minutes while the bot is limited", async () => {
+    const session = new FakeSession();
+    const h = harness(() => session);
+    const bot = newBot(h);
+    h.runner.submit(bot.id, "hit the limit", []);
+    await waitFor(() => session.sent.length > 0);
+
+    vi.useFakeTimers();
+    try {
+      const resetsAt = new Date(Date.now() + 2 * 60 * 60_000).toISOString();
+      session.emit({ type: "limit", state: "reached", usedPercent: 100, resetsAt });
+      session.emit({ type: "turn_done", ok: false, error: "Usage limit reached" });
+      expect(h.runner.toBot(getStoredBot(h.db, bot.id)).state).toBe("limited");
+      expect(session.closed).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+
+      expect(session.closed).toBe(true);
+      expect(h.runner.processId(bot.id)).toBeUndefined();
+    } finally {
+      h.runner.shutdown();
+      vi.useRealTimers();
+    }
   });
 });
 

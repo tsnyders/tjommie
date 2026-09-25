@@ -103,6 +103,8 @@ export class Runner {
       if (item.messageId) this.#emitMessage(updateMessage(this.#db, item.messageId, { status: "interrupted" }));
       this.#notice(item.botId, "error", "Tjommie restarted while this was running.", item.messageId ? { retryMessageId: item.messageId } : null);
     }
+    const streaming = this.#db.prepare("SELECT id FROM messages WHERE status = 'streaming' ORDER BY created_at, rowid").all() as { id: string }[];
+    for (const message of streaming) this.#emitMessage(updateMessage(this.#db, message.id, { status: "interrupted" }));
     for (const approval of expirePendingApprovals(this.#db)) this.#showApprovalStatus(approval);
     for (const bot of listStoredBots(this.#db)) {
       if (bot.limitedUntil) this.#armLimitTimer(bot.id, bot.limitedUntil);
@@ -211,6 +213,7 @@ export class Runner {
       return; // deleted
     }
     if (this.toBot(bot).state !== "idle") {
+      this.#armIdle(live);
       this.#emitBot(botId);
       return;
     }
@@ -302,11 +305,19 @@ export class Runner {
         live.session = null;
         created.close();
         if (!live.busy || live.item?.id !== item.id) return; // an exit already settled this turn
+        if (live.stopRequested) {
+          this.#finishTurn(bot.id, false, null);
+          return;
+        }
         if (resumeId === null) throw error;
         this.#db.prepare("DELETE FROM sessions WHERE bot_id = ?").run(bot.id); // couldn't resume: start fresh with a recap
         return this.#startTurn(bot, item);
       }
       if (!live.busy || live.item?.id !== item.id || live.session !== created) return;
+      if (live.stopRequested) {
+        this.#finishTurn(bot.id, false, null);
+        return;
+      }
       if (live.fresh) {
         const recap = buildRecap(history(this.#db, bot.id, item.messageId ?? undefined, RECAP_MESSAGES), bot.name);
         if (recap) text = `${recap}\n\n${text}`;
@@ -548,7 +559,7 @@ export class Runner {
     this.#flushText(live, outcome);
     if (live.activity) this.#closeActivity(live);
     const item = live.item;
-    if (item && live.limitHit) {
+    if (item && live.limitHit && !ok) {
       setStatus(this.#db, item.id, "queued"); // runs again once the limit resets
       if (item.messageId) this.#emitMessage(updateMessage(this.#db, item.messageId, { status: "queued" }));
     } else if (item) {
@@ -581,7 +592,7 @@ export class Runner {
       live.idleTimer = null;
     }
     if (!live.busy) return;
-    if (resumeFailed && live.item) {
+    if (resumeFailed && live.item && !live.stopRequested) {
       // The CLI couldn't resume this session: start fresh with a recap instead.
       this.#db.prepare("DELETE FROM sessions WHERE bot_id = ?").run(botId);
       setStatus(this.#db, live.item.id, "queued");
