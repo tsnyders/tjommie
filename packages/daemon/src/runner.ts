@@ -290,6 +290,7 @@ export class Runner {
         allowRules: allowRules(this.#db, bot.id),
         resumeId,
         env: accountEnv(account),
+        mcpServers: [],
       });
       created.onEvent((event) => this.#onEvent(bot.id, created, event));
       live.session = created;

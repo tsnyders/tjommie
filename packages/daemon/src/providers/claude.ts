@@ -3,7 +3,7 @@ import { createInterface } from "node:readline";
 import type { Autonomy } from "@tjommie/protocol";
 import { killTree, spawnCli, type CliCommand } from "../cli.ts";
 import { parseClaudeLine, toolSummary } from "./claude-parse.ts";
-import type { ApprovalAnswer, ProviderEvent, ProviderSession, StartOptions } from "./types.ts";
+import type { ApprovalAnswer, McpServer, ProviderEvent, ProviderSession, StartOptions } from "./types.ts";
 
 const INTERRUPT_GRACE_MS = 10_000;
 
@@ -30,10 +30,25 @@ export function claudeArgs(options: StartOptions): string[] {
     options.instructions,
     "--strict-mcp-config",
   ];
+  if (options.mcpServers.length) args.push("--mcp-config", JSON.stringify(claudeMcpConfig(options.mcpServers)));
   for (const dir of options.extraDirs) args.push("--add-dir", dir);
   if (options.resumeId) args.push("--resume", options.resumeId);
-  if (options.allowRules.length) args.push("--allowedTools", ...options.allowRules); // takes several values, so it goes last
+  const allowed = [...options.mcpServers.filter((server) => server.autoAllow).map((server) => `mcp__${server.name}`), ...options.allowRules];
+  if (allowed.length) args.push("--allowedTools", ...allowed); // takes several values, so it goes last
   return args;
+}
+
+export function claudeMcpConfig(servers: McpServer[]): { mcpServers: Record<string, unknown> } {
+  return {
+    mcpServers: Object.fromEntries(
+      servers.map((server) => [
+        server.name,
+        "url" in server
+          ? { type: "http", url: server.url, headers: server.headers }
+          : { type: "stdio", command: server.command, args: server.args, env: server.env },
+      ]),
+    ),
+  };
 }
 
 type PendingApproval = { input: Record<string, unknown>; toolName: string; suggestion: Record<string, unknown> | null };

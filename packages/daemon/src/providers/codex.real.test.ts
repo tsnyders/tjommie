@@ -1,6 +1,8 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import type { StoredBot } from "../bots.ts";
+import { browserServer } from "../browser.ts";
 import { resolveCli } from "../cli.ts";
 import { dataPaths } from "../paths.ts";
 import { accountEnv } from "../setup.ts";
@@ -8,8 +10,7 @@ import { firstOf, realAccount, tempRoot, waitFor } from "../testing.ts";
 import { CodexSession } from "./codex.ts";
 import type { ProviderEvent, StartOptions } from "./types.ts";
 
-function session(overrides: Partial<StartOptions> = {}) {
-  const cwd = tempRoot();
+function session(overrides: Partial<StartOptions> = {}, cwd = tempRoot()) {
   const codex = new CodexSession(resolveCli("codex")!, {
     cwd,
     extraDirs: [],
@@ -19,12 +20,16 @@ function session(overrides: Partial<StartOptions> = {}) {
     allowRules: [],
     resumeId: null,
     env: accountEnv(realAccount("codex")),
+    mcpServers: [],
     ...overrides,
   });
   const events: ProviderEvent[] = [];
   codex.onEvent((event) => events.push(event));
   return { codex, events, cwd };
 }
+
+// A headless browser on a profile in `home`, as the daemon attaches it to a bot with the browser on.
+const browser = (home: string, autonomy: StoredBot["autonomy"]) => browserServer({ homeFolder: home, autonomy } as StoredBot, { TJOMMIE_BROWSER_HEADLESS: "1" });
 
 const text = (events: ProviderEvent[]) => events.map((e) => (e.type === "text" ? e.delta : "")).join("");
 
@@ -60,6 +65,30 @@ describe("CodexSession against the real CLI", () => {
     codex.answer(approval.id, "deny");
     await waitFor(() => firstOf(events, "turn_done"));
     expect(existsSync(outside)).toBe(false);
+    codex.close();
+  });
+
+  it("asks before each browser tool of a server that isn't allowed outright, then browses in its own profile", async () => {
+    // The thread runs in Own folder (workspace-write), where spike 5 measured Playwright; only the browser server asks.
+    const cwd = tempRoot();
+    const { codex, events } = session({ mcpServers: [browser(cwd, "ask")] }, cwd);
+    await codex.start();
+    await codex.send("Use the browser MCP tools, not the shell or web search, to open https://example.com. Reply with the page title only.");
+    const answered = new Set<string>();
+    await waitFor(() => {
+      for (const event of events) {
+        if (event.type === "approval" && !answered.has(event.id)) {
+          answered.add(event.id);
+          codex.answer(event.id, "once");
+        }
+      }
+      return firstOf(events, "turn_done");
+    });
+    const approvals = events.filter((event) => event.type === "approval");
+    expect(approvals.length).toBeGreaterThan(0);
+    for (const approval of approvals) expect(approval).toMatchObject({ tool: expect.stringMatching(/^browser\./) });
+    expect(text(events)).toContain("Example Domain");
+    expect(existsSync(join(cwd, "chrome-profile", "Default"))).toBe(true);
     codex.close();
   });
 });

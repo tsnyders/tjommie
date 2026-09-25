@@ -9,6 +9,7 @@
     "chat": "node --disable-warning=ExperimentalWarning scripts/chat.ts"
   },
   "dependencies": {
+    "@playwright/mcp": "^0.0.82",
     "@tjommie/protocol": "*",
     "ws": "^8.21.3",
     "zod": "^4.6.5"

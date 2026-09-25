@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { codexConfig, codexPolicy } from "./codex.ts";
-import { mapCodexNotification, mapCodexRequest } from "./codex-parse.ts";
+import { CODEX_FEATURES_OFF, codexConfig, codexPolicy } from "./codex.ts";
+import { mapCodexElicitation, mapCodexNotification, mapCodexRequest } from "./codex-parse.ts";
 import type { StartOptions } from "./types.ts";
 
 type RpcFixture = Record<string, unknown> & { method: string; params: Record<string, unknown> };
@@ -55,6 +55,9 @@ const APPROVAL = parseRequest( // trimmed: the PowerShell path in "command" shor
   '{"method":"item/commandExecution/requestApproval","id":0,"params":{"kind":"command","threadId":"01a0d7d5-63cc-7c60-9053-51ebed691584","turnId":"01a0d7d5-6f72-7a01-96d4-f8a64437c1b5","itemId":"exec-0d7b2fc4-81aa-4a06-98bf-ef0ccc6c31bf","startedAtMs":1790327515964,"environmentId":"local","reason":"Allow writing and reading outside-netconfig.txt in the parent folder as requested?","command":"powershell.exe -Command \\\"Set-Content -LiteralPath \'C:\\\\Users\\\\tyrel\\\\AppData\\\\Local\\\\Temp\\\\tjommie-spikes\\\\codex\\\\outside-netconfig.txt\' -Value \'hi\' -NoNewline\\\"","cwd":"C:\\\\Users\\\\tyrel\\\\AppData\\\\Local\\\\Temp\\\\tjommie-spikes\\\\codex\\\\netconfig","commandActions":[{"type":"unknown","command":"Set-Content -LiteralPath \'C:\\\\Users\\\\tyrel\\\\AppData\\\\Local\\\\Temp\\\\tjommie-spikes\\\\codex\\\\outside-netconfig.txt\' -Value \'hi\' -NoNewline"}],"proposedExecpolicyAmendment":["Set-Content","-LiteralPath","C:\\\\Users\\\\tyrel\\\\AppData\\\\Local\\\\Temp\\\\tjommie-spikes\\\\codex\\\\outside-netconfig.txt","-Value","hi","-NoNewline"],"availableDecisions":["accept","cancel"]}}',
 );
 const FILE_APPROVAL = { reason: null, grantRoot: "C:\\work", itemId: "i", threadId: "t", turnId: "u", startedAtMs: 1 }; // built from the schema
+const ELICITATION = parseRequest( // the log cut the line off after "requestedSchema"; its end is as in the run's other requests
+  '{"method":"mcpServer/elicitation/request","id":0,"params":{"threadId":"01a0d957-abb2-79b3-a19e-4293c113bea1","turnId":"01a0d957-adfa-7f20-8558-a1eb40e165f2","serverName":"browser","mode":"form","_meta":{"codex_approval_kind":"mcp_tool_call","persist":["session","always"],"tool_description":"Navigate to a URL","tool_params":{"url":"https://example.com"},"tool_params_display":[{"name":"url","value":"https://example.com","display_name":"url"}]},"message":"Allow the browser MCP server to run tool \\"browser_navigate\\"?","requestedSchema":{"type":"object","properties":{}}}}',
+);
 
 describe("mapCodexNotification", () => {
   it("streams agent text and closes it when the message completes", () => {
@@ -112,10 +115,27 @@ describe("mapCodexRequest", () => {
     expect(mapCodexRequest(4, "item/fileChange/requestApproval", FILE_APPROVAL)).toEqual({ type: "approval", id: "4", tool: "Edit", summary: "Change files", detail: "C:\\work", rule: null });
     expect(mapCodexRequest(5, "item/tool/requestUserInput", {})).toBeNull();
   });
+
+  it("turns the question before an MCP tool call into a card with a reusable rule", () => {
+    expect(mapCodexElicitation(ELICITATION.id, ELICITATION.params)).toEqual({
+      type: "approval",
+      id: "0",
+      tool: "browser.browser_navigate",
+      summary: "Navigate to a URL",
+      detail: JSON.stringify({ url: "https://example.com" }, null, 2),
+      rule: "codex-mcp:browser.browser_navigate",
+    });
+  });
+
+  it("refuses malformed MCP tool-call elicitations", () => {
+    expect(mapCodexElicitation(1, { ...ELICITATION.params, serverName: 3 })).toBeNull();
+    expect(mapCodexElicitation(2, { ...ELICITATION.params, _meta: { codex_approval_kind: "mcp_tool_call", tool_description: "Navigate", tool_params: "bad" } })).toBeNull();
+    expect(mapCodexElicitation(3, { ...ELICITATION.params, message: "May I ask a question?" })).toBeNull();
+  });
 });
 
 describe("codex policy and config", () => {
-  const options: StartOptions = { cwd: "C:\\p", extraDirs: ["C:\\home"], model: "", instructions: "", autonomy: "folder", allowRules: [], resumeId: null, env: {} };
+  const options: StartOptions = { cwd: "C:\\p", extraDirs: ["C:\\home"], model: "", instructions: "", autonomy: "folder", allowRules: [], resumeId: null, env: {}, mcpServers: [] };
 
   it("maps autonomy to approval policy and sandbox", () => {
     expect(codexPolicy("ask")).toEqual({ approvalPolicy: "untrusted", sandbox: "read-only" });
@@ -123,8 +143,47 @@ describe("codex policy and config", () => {
     expect(codexPolicy("full")).toEqual({ approvalPolicy: "never", sandbox: "danger-full-access" });
   });
 
-  it("opens the network and extra folders to the sandbox, unelevated on Windows", () => {
-    expect(codexConfig(options, "win32")).toEqual({ sandbox_workspace_write: { network_access: true, writable_roots: ["C:\\home"] }, windows: { sandbox: "unelevated" } });
-    expect(codexConfig(options, "darwin")).toEqual({ sandbox_workspace_write: { network_access: true, writable_roots: ["C:\\home"] } });
+  it("opens the network and extra folders to the sandbox, unelevated on Windows, with Codex's own extras off", () => {
+    const features = {
+      apps: false,
+      browser_use: false,
+      browser_use_external: false,
+      computer_use: false,
+      in_app_browser: false,
+      plugins: false,
+      remote_plugin: false,
+      memories: false,
+      tool_suggest: false,
+      skill_mcp_dependency_install: false,
+    };
+    const common = { sandbox_workspace_write: { network_access: true, writable_roots: ["C:\\home"] }, features, mcp_servers: {} };
+    expect(codexConfig(options, "win32")).toEqual({ ...common, windows: { sandbox: "unelevated" } });
+    expect(codexConfig(options, "darwin")).toEqual(common);
+    expect(CODEX_FEATURES_OFF).toEqual({
+      apps: false,
+      browser_use: false,
+      browser_use_external: false,
+      computer_use: false,
+      in_app_browser: false,
+      plugins: false,
+      remote_plugin: false,
+      memories: false,
+      tool_suggest: false,
+      skill_mcp_dependency_install: false,
+    });
+  });
+
+  it("attaches Tjommie's MCP servers to the thread", () => {
+    const config = codexConfig({
+      ...options,
+      mcpServers: [
+        { name: "tjommie", url: "http://127.0.0.1:47100/mcp", headers: { Authorization: "Bearer t0k" }, autoAllow: true },
+        { name: "browser", command: "C:\\node.exe", args: ["cli.js"], env: { ELECTRON_RUN_AS_NODE: "1" }, autoAllow: true },
+      ],
+    });
+    expect(config.mcp_servers).toEqual({
+      tjommie: { url: "http://127.0.0.1:47100/mcp", http_headers: { Authorization: "Bearer t0k" } },
+      browser: { command: "C:\\node.exe", args: ["cli.js"], env: { ELECTRON_RUN_AS_NODE: "1" } },
+    });
   });
 });
