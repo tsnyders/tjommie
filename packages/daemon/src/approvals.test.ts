@@ -26,6 +26,15 @@ describe("approvals store", () => {
     expect(approval()).toMatchObject({ botId, tool: "Write", summary: "hello.txt", rule: "Write", status: "pending" });
   });
 
+  it("keeps routine proposals, with their payload, pending after a restart; other approvals are kind tool", () => {
+    const message = addMessage(db, { conversationId: botId, author: botId, kind: "approval", body: "Add a routine", status: "done" });
+    const routine = createApproval(db, { id: "r1", botId, kind: "routine", tool: "Routine", summary: "s", detail: "d", rule: null, payload: { name: "Morning check" }, messageId: message.id });
+    expect(routine).toMatchObject({ kind: "routine", payload: { name: "Morning check" } });
+    expect(approval()).toMatchObject({ kind: "tool", payload: null });
+    expirePendingApprovals(db);
+    expect(getApproval(db, "r1").status).toBe("pending");
+  });
+
   it("allows once without saving the rule", () => {
     const a = approval();
     expect(resolveApproval(db, a.id, "once").status).toBe("allowed");

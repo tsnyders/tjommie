@@ -16,7 +16,15 @@ describe("openDb", () => {
     db.close();
     const again = openDb(file);
     expect(again.prepare("SELECT label FROM accounts WHERE id = 'a'").get()).toEqual({ label: "Claude" });
-    expect(again.prepare("PRAGMA user_version").get()).toEqual({ user_version: 1 });
+    expect(again.prepare("PRAGMA user_version").get()).toEqual({ user_version: 2 });
+  });
+
+  it("has the Team room conversation and the routine tables after migration 2", () => {
+    const db = openDb(join(root(), "t.db"));
+    expect(db.prepare("SELECT kind FROM conversations WHERE id = 'team'").get()).toEqual({ kind: "room" });
+    for (const table of ["settings", "chains", "exchanges", "routines", "routine_runs"]) {
+      expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)).toEqual({ name: table });
+    }
   });
 
   it("enforces foreign keys", () => {
