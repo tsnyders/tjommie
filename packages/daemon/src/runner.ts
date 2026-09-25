@@ -33,6 +33,7 @@ type ActivityItem = { id: string; name: string; summary: string; status: "runnin
 type Live = {
   session: ProviderSession | null;
   fresh: boolean; // started without resuming
+  sawSession: boolean; // the CLI reported its session id since it started
   busy: boolean; // a turn is running
   sent: boolean; // the current turn's first message has reached the CLI, so more can be steered in
   steering: boolean;
@@ -247,6 +248,7 @@ export class Runner {
       live = {
         session: null,
         fresh: false,
+        sawSession: false,
         busy: false,
         sent: false,
         steering: false,
@@ -289,9 +291,14 @@ export class Runner {
       created.onEvent((event) => this.#onEvent(bot.id, created, event));
       live.session = created;
       live.fresh = resumeId === null;
+      live.sawSession = false;
       try {
         await created.start();
       } catch (error) {
+        if (live.session !== created) {
+          created.close();
+          return;
+        }
         live.session = null;
         created.close();
         if (!live.busy || live.item?.id !== item.id) return; // an exit already settled this turn
@@ -306,7 +313,12 @@ export class Runner {
       }
       session = created;
     }
-    await session.send(text);
+    try {
+      await session.send(text);
+    } catch (error) {
+      if (live.session !== session) return; // this attempt exited and was replaced while send was pending
+      throw error;
+    }
     if (!live.busy || live.item?.id !== item.id || live.session !== session) return;
     live.sent = true;
     await this.#steerQueued(bot.id); // anything sent while the turn was starting goes in now, in order
@@ -346,6 +358,7 @@ export class Runner {
     }
     switch (event.type) {
       case "session":
+        live.sawSession = true;
         this.#saveSession(botId, event.cliSessionId);
         return;
       case "text":
@@ -561,12 +574,23 @@ export class Runner {
   }
 
   #onExit(botId: string, live: Live, error: string | null): void {
+    const resumeFailed = !live.fresh && !live.sawSession;
     live.session = null;
     if (live.idleTimer) {
       clearTimeout(live.idleTimer);
       live.idleTimer = null;
     }
     if (!live.busy) return;
+    if (resumeFailed && live.item) {
+      // The CLI couldn't resume this session: start fresh with a recap instead.
+      this.#db.prepare("DELETE FROM sessions WHERE bot_id = ?").run(botId);
+      setStatus(this.#db, live.item.id, "queued");
+      live.busy = false;
+      live.sent = false;
+      live.item = null;
+      this.pump(botId);
+      return;
+    }
     live.limitHit = false; // an exit is terminal even if a limit event arrived first
     this.#finishTurn(botId, false, error ?? "The CLI stopped unexpectedly.");
   }

@@ -18,6 +18,7 @@ type SentEvent = { [E in EventName]: { event: E; data: EventData<E> } }[EventNam
 class FakeSession implements ProviderSession {
   events: ((event: ProviderEvent) => void) | null = null;
   startPromise: Promise<void> = Promise.resolve();
+  sendPromise: Promise<void> = Promise.resolve();
   sent: string[] = [];
   steered: string[] = [];
   answers: { id: string; answer: "once" | "always" | "deny" }[] = [];
@@ -31,6 +32,7 @@ class FakeSession implements ProviderSession {
 
   async send(text: string): Promise<void> {
     this.sent.push(text);
+    await this.sendPromise;
   }
 
   async steer(text: string): Promise<boolean> {
@@ -79,15 +81,15 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function harness(factory: () => FakeSession = () => new FakeSession(), signedIn = true): Harness {
+function harness(factory: (options: StartOptions) => FakeSession = () => new FakeSession(), signedIn = true): Harness {
   const root = tempRoot();
   const db = openDb(join(root, "t.db"));
   ensureAccounts(db, join(root, "accounts"));
   const events: SentEvent[] = [];
   const sessions: FakeSession[] = [];
   const broadcast: Broadcast = (event, data) => events.push({ event, data } as SentEvent);
-  const createSession: SessionFactory = () => {
-    const session = factory();
+  const createSession: SessionFactory = (_bot, options) => {
+    const session = factory(options);
     sessions.push(session);
     return session;
   };
@@ -221,6 +223,80 @@ describe("Runner queueing", () => {
 });
 
 describe("Runner turn settlement", () => {
+  it("restarts a failed resumed session fresh with a recap", async () => {
+    const resumed = new FakeSession();
+    const fresh = new FakeSession();
+    let rejectResumedSend: (reason: Error) => void = () => {
+      throw new Error("Resumed send did not start");
+    };
+    resumed.sendPromise = new Promise<void>((_resolve, reject) => {
+      rejectResumedSend = reject;
+    });
+    const available = [resumed, fresh];
+    const options: StartOptions[] = [];
+    let nextSession = 0;
+    const h = harness((startOptions) => {
+      options.push(startOptions);
+      const session = available[nextSession++];
+      if (!session) throw new Error("Unexpected extra session");
+      return session;
+    });
+    const bot = newBot(h);
+    addMessage(h.db, { conversationId: bot.id, author: "you", kind: "text", body: "Remember ZEBRA", status: "done" });
+    addMessage(h.db, { conversationId: bot.id, author: bot.id, kind: "text", body: "Noted ZEBRA", status: "done" });
+    h.db
+      .prepare("INSERT INTO sessions (bot_id, provider, account_id, cli_session_id, updated_at) VALUES (?, ?, ?, ?, ?)")
+      .run(bot.id, "claude", "claude-main", "missing-session", "2026-09-25T10:00:00.000Z");
+
+    const message = h.runner.submit(bot.id, "continue", []);
+    await waitFor(() => resumed.sent.length > 0);
+    expect(options[0]?.resumeId).toBe("missing-session");
+    expect(resumed.sent).toEqual(["continue"]);
+
+    resumed.emit({ type: "exit", error: null });
+    await waitFor(() => fresh.sent.length > 0, 2_000);
+
+    expect(options.map((item) => item.resumeId)).toEqual(["missing-session", null]);
+    expect(fresh.sent[0]).toContain("[Tjommie: this is a new session of an ongoing chat.");
+    expect(fresh.sent[0]).toContain("Person: Remember ZEBRA");
+    expect(fresh.sent[0]).toContain(`${bot.name}: Noted ZEBRA`);
+    expect(fresh.sent[0]).toContain("continue");
+    expect(h.db.prepare("SELECT cli_session_id FROM sessions WHERE bot_id = ?").get(bot.id)).toBeUndefined();
+    expect(h.db.prepare("SELECT count(*) AS count FROM work_items WHERE message_id = ?").get(message.id)).toEqual({ count: 1 });
+    expect(itemForMessage(h.db, message.id).status).toBe("running");
+    expect(history(h.db, bot.id, undefined, 20).some((item) => item.kind === "error")).toBe(false);
+
+    rejectResumedSend(new Error("old session stopped"));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(itemForMessage(h.db, message.id).status).toBe("running");
+    expect(history(h.db, bot.id, undefined, 20).some((item) => item.kind === "error")).toBe(false);
+
+    fresh.emit({ type: "exit", error: null });
+    expect(h.sessions).toHaveLength(2);
+    expect(itemForMessage(h.db, message.id).status).toBe("failed");
+    expect(history(h.db, bot.id, undefined, 20).find((item) => item.kind === "error")?.data).toEqual({ retryMessageId: message.id });
+  });
+
+  it("fails with Retry when a fresh session exits before reporting its session", async () => {
+    const session = new FakeSession();
+    const options: StartOptions[] = [];
+    const h = harness((startOptions) => {
+      options.push(startOptions);
+      return session;
+    });
+    const bot = newBot(h);
+    const message = h.runner.submit(bot.id, "start", []);
+    await waitFor(() => session.sent.length > 0);
+    expect(options[0]?.resumeId).toBeNull();
+
+    session.emit({ type: "exit", error: null });
+
+    expect(h.sessions).toHaveLength(1);
+    expect(itemForMessage(h.db, message.id).status).toBe("failed");
+    expect(history(h.db, bot.id, undefined, 20).find((item) => item.kind === "error")?.data).toEqual({ retryMessageId: message.id });
+    expect(h.runner.toBot(getStoredBot(h.db, bot.id)).state).toBe("idle");
+  });
+
   it("fails partial assistant text and offers Retry when the CLI exits mid-turn without an error", async () => {
     const session = new FakeSession();
     const h = harness(() => session);
