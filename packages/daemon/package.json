@@ -4,9 +4,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node src/main.ts"
+    "start": "node --disable-warning=ExperimentalWarning src/main.ts",
+    "signin": "node --disable-warning=ExperimentalWarning scripts/signin.ts",
+    "chat": "node --disable-warning=ExperimentalWarning scripts/chat.ts"
   },
   "dependencies": {
-    "@tjommie/protocol": "*"
+    "@tjommie/protocol": "*",
+    "zod": "^4.6.5"
   }
 }
