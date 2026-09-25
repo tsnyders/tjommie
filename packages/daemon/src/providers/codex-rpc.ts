@@ -45,7 +45,13 @@ export class JsonRpcLines {
         reject(new Error(`${method} timed out`));
       }, timeoutMs);
       this.#pending.set(id, { resolve: (value) => resolve(value as T), reject, timer });
-      this.#write(JSON.stringify({ id, method, params }));
+      try {
+        this.#write(JSON.stringify({ id, method, params }));
+      } catch (error) {
+        this.#pending.delete(id);
+        clearTimeout(timer);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
     });
   }
 
@@ -86,12 +92,13 @@ export class JsonRpcLines {
     this.#pending.delete(id);
     clearTimeout(pending.timer);
     const remoteError = message.error;
-    if (
-      isRecord(remoteError) &&
-      typeof remoteError.code === "number" &&
-      typeof remoteError.message === "string"
-    ) {
-      pending.reject(new RpcRemoteError(remoteError.code, remoteError.message));
+    if (remoteError !== undefined && remoteError !== null) {
+      const code = isRecord(remoteError) && typeof remoteError.code === "number" ? remoteError.code : 0;
+      const text =
+        isRecord(remoteError) && typeof remoteError.message === "string"
+          ? remoteError.message
+          : (JSON.stringify(remoteError) ?? String(remoteError));
+      pending.reject(new RpcRemoteError(code, text));
     } else {
       pending.resolve(message.result);
     }
@@ -134,6 +141,7 @@ export async function startCodexServer(
     rpc.failAll(new Error("codex app-server exited"));
   });
   child.on("error", (error) => rpc.failAll(error));
+  child.stdin.on("error", (error) => rpc.failAll(error));
   const close = () => {
     if (exited || killTimer !== undefined) return;
     child.stdin.end();

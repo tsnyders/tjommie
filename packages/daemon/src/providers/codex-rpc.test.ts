@@ -77,6 +77,19 @@ describe("JsonRpcLines", () => {
     await expect(pending).rejects.toBeInstanceOf(RpcRemoteError);
   });
 
+  it("rejects every non-null error response even when its code or shape is unexpected", async () => {
+    const { rpc, sent } = client();
+    const missingCode = rpc.request("thread/start", {});
+    rpc.handleLine(
+      JSON.stringify({ id: sent[0].id, error: { message: "failed to load configuration" } }),
+    );
+    await expect(missingCode).rejects.toMatchObject({ code: 0, message: "failed to load configuration" });
+
+    const stringError = rpc.request("thread/start", {});
+    rpc.handleLine(JSON.stringify({ id: sent[1].id, error: "boom" }));
+    await expect(stringError).rejects.toMatchObject({ code: 0, message: '"boom"' });
+  });
+
   it("routes notifications and server requests, and ignores junk (real app-server lines)", () => {
     const { rpc } = client();
     const seen: string[] = [];
@@ -123,9 +136,49 @@ describe("JsonRpcLines", () => {
     rpc.failAll(new Error("codex app-server exited"));
     await expect(pending).rejects.toThrow("exited");
   });
+
+  it("rejects immediately and clears its timeout when writing throws", async () => {
+    vi.useFakeTimers();
+    const failure = new Error("stdin write failed");
+    const rpc = new JsonRpcLines(() => {
+      throw failure;
+    });
+
+    try {
+      await expect(rpc.request("turn/start", {})).rejects.toBe(failure);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("startCodexServer", () => {
+  it("fails pending requests when the child stdin emits an error", async () => {
+    cliMocks.killTree.mockClear();
+    cliMocks.spawnCli.mockReset();
+    const { child, stdin, stdout, stderr } = fakeChild();
+    cliMocks.spawnCli.mockReturnValue(child);
+    answerInitialize(stdin, stdout);
+
+    try {
+      const server = await startCodexServer({ file: "codex", args: [] }, {}, ".");
+      expect(stdin.listenerCount("error")).toBe(1);
+
+      const pending = server.rpc.request("account/read", {});
+      const failure = new Error("write EPIPE");
+      stdin.emit("error", failure);
+
+      await expect(pending).rejects.toBe(failure);
+    } finally {
+      child.emit("exit", 1, null);
+      stdin.destroy();
+      stdout.destroy();
+      stderr.destroy();
+    }
+  });
+
   it("cancels the delayed tree kill when the child exits", async () => {
     vi.useFakeTimers();
     cliMocks.killTree.mockClear();
