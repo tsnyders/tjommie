@@ -7,6 +7,18 @@
 
 Bot names in this document ("Researcher", "Writer") and in the wireframes ("Pnet apply", "CV Writer") are examples. Tjommie ships with no bots.
 
+## Changes after the Phase 1 spikes (2026-09-25)
+
+The Phase 1 spikes ran against Claude Code 2.1.280 and Codex CLI 0.155.1 while the first implementation plan was being written. They changed these points. The sections below already include the changes.
+
+1. **Bots never use the person's own CLI setup (a decision made after spike findings).** Running bots on the PC's existing logins loaded the person's hooks, plugins, skills, MCP servers and Codex memories. For Claude that meant 66 s before the session was ready and ~28k extra prompt tokens; for Codex it meant 237k input tokens for a one-line task, plus writes into personal memories. So from Phase 1 on, each provider runs from a Tjommie-owned config folder (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`) that the person signs in to once on first run. Phase 2 adds more accounts on top of this.
+2. **Claude approvals go over stdin/stdout, not through our MCP server.** `--permission-prompt-tool stdio` makes Claude send `can_use_tool` control requests on stdout, and we answer on stdin. The `approve` MCP tool is gone. Claude's "default" permission mode is now called `manual`.
+3. **Claude reports usage percentages.** `rate_limit_event` includes the five-hour and seven-day utilization, so Claude shows live percentages like Codex. Its `total_cost_usd` is cumulative per CLI process, so each turn's cost is the difference from the previous one.
+4. **Bots don't get the person's MCP servers.** Because their CLI folder is Tjommie's own, bots only get the MCP servers Tjommie attaches. The per-bot Tools picker (Later) becomes the way to add Gmail, GitHub and similar tools.
+5. **Codex's Windows sandbox needs no admin.** A per-thread setting, `windows.sandbox = "unelevated"`, enforces writes (inside the bot's folders allowed, outside asks). Shell commands can't reach the network from inside the Windows sandbox (TLS fails), so network commands ask for approval. Bots do web work through the browser tool or Codex's built-in web search.
+6. **Codex sign-in doesn't need a terminal.** The app-server's `account/login/start` returns OpenAI's own sign-in URL, which the app opens in the browser. Claude's sign-in opens its own `claude auth login` in a console window.
+7. **Stop and steering work on both CLIs.** Claude reads a message written mid-turn at its next step, and stops on an `interrupt` control message. Codex uses `turn/steer` and `turn/interrupt`.
+
 ## 1. Summary
 
 Tjommie is a free, open-source desktop and phone app. People create AI bots that chat with them, work on their PC, talk to each other and run routines. It is modelled on Grok Bot (SpaceXAI, beta launched 2026-08-11), with one big difference: the bots run on the user's own computer, powered by the official Claude Code and Codex CLIs, signed in with the user's own accounts.
@@ -42,7 +54,7 @@ Tjommie is a free, open-source desktop and phone app. People create AI bots that
 | Phone scope | Full parity with the desktop |
 | Remote reach | Anywhere, through an end-to-end encrypted relay (public one + self-host); direct on the same Wi-Fi |
 | Usage and cost | Token, limit and cost tracking like T3 Code, plus spending caps on API keys |
-| Phase split | Phase 1 runs both CLIs with the PC's existing logins; Phase 2 adds multi-account |
+| Phase split | Phase 1 runs both CLIs, each signed in once inside Tjommie (one account per provider); Phase 2 adds more accounts, API keys and limit handling |
 | Testing | Real CLIs (no fake CLI), screenshot checks, a manual end-to-end run per phase |
 
 ### 1.3 Assumptions
@@ -78,7 +90,7 @@ Host PC (Windows)
 │   ├─ Runner: one CLI process per busy bot                    │
 │   │     claude -p (stream-json)    codex app-server          │
 │   ├─ App MCP server (HTTP): list_bots, message_bot,          │
-│   │     share_file, add_routine, Claude approval hook        │
+│   │     share_file, add_routine                              │
 │   ├─ Scheduler: routines                                     │
 │   └─ Browser: Playwright MCP, one Chrome profile per bot     │
 └──────────────────────────────────────────────────────────────┘
@@ -112,7 +124,7 @@ bots\<bot-id>\           the bot's home folder (its working folder unless a proj
     notes.md             the bot's memory
     inbox\               files you attach
     chrome-profile\      the bot's own Chrome profile
-accounts\<account-id>\   CLAUDE_CONFIG_DIR or CODEX_HOME for that account (Phase 2)
+accounts\<account-id>\   CLAUDE_CONFIG_DIR or CODEX_HOME for that account (claude-main, codex-main from Phase 1)
 logs\
 ```
 
@@ -135,7 +147,7 @@ logs\
 | Name, avatar | 10 colors and 8 blob shapes (`docs/design/brief.md` section 5) |
 | Instructions | "What should this bot do?". Passed to the CLI as a system prompt addition; never written into the folder, so a project's own `CLAUDE.md` and `AGENTS.md` stay untouched |
 | Provider, model | Claude or Codex. Claude models by alias (`sonnet`, `opus`, `haiku`) so bots get the newest version; Codex models from `model/list` |
-| Account | Phase 2. Until then the PC's existing login |
+| Account | Phase 1: the provider's one Tjommie account. Phase 2: any of several accounts |
 | Folder | The bot's home folder (default) or an attached project folder. With a project, the home folder is added as an extra allowed folder (Claude `--add-dir`, Codex writable roots) |
 | Autonomy | Always ask, Own folder (default), Full auto (section 5.4) |
 | Can message | The bots it may ask for help |
@@ -219,19 +231,19 @@ We run the installed, unmodified `claude` program directly. We don't use the Cla
 ```
 claude -p --input-format stream-json --output-format stream-json --verbose
   --include-partial-messages
+  --permission-prompt-tool stdio
+  --permission-mode <manual | acceptEdits | bypassPermissions>
   --model <alias>
   --append-system-prompt <bot instructions + memory rules>
-  --mcp-config <per-session JSON: tjommie (HTTP), browser (stdio)>
-  --permission-prompt-tool mcp__tjommie__approve
-  --permission-mode <per autonomy> [--allowedTools <saved rules>]
-  [--add-dir <home folder>] [--resume <session id>]
+  --strict-mcp-config [--mcp-config <per-session JSON: tjommie (HTTP), browser (stdio)>]
+  [--add-dir <home folder>] [--resume <session id>] [--allowedTools <saved rules>]
 ```
 
-- **Environment.** Remove `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` and `CLAUDE_CODE_OAUTH_TOKEN` so the CLI uses its own sign-in. Phase 2 sets `CLAUDE_CONFIG_DIR` per account, or `ANTHROPIC_API_KEY` for API-key accounts.
-- **Approvals.** Claude calls our `approve` tool with the tool name and input. If a saved rule matches, we allow it at once. Otherwise we show a card, keep the call open until the user answers, and return allow or deny.
-- **Steering.** Write a new user message line to stdin while a turn runs (Phase 1 spike 1).
-- **Stop.** Send the stream-json interrupt control message on stdin. If that doesn't work, end the process and resume (spike 2).
-- **Usage and limits.** The `result` message carries `usage`, `total_cost_usd` and per-model usage. `rate_limit_event` carries the status (`allowed`, `allowed_warning`, `rejected`), `resetsAt` and the limit type. A quota refusal arrives as an assistant message with `error: "rate_limit"`.
+- **Environment.** `CLAUDE_CONFIG_DIR` points at the bot's Tjommie account folder. Remove `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` and `CLAUDE_CODE_OAUTH_TOKEN` from the inherited environment so the CLI uses that folder's sign-in. Phase 2 sets `ANTHROPIC_API_KEY` for API-key accounts.
+- **Approvals.** Claude writes a `can_use_tool` control request to stdout with the tool name, input, a description and suggested rules. If a saved rule matches, we allow it at once. Otherwise we show a card and answer on stdin with allow or deny when the user decides. Waiting a long time is fine.
+- **Steering.** Write a new user message line to stdin while a turn runs; Claude reads it at its next step.
+- **Stop.** Send the `interrupt` control request on stdin. If no `result` arrives within 10 seconds, end the process tree and resume next time.
+- **Usage and limits.** The `result` message carries per-turn `usage` and a `total_cost_usd` that is cumulative for the process. `rate_limit_event` carries the status (`allowed`, `allowed_warning`, `rejected`), `resetsAt`, the limit type and each window's utilization.
 
 ### 5.3 Codex
 
@@ -240,8 +252,8 @@ We run `codex app-server`: JSON-RPC over stdio, the interface OpenAI built for i
 - **Threads and turns.** `thread/start` takes the working folder, model, `approvalPolicy`, `sandbox`, `developerInstructions` (the bot's instructions) and MCP servers. Also `thread/resume`, `turn/start`, `turn/steer` and `turn/interrupt`.
 - **Approvals.** The server sends `item/commandExecution/requestApproval` and `item/fileChange/requestApproval` and waits for our answer.
 - **Usage and limits.** `thread/tokenUsage/updated` gives input, cached, output and reasoning tokens. `account/rateLimits/updated` gives `usedPercent` and `resetsAt`. A turn fails with `UsageLimitExceeded` at the limit. Codex reports no cost; see section 8.3.
-- **Environment.** Remove `OPENAI_API_KEY` and `CODEX_API_KEY`. Phase 2 sets `CODEX_HOME` per account.
-- **Windows.** npm installs `codex` as a `.ps1`/`.cmd` shim, so we resolve and spawn the real executable (spike 7).
+- **Environment.** `CODEX_HOME` points at the bot's Tjommie account folder. Remove `OPENAI_API_KEY` and `CODEX_API_KEY` from the inherited environment.
+- **Windows.** npm installs `codex` as a `.ps1`/`.cmd` shim, so we run its JavaScript entry (`node_modules\@openai\codex\bin\codex.js`) with our own Node. Each thread's config sets `windows.sandbox = "unelevated"` (no admin needed). Inside that sandbox shell commands can't reach the network, so they ask for approval.
 
 ### 5.4 Autonomy
 
@@ -249,7 +261,7 @@ Each level maps onto the CLI's own permission system. We don't build a sandbox.
 
 | Level | Claude | Codex |
 |---|---|---|
-| Always ask | `default` mode: every change becomes a card | approval `untrusted`, `read-only` sandbox |
+| Always ask | `manual` mode: every change becomes a card | approval `untrusted`, `read-only` sandbox |
 | Own folder (default) | `acceptEdits`: edits inside its folders go through; shell commands and anything outside become a card | approval `on-request`, `workspace-write` sandbox on its folders, network on |
 | Full auto | `bypassPermissions` | approval `never`, full access |
 
@@ -271,9 +283,8 @@ Streamable HTTP at `http://127.0.0.1:<port>/mcp`. Each CLI session gets its own 
 | `message_bot(bot, message)` | Queues a request for another bot and returns at once: "Sent. Writer will reply." |
 | `share_file(path, caption?)` | Attaches a file from the bot's folders to its reply as a file card |
 | `add_routine(name, days, times, prompt, time_limit?)` | Proposes a routine as a "Waiting for you" card. Nothing is saved until you approve |
-| `approve` | Internal: Claude's permission prompt hook. Not meant for the model |
 
-Bots also keep any MCP servers the user set up in the CLI itself (we don't pass `--strict-mcp-config`). A per-bot Tools picker is listed under Later.
+Bots get only the MCP servers Tjommie attaches (this one and the browser), because their CLI config folder is Tjommie's own. A per-bot Tools picker for adding more is listed under Later.
 
 ### 5.7 Browser
 
@@ -283,7 +294,7 @@ Bots also keep any MCP servers the user set up in the CLI itself (we don't pass 
 
 ### 5.8 Setup check
 
-At startup, and whenever a bot hits a sign-in error, the daemon runs `claude --version`, `claude auth status`, `codex --version` and `codex login status`. Bots whose CLI is missing or signed out show "Needs setup" with the exact command to run (Phase 1) or a "Sign in" button (Phase 2).
+At startup, and when the setup screen asks, the daemon runs `claude --version` and `claude auth status` (JSON) with the Claude account folder, and `codex --version` plus the app-server's `account/read` with the Codex account folder. Bots whose CLI is missing or signed out show "Needs setup". First-run setup offers "Sign in to Claude" and "Sign in to Codex" (section 8.1).
 
 ## 6. Bots talking to each other
 
@@ -331,7 +342,7 @@ Neither CLI knows the other exists. Each only sees plain text through the daemon
 - **Where.** Settings → Accounts (WF4's "Models" nav item becomes "Accounts"). Designed in OpenPencil first. Accounts are grouped by provider, each with a name you choose ("Claude (Work)", "Claude (Personal)", "Codex (Main)"), its type, sign-in status and usage.
 - **Subscription sign-in** (Claude Pro/Max, ChatGPT plans):
   - **Its own folder.** The app creates `accounts\<id>\` and points that CLI at it: `CLAUDE_CONFIG_DIR` for Claude, `CODEX_HOME` for Codex. It's the same approach as the `kuumba-paseo` fork's provider profiles.
-  - **Signing in.** The CLI's own sign-in runs in a small terminal view inside the app (xterm.js in the UI, a pseudo-terminal in the daemon): `claude auth login`, or `codex login` / `codex login --device-auth`, with that account's folder. You open the link on the PC or your phone, approve, and paste back a code if asked.
+  - **Signing in.** Each provider's own sign-in, pointed at that account's folder. Claude: `claude auth login` in a console window (Phase 2 may move it into a small terminal view so it also works from the phone). Codex: the app-server's `account/login/start` returns OpenAI's sign-in URL, which opens in the browser; a device code (`chatgptDeviceCode`) works from any device. Phase 1 uses exactly this for its single account per provider.
   - **The app never handles your login.** The CLI stores it in that folder. The app never sees or reads your password or token.
 - **API key** (pay per use):
   - **Stored safely.** Kept in Windows Credential Manager.
@@ -359,7 +370,7 @@ Neither CLI knows the other exists. Each only sees plain text through the daemon
   - **Usage page** (Settings → Usage): today, this week and this month; tokens and cost by bot, account and model; a daily bar chart; each account's limit status.
   - **Each bot's right panel:** "Today: 1.2M tokens · $3.40".
   - **Accounts screen:** today and this month per account.
-- **Limits shown.** Codex shows live numbers ("62% of 5-hour limit, resets 3:45 PM"). Claude shows OK, Near limit or Limit reached, plus the reset time, because that's all its headless output reports.
+- **Limits shown.** Both providers show live numbers ("62% of 5-hour limit, resets 3:45 PM"): Codex from `account/rateLimits/updated`, Claude from `rate_limit_event` (each window's utilization).
 - **Money, labelled honestly.**
   - API-key accounts show "Spent: $12.40", which is real money.
   - Subscription accounts show "API value: $48.10", which is what the same tokens would cost at API prices.
@@ -455,7 +466,7 @@ In Phase 1:
 | 3 Remote | Start at login, tray, pairing, devices and revoke, relay (public and self-host guide), same-Wi-Fi connections, Noise encryption, Android app, push, host switcher, desktop auto-update | The app starts at login. Pair an Android phone by QR over mobile data. Chat, approve and create a bot from the phone. A push arrives when a bot waits. Pair a second PC with the code. Revoke the phone and it's cut off at once |
 | 4 Computer | Live screen of the bot's Chrome, Take over, Pause, Stop, Logins vault, live Agents thumbnails | Watch a bot's Chrome live; take over to type a PIN; Pause and Stop. The vault fills a login, and a test proves the password never reaches the model |
 
-### 12.3 Phase 1 spikes (run first)
+### 12.3 Phase 1 spikes (all run on 2026-09-25; results are in the "Changes after the Phase 1 spikes" section and in the Phase 1A plan)
 
 1. **Steering Claude.** Does Claude read a message written to stdin in the middle of a turn? If not, Claude bots use "first in line" for your messages.
 2. **Stopping Claude.** Does the stream-json interrupt message stop a turn cleanly? If not, end the process and resume.
@@ -504,7 +515,7 @@ In Phase 1:
 | Claude has no OS sandbox on Windows | "Own folder" asks before every shell command for Claude bots |
 | Bot-to-bot chains multiply usage | Chain limit, spending caps, usage page |
 | Many bots mean many processes and Chrome windows | One turn at a time per bot; idle shutdown after 10 minutes |
-| Bots inherit the user's CLI settings, plugins, hooks and MCP servers | Accepted for Phase 1; revisit with the Tools picker |
+| Bots inheriting the user's CLI settings, plugins, hooks, memories and MCP servers | Resolved: bots run from Tjommie-owned CLI config folders that the user signs in to once |
 | Public relay costs | Cloudflare Workers is cheap, the relay only forwards bytes, and a self-host guide exists |
 | Windows Firewall prompt for same-Wi-Fi connections | Explained on the pairing screen; the relay still works if it's refused |
 | The name | Run a trademark search for "Tjommie" before launch |
