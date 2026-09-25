@@ -78,7 +78,8 @@ export function runCli(
 export function killTree(pid: number | undefined): void {
   if (pid === undefined) return;
   if (process.platform === "win32") {
-    spawn("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
+    const child = spawn("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
+    child.on("error", () => {});
     return;
   }
   try {
@@ -95,6 +96,7 @@ export function openUrl(url: string): void {
     process.platform === "win32"
       ? spawn("rundll32", ["url.dll,FileProtocolHandler", url], { stdio: "ignore", detached: true })
       : spawn(process.platform === "darwin" ? "open" : "xdg-open", [url], { stdio: "ignore", detached: true });
+  child.on("error", () => {});
   child.unref();
 }
 
@@ -107,5 +109,6 @@ export function openConsole(title: string, command: string, env: Record<string, 
     stdio: "ignore",
     windowsVerbatimArguments: true,
   });
+  child.on("error", () => {});
   child.unref();
 }
