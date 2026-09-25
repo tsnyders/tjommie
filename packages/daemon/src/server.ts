@@ -54,6 +54,7 @@ export async function startServer(opts: { port: number; token: string; handlers:
   function accept(ws: WebSocket): void {
     let authed = false;
     const timer = setTimeout(() => ws.close(4401, "hello required"), HELLO_TIMEOUT_MS);
+    ws.on("error", () => ws.terminate());
     ws.on("close", () => {
       clearTimeout(timer);
       clients.delete(ws);

@@ -63,6 +63,26 @@ describe("startServer", () => {
     expect(await wrongProtocol.closed).toBe(4003);
   });
 
+  it("closes with 4400 on malformed JSON", async () => {
+    server = await startServer({ port: 0, token: "secret", allowedOrigins: [], handlers: {} });
+    const client = connect(server.port);
+    await client.opened;
+    client.ws.send("{not json");
+    expect(await client.closed).toBe(4400);
+  });
+
+  it("survives a bad WebSocket frame", async () => {
+    server = await startServer({ port: 0, token: "secret", allowedOrigins: [], handlers: {} });
+    const badFrame = connect(server.port);
+    await badFrame.opened;
+    badFrame.ws.send("x", { mask: false });
+    expect(await badFrame.closed).toBe(1002);
+
+    const fresh = connect(server.port);
+    expect(await hello(fresh, "secret")).toEqual({ type: "welcome", protocol: 1 });
+    fresh.ws.close();
+  });
+
   it("reports bad params and handler errors without closing the connection", async () => {
     server = await startServer({
       port: 0,
