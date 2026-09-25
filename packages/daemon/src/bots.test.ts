@@ -1,10 +1,15 @@
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { botPrompt, createBot, deleteBot, getStoredBot, listStoredBots, setPaused, updateBot } from "./bots.ts";
 import { openDb, type Db } from "./db.ts";
 import { RpcError } from "./server.ts";
 import { tempRoot } from "./testing.ts";
+
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return { ...actual, rmSync: vi.fn(actual.rmSync) };
+});
 
 const input = { name: "Researcher", color: "teal", shape: "droplet", instructions: "Find sources.", provider: "claude", model: "sonnet" } as const;
 let db: Db;
@@ -77,6 +82,24 @@ describe("bots store", () => {
     expect(listStoredBots(db)).toEqual([]);
     expect(existsSync(bot.homeFolder)).toBe(false);
     expect(db.prepare("SELECT COUNT(*) AS n FROM messages").get()).toEqual({ n: 0 });
+  });
+
+  it("keeps the bot when its home folder cannot be removed", () => {
+    const bot = createBot(db, botsDir, input);
+    vi.mocked(rmSync).mockImplementationOnce(() => {
+      throw new Error("locked");
+    });
+    let caught: unknown;
+    try {
+      deleteBot(db, bot.id);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(RpcError);
+    expect(caught).toMatchObject({ code: "busy", message: "The bot folder is busy" });
+    expect(rmSync).toHaveBeenCalledWith(bot.homeFolder, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    expect(getStoredBot(db, bot.id)).toEqual(bot);
+    expect(existsSync(bot.homeFolder)).toBe(true);
   });
 
   it("builds a prompt with the name, home folder and instructions", () => {

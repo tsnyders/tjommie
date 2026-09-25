@@ -104,8 +104,12 @@ export function updateBot(db: Db, id: string, patch: BotPatch): StoredBot {
 // Deletes the bot, its chat and its home folder. An attached project folder is never touched.
 export function deleteBot(db: Db, id: string): void {
   const bot = getStoredBot(db, id);
+  try {
+    rmSync(bot.homeFolder, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  } catch {
+    throw new RpcError("busy", "The bot folder is busy");
+  }
   db.prepare("DELETE FROM bots WHERE id = ?").run(id);
-  rmSync(bot.homeFolder, { recursive: true, force: true });
 }
 
 export function setPaused(db: Db, id: string, paused: boolean): void {
