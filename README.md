@@ -10,9 +10,13 @@ You need Windows and Node 24 or newer.
 
 ```sh
 npm install
+npm run signin -w @tjommie/daemon    # once: sign Tjommie's own Claude and Codex accounts in
+npm start -w @tjommie/daemon         # the daemon, on http://127.0.0.1:47100
+npm run chat -w @tjommie/daemon -- "Researcher" claude   # chat with a bot from the terminal
 npm run dev        # UI at http://localhost:3000
 npm run desktop    # Electron window showing that UI (keep npm run dev running)
-npm test
+npm test           # fast tests
+npm run test:real  # tests that drive the real Claude and Codex CLIs (needs the sign-in above)
 npm run typecheck
 npm run lint
 npm run build      # static export to packages/ui/out
