@@ -1,10 +1,27 @@
 import { z } from "zod";
-import { Approval, ApprovalDecision, Bot, BotInput, BotPatch, Message, ModelInfo, Provider, ProviderSetup } from "./model.ts";
+import {
+  Approval,
+  ApprovalDecision,
+  Bot,
+  BotInput,
+  BotPatch,
+  Exchange,
+  Message,
+  ModelInfo,
+  Provider,
+  ProviderSetup,
+  Routine,
+  RoutineInput,
+  RoutinePatch,
+  RoutineRun,
+  Settings,
+} from "./model.ts";
 
 export const PROTOCOL_VERSION = 1;
 
 const Empty = z.object({});
 const Id = z.object({ id: z.string() });
+const Page = { before: z.string().optional(), limit: z.number().int().min(1).max(200).default(50) };
 
 // Every request the daemon answers: params are validated on arrival, results are what handlers return.
 export const methods = {
@@ -16,10 +33,8 @@ export const methods = {
   "bots.update": { params: z.object({ id: z.string(), patch: BotPatch }), result: Bot },
   "bots.delete": { params: Id, result: Empty },
   "bots.pause": { params: z.object({ id: z.string(), paused: z.boolean() }), result: Bot },
-  "chat.history": {
-    params: z.object({ botId: z.string(), before: z.string().optional(), limit: z.number().int().min(1).max(200).default(50) }),
-    result: z.array(Message),
-  },
+  "bots.showBrowser": { params: Id, result: Empty },
+  "chat.history": { params: z.object({ botId: z.string(), ...Page }), result: z.array(Message) },
   "chat.send": {
     params: z.object({ botId: z.string(), text: z.string().trim().min(1).max(100_000), files: z.array(z.string()).max(20).default([]) }),
     result: Message,
@@ -27,6 +42,16 @@ export const methods = {
   "chat.stop": { params: z.object({ botId: z.string() }), result: Empty },
   "chat.retry": { params: z.object({ messageId: z.string() }), result: Message },
   "approvals.respond": { params: z.object({ approvalId: z.string(), decision: ApprovalDecision }), result: Approval },
+  "room.history": { params: z.object(Page), result: z.array(Message) },
+  "room.post": { params: z.object({ text: z.string().trim().min(1).max(100_000) }), result: Message },
+  "exchanges.get": { params: Id, result: z.object({ exchange: Exchange, messages: z.array(Message) }) },
+  "routines.list": { params: z.object({ botId: z.string() }), result: z.array(Routine) },
+  "routines.create": { params: RoutineInput, result: Routine },
+  "routines.update": { params: z.object({ id: z.string(), patch: RoutinePatch }), result: Routine },
+  "routines.delete": { params: Id, result: Empty },
+  "routines.runs": { params: z.object({ routineId: z.string() }), result: z.array(RoutineRun) },
+  "settings.get": { params: Empty, result: Settings },
+  "settings.set": { params: Settings.partial(), result: Settings },
 } as const;
 
 // Everything the daemon pushes to connected clients.
@@ -40,6 +65,10 @@ export const events = {
   "approval.resolved": Approval,
   "setup.changed": z.array(ProviderSetup),
   notify: z.object({ botId: z.string(), title: z.string(), body: z.string() }),
+  "routine.updated": Routine,
+  "routine.deleted": Id,
+  "routine.run": RoutineRun,
+  "settings.changed": Settings,
 } as const;
 
 export type MethodName = keyof typeof methods;
