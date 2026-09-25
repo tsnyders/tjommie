@@ -1,0 +1,14 @@
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+next-env.d.ts
+.env*
+*.pem
+
+# Design renders and smoke-test output (regenerable)
+design/_smoke/
+design/_smoke.fig
+
+# Grok Bot screenshots and scraped tokens: xAI's material, kept on this PC only
+docs/reference/
