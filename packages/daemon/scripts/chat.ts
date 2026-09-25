@@ -25,6 +25,19 @@ function isEventMessage(value: unknown): value is EventMessage {
   return isRecord(value) && value.type === "event" && typeof value.event === "string" && "data" in value;
 }
 
+function describeClose(code: number, reason: string): string {
+  const explanation =
+    code === 4401
+      ? "The daemon rejected the token. Restart the chat after the daemon has started."
+      : code === 4003
+        ? "The daemon and chat client use different protocol versions. Restart them from the same Tjommie version."
+        : code === 4400
+          ? "The daemon rejected a message from the chat client."
+          : "The daemon closed the connection unexpectedly.";
+  const reasonText = reason.trim() ? `Daemon reason: ${reason.trim()}` : "The daemon did not provide a reason.";
+  return `Connection closed with code ${code}. ${explanation} ${reasonText}`;
+}
+
 const [name = "Tester", provider = "claude", autonomy = "folder"] = process.argv.slice(2);
 const port = Number(process.env.TJOMMIE_PORT ?? DEFAULT_PORT);
 const token = readFileSync(dataPaths().token, "utf8").trim();
@@ -91,14 +104,34 @@ ws.addEventListener("message", (event) => {
     console.log(`\n  Waiting for you: ${data.summary}\n  /allow ${data.id}   /always ${data.id}   /deny ${data.id}`);
   }
 });
-ws.addEventListener("close", () => {
-  console.log("Disconnected from the daemon.");
-  process.exit(0);
+let opened = false;
+const connection = new Promise<void>((resolve, reject) => {
+  ws.addEventListener("open", () => {
+    opened = true;
+    resolve();
+  });
+  ws.addEventListener("error", (event) => {
+    if (!opened) reject(event);
+  });
+  ws.addEventListener("close", (event) => {
+    if (!opened) {
+      reject(new Error("The connection closed before it opened."));
+      return;
+    }
+    if (event.code === 1000 || event.code === 1005) {
+      console.log("Disconnected from the daemon.");
+      process.exit(0);
+    }
+    console.error(describeClose(event.code, event.reason));
+    process.exit(1);
+  });
 });
-await new Promise((resolve, reject) => {
-  ws.addEventListener("open", resolve);
-  ws.addEventListener("error", reject);
-});
+try {
+  await connection;
+} catch {
+  console.error(`Could not connect to the daemon on 127.0.0.1:${port}. Is it running? Start it with: npm start -w @tjommie/daemon`);
+  process.exit(1);
+}
 ws.send(JSON.stringify({ type: "hello", protocol: PROTOCOL_VERSION, token }));
 await welcome;
 
