@@ -5,6 +5,7 @@ export default defineConfig(({ mode }) => {
   const real = mode === "real";
   return {
     test: {
+      execArgv: ["--disable-warning=ExperimentalWarning"],
       include: [real ? "packages/*/src/**/*.real.test.ts" : "packages/*/src/**/*.test.ts"],
       exclude: real ? ["**/node_modules/**"] : ["**/node_modules/**", "**/*.real.test.ts"],
       testTimeout: real ? 600_000 : 10_000,
