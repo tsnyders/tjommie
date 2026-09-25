@@ -48,6 +48,7 @@ export class ClaudeSession implements ProviderSession {
   #lastTotalCost = 0;
   #streamed = "";
   #inTurn = false;
+  #closing = false;
   #interruptTimer: NodeJS.Timeout | undefined;
   #closeTimer: NodeJS.Timeout | undefined;
   #controlId = 0;
@@ -69,36 +70,46 @@ export class ClaudeSession implements ProviderSession {
     const child = spawnCli(this.#cmd, claudeArgs(this.#options), { cwd: this.#options.cwd, env: this.#options.env });
     this.#child = child;
     let stderr = "";
+    child.stdin.on("error", () => {});
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", (chunk: string) => (stderr = (stderr + chunk).slice(-2000)));
     createInterface({ input: child.stdout, crlfDelay: Infinity }).on("line", (line) => this.#onLine(line));
-    child.on("error", (error) => this.#exited(child, error.message));
-    child.on("exit", (code) => this.#exited(child, code === 0 ? null : stderr.trim() || `Claude exited with code ${code}`));
+    child.on("error", (error) => this.#exited(child, this.#closing ? null : error.message));
+    child.on("exit", (code, signal) => {
+      const status = code === null ? `signal ${signal ?? "unknown"}` : `code ${code}`;
+      this.#exited(child, this.#closing || code === 0 ? null : stderr.trim() || `Claude exited with ${status}`);
+    });
   }
 
   async send(text: string): Promise<void> {
+    if (!this.#child || this.#closing) return;
+    this.#inTurn = true;
     this.#write({ type: "user", message: { role: "user", content: text } });
   }
 
   // Claude reads a message written mid-turn at its next step, inside the same turn.
   async steer(text: string): Promise<boolean> {
-    if (!this.#child) return false;
+    if (!this.#child || this.#closing) return false;
     this.#write({ type: "user", message: { role: "user", content: text } });
     return true;
   }
 
   async interrupt(): Promise<void> {
     const child = this.#child;
-    if (!child || !this.#inTurn) return;
+    if (!child || !this.#inTurn || this.#closing) return;
     this.#write({ type: "control_request", request_id: `tjommie-${++this.#controlId}`, request: { subtype: "interrupt" } });
     clearTimeout(this.#interruptTimer);
     this.#interruptTimer = setTimeout(() => {
       this.#interruptTimer = undefined;
-      if (this.#child === child && this.#inTurn && child.exitCode === null && child.signalCode === null) killTree(child.pid);
+      if (this.#child === child && this.#inTurn && child.exitCode === null && child.signalCode === null) {
+        this.#closing = true;
+        killTree(child.pid);
+      }
     }, INTERRUPT_GRACE_MS);
   }
 
   answer(approvalId: string, answer: ApprovalAnswer): void {
+    if (!this.#child || this.#closing) return;
     const pending = this.#pending.get(approvalId);
     if (!pending) return;
     this.#pending.delete(approvalId);
@@ -111,12 +122,16 @@ export class ClaudeSession implements ProviderSession {
 
   close(): void {
     const child = this.#child;
-    if (!child) return;
+    if (!child || this.#closing) return;
+    this.#closing = true;
     child.stdin.end();
     clearTimeout(this.#closeTimer);
     this.#closeTimer = setTimeout(() => {
       this.#closeTimer = undefined;
-      if (this.#child === child && child.exitCode === null && child.signalCode === null) killTree(child.pid);
+      if (this.#child === child && child.exitCode === null && child.signalCode === null) {
+        this.#closing = true;
+        killTree(child.pid);
+      }
     }, 5000);
     this.#closeTimer.unref();
   }
@@ -126,7 +141,8 @@ export class ClaudeSession implements ProviderSession {
   }
 
   #write(message: unknown): void {
-    this.#child?.stdin.write(`${JSON.stringify(message)}\n`);
+    if (!this.#child || this.#closing) return;
+    this.#child.stdin.write(`${JSON.stringify(message)}\n`);
   }
 
   #exited(child: ChildProcessWithoutNullStreams, error: string | null): void {

@@ -146,3 +146,85 @@ describe("ClaudeSession fallback kills", () => {
     }
   });
 });
+
+describe("ClaudeSession lifecycle", () => {
+  it("does not write after close and reports the intentional exit quietly", async () => {
+    cliMocks.killTree.mockClear();
+    cliMocks.spawnCli.mockReset();
+    const { child, stdin, stdout, stderr } = fakeChild();
+    const stdinErrors: Error[] = [];
+    const exitErrors: (string | null)[] = [];
+    stdin.on("error", (error: Error) => stdinErrors.push(error));
+    cliMocks.spawnCli.mockReturnValue(child);
+    const claude = new ClaudeSession({ file: "claude", args: [] }, base);
+    claude.onEvent((event) => {
+      if (event.type === "exit") exitErrors.push(event.error);
+    });
+
+    try {
+      await claude.start();
+      claude.close();
+      await expect(claude.send("too late")).resolves.toBeUndefined();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(stdinErrors).toEqual([]);
+      await expect(claude.steer("too late")).resolves.toBe(false);
+
+      child.emit("exit", null, "SIGTERM");
+      expect(exitErrors).toEqual([null]);
+    } finally {
+      child.emit("exit", 0, null);
+      stdin.destroy();
+      stdout.destroy();
+      stderr.destroy();
+    }
+  });
+
+  it("can interrupt immediately after send, before Claude emits init", async () => {
+    vi.useFakeTimers();
+    cliMocks.killTree.mockClear();
+    cliMocks.spawnCli.mockReset();
+    const { child, stdin, stdout, stderr } = fakeChild();
+    const writes: string[] = [];
+    stdin.on("data", (chunk: Buffer) => writes.push(chunk.toString()));
+    cliMocks.spawnCli.mockReturnValue(child);
+    const claude = new ClaudeSession({ file: "claude", args: [] }, base);
+
+    try {
+      await claude.start();
+      await claude.send("start");
+      await claude.interrupt();
+
+      expect(writes.join("")).toContain('"subtype":"interrupt"');
+      expect(vi.getTimerCount()).toBe(1);
+      child.emit("exit", 0, null);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      stdin.destroy();
+      stdout.destroy();
+      stderr.destroy();
+      vi.useRealTimers();
+    }
+  });
+
+  it("reports the signal when an unexpected exit has no code", async () => {
+    cliMocks.killTree.mockClear();
+    cliMocks.spawnCli.mockReset();
+    const { child, stdin, stdout, stderr } = fakeChild();
+    const exitErrors: (string | null)[] = [];
+    cliMocks.spawnCli.mockReturnValue(child);
+    const claude = new ClaudeSession({ file: "claude", args: [] }, base);
+    claude.onEvent((event) => {
+      if (event.type === "exit") exitErrors.push(event.error);
+    });
+
+    try {
+      await claude.start();
+      child.emit("exit", null, "SIGTERM");
+      expect(exitErrors).toEqual(["Claude exited with signal SIGTERM"]);
+    } finally {
+      stdin.destroy();
+      stdout.destroy();
+      stderr.destroy();
+    }
+  });
+});
