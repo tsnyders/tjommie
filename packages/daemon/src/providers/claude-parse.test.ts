@@ -91,6 +91,11 @@ describe("parseClaudeLine", () => {
     expect(parseClaudeLine(CONTROL_RESPONSE)).toEqual({ kind: "other" });
     expect(parseClaudeLine("Warning: something")).toEqual({ kind: "other" });
   });
+
+  it("ignores valid JSON that is not an object", () => {
+    expect(parseClaudeLine("null")).toEqual({ kind: "other" });
+    expect(parseClaudeLine("42")).toEqual({ kind: "other" });
+  });
 });
 
 describe("toolSummary", () => {
