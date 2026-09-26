@@ -387,6 +387,37 @@ it("returns busy after fifteen seconds and restores work only when the delayed e
   }
 });
 
+it("rejects a second Delete while the first request waits for the same process", async () => {
+  const { daemon, client, db, sessions } = await harness();
+  const bot = await client.call("bots.create", input("One deletion"));
+  await client.call("chat.send", { botId: bot.id, text: "Running" });
+  const exited = Promise.withResolvers<void>();
+  const closing = Promise.withResolvers<void>();
+  vi.spyOn(sessions[0].session, "close").mockImplementation(() => { closing.resolve(); });
+  Object.assign(sessions[0].session, { waitForExit: () => exited.promise });
+  const cancelled = vi.spyOn(daemon.runner, "cancelDeletion");
+  const deletion = client.call("bots.delete", { id: bot.id });
+  await closing.promise;
+  let outcome: unknown;
+  const duplicate = client.call("bots.delete", { id: bot.id }).then(
+    (result) => { outcome = result; },
+    (error: unknown) => { outcome = error; },
+  );
+  try {
+    await vi.waitFor(() => expect(outcome).toBeInstanceOf(Error), { timeout: 200, interval: 10 });
+    expect((outcome as Error).message).toMatch(/^busy:/);
+    expect(cancelled).not.toHaveBeenCalled();
+    expect(getStoredBot(db, bot.id).id).toBe(bot.id);
+    expect(sessions).toHaveLength(1);
+  } finally {
+    exited.resolve();
+    await deletion;
+    await duplicate;
+  }
+  expect(existsSync(bot.homeFolder)).toBe(false);
+  expect(sessions).toHaveLength(1);
+});
+
 it("pumps waiting work after unpause and a successful setup refresh", async () => {
   const { client, sessions } = await harness();
   const bot = await client.call("bots.create", input("Paused"));

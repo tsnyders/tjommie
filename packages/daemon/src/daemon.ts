@@ -116,6 +116,7 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
     void refreshSetup().catch((error: unknown) => console.error("Failed to refresh provider setup.", error));
   };
 
+  const deletionRequests = new Set<string>();
   const handlers: Handlers = {
     "setup.status": () => refreshSetup(),
     "setup.signIn": ({ provider }) => signIn(db, provider, refreshSetupInBackground),
@@ -135,22 +136,28 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
     },
     "bots.delete": async ({ id }) => {
       getStoredBot(db, id);
-      let handle: ReturnType<Team["botDeleting"]>;
+      if (deletionRequests.has(id)) throw new RpcError("busy", "The bot is already being deleted. Try again shortly.");
+      deletionRequests.add(id);
       try {
-        await waitForBotClose(runner.closeForDeletion(id));
-        handle = team.botDeleting(id);
-        deleteBot(db, id);
-      } catch (error) {
-        runner.cancelDeletion(id);
-        throw error;
-      }
-      try {
-        team.botDeleted(handle);
+        let handle: ReturnType<Team["botDeleting"]>;
+        try {
+          await waitForBotClose(runner.closeForDeletion(id));
+          handle = team.botDeleting(id);
+          deleteBot(db, id);
+        } catch (error) {
+          runner.cancelDeletion(id);
+          throw error;
+        }
+        try {
+          team.botDeleted(handle);
+        } finally {
+          runner.forget(id);
+          broadcast("bot.deleted", { id });
+        }
+        return {};
       } finally {
-        runner.forget(id);
-        broadcast("bot.deleted", { id });
+        deletionRequests.delete(id);
       }
-      return {};
     },
     "bots.pause": ({ id, paused }) => {
       setPaused(db, id, paused);
