@@ -58,6 +58,7 @@ type Live = {
   activity: { id: string; items: ActivityItem[] } | null;
   stopRequested: boolean;
   stopNotice: string | null;
+  stopPending: Promise<boolean | void> | null;
   limitHit: boolean;
   lastResetsAt: string | null;
   reload: boolean;
@@ -230,7 +231,9 @@ export class Runner {
     const item = live.item;
     live.stopRequested = true;
     try {
-      await session?.interrupt();
+      const pending = session?.interrupt() ?? Promise.resolve();
+      if (this.#live.get(botId) === live && live.session === session && live.item === item && live.busy) live.stopPending = pending;
+      await pending;
     } catch (error) {
       if (this.#live.get(botId) === live && live.session === session && live.item === item && live.busy) {
         live.stopRequested = false;
@@ -326,7 +329,7 @@ export class Runner {
     this.#closeActivity(detached.live);
     // Use a new object so pending callbacks from the closed session cannot change resumed work.
     const live: Live = { ...detached.live, session: null, sent: false, steering: false, steeringItem: null,
-      text: null, activity: null, lastText: null, idleTimer: null, limitTimer: null };
+      text: null, activity: null, lastText: null, stopPending: null, idleTimer: null, limitTimer: null };
     this.#live.set(botId, live);
     if (detached.live.steeringItem) setStatus(this.#db, detached.live.steeringItem.id, "queued");
     const bot = getStoredBot(this.#db, botId);
@@ -372,6 +375,7 @@ export class Runner {
     live.item = item;
     live.stopRequested = false;
     live.stopNotice = null;
+    live.stopPending = null;
     live.limitHit = false;
     live.lastText = null;
     if (live.idleTimer) {
@@ -420,6 +424,7 @@ export class Runner {
         activity: null,
         stopRequested: false,
         stopNotice: null,
+        stopPending: null,
         limitHit: false,
         lastResetsAt: null,
         reload: false,
@@ -524,7 +529,17 @@ export class Runner {
     if (!live.busy || live.item?.id !== item.id || live.session !== session) return;
     live.sent = true;
     if (live.stopRequested) {
-      await session.interrupt();
+      let handled = false;
+      if (live.stopPending) {
+        try {
+          handled = await live.stopPending === true;
+        } catch {
+          // stop() reports the rejection and clears Stop. The provider still owns this turn's outcome.
+          return;
+        }
+      }
+      if (this.#live.get(bot.id) !== live || !live.busy || live.item?.id !== item.id || live.session !== session) return;
+      if (live.stopRequested && !handled) await this.stop(bot.id);
       return;
     }
     await this.#steerQueued(bot.id); // anything sent while the turn was starting goes in now, in order
@@ -808,6 +823,7 @@ export class Runner {
     live.item = null;
     live.stopRequested = false;
     live.stopNotice = null;
+    live.stopPending = null;
     live.limitHit = false;
     live.lastText = null;
     if (live.reload) {

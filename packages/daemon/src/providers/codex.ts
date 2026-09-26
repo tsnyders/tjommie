@@ -184,13 +184,14 @@ export class CodexSession implements ProviderSession {
     }
   }
 
-  async interrupt(): Promise<void> {
+  async interrupt(): Promise<boolean> {
     await this.#sending;
-    if (!this.#turnId || !this.#server) return;
+    if (!this.#turnId || !this.#server) return false;
     try {
       await this.#rpc().request("turn/interrupt", { threadId: this.#threadId, turnId: this.#turnId });
+      return true;
     } catch (error) {
-      if (isTurnAlreadyEnded(error)) return;
+      if (isTurnAlreadyEnded(error)) return true;
       console.error("Codex turn interrupt failed", error);
       throw error;
     }

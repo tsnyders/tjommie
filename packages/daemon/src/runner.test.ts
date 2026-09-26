@@ -36,6 +36,7 @@ class FakeSession implements ProviderSession {
   steerPromise: Promise<boolean> | null = null;
   steerError: Error | null = null;
   interruptError: Error | null = null;
+  interruptPromise: Promise<void> = Promise.resolve();
   exitPromise: Promise<void> = Promise.resolve();
   closeCalls = 0;
   hidePidWhenClosed = false;
@@ -58,6 +59,7 @@ class FakeSession implements ProviderSession {
 
   async interrupt(): Promise<void> {
     this.interrupts++;
+    await this.interruptPromise;
     if (this.interruptError) throw this.interruptError;
   }
 
@@ -319,6 +321,55 @@ describe("Runner session costs", () => {
 });
 
 describe("Runner turn settlement", () => {
+  it("keeps a turn running when its pending-send Stop request fails", async () => {
+    const session = new FakeSession();
+    const sending = Promise.withResolvers<void>();
+    const stopping = Promise.withResolvers<void>();
+    session.sendPromise = sending.promise;
+    session.interruptPromise = stopping.promise;
+    const h = harness(() => session);
+    const bot = newBot(h);
+    const message = h.runner.submit(bot.id, "start", []);
+    await waitFor(() => session.sent.length);
+    const stopFailed = expect(h.runner.stop(bot.id)).rejects.toThrow("interrupt failed");
+    sending.resolve();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    stopping.reject(new Error("interrupt failed"));
+    await stopFailed;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(itemForMessage(h.db, message.id).status).toBe("running");
+    expect(h.runner.toBot(getStoredBot(h.db, bot.id)).state).toBe("working");
+    session.emit({ type: "turn_done", ok: true, error: null });
+    expect(itemForMessage(h.db, message.id).status).toBe("done");
+  });
+
+  it("ignores a late pending-send Stop failure after the next turn was stopped", async () => {
+    const session = new FakeSession();
+    const sending = Promise.withResolvers<void>();
+    const stopping = Promise.withResolvers<void>();
+    session.sendPromise = sending.promise;
+    session.interruptPromise = stopping.promise;
+    const h = harness(() => session);
+    const bot = newBot(h);
+    const first = h.runner.deliver({ botId: bot.id, source: "routine", text: "first" });
+    await waitFor(() => session.sent.length);
+    const stopFailed = expect(h.runner.stop(bot.id)).rejects.toThrow("old interrupt failed");
+    sending.resolve();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const next = h.runner.deliver({ botId: bot.id, source: "routine", text: "next" });
+    session.emit({ type: "turn_done", ok: true, error: null });
+    await waitFor(() => session.sent.length === 2);
+    session.interruptPromise = Promise.resolve();
+    await h.runner.stop(bot.id);
+    stopping.reject(new Error("old interrupt failed"));
+    await stopFailed;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(getWorkItem(h.db, first.id).status).toBe("done");
+    expect(getWorkItem(h.db, next.id).status).toBe("running");
+    session.emit({ type: "turn_done", ok: false, error: null });
+    expect(getWorkItem(h.db, next.id).status).toBe("interrupted");
+  });
+
   it.each(["text_end", "tool_done"] as const)("a stray %s after a finished turn leaves the bot idle", async (type) => {
     const h = harness();
     const bot = newBot(h);
