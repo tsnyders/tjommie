@@ -145,10 +145,13 @@ export async function startDaemon(
       return {};
     },
     "chat.retry": ({ messageId, botId }) => runner.retry(messageId, botId),
-    "approvals.respond": ({ approvalId, decision }) =>
-      getApproval(db, approvalId).kind === "routine"
+    "approvals.respond": ({ approvalId, decision }) => {
+      const approval = getApproval(db, approvalId).kind === "routine"
         ? team.answerRoutineProposal(approvalId, decision)
-        : runner.answerApproval(approvalId, decision),
+        : runner.answerApproval(approvalId, decision);
+      runner.pump(approval.botId);
+      return approval;
+    },
     "room.history": ({ before, limit }) => historyPage(db, TEAM_ROOM_ID, before, limit),
     "room.post": ({ text }) => team.postToRoom(text),
     "exchanges.get": ({ id }) => ({ exchange: getExchange(db, id), ...historyPage(db, id, undefined, 200) }),

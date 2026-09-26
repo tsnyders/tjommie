@@ -192,6 +192,29 @@ it.each([false, true])("keeps a pending routine proposal waiting and clears it o
   expect(h.client.events).toContainEqual({ type: "event", event: "bot.updated", data: expect.objectContaining({ id: bot.id, state: "idle" }) });
 });
 
+it.each(["once", "deny"] as const)("starts queued work immediately after answering a routine proposal (%s)", async (decision) => {
+  const { daemon, client, db, sessions } = await harness();
+  const bot = await client.call("bots.create", input("Waiting queue"));
+  await client.call("chat.send", { botId: bot.id, text: "Begin" });
+  sessions[0].session.finish("Ready");
+  await tool(sessions[0].options, "add_routine", { name: "Check", prompt: "Check", days: ["mon"], times: ["08:48"] });
+  const card = await waitFor(() => client.events.find((event) => event.event === "approval.added" && event.data.kind === "routine"));
+  if (card.event !== "approval.added") throw new Error("Expected routine approval card");
+  await client.call("chat.send", { botId: bot.id, text: "Continue after the answer" });
+  const queued = db.prepare("SELECT id FROM work_items WHERE bot_id = ? AND status = 'queued'").get(bot.id) as { id: string };
+  expect(getWorkItem(db, queued.id).status).toBe("queued");
+  expect(sessions[0].session.sent).toHaveLength(1);
+  expect(await client.call("bots.list", {})).toMatchObject([{ id: bot.id, state: "waiting" }]);
+
+  const resolved = await client.call("approvals.respond", { approvalId: card.data.id, decision });
+  expect(resolved.status).toBe(decision === "deny" ? "denied" : "allowed");
+  expect(getWorkItem(db, queued.id).status).toBe("running");
+  expect(daemon.runner.currentWork(bot.id)?.id).toBe(queued.id);
+  expect(sessions[0].session.sent).toHaveLength(2);
+  expect(sessions[0].session.sent[1]).toContain("Continue after the answer");
+  sessions[0].session.finish("Done");
+});
+
 it("lists routines across bots and includes the bot on every run", async () => {
   const { daemon, client, sessions } = await harness();
   const bots = await Promise.all(["First planner", "Second planner"].map((name) => client.call("bots.create", input(name))));
