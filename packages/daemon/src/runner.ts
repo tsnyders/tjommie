@@ -8,8 +8,8 @@ import { resolveCli } from "./cli.ts";
 import { newId, nowIso, transaction, type Db } from "./db.ts";
 import { ClaudeSession } from "./providers/claude.ts";
 import { CodexSession } from "./providers/codex.ts";
-import type { ProviderEvent, ProviderSession, StartOptions } from "./providers/types.ts";
-import { enqueue, lastItemForMessage, nextQueued, recoverAfterRestart, setStatus, type WorkItem } from "./queue.ts";
+import type { McpServer, ProviderEvent, ProviderSession, StartOptions } from "./providers/types.ts";
+import { enqueue, lastItemForMessage, newChain, nextQueued, nextSteerable, recoverAfterRestart, setStatus, type NewWork, type WorkItem } from "./queue.ts";
 import { RpcError, type Broadcast } from "./server.ts";
 import { accountEnv, accountFor } from "./setup.ts";
 
@@ -21,11 +21,24 @@ export const cliSessionFactory: SessionFactory = (bot, options) => {
   return bot.provider === "claude" ? new ClaudeSession(cmd, options) : new CodexSession(cmd, options);
 };
 
+// The last finished text is the answer passed back to a bot that requested this work.
+export type TurnResult = { outcome: "done" | "failed" | "interrupted"; text: string | null; textMessageId: string | null; error: string | null };
+
+export type RunnerHooks = {
+  mcpServers?: (bot: StoredBot) => McpServer[];
+  sessionClosed?: (botId: string) => void;
+  turnStarted?: (item: WorkItem) => void;
+  turnEnded?: (item: WorkItem, result: TurnResult) => void;
+  // A usage limit parks the item; the scheduler clears its timer until turnStarted re-arms it.
+  turnRequeued?: (item: WorkItem) => void;
+};
+
 const IDLE_SHUTDOWN_MS = 10 * 60_000;
 const RECAP_MESSAGES = 20;
 const UNKNOWN_RESET_MS = 60 * 60_000;
 const MAX_TIMER_MS = 2 ** 31 - 1;
 const TURN_EVENTS = new Set<ProviderEvent["type"]>(["text", "text_end", "tool", "tool_done", "approval"]);
+const RESTARTED = "Tjommie restarted while this was running.";
 
 type ActivityItem = { id: string; name: string; summary: string; status: "running" | "done" | "failed" };
 
@@ -39,8 +52,10 @@ type Live = {
   steering: boolean;
   item: WorkItem | null; // null while the CLI runs a turn it started by itself
   text: { id: string; body: string } | null;
+  lastText: { id: string; body: string } | null;
   activity: { id: string; items: ActivityItem[] } | null;
   stopRequested: boolean;
+  stopNotice: string | null;
   limitHit: boolean;
   lastResetsAt: string | null;
   reload: boolean;
@@ -88,20 +103,23 @@ export class Runner {
   #broadcast: Broadcast;
   #isSignedIn: (provider: Bot["provider"]) => boolean;
   #createSession: SessionFactory;
+  #hooks: RunnerHooks;
   #live = new Map<string, Live>();
 
-  constructor(deps: { db: Db; broadcast: Broadcast; isSignedIn: (provider: Bot["provider"]) => boolean; createSession?: SessionFactory }) {
+  constructor(deps: { db: Db; broadcast: Broadcast; isSignedIn: (provider: Bot["provider"]) => boolean; createSession?: SessionFactory; hooks?: RunnerHooks }) {
     this.#db = deps.db;
     this.#broadcast = deps.broadcast;
     this.#isSignedIn = deps.isSignedIn;
     this.#createSession = deps.createSession ?? cliSessionFactory;
+    this.#hooks = deps.hooks ?? {};
   }
 
   // Call once at startup: settle work a restart cut off, then carry on with whatever is queued.
   start(): void {
     for (const item of recoverAfterRestart(this.#db)) {
       if (item.messageId) this.#emitMessage(updateMessage(this.#db, item.messageId, { status: "interrupted" }));
-      this.#notice(item.botId, "error", "Tjommie restarted while this was running.", item.messageId ? { retryMessageId: item.messageId } : null);
+      this.#notice(item.conversationId, "error", RESTARTED, item.messageId ? { retryMessageId: item.messageId } : null);
+      this.#safely(() => this.#hooks.turnEnded?.(item, { outcome: "failed", text: null, textMessageId: null, error: RESTARTED }));
     }
     const streaming = this.#db.prepare("SELECT id FROM messages WHERE status = 'streaming' ORDER BY created_at, rowid").all() as { id: string }[];
     for (const message of streaming) this.#emitMessage(updateMessage(this.#db, message.id, { status: "interrupted" }));
@@ -131,6 +149,12 @@ export class Runner {
     return this.#live.get(botId)?.session?.pid();
   }
 
+  // Null when idle or in a turn the CLI started by itself.
+  currentWork(botId: string): WorkItem | null {
+    const live = this.#live.get(botId);
+    return live?.busy ? live.item : null;
+  }
+
   submit(botId: string, text: string, files: string[]): Message {
     const bot = getStoredBot(this.#db, botId);
     const attached = files.map((file) => copyIntoInbox(bot.homeFolder, file));
@@ -144,11 +168,19 @@ export class Runner {
     });
     this.#emitMessage(message, "message.added");
     const prompt = attached.length ? `${text}\n\n[Attached files, now in your inbox folder: ${attached.join(", ")}]` : text;
-    enqueue(this.#db, { botId, source: "you", text: prompt, messageId: message.id });
-    const live = this.#liveFor(botId);
-    if (!live.busy) this.pump(botId);
-    else if (live.sent) void this.#steerQueued(botId); // otherwise the turn steers it in as soon as its first message is sent
+    this.deliver({ botId, source: "you", text: prompt, messageId: message.id, chainId: newChain(this.#db) });
     return getMessage(this.#db, message.id);
+  }
+
+  // Start queued work, or steer eligible work into the turn already writing to its conversation.
+  deliver(work: NewWork): WorkItem {
+    const item = enqueue(this.#db, work);
+    const live = this.#liveFor(work.botId);
+    if (!live.busy) this.pump(work.botId);
+    else if (live.sent) {
+      void this.#steerQueued(work.botId).catch((error: unknown) => console.error("Tjommie: queued steering failed", error));
+    }
+    return item;
   }
 
   retry(messageId: string): Message {
@@ -157,17 +189,25 @@ export class Runner {
     if (previous.status !== "failed" && previous.status !== "interrupted") {
       throw new RpcError("bad_state", "Only failed or interrupted work can be retried");
     }
-    enqueue(this.#db, { botId: previous.botId, source: previous.source, text: previous.text, messageId });
     this.#emitMessage(updateMessage(this.#db, messageId, { status: "queued" }));
-    this.pump(previous.botId);
+    this.deliver({ botId: previous.botId, source: previous.source, text: previous.text, messageId, conversationId: previous.conversationId, chainId: newChain(this.#db) });
     return getMessage(this.#db, messageId);
   }
 
   async stop(botId: string): Promise<void> {
     const live = this.#live.get(botId);
-    if (!live?.busy || !live.session) return;
+    if (!live?.busy) return;
     live.stopRequested = true;
-    await live.session.interrupt();
+    await live.session?.interrupt();
+  }
+
+  // A stale routine timer must never interrupt a later item on the same bot.
+  stopItem(itemId: string, notice: string): void {
+    for (const [botId, live] of this.#live) {
+      if (!live.busy || live.item?.id !== itemId) continue;
+      live.stopNotice = notice;
+      void this.stop(botId).catch((error: unknown) => console.error("Tjommie: stopping a work item failed", error));
+    }
   }
 
   answerApproval(approvalId: string, decision: ApprovalDecision): Approval {
@@ -190,7 +230,7 @@ export class Runner {
     const live = this.#live.get(botId);
     if (!live?.session) return;
     if (live.busy) live.reload = true;
-    else this.#closeSession(live);
+    else this.#closeSession(botId, live);
   }
 
   // Call before deleting a bot.
@@ -199,7 +239,7 @@ export class Runner {
     if (!live) return;
     if (live.idleTimer) clearTimeout(live.idleTimer);
     if (live.limitTimer) clearTimeout(live.limitTimer);
-    this.#closeSession(live);
+    this.#closeSession(botId, live);
     this.#live.delete(botId);
   }
 
@@ -209,24 +249,27 @@ export class Runner {
     let bot: StoredBot;
     try {
       bot = getStoredBot(this.#db, botId);
-    } catch {
-      return; // deleted
+    } catch (error) {
+      if (!(error instanceof RpcError && error.code === "not_found")) console.error("Tjommie: loading a bot failed", error);
+      return;
     }
     if (this.toBot(bot).state !== "idle") {
-      this.#armIdle(live);
+      this.#armIdle(botId, live);
       this.#emitBot(botId);
       return;
     }
     const item = nextQueued(this.#db, botId);
     if (!item) {
-      this.#armIdle(live);
+      this.#armIdle(botId, live);
       return;
     }
     live.busy = true; // set before any await, so a second pump can't start another turn
     live.sent = false;
     live.item = item;
     live.stopRequested = false;
+    live.stopNotice = null;
     live.limitHit = false;
+    live.lastText = null;
     if (live.idleTimer) {
       clearTimeout(live.idleTimer);
       live.idleTimer = null;
@@ -234,6 +277,7 @@ export class Runner {
     setStatus(this.#db, item.id, "running");
     if (item.messageId) this.#emitMessage(updateMessage(this.#db, item.messageId, { status: "sent" }));
     this.#emitBot(botId);
+    this.#safely(() => this.#hooks.turnStarted?.(item));
     this.#startTurn(bot, item).catch((error: unknown) => this.#finishTurn(botId, false, error instanceof Error ? error.message : String(error)));
   }
 
@@ -257,8 +301,10 @@ export class Runner {
         steering: false,
         item: null,
         text: null,
+        lastText: null,
         activity: null,
         stopRequested: false,
+        stopNotice: null,
         limitHit: false,
         lastResetsAt: null,
         reload: false,
@@ -271,8 +317,16 @@ export class Runner {
     return live;
   }
 
+  #dest(botId: string, live: Live): string {
+    return live.item?.conversationId ?? botId;
+  }
+
   async #startTurn(bot: StoredBot, item: WorkItem): Promise<void> {
     const live = this.#liveFor(bot.id);
+    if (live.stopRequested) {
+      this.#finishTurn(bot.id, false, null);
+      return;
+    }
     let text = item.text;
     let session = live.session;
     if (!session) {
@@ -281,31 +335,37 @@ export class Runner {
         | { provider: string; account_id: string; cli_session_id: string; total_cost_usd: number | null }
         | undefined;
       const resumeId = saved && saved.provider === bot.provider && saved.account_id === account.id ? saved.cli_session_id : null;
-      const created = this.#createSession(bot, {
-        cwd: bot.projectFolder ?? bot.homeFolder,
-        extraDirs: bot.projectFolder ? [bot.homeFolder] : [],
-        model: bot.model,
-        instructions: botPrompt(bot),
-        autonomy: bot.autonomy,
-        allowRules: allowRules(this.#db, bot.id),
-        resumeId,
-        resumeCostUsd: resumeId === null ? null : saved?.total_cost_usd ?? null,
-        env: accountEnv(account),
-        mcpServers: [],
-      });
-      created.onEvent((event) => this.#onEvent(bot.id, created, event));
+      let created: ProviderSession;
+      try {
+        created = this.#createSession(bot, {
+          cwd: bot.projectFolder ?? bot.homeFolder,
+          extraDirs: bot.projectFolder ? [bot.homeFolder] : [],
+          model: bot.model,
+          instructions: botPrompt(bot),
+          autonomy: bot.autonomy,
+          allowRules: allowRules(this.#db, bot.id),
+          resumeId,
+          resumeCostUsd: resumeId === null ? null : saved?.total_cost_usd ?? null,
+          env: accountEnv(account),
+          mcpServers: this.#mcpServers(bot),
+        });
+      } catch (error) {
+        // The MCP hook can issue a token even when no ProviderSession was constructed.
+        this.#safely(() => this.#hooks.sessionClosed?.(bot.id));
+        throw error;
+      }
       live.session = created;
       live.fresh = resumeId === null;
       live.sawSession = false;
       try {
+        created.onEvent((event) => this.#onEvent(bot.id, created, event));
         await created.start();
       } catch (error) {
         if (live.session !== created) {
           created.close();
           return;
         }
-        live.session = null;
-        created.close();
+        this.#closeSession(bot.id, live);
         if (!live.busy || live.item?.id !== item.id) return; // an exit already settled this turn
         if (live.stopRequested) {
           this.#finishTurn(bot.id, false, null);
@@ -321,7 +381,8 @@ export class Runner {
         return;
       }
       if (live.fresh) {
-        const recap = buildRecap(history(this.#db, bot.id, item.messageId ?? undefined, RECAP_MESSAGES), bot.name);
+        const before = item.conversationId === bot.id ? item.messageId ?? undefined : undefined;
+        const recap = buildRecap(history(this.#db, bot.id, before, RECAP_MESSAGES), bot.name);
         if (recap) text = `${recap}\n\n${text}`;
       }
       session = created;
@@ -337,17 +398,25 @@ export class Runner {
     await this.#steerQueued(bot.id); // anything sent while the turn was starting goes in now, in order
   }
 
-  // Steers queued messages into the running turn, oldest first. One loop at a time keeps the order.
+  // Only your messages and bot replies in this conversation may steer; other sources wait.
   async #steerQueued(botId: string): Promise<void> {
     const live = this.#liveFor(botId);
     if (live.steering) return;
     live.steering = true;
     try {
-      for (let item = nextQueued(this.#db, botId); item && live.busy && live.sent; item = nextQueued(this.#db, botId)) {
+      const next = () => nextSteerable(this.#db, botId, this.#dest(botId, live));
+      for (let item = next(); item && live.busy && live.sent; item = next()) {
         const session = live.session;
         if (!session) break;
         setStatus(this.#db, item.id, "done"); // claim it first, so a turn that ends meanwhile can't pick it up too
-        if (!(await session.steer(item.text).catch(() => false))) {
+        let steered = false;
+        try {
+          steered = await session.steer(item.text);
+        } catch (error) {
+          // Expected inability to steer is false in the provider contract; rejected calls are failures.
+          console.error("Tjommie: steering a work item failed", error);
+        }
+        if (!steered) {
           setStatus(this.#db, item.id, "queued"); // it runs as the next turn instead
           break;
         }
@@ -410,19 +479,21 @@ export class Runner {
   }
 
   #appendText(botId: string, live: Live, delta: string): void {
+    const conversationId = this.#dest(botId, live);
     if (!live.text) {
       if (live.activity) this.#closeActivity(live);
-      const message = addMessage(this.#db, { conversationId: botId, author: botId, kind: "text", body: "", status: "streaming" });
+      const message = addMessage(this.#db, { conversationId, author: botId, kind: "text", body: "", status: "streaming" });
       live.text = { id: message.id, body: "" };
       this.#emitMessage(message, "message.added");
     }
     live.text.body += delta;
-    this.#broadcast("message.delta", { id: live.text.id, conversationId: botId, delta });
+    this.#broadcast("message.delta", { id: live.text.id, conversationId, delta });
   }
 
   #flushText(live: Live, status: Message["status"]): void {
     if (!live.text) return;
     this.#emitMessage(updateMessage(this.#db, live.text.id, { body: live.text.body, status }));
+    if (status === "done" && live.text.body.trim()) live.lastText = live.text;
     live.text = null;
   }
 
@@ -435,7 +506,7 @@ export class Runner {
       return;
     }
     const message = addMessage(this.#db, {
-      conversationId: botId,
+      conversationId: this.#dest(botId, live),
       author: botId,
       kind: "activity",
       body: activityBody([item]),
@@ -572,27 +643,33 @@ export class Runner {
     this.#flushText(live, outcome);
     if (live.activity) this.#closeActivity(live);
     const item = live.item;
-    if (item && live.limitHit && !ok) {
+    const conversationId = this.#dest(botId, live);
+    const requeued = live.limitHit && !ok && !live.stopRequested;
+    if (item && requeued) {
       setStatus(this.#db, item.id, "queued"); // runs again once the limit resets
       if (item.messageId) this.#emitMessage(updateMessage(this.#db, item.messageId, { status: "queued" }));
     } else if (item) {
       setStatus(this.#db, item.id, outcome);
-      if (outcome === "interrupted") this.#notice(botId, "notice", "Stopped.", null);
-      if (outcome === "failed") this.#notice(botId, "error", error ?? "Something went wrong.", item.messageId ? { retryMessageId: item.messageId } : null);
+      if (outcome === "interrupted") this.#notice(conversationId, "notice", live.stopNotice ?? "Stopped.", null);
+      if (outcome === "failed") this.#notice(conversationId, "error", error ?? "Something went wrong.", item.messageId ? { retryMessageId: item.messageId } : null);
     }
     for (const approvalId of live.approvals.keys()) {
       this.#showApprovalStatus(resolveApproval(this.#db, approvalId, "deny")); // the turn that asked is over
     }
     live.approvals.clear();
+    const result: TurnResult = { outcome, text: live.lastText?.body ?? null, textMessageId: live.lastText?.id ?? null, error };
     live.busy = false;
     live.sent = false;
     live.item = null;
     live.stopRequested = false;
+    live.stopNotice = null;
     live.limitHit = false;
+    live.lastText = null;
     if (live.reload) {
       live.reload = false;
-      this.#closeSession(live);
+      this.#closeSession(botId, live);
     }
+    if (item) this.#safely(() => requeued ? this.#hooks.turnRequeued?.(item) : this.#hooks.turnEnded?.(item, result));
     this.#emitBot(botId);
     this.pump(botId);
   }
@@ -600,6 +677,7 @@ export class Runner {
   #onExit(botId: string, live: Live, error: string | null): void {
     const resumeFailed = !live.fresh && !live.sawSession;
     live.session = null;
+    this.#safely(() => this.#hooks.sessionClosed?.(botId));
     if (live.idleTimer) {
       clearTimeout(live.idleTimer);
       live.idleTimer = null;
@@ -619,26 +697,48 @@ export class Runner {
     this.#finishTurn(botId, false, error ?? "The CLI stopped unexpectedly.");
   }
 
-  #closeSession(live: Live): void {
+  #closeSession(botId: string, live: Live): void {
     const session = live.session;
     live.session = null; // its exit event is ignored from now on
-    session?.close();
+    if (!session) return;
+    try {
+      session.close();
+    } finally {
+      this.#safely(() => this.#hooks.sessionClosed?.(botId));
+    }
   }
 
-  #armIdle(live: Live): void {
+  #armIdle(botId: string, live: Live): void {
     if (!live.session || live.idleTimer) return;
     live.idleTimer = setTimeout(() => {
       live.idleTimer = null;
-      if (!live.busy) this.#closeSession(live);
+      if (!live.busy) this.#closeSession(botId, live);
     }, IDLE_SHUTDOWN_MS);
     live.idleTimer.unref();
   }
 
-  #notice(botId: string, kind: "notice" | "error", body: string, data: Record<string, unknown> | null): void {
+  #notice(conversationId: string, kind: "notice" | "error", body: string, data: Record<string, unknown> | null): void {
     this.#emitMessage(
-      addMessage(this.#db, { conversationId: botId, author: "system", kind, body: body.slice(0, 500), data, status: "done" }),
+      addMessage(this.#db, { conversationId, author: "system", kind, body: body.slice(0, 500), data, status: "done" }),
       "message.added",
     );
+  }
+
+  #mcpServers(bot: StoredBot): McpServer[] {
+    try {
+      return this.#hooks.mcpServers?.(bot) ?? [];
+    } catch (error) {
+      console.error("Tjommie: a runner hook failed", error);
+      throw error; // Starting without the requested servers would hide a broken tool configuration.
+    }
+  }
+
+  #safely(hook: () => void): void {
+    try {
+      hook();
+    } catch (error) {
+      console.error("Tjommie: a runner hook failed", error);
+    }
   }
 
   #emitMessage(message: Message, event: "message.added" | "message.updated" = "message.updated"): void {
@@ -646,10 +746,17 @@ export class Runner {
   }
 
   #emitBot(botId: string): void {
+    let bot: StoredBot;
     try {
-      this.#broadcast("bot.updated", this.toBot(getStoredBot(this.#db, botId)));
-    } catch {
-      // the bot was deleted
+      bot = getStoredBot(this.#db, botId);
+    } catch (error) {
+      if (!(error instanceof RpcError && error.code === "not_found")) console.error("Tjommie: loading a bot failed", error);
+      return;
+    }
+    try {
+      this.#broadcast("bot.updated", this.toBot(bot));
+    } catch (error) {
+      console.error("Tjommie: broadcasting a bot failed", error);
     }
   }
 }

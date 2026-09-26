@@ -5,7 +5,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createBot, getStoredBot } from "./bots.ts";
 import { killTree } from "./cli.ts";
 import { openDb, type Db } from "./db.ts";
-import { Runner, cliSessionFactory } from "./runner.ts";
+import { McpTokens } from "./mcp.ts";
+import type { WorkItem } from "./queue.ts";
+import { Runner, cliSessionFactory, type RunnerHooks, type TurnResult } from "./runner.ts";
 import type { Broadcast } from "./server.ts";
 import { ensureAccounts, listModels } from "./setup.ts";
 import { realAccountsDir, tempRoot, waitFor } from "./testing.ts";
@@ -20,7 +22,7 @@ afterEach(() => {
 });
 
 // A runner on a fresh database in a spaced, accented folder, using the real signed-in account folders.
-function harness(root = tempRoot(), db: Db = openDb(join(root, "t.db"))) {
+function harness(root = tempRoot(), db: Db = openDb(join(root, "t.db")), hooks: RunnerHooks = {}) {
   ensureAccounts(db, realAccountsDir());
   const events: SentEvent[] = [];
   let sessions = 0;
@@ -33,6 +35,7 @@ function harness(root = tempRoot(), db: Db = openDb(join(root, "t.db"))) {
       sessions++;
       return cliSessionFactory(bot, options);
     },
+    hooks,
   });
   runners.push(runner);
   runner.start();
@@ -49,10 +52,17 @@ function harness(root = tempRoot(), db: Db = openDb(join(root, "t.db"))) {
           event.event === "message.updated" && event.data.author === botId && event.data.kind === "text" && event.data.status === "done",
         )
         .map((event) => event.data.body),
-    firstAdded: (botId: string, kind: Message["kind"]) =>
+    // Finished texts written into one conversation: a bot's chat, "team" or an exchange.
+    said: (conversationId: string) =>
+      events
+        .filter((event): event is Extract<SentEvent, { event: "message.updated" }> =>
+          event.event === "message.updated" && event.data.conversationId === conversationId && event.data.kind === "text" && event.data.status === "done",
+        )
+        .map((event) => event.data.body),
+    firstAdded: (conversationId: string, kind: Message["kind"]) =>
       events.find(
         (event): event is Extract<SentEvent, { event: "message.added" }> =>
-          event.event === "message.added" && event.data.conversationId === botId && event.data.kind === kind,
+          event.event === "message.added" && event.data.conversationId === conversationId && event.data.kind === kind,
       )?.data,
   };
 }
@@ -178,5 +188,51 @@ describe("Runner against the real CLIs", () => {
     expect(turnCosts()).toHaveLength(3);
     expect(turnCosts()[2]).toBe(sessionCost());
     expect(turnCosts()[2]).toBeGreaterThan(0);
+  });
+
+  it("writes a turn where its work belongs, and doesn't steer a chat message into a Team room answer", async () => {
+    const h = harness();
+    const bot = newBot(h, { autonomy: "full" });
+    h.runner.deliver({ botId: bot.id, source: "room", text: `${LONG_COMMAND(8)} End your reply with the word ROOM.`, conversationId: "team" });
+    await waitFor(() => h.firstAdded("team", "activity"));
+    const message = h.runner.submit(bot.id, "Reply with exactly: CHAT", []);
+    expect(h.db.prepare("SELECT status FROM messages WHERE id = ?").get(message.id)).toEqual({ status: "queued" });
+    await waitFor(() => h.said(bot.id).some((text) => text.includes("CHAT")));
+    await waitFor(() => h.state(bot.id) === "idle");
+    expect(h.said("team").some((text) => text.includes("ROOM"))).toBe(true);
+    expect(h.said("team").some((text) => text.includes("CHAT"))).toBe(false);
+    expect(h.said(bot.id).some((text) => text.includes("ROOM"))).toBe(false);
+  });
+
+  it("tells the hooks how each turn went, and revokes the session's MCP token when it closes (token revoked on close)", async () => {
+    const tokens = new McpTokens();
+    const started: WorkItem[] = [];
+    const ended: [WorkItem, TurnResult][] = [];
+    let token = "";
+    const h = harness(undefined, undefined, {
+      mcpServers: (bot) => {
+        token = tokens.issue(bot.id);
+        return [];
+      },
+      sessionClosed: (botId) => tokens.revoke(botId),
+      turnStarted: (item) => started.push(item),
+      turnEnded: (item, result) => ended.push([item, result]),
+    });
+    const bot = newBot(h);
+    const message = h.runner.submit(bot.id, "Reply with exactly: PONG", []);
+    await waitFor(() => ended.length > 0);
+    expect(started).toHaveLength(1);
+    expect(ended).toHaveLength(1);
+    expect(started[0]).toMatchObject({ botId: bot.id, messageId: message.id });
+    expect(ended[0][0].id).toBe(started[0].id);
+    expect(ended[0][1]).toMatchObject({ outcome: "done", text: expect.stringContaining("PONG"), error: null });
+    expect(h.db.prepare("SELECT conversation_id, body, status FROM messages WHERE id = ?").get(ended[0][1].textMessageId)).toEqual({
+      conversation_id: bot.id,
+      body: ended[0][1].text,
+      status: "done",
+    });
+    expect(tokens.botFor(token)).toBe(bot.id);
+    h.runner.forget(bot.id);
+    expect(tokens.botFor(token)).toBeNull();
   });
 });
