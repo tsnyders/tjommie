@@ -8,6 +8,8 @@ Tjommie is a free, open-source desktop and phone app for AI bots that chat with 
 
 You need Windows and Node 24 or newer.
 
+Install the Claude Code and Codex CLIs and put them on PATH. Tjommie stores its data in `%LOCALAPPDATA%\Tjommie`; set `TJOMMIE_HOME` to use another folder and `TJOMMIE_PORT` to change the default port, 47100. The browser feature needs Chrome or Edge. From the repo root, `npm run chat -w @tjommie/daemon -- <name>` creates the named bot if it does not exist.
+
 ```sh
 npm install
 npm run signin -w @tjommie/daemon    # once: sign Tjommie's own Claude and Codex accounts in
