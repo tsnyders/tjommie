@@ -59,7 +59,7 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
   const send: Broadcast = (event, data) => broadcast(event, data);
   let mcpUrl = ""; // Set before queued work can start a CLI session.
   const tokens = new McpTokens();
-  const runner = new Runner({
+  const runner: Runner = new Runner({
     db,
     broadcast: send,
     isSignedIn: (provider) => setup.some((status) => status.provider === provider && status.signedIn),
@@ -90,7 +90,7 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
     stateOf: (bot) => runner.toBot(bot).state,
     stopItem: (itemId, notice) => runner.stopItem(itemId, notice),
   });
-  const scheduler = new Scheduler({
+  const scheduler: Scheduler = new Scheduler({
     db, broadcast: send,
     deliver: (work) => runner.deliver(work),
     stopItem: (itemId, notice) => runner.stopItem(itemId, notice),
