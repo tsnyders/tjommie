@@ -8,6 +8,7 @@ import {
 } from "@tjommie/protocol";
 import { afterEach, expect, it } from "vitest";
 import { WebSocketServer, type WebSocket } from "ws";
+import type { ClientEvent } from "./client.ts";
 
 const workspace = fileURLToPath(new URL("../../../", import.meta.url));
 const script = fileURLToPath(new URL("../scripts/chat.ts", import.meta.url));
@@ -43,7 +44,7 @@ afterEach(async () => {
     if (fixture.child && fixture.child.exitCode === null && fixture.child.signalCode === null) fixture.child.kill();
     for (const socket of fixture.server.clients) socket.terminate();
     await Promise.all([
-      fixture.closed,
+      fixture.closed && waitForExit(fixture.closed, () => "Terminal fixture cleanup"),
       new Promise<void>((resolve) => fixture.server.close(() => resolve())),
     ]);
     rmSync(fixture.root, { recursive: true, force: true });
@@ -51,14 +52,29 @@ afterEach(async () => {
 });
 
 async function eventually(check: () => boolean, diagnostic: () => string): Promise<void> {
-  const deadline = Date.now() + 8_000;
+  const deadline = Date.now() + 5_000;
   while (!check()) {
     if (Date.now() >= deadline) throw new Error(`Terminal chat did not reach the expected state. ${diagnostic()}`);
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
 }
 
-async function terminal(beforeWelcome?: { code: number; reason: string }) {
+async function waitForExit(closed: Promise<number | null>, diagnostic: () => string): Promise<number | null> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      closed,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`Terminal chat did not exit within 5 seconds. ${diagnostic()}`)), 5_000);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function terminal(options: { beforeWelcome?: { code: number; reason: string }; setupEvents?: ClientEvent[] } = {}) {
+  const { beforeWelcome, setupEvents = [] } = options;
   mkdirSync(cache, { recursive: true });
   const root = mkdtempSync(join(cache, "terminal-chat-"));
   writeFileSync(join(root, "daemon-token"), "terminal-test-token");
@@ -85,6 +101,9 @@ async function terminal(beforeWelcome?: { code: number; reason: string }) {
       switch (request.method) {
         case "bots.list":
           methods["bots.list"].params.parse(request.params);
+          for (const event of setupEvents) {
+            connected.send(JSON.stringify({ ...event, data: events[event.event].parse(event.data) }));
+          }
           result = methods["bots.list"].result.parse([tester, writer]);
           break;
         case "chat.send": {
@@ -133,15 +152,20 @@ async function terminal(beforeWelcome?: { code: number; reason: string }) {
   const diagnostic = () => `${spawnError} Exit: ${child.exitCode}; output: ${output}`;
   return {
     requests,
-    closed,
+    waitForExit: () => waitForExit(closed, diagnostic),
     output: () => output,
     hello: () => hello,
     waitFor: (text: string) => eventually(() => output.includes(text), diagnostic),
     waitForRequests: (count: number) => eventually(() => requests.length >= count, diagnostic),
     write: (text: string) => { child.stdin.write(text); },
+    endInput: () => { child.stdin.end(); },
     emit: <E extends EventName>(event: E, data: EventData<E>) => {
       if (!socket) throw new Error("No connected terminal");
       socket.send(JSON.stringify({ type: "event", event, data: events[event].parse(data) }));
+    },
+    sendFrame: (frame: string) => {
+      if (!socket) throw new Error("No connected terminal");
+      socket.send(frame);
     },
     close: (code = 1000, reason = "Test completed") => {
       if (!socket) throw new Error("No connected terminal");
@@ -160,6 +184,7 @@ it("prints Team room posts, bot names, local cards and streaming text", async ()
   chat.emit("bot.updated", { ...writer, name: "Editor" });
   chat.emit("message.updated", message({ conversationId: TEAM_ROOM_ID, author: writer.id, body: "Renamed", data: { toBotId: "unknown" } }));
   chat.emit("message.added", message({ conversationId: TEAM_ROOM_ID, author: "system", kind: "notice", body: "Room notice" }));
+  chat.emit("message.added", message({ conversationId: TEAM_ROOM_ID, author: "system", kind: "error", body: "Room error" }));
   chat.emit("message.added", message({ conversationId: TEAM_ROOM_ID, author: "unknown", body: "Unknown author" }));
   for (const [index, toBotId] of [4, {}, ""].entries()) {
     chat.emit("message.added", message({ conversationId: TEAM_ROOM_ID, author: writer.id, body: `Untargeted ${index}`, data: { toBotId } }));
@@ -179,6 +204,15 @@ it("prints Team room posts, bot names, local cards and streaming text", async ()
   chat.emit("approval.added", approval());
   chat.emit("approval.added", approval({ id: "tool-card", kind: "tool", tool: "Write", summary: "Write a file" }));
   chat.emit("approval.added", approval({ botId: writer.id, summary: "Hidden other approval" }));
+  chat.emit("approval.resolved", approval({ status: "allowed" }));
+  chat.emit("approval.resolved", approval({ id: "denied-card", status: "denied", summary: "Write declined" }));
+  chat.emit("approval.resolved", approval({ botId: writer.id, status: "allowed", summary: "Hidden other resolved approval" }));
+  chat.emit("notify", { botId: writer.id, title: "Routine finished", body: "News checked" });
+  chat.emit("notify", { botId: "unknown", title: "Needs attention", body: "Unknown bot report" });
+  chat.emit("notify", { botId: tester.id, title: "Ready", body: "Your bot report" });
+  chat.emit("settings.changed", { chainLimit: 5 });
+  chat.emit("bot.deleted", { id: "Hidden deleted bot" });
+  chat.emit("routine.deleted", { id: "Hidden deleted routine" });
   chat.emit("message.added", message({ kind: "notice", body: "Rendering complete" }));
   await chat.waitFor("(Rendering complete)");
   const output = chat.output();
@@ -186,16 +220,22 @@ it("prints Team room posts, bot names, local cards and streaming text", async ()
     "  [Team room] Writer to Tester: Hello team",
     "  [Team room] Editor to a bot: Renamed",
     "  [Team room] Tjommie: Room notice",
+    "  [Team room] Tjommie: Room error",
     "  [Team room] A bot: Unknown author",
     ...[0, 1, 2].map((index) => `  [Team room] Editor: Untargeted ${index}`),
     "Hello world\n", "  [Looking up news]",
     ...["notice", "error", "handoff", "routine", "file"].map((kind) => `  (${kind} card)`),
     "Waiting for you: Add a routine: News\n  /allow proposal   /always proposal   /deny proposal",
     "Waiting for you: Write a file\n  /allow tool-card   /always tool-card   /deny tool-card",
+    "  Approval proposal is allowed: Add a routine: News",
+    "  Approval denied-card is denied: Write declined",
+    "  [Editor] Routine finished: News checked",
+    "  [A bot] Needs attention: Unknown bot report",
+    "  [Tester] Ready: Your bot report",
   ]) expect(output).toContain(line);
   expect(output).not.toContain("Hidden");
   chat.close();
-  expect(await chat.closed).toBe(0);
+  expect(await chat.waitForExit()).toBe(0);
 });
 
 it("routes room posts, approval decisions, stop and ordinary chat through typed requests", async () => {
@@ -213,31 +253,94 @@ it("routes room posts, approval decisions, stop and ordinary chat through typed 
     { method: "chat.send", params: { botId: tester.id, text: "  ordinary chat  " } },
   ]);
   chat.close();
-  expect(await chat.closed).toBe(0);
+  expect(await chat.waitForExit()).toBe(0);
+});
+
+it("prints the chat header before replaying events received during bot setup", async () => {
+  const chat = await terminal({ setupEvents: [
+    { type: "event", event: "bot.updated", data: { ...writer, name: "Editor" } },
+    { type: "event", event: "message.added", data: message({ conversationId: TEAM_ROOM_ID, author: writer.id, body: "Setup room post", data: { toBotId: tester.id } }) },
+    { type: "event", event: "message.added", data: message({ kind: "notice", body: "Setup local notice" }) },
+    { type: "event", event: "approval.added", data: approval({ summary: "Setup approval" }) },
+    { type: "event", event: "notify", data: { botId: writer.id, title: "Setup notification", body: "Setup complete" } },
+  ] });
+  await chat.waitFor("[Editor] Setup notification: Setup complete");
+  const output = chat.output();
+  const headerIndex = output.indexOf("Chatting with Tester");
+  expect(headerIndex).toBeGreaterThanOrEqual(0);
+  for (const row of [
+    "[Team room] Editor to Tester: Setup room post", "(Setup local notice)", "Waiting for you: Setup approval",
+    "[Editor] Setup notification: Setup complete",
+  ]) {
+    expect(output.indexOf(row)).toBeGreaterThan(headerIndex);
+    expect(output.split(row)).toHaveLength(2);
+  }
+  chat.close();
+  expect(await chat.waitForExit()).toBe(0);
+});
+
+it("prints usage for incomplete commands and continues accepting valid commands", async () => {
+  const chat = await terminal();
+  await chat.waitFor("Chatting with Tester");
+  chat.write("/room\n/room   \n/allow\n/always\n/deny\n/stop\n");
+  await chat.waitForRequests(2);
+  await chat.waitFor("Usage: /deny <approval id>");
+  for (const usage of [
+    "Usage: /room <message>", "Usage: /allow <approval id>",
+    "Usage: /always <approval id>", "Usage: /deny <approval id>",
+  ]) expect(chat.output()).toContain(usage);
+  expect(chat.requests.map(({ method, params }) => ({ method, params }))).toEqual([
+    { method: "bots.list", params: {} },
+    { method: "chat.stop", params: { botId: tester.id } },
+  ]);
+  chat.close();
+  expect(await chat.waitForExit()).toBe(0);
+});
+
+it("closes the connection and exits normally when standard input ends", async () => {
+  const chat = await terminal();
+  await chat.waitFor("Chatting with Tester");
+  chat.endInput();
+  expect(await chat.waitForExit()).toBe(0);
+  expect(chat.output()).toContain("Disconnected from the daemon.");
+});
+
+it("identifies an invalid server frame as a client read failure", async () => {
+  const chat = await terminal();
+  await chat.waitFor("Chatting with Tester");
+  chat.sendFrame(JSON.stringify({ type: "event", event: "settings.changed", data: { chainLimit: "invalid" } }));
+  expect(await chat.waitForExit()).toBe(1);
+  expect(chat.output()).toContain("Connection closed with code 4400.");
+  expect(chat.output()).toContain("The chat client could not read a message from the daemon.");
+  expect(chat.output()).toContain("Client reason: Invalid server frame:");
+  expect(chat.output()).not.toContain("The daemon rejected a message from the chat client.");
+  expect(chat.output()).not.toContain("Daemon reason:");
 });
 
 for (const phase of ["before welcome", "after startup"] as const) {
   it.each([
     [4401, "Bad token"], [4003, "Protocol mismatch"], [4400, "Bad message"],
   ] as const)(`reports abnormal close %i ${phase} with its reason and exit 1`, async (code, reason) => {
-    const chat = await terminal(phase === "before welcome" ? { code, reason } : undefined);
+    const chat = await terminal({ beforeWelcome: phase === "before welcome" ? { code, reason } : undefined });
     if (phase === "after startup") {
       await chat.waitFor("Chatting with Tester");
       chat.close(code, reason);
     }
-    expect(await chat.closed).toBe(1);
+    expect(await chat.waitForExit()).toBe(1);
     expect(chat.output()).toContain(`Connection closed with code ${code}.`);
     expect(chat.output()).toContain(`Daemon reason: ${reason}`);
+    if (code === 4400) expect(chat.output()).toContain("The daemon rejected a message from the chat client.");
+    expect(chat.output()).not.toContain("Client reason:");
     expect(chat.output()).not.toContain("Could not connect to the daemon");
   });
 
   it.each([1000, 1005])(`exits normally for close %i ${phase}`, async (code) => {
-    const chat = await terminal(phase === "before welcome" ? { code, reason: "Normal close" } : undefined);
+    const chat = await terminal({ beforeWelcome: phase === "before welcome" ? { code, reason: "Normal close" } : undefined });
     if (phase === "after startup") {
       await chat.waitFor("Chatting with Tester");
       chat.close(code, "Normal close");
     }
-    expect(await chat.closed).toBe(0);
+    expect(await chat.waitForExit()).toBe(0);
     expect(chat.output()).toContain("Disconnected from the daemon.");
   });
 }
