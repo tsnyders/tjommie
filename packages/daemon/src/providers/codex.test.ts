@@ -8,7 +8,7 @@ vi.mock("./codex-rpc.ts", async (importOriginal) => ({
   startCodexServer: vi.fn(),
 }));
 
-import { JsonRpcLines, startCodexServer } from "./codex-rpc.ts";
+import { JsonRpcLines, RpcRemoteError, startCodexServer } from "./codex-rpc.ts";
 import { CodexSession } from "./codex.ts";
 import type { ProviderEvent, StartOptions } from "./types.ts";
 
@@ -127,5 +127,56 @@ describe("CodexSession MCP elicitations", () => {
     }]);
     codex.answer("approval-1", "once");
     expect(sent).toEqual([{ id: "approval-1", result: { action: "accept" } }]);
+  });
+});
+
+describe("CodexSession steering", () => {
+  it("does not send a steer request when there is no local active turn", async () => {
+    const { codex, sent } = await session(true);
+    await expect(codex.steer("Follow up")).resolves.toBe(false);
+    expect(sent).toEqual([]);
+  });
+
+  it("accepts a successful steer response", async () => {
+    const { codex, rpc, sent } = await session(true);
+    rpc.handleLine(JSON.stringify({ method: "turn/started", params: { turn: { id: "turn-1" } } }));
+    const steered = codex.steer("Follow up");
+    expect(sent).toEqual([{ id: 2, method: "turn/steer", params: { threadId: "thread-1", expectedTurnId: "turn-1", input: [{ type: "text", text: "Follow up" }] } }]);
+    rpc.handleLine(JSON.stringify({ id: 2, result: { turnId: "turn-1" } }));
+    await expect(steered).resolves.toBe(true);
+  });
+
+  it.each([
+    "no active turn to steer",
+    "expected active turn id `turn-1` but found `turn-2`",
+    "cannot steer a review turn",
+    "cannot steer a compact turn",
+  ])("returns false for the expected state rejection: %s", async (message) => {
+    const { codex, rpc } = await session(true);
+    rpc.handleLine(JSON.stringify({ method: "turn/started", params: { turn: { id: "turn-1" } } }));
+    const steered = codex.steer("Follow up");
+    rpc.handleLine(JSON.stringify({ id: 2, error: { code: -32600, message } }));
+    await expect(steered).resolves.toBe(false);
+  });
+
+  it.each([
+    { code: -32603, message: "failed to steer turn: connection failed" },
+    { code: -32600, message: "thread not found: thread-1" },
+    { code: -32603, message: "no active turn to steer" },
+  ])("propagates unexpected RPC rejection $code: $message", async ({ code, message }) => {
+    const { codex, rpc } = await session(true);
+    rpc.handleLine(JSON.stringify({ method: "turn/started", params: { turn: { id: "turn-1" } } }));
+    const steered = codex.steer("Follow up");
+    rpc.handleLine(JSON.stringify({ id: 2, error: { code, message } }));
+    await expect(steered).rejects.toMatchObject({ constructor: RpcRemoteError, code, message });
+  });
+
+  it("propagates transport failures even when their text resembles an expected state rejection", async () => {
+    const { codex, rpc } = await session(true);
+    rpc.handleLine(JSON.stringify({ method: "turn/started", params: { turn: { id: "turn-1" } } }));
+    const steered = codex.steer("Follow up");
+    const failure = new Error("no active turn to steer");
+    rpc.failAll(failure);
+    await expect(steered).rejects.toBe(failure);
   });
 });

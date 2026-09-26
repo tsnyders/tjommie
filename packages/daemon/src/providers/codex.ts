@@ -19,6 +19,15 @@ function isTurnAlreadyEnded(error: unknown): boolean {
   return error instanceof RpcRemoteError && /(?:^|: )no active turn to interrupt$/.test(error.message);
 }
 
+function isTurnNotSteerable(error: unknown): boolean {
+  if (!(error instanceof RpcRemoteError) || error.code !== -32600) return false;
+  // Codex's turn_steer_inner uses invalid-request errors for these turn-state races.
+  return error.message === "no active turn to steer"
+    || error.message === "cannot steer a review turn"
+    || error.message === "cannot steer a compact turn"
+    || /^expected active turn id `[^`\r\n]+` but found `[^`\r\n]+`$/.test(error.message);
+}
+
 export function codexPolicy(autonomy: Autonomy): Policy {
   if (autonomy === "ask") return { approvalPolicy: "untrusted", sandbox: "read-only" };
   if (autonomy === "folder") return { approvalPolicy: "on-request", sandbox: "workspace-write" };
@@ -138,8 +147,9 @@ export class CodexSession implements ProviderSession {
     try {
       await this.#rpc().request("turn/steer", { threadId: this.#threadId, expectedTurnId: this.#turnId, input: [{ type: "text", text }] });
       return true;
-    } catch {
-      return false; // the turn ended in the meantime, so the caller queues the message
+    } catch (error) {
+      if (isTurnNotSteerable(error)) return false; // the caller queues work that cannot join this turn
+      throw error; // the runner logs unexpected RPC and transport failures
     }
   }
 
