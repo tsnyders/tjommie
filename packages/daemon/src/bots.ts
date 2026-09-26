@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Bot, BotInput, BotPatch } from "@tjommie/protocol";
 import { newId, nowIso, transaction, type Db } from "./db.ts";
@@ -104,12 +104,28 @@ export function updateBot(db: Db, id: string, patch: BotPatch): StoredBot {
 // Deletes the bot, its chat and its home folder. An attached project folder is never touched.
 export function deleteBot(db: Db, id: string): void {
   const bot = getStoredBot(db, id);
+  const removed = `${bot.homeFolder}.deleting-${newId()}`;
+  const hadFolder = existsSync(bot.homeFolder);
   try {
-    rmSync(bot.homeFolder, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    // A locked folder must fail before any of its contents are removed.
+    if (hadFolder) renameSync(bot.homeFolder, removed);
   } catch {
     throw new RpcError("busy", "The bot folder is busy");
   }
-  db.prepare("DELETE FROM bots WHERE id = ?").run(id);
+  try {
+    db.prepare("DELETE FROM bots WHERE id = ?").run(id);
+  } catch (error) {
+    if (hadFolder) renameSync(removed, bot.homeFolder);
+    throw error;
+  }
+  if (hadFolder) {
+    try {
+      rmSync(removed, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    } catch (error) {
+      // The bot is deleted. Never restore a folder after a partial recursive removal.
+      console.error("Could not finish removing a deleted bot folder.", error);
+    }
+  }
 }
 
 export function setPaused(db: Db, id: string, paused: boolean): void {
@@ -158,6 +174,10 @@ function checkProjectFolder(folder: string | null, botsDir: string): string | nu
   // Reject both configured paths and junction aliases, including a managed root that is itself a junction.
   if (atOrInside(resolve(botsDir), resolve(folder)) || (existsSync(botsDir) && atOrInside(realpathSync.native(botsDir), realpathSync.native(folder)))) {
     throw new RpcError("bad_params", "The project folder must be outside the managed bots folder");
+  }
+  const dataRoot = dirname(botsDir);
+  if (atOrInside(resolve(folder), resolve(dataRoot)) || atOrInside(realpathSync.native(folder), realpathSync.native(dataRoot))) {
+    throw new RpcError("bad_params", "Pick a folder that doesn't contain Tjommie's own data folder.");
   }
   return folder;
 }

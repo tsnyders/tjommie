@@ -107,6 +107,10 @@ export function mcpHandler(opts: { tokens: McpTokens; tools: McpTool[] }): (req:
       return;
     }
     const messages: unknown[] = Array.isArray(body) ? body : [body];
+    if (messages.length > 20) {
+      send(res, 200, { jsonrpc: "2.0", id: null, error: { code: -32600, message: "A batch can contain at most 20 calls." } });
+      return;
+    }
     const answers = (await Promise.all(messages.map((message) => answer(botId, token, message)))).filter((a) => a !== null);
     if (answers.length === 0) res.writeHead(202).end();
     else send(res, 200, Array.isArray(body) ? answers : answers[0]);

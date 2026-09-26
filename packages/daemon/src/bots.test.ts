@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { botPrompt, createBot, deleteBot, getStoredBot, listStoredBots, setPaused, updateBot } from "./bots.ts";
 import { openDb, type Db } from "./db.ts";
@@ -8,7 +8,7 @@ import { tempRoot } from "./testing.ts";
 
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
-  return { ...actual, rmSync: vi.fn(actual.rmSync) };
+  return { ...actual, rmSync: vi.fn(actual.rmSync), renameSync: vi.fn(actual.renameSync) };
 });
 
 const input = { name: "Researcher", color: "teal", shape: "droplet", instructions: "Find sources.", provider: "claude", model: "sonnet" } as const;
@@ -86,7 +86,11 @@ describe("bots store", () => {
 
   it("keeps the bot when its home folder cannot be removed", () => {
     const bot = createBot(db, botsDir, input);
-    vi.mocked(rmSync).mockImplementationOnce(() => {
+    const notes = readFileSync(join(bot.homeFolder, "notes.md"), "utf8");
+    writeFileSync(join(bot.homeFolder, "inbox", "keep.txt"), "Keep this file");
+    mkdirSync(join(bot.homeFolder, "chrome-profile"));
+    writeFileSync(join(bot.homeFolder, "chrome-profile", "keep.txt"), "Keep this profile");
+    vi.mocked(renameSync).mockImplementationOnce(() => {
       throw new Error("locked");
     });
     let caught: unknown;
@@ -97,9 +101,11 @@ describe("bots store", () => {
     }
     expect(caught).toBeInstanceOf(RpcError);
     expect(caught).toMatchObject({ code: "busy", message: "The bot folder is busy" });
-    expect(rmSync).toHaveBeenCalledWith(bot.homeFolder, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
     expect(getStoredBot(db, bot.id)).toEqual(bot);
     expect(existsSync(bot.homeFolder)).toBe(true);
+    expect(readFileSync(join(bot.homeFolder, "notes.md"), "utf8")).toBe(notes);
+    expect(readFileSync(join(bot.homeFolder, "inbox", "keep.txt"), "utf8")).toBe("Keep this file");
+    expect(readFileSync(join(bot.homeFolder, "chrome-profile", "keep.txt"), "utf8")).toBe("Keep this profile");
   });
 
   it("builds a prompt with the name, home folder and instructions", () => {
@@ -172,5 +178,61 @@ describe("bots store", () => {
     expect(bot.projectFolder).toBe(project);
     expect(updateBot(db, bot.id, { projectFolder: null }).projectFolder).toBeNull();
     expect(updateBot(db, bot.id, { projectFolder: project }).projectFolder).toBe(project);
+  });
+
+  it("restores the untouched folder if the database refuses deletion", () => {
+    const bot = createBot(db, botsDir, input);
+    db.exec("CREATE TRIGGER refuse_bot_delete BEFORE DELETE ON bots BEGIN SELECT RAISE(ABORT, 'keep bot'); END");
+    expect(() => deleteBot(db, bot.id)).toThrow(/keep bot/);
+    expect(getStoredBot(db, bot.id)).toEqual(bot);
+    expect(readFileSync(join(bot.homeFolder, "notes.md"), "utf8")).toContain("Researcher");
+  });
+
+  it("does not restore a partially removed folder after successful database deletion", () => {
+    const bot = createBot(db, botsDir, input);
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(rmSync).mockImplementationOnce(() => { throw new Error("locked child"); });
+    try {
+      deleteBot(db, bot.id);
+      expect(existsSync(bot.homeFolder)).toBe(false);
+      expect(listStoredBots(db)).toEqual([]);
+      expect(logged).toHaveBeenCalledWith("Could not finish removing a deleted bot folder.", expect.any(Error));
+    } finally {
+      logged.mockRestore();
+    }
+  });
+
+  it("rejects the data root and its ancestors on create and update", () => {
+    const bot = createBot(db, botsDir, input);
+    for (const projectFolder of [root, dirname(root)]) {
+      expect(() => createBot(db, botsDir, { ...input, name: "Other", projectFolder })).toThrow(/doesn't contain Tjommie's own data folder/);
+      expect(() => updateBot(db, bot.id, { projectFolder })).toThrow(/doesn't contain Tjommie's own data folder/);
+    }
+    expect(getStoredBot(db, bot.id)).toEqual(bot);
+  });
+
+  it("rejects junction aliases of the data root and its ancestors", () => {
+    const bot = createBot(db, botsDir, input);
+    const aliases = tempRoot();
+    for (const [name, target] of [["root", root], ["parent", dirname(root)]]) {
+      const alias = join(aliases, name);
+      symlinkSync(target, alias, "junction");
+      expect(() => createBot(db, botsDir, { ...input, name: "Other", projectFolder: alias })).toThrow(/doesn't contain Tjommie's own data folder/);
+      expect(() => updateBot(db, bot.id, { projectFolder: alias })).toThrow(/doesn't contain Tjommie's own data folder/);
+    }
+  });
+
+  it("checks the physical data root when its configured path is a junction", () => {
+    const physicalParent = tempRoot();
+    const physicalRoot = join(physicalParent, "data");
+    mkdirSync(physicalRoot);
+    const alias = join(root, "data-link");
+    symlinkSync(physicalRoot, alias, "junction");
+    const aliasedBots = join(alias, "bots");
+    const bot = createBot(db, aliasedBots, input);
+    for (const projectFolder of [physicalRoot, physicalParent, alias, root]) {
+      expect(() => createBot(db, aliasedBots, { ...input, name: "Other", projectFolder })).toThrow(/doesn't contain Tjommie's own data folder/);
+      expect(() => updateBot(db, bot.id, { projectFolder })).toThrow(/doesn't contain Tjommie's own data folder/);
+    }
   });
 });
