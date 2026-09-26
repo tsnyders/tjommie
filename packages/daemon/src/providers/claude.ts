@@ -1,4 +1,6 @@
-import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { createInterface } from "node:readline";
 import type { Autonomy } from "@tjommie/protocol";
 import { killTree, spawnCli, type CliCommand } from "../cli.ts";
@@ -11,7 +13,9 @@ export function claudeMode(autonomy: Autonomy): "manual" | "acceptEdits" | "bypa
   return autonomy === "ask" ? "manual" : autonomy === "folder" ? "acceptEdits" : "bypassPermissions";
 }
 
-export function claudeArgs(options: StartOptions): string[] {
+type SessionFiles = { instructions: string; mcp: string };
+
+export function claudeArgs(options: StartOptions, files: SessionFiles): string[] {
   const args = [
     "-p",
     "--input-format",
@@ -26,11 +30,11 @@ export function claudeArgs(options: StartOptions): string[] {
     claudeMode(options.autonomy),
     "--model",
     options.model,
-    "--append-system-prompt",
-    options.instructions,
+    "--append-system-prompt-file",
+    files.instructions,
     "--strict-mcp-config",
   ];
-  if (options.mcpServers.length) args.push("--mcp-config", JSON.stringify(claudeMcpConfig(options.mcpServers)));
+  if (options.mcpServers.length) args.push("--mcp-config", files.mcp);
   for (const dir of options.extraDirs) args.push("--add-dir", dir);
   if (options.resumeId) args.push("--resume", options.resumeId);
   const allowed = [...options.mcpServers.filter((server) => server.autoAllow).map((server) => `mcp__${server.name}`), ...options.allowRules];
@@ -68,6 +72,9 @@ export class ClaudeSession implements ProviderSession {
   #interruptTimer: NodeJS.Timeout | undefined;
   #closeTimer: NodeJS.Timeout | undefined;
   #controlId = 0;
+  #filesDir: string | null = null;
+  #exitPromise: Promise<void> = Promise.resolve();
+  #resolveExit: (() => void) | null = null;
 
   constructor(cmd: CliCommand, options: StartOptions) {
     this.#cmd = cmd;
@@ -85,8 +92,21 @@ export class ClaudeSession implements ProviderSession {
   }
 
   async start(): Promise<void> {
-    const child = spawnCli(this.#cmd, claudeArgs(this.#options), { cwd: this.#options.cwd, env: this.#options.env });
+    const dir = mkdtempSync(join(this.#options.env.CLAUDE_CONFIG_DIR ?? this.#options.cwd, ".tjommie-session-"));
+    this.#filesDir = dir;
+    let child: ChildProcessWithoutNullStreams;
+    try {
+      restrictSessionFolder(dir);
+      const files = { instructions: join(dir, "instructions.txt"), mcp: join(dir, "mcp.json") };
+      writeFileSync(files.instructions, this.#options.instructions, { mode: 0o600 });
+      if (this.#options.mcpServers.length) writeFileSync(files.mcp, JSON.stringify(claudeMcpConfig(this.#options.mcpServers)), { mode: 0o600 });
+      child = spawnCli(this.#cmd, claudeArgs(this.#options, files), { cwd: this.#options.cwd, env: this.#options.env });
+    } catch (error) {
+      this.#removeFiles();
+      throw error;
+    }
     this.#child = child;
+    this.#exitPromise = new Promise((resolve) => { this.#resolveExit = resolve; });
     let stderr = "";
     child.stdin.on("error", () => {});
     child.stderr.setEncoding("utf8");
@@ -139,6 +159,7 @@ export class ClaudeSession implements ProviderSession {
   }
 
   close(): void {
+    this.#removeFiles();
     const child = this.#child;
     if (!child || this.#closing) return;
     this.#closing = true;
@@ -154,6 +175,21 @@ export class ClaudeSession implements ProviderSession {
     this.#closeTimer.unref();
   }
 
+  waitForExit(): Promise<void> {
+    return this.#exitPromise;
+  }
+
+  #removeFiles(): void {
+    if (!this.#filesDir) return;
+    try {
+      rmSync(this.#filesDir, { recursive: true, force: true });
+      this.#filesDir = null;
+    } catch (error) {
+      // A locked file must not prevent the process from closing. Exit retries this cleanup.
+      console.error("Could not remove Claude's session files", error);
+    }
+  }
+
   #emit(event: ProviderEvent): void {
     for (const listener of this.#listeners) listener(event);
   }
@@ -166,6 +202,9 @@ export class ClaudeSession implements ProviderSession {
   #exited(child: ChildProcessWithoutNullStreams, error: string | null): void {
     if (this.#child !== child) return; // already reported or from a superseded child
     this.#child = null;
+    this.#removeFiles();
+    this.#resolveExit?.();
+    this.#resolveExit = null;
     this.#inTurn = false;
     clearTimeout(this.#interruptTimer);
     clearTimeout(this.#closeTimer);
@@ -230,6 +269,19 @@ export class ClaudeSession implements ProviderSession {
         return;
     }
   }
+}
+
+// Windows ignores POSIX file modes. Remove inherited ACL entries before placing secrets in the folder.
+function restrictSessionFolder(folder: string): void {
+  if (process.platform !== "win32") {
+    chmodSync(folder, 0o700);
+    return;
+  }
+  const identity = spawnSync("whoami", ["/user", "/fo", "csv", "/nh"], { encoding: "utf8", windowsHide: true });
+  const sid = identity.stdout?.match(/S-1-[0-9-]+/)?.[0];
+  if (!sid) throw new Error("Could not identify the user for Claude's session files.");
+  const result = spawnSync("icacls", [folder, "/inheritance:r", "/grant:r", `*${sid}:(OI)(CI)F`], { windowsHide: true });
+  if (result.status !== 0) throw new Error("Could not make Claude's session files private.");
 }
 
 // "Always allow" also tells this session to stop asking; the daemon saves the rule for later sessions.

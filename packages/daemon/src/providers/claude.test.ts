@@ -1,6 +1,6 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -21,7 +21,7 @@ import { ClaudeSession, claudeArgs, claudeMode } from "./claude.ts";
 import type { ProviderEvent, StartOptions } from "./types.ts";
 
 const base: StartOptions = {
-  cwd: "C:\\bots\\b1",
+  cwd: mkdtempSync(join(tmpdir(), "tjommie claude-")),
   extraDirs: [],
   model: "sonnet",
   instructions: "Be brief.",
@@ -31,6 +31,7 @@ const base: StartOptions = {
   env: {},
   mcpServers: [],
 };
+const files = { instructions: "instructions.txt", mcp: "mcp.json" };
 
 function fakeChild(): {
   child: ChildProcessWithoutNullStreams;
@@ -58,7 +59,7 @@ describe("claudeArgs", () => {
   });
 
   it("starts a headless stream-json session with approvals over stdio and no outside MCP servers", () => {
-    expect(claudeArgs(base)).toEqual([
+    expect(claudeArgs(base, files)).toEqual([
       "-p",
       "--input-format",
       "stream-json",
@@ -72,14 +73,14 @@ describe("claudeArgs", () => {
       "acceptEdits",
       "--model",
       "sonnet",
-      "--append-system-prompt",
-      "Be brief.",
+      "--append-system-prompt-file",
+      "instructions.txt",
       "--strict-mcp-config",
     ]);
   });
 
   it("adds extra folders, the session to resume, and saved rules last", () => {
-    const args = claudeArgs({ ...base, extraDirs: ["C:\\home"], resumeId: "abc", allowRules: ["Write", "Bash(npm test *)"] });
+    const args = claudeArgs({ ...base, extraDirs: ["C:\\home"], resumeId: "abc", allowRules: ["Write", "Bash(npm test *)"] }, files);
     expect(args.slice(-7)).toEqual(["--add-dir", "C:\\home", "--resume", "abc", "--allowedTools", "Write", "Bash(npm test *)"]);
   });
 
@@ -91,19 +92,15 @@ describe("claudeArgs", () => {
         { name: "tjommie", url: "http://127.0.0.1:47100/mcp", headers: { Authorization: "Bearer t0k" }, autoAllow: true },
         { name: "browser", command: "C:\\node.exe", args: ["cli.js", "--headless"], env: {}, autoAllow: false },
       ],
-    });
-    expect(JSON.parse(args[args.indexOf("--mcp-config") + 1])).toEqual({
-      mcpServers: {
-        tjommie: { type: "http", url: "http://127.0.0.1:47100/mcp", headers: { Authorization: "Bearer t0k" } },
-        browser: { type: "stdio", command: "C:\\node.exe", args: ["cli.js", "--headless"], env: {} },
-      },
-    });
+    }, files);
+    expect(args[args.indexOf("--mcp-config") + 1]).toBe(files.mcp);
+    expect(args.join(" ")).not.toContain("Bearer t0k");
     expect(args.slice(-3)).toEqual(["--allowedTools", "mcp__tjommie", "Write"]);
   });
 
   it("passes awkward instructions through process arguments unchanged (argument round trip)", async () => {
     const instructions = `Say "hi" & 'bye'\n100% ^caret <tag> | pipe naïve ✓ C:\\Users\\Thabo Mokoena`;
-    const args = claudeArgs({ ...base, instructions });
+    const args = claudeArgs({ ...base, instructions }, files);
     const script = join(mkdtempSync(join(tmpdir(), "tjommie args ñ-")), "print-args.js");
     writeFileSync(script, "process.stdout.write(JSON.stringify(process.argv.slice(2)))");
     const out = await runCli({ file: process.execPath, args: [script] }, args, cliEnv({}));
@@ -208,6 +205,24 @@ describe("ClaudeSession fallback kills", () => {
 });
 
 describe("ClaudeSession lifecycle", () => {
+  it("stores instructions and MCP config in private files and removes them when closing", async () => {
+    const { child } = fakeChild();
+    cliMocks.spawnCli.mockReturnValue(child);
+    const instructions = `Say "hi" & 'bye'\n100% ^caret <tag> | pipe`;
+    const claude = new ClaudeSession({ file: "claude", args: [] }, { ...base, instructions, mcpServers: [{ name: "test", url: "http://127.0.0.1:1/mcp", headers: { Authorization: "Bearer test-only-value" }, autoAllow: true }] });
+    await claude.start();
+    const args = cliMocks.spawnCli.mock.lastCall![1] as string[];
+    const promptFile = args[args.indexOf("--append-system-prompt-file") + 1];
+    const mcpFile = args[args.indexOf("--mcp-config") + 1];
+    expect(readFileSync(promptFile, "utf8")).toBe(instructions);
+    expect(JSON.parse(readFileSync(mcpFile, "utf8"))).toMatchObject({ mcpServers: { test: { headers: { Authorization: "Bearer test-only-value" } } } });
+    expect(args.join(" ")).not.toContain(instructions);
+    expect(args.join(" ")).not.toContain("test-only-value");
+    claude.close();
+    expect(existsSync(promptFile)).toBe(false);
+    expect(existsSync(mcpFile)).toBe(false);
+    child.emit("exit", 0, null);
+  });
   it("does not write after close and reports the intentional exit quietly", async () => {
     cliMocks.killTree.mockClear();
     cliMocks.spawnCli.mockReset();
