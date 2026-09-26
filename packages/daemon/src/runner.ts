@@ -29,7 +29,7 @@ export type RunnerHooks = {
   sessionClosed?: (botId: string) => void;
   turnStarted?: (item: WorkItem) => void;
   turnEnded?: (item: WorkItem, result: TurnResult) => void;
-  // A usage limit parks the item; the scheduler clears its timer until turnStarted re-arms it.
+  // A limit or failed resume restarts the item; clear its timer until turnStarted re-arms it.
   turnRequeued?: (item: WorkItem) => void;
 };
 
@@ -190,7 +190,7 @@ export class Runner {
       throw new RpcError("bad_state", "Only failed or interrupted work can be retried");
     }
     this.#emitMessage(updateMessage(this.#db, messageId, { status: "queued" }));
-    this.deliver({ botId: previous.botId, source: previous.source, text: previous.text, messageId, conversationId: previous.conversationId, chainId: newChain(this.#db) });
+    this.deliver({ botId: previous.botId, source: previous.source, text: previous.text, messageId, conversationId: previous.conversationId, exchangeId: previous.exchangeId, chainId: newChain(this.#db) });
     return getMessage(this.#db, messageId);
   }
 
@@ -373,6 +373,8 @@ export class Runner {
         }
         if (resumeId === null) throw error;
         this.#db.prepare("DELETE FROM sessions WHERE bot_id = ?").run(bot.id); // couldn't resume: start fresh with a recap
+        this.#safely(() => this.#hooks.turnRequeued?.(item));
+        this.#safely(() => this.#hooks.turnStarted?.(item)); // this retry starts directly, without pump
         return this.#startTurn(bot, item);
       }
       if (!live.busy || live.item?.id !== item.id || live.session !== created) return;
@@ -685,11 +687,13 @@ export class Runner {
     if (!live.busy) return;
     if (resumeFailed && live.item && !live.stopRequested) {
       // The CLI couldn't resume this session: start fresh with a recap instead.
+      const item = live.item;
       this.#db.prepare("DELETE FROM sessions WHERE bot_id = ?").run(botId);
-      setStatus(this.#db, live.item.id, "queued");
+      setStatus(this.#db, item.id, "queued");
       live.busy = false;
       live.sent = false;
       live.item = null;
+      this.#safely(() => this.#hooks.turnRequeued?.(item));
       this.pump(botId);
       return;
     }

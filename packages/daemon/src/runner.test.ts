@@ -8,7 +8,7 @@ import { addMessage, getMessage, history } from "./chat.ts";
 import { openDb, type Db } from "./db.ts";
 import { McpTokens } from "./mcp.ts";
 import type { ProviderEvent, ProviderSession, StartOptions } from "./providers/types.ts";
-import { enqueue, getWorkItem, setStatus, type WorkItem, type WorkStatus } from "./queue.ts";
+import { enqueue, getWorkItem, newChain, setStatus, type WorkItem, type WorkStatus } from "./queue.ts";
 import { activityBody, botStateOf, copyIntoInbox, Runner, type RunnerHooks, type SessionFactory, type TurnResult } from "./runner.ts";
 import { RpcError, type Broadcast } from "./server.ts";
 import { ensureAccounts } from "./setup.ts";
@@ -694,6 +694,40 @@ describe("Runner destinations and delivery", () => {
     expect(history(h.db, "team", undefined, 20).at(-1)).toMatchObject({ body: "ROOM", status: "done" });
   });
 
+  it("retry preserves a failed bot request's exchange link for the completion hook but starts a new chain without the old routine run", async () => {
+    const ended: [WorkItem, TurnResult][] = [];
+    const h = harness(undefined, true, { turnEnded: (item, result) => ended.push([item, result]) });
+    const bot = newBot(h);
+    const exchangeId = "exchange-to-retry";
+    h.db.prepare("INSERT INTO conversations (id, kind) VALUES (?, 'exchange')").run(exchangeId);
+    const message = addMessage(h.db, { conversationId: exchangeId, author: bot.id, kind: "text", body: "Please help", status: "failed" });
+    const originalChain = newChain(h.db);
+    const failed = enqueue(h.db, {
+      botId: bot.id, source: "bot_request", text: "Please help", messageId: message.id,
+      conversationId: exchangeId, exchangeId, chainId: originalChain, routineRunId: "original-run",
+    });
+    setStatus(h.db, failed.id, "failed");
+
+    h.runner.retry(message.id);
+    await waitFor(() => h.sessions[0]?.sent.length);
+    const retried = getWorkItem(h.db, itemForMessage(h.db, message.id).id);
+    expect(retried).toMatchObject({
+      botId: bot.id, source: "bot_request", text: "Please help", messageId: message.id,
+      conversationId: exchangeId, exchangeId, routineRunId: null, status: "running",
+    });
+    expect(retried.id).not.toBe(failed.id);
+    expect(retried.chainId).toBeTypeOf("string");
+    expect(retried.chainId).not.toBe(originalChain);
+    expect(h.db.prepare("SELECT count(*) AS count FROM chains").get()).toEqual({ count: 2 });
+    expect(getWorkItem(h.db, failed.id).status).toBe("failed");
+    h.sessions[0].emit({ type: "text", delta: "Here is the help" });
+    h.sessions[0].emit({ type: "turn_done", ok: true, error: null });
+    expect(ended).toHaveLength(1);
+    expect(ended[0][0]).toMatchObject({ id: retried.id, conversationId: exchangeId, exchangeId, chainId: retried.chainId, routineRunId: null });
+    expect(ended[0][1]).toMatchObject({ outcome: "done", text: "Here is the help", error: null });
+    expect(history(h.db, exchangeId, undefined, 1)[0]).toMatchObject({ body: "Here is the help", status: "done" });
+  });
+
   it("stopItem only interrupts its current item and resets its custom notice before later work", async () => {
     const h = harness();
     const bot = newBot(h);
@@ -959,6 +993,59 @@ describe("Runner session hooks", () => {
     expect(closed).toEqual([bot.id]);
     expect(h.db.prepare("SELECT cli_session_id FROM sessions WHERE bot_id = ?").get(bot.id)).toEqual({ cli_session_id: "saved" });
     expect(history(h.db, bot.id, undefined, 20).some((item) => item.kind === "error")).toBe(false);
+  });
+
+  it.each([
+    { boundary: "exit", throws: false },
+    { boundary: "start", throws: false },
+    { boundary: "exit", throws: true },
+    { boundary: "start", throws: true },
+  ] as const)("brackets the same resumed item's $boundary fallback with requeue and start hooks (requeue hook throws: $throws)", async ({ boundary, throws }) => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const hookFailure = new Error("requeue hook failed");
+    const lifecycle: ["started" | "requeued" | "ended", string][] = [];
+    const ended: TurnResult[] = [];
+    let rejectStart: (error: Error) => void = () => { throw new Error("Start was not held"); };
+    const resumed = new FakeSession();
+    if (boundary === "start") resumed.startPromise = new Promise<void>((_resolve, reject) => { rejectStart = reject; });
+    const fresh = new FakeSession();
+    const available = [resumed, fresh];
+    let nextSession = 0;
+    const h = harness(() => {
+      const session = available[nextSession++];
+      if (!session) throw new Error("Unexpected extra session");
+      return session;
+    }, true, {
+      turnStarted: (item) => lifecycle.push(["started", item.id]),
+      turnRequeued: (item) => {
+        lifecycle.push(["requeued", item.id]);
+        if (throws) throw hookFailure;
+      },
+      turnEnded: (item, result) => { lifecycle.push(["ended", item.id]); ended.push(result); },
+    });
+    const bot = newBot(h);
+    h.db.prepare("INSERT INTO sessions (bot_id, provider, account_id, cli_session_id, updated_at) VALUES (?, 'claude', 'claude-main', 'missing', 'then')").run(bot.id);
+    const message = h.runner.submit(bot.id, "continue the same item", []);
+    const itemId = itemForMessage(h.db, message.id).id;
+    expect(lifecycle).toEqual([["started", itemId]]);
+    if (boundary === "exit") {
+      await waitFor(() => resumed.sent.length);
+      resumed.emit({ type: "exit", error: null });
+    } else rejectStart(new Error("resume start rejected"));
+    await waitFor(() => fresh.sent.length);
+
+    expect(lifecycle).toEqual([["started", itemId], ["requeued", itemId], ["started", itemId]]);
+    expect(ended).toEqual([]);
+    expect(h.runner.currentWork(bot.id)?.id).toBe(itemId);
+    expect(getWorkItem(h.db, itemId).status).toBe("running");
+    if (throws) expect(logged.mock.calls.some((call) => call.includes(hookFailure))).toBe(true);
+    else expect(logged).not.toHaveBeenCalled();
+    fresh.emit({ type: "text", delta: "final answer" });
+    fresh.emit({ type: "turn_done", ok: true, error: null });
+    expect(lifecycle).toEqual([["started", itemId], ["requeued", itemId], ["started", itemId], ["ended", itemId]]);
+    expect(ended).toEqual([{ outcome: "done", text: "final answer", textMessageId: history(h.db, bot.id, undefined, 1)[0].id, error: null }]);
+    expect(getWorkItem(h.db, itemId).status).toBe("done");
+    expect(h.sessions).toHaveLength(2);
   });
 
   it.each([false, true])("retries a rejected resumed start only once with a renewed token (fresh startup fails: %s)", async (freshFails) => {
