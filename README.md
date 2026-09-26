@@ -8,6 +8,8 @@ Tjommie is a free, open-source desktop and phone app for AI bots that chat with 
 
 You need Windows and Node 24 or newer.
 
+Set `$env:TJOMMIE_DEV = '1'` in PowerShell before starting the daemon to allow the development UI at `http://localhost:3000`. The desktop origin `app://tjommie` is always allowed.
+
 ```sh
 npm install
 npm run signin -w @tjommie/daemon    # once: sign Tjommie's own Claude and Codex accounts in
@@ -29,6 +31,10 @@ npm run build      # static export to packages/ui/out
 | `packages/daemon` | The background process that runs the bots |
 | `packages/ui` | The UI: Next.js static export, shadcn/ui, Tailwind |
 | `packages/desktop` | Electron shell |
+
+## Autonomy
+
+"Own folder" protects your files from mistakes, and doesn't make a bot safe to point at untrusted content.
 
 ## License
 

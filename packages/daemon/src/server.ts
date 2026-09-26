@@ -24,7 +24,8 @@ export class RpcError extends Error {
 
 export type Handlers = { [M in MethodName]?: (params: ParamsOut<M>) => Result<M> | Promise<Result<M>> };
 export type Broadcast = <E extends EventName>(event: E, data: EventData<E>) => void;
-export type Server = { port: number; broadcast: Broadcast; close: () => Promise<void> };
+type ServerConfig = { token: string; handlers: Handlers; routes?: Record<string, Route> };
+export type Server = { port: number; broadcast: Broadcast; activate: (config: ServerConfig) => void; close: () => Promise<void> };
 // An extra HTTP endpoint, such as the app's MCP server at /mcp.
 export type Route = (req: IncomingMessage, res: ServerResponse) => void | Promise<void>;
 
@@ -36,16 +37,23 @@ export async function startServer(opts: {
   handlers: Handlers;
   allowedOrigins: string[];
   routes?: Record<string, Route>;
+  deferRequests?: boolean;
 }): Promise<Server> {
   const clients = new Set<WebSocket>();
   let port = opts.port;
+  let config: ServerConfig = opts;
+  let ready = !opts.deferRequests;
 
   const http = createServer((req, res) => {
+    if (!ready) {
+      res.writeHead(503).end();
+      return;
+    }
     if (req.url === "/health") {
       res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true, protocol: PROTOCOL_VERSION }));
       return;
     }
-    const route = opts.routes?.[(req.url ?? "").split("?")[0]];
+    const route = config.routes?.[(req.url ?? "").split("?")[0]];
     if (route) {
       // Only programs on this machine: browsers always send an Origin header, the CLIs never do.
       if (!isLocalHost(req, port) || req.headers.origin !== undefined) {
@@ -64,6 +72,10 @@ export async function startServer(opts: {
   const wss = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024 * 1024 });
 
   http.on("upgrade", (req, socket, head) => {
+    if (!ready) {
+      socket.end("HTTP/1.1 503 Service Unavailable\r\n\r\n");
+      return;
+    }
     if (!isLocalHost(req, port) || !originAllowed(req, opts.allowedOrigins)) {
       socket.end("HTTP/1.1 403 Forbidden\r\n\r\n");
       return;
@@ -91,7 +103,7 @@ export async function startServer(opts: {
       }
       if (!authed) {
         const givenToken = typeof rawMessage === "object" && rawMessage !== null && "token" in rawMessage ? rawMessage.token : undefined;
-        if (typeof givenToken !== "string" || !sameToken(givenToken, opts.token)) {
+        if (typeof givenToken !== "string" || !sameToken(givenToken, config.token)) {
           ws.close(4401, "unauthorized");
           return;
         }
@@ -104,7 +116,7 @@ export async function startServer(opts: {
         return;
       }
       if (!authed) {
-        if (message.type !== "hello" || !sameToken(message.token, opts.token)) {
+        if (message.type !== "hello" || !sameToken(message.token, config.token)) {
           ws.close(4401, "unauthorized");
           return;
         }
@@ -130,7 +142,7 @@ export async function startServer(opts: {
 
   async function call(method: string, params: unknown): Promise<unknown> {
     // Params are validated below before the call, so the handler table can be called untyped here.
-    const handler = Object.hasOwn(methods, method) ? (opts.handlers[method as MethodName] as unknown as ((p: unknown) => unknown) | undefined) : undefined;
+    const handler = Object.hasOwn(methods, method) ? (config.handlers[method as MethodName] as unknown as ((p: unknown) => unknown) | undefined) : undefined;
     if (!handler) throw new RpcError("unknown_method", `Unknown method ${method}`);
     return handler(methods[method as MethodName].params.parse(params));
   }
@@ -149,6 +161,10 @@ export async function startServer(opts: {
   return {
     port,
     broadcast,
+    activate: (next) => {
+      config = next;
+      ready = true;
+    },
     close: () =>
       new Promise<void>((resolve) => {
         for (const ws of clients) ws.terminate();

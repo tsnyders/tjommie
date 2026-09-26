@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, utimesSync } from "node:fs";
 import { join } from "node:path";
 import type { BotInput, ProviderSetup } from "@tjommie/protocol";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import WebSocket from "ws";
 import { createBot, getStoredBot, setLimitedUntil } from "./bots.ts";
 import { showBrowser } from "./browser.ts";
 import { connect, type Client } from "./client.ts";
@@ -20,12 +21,12 @@ import { tempRoot, waitFor } from "./testing.ts";
 const removal = vi.hoisted(() => ({ failPath: "", beforeRemove: () => {} }));
 vi.mock("node:fs", async (original) => {
   const fs = await original<typeof import("node:fs")>();
-  return { ...fs, rmSync: (...args: Parameters<typeof fs.rmSync>) => {
+  return { ...fs, renameSync: (...args: Parameters<typeof fs.renameSync>) => {
     if (String(args[0]) === removal.failPath) {
       removal.beforeRemove();
       throw new Error("Forced locked folder");
     }
-    return fs.rmSync(...args);
+    return fs.renameSync(...args);
   } };
 });
 vi.mock("./setup.ts", async (original) => ({
@@ -67,6 +68,7 @@ const daemons: Daemon[] = [];
 const clients: Client[] = [];
 const databases: Db[] = [];
 beforeEach(() => {
+  vi.stubEnv("TJOMMIE_DEV", "");
   vi.mocked(checkSetup).mockResolvedValue(setup());
   vi.mocked(showBrowser).mockResolvedValue(undefined);
   removal.failPath = "";
@@ -77,6 +79,7 @@ afterEach(async () => {
   for (const daemon of daemons.splice(0)) await daemon.close();
   for (const db of databases.splice(0)) db.close();
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
 });
 
 async function harness(root = tempRoot()) {
@@ -259,11 +262,11 @@ it("recovers an interrupted routine and sweeps stale shares before starting queu
   utimesSync(stale, old, old);
   const listen = serverModule.startServer;
   const server = vi.spyOn(serverModule, "startServer").mockImplementation((options) => {
-    expect(options.allowedOrigins).toEqual(["app://tjommie", "http://localhost:3000"]);
-    expect(getWorkItem(db, item.id).status).toBe("interrupted");
-    expect(getRun(db, run.id)?.status).toBe("failed");
+    expect(options.allowedOrigins).toEqual(["app://tjommie"]);
+    expect(getWorkItem(db, item.id).status).toBe("running");
+    expect(getRun(db, run.id)?.status).toBe("running");
     expect(getWorkItem(db, queued.id).status).toBe("queued");
-    expect(existsSync(stale)).toBe(false);
+    expect(existsSync(stale)).toBe(true);
     return listen(options);
   });
   const { sessions } = await harness(root);
@@ -274,6 +277,67 @@ it("recovers an interrupted routine and sweeps stale shares before starting queu
   expect(getWorkItem(db, queued.id).status).toBe("running");
   expect(appServer(sessions[0].options).url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/mcp$/);
   expect(existsSync(stale)).toBe(false);
+});
+
+it("leaves the live daemon's work, approvals and streaming messages untouched on a second start", async () => {
+  const { daemon, client, db, sessions, root } = await harness();
+  const bot = await client.call("bots.create", input("Still working"));
+  await client.call("chat.send", { botId: bot.id, text: "Begin" });
+  sessions[0].session.emit({ type: "approval", id: "waiting", tool: "Write", summary: "Write", detail: "file", rule: null });
+  sessions[0].session.emit({ type: "text", delta: "In progress" });
+  const before = {
+    work: db.prepare("SELECT * FROM work_items").all(),
+    approvals: db.prepare("SELECT * FROM approvals").all(),
+    messages: db.prepare("SELECT * FROM messages").all(),
+  };
+  expect(before.work).toMatchObject([{ status: "running" }]);
+  expect(before.approvals).toMatchObject([{ status: "pending" }]);
+  expect(before.messages.some((row) => row.status === "streaming")).toBe(true);
+  vi.mocked(checkSetup).mockClear();
+  await expect(startDaemon({ root, port: daemon.port })).rejects.toMatchObject({ code: "EADDRINUSE" });
+  expect(db.prepare("SELECT * FROM work_items").all()).toEqual(before.work);
+  expect(db.prepare("SELECT * FROM approvals").all()).toEqual(before.approvals);
+  expect(db.prepare("SELECT * FROM messages").all()).toEqual(before.messages);
+  expect(checkSetup).not.toHaveBeenCalled();
+});
+
+it.each(["", "0", "1"])("allows the dev origin only with TJOMMIE_DEV=1 (%s)", async (dev) => {
+  vi.stubEnv("TJOMMIE_DEV", dev);
+  const { daemon } = await harness();
+  const upgrade = (origin: string) => new Promise<boolean>((resolve) => {
+    const socket = new WebSocket(`ws://127.0.0.1:${daemon.port}`, { origin });
+    socket.once("open", () => { socket.close(); resolve(true); });
+    socket.once("error", () => resolve(false));
+  });
+  expect(await upgrade("app://tjommie")).toBe(true);
+  expect(await upgrade("http://localhost:3000")).toBe(dev === "1");
+});
+
+it("waits for a delayed session close before capturing exchanges and deleting the bot", async () => {
+  const { client, db, sessions } = await harness();
+  const bot = await client.call("bots.create", input("Delayed close"));
+  await client.call("chat.send", { botId: bot.id, text: "Begin" });
+  sessions[0].session.finish("Done");
+  const exited = Promise.withResolvers<void>();
+  const closing = Promise.withResolvers<void>();
+  vi.spyOn(sessions[0].session, "close").mockImplementation(() => {
+    closing.resolve();
+  });
+  Object.assign(sessions[0].session, { waitForExit: () => exited.promise });
+  const captured = vi.spyOn(Team.prototype, "botDeleting");
+  const deletion = client.call("bots.delete", { id: bot.id });
+  try {
+    await closing.promise;
+    expect(captured).not.toHaveBeenCalled();
+    expect(getStoredBot(db, bot.id).id).toBe(bot.id);
+    expect(existsSync(bot.homeFolder)).toBe(true);
+  } finally {
+    exited.resolve();
+    await deletion;
+  }
+  expect(captured).toHaveBeenCalledExactlyOnceWith(bot.id);
+  expect(existsSync(bot.homeFolder)).toBe(false);
+  expect(db.prepare("SELECT * FROM work_items WHERE bot_id = ?").all(bot.id)).toEqual([]);
 });
 
 it("pumps waiting work after unpause and a successful setup refresh", async () => {

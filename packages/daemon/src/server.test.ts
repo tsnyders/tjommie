@@ -38,6 +38,19 @@ async function hello(client: ReturnType<typeof connect>, token: string) {
 }
 
 describe("startServer", () => {
+  it("holds HTTP and WebSocket requests until recovery activates the server", async () => {
+    server = await startServer({ port: 0, token: "", allowedOrigins: [], handlers: {}, deferRequests: true });
+    expect((await fetch(`http://127.0.0.1:${server.port}/health`)).status).toBe(503);
+    const early = connect(server.port);
+    await expect(early.opened).rejects.toThrow(/503/);
+    server.activate({ token: "ready", handlers: { "bots.list": () => [] } });
+    expect((await fetch(`http://127.0.0.1:${server.port}/health`)).status).toBe(200);
+    const client = connect(server.port);
+    expect(await hello(client, "ready")).toEqual({ type: "welcome", protocol: 1 });
+    client.send({ type: "req", id: 1, method: "bots.list", params: {} });
+    expect(await client.next()).toMatchObject({ ok: true, result: [] });
+    client.ws.close();
+  });
   it("answers requests after a valid hello", async () => {
     server = await startServer({ port: 0, token: "secret", allowedOrigins: [], handlers: { "bots.list": () => [] } });
     const client = connect(server.port);

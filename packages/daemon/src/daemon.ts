@@ -10,24 +10,37 @@ import { getWorkItem, type WorkItem } from "./queue.ts";
 import { createRoutine, deleteRoutine, getRoutine, listRoutines, listRuns, updateRoutine } from "./routines.ts";
 import { Runner, type SessionFactory, type TurnResult } from "./runner.ts";
 import { Scheduler } from "./scheduler.ts";
-import { RpcError, startServer, type Broadcast, type Handlers } from "./server.ts";
+import { RpcError, startServer, type Broadcast, type Handlers, type Server } from "./server.ts";
 import { getSettings, setSettings } from "./settings.ts";
 import { checkSetup, ensureAccounts, listModels, signIn } from "./setup.ts";
 import { Team, getExchange } from "./team.ts";
 
 // The desktop app loads the UI from app://tjommie (plan 1D); `npm run dev` serves it on localhost:3000.
-const ALLOWED_ORIGINS = ["app://tjommie", "http://localhost:3000"];
+const allowedOrigins = () => ["app://tjommie", ...(process.env.TJOMMIE_DEV === "1" ? ["http://localhost:3000"] : [])];
 
 export type Daemon = { port: number; token: string; runner: Runner; scheduler: Scheduler; close: () => Promise<void> };
 
-export async function startDaemon(
-  options: { root?: string; port?: number; accountsDir?: string; createSession?: SessionFactory } = {},
-): Promise<Daemon> {
+type DaemonOptions = { root?: string; port?: number; accountsDir?: string; createSession?: SessionFactory };
+
+export async function startDaemon(options: DaemonOptions = {}): Promise<Daemon> {
+  // The listening port is the lock. A duplicate launch must not even open the database.
+  const server = await startServer({ port: options.port ?? DEFAULT_PORT, token: "", handlers: {}, allowedOrigins: allowedOrigins(), deferRequests: true });
+  let cleanup = () => {};
+  try {
+    return await initializeDaemon(options, server, (next) => { cleanup = next; });
+  } catch (error) {
+    try { cleanup(); } finally { await server.close(); }
+    throw error;
+  }
+}
+
+async function initializeDaemon(options: DaemonOptions, server: Server, onCleanup: (cleanup: () => void) => void): Promise<Daemon> {
   const paths = dataPaths(options.root);
   const db = openDb(paths.db);
+  onCleanup(() => db.close());
   const token = readOrCreateToken(paths.token);
-  ensureAccounts(db, options.accountsDir ?? paths.accounts);
-  let setup: ProviderSetup[] = await checkSetup(db);
+  ensureAccounts(db, options.accountsDir ?? paths.accounts, paths.root);
+  let setup: ProviderSetup[] = [];
   let broadcast: Broadcast = () => {};
   const send: Broadcast = (event, data) => broadcast(event, data);
   let mcpUrl = ""; // Set before queued work can start a CLI session.
@@ -60,12 +73,14 @@ export async function startDaemon(
     deliver: (work) => runner.deliver(work),
     currentWork: (botId) => runner.currentWork(botId),
     stateOf: (bot) => runner.toBot(bot).state,
+    stopItem: (itemId, notice) => runner.stopItem(itemId, notice),
   });
   const scheduler = new Scheduler({
     db, broadcast: send,
     deliver: (work) => runner.deliver(work),
     stopItem: (itemId, notice) => runner.stopItem(itemId, notice),
   });
+  onCleanup(() => { scheduler.stop(); runner.shutdown(); db.close(); });
 
   function turnEnded(item: WorkItem, result: TurnResult): void {
     try {
@@ -104,13 +119,15 @@ export async function startDaemon(
       broadcast("bot.updated", bot);
       return bot;
     },
-    "bots.delete": ({ id }) => {
-      const handle = team.botDeleting(id);
+    "bots.delete": async ({ id }) => {
+      getStoredBot(db, id);
+      let handle: ReturnType<Team["botDeleting"]>;
       try {
-        runner.closeForDeletion(id);
+        await runner.closeForDeletion(id);
+        handle = team.botDeleting(id);
         deleteBot(db, id);
       } catch (error) {
-        runner.pump(id);
+        runner.cancelDeletion(id);
         throw error;
       }
       try {
@@ -186,18 +203,13 @@ export async function startDaemon(
   };
 
   team.start();
-  runner.recover(); // Settle interrupted work before the server can accept new requests.
-  const server = await startServer({
-    port: options.port ?? DEFAULT_PORT,
-    token,
-    handlers,
-    allowedOrigins: ALLOWED_ORIGINS,
-    routes: { "/mcp": mcpHandler({ tokens, tools: team.tools() }) },
-  });
+  runner.recover(); // Synchronous after binding, before setup yields or requests can be served.
+  setup = await checkSetup(db);
   mcpUrl = `http://127.0.0.1:${server.port}/mcp`;
   broadcast = server.broadcast;
   runner.start();
   scheduler.start();
+  server.activate({ token, handlers, routes: { "/mcp": mcpHandler({ tokens, tools: team.tools() }) } });
   return {
     port: server.port,
     token,
