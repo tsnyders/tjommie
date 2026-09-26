@@ -42,6 +42,7 @@ export interface ProviderSession {
   interrupt(): Promise<void>;
   answer(approvalId: string, answer: ApprovalAnswer): void;
   close(): void;
+  waitForExit?(): Promise<void>; // resolves after the underlying process has exited, including a pending start
   pid(): number | undefined;
   onEvent(listener: (event: ProviderEvent) => void): void;
 }

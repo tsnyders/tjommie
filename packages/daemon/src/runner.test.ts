@@ -14,6 +14,12 @@ import { RpcError, type Broadcast } from "./server.ts";
 import { ensureAccounts } from "./setup.ts";
 import { tempRoot, waitFor } from "./testing.ts";
 
+const cliMocks = vi.hoisted(() => ({ killTree: vi.fn() }));
+vi.mock("./cli.ts", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./cli.ts")>()),
+  killTree: cliMocks.killTree,
+}));
+
 type SentEvent = { [E in EventName]: { event: E; data: EventData<E> } }[EventName];
 
 class FakeSession implements ProviderSession {
@@ -30,6 +36,8 @@ class FakeSession implements ProviderSession {
   steerPromise: Promise<boolean> | null = null;
   steerError: Error | null = null;
   interruptError: Error | null = null;
+  exitPromise: Promise<void> = Promise.resolve();
+  closeCalls = 0;
 
   start(): Promise<void> {
     return this.startPromise;
@@ -57,8 +65,13 @@ class FakeSession implements ProviderSession {
   }
 
   close(): void {
+    this.closeCalls++;
     this.closed = true;
     if (this.closeError) throw this.closeError;
+  }
+
+  waitForExit(): Promise<void> {
+    return this.exitPromise;
   }
 
   pid(): number {
@@ -305,6 +318,33 @@ describe("Runner session costs", () => {
 });
 
 describe("Runner turn settlement", () => {
+  it.each(["text_end", "tool_done"] as const)("a stray %s after a finished turn leaves the bot idle", async (type) => {
+    const h = harness();
+    const bot = newBot(h);
+    h.runner.submit(bot.id, "finish", []);
+    await waitFor(() => h.sessions[0]?.sent.length);
+    h.sessions[0].emit({ type: "turn_done", ok: true, error: null });
+    h.sessions[0].emit(type === "text_end" ? { type } : { type, id: "old-tool", ok: true });
+    expect(h.runner.toBot(getStoredBot(h.db, bot.id)).state).toBe("idle");
+  });
+
+  it("repeats a Stop once the pending send has reached the provider", async () => {
+    const session = new FakeSession();
+    let sent = (): void => {};
+    session.sendPromise = new Promise<void>((resolve) => { sent = resolve; });
+    const h = harness(() => session);
+    const bot = newBot(h);
+    const message = h.runner.submit(bot.id, "start", []);
+    await waitFor(() => session.sent.length);
+    await h.runner.stop(bot.id);
+    expect(session.interrupts).toBe(1);
+    sent();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(session.interrupts).toBe(2);
+    session.emit({ type: "turn_done", ok: false, error: null });
+    expect(itemForMessage(h.db, message.id).status).toBe("interrupted");
+  });
+
   it("restarts a failed resumed session fresh with a recap", async () => {
     const resumed = new FakeSession();
     const fresh = new FakeSession();
@@ -632,16 +672,101 @@ describe("Runner.start", () => {
 });
 
 describe("Runner bot deletion", () => {
+  it("clears text, activity, the last answer and Stop when a failed deletion restores work", async () => {
+    const ended: TurnResult[] = [];
+    const h = harness(undefined, true, { turnEnded: (_item, result) => ended.push(result) });
+    const bot = newBot(h);
+    const item = h.runner.deliver({ botId: bot.id, source: "routine", text: "complete this" });
+    await waitFor(() => h.sessions[0]?.sent.length);
+    const old = h.sessions[0];
+    old.emit({ type: "text", delta: "old answer" });
+    old.emit({ type: "text_end" });
+    old.emit({ type: "tool", id: "old", name: "Read", summary: "Read old.txt" });
+    old.emit({ type: "text", delta: "old partial" });
+    await h.runner.stop(bot.id);
+    await h.runner.closeForDeletion(bot.id);
+    h.runner.cancelDeletion(bot.id);
+    await waitFor(() => h.sessions[1]?.sent.length, 2_000);
+    const replacement = h.sessions[1];
+    replacement.emit({ type: "tool", id: "new", name: "Read", summary: "Read new.txt" });
+    replacement.emit({ type: "turn_done", ok: false, error: "new failure" });
+    expect(getWorkItem(h.db, item.id).status).toBe("failed");
+    expect(ended).toEqual([{ outcome: "failed", text: null, textMessageId: null, error: "new failure" }]);
+    const messages = history(h.db, bot.id, undefined, 20);
+    expect(messages.find((message) => message.body === "old partial")?.status).toBe("interrupted");
+    expect(messages.filter((message) => message.kind === "activity").map((message) => message.body)).toEqual(["1 step: Read old.txt", "1 step: Read new.txt"]);
+  });
+
+  it("waits for process exit and blocks every pump until deletion is cancelled", async () => {
+    const session = new FakeSession();
+    let exit = (): void => {};
+    session.exitPromise = new Promise<void>((resolve) => { exit = resolve; });
+    const h = harness(() => session);
+    const bot = newBot(h);
+    h.runner.submit(bot.id, "first", []);
+    await waitFor(() => session.sent.length);
+    let settled = false;
+    const closing = Promise.resolve(h.runner.closeForDeletion(bot.id)).then(() => { settled = true; });
+    h.runner.pump(bot.id);
+    h.runner.pumpAll();
+    h.runner.deliver({ botId: bot.id, source: "routine", text: "wait" });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(settled).toBe(false);
+    expect(h.sessions).toHaveLength(1);
+    exit();
+    await closing;
+    h.runner.pump(bot.id);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(h.sessions).toHaveLength(1);
+  });
+
+  it("closes a session again when startup succeeds after it was detached", async () => {
+    const session = new FakeSession();
+    let started = (): void => {};
+    session.startPromise = new Promise<void>((resolve) => { started = resolve; });
+    const h = harness(() => session);
+    const bot = newBot(h);
+    h.runner.submit(bot.id, "first", []);
+    await h.runner.closeForDeletion(bot.id);
+    expect(session.closeCalls).toBe(1);
+    started();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(session.closeCalls).toBe(2);
+    expect(session.sent).toEqual([]);
+  });
+
+  it("starts a tree kill synchronously for a busy session on shutdown", async () => {
+    cliMocks.killTree.mockClear();
+    const h = harness();
+    const bot = newBot(h);
+    h.runner.submit(bot.id, "running", []);
+    await waitFor(() => h.sessions[0]?.sent.length);
+    h.runner.shutdown();
+    expect(cliMocks.killTree).toHaveBeenCalledWith(4321);
+    expect(h.sessions[0].closed).toBe(true);
+  });
+
+  it("closes an idle session without a tree kill on shutdown", async () => {
+    cliMocks.killTree.mockClear();
+    const h = harness();
+    const bot = newBot(h);
+    h.runner.submit(bot.id, "finished", []);
+    await waitFor(() => h.sessions[0]?.sent.length);
+    h.sessions[0].emit({ type: "turn_done", ok: true, error: null });
+    h.runner.shutdown();
+    expect(cliMocks.killTree).not.toHaveBeenCalled();
+    expect(h.sessions[0].closed).toBe(true);
+  });
   it("keeps queued work unchanged while closing for deletion and pumps it after failure", async () => {
     const ended: WorkItem[] = [];
     const h = harness(undefined, true, { turnEnded: (item) => ended.push(item) });
     const bot = newBot(h);
     const item = enqueue(h.db, { botId: bot.id, source: "routine", text: "Queued routine" });
     const before = h.db.prepare("SELECT * FROM work_items WHERE bot_id = ?").all(bot.id);
-    h.runner.closeForDeletion(bot.id);
+    await h.runner.closeForDeletion(bot.id);
     expect(h.db.prepare("SELECT * FROM work_items WHERE bot_id = ?").all(bot.id)).toEqual(before);
     expect(ended).toEqual([]);
-    h.runner.pump(bot.id);
+    h.runner.cancelDeletion(bot.id);
     await waitFor(() => h.sessions[0]?.sent.length);
     expect(h.runner.currentWork(bot.id)?.id).toBe(item.id);
   });
@@ -666,11 +791,11 @@ describe("Runner bot deletion", () => {
     const item = h.runner.deliver({ botId: bot.id, source: "routine", text: "Active routine" });
     if (boundary === "send") await waitFor(() => oldSession.sent.length);
     const before = h.db.prepare("SELECT * FROM work_items WHERE bot_id = ?").all(bot.id);
-    h.runner.closeForDeletion(bot.id);
+    await h.runner.closeForDeletion(bot.id);
     expect(oldSession.closed).toBe(true);
     expect(h.db.prepare("SELECT * FROM work_items WHERE bot_id = ?").all(bot.id)).toEqual(before);
     expect(ended).toEqual([]);
-    h.runner.pump(bot.id);
+    h.runner.cancelDeletion(bot.id);
     await waitFor(() => replacement.sent.length);
     rejectPending(new Error("Old operation rejected after replacement"));
     oldSession.emit({ type: "exit", error: "Old exit" });
@@ -692,7 +817,7 @@ describe("Runner bot deletion", () => {
     const active = h.runner.deliver({ botId: bot.id, source: "routine", text: "Active routine" });
     await waitFor(() => h.sessions[0]?.sent.length);
     const queued = h.runner.deliver({ botId: bot.id, source: "routine", text: "Queued routine" });
-    h.runner.closeForDeletion(bot.id);
+    await h.runner.closeForDeletion(bot.id);
     h.db.prepare("DELETE FROM bots WHERE id = ?").run(bot.id);
     h.runner.forget(bot.id);
     h.runner.forget(bot.id);
@@ -714,12 +839,12 @@ describe("Runner bot deletion", () => {
     await waitFor(() => oldSession.sent.length);
     const steered = h.runner.submit(bot.id, "Still needed", []);
     await waitFor(() => oldSession.steered.length);
-    h.runner.closeForDeletion(bot.id);
+    await h.runner.closeForDeletion(bot.id);
     if (deleted) {
       h.db.prepare("DELETE FROM bots WHERE id = ?").run(bot.id);
       h.runner.forget(bot.id);
     } else {
-      h.runner.pump(bot.id);
+      h.runner.cancelDeletion(bot.id);
       await waitFor(() => replacement.steered.length);
       expect(replacement.steered).toEqual(["Still needed"]);
       expect(itemForMessage(h.db, steered.id).status).toBe("done");
@@ -750,9 +875,9 @@ describe("Runner bot deletion", () => {
     h.sessions[0].emit({ type: "approval", id: "old-provider-request", tool: "Write", summary: "Write notes", detail: "{}", rule: null });
     const added = h.events.find((event) => event.event === "approval.added");
     if (!added) throw new Error("Missing approval card");
-    h.runner.closeForDeletion(bot.id);
+    await h.runner.closeForDeletion(bot.id);
     expect(getMessage(h.db, added.data.messageId).data?.status).toBe("pending");
-    h.runner.pump(bot.id);
+    h.runner.cancelDeletion(bot.id);
     await waitFor(() => h.sessions[1]?.sent.length);
     expect(getMessage(h.db, added.data.messageId).data?.status).toBe("denied");
     expect(h.runner.toBot(getStoredBot(h.db, bot.id)).state).toBe("working");
@@ -1413,19 +1538,17 @@ describe("Runner session hooks", () => {
 });
 
 describe("Runner unexpected error boundaries", () => {
-  it("logs a rejected stopItem interrupt and can settle the turn afterwards", async () => {
-    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+  it("reports a rejected stopItem interrupt so its caller can clear the time limit", async () => {
     const failure = new Error("interrupt transport failed");
     const h = harness();
     const bot = newBot(h);
     const item = h.runner.deliver({ botId: bot.id, source: "routine", text: "run" });
     await waitFor(() => h.sessions[0]?.sent.length);
     h.sessions[0].interruptError = failure;
-    h.runner.stopItem(item.id, "Routine timed out.");
-    await waitFor(() => logged.mock.calls.some((call) => call.includes(failure)));
-    h.sessions[0].emit({ type: "exit", error: null });
-    expect(getWorkItem(h.db, item.id).status).toBe("interrupted");
-    expect(history(h.db, bot.id, undefined, 1)[0].body).toBe("Routine timed out.");
+    await expect(h.runner.stopItem(item.id, "Routine timed out.")).rejects.toThrow(failure);
+    h.sessions[0].emit({ type: "turn_done", ok: false, error: "The command failed." });
+    expect(getWorkItem(h.db, item.id).status).toBe("failed");
+    expect(history(h.db, bot.id, undefined, 1)[0].body).toBe("The command failed.");
     expect(h.runner.currentWork(bot.id)).toBeNull();
   });
 

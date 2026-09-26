@@ -6,6 +6,11 @@ import { dirname, join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 const childProcessMocks = vi.hoisted(() => ({ spawn: vi.fn() }));
+const cliMocks = vi.hoisted(() => ({ killTree: vi.fn() }));
+vi.mock("./cli.ts", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./cli.ts")>()),
+  killTree: cliMocks.killTree,
+}));
 
 vi.mock("node:child_process", async (importOriginal) => ({
   ...(await importOriginal<typeof import("node:child_process")>()),
@@ -13,12 +18,36 @@ vi.mock("node:child_process", async (importOriginal) => ({
 }));
 
 import type { StoredBot } from "./bots.ts";
-import { browserServer, findBrowser, showBrowser } from "./browser.ts";
+import { browserServer, closeBrowser, findBrowser, showBrowser } from "./browser.ts";
 
 const env = { ProgramFiles: "C:\\Program Files", "ProgramFiles(x86)": "C:\\Program Files (x86)", LOCALAPPDATA: "C:\\Users\\Thabo Mokoena\\AppData\\Local" };
-const bot = { homeFolder: "C:\\Users\\Thabo Mokoena\\AppData\\Local\\Tjommie\\bots\\b1", autonomy: "folder" } as StoredBot;
+const bot = { id: "b1", homeFolder: "C:\\Users\\Thabo Mokoena\\AppData\\Local\\Tjommie\\bots\\b1", autonomy: "folder" } as StoredBot;
 
 describe("browser", () => {
+  it("closes only the owned browser and waits for it to exit before deletion", async () => {
+    cliMocks.killTree.mockClear();
+    const owned = Object.assign(new EventEmitter(), { pid: 4123, unref: vi.fn() }) as unknown as ChildProcess;
+    const other = Object.assign(new EventEmitter(), { pid: 5678, unref: vi.fn() }) as unknown as ChildProcess;
+    childProcessMocks.spawn.mockReturnValueOnce(owned).mockReturnValueOnce(other);
+    const shown = showBrowser(bot);
+    owned.emit("spawn");
+    await shown;
+    const otherShown = showBrowser({ ...bot, id: "other" });
+    other.emit("spawn");
+    await otherShown;
+    let closed = false;
+    const closing = closeBrowser(bot.id).then(() => { closed = true; });
+    await Promise.resolve();
+    expect(cliMocks.killTree.mock.calls).toEqual([[4123]]);
+    expect(closed).toBe(false);
+    owned.emit("close", 0);
+    await closing;
+    cliMocks.killTree.mockClear();
+    await closeBrowser(bot.id);
+    expect(cliMocks.killTree).not.toHaveBeenCalled();
+    other.emit("close", 0);
+  });
+
   it("uses Chrome when it's installed, otherwise Edge", () => {
     expect(findBrowser((path) => path === "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe", env)).toEqual({
       channel: "chrome",
