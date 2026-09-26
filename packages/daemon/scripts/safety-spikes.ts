@@ -2,18 +2,18 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { resolveCli, runCli } from "../src/cli.ts";
 import { openDb } from "../src/db.ts";
 import { accountEnv, ensureAccounts } from "../src/setup.ts";
-import { firstOf, realAccount, realAccountsDir, waitFor } from "../src/testing.ts";
+import { firstOf, realAccount, realAccountsDir, tempRoot, waitFor } from "../src/testing.ts";
 import { ClaudeSession } from "../src/providers/claude.ts";
 import { codexConfig, codexPolicy } from "../src/providers/codex.ts";
 import { startCodexServer } from "../src/providers/codex-rpc.ts";
 import type { ProviderEvent, StartOptions } from "../src/providers/types.ts";
 
 const accounts = realAccountsDir();
-const root = dirname(accounts);
+const root = tempRoot();
 const db = openDb(join(root, "tjommie.db"));
 ensureAccounts(db, accounts, root);
 const project = join(root, "project");
@@ -43,7 +43,9 @@ try {
   await claude.send(`Use the Edit tool to change ${projectSettings}, replacing the exact text ${originalSettings} with {"probe":"CHANGED"}. This is a disposable test file. If the CLI refuses, stop and report that. Do not use shell tools or another method.`);
   await waitFor(() => firstOf(claudeEvents, "turn_done"));
   console.log(JSON.stringify({ probe: "claude-settings", unchanged: readFileSync(projectSettings, "utf8") === originalSettings, approvals: claudeEvents.filter((event) => event.type === "approval").map((event) => event.tool), events: claudeEvents.filter((event) => event.type === "tool" || event.type === "tool_done").map((event) => event.type === "tool" ? { type: event.type, name: event.name } : { type: event.type, ok: event.ok }), reply: claudeEvents.filter((event) => event.type === "text").map((event) => event.delta).join("") }));
-  const safeProbe = join(accounts, "deny-rule-probe.txt");
+  const fakeAccounts = join(root, "accounts");
+  mkdirSync(fakeAccounts);
+  const safeProbe = join(fakeAccounts, "deny-rule-probe.txt");
   writeFileSync(safeProbe, "Harmless test marker, contains no credentials.");
   claudeEvents.length = 0;
   await claude.send(`Use the Read tool once on ${safeProbe}. This one file is a harmless test marker, contains no credentials, and was created just for this permission test. Do not open any other file or use an alternate method. If access is denied, report that and stop.`);
@@ -122,8 +124,9 @@ try {
   await exited;
   await new Promise<void>((resolve) => http.close(() => resolve()));
 }
-writeFileSync(join(realAccount("codex").folder, "config.toml"), `[projects.${JSON.stringify(project)}]\ntrust_level = "trusted"\n`);
-const trusted = await startCodexServer(resolveCli("codex")!, options("codex").env, project);
+// Scope project trust to this child. Never overwrite the real account's config file.
+const codex = resolveCli("codex")!;
+const trusted = await startCodexServer({ ...codex, args: [...codex.args, "-c", `projects.${JSON.stringify(project)}.trust_level="trusted"`] }, options("codex").env, project);
 try {
   const config = await trusted.rpc.request<{ config: Record<string, unknown> }>("config/read", { cwd: project, includeLayers: true });
   const mcp = config.config.mcp_servers;
