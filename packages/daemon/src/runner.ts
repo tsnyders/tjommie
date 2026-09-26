@@ -127,7 +127,7 @@ export class Runner {
     if (this.#recovered) return;
     this.#ready = false;
     for (const item of recoverAfterRestart(this.#db)) {
-      if (item.messageId) this.#emitMessage(updateMessage(this.#db, item.messageId, { status: "interrupted" }));
+      this.#setChatMessageStatus(item, "interrupted");
       this.#notice(item.conversationId, "error", RESTARTED, retryData(item));
       this.#safely(() => this.#hooks.turnEnded?.(item, { outcome: "failed", text: null, textMessageId: null, error: RESTARTED }));
     }
@@ -217,8 +217,11 @@ export class Runner {
     if (previous.status !== "failed" && previous.status !== "interrupted") {
       throw new RpcError("bad_state", "Only failed or interrupted work can be retried");
     }
-    if (previous.source === "routine" && this.#hooks.retryRoutine) return this.#hooks.retryRoutine(getMessage(this.#db, messageId));
-    this.#emitMessage(updateMessage(this.#db, messageId, { status: "queued" }));
+    if (previous.source === "routine") {
+      if (!this.#hooks.retryRoutine) throw new RpcError("bad_state", "Routine retry is unavailable");
+      return this.#hooks.retryRoutine(getMessage(this.#db, messageId));
+    }
+    this.#setChatMessageStatus(previous, "queued");
     this.deliver({ botId: previous.botId, source: previous.source, text: previous.text, messageId, conversationId: previous.conversationId, exchangeId: previous.exchangeId, chainId: newChain(this.#db) });
     return getMessage(this.#db, messageId);
   }
@@ -319,7 +322,8 @@ export class Runner {
         live.busy = false;
       }
     }
-    if (this.toBot(bot).state !== "idle") {
+    // A routine proposal changes the displayed state, but does not block work.
+    if (!this.#isSignedIn(bot.provider) || bot.paused || (bot.limitedUntil !== null && bot.limitedUntil > nowIso()) || live.approvals.size > 0 || live.busy) {
       this.#armIdle(botId, live);
       this.#emitBot(botId);
       return;
@@ -341,7 +345,7 @@ export class Runner {
       live.idleTimer = null;
     }
     setStatus(this.#db, item.id, "running");
-    if (item.messageId) this.#emitMessage(updateMessage(this.#db, item.messageId, { status: "sent" }));
+    this.#setChatMessageStatus(item, "sent");
     this.#emitBot(botId);
     this.#safely(() => this.#hooks.turnStarted?.(item));
     this.#launchTurn(bot, item, live);
@@ -504,7 +508,7 @@ export class Runner {
           setStatus(this.#db, item.id, "queued"); // it runs as the next turn instead
           break;
         }
-        if (item.messageId) this.#emitMessage(updateMessage(this.#db, item.messageId, { status: "sent" }));
+        this.#setChatMessageStatus(item, "sent");
       }
     } finally {
       live.steering = false;
@@ -658,7 +662,12 @@ export class Runner {
 
   #showApprovalStatus(approval: Approval): void {
     const message = getMessage(this.#db, approval.messageId);
-    this.#emitMessage(updateMessage(this.#db, message.id, { data: { ...ApprovalData.parse(message.data), status: approval.status } satisfies ApprovalData }));
+    const parsed = ApprovalData.safeParse(message.data);
+    // Preserve a damaged card's fields without letting it interrupt turn cleanup.
+    const data = parsed.success
+      ? { ...parsed.data, status: approval.status } satisfies ApprovalData
+      : { ...message.data, status: approval.status };
+    this.#emitMessage(updateMessage(this.#db, message.id, { data }));
     this.#broadcast("approval.resolved", approval);
   }
 
@@ -732,7 +741,7 @@ export class Runner {
     const requeued = live.limitHit && !ok && !live.stopRequested;
     if (item && requeued) {
       setStatus(this.#db, item.id, "queued"); // runs again once the limit resets
-      if (item.messageId) this.#emitMessage(updateMessage(this.#db, item.messageId, { status: "queued" }));
+      this.#setChatMessageStatus(item, "queued");
     } else if (item) {
       setStatus(this.#db, item.id, outcome);
       if (outcome === "interrupted") this.#notice(conversationId, "notice", live.stopNotice ?? "Stopped.", null);
@@ -814,6 +823,13 @@ export class Runner {
       if (!live.busy) this.#closeSession(botId, live);
     }, IDLE_SHUTDOWN_MS);
     live.idleTimer.unref();
+  }
+
+  #setChatMessageStatus(item: WorkItem, status: Message["status"]): void {
+    if (!item.messageId || item.conversationId !== item.botId) return;
+    const message = getMessage(this.#db, item.messageId);
+    if (message.conversationId !== item.botId || message.author !== "you" || message.kind !== "text") return;
+    this.#emitMessage(updateMessage(this.#db, message.id, { status }));
   }
 
   #notice(conversationId: string, kind: "notice" | "error", body: string, data: ErrorData | null): void {

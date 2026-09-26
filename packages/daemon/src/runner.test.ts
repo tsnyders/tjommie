@@ -3,8 +3,8 @@ import { join } from "node:path";
 import type { BotInput, EventData, EventName } from "@tjommie/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApproval } from "./approvals.ts";
-import { createBot, getStoredBot } from "./bots.ts";
-import { addMessage, getMessage, history } from "./chat.ts";
+import { createBot, getStoredBot, setLimitedUntil } from "./bots.ts";
+import { addMessage, getMessage, history, updateMessage } from "./chat.ts";
 import { openDb, type Db } from "./db.ts";
 import { McpTokens } from "./mcp.ts";
 import type { ProviderEvent, ProviderSession, StartOptions } from "./providers/types.ts";
@@ -562,6 +562,28 @@ describe("Runner idle shutdown", () => {
 });
 
 describe("Runner approvals", () => {
+  it.each([null, { corrupt: "missing approval fields" }])("finishes and continues queued work when an approval card is malformed (%j)", async (data) => {
+    const h = harness();
+    const bot = newBot(h);
+    const first = h.runner.submit(bot.id, "First", []);
+    await waitFor(() => h.sessions[0]?.sent.length);
+    const session = h.sessions[0];
+    session.emit({ type: "approval", id: "corrupted-card", tool: "Write", summary: "Write file", detail: "{}", rule: null });
+    const added = h.events.find((event) => event.event === "approval.added");
+    if (!added) throw new Error("Missing approval");
+    updateMessage(h.db, added.data.messageId, { data });
+    const next = h.runner.deliver({ botId: bot.id, source: "room", conversationId: "team", text: "Next turn" });
+
+    expect(() => session.emit({ type: "turn_done", ok: true, error: null })).not.toThrow();
+    await waitFor(() => session.sent.length === 2);
+    expect(itemForMessage(h.db, first.id).status).toBe("done");
+    expect(h.runner.currentWork(bot.id)?.id).toBe(next.id);
+    expect(getMessage(h.db, added.data.messageId).data).toEqual({ ...data, status: "denied" });
+    expect(h.events).toContainEqual({ event: "approval.resolved", data: expect.objectContaining({ id: added.data.id, status: "denied" }) });
+    session.emit({ type: "turn_done", ok: true, error: null });
+    expect(h.runner.toBot(getStoredBot(h.db, bot.id)).state).toBe("idle");
+  });
+
   it("updates the card and broadcasts the resolved approval when answered", async () => {
     const session = new FakeSession();
     const h = harness(() => session);
@@ -601,6 +623,62 @@ describe("Runner approvals", () => {
     expect(getMessage(h.db, card.id).data?.status).toBe("denied");
     expect(h.events.some((event) => event.event === "message.updated" && event.data.id === card.id && event.data.data?.status === "denied")).toBe(true);
     expect(h.events.some((event) => event.event === "approval.resolved" && event.data.id === "a-restart" && event.data.status === "denied")).toBe(true);
+  });
+});
+
+describe("Runner linked messages", () => {
+  it.each(["room", "routine"] as const)("keeps the linked %s message done through start, limit requeue and recovery", async (source) => {
+    const h = harness();
+    const bot = newBot(h);
+    const conversationId = source === "room" ? "team" : bot.id;
+    const linked = addMessage(h.db, {
+      conversationId, author: source === "room" ? "you" : "system",
+      kind: source === "room" ? "text" : "routine", body: "Linked message", status: "done",
+      data: source === "routine" ? { routineId: "routine", runId: "run", status: "queued", note: null } : null,
+    });
+    const item = h.runner.deliver({ botId: bot.id, source, conversationId, text: "Run", messageId: linked.id });
+    await waitFor(() => h.sessions[0]?.sent.length);
+    expect(getMessage(h.db, linked.id).status).toBe("done");
+    const session = h.sessions[0];
+    session.emit({ type: "limit", state: "reached", usedPercent: 100, resetsAt: "2099-09-25T10:00:00.000Z" });
+    session.emit({ type: "turn_done", ok: false, error: "Limited" });
+    expect(getWorkItem(h.db, item.id).status).toBe("queued");
+    expect(getMessage(h.db, linked.id).status).toBe("done");
+    setLimitedUntil(h.db, bot.id, null);
+    h.runner.pump(bot.id);
+    await waitFor(() => session.sent.length === 2);
+    h.runner.shutdown();
+    const restarted = new Runner({ db: h.db, broadcast: () => {}, isSignedIn: () => true });
+    runners.push(restarted);
+    restarted.recover();
+    expect(getWorkItem(h.db, item.id).status).toBe("interrupted");
+    expect(getMessage(h.db, linked.id)).toEqual(linked);
+    expect(h.events.filter((event) => event.event === "message.updated" && event.data.id === linked.id)).toEqual([]);
+  });
+
+  it("keeps a bot reply's linked message done when steering", async () => {
+    const h = harness();
+    const bot = newBot(h);
+    h.runner.submit(bot.id, "Start", []);
+    await waitFor(() => h.sessions[0]?.sent.length);
+    const linked = addMessage(h.db, { conversationId: bot.id, author: bot.id, kind: "text", body: "Reply", status: "done" });
+    h.runner.deliver({ botId: bot.id, source: "bot_reply", text: "Reply", messageId: linked.id });
+    await waitFor(() => h.sessions[0].steered.length);
+    expect(getMessage(h.db, linked.id)).toEqual(linked);
+  });
+
+  it("refuses a routine retry without a scheduler hook before changing anything", () => {
+    const h = harness(undefined, false);
+    const bot = newBot(h);
+    const label = addMessage(h.db, { conversationId: bot.id, author: "system", kind: "routine", body: "Routine: Check", data: { routineId: "routine", runId: "run", status: "failed", note: "Failed" }, status: "done" });
+    const item = enqueue(h.db, { botId: bot.id, source: "routine", text: "Check", messageId: label.id, routineRunId: "run" });
+    setStatus(h.db, item.id, "failed");
+    const deliver = vi.spyOn(h.runner, "deliver");
+    expect(() => h.runner.retry(label.id)).toThrow(expect.objectContaining({ code: "bad_state", message: "Routine retry is unavailable" }));
+    expect(deliver).not.toHaveBeenCalled();
+    expect(getMessage(h.db, label.id)).toEqual(label);
+    expect(h.db.prepare("SELECT COUNT(*) AS n FROM work_items").get()).toEqual({ n: 1 });
+    expect(h.db.prepare("SELECT COUNT(*) AS n FROM chains").get()).toEqual({ n: 0 });
   });
 });
 
@@ -899,11 +977,12 @@ describe("Runner destinations and delivery", () => {
   it("retry preserves the prior destination and routes through delivery", async () => {
     const h = harness();
     const bot = newBot(h);
-    const message = addMessage(h.db, { conversationId: "team", author: "you", kind: "text", body: "room retry", status: "failed" });
+    const message = addMessage(h.db, { conversationId: "team", author: "you", kind: "text", body: "room retry", status: "done" });
     const failed = enqueue(h.db, { botId: bot.id, source: "room", text: "room retry", conversationId: "team", messageId: message.id });
     setStatus(h.db, failed.id, "failed");
     h.runner.retry(message.id);
     await waitFor(() => h.sessions[0]?.sent.length);
+    expect(getMessage(h.db, message.id)).toEqual(message);
     expect(h.runner.currentWork(bot.id)).toMatchObject({ conversationId: "team", source: "room", messageId: message.id });
     h.sessions[0].emit({ type: "text", delta: "ROOM" });
     h.sessions[0].emit({ type: "turn_done", ok: true, error: null });
@@ -985,7 +1064,7 @@ describe("Runner steering boundaries", () => {
     const chat = h.runner.submit(bot.id, "chat waits", []);
     const replyElsewhere = h.runner.deliver({ botId: bot.id, source: "bot_reply", text: "other reply waits", conversationId: bot.id });
     const reply = h.runner.deliver({ botId: bot.id, source: "bot_reply", text: "reply now", conversationId: "team" });
-    const message = addMessage(h.db, { conversationId: "team", author: "you", kind: "text", body: "steer now", status: "queued" });
+    const message = addMessage(h.db, { conversationId: "team", author: "you", kind: "text", body: "steer now", status: "done" });
     const yours = h.runner.deliver({ botId: bot.id, source: "you", text: "steer now", conversationId: "team", messageId: message.id });
     expect(session.steered).toEqual([]);
     releaseSend();
@@ -993,7 +1072,7 @@ describe("Runner steering boundaries", () => {
     expect(session.steered).toEqual(["reply now", "steer now"]);
     expect(getWorkItem(h.db, reply.id).status).toBe("done");
     expect(getWorkItem(h.db, yours.id).status).toBe("done");
-    expect(getMessage(h.db, message.id).status).toBe("sent");
+    expect(getMessage(h.db, message.id).status).toBe("done");
     for (const item of [room, request, routine, replyElsewhere]) expect(getWorkItem(h.db, item.id).status).toBe("queued");
     expect(getMessage(h.db, chat.id).status).toBe("queued");
     expect(h.runner.currentWork(bot.id)?.id).toBe(running.id);
