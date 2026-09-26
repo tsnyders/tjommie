@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Bot, BotInput, BotPatch } from "@tjommie/protocol";
 import { newId, nowIso, transaction, type Db } from "./db.ts";
@@ -125,6 +125,35 @@ export function deleteBot(db: Db, id: string): void {
       // The bot is deleted. Never restore a folder after a partial recursive removal.
       console.error("Could not finish removing a deleted bot folder.", error);
     }
+  }
+}
+
+// Retry folders left behind after a committed deletion. A crash before the row was
+// deleted can leave the same rename behind, so never remove a live bot's folder.
+export function sweepDeletedBotFolders(db: Db, botsDir: string): void {
+  if (!existsSync(botsDir)) return;
+  try {
+    const live = db.prepare("SELECT id, home_folder FROM bots").all() as { id: string; home_folder: string }[];
+    const ids = new Set(live.map((bot) => bot.id.toLowerCase()));
+    const pathKey = (path: string) => process.platform === "win32" ? resolve(path).toLowerCase() : resolve(path);
+    const homes = live.map((bot) => pathKey(bot.home_folder));
+    const pattern = /^([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\.deleting-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
+    for (const entry of readdirSync(botsDir, { withFileTypes: true })) {
+      const match = pattern.exec(entry.name);
+      // Directory links are not deletion leftovers. rmSync also unlinks nested
+      // junctions without following their targets when removing a real folder.
+      if (!entry.isDirectory() || !match || ids.has(match[1].toLowerCase())) continue;
+      const folder = join(botsDir, entry.name);
+      const candidate = pathKey(folder);
+      if (homes.some((home) => home === candidate || home.startsWith(`${candidate}${sep}`))) continue;
+      try {
+        rmSync(folder, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+      } catch (error) {
+        console.error("Could not finish removing a deleted bot folder.", error);
+      }
+    }
+  } catch (error) {
+    console.error("Could not check for deleted bot folders.", error);
   }
 }
 

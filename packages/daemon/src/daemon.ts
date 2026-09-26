@@ -1,6 +1,6 @@
 import { TEAM_ROOM_ID, type ProviderSetup } from "@tjommie/protocol";
 import { getApproval } from "./approvals.ts";
-import { createBot, deleteBot, getStoredBot, listStoredBots, setPaused, updateBot } from "./bots.ts";
+import { createBot, deleteBot, getStoredBot, listStoredBots, setPaused, sweepDeletedBotFolders, updateBot } from "./bots.ts";
 import { browserServer, showBrowser } from "./browser.ts";
 import { history } from "./chat.ts";
 import { openDb } from "./db.ts";
@@ -202,6 +202,7 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
     },
   };
 
+  sweepDeletedBotFolders(db, paths.bots);
   team.start();
   runner.recover(); // Synchronous after binding, before setup yields or requests can be served.
   setup = await checkSetup(db);

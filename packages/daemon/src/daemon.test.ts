@@ -7,7 +7,7 @@ import { createBot, getStoredBot, setLimitedUntil } from "./bots.ts";
 import { showBrowser } from "./browser.ts";
 import { connect, type Client } from "./client.ts";
 import { startDaemon, type Daemon } from "./daemon.ts";
-import { openDb, type Db } from "./db.ts";
+import { newId, openDb, type Db } from "./db.ts";
 import { dataPaths } from "./paths.ts";
 import type { ProviderEvent, ProviderSession, StartOptions } from "./providers/types.ts";
 import { enqueue, getWorkItem, newChain, setStatus } from "./queue.ts";
@@ -258,6 +258,8 @@ it("recovers an interrupted routine and sweeps stale shares before starting queu
   const queued = enqueue(db, { botId: bot.id, source: "you", text: "Queued", chainId: newChain(db) });
   const stale = join(root, "shared-files", "share-old");
   mkdirSync(stale, { recursive: true });
+  const deleted = join(paths.bots, `${newId()}.deleting-${newId()}`);
+  mkdirSync(deleted);
   const old = new Date(Date.now() - 25 * 60 * 60_000);
   utimesSync(stale, old, old);
   const listen = serverModule.startServer;
@@ -267,6 +269,7 @@ it("recovers an interrupted routine and sweeps stale shares before starting queu
     expect(getRun(db, run.id)?.status).toBe("running");
     expect(getWorkItem(db, queued.id).status).toBe("queued");
     expect(existsSync(stale)).toBe(true);
+    expect(existsSync(deleted)).toBe(true);
     return listen(options);
   });
   const { sessions } = await harness(root);
@@ -277,6 +280,7 @@ it("recovers an interrupted routine and sweeps stale shares before starting queu
   expect(getWorkItem(db, queued.id).status).toBe("running");
   expect(appServer(sessions[0].options).url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/mcp$/);
   expect(existsSync(stale)).toBe(false);
+  expect(existsSync(deleted)).toBe(false);
 });
 
 it("leaves the live daemon's work, approvals and streaming messages untouched on a second start", async () => {
@@ -293,12 +297,15 @@ it("leaves the live daemon's work, approvals and streaming messages untouched on
   expect(before.work).toMatchObject([{ status: "running" }]);
   expect(before.approvals).toMatchObject([{ status: "pending" }]);
   expect(before.messages.some((row) => row.status === "streaming")).toBe(true);
+  const deleted = join(dataPaths(root).bots, `${newId()}.deleting-${newId()}`);
+  mkdirSync(deleted);
   vi.mocked(checkSetup).mockClear();
   await expect(startDaemon({ root, port: daemon.port })).rejects.toMatchObject({ code: "EADDRINUSE" });
   expect(db.prepare("SELECT * FROM work_items").all()).toEqual(before.work);
   expect(db.prepare("SELECT * FROM approvals").all()).toEqual(before.approvals);
   expect(db.prepare("SELECT * FROM messages").all()).toEqual(before.messages);
   expect(checkSetup).not.toHaveBeenCalled();
+  expect(existsSync(deleted)).toBe(true);
 });
 
 it.each(["", "0", "1"])("allows the dev origin only with TJOMMIE_DEV=1 (%s)", async (dev) => {

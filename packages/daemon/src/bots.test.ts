@@ -1,8 +1,8 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { botPrompt, createBot, deleteBot, getStoredBot, listStoredBots, setPaused, updateBot } from "./bots.ts";
-import { openDb, type Db } from "./db.ts";
+import { botPrompt, createBot, deleteBot, getStoredBot, listStoredBots, setPaused, sweepDeletedBotFolders, updateBot } from "./bots.ts";
+import { newId, openDb, type Db } from "./db.ts";
 import { RpcError } from "./server.ts";
 import { tempRoot } from "./testing.ts";
 
@@ -197,9 +197,72 @@ describe("bots store", () => {
       expect(existsSync(bot.homeFolder)).toBe(false);
       expect(listStoredBots(db)).toEqual([]);
       expect(logged).toHaveBeenCalledWith("Could not finish removing a deleted bot folder.", expect.any(Error));
+      const leftover = readdirSync(botsDir).find((name) => name.startsWith(`${bot.id}.deleting-`));
+      expect(leftover).toBeDefined();
+      sweepDeletedBotFolders(db, botsDir);
+      expect(readdirSync(botsDir)).toEqual([]);
     } finally {
       logged.mockRestore();
     }
+  });
+
+  it("logs leftover cleanup failures and retries them on the next sweep", () => {
+    mkdirSync(botsDir);
+    const folders = [join(botsDir, `${newId()}.deleting-${newId()}`), join(botsDir, `${newId()}.deleting-${newId()}`)];
+    for (const folder of folders) mkdirSync(folder);
+    const error = new Error("Still locked");
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(rmSync).mockImplementationOnce(() => { throw error; });
+    try {
+      expect(() => sweepDeletedBotFolders(db, botsDir)).not.toThrow();
+      expect(folders.filter(existsSync)).toHaveLength(1);
+      expect(logged).toHaveBeenCalledWith("Could not finish removing a deleted bot folder.", error);
+      sweepDeletedBotFolders(db, botsDir);
+      expect(folders.some(existsSync)).toBe(false);
+    } finally {
+      logged.mockRestore();
+    }
+  });
+
+  it("preserves live bot folders and unrelated entries during leftover cleanup", () => {
+    const bot = createBot(db, botsDir, input);
+    const liveRename = `${bot.homeFolder}.deleting-${newId()}`;
+    renameSync(bot.homeFolder, liveRename);
+    const unrelated = join(botsDir, "notes.deleting-keep");
+    mkdirSync(unrelated);
+    const ordinary = join(botsDir, "other-folder");
+    mkdirSync(ordinary);
+    const file = join(botsDir, `${newId()}.deleting-${newId()}`);
+    writeFileSync(file, "Keep file");
+    sweepDeletedBotFolders(db, botsDir);
+    expect(getStoredBot(db, bot.id)).toEqual(bot);
+    expect(readFileSync(join(liveRename, "notes.md"), "utf8")).toContain("Researcher");
+    expect([unrelated, ordinary, file].every(existsSync)).toBe(true);
+  });
+
+  it("keeps a registered live home even when its name looks like another bot's deletion leftover", () => {
+    const bot = createBot(db, botsDir, input);
+    const home = join(botsDir, `${newId()}.deleting-${newId()}`);
+    renameSync(bot.homeFolder, home);
+    db.prepare("UPDATE bots SET home_folder = ? WHERE id = ?").run(home, bot.id);
+    sweepDeletedBotFolders(db, botsDir);
+    expect(readFileSync(join(home, "notes.md"), "utf8")).toContain("Researcher");
+  });
+
+  it("never removes junction targets while sweeping a deleted bot's folder", () => {
+    mkdirSync(botsDir);
+    const outside = join(root, "outside");
+    mkdirSync(outside);
+    writeFileSync(join(outside, "keep.txt"), "Do not remove");
+    const leftover = join(botsDir, `${newId()}.deleting-${newId()}`);
+    mkdirSync(leftover);
+    symlinkSync(outside, join(leftover, "link"), "junction");
+    const linkedEntry = join(botsDir, `${newId()}.deleting-${newId()}`);
+    symlinkSync(outside, linkedEntry, "junction");
+    sweepDeletedBotFolders(db, botsDir);
+    expect(existsSync(leftover)).toBe(false);
+    expect(existsSync(linkedEntry)).toBe(true);
+    expect(readFileSync(join(outside, "keep.txt"), "utf8")).toBe("Do not remove");
   });
 
   it("rejects the data root and its ancestors on create and update", () => {
