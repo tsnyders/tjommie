@@ -1,7 +1,7 @@
 import type { Autonomy } from "@tjommie/protocol";
 import type { CliCommand } from "../cli.ts";
 import { RpcRemoteError, startCodexServer, type CodexServer, type JsonRpcLines } from "./codex-rpc.ts";
-import { mapCodexElicitation, mapCodexNotification, mapCodexRequest } from "./codex-parse.ts";
+import { isCodexMcpToolCall, mapCodexElicitation, mapCodexNotification, mapCodexRequest } from "./codex-parse.ts";
 import type { ApprovalAnswer, ProviderEvent, ProviderSession, StartOptions } from "./types.ts";
 
 type Policy = { approvalPolicy: "untrusted" | "on-request" | "never"; sandbox: "read-only" | "workspace-write" | "danger-full-access" };
@@ -173,18 +173,22 @@ export class CodexSession implements ProviderSession {
   // Codex asks before every MCP tool call. Tjommie's own servers marked autoAllow are answered at once; other
   // tool calls become approval cards. Any other question from an MCP server is declined.
   #onElicitation(rpc: JsonRpcLines, id: number | string, params: unknown): void {
-    if (!isRecord(params) || typeof params.serverName !== "string") {
+    if (!isCodexMcpToolCall(params)) {
       rpc.respond(id, { action: "decline" });
       return;
     }
     const server = this.#options.mcpServers.find((candidate) => candidate.name === params.serverName);
-    const approval = mapCodexElicitation(id, params);
-    if (!server || !approval) {
+    if (!server) {
       rpc.respond(id, { action: "decline" });
       return;
     }
     if (server.autoAllow) {
       rpc.respond(id, { action: "accept" });
+      return;
+    }
+    const approval = mapCodexElicitation(id, params);
+    if (!approval) {
+      rpc.respond(id, { action: "decline" });
       return;
     }
     this.#approvals.set(approval.id, { rpcId: id, answers: "action" });
