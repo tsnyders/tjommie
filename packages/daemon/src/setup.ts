@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import type { ModelInfo, Provider, ProviderSetup } from "@tjommie/protocol";
 import { cliEnv, openConsole, openUrl, resolveCli, runCli } from "./cli.ts";
 import { nowIso, type Db } from "./db.ts";
@@ -45,11 +45,39 @@ function hardenClaudeSettings(folder: string, dataRoot: string): void {
   const parsed = readClaudeSettings(file);
   if (!parsed) return;
   const { settings, permissions, existing } = parsed;
-  // Claude matches absolute Windows paths as POSIX drive paths, prefixed with //.
-  const root = resolve(dataRoot).replace(/\\/g, "/").replace(/^([A-Za-z]):/, (_match, drive: string) => `/${drive.toLowerCase()}`);
-  const deny = [...new Set([...existing, "Edit(**/.claude/**)", "Write(**/.claude/**)", `Read(/${root}/accounts/**)`, `Read(/${root}/daemon-token)`, `Read(/${root}/tjommie.db*)`])];
+  const stale = staleClaudeReadRules(existing);
+  const deny = [...new Set([...existing.filter((rule) => !stale.has(rule)), "Edit(**/.claude/**)", "Write(**/.claude/**)", ...claudeReadRules(dataRoot)])];
   if (existing.length === deny.length && existing.every((rule, index) => rule === deny[index])) return;
   writeFileSync(file, `${JSON.stringify({ ...settings, permissions: { ...permissions, deny } }, null, 2)}\n`, { mode: 0o600 });
+}
+
+function claudeReadRules(dataRoot: string): string[] {
+  // Claude matches absolute Windows paths as POSIX drive paths, prefixed with //.
+  const root = resolve(dataRoot).replace(/\\/g, "/").replace(/^([A-Za-z]):/, (_match, drive: string) => `/${drive.toLowerCase()}`);
+  return [`Read(/${root}/accounts/**)`, `Read(/${root}/daemon-token)`, `Read(/${root}/tjommie.db*)`];
+}
+
+function staleClaudeReadRules(existing: string[]): Set<string> {
+  const rules = new Set(existing);
+  const checked = new Set<string>();
+  const stale = new Set<string>();
+  for (const rule of rules) {
+    const root = /^Read\((\/\/.+)\/(?:accounts\/\*\*|daemon-token|tjommie\.db\*)\)$/.exec(rule)?.[1];
+    if (!root || /[*?\[\]{}]/.test(root) || checked.has(root)) continue;
+    checked.add(root);
+    const folder = process.platform === "win32" ? root.slice(1).replace(/^\/([a-z])(?=\/|$)/, "$1:") : root.slice(1);
+    if (!isAbsolute(folder)) continue;
+    const managed = claudeReadRules(folder);
+    // Tjommie always writes this exact group together. Preserve partial groups and user globs.
+    if (!managed.includes(rule) || !managed.every((entry) => rules.has(entry))) continue;
+    try {
+      lstatSync(folder);
+    } catch (error) {
+      // Keep live roots, links and uncertain states such as access denied.
+      if (isRecord(error) && error.code === "ENOENT") for (const entry of managed) stale.add(entry);
+    }
+  }
+  return stale;
 }
 
 function readClaudeSettings(file: string): { settings: Record<string, unknown>; permissions: Record<string, unknown>; existing: string[] } | null {
