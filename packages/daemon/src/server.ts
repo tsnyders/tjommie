@@ -1,5 +1,5 @@
 import { timingSafeEqual } from "node:crypto";
-import { createServer, type IncomingMessage } from "node:http";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
 import { ZodError } from "zod";
 import {
@@ -25,16 +25,38 @@ export class RpcError extends Error {
 export type Handlers = { [M in MethodName]?: (params: ParamsOut<M>) => Result<M> | Promise<Result<M>> };
 export type Broadcast = <E extends EventName>(event: E, data: EventData<E>) => void;
 export type Server = { port: number; broadcast: Broadcast; close: () => Promise<void> };
+// An extra HTTP endpoint, such as the app's MCP server at /mcp.
+export type Route = (req: IncomingMessage, res: ServerResponse) => void | Promise<void>;
 
 const HELLO_TIMEOUT_MS = 5000;
 
-export async function startServer(opts: { port: number; token: string; handlers: Handlers; allowedOrigins: string[] }): Promise<Server> {
+export async function startServer(opts: {
+  port: number;
+  token: string;
+  handlers: Handlers;
+  allowedOrigins: string[];
+  routes?: Record<string, Route>;
+}): Promise<Server> {
   const clients = new Set<WebSocket>();
   let port = opts.port;
 
   const http = createServer((req, res) => {
     if (req.url === "/health") {
       res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true, protocol: PROTOCOL_VERSION }));
+      return;
+    }
+    const route = opts.routes?.[(req.url ?? "").split("?")[0]];
+    if (route) {
+      // Only programs on this machine: browsers always send an Origin header, the CLIs never do.
+      if (!isLocalHost(req, port) || req.headers.origin !== undefined) {
+        res.writeHead(403).end();
+        return;
+      }
+      Promise.resolve().then(() => route(req, res)).catch((error: unknown) => {
+        console.error(error);
+        if (!res.headersSent) res.writeHead(500);
+        res.end();
+      });
       return;
     }
     res.writeHead(404).end();
