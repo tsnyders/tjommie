@@ -25,7 +25,9 @@ class FakeSession implements ProviderSession {
   answers: { id: string; answer: "once" | "always" | "deny" }[] = [];
   interrupts = 0;
   closed = false;
+  closeError: Error | null = null;
   steerResult = true;
+  steerPromise: Promise<boolean> | null = null;
   steerError: Error | null = null;
   interruptError: Error | null = null;
 
@@ -41,6 +43,7 @@ class FakeSession implements ProviderSession {
   async steer(text: string): Promise<boolean> {
     this.steered.push(text);
     if (this.steerError) throw this.steerError;
+    if (this.steerPromise) return this.steerPromise;
     return this.steerResult;
   }
 
@@ -55,6 +58,7 @@ class FakeSession implements ProviderSession {
 
   close(): void {
     this.closed = true;
+    if (this.closeError) throw this.closeError;
   }
 
   pid(): number {
@@ -590,6 +594,27 @@ describe("Runner approvals", () => {
 });
 
 describe("Runner.start", () => {
+  it("recovers before listening and holds work delivered by recovery hooks until start", async () => {
+    let runner: Runner | undefined;
+    const h = harness(undefined, true, {
+      turnEnded: (item) => runner?.deliver({ botId: item.botId, source: "bot_reply", text: "Recovery reply" }),
+    });
+    runner = h.runner;
+    const bot = newBot(h);
+    const interrupted = enqueue(h.db, { botId: bot.id, source: "routine", text: "Interrupted routine" });
+    setStatus(h.db, interrupted.id, "running");
+
+    h.runner.recover();
+    h.runner.pumpAll();
+    expect(getWorkItem(h.db, interrupted.id).status).toBe("interrupted");
+    expect(h.sessions).toEqual([]);
+    h.runner.start();
+    await waitFor(() => h.sessions[0]?.sent.length);
+    expect(h.sessions).toHaveLength(1);
+    expect(h.sessions[0].sent[0]).toContain("Recovery reply");
+    expect(getWorkItem(h.db, interrupted.id).status).toBe("interrupted");
+  });
+
   it("reports a turn a restart cut off to the hooks, and says so where the turn was writing", () => {
     const root = tempRoot();
     const db = openDb(join(root, "t.db"));
@@ -603,6 +628,153 @@ describe("Runner.start", () => {
     expect(ended).toEqual([[item.id, { outcome: "failed", text: null, textMessageId: null, error: "Tjommie restarted while this was running." }]]);
     expect(history(db, "team", undefined, 1)[0]).toMatchObject({ author: "system", kind: "error", body: "Tjommie restarted while this was running." });
     runner.shutdown();
+  });
+});
+
+describe("Runner bot deletion", () => {
+  it("keeps queued work unchanged while closing for deletion and pumps it after failure", async () => {
+    const ended: WorkItem[] = [];
+    const h = harness(undefined, true, { turnEnded: (item) => ended.push(item) });
+    const bot = newBot(h);
+    const item = enqueue(h.db, { botId: bot.id, source: "routine", text: "Queued routine" });
+    const before = h.db.prepare("SELECT * FROM work_items WHERE bot_id = ?").all(bot.id);
+    h.runner.closeForDeletion(bot.id);
+    expect(h.db.prepare("SELECT * FROM work_items WHERE bot_id = ?").all(bot.id)).toEqual(before);
+    expect(ended).toEqual([]);
+    h.runner.pump(bot.id);
+    await waitFor(() => h.sessions[0]?.sent.length);
+    expect(h.runner.currentWork(bot.id)?.id).toBe(item.id);
+  });
+
+  it.each(["start", "send"] as const)("restarts active work after failed deletion and ignores late %s rejection", async (boundary) => {
+    let rejectPending: (error: Error) => void = () => { throw new Error("No pending operation"); };
+    const pending = new Promise<void>((_resolve, reject) => { rejectPending = reject; });
+    const oldSession = new FakeSession();
+    if (boundary === "start") oldSession.startPromise = pending;
+    else oldSession.sendPromise = pending;
+    const replacement = new FakeSession();
+    let calls = 0;
+    const ended: WorkItem[] = [];
+    const started: WorkItem[] = [];
+    const requeued: WorkItem[] = [];
+    const h = harness(() => calls++ === 0 ? oldSession : replacement, true, {
+      turnStarted: (item) => started.push(item),
+      turnEnded: (item) => ended.push(item),
+      turnRequeued: (item) => requeued.push(item),
+    });
+    const bot = newBot(h);
+    const item = h.runner.deliver({ botId: bot.id, source: "routine", text: "Active routine" });
+    if (boundary === "send") await waitFor(() => oldSession.sent.length);
+    const before = h.db.prepare("SELECT * FROM work_items WHERE bot_id = ?").all(bot.id);
+    h.runner.closeForDeletion(bot.id);
+    expect(oldSession.closed).toBe(true);
+    expect(h.db.prepare("SELECT * FROM work_items WHERE bot_id = ?").all(bot.id)).toEqual(before);
+    expect(ended).toEqual([]);
+    h.runner.pump(bot.id);
+    await waitFor(() => replacement.sent.length);
+    rejectPending(new Error("Old operation rejected after replacement"));
+    oldSession.emit({ type: "exit", error: "Old exit" });
+    oldSession.emit({ type: "text", delta: "Old text" });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(h.runner.currentWork(bot.id)?.id).toBe(item.id);
+    expect(getWorkItem(h.db, item.id).status).toBe("running");
+    expect(started.map((work) => work.id)).toEqual([item.id]);
+    expect(requeued).toEqual([]);
+    expect(ended).toEqual([]);
+    replacement.emit({ type: "turn_done", ok: true, error: null });
+    expect(ended.map((work) => work.id)).toEqual([item.id]);
+  });
+
+  it("ends captured active and queued routine work after successful deletion", async () => {
+    const ended: [WorkItem, TurnResult][] = [];
+    const h = harness(undefined, true, { turnEnded: (item, result) => ended.push([item, result]) });
+    const bot = newBot(h);
+    const active = h.runner.deliver({ botId: bot.id, source: "routine", text: "Active routine" });
+    await waitFor(() => h.sessions[0]?.sent.length);
+    const queued = h.runner.deliver({ botId: bot.id, source: "routine", text: "Queued routine" });
+    h.runner.closeForDeletion(bot.id);
+    h.db.prepare("DELETE FROM bots WHERE id = ?").run(bot.id);
+    h.runner.forget(bot.id);
+    h.runner.forget(bot.id);
+    expect(ended.map(([item, result]) => [item.id, result.outcome])).toEqual([[active.id, "interrupted"], [queued.id, "interrupted"]]);
+    expect(h.runner.currentWork(bot.id)).toBeNull();
+    expect(h.runner.processId(bot.id)).toBeUndefined();
+  });
+
+  it.each([false, true])("ignores pending steering after deletion (successful: %s)", async (deleted) => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    let resolveSteer: (value: boolean) => void = () => { throw new Error("No pending steering"); };
+    const oldSession = new FakeSession();
+    oldSession.steerPromise = new Promise<boolean>((resolve) => { resolveSteer = resolve; });
+    const replacement = new FakeSession();
+    let calls = 0;
+    const h = harness(() => calls++ === 0 ? oldSession : replacement);
+    const bot = newBot(h);
+    h.runner.submit(bot.id, "First", []);
+    await waitFor(() => oldSession.sent.length);
+    const steered = h.runner.submit(bot.id, "Still needed", []);
+    await waitFor(() => oldSession.steered.length);
+    h.runner.closeForDeletion(bot.id);
+    if (deleted) {
+      h.db.prepare("DELETE FROM bots WHERE id = ?").run(bot.id);
+      h.runner.forget(bot.id);
+    } else {
+      h.runner.pump(bot.id);
+      await waitFor(() => replacement.steered.length);
+      expect(replacement.steered).toEqual(["Still needed"]);
+      expect(itemForMessage(h.db, steered.id).status).toBe("done");
+    }
+    resolveSteer(false);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(logged).not.toHaveBeenCalled();
+    if (!deleted) expect(itemForMessage(h.db, steered.id).status).toBe("done");
+  });
+
+  it("leaves interrupted-by-shutdown work running for startup recovery without turn-end hooks", async () => {
+    const ended: WorkItem[] = [];
+    const h = harness(undefined, true, { turnEnded: (item) => ended.push(item) });
+    const bot = newBot(h);
+    const item = h.runner.deliver({ botId: bot.id, source: "routine", text: "Recover on restart" });
+    await waitFor(() => h.sessions[0]?.sent.length);
+    h.runner.shutdown();
+    expect(h.sessions[0].closed).toBe(true);
+    expect(getWorkItem(h.db, item.id).status).toBe("running");
+    expect(ended).toEqual([]);
+  });
+
+  it("expires obsolete approval cards only when failed deletion resumes the bot", async () => {
+    const h = harness();
+    const bot = newBot(h);
+    const work = h.runner.deliver({ botId: bot.id, source: "routine", text: "Needs approval" });
+    await waitFor(() => h.sessions[0]?.sent.length);
+    h.sessions[0].emit({ type: "approval", id: "old-provider-request", tool: "Write", summary: "Write notes", detail: "{}", rule: null });
+    const added = h.events.find((event) => event.event === "approval.added");
+    if (!added) throw new Error("Missing approval card");
+    h.runner.closeForDeletion(bot.id);
+    expect(getMessage(h.db, added.data.messageId).data?.status).toBe("pending");
+    h.runner.pump(bot.id);
+    await waitFor(() => h.sessions[1]?.sent.length);
+    expect(getMessage(h.db, added.data.messageId).data?.status).toBe("denied");
+    expect(h.runner.toBot(getStoredBot(h.db, bot.id)).state).toBe("working");
+    expect(getWorkItem(h.db, work.id).status).toBe("running");
+    expect(h.sessions[1].answers).toEqual([]);
+  });
+
+  it("closes every session and revokes every token when one shutdown close throws", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const closed: string[] = [];
+    const h = harness(undefined, true, { sessionClosed: (id) => closed.push(id) });
+    const first = newBot(h);
+    const second = newBot(h);
+    h.runner.submit(first.id, "First", []);
+    h.runner.submit(second.id, "Second", []);
+    await waitFor(() => h.sessions.every((session) => session.sent.length));
+    const failure = new Error("Session close failed");
+    h.sessions[0].closeError = failure;
+    expect(() => h.runner.shutdown()).not.toThrow();
+    expect(h.sessions.every((session) => session.closed)).toBe(true);
+    expect(closed).toEqual([first.id, second.id]);
+    expect(logged.mock.calls.some((call) => call.includes(failure))).toBe(true);
   });
 });
 

@@ -1,0 +1,319 @@
+import { existsSync, mkdirSync, utimesSync } from "node:fs";
+import { join } from "node:path";
+import type { BotInput, ProviderSetup } from "@tjommie/protocol";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { createBot, getStoredBot, setLimitedUntil } from "./bots.ts";
+import { showBrowser } from "./browser.ts";
+import { connect, type Client } from "./client.ts";
+import { startDaemon, type Daemon } from "./daemon.ts";
+import { openDb, type Db } from "./db.ts";
+import { dataPaths } from "./paths.ts";
+import type { ProviderEvent, ProviderSession, StartOptions } from "./providers/types.ts";
+import { enqueue, getWorkItem, newChain, setStatus } from "./queue.ts";
+import { addRun, createRoutine, getRun, listRuns } from "./routines.ts";
+import { Scheduler } from "./scheduler.ts";
+import * as serverModule from "./server.ts";
+import { checkSetup, ensureAccounts, signIn } from "./setup.ts";
+import { Team } from "./team.ts";
+import { tempRoot, waitFor } from "./testing.ts";
+
+const removal = vi.hoisted(() => ({ failPath: "", beforeRemove: () => {} }));
+vi.mock("node:fs", async (original) => {
+  const fs = await original<typeof import("node:fs")>();
+  return { ...fs, rmSync: (...args: Parameters<typeof fs.rmSync>) => {
+    if (String(args[0]) === removal.failPath) {
+      removal.beforeRemove();
+      throw new Error("Forced locked folder");
+    }
+    return fs.rmSync(...args);
+  } };
+});
+vi.mock("./setup.ts", async (original) => ({
+  ...await original<typeof import("./setup.ts")>(), checkSetup: vi.fn(), signIn: vi.fn(),
+}));
+vi.mock("./browser.ts", async (original) => ({
+  ...await original<typeof import("./browser.ts")>(), showBrowser: vi.fn(),
+}));
+
+class Session implements ProviderSession {
+  listener: (event: ProviderEvent) => void = () => {};
+  sent: string[] = [];
+  closed = false;
+  answers: string[] = [];
+  async start(): Promise<void> {}
+  async send(text: string): Promise<void> { this.sent.push(text); }
+  async steer(): Promise<boolean> { return false; }
+  async interrupt(): Promise<void> { this.emit({ type: "turn_done", ok: false, error: null }); }
+  answer(id: string): void { this.answers.push(id); }
+  close(): void { this.closed = true; }
+  pid(): undefined { return undefined; }
+  onEvent(listener: (event: ProviderEvent) => void): void { this.listener = listener; }
+  emit(event: ProviderEvent): void { this.listener(event); }
+  finish(text: string): void {
+    this.emit({ type: "text", delta: text });
+    this.emit({ type: "text_end" });
+    this.emit({ type: "turn_done", ok: true, error: null });
+  }
+}
+
+const setup = (signedIn = true): ProviderSetup[] => ["claude", "codex"].map((provider) => ({
+  provider: provider as ProviderSetup["provider"], installed: true, version: "test", signedIn,
+  account: null, plan: null, error: null,
+}));
+const input = (name: string, extra: Partial<BotInput> = {}): BotInput => ({
+  name, color: "green", shape: "pill", instructions: "Be terse", provider: "claude", model: "haiku", ...extra,
+});
+const daemons: Daemon[] = [];
+const clients: Client[] = [];
+const databases: Db[] = [];
+beforeEach(() => {
+  vi.mocked(checkSetup).mockResolvedValue(setup());
+  vi.mocked(showBrowser).mockResolvedValue(undefined);
+  removal.failPath = "";
+  removal.beforeRemove = () => {};
+});
+afterEach(async () => {
+  for (const client of clients.splice(0)) await client.close();
+  for (const daemon of daemons.splice(0)) await daemon.close();
+  for (const db of databases.splice(0)) db.close();
+  vi.restoreAllMocks();
+});
+
+async function harness(root = tempRoot()) {
+  const sessions: { botId: string; options: StartOptions; session: Session }[] = [];
+  const daemon = await startDaemon({ root, port: 0, createSession: (bot, options) => {
+    const session = new Session();
+    sessions.push({ botId: bot.id, options, session });
+    return session;
+  } });
+  daemons.push(daemon);
+  const client = await connect(daemon.port, daemon.token);
+  clients.push(client);
+  const db = openDb(dataPaths(root).db);
+  databases.push(db);
+  return { daemon, client, db, sessions, root };
+}
+
+function appServer(options: StartOptions) {
+  const server = options.mcpServers?.find((entry) => entry.name === "tjommie");
+  if (!server || !("url" in server)) throw new Error("Missing Tjommie MCP server");
+  return server;
+}
+
+async function tool(options: StartOptions, name: string, args: Record<string, unknown>) {
+  const server = appServer(options);
+  const response = await fetch(server.url, {
+    method: "POST", headers: { ...server.headers, "Content-Type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } }),
+  });
+  expect(response.status).toBe(200);
+  const result: unknown = await response.json();
+  expect(result).not.toHaveProperty("error");
+  expect(result).not.toHaveProperty("result.isError", true);
+  return result;
+}
+
+it("wires settings, routine CRUD and the Team room through the WebSocket methods", async () => {
+  const { client } = await harness();
+  const bot = await client.call("bots.create", input("Roomy"));
+  expect(await client.call("settings.get", {})).toEqual({ chainLimit: 5 });
+  expect(await client.call("settings.set", { chainLimit: 7 })).toEqual({ chainLimit: 7 });
+  await client.call("room.post", { text: "Hello team" });
+  expect(await client.call("room.history", {})).toMatchObject([{ body: "Hello team" }]);
+  const routine = await client.call("routines.create", { botId: bot.id, name: "Check", prompt: "Check", days: [1], times: ["08:00"] });
+  expect(await client.call("routines.list", { botId: bot.id })).toEqual([routine]);
+  expect(await client.call("routines.runs", { routineId: routine.id })).toEqual([]);
+  expect(await client.call("routines.update", { id: routine.id, patch: { enabled: false } })).toMatchObject({ enabled: false });
+  await client.call("routines.delete", { id: routine.id });
+  expect(await client.call("routines.list", { botId: bot.id })).toEqual([]);
+  await expect(client.call("routines.runs", { routineId: routine.id })).rejects.toThrow(/not_found/);
+  await expect(client.call("routines.list", { botId: "missing" })).rejects.toThrow(/not_found/);
+  expect(client.events.some((event) => event.event === "settings.changed")).toBe(true);
+  expect(client.events.some((event) => event.event === "routine.deleted")).toBe(true);
+});
+
+it.each(["folder", "ask"] as const)("attaches session MCP servers and revokes their token when closing (%s)", async (autonomy) => {
+  const { client, sessions } = await harness();
+  const bot = await client.call("bots.create", input("Browser", { browser: true, autonomy }));
+  await client.call("chat.send", { botId: bot.id, text: "Begin" });
+  const first = sessions[0];
+  expect(first.options.mcpServers?.map((entry) => [entry.name, entry.autoAllow])).toEqual([["tjommie", true], ["browser", autonomy !== "ask"]]);
+  await tool(first.options, "list_bots", {});
+  first.session.finish("Done");
+  await client.call("bots.update", { id: bot.id, patch: { browser: false } });
+  expect(first.session.closed).toBe(true);
+  const server = appServer(first.options);
+  expect((await fetch(server.url, { method: "POST", headers: server.headers, body: "{}" })).status).toBe(401);
+  await client.call("chat.send", { botId: bot.id, text: "Again" });
+  expect(sessions[1].options.mcpServers?.map((entry) => entry.name)).toEqual(["tjommie"]);
+  expect(appServer(sessions[1].options).headers).not.toEqual(server.headers);
+});
+
+it("routes routine proposals to Team and tool approvals to the runner", async () => {
+  const { client, sessions } = await harness();
+  const bot = await client.call("bots.create", input("Planner"));
+  await client.call("chat.send", { botId: bot.id, text: "Begin" });
+  await tool(sessions[0].options, "add_routine", { name: "Morning check", prompt: "Check", days: ["mon"], times: ["08:48"] });
+  const card = await waitFor(() => client.events.find((event) => event.event === "approval.added" && event.data.kind === "routine"));
+  if (card.event !== "approval.added") throw new Error("Expected approval card");
+  await client.call("approvals.respond", { approvalId: card.data.id, decision: "once" });
+  expect(await client.call("routines.list", { botId: bot.id })).toMatchObject([{ name: "Morning check", enabled: true }]);
+  expect(sessions[0].session.answers).toEqual([]);
+  sessions[0].session.emit({ type: "approval", id: "cli-approval", tool: "Write", summary: "Write file", detail: "File", rule: null });
+  const approval = await waitFor(() => client.events.find((event) => event.event === "approval.added" && event.data.kind === "tool"));
+  if (approval.event !== "approval.added") throw new Error("Expected tool approval");
+  await client.call("approvals.respond", { approvalId: approval.data.id, decision: "once" });
+  expect(sessions[0].session.answers).toEqual(["cli-approval"]);
+});
+
+it("settles a routine and re-arms its lifecycle after a provider limit requeue", async () => {
+  const requeued = vi.spyOn(Scheduler.prototype, "runRequeued");
+  const started = vi.spyOn(Scheduler.prototype, "runStarted");
+  const ended = vi.spyOn(Scheduler.prototype, "runEnded");
+  const teamEnded = vi.spyOn(Team.prototype, "turnEnded");
+  const { daemon, client, db, sessions } = await harness();
+  const bot = await client.call("bots.create", input("Clockwork"));
+  const routine = await client.call("routines.create", { botId: bot.id, name: "Tick", prompt: "Tick", days: [0, 1, 2, 3, 4, 5, 6], times: ["03:00"], timeLimitMinutes: 1 });
+  if (!routine.nextRunAt) throw new Error("Missing next run");
+  daemon.scheduler.tick(Date.parse(routine.nextRunAt));
+  await waitFor(() => sessions[0]?.session.sent.length);
+  sessions[0].session.emit({ type: "limit", state: "reached", usedPercent: 100, resetsAt: new Date(Date.now() + 60_000).toISOString() });
+  sessions[0].session.emit({ type: "turn_done", ok: false, error: "Limited" });
+  expect(requeued).toHaveBeenCalledOnce();
+  expect(ended).not.toHaveBeenCalled();
+  setLimitedUntil(db, bot.id, null);
+  daemon.runner.pump(bot.id);
+  await waitFor(() => sessions[0].session.sent.length === 2);
+  expect(started).toHaveBeenCalledTimes(2);
+  sessions[0].session.finish("TICK");
+  expect(listRuns(db, routine.id)).toMatchObject([{ status: "done" }]);
+  expect(ended).toHaveBeenCalledOnce();
+  expect(teamEnded).toHaveBeenCalledOnce();
+});
+
+it("keeps the bot, queue and exchanges intact when folder removal fails, then deletes successfully", async () => {
+  const { daemon, client, db, sessions } = await harness();
+  const writer = await client.call("bots.create", input("Writer"));
+  const asker = await client.call("bots.create", input("Asker", { canMessage: [writer.id] }));
+  await client.call("chat.send", { botId: writer.id, text: "Warm up" });
+  sessions[0].session.finish("Ready");
+  await client.call("bots.pause", { id: writer.id, paused: true });
+  await client.call("chat.send", { botId: asker.id, text: "Ask Writer" });
+  await tool(sessions[1].options, "message_bot", { bot: "Writer", message: "Help" });
+  const queue = db.prepare("SELECT * FROM work_items WHERE bot_id = ?").all(writer.id);
+  const exchanges = db.prepare("SELECT * FROM exchanges").all();
+  const bot = getStoredBot(db, writer.id);
+  removal.failPath = writer.homeFolder;
+  removal.beforeRemove = () => expect(sessions[0].session.closed).toBe(true);
+  const pump = vi.spyOn(daemon.runner, "pump");
+  await expect(client.call("bots.delete", { id: writer.id })).rejects.toThrow(/busy/);
+  expect(pump).toHaveBeenCalledWith(writer.id);
+  expect(getStoredBot(db, writer.id)).toEqual(bot);
+  expect(db.prepare("SELECT * FROM work_items WHERE bot_id = ?").all(writer.id)).toEqual(queue);
+  expect(db.prepare("SELECT * FROM exchanges").all()).toEqual(exchanges);
+  expect(client.events.some((event) => event.event === "bot.deleted")).toBe(false);
+  const row = exchanges[0];
+  if (typeof row.id !== "string") throw new Error("Missing exchange");
+  expect(await client.call("exchanges.get", { id: row.id })).toMatchObject({ exchange: { status: "waiting" } });
+  removal.failPath = "";
+  await client.call("bots.delete", { id: writer.id });
+  expect(existsSync(writer.homeFolder)).toBe(false);
+  expect(await client.call("exchanges.get", { id: row.id })).toMatchObject({ exchange: { status: "failed" } });
+  expect(client.events.filter((event) => event.event === "bot.deleted")).toHaveLength(1);
+});
+
+it("reports queued routine work dropped by routine deletion through both end hooks", async () => {
+  const ended = vi.spyOn(Scheduler.prototype, "runEnded");
+  const teamEnded = vi.spyOn(Team.prototype, "turnEnded");
+  const { daemon, client, db, sessions } = await harness();
+  const bot = await client.call("bots.create", input("Queued routine"));
+  await client.call("chat.send", { botId: bot.id, text: "Keep working" });
+  const routine = await client.call("routines.create", { botId: bot.id, name: "Waiting", prompt: "Check", days: [0, 1, 2, 3, 4, 5, 6], times: ["03:00"] });
+  if (!routine.nextRunAt) throw new Error("Missing next run");
+  daemon.scheduler.tick(Date.parse(routine.nextRunAt));
+  const run = listRuns(db, routine.id)[0];
+  expect(run.status).toBe("queued");
+  await client.call("routines.delete", { id: routine.id });
+  expect(ended).toHaveBeenCalledOnce();
+  expect(ended.mock.calls[0][0].routineRunId).toBe(run.id);
+  expect(teamEnded).toHaveBeenCalledOnce();
+  sessions[0].session.finish("Done");
+  expect(sessions[0].session.sent).toHaveLength(1);
+});
+
+it("recovers an interrupted routine and sweeps stale shares before starting queued work", async () => {
+  const root = tempRoot();
+  const paths = dataPaths(root);
+  const db = openDb(paths.db);
+  databases.push(db);
+  ensureAccounts(db, paths.accounts);
+  const bot = createBot(db, paths.bots, input("Restart"));
+  const routine = createRoutine(db, { botId: bot.id, name: "Interrupted", prompt: "Check", days: [1], times: ["08:00"], enabled: false });
+  const run = addRun(db, routine.id, new Date().toISOString(), "running");
+  const item = enqueue(db, { botId: bot.id, source: "routine", text: "Check", routineRunId: run.id, chainId: newChain(db) });
+  setStatus(db, item.id, "running");
+  const queued = enqueue(db, { botId: bot.id, source: "you", text: "Queued", chainId: newChain(db) });
+  const stale = join(root, "shared-files", "share-old");
+  mkdirSync(stale, { recursive: true });
+  const old = new Date(Date.now() - 25 * 60 * 60_000);
+  utimesSync(stale, old, old);
+  const listen = serverModule.startServer;
+  const server = vi.spyOn(serverModule, "startServer").mockImplementation((options) => {
+    expect(options.allowedOrigins).toEqual(["app://tjommie", "http://localhost:3000"]);
+    expect(getWorkItem(db, item.id).status).toBe("interrupted");
+    expect(getRun(db, run.id)?.status).toBe("failed");
+    expect(getWorkItem(db, queued.id).status).toBe("queued");
+    expect(existsSync(stale)).toBe(false);
+    return listen(options);
+  });
+  const { sessions } = await harness(root);
+  expect(server).toHaveBeenCalledOnce();
+  await waitFor(() => sessions[0]?.session.sent.length);
+  expect(getWorkItem(db, item.id).status).toBe("interrupted");
+  expect(getRun(db, run.id)?.status).toBe("failed");
+  expect(getWorkItem(db, queued.id).status).toBe("running");
+  expect(appServer(sessions[0].options).url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/mcp$/);
+  expect(existsSync(stale)).toBe(false);
+});
+
+it("pumps waiting work after unpause and a successful setup refresh", async () => {
+  const { client, sessions } = await harness();
+  const bot = await client.call("bots.create", input("Paused"));
+  await client.call("bots.pause", { id: bot.id, paused: true });
+  await client.call("chat.send", { botId: bot.id, text: "Queued" });
+  expect(sessions).toHaveLength(0);
+  await client.call("bots.pause", { id: bot.id, paused: false });
+  await waitFor(() => sessions[0]?.session.sent.length);
+  sessions[0].session.finish("Done");
+  vi.mocked(checkSetup).mockResolvedValue(setup(false));
+  await client.call("setup.status", {});
+  await client.call("chat.send", { botId: bot.id, text: "Wait for sign-in" });
+  expect(sessions[0].session.sent).toHaveLength(1);
+  vi.mocked(checkSetup).mockResolvedValue(setup());
+  await client.call("setup.status", {});
+  await waitFor(() => sessions[0].session.sent.length === 2);
+});
+
+it("logs a rejected background setup refresh from the sign-in callback", async () => {
+  const { client } = await harness();
+  const failure = new Error("Setup unavailable");
+  const log = vi.spyOn(console, "error").mockImplementation(() => {});
+  vi.mocked(checkSetup).mockRejectedValueOnce(failure);
+  vi.mocked(signIn).mockImplementation(async (_db, _provider, onDone) => {
+    onDone(true);
+    return { url: null };
+  });
+  await client.call("setup.signIn", { provider: "claude" });
+  await waitFor(() => log.mock.calls.length);
+  expect(log).toHaveBeenCalledWith("Failed to refresh provider setup.", failure);
+});
+
+it("awaits browser launch errors and rejects showing a disabled browser", async () => {
+  const { client } = await harness();
+  const off = await client.call("bots.create", input("Off"));
+  await expect(client.call("bots.showBrowser", { id: off.id })).rejects.toThrow(/bad_params/);
+  const on = await client.call("bots.create", input("On", { browser: true }));
+  vi.mocked(showBrowser).mockRejectedValueOnce(new Error("Browser could not start"));
+  await expect(client.call("bots.showBrowser", { id: on.id })).rejects.toThrow(/Browser could not start/);
+  await expect(client.call("bots.showBrowser", { id: on.id })).resolves.toEqual({});
+});
