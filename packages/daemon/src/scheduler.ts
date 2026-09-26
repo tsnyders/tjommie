@@ -162,7 +162,6 @@ export class Scheduler {
     this.#broadcast("routine.updated", getRoutine(this.#db, routine.id));
     this.#broadcast("routine.run", run);
     if (run.status !== "queued") {
-      this.#label(routine, { ...run, status: "queued", note: null });
       this.#label(routine, run);
       return;
     }
@@ -174,6 +173,8 @@ export class Scheduler {
     const parsed = messageData(message);
     if (parsed.kind !== "routine") throw new RpcError("bad_params", "This message is not a routine label");
     const routine = getRoutine(this.#db, parsed.data.routineId);
+    if (!routine.enabled) throw new RpcError("bad_state", "Enable this routine before retrying it");
+    if (getStoredBot(this.#db, routine.botId).paused) throw new RpcError("bad_state", "Unpause this bot before retrying its routine");
     if (hasOpenRun(this.#db, routine.id)) throw new RpcError("busy", "This routine already has a queued or running run");
     const run = addRun(this.#db, routine.id, new Date().toISOString(), "queued");
     this.#broadcast("routine.run", run);

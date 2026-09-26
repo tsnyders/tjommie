@@ -5,8 +5,9 @@ import { createBot, setPaused } from "./bots.ts";
 import { history } from "./chat.ts";
 import { openDb, type Db } from "./db.ts";
 import { enqueue, getWorkItem, setStatus, type NewWork } from "./queue.ts";
-import { addRun, createRoutine, deleteRoutine, getRoutine, getRun, hasOpenRun, listRuns } from "./routines.ts";
+import { addRun, createRoutine, deleteRoutine, getRoutine, getRun, hasOpenRun, listRuns, updateRoutine } from "./routines.ts";
 import { GRACE_MS, Scheduler, TICK_MS, duration, routinePrompt } from "./scheduler.ts";
+import { RpcError } from "./server.ts";
 import { tempRoot } from "./testing.ts";
 
 const at = (iso: string) => Date.parse(iso);
@@ -52,6 +53,60 @@ const digest = (extra: { timeLimitMinutes?: number; enabled?: boolean; days?: nu
   createRoutine(db, { botId, name: "Digest", prompt: "Summarize my inbox", days: [0, 1, 2, 3, 4, 5, 6], times: ["08:00", "17:00"], timeZone: "UTC", ...extra }, at("2026-09-20T00:00:00Z"));
 
 describe("Scheduler", () => {
+  it.each([
+    { reason: "missed", status: "missed", note: "The PC was off or asleep, or Tjommie wasn't running." },
+    { reason: "paused", status: "skipped", note: "Night Shift was paused." },
+    { reason: "running", status: "skipped", note: "The previous run was still going." },
+    { reason: "queued", status: "skipped", note: "The previous run was still going." },
+  ] as const)("publishes one final label when a due run is $reason", ({ reason, status, note }) => {
+    const routine = digest();
+    if (reason === "paused") setPaused(db, botId, true);
+    if (reason === "running" || reason === "queued") addRun(db, routine.id, "2026-09-19T17:00:00.000Z", reason);
+    scheduler().tick(at(reason === "missed" ? "2026-09-20T08:03:00Z" : "2026-09-20T08:00:10Z"));
+    const labels = history(db, botId, undefined, 10);
+    expect(labels).toMatchObject([{ kind: "routine", data: { status, note } }]);
+    expect(events.filter(({ event }) => event === "message.added" || event === "message.updated")).toEqual([
+      { event: "message.added", data: labels[0] },
+    ]);
+    expect(delivered).toEqual([]);
+  });
+
+  it.each([
+    { reason: "paused bot", message: "Unpause this bot before retrying its routine" },
+    { reason: "disabled routine", message: "Enable this routine before retrying it" },
+  ] as const)("refuses a routine retry for a $reason before creating work", ({ reason, message }) => {
+    const routine = digest();
+    const s = scheduler();
+    s.tick(at("2026-09-20T08:00:10Z"));
+    const item = enqueue(db, delivered[0]);
+    s.runStarted(item);
+    setStatus(db, item.id, "failed");
+    s.runEnded(item, { outcome: "failed", error: "CLI exited" });
+    if (reason === "paused bot") setPaused(db, botId, true);
+    else updateRoutine(db, routine.id, { enabled: false });
+    const state = () => ({
+      runs: listRuns(db, routine.id),
+      messages: history(db, botId, undefined, 10),
+      chains: db.prepare("SELECT * FROM chains ORDER BY id").all(),
+      work: db.prepare("SELECT * FROM work_items ORDER BY id").all(),
+      routine: getRoutine(db, routine.id),
+    });
+    const before = state();
+    delivered.length = 0;
+    events.length = 0;
+    let error: unknown;
+    try {
+      s.retry(before.messages[0]);
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toBeInstanceOf(RpcError);
+    expect(error).toMatchObject({ code: "bad_state", message });
+    expect(state()).toEqual(before);
+    expect(delivered).toEqual([]);
+    expect(events).toEqual([]);
+  });
+
   it.each(["done", "failed", "interrupted"] as const)("keeps one routine label current through %s", (outcome) => {
     const routine = digest();
     const s = scheduler();
