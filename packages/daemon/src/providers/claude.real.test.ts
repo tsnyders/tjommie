@@ -1,9 +1,12 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { createBot, getStoredBot } from "../bots.ts";
 import { resolveCli } from "../cli.ts";
-import { accountEnv } from "../setup.ts";
-import { firstOf, realAccount, tempRoot, waitFor } from "../testing.ts";
+import { openDb } from "../db.ts";
+import { Runner } from "../runner.ts";
+import { accountEnv, ensureAccounts } from "../setup.ts";
+import { firstOf, realAccount, realAccountsDir, tempRoot, waitFor } from "../testing.ts";
 import { ClaudeSession } from "./claude.ts";
 import type { ProviderEvent, StartOptions } from "./types.ts";
 
@@ -52,12 +55,36 @@ describe("ClaudeSession against the real CLI", () => {
   });
 
   it("stops a running turn", async () => {
-    const { claude, events } = session({ autonomy: "full" });
-    await claude.start();
-    await claude.send(`Use the Bash tool, not in the background, to run exactly: node -e "setTimeout(() => console.log('late'), 30000)". Then tell me what it printed.`);
-    await waitFor(() => firstOf(events, "tool"));
-    await claude.interrupt();
-    expect(await waitFor(() => firstOf(events, "turn_done"), 20_000)).toMatchObject({ ok: false });
-    claude.close();
+    const { claude, events, cwd } = session({ autonomy: "full" });
+    const db = openDb(join(cwd, "stop.db"));
+    ensureAccounts(db, realAccountsDir());
+    const bot = createBot(db, join(cwd, "bots"), {
+      name: "Stop test",
+      color: "blue",
+      shape: "circle",
+      instructions: "You are a terse test bot.",
+      provider: "claude",
+      model: "haiku",
+      autonomy: "full",
+    });
+    const runner = new Runner({ db, broadcast: () => {}, isSignedIn: () => true, createSession: () => claude });
+    try {
+      runner.start();
+      const message = runner.submit(bot.id, `Use the Bash tool, not in the background, to run exactly: node -e "setTimeout(() => console.log('late'), 30000)". Then tell me what it printed.`, []);
+      await waitFor(() => firstOf(events, "tool"));
+      expect(firstOf(events, "turn_done")).toBeUndefined();
+      await runner.stop(bot.id);
+      // Claude can acknowledge interrupt without a result. The 10 s fallback then reports a quiet exit.
+      const terminal = await waitFor(() => events.find((event) => event.type === "turn_done" || event.type === "exit"), 20_000);
+      expect(terminal).toMatchObject(terminal.type === "exit" ? { error: null } : { ok: false });
+      expect(runner.toBot(getStoredBot(db, bot.id)).state).toBe("idle");
+      expect(db.prepare("SELECT status FROM work_items WHERE message_id = ?").get(message.id)).toEqual({ status: "interrupted" });
+      expect(db.prepare("SELECT kind, body FROM messages WHERE conversation_id = ? AND author = 'system'").all(bot.id))
+        .toEqual([{ kind: "notice", body: "Stopped." }]);
+    } finally {
+      runner.shutdown();
+      await waitFor(() => firstOf(events, "exit"), 20_000);
+      db.close();
+    }
   });
 });
