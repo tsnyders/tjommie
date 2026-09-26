@@ -88,6 +88,20 @@ function stateCounts(connection = db): Record<string, number> {
 }
 
 describe("Team routine transactions", () => {
+  it("caps pending proposals at five per bot and frees a slot when one is answered", () => {
+    const first = proposal();
+    for (let index = 1; index < 5; index++) propose();
+    const before = stateCounts();
+    const published = events.length;
+    expect(() => propose()).toThrow("You already have 5 routine proposals waiting for the person. Wait for them to answer before proposing another.");
+    expect(stateCounts()).toEqual(before);
+    expect(events).toHaveLength(published);
+    expect(call(researcher.id, "add_routine", { name: "Other bot", days: ["mon"], times: ["08:30"], prompt: "Check" })).toMatch(/^Proposed/);
+    team.answerRoutineProposal(first.id, "deny");
+    expect(propose()).toMatch(/^Proposed/);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM approvals WHERE bot_id = ? AND kind = 'routine' AND status = 'pending'").get(writer.id)).toEqual({ n: 5 });
+  });
+
   it("rolls back the proposal card when creating its approval fails", () => {
     const before = stateCounts();
     db.exec("CREATE TRIGGER reject_proposal BEFORE INSERT ON approvals BEGIN SELECT RAISE(ABORT, 'approval insert failed'); END");

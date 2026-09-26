@@ -62,6 +62,16 @@ function otherDriveFile(): string | null {
 }
 
 describe("Shared file containment with existing outside files", () => {
+  it.each(["accounts/claude-main/settings.json", "daemon-token", "tjommie.db-fixture", "shared-files/private.txt"])("rejects data-root file %s through a legacy broad project folder", (name) => {
+    const file = join(root, name);
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, "synthetic private fixture");
+    db.prepare("UPDATE bots SET project_folder = ? WHERE id = ?").run(root, bot.id);
+    const tool = team.tools().find((entry) => entry.name === "share_file")!;
+    expect(() => tool.run(bot.id, tool.input.parse({ path: file }))).toThrow("You can only share files from your own folders.");
+    expect(db.prepare("SELECT id FROM messages WHERE kind = 'file'").all()).toEqual([]);
+  });
+
   it("rejects an existing sibling file reached through parent traversal", () => {
     const outside = join(dirname(bot.homeFolder), "private");
     mkdirSync(outside);

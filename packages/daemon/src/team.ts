@@ -17,6 +17,7 @@ import { getSettings } from "./settings.ts";
 const ROOM_CONTEXT = 20;
 const MAX_SHARE_BYTES = 200 * 1024 * 1024;
 const SNAPSHOT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const MAX_PENDING_ROUTINE_PROPOSALS = 5;
 const DAYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"] as const;
 const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const STATE_WORDS: Record<BotState, string> = {
@@ -473,8 +474,8 @@ export class Team {
     const bot = getStoredBot(this.#db, botId);
     const roots = bot.projectFolder ? [bot.projectFolder, bot.homeFolder] : [bot.homeFolder];
     const file = fileInside(roots, resolve(roots[0], path));
-    // Even a project above the managed directory cannot expose another bot's files.
-    const managed = realpathSync.native(dirname(bot.homeFolder));
+    // Legacy project folders must not expose the daemon's data or another bot's files.
+    const managed = realpathSync.native(dirname(this.#staging()));
     if (within(managed, file) && !within(realpathSync.native(bot.homeFolder), file)) throw new Error("You can only share files from your own folders.");
     const work = this.#currentWork(botId);
     const exchange = work ? this.#exchange(work.conversationId) : undefined;
@@ -502,6 +503,8 @@ export class Team {
     const approvalId = newId();
     const payload = RoutineInput.parse({ botId, ...r, timeZone: hostTimeZone() });
     this.#atomic(() => {
+      const pending = this.#db.prepare("SELECT COUNT(*) AS n FROM approvals WHERE bot_id = ? AND kind = 'routine' AND status = 'pending'").get(botId) as { n: number };
+      if (pending.n >= MAX_PENDING_ROUTINE_PROPOSALS) throw new Error(`You already have ${MAX_PENDING_ROUTINE_PROPOSALS} routine proposals waiting for the person. Wait for them to answer before proposing another.`);
       const message = this.#add({
         conversationId: botId,
         author: botId,
