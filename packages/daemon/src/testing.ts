@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Provider } from "@tjommie/protocol";
@@ -10,8 +10,20 @@ import type { Account } from "./setup.ts";
 // A fresh folder whose path has a space and an accented letter, like many Windows profile paths.
 export const tempRoot = (): string => mkdtempSync(join(tmpdir(), "tjommie test ñ-"));
 
-// The real Tjommie account folders, signed in once with `npm run signin -w @tjommie/daemon`.
-export const realAccountsDir = (): string => dataPaths().accounts;
+// Each test worker gets disposable config and session storage. Only the official CLIs access the
+// existing sign-in files through symlinks. Tests never read or copy credential contents.
+let isolatedAccounts: string | undefined;
+export const realAccountsDir = (): string => {
+  if (isolatedAccounts) return isolatedAccounts;
+  const accounts = join(tempRoot(), "accounts");
+  for (const [provider, filename] of [["claude", ".credentials.json"], ["codex", "auth.json"]] as const) {
+    const folder = join(accounts, `${provider}-main`);
+    mkdirSync(folder, { recursive: true });
+    symlinkSync(join(dataPaths().accounts, `${provider}-main`, filename), join(folder, filename), "file");
+  }
+  isolatedAccounts = accounts;
+  return accounts;
+};
 
 export const realAccount = (provider: Provider): Account => ({
   id: `${provider}-main`,

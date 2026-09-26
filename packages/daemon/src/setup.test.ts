@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { openDb } from "./db.ts";
@@ -44,6 +44,34 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllEnvs());
 
 describe("accounts", () => {
+  it("merges Claude deny rules without dropping existing settings or permissions", () => {
+    const root = tempRoot();
+    const db = openDb(join(root, "t.db"));
+    const accountsDir = join(root, "accounts");
+    ensureAccounts(db, accountsDir);
+    const file = join(accountsDir, "claude-main", "settings.json");
+    writeFileSync(file, JSON.stringify({ theme: "dark", permissions: { allow: ["Read"], deny: ["Bash(rm *)"], defaultMode: "manual" } }));
+    ensureAccounts(db, accountsDir);
+    const settings = JSON.parse(readFileSync(file, "utf8")) as { theme: string; permissions: { allow: string[]; deny: string[]; defaultMode: string } };
+    expect(settings.theme).toBe("dark");
+    expect(settings.permissions.allow).toEqual(["Read"]);
+    expect(settings.permissions.defaultMode).toBe("manual");
+    const absolute = root.replace(/\\/g, "/").replace(/^([A-Za-z]):/, (_match, drive: string) => `/${drive.toLowerCase()}`);
+    expect(settings.permissions.deny).toEqual(["Bash(rm *)", "Edit(**/.claude/**)", "Write(**/.claude/**)", `Read(/${absolute}/accounts/**)`, `Read(/${absolute}/daemon-token)`, `Read(/${absolute}/tjommie.db*)`]);
+    ensureAccounts(db, accountsDir);
+    expect(JSON.parse(readFileSync(file, "utf8"))).toEqual(settings);
+  });
+
+  it("creates the Claude settings file and leaves invalid existing settings intact", () => {
+    const root = tempRoot();
+    const db = openDb(join(root, "t.db"));
+    ensureAccounts(db, join(root, "accounts"));
+    const file = join(root, "accounts", "claude-main", "settings.json");
+    expect(existsSync(file)).toBe(true);
+    writeFileSync(file, "not JSON");
+    expect(() => ensureAccounts(db, join(root, "accounts"))).toThrow();
+    expect(readFileSync(file, "utf8")).toBe("not JSON");
+  });
   it("creates one account per provider, once, each with its folder", () => {
     const root = tempRoot();
     const db = openDb(join(root, "t.db"));

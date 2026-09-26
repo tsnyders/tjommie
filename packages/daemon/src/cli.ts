@@ -34,20 +34,30 @@ const STRIPPED_ENV = [
   "OPENAI_API_KEY",
   "CODEX_API_KEY",
   "CODEX_HOME",
+  "ANTHROPIC_BASE_URL",
+  "ANTHROPIC_CUSTOM_HEADERS",
+  "CLAUDE_CODE_USE_BEDROCK",
+  "CLAUDE_CODE_USE_VERTEX",
+  "OPENAI_BASE_URL",
+  "OPENAI_API_BASE",
 ];
+const SECRET_ENV = /(TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|CREDENTIALS|PRIVATE_KEY|API_KEY|ACCESS_KEY|_KEY)$/i;
+const CLOUD_ENV = /^(AWS_|AZURE_|GOOGLE_|GCP_)/i;
 
 // A CLI must use the login in its Tjommie account folder, never keys or config folders we happen to inherit.
 export function cliEnv(extra: Record<string, string>, base: NodeJS.ProcessEnv = process.env): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(base)) {
-    if (value !== undefined && !STRIPPED_ENV.includes(key.toUpperCase())) env[key] = value;
+    if (value !== undefined && !STRIPPED_ENV.includes(key.toUpperCase()) && !SECRET_ENV.test(key) && !CLOUD_ENV.test(key)) env[key] = value;
   }
   return { ...env, ...extra };
 }
 
 export function spawnCli(cmd: CliCommand, args: string[], opts: { cwd: string; env: Record<string, string> }): ChildProcessWithoutNullStreams {
-  return spawn(cmd.file, [...cmd.args, ...args], { cwd: opts.cwd, env: opts.env, stdio: "pipe", windowsHide: true });
+  return spawn(cmd.file, [...cmd.args, ...args], { cwd: opts.cwd, env: nodeEnv(opts.env), stdio: "pipe", windowsHide: true });
 }
+
+const nodeEnv = (env: Record<string, string>): Record<string, string> => process.versions.electron ? { ...env, ELECTRON_RUN_AS_NODE: "1" } : env;
 
 // Runs a short command (version and status checks) and collects its output.
 export function runCli(
@@ -57,7 +67,7 @@ export function runCli(
   timeoutMs = 20_000,
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
-    const child = spawn(cmd.file, [...cmd.args, ...args], { env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    const child = spawn(cmd.file, [...cmd.args, ...args], { env: nodeEnv(env), stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (chunk) => (stdout += chunk));
