@@ -103,8 +103,8 @@ describe("Team routine transactions", () => {
       observations.push({ messages: counts.messages, approvals: counts.approvals });
     });
     proposal();
-    expect(events.map((event) => event.event)).toEqual(["message.added", "approval.added", "notify"]);
-    expect(observations).toEqual(Array.from({ length: 3 }, () => ({ messages: 1, approvals: 1 })));
+    expect(events.map((event) => event.event)).toEqual(["message.added", "approval.added", "notify", "bot.updated"]);
+    expect(observations).toEqual(Array.from({ length: 4 }, () => ({ messages: 1, approvals: 1 })));
   });
 
   it.each([
@@ -143,8 +143,8 @@ describe("Team routine transactions", () => {
       observations.push({ approval: getApproval(observer, pending.id).status, card: getMessage(observer, pending.messageId).data?.status, routines: listRoutines(observer, writer.id).length });
     });
     team.answerRoutineProposal(pending.id, "once");
-    expect(events.map((event) => event.event).sort()).toEqual(["approval.resolved", "message.updated", "routine.updated"]);
-    expect(observations).toEqual(Array.from({ length: 3 }, () => ({ approval: "allowed", card: "allowed", routines: 1 })));
+    expect(events.map((event) => event.event).sort()).toEqual(["approval.resolved", "bot.updated", "message.updated", "routine.updated"]);
+    expect(observations).toEqual(Array.from({ length: 4 }, () => ({ approval: "allowed", card: "allowed", routines: 1 })));
     expect(() => team.answerRoutineProposal(pending.id, "once")).toThrow(/already answered/);
     expect(listRoutines(db, writer.id)).toHaveLength(1);
   });
