@@ -153,6 +153,7 @@ const migrations = [
   ALTER TABLE approvals ADD COLUMN payload TEXT;
   INSERT INTO conversations (id, kind, bot_id) VALUES ('team', 'room', NULL);
   `,
+  `ALTER TABLE sessions ADD COLUMN total_cost_usd REAL;`,
 ];
 
 export function transaction(db: Db, work: () => void): void {

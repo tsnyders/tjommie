@@ -150,12 +150,20 @@ describe("Runner against the real CLIs", () => {
     first.runner.submit(bot.id, "Remember the code word ZEBRA. Reply with just OK.", []);
     await waitFor(() => first.replies(bot.id).length > 0);
     await waitFor(() => first.state(bot.id) === "idle");
+    const sessionCost = () => (db.prepare("SELECT total_cost_usd FROM sessions WHERE bot_id = ?").get(bot.id) as { total_cost_usd: number }).total_cost_usd;
+    const turnCosts = () => (db.prepare("SELECT cost_usd FROM usage WHERE bot_id = ? ORDER BY rowid").all(bot.id) as { cost_usd: number }[]).map((row) => row.cost_usd);
+    const firstTotal = sessionCost();
+    expect(firstTotal).toBeGreaterThan(0);
+    expect(turnCosts()).toEqual([firstTotal]);
     first.runner.shutdown();
 
     const second = harness(root, db); // the same database: a restarted daemon
     second.runner.submit(bot.id, "What was the code word? Reply with just the word.", []);
     await waitFor(() => second.replies(bot.id).some((reply) => /ZEBRA/i.test(reply)));
     await waitFor(() => second.state(bot.id) === "idle");
+    expect(turnCosts()).toHaveLength(2);
+    expect(turnCosts()[1]).toBeCloseTo(sessionCost() - firstTotal, 10);
+    expect(turnCosts()[1]).toBeGreaterThan(0);
 
     db.prepare("DELETE FROM sessions WHERE bot_id = ?").run(bot.id); // the next turn has to start a fresh CLI session
     second.runner.botChanged(bot.id, false);
@@ -166,5 +174,9 @@ describe("Runner against the real CLIs", () => {
       const latest = replies.at(-1);
       return replies.length > before && latest !== undefined && /ZEBRA/i.test(latest);
     });
+    await waitFor(() => second.state(bot.id) === "idle");
+    expect(turnCosts()).toHaveLength(3);
+    expect(turnCosts()[2]).toBe(sessionCost());
+    expect(turnCosts()[2]).toBeGreaterThan(0);
   });
 });

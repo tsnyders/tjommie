@@ -45,7 +45,8 @@ export class ClaudeSession implements ProviderSession {
   #child: ChildProcessWithoutNullStreams | null = null;
   #listeners: ((event: ProviderEvent) => void)[] = [];
   #pending = new Map<string, PendingApproval>();
-  #lastTotalCost = 0;
+  #lastTotalCost: number | null;
+  #cliSessionId: string | null;
   #streamed = "";
   #inTurn = false;
   #closing = false;
@@ -56,6 +57,8 @@ export class ClaudeSession implements ProviderSession {
   constructor(cmd: CliCommand, options: StartOptions) {
     this.#cmd = cmd;
     this.#options = options;
+    this.#lastTotalCost = options.resumeId === null ? 0 : options.resumeCostUsd ?? null;
+    this.#cliSessionId = options.resumeId;
   }
 
   onEvent(listener: (event: ProviderEvent) => void): void {
@@ -160,6 +163,8 @@ export class ClaudeSession implements ProviderSession {
     const out = parseClaudeLine(line);
     switch (out.kind) {
       case "init":
+        if (this.#cliSessionId !== out.sessionId) this.#lastTotalCost = 0;
+        this.#cliSessionId = out.sessionId;
         this.#inTurn = true;
         this.#emit({ type: "session", cliSessionId: out.sessionId });
         return;
@@ -198,10 +203,11 @@ export class ClaudeSession implements ProviderSession {
         this.#interruptTimer = undefined;
         this.#inTurn = false;
         this.#streamed = "";
-        // total_cost_usd is cumulative for this process, so one turn's cost is the difference.
-        const cost = out.totalCostUsd === null ? null : Math.max(0, out.totalCostUsd - this.#lastTotalCost);
+        // Claude restores cumulative session cost on --resume, including earlier processes.
+        // A legacy resumed session has no baseline, so its first turn's cost is unknown.
+        const cost = out.totalCostUsd === null || this.#lastTotalCost === null ? null : Math.max(0, out.totalCostUsd - this.#lastTotalCost);
         if (out.totalCostUsd !== null) this.#lastTotalCost = out.totalCostUsd;
-        this.#emit({ type: "usage", model: out.model ?? this.#options.model, ...out.usage, costUsd: cost });
+        this.#emit({ type: "usage", model: out.model ?? this.#options.model, ...out.usage, costUsd: cost, totalCostUsd: out.totalCostUsd });
         this.#emit({ type: "turn_done", ok: out.ok, error: out.error });
         return;
       }

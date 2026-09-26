@@ -222,6 +222,76 @@ describe("Runner queueing", () => {
   });
 });
 
+describe("Runner session costs", () => {
+  it("preserves the cost baseline across a daemon restart and records only the resumed delta", async () => {
+    const h = harness();
+    const bot = newBot(h);
+    h.runner.submit(bot.id, "first", []);
+    await waitFor(() => h.sessions[0]?.sent.length);
+    h.sessions[0].emit({ type: "session", cliSessionId: "saved" });
+    h.sessions[0].emit({ type: "usage", model: "haiku", input: 1, cachedInput: 0, output: 1, reasoning: 0, costUsd: 0.0169623, totalCostUsd: 0.0169623 });
+    h.sessions[0].emit({ type: "turn_done", ok: true, error: null });
+    h.runner.shutdown();
+    h.db.close();
+
+    const db = openDb(join(h.root, "t.db"));
+    const resumed = new FakeSession();
+    const options: StartOptions[] = [];
+    const restarted = new Runner({
+      db,
+      broadcast: () => {},
+      isSignedIn: () => true,
+      createSession: (_bot, startOptions) => {
+        options.push(startOptions);
+        return resumed;
+      },
+    });
+    runners.push(restarted);
+    try {
+      restarted.submit(bot.id, "continue", []);
+      await waitFor(() => resumed.sent.length);
+      expect(options[0]).toMatchObject({ resumeId: "saved", resumeCostUsd: 0.0169623 });
+      resumed.emit({ type: "session", cliSessionId: "saved" });
+      expect(db.prepare("SELECT total_cost_usd FROM sessions WHERE bot_id = ?").get(bot.id)).toEqual({ total_cost_usd: 0.0169623 });
+
+      resumed.emit({ type: "usage", model: "haiku", input: 1, cachedInput: 0, output: 1, reasoning: 0, costUsd: 0.0029083, totalCostUsd: 0.0198706 });
+      resumed.emit({ type: "turn_done", ok: true, error: null });
+      expect(db.prepare("SELECT total_cost_usd FROM sessions WHERE bot_id = ?").get(bot.id)).toEqual({ total_cost_usd: 0.0198706 });
+      const total = db.prepare("SELECT sum(cost_usd) AS cost FROM usage WHERE bot_id = ?").get(bot.id) as { cost: number };
+      expect(total.cost).toBeCloseTo(0.0198706, 10);
+    } finally {
+      restarted.shutdown();
+      db.close();
+    }
+  });
+
+  it.each([
+    { name: "provider", provider: "codex", accountId: "claude-main", emittedId: "saved", resumeId: null, resumeCostUsd: null },
+    { name: "account", provider: "claude", accountId: "old-account", emittedId: "saved", resumeId: null, resumeCostUsd: null },
+    { name: "CLI session", provider: "claude", accountId: "claude-main", emittedId: "replacement", resumeId: "saved", resumeCostUsd: 0.0169623 },
+  ])("clears the saved cost when the $name changes", async ({ provider, accountId, emittedId, resumeId, resumeCostUsd }) => {
+    const options: StartOptions[] = [];
+    const h = harness((startOptions) => {
+      options.push(startOptions);
+      return new FakeSession();
+    });
+    const bot = newBot(h);
+    h.db.prepare("INSERT INTO sessions (bot_id, provider, account_id, cli_session_id, updated_at, total_cost_usd) VALUES (?, ?, ?, ?, ?, ?)")
+      .run(bot.id, provider, accountId, "saved", "then", 0.0169623);
+
+    h.runner.submit(bot.id, "continue", []);
+    await waitFor(() => h.sessions[0]?.sent.length);
+    expect(options[0]).toMatchObject({ resumeId, resumeCostUsd });
+    h.sessions[0].emit({ type: "session", cliSessionId: emittedId });
+    expect(h.db.prepare("SELECT provider, account_id, cli_session_id, total_cost_usd FROM sessions WHERE bot_id = ?").get(bot.id)).toEqual({
+      provider: "claude",
+      account_id: "claude-main",
+      cli_session_id: emittedId,
+      total_cost_usd: null,
+    });
+  });
+});
+
 describe("Runner turn settlement", () => {
   it("restarts a failed resumed session fresh with a recap", async () => {
     const resumed = new FakeSession();
