@@ -195,6 +195,7 @@ export type TeamDeps = {
   broadcast: Broadcast;
   // Work is already committed to the queue. Runner.deliver accepts it without inserting again.
   deliver: (work: WorkItem) => void;
+  stopItem: (itemId: string, notice: string) => void | Promise<void>;
   currentWork: (botId: string) => WorkItem | null;
   stateOf: (bot: StoredBot) => BotState;
 };
@@ -204,6 +205,7 @@ export class Team {
   #db: Db;
   #broadcast: Broadcast;
   #deliver: (work: WorkItem) => void;
+  #stopItem: TeamDeps["stopItem"];
   #currentWork: (botId: string) => WorkItem | null;
   #stateOf: (bot: StoredBot) => BotState;
   #shared = new Map<string, string[]>(); // work item id -> files the bot shared during that turn
@@ -216,6 +218,7 @@ export class Team {
     this.#db = deps.db;
     this.#broadcast = deps.broadcast;
     this.#deliver = deps.deliver;
+    this.#stopItem = deps.stopItem;
     this.#currentWork = deps.currentWork;
     this.#stateOf = deps.stateOf;
   }
@@ -320,7 +323,7 @@ export class Team {
     }
   }
 
-  // Capture before closing the session or attempting the fallible folder-first delete.
+  // Capture after the session closes and before attempting the fallible folder-first delete.
   // This does not change the queue, exchanges, snapshots or published state.
   botDeleting(botId: string): BotDeletionHandle {
     const bot = getStoredBot(this.#db, botId);
@@ -362,6 +365,7 @@ export class Team {
     if (this.#deletedBots.has(botId)) return;
     if (this.#botOrNull(botId)) throw new RpcError("busy", "The bot must be deleted before finishing its exchanges");
     const queued: WorkItem[] = [];
+    const stopping: string[] = [];
     const moved: { from: string; to: string }[] = [];
     try {
       this.#atomic(() => {
@@ -373,8 +377,9 @@ export class Team {
             this.#db.prepare("INSERT INTO exchanges (id, from_bot_id, to_bot_id, request, reply, status, chain_id, reply_to, created_at, replied_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
               .run(row.id, row.from_bot_id, row.to_bot_id, row.request, row.reply, row.status, row.chain_id, row.reply_to, row.created_at, row.replied_at);
           }
-          this.#db.prepare("DELETE FROM work_items WHERE exchange_id = ? AND source = 'bot_request' AND status = 'queued'").run(row.id);
-          this.#db.prepare("UPDATE work_items SET status = 'failed', ended_at = ? WHERE exchange_id = ? AND source = 'bot_request' AND status = 'running'").run(nowIso(), row.id);
+          const running = this.#db.prepare("SELECT id FROM work_items WHERE exchange_id = ? AND source = 'bot_request' AND status = 'running'").all(row.id) as { id: string }[];
+          stopping.push(...running.map((item) => item.id));
+          this.#db.prepare("UPDATE work_items SET status = 'failed', ended_at = ? WHERE exchange_id = ? AND source = 'bot_request' AND status = 'queued'").run(nowIso(), row.id);
           this.#fail(row, `${handle.bot.name} was deleted`, captured);
           if (row.to_bot_id === botId && captured.asker && this.#botOrNull(captured.asker.id)) {
             const replyTo = this.#db.prepare("SELECT 1 FROM conversations WHERE id = ?").get(captured.replyTo) ? captured.replyTo : captured.asker.id;
@@ -402,6 +407,14 @@ export class Team {
     } catch (error) {
       for (const move of moved.reverse()) renameSync(move.to, move.from);
       throw error;
+    }
+    for (const itemId of stopping) {
+      const failed = (error: unknown) => console.error("Tjommie: could not stop a deleted bot's request", error);
+      try {
+        void Promise.resolve(this.#stopItem(itemId, `${handle.bot.name} was deleted.`)).catch(failed);
+      } catch (error) {
+        failed(error);
+      }
     }
     for (const item of queued) this.#wake(item);
   }
@@ -543,7 +556,8 @@ export class Team {
     }
     if (result.outcome !== "done") {
       const reason = result.outcome === "interrupted" ? "it was stopped" : (result.error ?? "something went wrong");
-      if (first) this.#fail(row, reason);
+      if (first) this.#atomic(() => this.#fail(row, reason));
+      if (files.length) this.#saveFilesForPerson(to, files);
       this.#tell(row, failedPrompt(to.name, row.request, reason));
       return;
     }
@@ -555,7 +569,7 @@ export class Team {
     } catch {
       for (const name of inbox) rmSync(join(recipient.homeFolder, "inbox", name), { force: true });
       const reason = "the shared files could not be copied into your inbox";
-      this.#atomic(() => this.#fail(row, reason));
+      if (first) this.#atomic(() => this.#fail(row, reason));
       this.#tell(row, failedPrompt(to.name, row.request, reason));
       return;
     }
@@ -574,14 +588,14 @@ export class Team {
       });
     } catch (error) {
       for (const name of inbox) rmSync(join(recipient.homeFolder, "inbox", name), { force: true });
-      this.#atomic(() => this.#fail(row, "the reply could not be saved"));
+      if (first) this.#atomic(() => this.#fail(row, "the reply could not be saved"));
       throw error;
     }
     if (queued) {
       try {
         this.#wake(queued);
       } catch (error) {
-        this.#atomic(() => this.#fail(row, "the reply could not be delivered"));
+        if (first) this.#atomic(() => this.#fail(row, "the reply could not be delivered"));
         throw error;
       }
     }
@@ -730,7 +744,10 @@ export class Team {
   }
 
   #atomic<T>(work: () => T, afterCommit?: () => void): T {
-    if (this.#pending) return work();
+    if (this.#pending) {
+      if (afterCommit) throw new Error("An after-commit action cannot run inside another Team transaction.");
+      return work();
+    }
     const events: (() => void)[] = [];
     this.#pending = events;
     let result!: T;

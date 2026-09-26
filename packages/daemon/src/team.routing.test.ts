@@ -15,12 +15,13 @@ import { tempRoot, waitFor } from "./testing.ts";
 class RoutingSession implements ProviderSession {
   sent: string[] = [];
   steered: string[] = [];
+  interrupts = 0;
   listener: ((event: ProviderEvent) => void) | null = null;
 
   async start(): Promise<void> {}
   async send(text: string): Promise<void> { this.sent.push(text); }
   async steer(text: string): Promise<boolean> { this.steered.push(text); return true; }
-  async interrupt(): Promise<void> {}
+  async interrupt(): Promise<void> { this.interrupts++; }
   answer(): void {}
   close(): void {}
   pid(): undefined { return undefined; }
@@ -78,6 +79,7 @@ beforeEach(() => {
     db,
     broadcast: () => {},
     deliver: (work) => { delivered.push(work); runner.deliver(work); },
+    stopItem: (id, notice) => runner.stopItem(id, notice),
     currentWork: (botId) => runner.currentWork(botId),
     stateOf: (bot) => runner.toBot(bot).state,
   });
@@ -170,10 +172,13 @@ describe("Team reply routing with Runner", () => {
     deleteBot(db, alice.id);
     team.botDeleted(deleting);
     runner.forget(alice.id);
-    expect(() => getWorkItem(db, queued.id)).toThrow(/No work item/);
+    expect(getWorkItem(db, queued.id).status).toBe("failed");
+    expect(getWorkItem(db, running.id).status).toBe("running");
+    expect(bobSession.interrupts).toBe(1);
     expect(getExchange(db, queued.exchangeId!).status).toBe("failed");
     expect(getExchange(db, running.exchangeId!).status).toBe("failed");
     expect(() => bobSession.finish("Finished for the room")).not.toThrow();
+    expect(getWorkItem(db, running.id).status).toBe("done");
     expect(getExchange(db, running.exchangeId!)).toMatchObject({ status: "failed", reply: "Alice was deleted" });
     expect(delivered).toHaveLength(2);
     expect(bobSession.sent).toHaveLength(1);

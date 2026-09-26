@@ -16,7 +16,7 @@ beforeEach(() => {
   root = tempRoot();
   db = openDb(join(root, "t.db"));
   bot = createBot(db, join(root, "bots"), { name: "Writer", color: "blue", shape: "circle", instructions: "Write summaries.", provider: "codex", model: "gpt-5.6-sol" });
-  team = new Team({ db, broadcast: () => {}, deliver: () => {}, currentWork: () => null, stateOf: () => "idle" });
+  team = new Team({ db, broadcast: () => {}, deliver: () => {}, stopItem: () => {}, currentWork: () => null, stateOf: () => "idle" });
   otherDriveFolders = [];
 });
 
