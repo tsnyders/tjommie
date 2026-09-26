@@ -121,19 +121,25 @@ describe("Runner against the real CLIs", () => {
 
   it("gets back to Idle with a Retry when the CLI dies mid-turn (CLI killed mid-turn)", async () => {
     const h = harness();
-    const bot = newBot(h, { autonomy: "full" });
-    const message = h.runner.submit(bot.id, "Write a response of at least 2,000 words. Start immediately and do not use tools.", []);
-    await waitFor(() => h.events.find((event) => event.event === "message.delta" && event.data.conversationId === bot.id));
-    killTree(h.runner.processId(bot.id));
-    const error = await waitFor(() => h.firstAdded(bot.id, "error"));
+    const bot = newBot(h, { autonomy: "ask" });
+    const message = h.runner.submit(bot.id, "Use the Write tool to create crash.txt containing the word hi. Then reply DONE.", []);
+    // An unanswered permission request holds the real turn open, regardless of response length or kill latency.
+    const approval = await waitFor(() => h.events.find((event): event is Extract<SentEvent, { event: "approval.added" }> =>
+      event.event === "approval.added" && event.data.botId === bot.id,
+    ));
+    expect(approval.data.tool).toBe("Write");
+    expect(h.state(bot.id)).toBe("waiting");
+    expect(h.db.prepare("SELECT status FROM work_items WHERE message_id = ?").get(message.id)).toEqual({ status: "running" });
+    const pid = h.runner.processId(bot.id);
+    expect(pid).toBeDefined();
+    killTree(pid);
+    const error = await waitFor(() => h.firstAdded(bot.id, "error"), 20_000);
     expect(error.data).toEqual({ retryMessageId: message.id });
-    await waitFor(() => h.state(bot.id) === "idle");
+    await waitFor(() => h.state(bot.id) === "idle", 20_000);
+    expect(h.runner.processId(bot.id)).toBeUndefined();
     expect(h.db.prepare("SELECT status FROM work_items WHERE message_id = ?").get(message.id)).toEqual({ status: "failed" });
-    const partial = h.db
-      .prepare("SELECT body, status FROM messages WHERE conversation_id = ? AND author = ? AND kind = 'text' ORDER BY seq DESC LIMIT 1")
-      .get(bot.id, bot.id) as { body: string; status: string };
-    expect(partial.body.length).toBeGreaterThan(0);
-    expect(partial.status).toBe("failed");
+    expect(h.db.prepare("SELECT status FROM approvals WHERE id = ?").get(approval.data.id)).toEqual({ status: "denied" });
+    expect(existsSync(join(bot.homeFolder, "crash.txt"))).toBe(false);
   });
 
   it("keeps a conversation across a restart (resume) and across a fresh session (recap)", async () => {
