@@ -5,6 +5,7 @@ export type Client = {
   call: <M extends MethodName>(method: M, params: ParamsIn<M>) => Promise<Result<M>>;
   events: ClientEvent[];
   subscribe: (listener: (event: ClientEvent) => void) => () => void;
+  disconnected: Promise<ClientConnectionError>;
   close: () => Promise<void>;
 };
 
@@ -14,8 +15,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function connectionError(code: number, reason: string): Error {
-  return new Error(`WebSocket closed (code ${code}, reason: ${reason || "none"})`);
+export class ClientConnectionError extends Error {
+  readonly code: number;
+  readonly reason: string;
+  readonly opened: boolean;
+
+  constructor(code: number, reason: string, opened: boolean) {
+    super(`WebSocket closed (code ${code}, reason: ${reason || "none"})`);
+    this.name = "ClientConnectionError";
+    this.code = code;
+    this.reason = reason;
+    this.opened = opened;
+  }
 }
 
 // Node's built-in WebSocket speaks the same protocol as the desktop client.
@@ -25,8 +36,9 @@ export async function connect(port: number, token: string): Promise<Client> {
   const subscribers = new Set<(event: ClientEvent) => void>();
   const pending = new Map<number, PendingCall>();
   let nextId = 1;
+  let opened = false;
   let welcomed = false;
-  let failure: Error | undefined;
+  let failure: ClientConnectionError | undefined;
   let resolveWelcome: () => void = () => {};
   let rejectWelcome: (error: Error) => void = () => {};
   const welcome = new Promise<void>((resolve, reject) => {
@@ -35,11 +47,18 @@ export async function connect(port: number, token: string): Promise<Client> {
   });
   let resolveClosed: () => void = () => {};
   const closed = new Promise<void>((resolve) => { resolveClosed = resolve; });
+  let resolveDisconnected: (error: ClientConnectionError) => void = () => {};
+  const disconnected = new Promise<ClientConnectionError>((resolve) => { resolveDisconnected = resolve; });
 
-  function fail(error: Error): void {
+  function connectionError(code: number, reason: string): ClientConnectionError {
+    return new ClientConnectionError(code, reason, opened);
+  }
+
+  function fail(error: ClientConnectionError): void {
     if (failure) return;
     failure = error;
     clearTimeout(helloTimer);
+    resolveDisconnected(error);
     rejectWelcome(error);
     for (const call of pending.values()) call.reject(error);
     pending.clear();
@@ -56,6 +75,7 @@ export async function connect(port: number, token: string): Promise<Client> {
   }, 5000);
 
   socket.addEventListener("open", () => {
+    opened = true;
     if (failure) return;
     try {
       socket.send(JSON.stringify({ type: "hello", protocol: PROTOCOL_VERSION, token }));
@@ -141,6 +161,7 @@ export async function connect(port: number, token: string): Promise<Client> {
   return {
     call,
     events: received,
+    disconnected,
     subscribe: (listener) => {
       subscribers.add(listener);
       return () => { subscribers.delete(listener); };
