@@ -50,6 +50,7 @@ type Live = {
   busy: boolean; // a turn is running
   sent: boolean; // the current turn's first message has reached the CLI, so more can be steered in
   steering: boolean;
+  steeringItem: WorkItem | null;
   item: WorkItem | null; // null while the CLI runs a turn it started by itself
   text: { id: string; body: string } | null;
   lastText: { id: string; body: string } | null;
@@ -105,6 +106,9 @@ export class Runner {
   #createSession: SessionFactory;
   #hooks: RunnerHooks;
   #live = new Map<string, Live>();
+  #deleting = new Map<string, { live: Live; items: WorkItem[] }>();
+  #recovered = false;
+  #ready = true;
 
   constructor(deps: { db: Db; broadcast: Broadcast; isSignedIn: (provider: Bot["provider"]) => boolean; createSession?: SessionFactory; hooks?: RunnerHooks }) {
     this.#db = deps.db;
@@ -114,8 +118,10 @@ export class Runner {
     this.#hooks = deps.hooks ?? {};
   }
 
-  // Call once at startup: settle work a restart cut off, then carry on with whatever is queued.
-  start(): void {
+  // Settle interrupted work before listening. Hooks may queue replies, but cannot start a CLI yet.
+  recover(): void {
+    if (this.#recovered) return;
+    this.#ready = false;
     for (const item of recoverAfterRestart(this.#db)) {
       if (item.messageId) this.#emitMessage(updateMessage(this.#db, item.messageId, { status: "interrupted" }));
       this.#notice(item.conversationId, "error", RESTARTED, item.messageId ? { retryMessageId: item.messageId } : null);
@@ -124,6 +130,13 @@ export class Runner {
     const streaming = this.#db.prepare("SELECT id FROM messages WHERE status = 'streaming' ORDER BY created_at, rowid").all() as { id: string }[];
     for (const message of streaming) this.#emitMessage(updateMessage(this.#db, message.id, { status: "interrupted" }));
     for (const approval of expirePendingApprovals(this.#db)) this.#showApprovalStatus(approval);
+    this.#recovered = true;
+  }
+
+  // Start pumping after the daemon knows the listening address used by its MCP server.
+  start(): void {
+    this.recover();
+    this.#ready = true;
     for (const bot of listStoredBots(this.#db)) {
       if (bot.limitedUntil) this.#armLimitTimer(bot.id, bot.limitedUntil);
       this.pump(bot.id);
@@ -233,25 +246,62 @@ export class Runner {
     else this.#closeSession(botId, live);
   }
 
-  // Call before deleting a bot.
-  forget(botId: string): void {
-    const live = this.#live.get(botId);
-    if (!live) return;
-    if (live.idleTimer) clearTimeout(live.idleTimer);
-    if (live.limitTimer) clearTimeout(live.limitTimer);
-    this.#closeSession(botId, live);
+  // Release the CLI's folder locks without changing persisted work. pump restores it if deletion fails.
+  closeForDeletion(botId: string): void {
+    if (this.#deleting.has(botId)) return;
+    const live = this.#liveFor(botId);
+    const rows = this.#db.prepare("SELECT id FROM work_items WHERE bot_id = ? AND status IN ('queued', 'running') ORDER BY created_at, rowid").all(botId) as { id: string }[];
+    const items = rows.map((row) => getWorkItem(this.#db, row.id));
+    if (live.steeringItem && !items.some((item) => item.id === live.steeringItem?.id)) items.push(live.steeringItem);
+    this.#deleting.set(botId, { live, items });
     this.#live.delete(botId);
+    this.#releaseSession(botId, live);
+  }
+
+  // Call only after deletion succeeds. Captured work survives the database cascade long enough for hooks.
+  forget(botId: string): void {
+    if (!this.#deleting.has(botId) && this.#live.has(botId)) this.closeForDeletion(botId);
+    const detached = this.#deleting.get(botId);
+    if (!detached) return;
+    this.#deleting.delete(botId);
+    for (const item of detached.items) {
+      this.#safely(() => this.#hooks.turnEnded?.(item, { outcome: "interrupted", text: null, textMessageId: null, error: "The bot was deleted." }));
+    }
   }
 
   pump(botId: string): void {
+    if (!this.#ready) return;
+    const detached = this.#deleting.get(botId);
+    if (detached) {
+      this.#deleting.delete(botId);
+      // Use a new object so pending callbacks from the closed session cannot change resumed work.
+      this.#live.set(botId, { ...detached.live, session: null, sent: false, steering: false, steeringItem: null, idleTimer: null, limitTimer: null });
+      if (detached.live.steeringItem) setStatus(this.#db, detached.live.steeringItem.id, "queued");
+    }
     const live = this.#liveFor(botId);
-    if (live.busy) return;
+    if (live.busy && !detached) return;
     let bot: StoredBot;
     try {
       bot = getStoredBot(this.#db, botId);
     } catch (error) {
       if (!(error instanceof RpcError && error.code === "not_found")) console.error("Tjommie: loading a bot failed", error);
       return;
+    }
+    if (detached) {
+      // These cards refer to the closed provider session, so cannot be answered by its replacement.
+      for (const approvalId of live.approvals.keys()) this.#showApprovalStatus(resolveApproval(this.#db, approvalId, "deny"));
+      live.approvals.clear();
+      if (bot.limitedUntil) this.#armLimitTimer(botId, bot.limitedUntil);
+      if (live.busy && live.item) {
+        // Keep the same work and its routine timer after a failed folder removal.
+        this.#launchTurn(bot, live.item, live);
+        return;
+      }
+      if (live.busy) {
+        this.#flushText(live, "interrupted");
+        this.#closeActivity(live);
+        live.busy = false;
+      }
     }
     if (this.toBot(bot).state !== "idle") {
       this.#armIdle(botId, live);
@@ -278,7 +328,7 @@ export class Runner {
     if (item.messageId) this.#emitMessage(updateMessage(this.#db, item.messageId, { status: "sent" }));
     this.#emitBot(botId);
     this.#safely(() => this.#hooks.turnStarted?.(item));
-    this.#startTurn(bot, item).catch((error: unknown) => this.#finishTurn(botId, false, error instanceof Error ? error.message : String(error)));
+    this.#launchTurn(bot, item, live);
   }
 
   pumpAll(): void {
@@ -286,7 +336,11 @@ export class Runner {
   }
 
   shutdown(): void {
-    for (const botId of [...this.#live.keys()]) this.forget(botId);
+    this.#ready = false;
+    const live = [...this.#live];
+    this.#live.clear();
+    this.#deleting.clear();
+    for (const [botId, state] of live) this.#releaseSession(botId, state);
   }
 
   #liveFor(botId: string): Live {
@@ -299,6 +353,7 @@ export class Runner {
         busy: false,
         sent: false,
         steering: false,
+        steeringItem: null,
         item: null,
         text: null,
         lastText: null,
@@ -319,6 +374,13 @@ export class Runner {
 
   #dest(botId: string, live: Live): string {
     return live.item?.conversationId ?? botId;
+  }
+
+  #launchTurn(bot: StoredBot, item: WorkItem, live: Live): void {
+    this.#startTurn(bot, item).catch((error: unknown) => {
+      if (this.#live.get(bot.id) !== live || live.item?.id !== item.id) return;
+      this.#finishTurn(bot.id, false, error instanceof Error ? error.message : String(error));
+    });
   }
 
   async #startTurn(bot: StoredBot, item: WorkItem): Promise<void> {
@@ -411,13 +473,17 @@ export class Runner {
         const session = live.session;
         if (!session) break;
         setStatus(this.#db, item.id, "done"); // claim it first, so a turn that ends meanwhile can't pick it up too
+        live.steeringItem = item;
         let steered = false;
         try {
           steered = await session.steer(item.text);
         } catch (error) {
+          if (this.#live.get(botId) !== live) return;
           // Expected inability to steer is false in the provider contract; rejected calls are failures.
           console.error("Tjommie: steering a work item failed", error);
         }
+        if (this.#live.get(botId) !== live) return;
+        live.steeringItem = null;
         if (!steered) {
           setStatus(this.#db, item.id, "queued"); // it runs as the next turn instead
           break;
@@ -427,6 +493,7 @@ export class Runner {
     } finally {
       live.steering = false;
     }
+    if (this.#live.get(botId) !== live) return;
     if (!live.busy) this.pump(botId);
   }
 
@@ -709,6 +776,18 @@ export class Runner {
       session.close();
     } finally {
       this.#safely(() => this.#hooks.sessionClosed?.(botId));
+    }
+  }
+
+  #releaseSession(botId: string, live: Live): void {
+    if (live.idleTimer) clearTimeout(live.idleTimer);
+    if (live.limitTimer) clearTimeout(live.limitTimer);
+    live.idleTimer = null;
+    live.limitTimer = null;
+    try {
+      this.#closeSession(botId, live);
+    } catch (error) {
+      console.error("Tjommie: closing a CLI session failed", error);
     }
   }
 
