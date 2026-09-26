@@ -1,4 +1,4 @@
-import type { Message } from "@tjommie/protocol";
+import type { Message, Result } from "@tjommie/protocol";
 import { newId, nowIso, type Db } from "./db.ts";
 import { RpcError } from "./server.ts";
 
@@ -67,6 +67,13 @@ export function history(db: Db, conversationId: string, before: string | undefin
     .prepare("SELECT * FROM messages WHERE conversation_id = ? AND seq < ? ORDER BY seq DESC LIMIT ?")
     .all(conversationId, cursor?.seq ?? Number.MAX_SAFE_INTEGER, limit) as MessageRow[];
   return rows.reverse().map(toMessage);
+}
+
+// Read one extra message so a full final page still reports hasMore: false.
+export function historyPage(db: Db, conversationId: string, before: string | undefined, limit: number): Result<"chat.history"> {
+  const messages = history(db, conversationId, before, limit + 1);
+  const hasMore = messages.length > limit;
+  return { messages: hasMore ? messages.slice(1) : messages, hasMore };
 }
 
 // Opening text for a fresh CLI session, so the bot picks up an ongoing chat where it left off.

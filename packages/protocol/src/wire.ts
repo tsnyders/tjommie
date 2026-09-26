@@ -28,6 +28,7 @@ export type ErrorCode = z.infer<typeof ErrorCode>;
 const Empty = z.object({});
 const Id = z.object({ id: z.string() });
 const Page = { before: z.string().optional(), limit: z.number().int().min(1).max(200).default(50) };
+const MessagePage = z.object({ messages: z.array(Message), hasMore: z.boolean() });
 
 // Every request the daemon answers: params are validated on arrival, results are what handlers return.
 export const methods = {
@@ -40,18 +41,18 @@ export const methods = {
   "bots.delete": { params: Id, result: Empty },
   "bots.pause": { params: z.object({ id: z.string(), paused: z.boolean() }), result: Bot },
   "bots.showBrowser": { params: Id, result: Empty },
-  "chat.history": { params: z.object({ botId: z.string(), ...Page }), result: z.array(Message) },
+  "chat.history": { params: z.object({ botId: z.string(), ...Page }), result: MessagePage },
   "chat.send": {
     params: z.object({ botId: z.string(), text: z.string().trim().min(1).max(100_000), files: z.array(z.string()).max(20).default([]) }),
     result: Message,
   },
   "chat.stop": { params: z.object({ botId: z.string() }), result: Empty },
-  "chat.retry": { params: z.object({ messageId: z.string() }), result: Message },
+  "chat.retry": { params: z.object({ messageId: z.string(), botId: z.string().optional() }), result: Message },
   "approvals.respond": { params: z.object({ approvalId: z.string(), decision: ApprovalDecision }), result: Approval },
-  "room.history": { params: z.object(Page), result: z.array(Message) },
+  "room.history": { params: z.object(Page), result: MessagePage },
   "room.post": { params: z.object({ text: z.string().trim().min(1).max(100_000) }), result: Message },
-  "exchanges.get": { params: Id, result: z.object({ exchange: Exchange, messages: z.array(Message) }) },
-  "routines.list": { params: z.object({ botId: z.string() }), result: z.array(Routine) },
+  "exchanges.get": { params: Id, result: MessagePage.extend({ exchange: Exchange }) },
+  "routines.list": { params: z.object({ botId: z.string().optional() }), result: z.array(Routine) },
   "routines.create": { params: RoutineInput, result: Routine },
   "routines.update": { params: z.object({ id: z.string(), patch: RoutinePatch }), result: Routine },
   "routines.delete": { params: Id, result: Empty },
@@ -59,6 +60,8 @@ export const methods = {
   "settings.get": { params: Empty, result: Settings },
   "settings.set": { params: Settings.partial(), result: Settings },
 } as const;
+
+const Notification = z.object({ botId: z.string(), title: z.string(), body: z.string() });
 
 // Everything the daemon pushes to connected clients.
 export const events = {
@@ -70,7 +73,11 @@ export const events = {
   "approval.added": Approval,
   "approval.resolved": Approval,
   "setup.changed": z.array(ProviderSetup),
-  notify: z.object({ botId: z.string(), title: z.string(), body: z.string() }),
+  notify: z.discriminatedUnion("kind", [
+    Notification.extend({ kind: z.literal("approval"), approvalId: z.string().optional() }),
+    Notification.extend({ kind: z.literal("limit") }),
+    Notification.extend({ kind: z.literal("routine_failed"), routineId: z.string().optional(), runId: z.string().optional() }),
+  ]),
   "routine.updated": Routine,
   "routine.deleted": Id,
   "routine.run": RoutineRun,

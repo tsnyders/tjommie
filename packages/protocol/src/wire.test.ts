@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Approval, BotInput, BotPatch, ClientMessage, ErrorCode, PROTOCOL_VERSION, RoutineInput, RoutinePatch, Settings, TEAM_ROOM_ID, methods } from "./index.ts";
+import { Approval, BotInput, BotPatch, ClientMessage, ErrorCode, PROTOCOL_VERSION, RoutineInput, RoutinePatch, Settings, TEAM_ROOM_ID, events, methods } from "./index.ts";
 
 const bot = { name: "Writer", color: "blue", shape: "circle", instructions: "", provider: "claude", model: "sonnet" } as const;
 
@@ -34,11 +34,47 @@ describe("protocol", () => {
     expect(methods["chat.send"].params.parse({ botId: "b", text: " hi " })).toEqual({ botId: "b", text: "hi", files: [] });
     expect(() => methods["chat.send"].params.parse({ botId: "b", text: "  " })).toThrow();
   });
+
+  it("preserves an optional bot id when selecting a failed room turn to retry", () => {
+    expect(methods["chat.retry"].params.parse({ messageId: "m" })).toEqual({ messageId: "m" });
+    expect(methods["chat.retry"].params.parse({ messageId: "m", botId: "b" })).toEqual({ messageId: "m", botId: "b" });
+  });
+
+  it("requires an explicit hasMore flag on history responses", () => {
+    for (const method of ["chat.history", "room.history"] as const) {
+      expect(methods[method].result.parse({ messages: [], hasMore: false })).toEqual({ messages: [], hasMore: false });
+      expect(methods[method].result.safeParse([]).success).toBe(false);
+      expect(methods[method].result.safeParse({ messages: [] }).success).toBe(false);
+    }
+    const exchange = { id: "e", fromBotId: "a", toBotId: "b", status: "waiting", request: "Help", reply: null, createdAt: "t", repliedAt: null };
+    expect(methods["exchanges.get"].result.parse({ exchange, messages: [], hasMore: false }).hasMore).toBe(false);
+    expect(methods["exchanges.get"].result.safeParse({ exchange, messages: [] }).success).toBe(false);
+  });
 });
 
 describe("protocol for bots working together", () => {
   it("names the Team room", () => {
     expect(TEAM_ROOM_ID).toBe("team");
+  });
+
+  it("lets callers list all routines or one bot's routines", () => {
+    expect(methods["routines.list"].params.parse({})).toEqual({});
+    expect(methods["routines.list"].params.parse({ botId: "b" })).toEqual({ botId: "b" });
+  });
+
+  it("describes notification kinds and their optional targets", () => {
+    const notification = { botId: "b", title: "Needs attention", body: "Open this bot" };
+    expect(events.notify.safeParse(notification).success).toBe(false);
+    for (const target of [
+      { kind: "approval", approvalId: "a" },
+      { kind: "limit" },
+      { kind: "routine_failed", routineId: "r", runId: "run" },
+    ]) expect(events.notify.parse({ ...notification, ...target })).toEqual({ ...notification, ...target });
+    for (const kind of ["approval", "limit", "routine_failed"]) {
+      expect(events.notify.parse({ ...notification, kind })).toEqual({ ...notification, kind });
+    }
+    expect(events.notify.safeParse({ ...notification, kind: "other" }).success).toBe(false);
+    expect(events.notify.safeParse({ ...notification, kind: "approval", approvalId: 42 }).success).toBe(false);
   });
 
   it("accepts a weekday routine and rejects bad days and times", () => {

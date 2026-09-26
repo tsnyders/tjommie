@@ -1,6 +1,6 @@
 ﻿import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { Bot, Message, ProviderSetup, type BotInput } from "@tjommie/protocol";
+import { Bot, ProviderSetup, type BotInput } from "@tjommie/protocol";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { z } from "zod";
 import { connect, type Client } from "./client.ts";
@@ -80,8 +80,9 @@ it("creates a bot and chats with it over the WebSocket API", async () => {
     const reply = await said(client, bot.id, bot.id, "PONG");
     expect(reply.body).toContain("PONG");
     expect(client.events.some((event) => event.event === "message.delta")).toBe(true);
-    const history = Message.array().parse(await client.call("chat.history", { botId: bot.id }));
+    const { messages: history, hasMore } = await client.call("chat.history", { botId: bot.id });
     expect(history.map((message) => message.author)).toEqual(["you", bot.id]);
+    expect(hasMore).toBe(false);
     await expect(client.call("chat.send", { botId: bot.id, text: "   " })).rejects.toThrow(/bad_params/);
   });
 });
@@ -122,11 +123,12 @@ it("a Claude bot asks a Codex bot for help and gets the answer back", async () =
       return undefined;
     });
     const { exchangeId } = z.object({ exchangeId: z.string() }).parse(row.data);
-    const { exchange, messages } = await client.call("exchanges.get", { id: exchangeId });
+    const { exchange, messages, hasMore } = await client.call("exchanges.get", { id: exchangeId });
     expect(exchange).toMatchObject({ status: "replied", fromBotId: researcher.id, toBotId: writer.id });
     expect(exchange.reply).toContain("MANGO");
     expect(messages[0]).toMatchObject({ author: researcher.id, kind: "text" });
-    const room = await client.call("room.history", {});
+    expect(hasMore).toBe(false);
+    const { messages: room } = await client.call("room.history", {});
     const exchangePosts = room.flatMap((message) => {
       const data = z.object({ exchangeId: z.string(), toBotId: z.string() }).safeParse(message.data);
       return data.success && data.data.exchangeId === exchange.id ? [[message.author, data.data.toBotId]] : [];
@@ -193,7 +195,7 @@ it("runs a routine when it's due, under a routine label", async () => {
     await waitFor(() => client.events.find((event) =>
       event.event === "routine.run" && event.data.routineId === routine.id && event.data.status === "done",
     ));
-    const chat = await client.call("chat.history", { botId: bot.id });
+    const { messages: chat } = await client.call("chat.history", { botId: bot.id });
     expect(chat[0]).toMatchObject({ kind: "routine", body: "Routine: Tick" });
   });
 });

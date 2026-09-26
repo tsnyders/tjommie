@@ -126,7 +126,7 @@ async function terminal(options: { beforeWelcome?: { code: number; reason: strin
           break;
         }
         default:
-          connected.send(JSON.stringify({ type: "res", id: request.id, ok: false, error: { code: "unexpected", message: request.method } }));
+          connected.send(JSON.stringify({ type: "res", id: request.id, ok: false, error: { code: "unknown_method", message: request.method } }));
           return;
       }
       connected.send(JSON.stringify({ type: "res", id: request.id, ok: true, result }));
@@ -207,9 +207,9 @@ it("prints Team room posts, bot names, local cards and streaming text", async ()
   chat.emit("approval.resolved", approval({ status: "allowed" }));
   chat.emit("approval.resolved", approval({ id: "denied-card", status: "denied", summary: "Write declined" }));
   chat.emit("approval.resolved", approval({ botId: writer.id, status: "allowed", summary: "Hidden other resolved approval" }));
-  chat.emit("notify", { botId: writer.id, title: "Routine finished", body: "News checked" });
-  chat.emit("notify", { botId: "unknown", title: "Needs attention", body: "Unknown bot report" });
-  chat.emit("notify", { botId: tester.id, title: "Ready", body: "Your bot report" });
+  chat.emit("notify", { kind: "routine_failed", routineId: "r", runId: "run", botId: writer.id, title: "Routine finished", body: "News checked" });
+  chat.emit("notify", { kind: "limit", botId: "unknown", title: "Needs attention", body: "Unknown bot report" });
+  chat.emit("notify", { kind: "approval", approvalId: "a", botId: tester.id, title: "Ready", body: "Your bot report" });
   chat.emit("settings.changed", { chainLimit: 5 });
   chat.emit("bot.deleted", { id: "Hidden deleted bot" });
   chat.emit("routine.deleted", { id: "Hidden deleted routine" });
@@ -262,7 +262,7 @@ it("prints the chat header before replaying events received during bot setup", a
     { type: "event", event: "message.added", data: message({ conversationId: TEAM_ROOM_ID, author: writer.id, body: "Setup room post", data: { toBotId: tester.id } }) },
     { type: "event", event: "message.added", data: message({ kind: "notice", body: "Setup local notice" }) },
     { type: "event", event: "approval.added", data: approval({ summary: "Setup approval" }) },
-    { type: "event", event: "notify", data: { botId: writer.id, title: "Setup notification", body: "Setup complete" } },
+    { type: "event", event: "notify", data: { kind: "approval", approvalId: "a", botId: writer.id, title: "Setup notification", body: "Setup complete" } },
   ] });
   await chat.waitFor("[Editor] Setup notification: Setup complete");
   const output = chat.output();
