@@ -5,6 +5,7 @@ import { createInterface } from "node:readline";
 import type { Autonomy } from "@tjommie/protocol";
 import { killTree, spawnCli, type CliCommand } from "../cli.ts";
 import { parseClaudeLine, toolSummary } from "./claude-parse.ts";
+import { recordClaudeSessionOwner } from "./claude-files.ts";
 import type { ApprovalAnswer, McpServer, ProviderEvent, ProviderSession, StartOptions } from "./types.ts";
 
 const INTERRUPT_GRACE_MS = 10_000;
@@ -96,10 +97,13 @@ export class ClaudeSession implements ProviderSession {
     this.#filesDir = dir;
     let child: ChildProcessWithoutNullStreams;
     try {
+      recordClaudeSessionOwner(dir, { phase: "preparing", childPid: null });
       restrictSessionFolder(dir);
       const files = { instructions: join(dir, "instructions.txt"), mcp: join(dir, "mcp.json") };
       writeFileSync(files.instructions, this.#options.instructions, { mode: 0o600 });
       if (this.#options.mcpServers.length) writeFileSync(files.mcp, JSON.stringify(claudeMcpConfig(this.#options.mcpServers)), { mode: 0o600 });
+      // A crash during spawn may leave a live CLI whose PID was not recorded.
+      recordClaudeSessionOwner(dir, { phase: "starting", childPid: null });
       child = spawnCli(this.#cmd, claudeArgs(this.#options, files), { cwd: this.#options.cwd, env: this.#options.env });
     } catch (error) {
       this.#removeFiles();
@@ -117,6 +121,14 @@ export class ClaudeSession implements ProviderSession {
       const status = code === null ? `signal ${signal ?? "unknown"}` : `code ${code}`;
       this.#exited(child, this.#closing || code === 0 ? null : stderr.trim() || `Claude exited with ${status}`);
     });
+    if (child.pid !== undefined) {
+      try {
+        recordClaudeSessionOwner(dir, { phase: "started", childPid: child.pid });
+      } catch {
+        // Keep the starting marker. Failing to record the PID must not abandon a live CLI.
+        console.error("Could not record Claude's session process. Its files will be kept until it closes.", dir);
+      }
+    }
   }
 
   async send(text: string): Promise<void> {
@@ -271,16 +283,20 @@ export class ClaudeSession implements ProviderSession {
   }
 }
 
+let userSid: string | undefined;
+
 // Windows ignores POSIX file modes. Remove inherited ACL entries before placing secrets in the folder.
 function restrictSessionFolder(folder: string): void {
   if (process.platform !== "win32") {
     chmodSync(folder, 0o700);
     return;
   }
-  const identity = spawnSync("whoami", ["/user", "/fo", "csv", "/nh"], { encoding: "utf8", windowsHide: true });
-  const sid = identity.stdout?.match(/S-1-[0-9-]+/)?.[0];
-  if (!sid) throw new Error("Could not identify the user for Claude's session files.");
-  const result = spawnSync("icacls", [folder, "/inheritance:r", "/grant:r", `*${sid}:(OI)(CI)F`], { windowsHide: true });
+  if (userSid === undefined) {
+    const identity = spawnSync("whoami", ["/user", "/fo", "csv", "/nh"], { encoding: "utf8", windowsHide: true });
+    userSid = identity.stdout?.match(/S-1-[0-9-]+/)?.[0];
+    if (!userSid) throw new Error("Could not identify the user for Claude's session files.");
+  }
+  const result = spawnSync("icacls", [folder, "/inheritance:r", "/grant:r", `*${userSid}:(OI)(CI)F`], { windowsHide: true });
   if (result.status !== 0) throw new Error("Could not make Claude's session files private.");
 }
 

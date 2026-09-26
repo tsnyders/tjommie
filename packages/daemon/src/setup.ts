@@ -4,6 +4,7 @@ import type { ModelInfo, Provider, ProviderSetup } from "@tjommie/protocol";
 import { cliEnv, openConsole, openUrl, resolveCli, runCli } from "./cli.ts";
 import { nowIso, type Db } from "./db.ts";
 import { startCodexServer } from "./providers/codex-rpc.ts";
+import { sweepClaudeSessionFiles } from "./providers/claude-files.ts";
 import { RpcError } from "./server.ts";
 
 export type Account = { id: string; provider: Provider; label: string; folder: string };
@@ -24,7 +25,10 @@ export function ensureAccounts(db: Db, accountsDir: string, dataRoot = dirname(a
     const id = `${provider}-main`;
     const folder = join(accountsDir, id);
     mkdirSync(folder, { recursive: true });
-    if (provider === "claude") hardenClaudeSettings(folder, dataRoot);
+    if (provider === "claude") {
+      sweepClaudeSessionFiles(folder);
+      hardenClaudeSettings(folder, dataRoot);
+    }
     db.prepare("INSERT OR IGNORE INTO accounts (id, provider, label, kind, folder, created_at) VALUES (?, ?, ?, 'subscription', ?, ?)").run(
       id,
       provider,
@@ -49,8 +53,9 @@ function hardenClaudeSettings(folder: string, dataRoot: string): void {
 }
 
 function readClaudeSettings(file: string): { settings: Record<string, unknown>; permissions: Record<string, unknown>; existing: string[] } | null {
+  const contents = existsSync(file) ? readFileSync(file, "utf8") : "{}";
   try {
-    const settings: unknown = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
+    const settings: unknown = JSON.parse(contents);
     if (!isRecord(settings) || Array.isArray(settings)) throw new Error("Expected a settings object");
     const permissions = settings.permissions === undefined ? {} : settings.permissions;
     if (!isRecord(permissions) || Array.isArray(permissions)) throw new Error("Expected a permissions object");

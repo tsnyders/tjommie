@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { openDb } from "./db.ts";
@@ -24,6 +24,11 @@ vi.mock("./cli.ts", async (importOriginal) => {
 
 vi.mock("./providers/codex-rpc.ts", () => codexMocks);
 
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return { ...actual, rmSync: vi.fn(actual.rmSync) };
+});
+
 const successfulCliRun = async (cmd: CliCommand, args: string[]): Promise<CliResult> => {
   if (args[0] === "--version") {
     return { code: 0, stdout: cmd.file === "claude" ? "2.1.280 (Claude Code)\n" : "codex-cli 0.155.1\n", stderr: "" };
@@ -44,6 +49,49 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllEnvs());
 
 describe("accounts", () => {
+  it("sweeps only confirmed stale session folders and preserves live or uncertain owners", () => {
+    const root = tempRoot();
+    const db = openDb(join(root, "t.db"));
+    const accountsDir = join(root, "accounts");
+    ensureAccounts(db, accountsDir);
+    const folder = join(accountsDir, "claude-main");
+    const cases: { name: string; owner: unknown; removed: boolean }[] = [
+      { name: "stale", owner: { version: 1, ownerPid: 100, phase: "started", childPid: 200 }, removed: true },
+      { name: "preparing", owner: { version: 1, ownerPid: 100, phase: "preparing", childPid: null }, removed: true },
+      { name: "live-owner", owner: { version: 1, ownerPid: 101, phase: "started", childPid: 200 }, removed: false },
+      { name: "surviving-child", owner: { version: 1, ownerPid: 100, phase: "started", childPid: 201 }, removed: false },
+      { name: "unknown-process", owner: { version: 1, ownerPid: 102, phase: "started", childPid: 200 }, removed: false },
+      { name: "starting", owner: { version: 1, ownerPid: 100, phase: "starting", childPid: null }, removed: false },
+      { name: "malformed", owner: { version: 1, ownerPid: "wrong", phase: "started", childPid: 200 }, removed: false },
+      { name: "markerless", owner: undefined, removed: false },
+    ];
+    for (const item of cases) {
+      const dir = join(folder, `.tjommie-session-${item.name}`);
+      mkdirSync(dir);
+      writeFileSync(join(dir, "instructions.txt"), "Preserve unless confirmed stale");
+      if (item.owner !== undefined) writeFileSync(join(dir, "owner.json"), JSON.stringify(item.owner));
+    }
+    const outside = join(root, "outside");
+    mkdirSync(outside);
+    writeFileSync(join(outside, "owner.json"), JSON.stringify(cases[0].owner));
+    writeFileSync(join(outside, "keep.txt"), "outside");
+    symlinkSync(outside, join(folder, ".tjommie-session-junction"), process.platform === "win32" ? "junction" : "dir");
+    mkdirSync(join(folder, "unrelated"));
+    writeFileSync(join(folder, "unrelated", "owner.json"), JSON.stringify(cases[0].owner));
+    const liveness = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+      expect(signal).toBe(0);
+      if (pid === 101 || pid === 201) return true;
+      throw Object.assign(new Error("Process check"), { code: pid === 102 ? "EPERM" : "ESRCH" });
+    });
+    try {
+      ensureAccounts(db, accountsDir);
+      for (const item of cases) expect(existsSync(join(folder, `.tjommie-session-${item.name}`))).toBe(!item.removed);
+      expect(readFileSync(join(outside, "keep.txt"), "utf8")).toBe("outside");
+      expect(existsSync(join(folder, "unrelated"))).toBe(true);
+    } finally {
+      liveness.mockRestore();
+    }
+  });
   it("merges Claude deny rules without dropping existing settings or permissions", () => {
     const root = tempRoot();
     const db = openDb(join(root, "t.db"));
@@ -60,6 +108,27 @@ describe("accounts", () => {
     expect(settings.permissions.deny).toEqual(["Bash(rm *)", "Edit(**/.claude/**)", "Write(**/.claude/**)", `Read(/${absolute}/accounts/**)`, `Read(/${absolute}/daemon-token)`, `Read(/${absolute}/tjommie.db*)`]);
     ensureAccounts(db, accountsDir);
     expect(JSON.parse(readFileSync(file, "utf8"))).toEqual(settings);
+  });
+
+  it("logs stale folder removal failures and continues account setup", () => {
+    const root = tempRoot();
+    const db = openDb(join(root, "t.db"));
+    const accountsDir = join(root, "accounts");
+    ensureAccounts(db, accountsDir);
+    const folder = join(accountsDir, "claude-main", ".tjommie-session-locked");
+    mkdirSync(folder);
+    writeFileSync(join(folder, "owner.json"), JSON.stringify({ version: 1, ownerPid: 100, phase: "started", childPid: 200 }));
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const liveness = vi.spyOn(process, "kill").mockImplementation(() => { throw Object.assign(new Error("Gone"), { code: "ESRCH" }); });
+    vi.mocked(rmSync).mockImplementationOnce(() => { throw Object.assign(new Error("Locked"), { code: "EBUSY" }); });
+    try {
+      expect(ensureAccounts(db, accountsDir)).toHaveLength(2);
+      expect(existsSync(folder)).toBe(true);
+      expect(logged).toHaveBeenCalledWith("Could not remove stale Claude session files.", folder);
+    } finally {
+      logged.mockRestore();
+      liveness.mockRestore();
+    }
   });
 
   it.each([
@@ -83,6 +152,17 @@ describe("accounts", () => {
     } finally {
       logged.mockRestore();
     }
+  });
+
+  it("still reports filesystem failures while reading Claude settings", () => {
+    const root = tempRoot();
+    const db = openDb(join(root, "t.db"));
+    const accountsDir = join(root, "accounts");
+    ensureAccounts(db, accountsDir);
+    const file = join(accountsDir, "claude-main", "settings.json");
+    unlinkSync(file);
+    mkdirSync(file);
+    expect(() => ensureAccounts(db, accountsDir)).toThrow();
   });
   it("creates one account per provider, once, each with its folder", () => {
     const root = tempRoot();
