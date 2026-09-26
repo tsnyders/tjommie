@@ -9,7 +9,7 @@ import { newId, nowIso, transaction, type Db } from "./db.ts";
 import { ClaudeSession } from "./providers/claude.ts";
 import { CodexSession } from "./providers/codex.ts";
 import type { McpServer, ProviderEvent, ProviderSession, StartOptions } from "./providers/types.ts";
-import { enqueue, lastItemForMessage, newChain, nextQueued, nextSteerable, recoverAfterRestart, setStatus, type NewWork, type WorkItem } from "./queue.ts";
+import { enqueue, getWorkItem, lastItemForMessage, newChain, nextQueued, nextSteerable, recoverAfterRestart, setStatus, type NewWork, type WorkItem } from "./queue.ts";
 import { RpcError, type Broadcast } from "./server.ts";
 import { accountEnv, accountFor } from "./setup.ts";
 
@@ -172,13 +172,13 @@ export class Runner {
     return getMessage(this.#db, message.id);
   }
 
-  // Start queued work, or steer eligible work into the turn already writing to its conversation.
-  deliver(work: NewWork): WorkItem {
-    const item = enqueue(this.#db, work);
-    const live = this.#liveFor(work.botId);
-    if (!live.busy) this.pump(work.botId);
+  // Start or steer new work, or wake work already queued atomically with its exchange.
+  deliver(work: NewWork | WorkItem): WorkItem {
+    const item = "id" in work ? getWorkItem(this.#db, work.id) : enqueue(this.#db, work);
+    const live = this.#liveFor(item.botId);
+    if (!live.busy) this.pump(item.botId);
     else if (live.sent) {
-      void this.#steerQueued(work.botId).catch((error: unknown) => console.error("Tjommie: queued steering failed", error));
+      void this.#steerQueued(item.botId).catch((error: unknown) => console.error("Tjommie: queued steering failed", error));
     }
     return item;
   }

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { botPrompt, createBot, deleteBot, getStoredBot, listStoredBots, setPaused, updateBot } from "./bots.ts";
@@ -108,5 +108,69 @@ describe("bots store", () => {
     expect(prompt).toContain("You are Researcher");
     expect(prompt).toContain(bot.homeFolder);
     expect(prompt).toContain("Find sources.");
+  });
+
+  it("tells the bot about Tjommie's tools, and about its browser only when it has one", () => {
+    const bot = createBot(db, botsDir, input);
+    const prompt = botPrompt(bot);
+    for (const name of ["list_bots", "message_bot", "share_file", "add_routine"]) expect(prompt).toContain(name);
+    expect(prompt).not.toContain("browser tools");
+    expect(botPrompt({ ...bot, browser: true })).toContain("browser tools");
+  });
+
+  it("rejects creating a bot with a project at or below the managed bots folder", () => {
+    const owner = createBot(db, botsDir, input);
+    for (const projectFolder of [botsDir, owner.homeFolder, join(owner.homeFolder, "inbox")]) {
+      expect(() => createBot(db, botsDir, { ...input, name: "Other", projectFolder })).toThrow(/project folder.*managed bots folder/);
+    }
+    expect(listStoredBots(db)).toEqual([owner]);
+  });
+
+  it("rejects updating a bot with a project at or below the managed bots folder without changing it", () => {
+    const owner = createBot(db, botsDir, input);
+    const other = createBot(db, botsDir, { ...input, name: "Other" });
+    for (const projectFolder of [botsDir, owner.homeFolder, join(owner.homeFolder, "inbox"), other.homeFolder]) {
+      expect(() => updateBot(db, other.id, { instructions: "Changed", projectFolder })).toThrow(/project folder.*managed bots folder/);
+      expect(getStoredBot(db, other.id)).toEqual(other);
+    }
+  });
+
+  it("rejects junction aliases into the managed bots folder on create and update", () => {
+    const owner = createBot(db, botsDir, input);
+    const alias = join(root, "bots-alias");
+    symlinkSync(botsDir, alias, "junction");
+    for (const projectFolder of [alias, join(alias, owner.id), join(alias, owner.id, "inbox")]) {
+      expect(() => createBot(db, botsDir, { ...input, name: "Other", projectFolder })).toThrow(/project folder.*managed bots folder/);
+      expect(() => updateBot(db, owner.id, { projectFolder })).toThrow(/project folder.*managed bots folder/);
+    }
+    expect(getStoredBot(db, owner.id)).toEqual(owner);
+  });
+
+  it("checks the real managed bots folder when its configured path is a junction", () => {
+    const physical = join(root, "physical-bots");
+    mkdirSync(physical);
+    symlinkSync(physical, botsDir, "junction");
+    const owner = createBot(db, botsDir, input);
+    expect(() => createBot(db, botsDir, { ...input, name: "Other", projectFolder: physical })).toThrow(/project folder.*managed bots folder/);
+    expect(() => updateBot(db, owner.id, { projectFolder: join(physical, owner.id) })).toThrow(/project folder.*managed bots folder/);
+  });
+
+  it("rejects project paths under the managed bots folder even when a junction leads outside", () => {
+    const owner = createBot(db, botsDir, input);
+    const project = join(root, "project");
+    mkdirSync(project);
+    const alias = join(owner.homeFolder, "project-link");
+    symlinkSync(project, alias, "junction");
+    expect(() => createBot(db, botsDir, { ...input, name: "Other", projectFolder: alias })).toThrow(/project folder.*managed bots folder/);
+    expect(() => updateBot(db, owner.id, { projectFolder: alias })).toThrow(/project folder.*managed bots folder/);
+  });
+
+  it("accepts a separate project folder whose name shares the managed bots prefix", () => {
+    const project = join(root, "bots-project");
+    mkdirSync(project);
+    const bot = createBot(db, botsDir, { ...input, projectFolder: project });
+    expect(bot.projectFolder).toBe(project);
+    expect(updateBot(db, bot.id, { projectFolder: null }).projectFolder).toBeNull();
+    expect(updateBot(db, bot.id, { projectFolder: project }).projectFolder).toBe(project);
   });
 });
