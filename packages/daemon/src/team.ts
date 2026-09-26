@@ -557,7 +557,11 @@ export class Team {
     if (result.outcome !== "done") {
       const reason = result.outcome === "interrupted" ? "it was stopped" : (result.error ?? "something went wrong");
       if (first) this.#atomic(() => this.#fail(row, reason));
-      if (files.length) this.#saveFilesForPerson(to, files);
+      try {
+        if (files.length) this.#saveFilesForPerson(to, files);
+      } catch (error) {
+        console.error("Tjommie: could not save files from a failed exchange turn", error);
+      }
       this.#tell(row, failedPrompt(to.name, row.request, reason));
       return;
     }

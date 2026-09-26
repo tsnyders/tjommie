@@ -69,6 +69,30 @@ describe("Team snapshot lifecycle", () => {
     expect(existsSync(stage)).toBe(false);
   });
 
+  it.each(["failed", "interrupted"] as const)("still tells the asker about a %s turn when saving shared files fails", (outcome) => {
+    const request = ask();
+    const card = share(request.conversationId);
+    const snapshot = String(card.data?.path);
+    rmSync(join(writer.homeFolder, "inbox"), { recursive: true });
+    writeFileSync(join(writer.homeFolder, "inbox"), "blocks copying");
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    let thrown: unknown;
+    try {
+      team.turnEnded(request, { ...done, outcome, error: "The CLI exited" });
+    } catch (error) {
+      thrown = error;
+    }
+    const reason = outcome === "interrupted" ? "it was stopped" : "The CLI exited";
+    expect(getExchange(db, request.exchangeId!)).toMatchObject({ status: "failed", reply: reason });
+    expect(delivered.filter((work) => work.source === "bot_reply")).toEqual([
+      expect.objectContaining({ botId: asker.id, exchangeId: request.exchangeId, text: expect.stringContaining(`Writer couldn't finish your request "Share a file.": ${reason}`) }),
+    ]);
+    expect(thrown).toBeUndefined();
+    expect(logged).toHaveBeenCalledWith("Tjommie: could not save files from a failed exchange turn", expect.any(Error));
+    expect(getMessage(db, card.id).data?.path).toBe(snapshot);
+    expect(existsSync(snapshot)).toBe(true);
+  });
+
   it.each(["copy", "save", "delivery"] as const)("preserves the original reply when a follow-up %s fails", (failure) => {
     const request = ask();
     team.turnEnded(request, done);
