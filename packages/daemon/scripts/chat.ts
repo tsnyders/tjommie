@@ -4,7 +4,7 @@
 // /room <text> posts in the Team room, Ctrl+C quits.
 import { readFileSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
-import { Autonomy, Provider, TEAM_ROOM_ID, type ApprovalDecision } from "@tjommie/protocol";
+import { Autonomy, Provider, TEAM_ROOM_ID, messageData, type ApprovalDecision } from "@tjommie/protocol";
 import { ClientConnectionError, connect, type Client, type ClientEvent } from "../src/client.ts";
 import { DEFAULT_PORT, dataPaths } from "../src/paths.ts";
 
@@ -72,8 +72,15 @@ function showEvent(message: ClientEvent): void {
     if (message.event === "message.updated" && data.conversationId === botId && data.kind === "text" && data.author === botId && data.status !== "streaming") {
       process.stdout.write("\n");
     } else if (data.status === "done" && data.conversationId === TEAM_ROOM_ID && data.author !== "you" && (data.kind === "text" || data.kind === "notice" || data.kind === "error")) {
-      const toBotId = data.data?.toBotId;
-      const to = typeof toBotId === "string" && toBotId ? ` to ${names.get(toBotId) ?? "a bot"}` : "";
+      let to = "";
+      try {
+        const payload = messageData(data);
+        if (payload.kind === "text" && payload.data !== null && "toBotId" in payload.data && payload.data.toBotId) {
+          to = ` to ${names.get(payload.data.toBotId) ?? "a bot"}`;
+        }
+      } catch {
+        // Keep the body readable if an older or malformed payload cannot be typed.
+      }
       console.log(`  [Team room] ${names.get(data.author) ?? "A bot"}${to}: ${data.body}`);
     } else if (message.event === "message.added" && data.conversationId === botId) {
       if (data.kind === "activity") console.log(`  [${data.body}]`);

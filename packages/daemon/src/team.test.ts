@@ -183,9 +183,10 @@ describe("Team room", () => {
   it("asks each bot a post mentions, with the recent room messages, on one chain", () => {
     team.postToRoom("Morning all.");
     expect(delivered).toEqual([]);
-    team.postToRoom("@Writer and @researcher, what's new?");
+    const post = team.postToRoom("@Writer and @researcher, what's new?");
     expect(delivered.map((item) => item.botId).sort()).toEqual([writer.id, researcher.id].sort());
     expect(delivered[0]).toMatchObject({ source: "room", conversationId: TEAM_ROOM_ID });
+    expect(delivered.map((item) => item.messageId)).toEqual([post.id, post.id]);
     expect(delivered[0].chainId).toBe(delivered[1].chainId);
     expect(delivered[0].text).toContain("Person: Morning all.");
     expect(delivered[0].text).toContain("what's new?");

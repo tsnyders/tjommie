@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { BotInput, EventData, EventName } from "@tjommie/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -154,6 +154,17 @@ describe("activityBody", () => {
 });
 
 describe("copyIntoInbox", () => {
+  it("rejects missing paths and directories before copying attachments or saving a message", () => {
+    const h = harness();
+    const bot = newBot(h);
+    const file = join(h.root, "valid.txt");
+    writeFileSync(file, "valid");
+    for (const invalid of [join(h.root, "missing.txt"), h.root]) {
+      expect(() => h.runner.submit(bot.id, "Files", [file, invalid])).toThrow(expect.objectContaining({ code: "bad_params", message: expect.stringContaining(invalid) }));
+      expect(history(h.db, bot.id, undefined, 20)).toEqual([]);
+      expect(readdirSync(join(bot.homeFolder, "inbox"))).toEqual([]);
+    }
+  });
   it("copies three same-name attachments without overwriting under a fixed clock", () => {
     vi.spyOn(Date, "now").mockReturnValue(1_797_000_000_000);
     const root = tempRoot();
@@ -862,6 +873,9 @@ describe("Runner destinations and delivery", () => {
     ]));
     expect(history(h.db, conversationId, undefined, 20)).toEqual([expect.objectContaining({ kind: "text", body: "Working here" })]);
     expect(h.events.filter((event) => event.event === "notify").map((event) => event.data.botId)).toEqual([bot.id, bot.id]);
+    const approval = history(h.db, bot.id, undefined, 20).find((message) => message.kind === "approval")!;
+    expect(h.events).toContainEqual({ event: "notify", data: expect.objectContaining({ kind: "approval", botId: bot.id, approvalId: approval.data?.approvalId }) });
+    expect(h.events).toContainEqual({ event: "notify", data: expect.objectContaining({ kind: "limit", botId: bot.id }) });
     session.emit({ type: "turn_done", ok: true, error: null });
   });
 

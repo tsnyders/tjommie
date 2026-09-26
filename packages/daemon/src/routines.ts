@@ -21,7 +21,7 @@ type RoutineRow = {
   next_run_at: string | null;
   created_at: string;
 };
-type RunRow = { id: string; routine_id: string; due_at: string; started_at: string | null; ended_at: string | null; status: RoutineRunStatus; note: string | null };
+type RunRow = { id: string; bot_id: string; routine_id: string; due_at: string; started_at: string | null; ended_at: string | null; status: RoutineRunStatus; note: string | null };
 
 const toRoutine = (row: RoutineRow): Routine => ({
   id: row.id,
@@ -39,6 +39,7 @@ const toRoutine = (row: RoutineRow): Routine => ({
 
 const toRun = (row: RunRow): RoutineRun => ({
   id: row.id,
+  botId: row.bot_id,
   routineId: row.routine_id,
   dueAt: row.due_at,
   startedAt: row.started_at,
@@ -109,8 +110,11 @@ export function getRoutine(db: Db, id: string): Routine {
   return toRoutine(row);
 }
 
-export function listRoutines(db: Db, botId: string): Routine[] {
-  return (db.prepare("SELECT * FROM routines WHERE bot_id = ? ORDER BY created_at, rowid").all(botId) as RoutineRow[]).map(toRoutine);
+export function listRoutines(db: Db, botId?: string): Routine[] {
+  const rows = botId === undefined
+    ? db.prepare("SELECT * FROM routines ORDER BY created_at, rowid").all()
+    : db.prepare("SELECT * FROM routines WHERE bot_id = ? ORDER BY created_at, rowid").all(botId);
+  return (rows as RoutineRow[]).map(toRoutine);
 }
 
 export function createRoutine(db: Db, input: RoutineInput, nowMs = Date.now()): Routine {
@@ -168,13 +172,13 @@ export function setNextRun(db: Db, id: string, nextRunAt: string | null): void {
 }
 
 export function getRun(db: Db, id: string): RoutineRun | null {
-  const row = db.prepare("SELECT * FROM routine_runs WHERE id = ?").get(id) as RunRow | undefined;
+  const row = db.prepare("SELECT routine_runs.*, routines.bot_id FROM routine_runs JOIN routines ON routines.id = routine_runs.routine_id WHERE routine_runs.id = ?").get(id) as RunRow | undefined;
   return row ? toRun(row) : null;
 }
 
 // All open runs and the newest RUNS_KEPT finished runs, newest first.
 export function listRuns(db: Db, routineId: string): RoutineRun[] {
-  return (db.prepare("SELECT * FROM routine_runs WHERE routine_id = ? ORDER BY due_at DESC, rowid DESC").all(routineId) as RunRow[]).map(toRun);
+  return (db.prepare("SELECT routine_runs.*, routines.bot_id FROM routine_runs JOIN routines ON routines.id = routine_runs.routine_id WHERE routine_id = ? ORDER BY due_at DESC, routine_runs.rowid DESC").all(routineId) as RunRow[]).map(toRun);
 }
 
 function pruneFinishedRuns(db: Db, routineId: string): void {
@@ -192,7 +196,7 @@ export function addRun(db: Db, routineId: string, dueAt: string, status: Routine
   db.prepare("INSERT INTO routine_runs (id, routine_id, due_at, ended_at, status, note) VALUES (?, ?, ?, ?, ?, ?)").run(id, routineId, dueAt, ended, status, note);
   pruneFinishedRuns(db, routineId);
   // An older due time can put the new record outside the retained history immediately.
-  return { id, routineId, dueAt, startedAt: null, endedAt: ended, status, note };
+  return { id, botId: getRoutine(db, routineId).botId, routineId, dueAt, startedAt: null, endedAt: ended, status, note };
 }
 
 export function setRunStatus(db: Db, id: string, status: RoutineRunStatus, note: string | null = null): RoutineRun | null {

@@ -2,7 +2,7 @@ import { TEAM_ROOM_ID, type ProviderSetup } from "@tjommie/protocol";
 import { getApproval } from "./approvals.ts";
 import { createBot, deleteBot, getStoredBot, listStoredBots, setPaused, updateBot } from "./bots.ts";
 import { browserServer, showBrowser } from "./browser.ts";
-import { history } from "./chat.ts";
+import { historyPage } from "./chat.ts";
 import { openDb } from "./db.ts";
 import { McpTokens, mcpHandler } from "./mcp.ts";
 import { DEFAULT_PORT, dataPaths, readOrCreateToken } from "./paths.ts";
@@ -38,6 +38,7 @@ export async function startDaemon(
     isSignedIn: (provider) => setup.some((status) => status.provider === provider && status.signedIn),
     createSession: options.createSession,
     hooks: {
+      retryRoutine: (message) => scheduler.retry(message),
       mcpServers: (bot) => [
         { name: "tjommie", url: mcpUrl, headers: { Authorization: `Bearer ${tokens.issue(bot.id)}` }, autoAllow: true },
         ...(bot.browser ? [browserServer(bot)] : []),
@@ -136,23 +137,23 @@ export async function startDaemon(
     },
     "chat.history": ({ botId, before, limit }) => {
       getStoredBot(db, botId);
-      return history(db, botId, before, limit);
+      return historyPage(db, botId, before, limit);
     },
     "chat.send": ({ botId, text, files }) => runner.submit(botId, text, files),
     "chat.stop": async ({ botId }) => {
       await runner.stop(botId);
       return {};
     },
-    "chat.retry": ({ messageId }) => runner.retry(messageId),
+    "chat.retry": ({ messageId, botId }) => runner.retry(messageId, botId),
     "approvals.respond": ({ approvalId, decision }) =>
       getApproval(db, approvalId).kind === "routine"
         ? team.answerRoutineProposal(approvalId, decision)
         : runner.answerApproval(approvalId, decision),
-    "room.history": ({ before, limit }) => history(db, TEAM_ROOM_ID, before, limit),
+    "room.history": ({ before, limit }) => historyPage(db, TEAM_ROOM_ID, before, limit),
     "room.post": ({ text }) => team.postToRoom(text),
-    "exchanges.get": ({ id }) => ({ exchange: getExchange(db, id), messages: history(db, id, undefined, 200) }),
+    "exchanges.get": ({ id }) => ({ exchange: getExchange(db, id), ...historyPage(db, id, undefined, 200) }),
     "routines.list": ({ botId }) => {
-      getStoredBot(db, botId);
+      if (botId !== undefined) getStoredBot(db, botId);
       return listRoutines(db, botId);
     },
     "routines.create": (input) => {

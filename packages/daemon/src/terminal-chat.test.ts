@@ -180,13 +180,13 @@ it("prints Team room posts, bot names, local cards and streaming text", async ()
   await chat.waitFor("Chatting with Tester (claude, folder, idle).");
   expect(chat.output()).toContain("/room <text> posts in the Team room, /stop interrupts, Ctrl+C quits.");
   expect(chat.hello()).toEqual({ type: "hello", protocol: PROTOCOL_VERSION, token: "terminal-test-token" });
-  chat.emit("message.added", message({ conversationId: TEAM_ROOM_ID, author: writer.id, body: "Hello team", data: { toBotId: tester.id } }));
+  chat.emit("message.added", message({ conversationId: TEAM_ROOM_ID, author: writer.id, body: "Hello team", data: { exchangeId: "exchange", toBotId: tester.id } }));
   chat.emit("bot.updated", { ...writer, name: "Editor" });
-  chat.emit("message.updated", message({ conversationId: TEAM_ROOM_ID, author: writer.id, body: "Renamed", data: { toBotId: "unknown" } }));
+  chat.emit("message.updated", message({ conversationId: TEAM_ROOM_ID, author: writer.id, body: "Renamed", data: { exchangeId: "exchange", toBotId: "unknown" } }));
   chat.emit("message.added", message({ conversationId: TEAM_ROOM_ID, author: "system", kind: "notice", body: "Room notice" }));
   chat.emit("message.added", message({ conversationId: TEAM_ROOM_ID, author: "system", kind: "error", body: "Room error" }));
   chat.emit("message.added", message({ conversationId: TEAM_ROOM_ID, author: "unknown", body: "Unknown author" }));
-  for (const [index, toBotId] of [4, {}, ""].entries()) {
+  for (const [index, toBotId] of [4, {}, "", tester.id].entries()) {
     chat.emit("message.added", message({ conversationId: TEAM_ROOM_ID, author: writer.id, body: `Untargeted ${index}`, data: { toBotId } }));
   }
   for (const patch of [
@@ -222,7 +222,7 @@ it("prints Team room posts, bot names, local cards and streaming text", async ()
     "  [Team room] Tjommie: Room notice",
     "  [Team room] Tjommie: Room error",
     "  [Team room] A bot: Unknown author",
-    ...[0, 1, 2].map((index) => `  [Team room] Editor: Untargeted ${index}`),
+    ...[0, 1, 2, 3].map((index) => `  [Team room] Editor: Untargeted ${index}`),
     "Hello world\n", "  [Looking up news]",
     ...["notice", "error", "handoff", "routine", "file"].map((kind) => `  (${kind} card)`),
     "Waiting for you: Add a routine: News\n  /allow proposal   /always proposal   /deny proposal",
@@ -259,7 +259,7 @@ it("routes room posts, approval decisions, stop and ordinary chat through typed 
 it("prints the chat header before replaying events received during bot setup", async () => {
   const chat = await terminal({ setupEvents: [
     { type: "event", event: "bot.updated", data: { ...writer, name: "Editor" } },
-    { type: "event", event: "message.added", data: message({ conversationId: TEAM_ROOM_ID, author: writer.id, body: "Setup room post", data: { toBotId: tester.id } }) },
+    { type: "event", event: "message.added", data: message({ conversationId: TEAM_ROOM_ID, author: writer.id, body: "Setup room post", data: { exchangeId: "exchange", toBotId: tester.id } }) },
     { type: "event", event: "message.added", data: message({ kind: "notice", body: "Setup local notice" }) },
     { type: "event", event: "approval.added", data: approval({ summary: "Setup approval" }) },
     { type: "event", event: "notify", data: { kind: "approval", approvalId: "a", botId: writer.id, title: "Setup notification", body: "Setup complete" } },

@@ -4,6 +4,7 @@ import type { BotInput, ProviderSetup } from "@tjommie/protocol";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createBot, getStoredBot, setLimitedUntil } from "./bots.ts";
 import { showBrowser } from "./browser.ts";
+import { history } from "./chat.ts";
 import { connect, type Client } from "./client.ts";
 import { startDaemon, type Daemon } from "./daemon.ts";
 import { openDb, type Db } from "./db.ts";
@@ -119,7 +120,7 @@ it("wires settings, routine CRUD and the Team room through the WebSocket methods
   expect(await client.call("settings.get", {})).toEqual({ chainLimit: 5 });
   expect(await client.call("settings.set", { chainLimit: 7 })).toEqual({ chainLimit: 7 });
   await client.call("room.post", { text: "Hello team" });
-  expect(await client.call("room.history", {})).toMatchObject([{ body: "Hello team" }]);
+  expect(await client.call("room.history", {})).toMatchObject({ messages: [{ body: "Hello team" }], hasMore: false });
   const routine = await client.call("routines.create", { botId: bot.id, name: "Check", prompt: "Check", days: [1], times: ["08:00"] });
   expect(await client.call("routines.list", { botId: bot.id })).toEqual([routine]);
   expect(await client.call("routines.runs", { routineId: routine.id })).toEqual([]);
@@ -164,6 +165,103 @@ it("routes routine proposals to Team and tool approvals to the runner", async ()
   if (approval.event !== "approval.added") throw new Error("Expected tool approval");
   await client.call("approvals.respond", { approvalId: approval.data.id, decision: "once" });
   expect(sessions[0].session.answers).toEqual(["cli-approval"]);
+});
+
+it.each([false, true])("keeps a pending routine proposal waiting and clears it on answer (restart: %s)", async (restart) => {
+  let h = await harness();
+  const bot = await h.client.call("bots.create", input("Waiting planner"));
+  await h.client.call("chat.send", { botId: bot.id, text: "Begin" });
+  h.sessions[0].session.finish("Ready");
+  await tool(h.sessions[0].options, "add_routine", { name: "Check", prompt: "Check", days: ["mon"], times: ["08:48"] });
+  const card = await waitFor(() => h.client.events.find((event) => event.event === "approval.added"));
+  if (card.event !== "approval.added") throw new Error("Expected approval card");
+  expect(await h.client.call("bots.list", {})).toMatchObject([{ id: bot.id, state: "waiting" }]);
+  expect(h.client.events).toContainEqual({ type: "event", event: "bot.updated", data: expect.objectContaining({ id: bot.id, state: "waiting" }) });
+  expect(h.client.events).toContainEqual({ type: "event", event: "notify", data: expect.objectContaining({ kind: "approval", botId: bot.id, approvalId: card.data.id }) });
+  if (restart) {
+    await h.client.close();
+    clients.splice(clients.indexOf(h.client), 1);
+    await h.daemon.close();
+    daemons.splice(daemons.indexOf(h.daemon), 1);
+    h = await harness(h.root);
+    expect(await h.client.call("bots.list", {})).toMatchObject([{ id: bot.id, state: "waiting" }]);
+    expect((await h.client.call("chat.history", { botId: bot.id })).messages).toContainEqual(expect.objectContaining({ kind: "approval", data: expect.objectContaining({ approvalId: card.data.id, status: "pending" }) }));
+  }
+  await h.client.call("approvals.respond", { approvalId: card.data.id, decision: "deny" });
+  expect(await h.client.call("bots.list", {})).toMatchObject([{ id: bot.id, state: "idle" }]);
+  expect(h.client.events).toContainEqual({ type: "event", event: "bot.updated", data: expect.objectContaining({ id: bot.id, state: "idle" }) });
+});
+
+it("lists routines across bots and includes the bot on every run", async () => {
+  const { daemon, client, sessions } = await harness();
+  const bots = await Promise.all(["First planner", "Second planner"].map((name) => client.call("bots.create", input(name))));
+  const routines = await Promise.all(bots.map((bot) => client.call("routines.create", { botId: bot.id, name: "Check", prompt: "Check", days: [0, 1, 2, 3, 4, 5, 6], times: ["08:48"] })));
+  expect(await client.call("routines.list", {})).toEqual(expect.arrayContaining(routines));
+  expect(await client.call("routines.list", { botId: bots[0].id })).toEqual([routines[0]]);
+  daemon.scheduler.tick(Date.parse(routines[0].nextRunAt!));
+  await waitFor(() => sessions.length === 2 && sessions.every(({ session }) => session.sent.length));
+  for (const routine of routines) {
+    expect(await client.call("routines.runs", { routineId: routine.id })).toMatchObject([{ botId: routine.botId }]);
+  }
+});
+
+it("retries only the failed bot from a shared Team room post", async () => {
+  const { daemon, client, db, sessions } = await harness();
+  const first = await client.call("bots.create", input("First"));
+  const second = await client.call("bots.create", input("Second"));
+  const post = await client.call("room.post", { text: "@First @Second Please check" });
+  await waitFor(() => sessions.length === 2 && sessions.every(({ session }) => session.sent.length));
+  const failed = sessions.find(({ botId }) => botId === first.id)!.session;
+  const successful = sessions.find(({ botId }) => botId === second.id)!.session;
+  failed.emit({ type: "turn_done", ok: false, error: "First failed" });
+  successful.finish("Second done");
+  expect(history(db, "team", undefined, 50)).toContainEqual(expect.objectContaining({ kind: "error", data: { retryMessageId: post.id, retryBotId: first.id } }));
+  const old = db.prepare("SELECT id FROM work_items WHERE bot_id = ?").get(first.id) as { id: string };
+  await client.call("chat.retry", { messageId: post.id });
+  await waitFor(() => failed.sent.length === 2);
+  const retry = daemon.runner.currentWork(first.id)!;
+  expect(retry).toMatchObject({ source: "room", conversationId: "team", messageId: post.id });
+  expect(retry.chainId).not.toBe(getWorkItem(db, old.id).chainId);
+  expect(successful.sent).toHaveLength(1);
+  await expect(client.call("chat.retry", { messageId: post.id, botId: first.id })).rejects.toThrow(/bad_state/);
+  failed.finish("First done");
+});
+
+it("requires a bot target when more than one room turn failed", async () => {
+  const { client, sessions } = await harness();
+  const first = await client.call("bots.create", input("First"));
+  await client.call("bots.create", input("Second"));
+  const post = await client.call("room.post", { text: "@First @Second Please check" });
+  await waitFor(() => sessions.length === 2 && sessions.every(({ session }) => session.sent.length));
+  for (const { session } of sessions) session.emit({ type: "turn_done", ok: false, error: "Failed" });
+  await expect(client.call("chat.retry", { messageId: post.id })).rejects.toThrow(/bad_params/);
+  await client.call("chat.retry", { messageId: post.id, botId: first.id });
+  await waitFor(() => sessions.find(({ botId }) => botId === first.id)!.session.sent.length === 2);
+  expect(sessions.find(({ botId }) => botId !== first.id)!.session.sent).toHaveLength(1);
+});
+
+it("retries a failed routine as a new run with a new label and chain", async () => {
+  const { daemon, client, db, sessions } = await harness();
+  const bot = await client.call("bots.create", input("Routine retry"));
+  const routine = await client.call("routines.create", { botId: bot.id, name: "Check", prompt: "Check", days: [0, 1, 2, 3, 4, 5, 6], times: ["08:48"] });
+  daemon.scheduler.tick(Date.parse(routine.nextRunAt!));
+  await waitFor(() => sessions[0]?.session.sent.length);
+  const old = daemon.runner.currentWork(bot.id)!;
+  sessions[0].session.emit({ type: "turn_done", ok: false, error: "Routine failed" });
+  const label = history(db, bot.id, undefined, 50).find((message) => message.kind === "routine")!;
+  expect(history(db, bot.id, undefined, 50)).toContainEqual(expect.objectContaining({ kind: "error", data: { retryMessageId: label.id } }));
+  const nextLabel = await client.call("chat.retry", { messageId: label.id });
+  await waitFor(() => sessions[0].session.sent.length === 2);
+  const next = daemon.runner.currentWork(bot.id)!;
+  expect(next.routineRunId).toBeTruthy();
+  expect(next.routineRunId).not.toBe(old.routineRunId);
+  expect(next.chainId).not.toBe(old.chainId);
+  expect(next.messageId).toBe(nextLabel.id);
+  expect(nextLabel.id).not.toBe(label.id);
+  expect(listRuns(db, routine.id)).toEqual(expect.arrayContaining([expect.objectContaining({ id: old.routineRunId, status: "failed" }), expect.objectContaining({ id: next.routineRunId, status: "running" })]));
+  await expect(client.call("chat.retry", { messageId: label.id })).rejects.toThrow(/busy/);
+  sessions[0].session.finish("Recovered");
+  expect(history(db, bot.id, undefined, 50).find((message) => message.id === nextLabel.id)?.data?.status).toBe("done");
 });
 
 it("settles a routine and re-arms its lifecycle after a provider limit requeue", async () => {

@@ -113,8 +113,10 @@ export function setStatus(db: Db, id: string, status: WorkStatus): void {
   else db.prepare("UPDATE work_items SET status = ?, ended_at = ? WHERE id = ?").run(status, nowIso(), id);
 }
 
-export function lastItemForMessage(db: Db, messageId: string): WorkItem | null {
-  const row = db.prepare("SELECT * FROM work_items WHERE message_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1").get(messageId) as WorkRow | undefined;
+export function lastItemForMessage(db: Db, messageId: string, botId?: string): WorkItem | null {
+  const row = (botId === undefined
+    ? db.prepare("SELECT * FROM work_items WHERE message_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1").get(messageId)
+    : db.prepare("SELECT * FROM work_items WHERE message_id = ? AND bot_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1").get(messageId, botId)) as WorkRow | undefined;
   return row ? toItem(row) : null;
 }
 

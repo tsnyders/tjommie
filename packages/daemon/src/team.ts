@@ -1,6 +1,10 @@
 import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readSync, realpathSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { RoutineInput, TEAM_ROOM_ID, type Approval, type ApprovalDecision, type BotState, type EventData, type EventName, type Exchange, type Message } from "@tjommie/protocol";
+import {
+  ExchangeHandoffData, FileData, RoutineApprovalData, RoutineInput, TEAM_ROOM_ID,
+  type Approval, type ApprovalDecision, type BotState, type EventData, type EventName,
+  type Exchange, type ExchangePostData, type Message, type NoticeData, type RoomHandoffData,
+} from "@tjommie/protocol";
 import { z } from "zod";
 import { createApproval, getApproval, resolveApproval } from "./approvals.ts";
 import { getStoredBot, listStoredBots, type StoredBot } from "./bots.ts";
@@ -151,7 +155,7 @@ export function fileInside(roots: string[], target: string): string {
 
 // Open once and read a bounded snapshot from that handle. A later rename, link swap,
 // deletion or growth of the source cannot change the file card or the delivered bytes.
-function snapshotFile(roots: string[], target: string, staging: string, botId: string): { path: string; name: string; size: number } {
+function snapshotFile(roots: string[], target: string, staging: string, botId: string): FileData {
   const file = fileInside(roots, target);
   const source = openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
   let folder: string | null = null;
@@ -294,7 +298,7 @@ export class Team {
       const message = this.#add({ conversationId: TEAM_ROOM_ID, author: "you", kind: "text", body: text, status: "done" });
       if (mentioned.length) {
         const chainId = newChain(this.#db);
-        for (const botId of mentioned) queued.push(enqueue(this.#db, { botId, source: "room", text: roomPrompt(context, text), conversationId: TEAM_ROOM_ID, chainId }));
+        for (const botId of mentioned) queued.push(enqueue(this.#db, { botId, source: "room", text: roomPrompt(context, text), messageId: message.id, conversationId: TEAM_ROOM_ID, chainId }));
       }
       return message;
     });
@@ -315,7 +319,7 @@ export class Team {
     const exchange = this.#exchange(item.conversationId);
     if (exchange && exchange.to_bot_id === item.botId) this.#answer(exchange, result, files);
     if (item.conversationId === TEAM_ROOM_ID && result.outcome === "done" && result.textMessageId) {
-      this.#add({ conversationId: item.botId, author: item.botId, kind: "handoff", body: "Answered in the Team room", data: { roomMessageId: result.textMessageId }, status: "done" });
+      this.#add({ conversationId: item.botId, author: item.botId, kind: "handoff", body: "Answered in the Team room", data: { roomMessageId: result.textMessageId } satisfies RoomHandoffData, status: "done" });
     }
   }
 
@@ -417,8 +421,11 @@ export class Team {
         this.#emit("routine.updated", createRoutine(this.#db, input));
       }
       const message = getMessage(this.#db, approval.messageId);
-      this.#emit("message.updated", updateMessage(this.#db, message.id, { data: { ...message.data, status: approval.status } }));
+      const data = { ...RoutineApprovalData.parse(message.data), status: approval.status } satisfies RoutineApprovalData;
+      this.#emit("message.updated", updateMessage(this.#db, message.id, { data }));
       this.#emit("approval.resolved", approval);
+      const bot = getStoredBot(this.#db, approval.botId);
+      this.#emit("bot.updated", { ...bot, state: this.#stateOf(bot) });
       return approval;
     });
   }
@@ -451,8 +458,8 @@ export class Team {
         .run(id, from.id, to.id, request, chainId, work?.conversationId ?? from.id, nowIso());
       this.#db.prepare("INSERT INTO conversations (id, kind, bot_id) VALUES (?, 'exchange', NULL)").run(id);
       const message = this.#add({ conversationId: id, author: from.id, kind: "text", body: request, status: "done" });
-      this.#add({ conversationId: TEAM_ROOM_ID, author: from.id, kind: "text", body: request, data: { exchangeId: id, toBotId: to.id }, status: "done" });
-      const row = { exchangeId: id, fromBotId: from.id, toBotId: to.id, messages: 1, status: "waiting" };
+      this.#add({ conversationId: TEAM_ROOM_ID, author: from.id, kind: "text", body: request, data: { exchangeId: id, toBotId: to.id } satisfies ExchangePostData, status: "done" });
+      const row = { exchangeId: id, fromBotId: from.id, toBotId: to.id, messages: 1, status: "waiting" } satisfies ExchangeHandoffData;
       for (const botId of [from.id, to.id]) this.#add({ conversationId: botId, author: from.id, kind: "handoff", body: firstLine(request), data: row, status: "done" });
       return enqueue(this.#db, { botId: to.id, source: "bot_request", text: requestPrompt(from.name, request), messageId: message.id, conversationId: id, chainId, exchangeId: id });
     });
@@ -484,7 +491,7 @@ export class Team {
     try {
       // Without a bot recipient the person receives the file through this bot's inbox.
       if (!needsReply) durable = join(bot.homeFolder, "inbox", copyIntoInbox(bot.homeFolder, snapshot.path));
-      this.#atomic(() => this.#add({ conversationId: work?.conversationId ?? botId, author: botId, kind: "file", body: caption?.trim() || snapshot.name, data: { ...snapshot, path: durable ?? snapshot.path }, status: "done" }));
+      this.#atomic(() => this.#add({ conversationId: work?.conversationId ?? botId, author: botId, kind: "file", body: caption?.trim() || snapshot.name, data: { ...snapshot, path: durable ?? snapshot.path } satisfies FileData, status: "done" }));
     } catch (error) {
       if (durable) rmSync(durable, { force: true });
       rmSync(dirname(snapshot.path), { recursive: true, force: true });
@@ -507,7 +514,7 @@ export class Team {
         author: botId,
         kind: "approval",
         body: summary,
-        data: { approvalId, kind: "routine", tool: "Routine", detail: r.prompt, status: "pending" },
+        data: { approvalId, kind: "routine", tool: "Routine", detail: r.prompt, status: "pending" } satisfies RoutineApprovalData,
         status: "done",
       });
       const approval = createApproval(this.#db, {
@@ -522,7 +529,8 @@ export class Team {
         messageId: message.id,
       });
       this.#emit("approval.added", approval);
-      this.#emit("notify", { botId, title: `${bot.name} is waiting for you`, body: summary });
+      this.#emit("notify", { kind: "approval", botId, approvalId, title: `${bot.name} is waiting for you`, body: summary });
+      this.#emit("bot.updated", { ...bot, state: this.#stateOf(bot) });
     });
     return "Proposed. The person sees a card and decides; nothing is saved until they approve it.";
   }
@@ -565,7 +573,7 @@ export class Team {
           this.#pointFileCards(path, durable);
           return { name: basename(path), path: durable };
         });
-        this.#add({ conversationId: TEAM_ROOM_ID, author: to.id, kind: "text", body: reply, data: { exchangeId: row.id, toBotId: row.from_bot_id, files: shared }, status: "done" });
+        this.#add({ conversationId: TEAM_ROOM_ID, author: to.id, kind: "text", body: reply, data: { exchangeId: row.id, toBotId: row.from_bot_id, files: shared } satisfies ExchangePostData, status: "done" });
         this.#refreshRows(row.id);
         return this.#queueReply(row, replyPrompt(to.name, row.request, reply, inbox, first));
       });
@@ -594,7 +602,7 @@ export class Team {
       author: "system",
       kind: "notice",
       body: `${names?.toName ?? this.#name(row.to_bot_id)} couldn't answer ${names?.fromName ?? this.#name(row.from_bot_id)}: ${reason}.`,
-      data: { exchangeId: row.id },
+      data: { exchangeId: row.id } satisfies NoticeData,
       status: "done",
     });
   }
@@ -618,7 +626,8 @@ export class Team {
     const ids = this.#db.prepare("SELECT id FROM messages WHERE kind = 'handoff' AND json_extract(data, '$.exchangeId') = ?").all(exchangeId) as { id: string }[];
     for (const { id } of ids) {
       const message = getMessage(this.#db, id);
-      this.#emit("message.updated", updateMessage(this.#db, id, { data: { ...message.data, messages: n, status: row.status } }));
+      const data = { ...ExchangeHandoffData.parse(message.data), messages: n, status: row.status } satisfies ExchangeHandoffData;
+      this.#emit("message.updated", updateMessage(this.#db, id, { data }));
     }
   }
 
@@ -670,7 +679,8 @@ export class Team {
     const cards = this.#db.prepare("SELECT id FROM messages WHERE kind = 'file' AND json_extract(data, '$.path') = ?").all(snapshot) as { id: string }[];
     for (const { id } of cards) {
       const message = getMessage(this.#db, id);
-      this.#emit("message.updated", updateMessage(this.#db, id, { data: { ...message.data, path: durable } }));
+      const data = { ...FileData.parse(message.data), path: durable } satisfies FileData;
+      this.#emit("message.updated", updateMessage(this.#db, id, { data }));
     }
   }
 
