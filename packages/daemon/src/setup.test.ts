@@ -110,6 +110,39 @@ describe("accounts", () => {
     expect(JSON.parse(readFileSync(file, "utf8"))).toEqual(settings);
   });
 
+  it("prunes only managed deny rules for missing data roots and preserves live roots and user rules", () => {
+    const root = tempRoot();
+    const db = openDb(join(root, "t.db"));
+    const accountsDir = join(root, "accounts");
+    const staleRoot = join(root, "removed data");
+    const liveRoot = join(root, "live data");
+    mkdirSync(liveRoot);
+    const rulesFor = (folder: string): string[] => {
+      const absolute = folder.replace(/\\/g, "/").replace(/^([A-Za-z]):/, (_match, drive: string) => `/${drive.toLowerCase()}`);
+      return [`Read(/${absolute}/accounts/**)`, `Read(/${absolute}/daemon-token)`, `Read(/${absolute}/tjommie.db*)`];
+    };
+    try {
+      ensureAccounts(db, accountsDir);
+      const file = join(accountsDir, "claude-main", "settings.json");
+      const staleRules = rulesFor(staleRoot);
+      const liveRules = rulesFor(liveRoot);
+      const userRules = ["Bash(rm *)", "Read(//unrelated/private/**)", "Read(**/daemon-token)",
+        ...rulesFor(join(root, "user-only")).slice(0, 1),
+        ...rulesFor(join(root, "user-*")),
+        staleRules[0].replace("Read(", "Write("), staleRules[2].replace("db*", "db")];
+      writeFileSync(file, JSON.stringify({ theme: "dark", permissions: { allow: ["Read"], deny: [...staleRules, ...liveRules, ...userRules] } }));
+      ensureAccounts(db, accountsDir);
+      const settings = JSON.parse(readFileSync(file, "utf8")) as { theme: string; permissions: { allow: string[]; deny: string[] } };
+      expect(settings.theme).toBe("dark");
+      expect(settings.permissions.allow).toEqual(["Read"]);
+      expect(settings.permissions.deny).toEqual([...liveRules, ...userRules, "Edit(**/.claude/**)", "Write(**/.claude/**)", ...rulesFor(root)]);
+      ensureAccounts(db, accountsDir);
+      expect(JSON.parse(readFileSync(file, "utf8"))).toEqual(settings);
+    } finally {
+      db.close();
+    }
+  });
+
   it("logs stale folder removal failures and continues account setup", () => {
     const root = tempRoot();
     const db = openDb(join(root, "t.db"));

@@ -1,5 +1,6 @@
-﻿import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, lstatSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { Bot, ProviderSetup, type BotInput } from "@tjommie/protocol";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { z } from "zod";
@@ -12,12 +13,30 @@ import { realAccountsDir, tempRoot, waitFor } from "./testing.ts";
 process.env.TJOMMIE_BROWSER_HEADLESS = "1";
 
 let daemon: Daemon | undefined;
+const accounts = realAccountsDir();
 const root = tempRoot();
 beforeAll(async () => {
-  daemon = await startDaemon({ root, port: 0, accountsDir: realAccountsDir() });
+  daemon = await startDaemon({ root, port: 0, accountsDir: accounts });
 });
 afterAll(async () => {
-  await daemon?.close();
+  try {
+    if (daemon) {
+      daemon.scheduler.stop();
+      await withClient(async (client) => {
+        const bots = await client.call("bots.list", {});
+        await Promise.all(bots.map((bot) => runningDaemon().runner.closeForDeletion(bot.id)));
+      });
+    }
+  } finally {
+    await daemon?.close();
+  }
+  // Provider exits and owned browser windows have settled, and the daemon closed its database.
+  const disposable = resolve(root);
+  if (dirname(disposable) !== resolve(tmpdir()) || disposable === resolve(dirname(accounts)) || disposable === resolve(accounts) || lstatSync(disposable).isSymbolicLink()) {
+    throw new Error("Refusing to remove a test folder outside the disposable temp root.");
+  }
+  rmSync(disposable, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  expect(existsSync(disposable)).toBe(false);
 });
 
 function runningDaemon(): Daemon {
