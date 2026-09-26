@@ -1,7 +1,7 @@
 import { ClientMessage, type ClientMessage as Request } from "@tjommie/protocol";
 import { afterEach, describe, expect, it } from "vitest";
 import { WebSocketServer, type WebSocket } from "ws";
-import { connect, type Client } from "./client.ts";
+import { ClientRpcError, connect, type Client } from "./client.ts";
 import { RpcError, startServer, type Server } from "./server.ts";
 
 const clients: Client[] = [];
@@ -74,7 +74,10 @@ describe("typed daemon client", () => {
       },
     });
     const client = await open(server.port);
-    await expect(client.call("bots.delete", { id: "missing" })).rejects.toThrow("not_found: No such bot");
+    const failure = client.call("bots.delete", { id: "missing" });
+    await expect(failure).rejects.toThrow("not_found: No such bot");
+    await expect(failure).rejects.toBeInstanceOf(ClientRpcError);
+    await expect(failure).rejects.toMatchObject({ code: "not_found" });
     expect(await client.call("settings.get", {})).toEqual({ chainLimit: 3 });
   });
 
@@ -144,6 +147,7 @@ describe("typed daemon client", () => {
     JSON.stringify({ type: "res", id: 1, ok: "true", result: [] }),
     JSON.stringify({ type: "res", id: 1, ok: true }),
     JSON.stringify({ type: "res", id: 1, ok: false, error: { message: "missing code" } }),
+    JSON.stringify({ type: "res", id: 1, ok: false, error: { code: "unexpected", message: "Unknown code" } }),
     JSON.stringify({ type: "event", event: "settings.changed", data: { chainLimit: "invalid" } }),
     JSON.stringify({ type: "event", event: "unknown", data: {} }),
     JSON.stringify({ type: "mystery" }),

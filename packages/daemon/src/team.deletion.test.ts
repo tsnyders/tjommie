@@ -1,17 +1,17 @@
-import { existsSync, rmSync } from "node:fs";
+import { existsSync, renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { TEAM_ROOM_ID, type EventData, type EventName } from "@tjommie/protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createBot, deleteBot, getStoredBot, updateBot, type StoredBot } from "./bots.ts";
 import { openDb, type Db } from "./db.ts";
-import { enqueue, newChain, setStatus, type WorkItem } from "./queue.ts";
+import { enqueue, getWorkItem, newChain, setStatus, type WorkItem } from "./queue.ts";
 import type { Broadcast } from "./server.ts";
 import { Team, getExchange } from "./team.ts";
 import { tempRoot } from "./testing.ts";
 
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
-  return { ...actual, rmSync: vi.fn(actual.rmSync) };
+  return { ...actual, renameSync: vi.fn(actual.renameSync) };
 });
 
 let root: string;
@@ -24,6 +24,7 @@ let team: Team;
 let current: Map<string, WorkItem>;
 let delivered: WorkItem[];
 let events: { event: EventName; data: EventData<EventName> }[];
+let stopped: string[];
 
 function makeTeam(observe?: Broadcast): Team {
   return new Team({
@@ -33,6 +34,12 @@ function makeTeam(observe?: Broadcast): Team {
       observe?.(event, data);
     },
     deliver: (work) => { delivered.push(work); },
+    stopItem: (id: string) => {
+      const item = getWorkItem(observer, id);
+      expect(item.status).toBe("running");
+      expect(getExchange(observer, item.exchangeId!).status).toBe("failed");
+      stopped.push(id);
+    },
     currentWork: (botId) => current.get(botId) ?? null,
     stateOf: () => "idle",
   });
@@ -49,6 +56,7 @@ beforeEach(() => {
   current = new Map();
   delivered = [];
   events = [];
+  stopped = [];
   team = makeTeam();
 });
 
@@ -108,7 +116,7 @@ describe("Team two-phase bot deletion", () => {
     clearEffects();
     const before = state();
     team.botDeleting(writer.id);
-    vi.mocked(rmSync).mockImplementationOnce(() => { throw new Error("locked"); });
+    vi.mocked(renameSync).mockImplementationOnce(() => { throw new Error("locked"); });
     expect(() => deleteBot(db, writer.id)).toThrow("The bot folder is busy");
     expect(getStoredBot(db, writer.id)).toEqual(writer);
     expect(existsSync(writer.homeFolder)).toBe(true);
@@ -166,7 +174,7 @@ describe("Team two-phase bot deletion", () => {
     expect(delivered).toHaveLength(1);
   });
 
-  it("fails queued and running requests from a deleted asker without sending it a reply", () => {
+  it("fails queued requests and asks the runner to stop running requests after deletion commits", () => {
     const queued = request(writer, researcher);
     const running = request(writer, researcher);
     setStatus(db, running.id, "running");
@@ -175,7 +183,9 @@ describe("Team two-phase bot deletion", () => {
     clearEffects();
     team.botDeleted(handle);
     for (const work of [queued, running]) expect(getExchange(db, exchangeId(work)).status).toBe("failed");
-    expect(db.prepare("SELECT id FROM work_items WHERE bot_id = ? AND source = 'bot_request' AND status IN ('queued', 'running')").all(researcher.id)).toEqual([]);
+    expect(getWorkItem(db, queued.id).status).toBe("failed");
+    expect(getWorkItem(db, running.id).status).toBe("running");
+    expect(stopped).toEqual([running.id]);
     expect(replies()).toEqual([]);
     expect(delivered).toEqual([]);
     const after = state();
@@ -188,6 +198,8 @@ describe("Team two-phase bot deletion", () => {
   it("rolls back all failures and notices when a reply insert fails and keeps the handle reusable", () => {
     const first = request(researcher, writer);
     const second = request(planner, writer);
+    const running = request(writer, researcher);
+    setStatus(db, running.id, "running");
     const handle = team.botDeleting(writer.id);
     deleteBot(db, writer.id);
     clearEffects();
@@ -197,11 +209,14 @@ describe("Team two-phase bot deletion", () => {
     expect(state()).toEqual(before);
     expect(events).toEqual([]);
     expect(delivered).toEqual([]);
+    expect(stopped).toEqual([]);
     db.exec("DROP TRIGGER reject_deleted_reply");
     team.botDeleted(handle);
     for (const work of [first, second]) expect(getExchange(db, exchangeId(work)).status).toBe("failed");
     expect(replies()).toHaveLength(2);
     expect(delivered).toHaveLength(2);
+    expect(stopped).toEqual([running.id]);
+    expect(getWorkItem(db, running.id).status).toBe("running");
   });
 
   it("broadcasts deletion results only after all failures and notifications commit", () => {

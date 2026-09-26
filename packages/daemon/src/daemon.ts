@@ -1,8 +1,8 @@
 import { TEAM_ROOM_ID, type ProviderSetup } from "@tjommie/protocol";
 import { getApproval } from "./approvals.ts";
-import { createBot, deleteBot, getStoredBot, listStoredBots, setPaused, updateBot } from "./bots.ts";
+import { createBot, deleteBot, getStoredBot, listStoredBots, setPaused, sweepDeletedBotFolders, updateBot } from "./bots.ts";
 import { browserServer, showBrowser } from "./browser.ts";
-import { history } from "./chat.ts";
+import { historyPage } from "./chat.ts";
 import { openDb } from "./db.ts";
 import { McpTokens, mcpHandler } from "./mcp.ts";
 import { DEFAULT_PORT, dataPaths, readOrCreateToken } from "./paths.ts";
@@ -10,34 +10,62 @@ import { getWorkItem, type WorkItem } from "./queue.ts";
 import { createRoutine, deleteRoutine, getRoutine, listRoutines, listRuns, updateRoutine } from "./routines.ts";
 import { Runner, type SessionFactory, type TurnResult } from "./runner.ts";
 import { Scheduler } from "./scheduler.ts";
-import { RpcError, startServer, type Broadcast, type Handlers } from "./server.ts";
+import { RpcError, startServer, type Broadcast, type Handlers, type Server } from "./server.ts";
 import { getSettings, setSettings } from "./settings.ts";
 import { checkSetup, ensureAccounts, listModels, signIn } from "./setup.ts";
 import { Team, getExchange } from "./team.ts";
 
 // The desktop app loads the UI from app://tjommie (plan 1D); `npm run dev` serves it on localhost:3000.
-const ALLOWED_ORIGINS = ["app://tjommie", "http://localhost:3000"];
+const allowedOrigins = () => ["app://tjommie", ...(process.env.TJOMMIE_DEV === "1" ? ["http://localhost:3000"] : [])];
+
+async function waitForBotClose(closed: Promise<void>): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      closed,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new RpcError("busy", "The bot is taking too long to close. Try deleting it again shortly.")), 15_000);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 export type Daemon = { port: number; token: string; runner: Runner; scheduler: Scheduler; close: () => Promise<void> };
 
-export async function startDaemon(
-  options: { root?: string; port?: number; accountsDir?: string; createSession?: SessionFactory } = {},
-): Promise<Daemon> {
+type DaemonOptions = { root?: string; port?: number; accountsDir?: string; createSession?: SessionFactory };
+
+export async function startDaemon(options: DaemonOptions = {}): Promise<Daemon> {
+  // The listening port is the lock. A duplicate launch must not even open the database.
+  const server = await startServer({ port: options.port ?? DEFAULT_PORT, token: "", handlers: {}, allowedOrigins: allowedOrigins(), deferRequests: true });
+  let cleanup = () => {};
+  try {
+    return await initializeDaemon(options, server, (next) => { cleanup = next; });
+  } catch (error) {
+    try { cleanup(); } finally { await server.close(); }
+    throw error;
+  }
+}
+
+async function initializeDaemon(options: DaemonOptions, server: Server, onCleanup: (cleanup: () => void) => void): Promise<Daemon> {
   const paths = dataPaths(options.root);
   const db = openDb(paths.db);
+  onCleanup(() => db.close());
   const token = readOrCreateToken(paths.token);
-  ensureAccounts(db, options.accountsDir ?? paths.accounts);
-  let setup: ProviderSetup[] = await checkSetup(db);
+  ensureAccounts(db, options.accountsDir ?? paths.accounts, paths.root);
+  let setup: ProviderSetup[] = [];
   let broadcast: Broadcast = () => {};
   const send: Broadcast = (event, data) => broadcast(event, data);
   let mcpUrl = ""; // Set before queued work can start a CLI session.
   const tokens = new McpTokens();
-  const runner = new Runner({
+  const runner: Runner = new Runner({
     db,
     broadcast: send,
     isSignedIn: (provider) => setup.some((status) => status.provider === provider && status.signedIn),
     createSession: options.createSession,
     hooks: {
+      retryRoutine: (message) => scheduler.retry(message),
       mcpServers: (bot) => [
         { name: "tjommie", url: mcpUrl, headers: { Authorization: `Bearer ${tokens.issue(bot.id)}` }, autoAllow: true },
         ...(bot.browser ? [browserServer(bot)] : []),
@@ -60,12 +88,14 @@ export async function startDaemon(
     deliver: (work) => runner.deliver(work),
     currentWork: (botId) => runner.currentWork(botId),
     stateOf: (bot) => runner.toBot(bot).state,
+    stopItem: (itemId, notice) => runner.stopItem(itemId, notice),
   });
-  const scheduler = new Scheduler({
+  const scheduler: Scheduler = new Scheduler({
     db, broadcast: send,
     deliver: (work) => runner.deliver(work),
     stopItem: (itemId, notice) => runner.stopItem(itemId, notice),
   });
+  onCleanup(() => { scheduler.stop(); runner.shutdown(); db.close(); });
 
   function turnEnded(item: WorkItem, result: TurnResult): void {
     try {
@@ -87,6 +117,7 @@ export async function startDaemon(
     void refreshSetup().catch((error: unknown) => console.error("Failed to refresh provider setup.", error));
   };
 
+  const deletionRequests = new Set<string>();
   const handlers: Handlers = {
     "setup.status": () => refreshSetup(),
     "setup.signIn": ({ provider }) => signIn(db, provider, refreshSetupInBackground),
@@ -104,22 +135,30 @@ export async function startDaemon(
       broadcast("bot.updated", bot);
       return bot;
     },
-    "bots.delete": ({ id }) => {
-      const handle = team.botDeleting(id);
+    "bots.delete": async ({ id }) => {
+      getStoredBot(db, id);
+      if (deletionRequests.has(id)) throw new RpcError("busy", "The bot is already being deleted. Try again shortly.");
+      deletionRequests.add(id);
       try {
-        runner.closeForDeletion(id);
-        deleteBot(db, id);
-      } catch (error) {
-        runner.pump(id);
-        throw error;
-      }
-      try {
-        team.botDeleted(handle);
+        let handle: ReturnType<Team["botDeleting"]>;
+        try {
+          await waitForBotClose(runner.closeForDeletion(id));
+          handle = team.botDeleting(id);
+          deleteBot(db, id);
+        } catch (error) {
+          runner.cancelDeletion(id);
+          throw error;
+        }
+        try {
+          team.botDeleted(handle);
+        } finally {
+          runner.forget(id);
+          broadcast("bot.deleted", { id });
+        }
+        return {};
       } finally {
-        runner.forget(id);
-        broadcast("bot.deleted", { id });
+        deletionRequests.delete(id);
       }
-      return {};
     },
     "bots.pause": ({ id, paused }) => {
       setPaused(db, id, paused);
@@ -136,23 +175,26 @@ export async function startDaemon(
     },
     "chat.history": ({ botId, before, limit }) => {
       getStoredBot(db, botId);
-      return history(db, botId, before, limit);
+      return historyPage(db, botId, before, limit);
     },
     "chat.send": ({ botId, text, files }) => runner.submit(botId, text, files),
     "chat.stop": async ({ botId }) => {
       await runner.stop(botId);
       return {};
     },
-    "chat.retry": ({ messageId }) => runner.retry(messageId),
-    "approvals.respond": ({ approvalId, decision }) =>
-      getApproval(db, approvalId).kind === "routine"
+    "chat.retry": ({ messageId, botId }) => runner.retry(messageId, botId),
+    "approvals.respond": ({ approvalId, decision }) => {
+      const approval = getApproval(db, approvalId).kind === "routine"
         ? team.answerRoutineProposal(approvalId, decision)
-        : runner.answerApproval(approvalId, decision),
-    "room.history": ({ before, limit }) => history(db, TEAM_ROOM_ID, before, limit),
+        : runner.answerApproval(approvalId, decision);
+      runner.pump(approval.botId);
+      return approval;
+    },
+    "room.history": ({ before, limit }) => historyPage(db, TEAM_ROOM_ID, before, limit),
     "room.post": ({ text }) => team.postToRoom(text),
-    "exchanges.get": ({ id }) => ({ exchange: getExchange(db, id), messages: history(db, id, undefined, 200) }),
+    "exchanges.get": ({ id }) => ({ exchange: getExchange(db, id), ...historyPage(db, id, undefined, 200) }),
     "routines.list": ({ botId }) => {
-      getStoredBot(db, botId);
+      if (botId !== undefined) getStoredBot(db, botId);
       return listRoutines(db, botId);
     },
     "routines.create": (input) => {
@@ -185,19 +227,15 @@ export async function startDaemon(
     },
   };
 
+  sweepDeletedBotFolders(db, paths.bots);
   team.start();
-  runner.recover(); // Settle interrupted work before the server can accept new requests.
-  const server = await startServer({
-    port: options.port ?? DEFAULT_PORT,
-    token,
-    handlers,
-    allowedOrigins: ALLOWED_ORIGINS,
-    routes: { "/mcp": mcpHandler({ tokens, tools: team.tools() }) },
-  });
+  runner.recover(); // Synchronous after binding, before setup yields or requests can be served.
+  setup = await checkSetup(db);
   mcpUrl = `http://127.0.0.1:${server.port}/mcp`;
   broadcast = server.broadcast;
   runner.start();
   scheduler.start();
+  server.activate({ token, handlers, routes: { "/mcp": mcpHandler({ tokens, tools: team.tools() }) } });
   return {
     port: server.port,
     token,

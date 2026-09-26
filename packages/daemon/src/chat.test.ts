@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { Message } from "@tjommie/protocol";
 import { createBot } from "./bots.ts";
-import { addMessage, buildRecap, getMessage, history, updateMessage } from "./chat.ts";
+import { addMessage, buildRecap, getMessage, history, historyPage, updateMessage } from "./chat.ts";
 import { openDb } from "./db.ts";
 import { RpcError } from "./server.ts";
 import { tempRoot } from "./testing.ts";
@@ -35,6 +35,24 @@ describe("chat store", () => {
       expect(error).toBeInstanceOf(RpcError);
       expect(error).toMatchObject({ code: "not_found", message: "No such message" });
     }
+  });
+
+  it("reports more history only when an earlier message remains", () => {
+    const { db, bot } = setup();
+    expect(historyPage(db, bot.id, undefined, 2)).toEqual({ messages: [], hasMore: false });
+    const messages = ["one", "two", "three", "four"].map((body) => addMessage(db, { conversationId: bot.id, author: "you", kind: "text", body, status: "done" }));
+    const newest = historyPage(db, bot.id, undefined, 2);
+    expect(newest).toEqual({ messages: messages.slice(2), hasMore: true });
+    expect(historyPage(db, bot.id, newest.messages[0].id, 2)).toEqual({ messages: messages.slice(0, 2), hasMore: false });
+    expect(historyPage(db, bot.id, messages[0].id, 2)).toEqual({ messages: [], hasMore: false });
+    expect(historyPage(db, bot.id, undefined, 10)).toEqual({ messages, hasMore: false });
+  });
+
+  it("rejects a history page cursor from another conversation", () => {
+    const { db, bot, root } = setup();
+    const otherBot = createBot(db, join(root, "bots"), { name: "Reader", color: "green", shape: "pill", instructions: "", provider: "codex", model: "gpt-5.6-sol" });
+    const cursor = addMessage(db, { conversationId: otherBot.id, author: "you", kind: "text", body: "other", status: "done" });
+    expect(() => historyPage(db, bot.id, cursor.id, 2)).toThrow("No such message");
   });
 
   it("updates body, status and data, and keeps data when an update doesn't mention it", () => {

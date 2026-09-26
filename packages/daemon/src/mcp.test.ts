@@ -69,6 +69,18 @@ function post(port: number, body: unknown, headers: Record<string, string> = {},
 }
 
 describe("the app's MCP endpoint", () => {
+  it("rejects a batch over 20 calls before executing anything", async () => {
+    const run = vi.fn(() => "ran");
+    const { tokens, port } = await setup([defineTool({ name: "record", description: "Records a call.", input: z.object({}), run })]);
+    const auth = { authorization: `Bearer ${tokens.issue("bot-1")}` };
+    const calls = Array.from({ length: 21 }, (_, id) => ({ id, method: "tools/call", params: { name: "record", arguments: {} } }));
+    expect(await post(port, calls, auth)).toMatchObject({ status: 200, body: { id: null, error: { code: -32600, message: "A batch can contain at most 20 calls." } } });
+    expect(run).not.toHaveBeenCalled();
+    const response = await post(port, calls.slice(0, 20), auth);
+    expect(response.status).toBe(200);
+    expect(response.body).toHaveLength(20);
+    expect(run).toHaveBeenCalledTimes(20);
+  });
   it("echoes the client's protocol version, lists tools and runs them as the token's bot", async () => {
     const { tokens, port } = await setup();
     const auth = { authorization: `Bearer ${tokens.issue("bot-1")}` };

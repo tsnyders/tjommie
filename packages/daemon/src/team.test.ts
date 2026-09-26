@@ -35,6 +35,7 @@ beforeEach(() => {
     db,
     broadcast: (event, data) => events.push({ event, data }),
     deliver: (work) => delivered.push(work),
+    stopItem: () => {},
     currentWork: (botId) => current.get(botId) ?? null,
     stateOf: () => "idle",
   });
@@ -131,7 +132,7 @@ describe("Team tools", () => {
     const deleting = team.botDeleting(researcher.id);
     deleteBot(db, researcher.id);
     team.botDeleted(deleting);
-    expect(db.prepare("SELECT id FROM work_items WHERE id = ?").get(waiting.id)).toBeUndefined();
+    expect(db.prepare("SELECT status FROM work_items WHERE id = ?").get(waiting.id)).toEqual({ status: "failed" });
     expect(getExchange(db, waiting.exchangeId!).status).toBe("failed");
     current.set(writer.id, started);
     expect(() => team.turnEnded(started, done("Done anyway."))).not.toThrow();
@@ -183,9 +184,10 @@ describe("Team room", () => {
   it("asks each bot a post mentions, with the recent room messages, on one chain", () => {
     team.postToRoom("Morning all.");
     expect(delivered).toEqual([]);
-    team.postToRoom("@Writer and @researcher, what's new?");
+    const post = team.postToRoom("@Writer and @researcher, what's new?");
     expect(delivered.map((item) => item.botId).sort()).toEqual([writer.id, researcher.id].sort());
     expect(delivered[0]).toMatchObject({ source: "room", conversationId: TEAM_ROOM_ID });
+    expect(delivered.map((item) => item.messageId)).toEqual([post.id, post.id]);
     expect(delivered[0].chainId).toBe(delivered[1].chainId);
     expect(delivered[0].text).toContain("Person: Morning all.");
     expect(delivered[0].text).toContain("what's new?");
@@ -316,13 +318,17 @@ describe("Shared file snapshots", () => {
   });
 
   it("allows an ordinary project but rejects another bot reached through an ancestor project", () => {
-    const project = join(root, "project");
-    mkdirSync(project);
-    writeFileSync(join(project, "notes.txt"), "project notes");
-    updateBot(db, writer.id, { projectFolder: project });
-    expect(call(writer.id, "share_file", { path: "notes.txt" })).toBe("Shared notes.txt.");
-    updateBot(db, writer.id, { projectFolder: root });
-    expect(() => call(writer.id, "share_file", { path: join(researcher.homeFolder, "notes.md") })).toThrow(/only share files from your own folders/);
+    const project = tempRoot();
+    try {
+      writeFileSync(join(project, "notes.txt"), "project notes");
+      updateBot(db, writer.id, { projectFolder: project });
+      expect(call(writer.id, "share_file", { path: "notes.txt" })).toBe("Shared notes.txt.");
+      // Simulate a legacy project selection that predates the project-folder guard.
+      db.prepare("UPDATE bots SET project_folder = ? WHERE id = ?").run(root, writer.id);
+      expect(() => call(writer.id, "share_file", { path: join(researcher.homeFolder, "notes.md") })).toThrow(/only share files from your own folders/);
+    } finally {
+      rmSync(project, { recursive: true, force: true });
+    }
   });
 
   it("rolls back a reply and copied files and fails visibly when queuing the reply fails", () => {

@@ -1,10 +1,10 @@
-import type { Routine, RoutineRun } from "@tjommie/protocol";
+import { messageData, type Message, type Routine, type RoutineLabelData, type RoutineRun } from "@tjommie/protocol";
 import { getStoredBot } from "./bots.ts";
-import { addMessage } from "./chat.ts";
+import { addMessage, getMessage, updateMessage } from "./chat.ts";
 import type { Db } from "./db.ts";
 import { newChain, type NewWork, type WorkItem } from "./queue.ts";
 import { addRun, getRoutine, getRun, hasOpenRun, nextRunAfter, setNextRun, setRunStatus } from "./routines.ts";
-import type { Broadcast } from "./server.ts";
+import { RpcError, type Broadcast } from "./server.ts";
 
 export const TICK_MS = 30_000;
 export const GRACE_MS = 120_000; // a run later than this counts as missed
@@ -25,12 +25,12 @@ export class Scheduler {
   #db: Db;
   #broadcast: Broadcast;
   #deliver: (work: NewWork) => void;
-  #stopItem: (itemId: string, notice: string) => void;
+  #stopItem: (itemId: string, notice: string) => void | Promise<void>;
   #timer: NodeJS.Timeout | null = null;
   #limits = new Map<string, NodeJS.Timeout>(); // run id -> its time limit
   #timedOut = new Set<string>();
 
-  constructor(deps: { db: Db; broadcast: Broadcast; deliver: (work: NewWork) => void; stopItem: (itemId: string, notice: string) => void }) {
+  constructor(deps: { db: Db; broadcast: Broadcast; deliver: (work: NewWork) => void; stopItem: (itemId: string, notice: string) => void | Promise<void> }) {
     this.#db = deps.db;
     this.#broadcast = deps.broadcast;
     this.#deliver = deps.deliver;
@@ -93,13 +93,17 @@ export class Scheduler {
     const notice = `Stopped at the time limit (${duration(routine.timeLimitMinutes)}).`;
     const timer = setTimeout(() => {
       this.#limits.delete(id);
+      const failed = (error: unknown) => {
+        this.#timedOut.delete(id);
+        console.error("Routine time limit failed.", error);
+      };
       try {
         const current = getRun(this.#db, id);
         if (!current || current.status !== "running") return; // deleted or already finished
         this.#timedOut.add(id);
-        this.#stopItem(item.id, notice);
+        void Promise.resolve(this.#stopItem(item.id, notice)).catch(failed);
       } catch (error) {
-        console.error("Routine time limit failed.", error);
+        failed(error);
       }
     }, routine.timeLimitMinutes * 60_000);
     timer.unref();
@@ -122,13 +126,25 @@ export class Scheduler {
     this.#clearLimit(id);
     const timedOut = this.#timedOut.delete(id);
     const run = getRun(this.#db, id);
-    if (!run || (run.status !== "queued" && run.status !== "running")) return;
+    if (!run) {
+      // Deleted routines have no run row; their retained label still needs a final state.
+      if (item.messageId && this.#db.prepare("SELECT 1 FROM messages WHERE id = ?").get(item.messageId)) {
+        const parsed = messageData(getMessage(this.#db, item.messageId));
+        if (parsed.kind === "routine" && (parsed.data.status === "queued" || parsed.data.status === "running")) {
+          const data = { ...parsed.data, status: "stopped", note: "The routine was deleted." } satisfies RoutineLabelData;
+          this.#broadcast("message.updated", updateMessage(this.#db, item.messageId, { data }));
+        }
+      }
+      return;
+    }
+    if (run.status !== "queued" && run.status !== "running") return;
     const status = timedOut || result.outcome === "interrupted" ? "stopped" : result.outcome;
     const note = timedOut ? "Stopped at the time limit." : status === "stopped" ? "Stopped by you." : status === "failed" ? (result.error ?? "Something went wrong.") : null;
     const ended = setRunStatus(this.#db, id, status, note);
     if (!ended) return; // the routine was deleted meanwhile
+    this.#label(getRoutine(this.#db, run.routineId), ended);
     this.#broadcast("routine.run", ended);
-    if (status === "failed") this.#notifyFailure(getRoutine(this.#db, run.routineId), note ?? "Something went wrong.");
+    if (status === "failed") this.#notifyFailure(getRoutine(this.#db, run.routineId), ended, note ?? "Something went wrong.");
   }
 
   #clearLimit(id: string): void {
@@ -149,9 +165,30 @@ export class Scheduler {
     setNextRun(this.#db, routine.id, next === null ? null : new Date(next).toISOString());
     this.#broadcast("routine.updated", getRoutine(this.#db, routine.id));
     this.#broadcast("routine.run", run);
-    if (run.status !== "queued") return this.#label(routine, run);
+    if (run.status !== "queued") {
+      this.#label(routine, run);
+      return;
+    }
+    this.#queue(routine, run);
+  }
+
+  // A manual retry is a new run with its own label and chain, leaving the old result intact.
+  retry(message: Message): Message {
+    const parsed = messageData(message);
+    if (parsed.kind !== "routine") throw new RpcError("bad_params", "This message is not a routine label");
+    const routine = getRoutine(this.#db, parsed.data.routineId);
+    if (!routine.enabled) throw new RpcError("bad_state", "Enable this routine before retrying it");
+    if (getStoredBot(this.#db, routine.botId).paused) throw new RpcError("bad_state", "Unpause this bot before retrying its routine");
+    if (hasOpenRun(this.#db, routine.id)) throw new RpcError("busy", "This routine already has a queued or running run");
+    const run = addRun(this.#db, routine.id, new Date().toISOString(), "queued");
+    this.#broadcast("routine.run", run);
+    return this.#queue(routine, run);
+  }
+
+  #queue(routine: Routine, run: RoutineRun): Message {
+    const label = this.#label(routine, run);
     try {
-      this.#deliver({ botId: routine.botId, source: "routine", text: routinePrompt(routine), chainId: newChain(this.#db), routineRunId: run.id });
+      this.#deliver({ botId: routine.botId, source: "routine", text: routinePrompt(routine), messageId: label.id, chainId: newChain(this.#db), routineRunId: run.id });
     } catch (error) {
       console.error("Routine delivery failed.", error);
       this.#clearLimit(run.id);
@@ -159,27 +196,37 @@ export class Scheduler {
       // The next run was computed from this tick before delivery, so failure cannot retry or burst it.
       const note = "Could not queue the routine run.";
       const failed = setRunStatus(this.#db, run.id, "failed", note);
-      if (!failed) return; // the routine was deleted during delivery
-      this.#broadcast("routine.run", failed);
-      this.#label(routine, failed);
-      this.#notifyFailure(routine, note);
+      if (failed) {
+        this.#broadcast("routine.run", failed);
+        this.#label(routine, failed);
+        this.#notifyFailure(routine, failed, note);
+      }
     }
+    return getMessage(this.#db, label.id);
   }
 
-  #notifyFailure(routine: Routine, note: string): void {
-    this.#broadcast("notify", { botId: routine.botId, title: `${getStoredBot(this.#db, routine.botId).name}'s routine failed`, body: `${routine.name}: ${note}` });
+  #notifyFailure(routine: Routine, run: RoutineRun, note: string): void {
+    this.#broadcast("notify", { kind: "routine_failed", botId: routine.botId, routineId: routine.id, runId: run.id, title: `${getStoredBot(this.#db, routine.botId).name}'s routine failed`, body: `${routine.name}: ${note}` });
   }
 
   // The "Routine: <name>" row in the bot's chat, above the run or saying why it didn't run.
-  #label(routine: Routine, run: RoutineRun): void {
+  #label(routine: Routine, run: RoutineRun): Message {
+    const data = { routineId: routine.id, runId: run.id, status: run.status, note: run.note } satisfies RoutineLabelData;
+    const existing = this.#db.prepare("SELECT id FROM messages WHERE conversation_id = ? AND kind = 'routine' AND json_extract(data, '$.runId') = ? LIMIT 1").get(routine.botId, run.id) as { id: string } | undefined;
+    if (existing) {
+      const message = updateMessage(this.#db, existing.id, { data });
+      this.#broadcast("message.updated", message);
+      return message;
+    }
     const message = addMessage(this.#db, {
       conversationId: routine.botId,
       author: "system",
       kind: "routine",
       body: `Routine: ${routine.name}`,
-      data: { routineId: routine.id, runId: run.id, status: run.status, note: run.note },
+      data,
       status: "done",
     });
     this.#broadcast("message.added", message);
+    return message;
   }
 }

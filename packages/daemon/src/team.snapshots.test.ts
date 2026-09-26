@@ -5,7 +5,7 @@ import { createBot, deleteBot, type StoredBot } from "./bots.ts";
 import { getMessage, history } from "./chat.ts";
 import { openDb, type Db } from "./db.ts";
 import { enqueue, newChain, type WorkItem } from "./queue.ts";
-import { Team } from "./team.ts";
+import { Team, getExchange } from "./team.ts";
 import { tempRoot } from "./testing.ts";
 
 vi.mock("node:fs", async (importOriginal) => {
@@ -20,6 +20,7 @@ let writer: StoredBot;
 let asker: StoredBot;
 let current: Map<string, WorkItem>;
 let delivered: WorkItem[];
+let deliveryError: Error | null;
 const done = { outcome: "done" as const, text: "Here is the file.", textMessageId: null, error: null };
 
 beforeEach(() => {
@@ -29,7 +30,8 @@ beforeEach(() => {
   asker = createBot(db, join(root, "bots"), { name: "Asker", color: "blue", shape: "circle", instructions: "", provider: "claude", model: "sonnet", canMessage: [writer.id] });
   current = new Map();
   delivered = [];
-  team = new Team({ db, broadcast: () => {}, deliver: (work) => { delivered.push(work); }, currentWork: (id) => current.get(id) ?? null, stateOf: () => "idle" });
+  deliveryError = null;
+  team = new Team({ db, broadcast: () => {}, deliver: (work) => { if (deliveryError) throw deliveryError; delivered.push(work); }, stopItem: () => {}, currentWork: (id) => current.get(id) ?? null, stateOf: () => "idle" });
 });
 
 afterEach(() => {
@@ -56,6 +58,59 @@ const share = (conversationId: string, name = "answer.txt") => {
 };
 
 describe("Team snapshot lifecycle", () => {
+  it.each(["failed", "interrupted"] as const)("keeps files from a %s turn in the target bot inbox and releases staging", (outcome) => {
+    const request = ask();
+    const card = share(request.conversationId);
+    const stage = dirname(String(card.data?.path));
+    team.turnEnded(request, { ...done, outcome, error: "Could not finish" });
+    const expected = join(writer.homeFolder, "inbox", "answer.txt");
+    expect(getMessage(db, card.id).data?.path).toBe(expected);
+    expect(readFileSync(expected, "utf8")).toBe("snapshot contents");
+    expect(existsSync(stage)).toBe(false);
+  });
+
+  it.each(["failed", "interrupted"] as const)("still tells the asker about a %s turn when saving shared files fails", (outcome) => {
+    const request = ask();
+    const card = share(request.conversationId);
+    const snapshot = String(card.data?.path);
+    rmSync(join(writer.homeFolder, "inbox"), { recursive: true });
+    writeFileSync(join(writer.homeFolder, "inbox"), "blocks copying");
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    let thrown: unknown;
+    try {
+      team.turnEnded(request, { ...done, outcome, error: "The CLI exited" });
+    } catch (error) {
+      thrown = error;
+    }
+    const reason = outcome === "interrupted" ? "it was stopped" : "The CLI exited";
+    expect(getExchange(db, request.exchangeId!)).toMatchObject({ status: "failed", reply: reason });
+    expect(delivered.filter((work) => work.source === "bot_reply")).toEqual([
+      expect.objectContaining({ botId: asker.id, exchangeId: request.exchangeId, text: expect.stringContaining(`Writer couldn't finish your request "Share a file.": ${reason}`) }),
+    ]);
+    expect(thrown).toBeUndefined();
+    expect(logged).toHaveBeenCalledWith("Tjommie: could not save files from a failed exchange turn", expect.any(Error));
+    expect(getMessage(db, card.id).data?.path).toBe(snapshot);
+    expect(existsSync(snapshot)).toBe(true);
+  });
+
+  it.each(["copy", "save", "delivery"] as const)("preserves the original reply when a follow-up %s fails", (failure) => {
+    const request = ask();
+    team.turnEnded(request, done);
+    const original = getExchange(db, request.exchangeId!);
+    if (failure === "copy") {
+      share(request.conversationId);
+      rmSync(join(asker.homeFolder, "inbox"), { recursive: true });
+      writeFileSync(join(asker.homeFolder, "inbox"), "blocks copying");
+      team.turnEnded(request, { ...done, text: "Follow-up" });
+    } else {
+      if (failure === "save") db.exec(`CREATE TRIGGER reject_follow_up BEFORE INSERT ON messages WHEN NEW.conversation_id = 'team' AND NEW.author = '${writer.id}' BEGIN SELECT RAISE(ABORT, 'cannot save follow-up'); END`);
+      else deliveryError = new Error("cannot deliver follow-up");
+      expect(() => team.turnEnded(request, { ...done, text: "Follow-up" })).toThrow();
+    }
+    expect(getExchange(db, request.exchangeId!)).toEqual(original);
+    expect(history(db, asker.id, undefined, 20).find((message) => message.kind === "handoff")?.data?.status).toBe("replied");
+  });
+
   it("delivers and releases a snapshot shared while retrying a failed exchange", () => {
     const request = ask();
     team.turnEnded(request, { ...done, outcome: "failed", error: "Try again" });

@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
-import { openDb } from "./db.ts";
+import { migrations, openDb } from "./db.ts";
 import { dataPaths, readOrCreateToken } from "./paths.ts";
 
 // A root with a space and an accented letter, like a real Windows profile path.
@@ -36,9 +36,11 @@ describe("openDb", () => {
   it("upgrades saved sessions with an unknown cost baseline", () => {
     const file = join(root(), "t.db");
     const old = new DatabaseSync(file);
+    for (const migration of migrations.slice(0, 2)) old.exec(migration);
     old.exec(`
-      CREATE TABLE sessions (bot_id TEXT PRIMARY KEY, provider TEXT NOT NULL, account_id TEXT NOT NULL,
-        cli_session_id TEXT NOT NULL, updated_at TEXT NOT NULL);
+      PRAGMA foreign_keys = ON;
+      INSERT INTO bots (id, name, color, shape, instructions, provider, model, autonomy, home_folder, created_at)
+        VALUES ('bot', 'Writer', 'blue', 'circle', '', 'claude', 'haiku', 'folder', 'x', 'then');
       INSERT INTO sessions VALUES ('bot', 'claude', 'claude-main', 'saved', 'then');
       PRAGMA user_version = 2;
     `);

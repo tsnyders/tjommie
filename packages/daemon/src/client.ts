@@ -1,4 +1,4 @@
-import { PROTOCOL_VERSION, events, methods, type EventData, type EventName, type MethodName, type ParamsIn, type Result } from "@tjommie/protocol";
+import { ErrorCode, PROTOCOL_VERSION, events, methods, type EventData, type EventName, type MethodName, type ParamsIn, type Result } from "@tjommie/protocol";
 
 export type ClientEvent = { [E in EventName]: { type: "event"; event: E; data: EventData<E> } }[EventName];
 export type Client = {
@@ -13,6 +13,16 @@ type PendingCall = { accept: (result: unknown) => void; reject: (error: Error) =
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export class ClientRpcError extends Error {
+  readonly code: ErrorCode;
+
+  constructor(code: ErrorCode, message: string) {
+    super(`${code}: ${message}`);
+    this.name = "ClientRpcError";
+    this.code = code;
+  }
 }
 
 export class ClientConnectionError extends Error {
@@ -114,7 +124,7 @@ export async function connect(port: number, token: string): Promise<Client> {
           call?.accept(frame.result);
         } else {
           if (!isRecord(frame.error) || typeof frame.error.code !== "string" || typeof frame.error.message !== "string") throw new Error("Invalid response error");
-          call?.reject(new Error(`${frame.error.code}: ${frame.error.message}`));
+          call?.reject(new ClientRpcError(ErrorCode.parse(frame.error.code), frame.error.message));
         }
         pending.delete(frame.id);
         return;

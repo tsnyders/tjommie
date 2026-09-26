@@ -1,10 +1,9 @@
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, mkdtempSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { StoredBot } from "../bots.ts";
 import { browserServer } from "../browser.ts";
 import { resolveCli } from "../cli.ts";
-import { dataPaths } from "../paths.ts";
 import { accountEnv } from "../setup.ts";
 import { firstOf, realAccount, tempRoot, waitFor } from "../testing.ts";
 import { CodexSession } from "./codex.ts";
@@ -57,7 +56,10 @@ describe("CodexSession against the real CLI", () => {
   });
 
   it("asks before writing outside its folder, and a denial keeps the file from being written", async () => {
-    const outside = join(dataPaths().root, `tjommie-outside-${Date.now()}.txt`); // not under %TEMP%, which the sandbox allows
+    // Keep the denied target outside the sandbox's temp allowance and away from the real data root.
+    const cache = resolve("node_modules/.cache/fix-A");
+    mkdirSync(cache, { recursive: true });
+    const outside = join(mkdtempSync(join(cache, "codex-outside-")), "denied.txt");
     const { codex, events } = session();
     await codex.start();
     await codex.send(`Write the text hi to the file ${outside} with a shell command.`);

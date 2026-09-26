@@ -1,10 +1,11 @@
-import { copyFileSync, existsSync, mkdirSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
-import type { Approval, ApprovalDecision, Bot, BotState, Message } from "@tjommie/protocol";
+import { ApprovalData, type ActivityData, type ActivityItem, type Approval, type ApprovalDecision, type Bot, type BotState, type ErrorData, type Message, type UserMessageData } from "@tjommie/protocol";
 import { allowRules, createApproval, expirePendingApprovals, resolveApproval } from "./approvals.ts";
 import { botPrompt, getStoredBot, listStoredBots, setLimitedUntil, type StoredBot } from "./bots.ts";
+import { closeBrowser } from "./browser.ts";
 import { addMessage, buildRecap, getMessage, history, updateMessage } from "./chat.ts";
-import { resolveCli } from "./cli.ts";
+import { killTree, resolveCli } from "./cli.ts";
 import { newId, nowIso, transaction, type Db } from "./db.ts";
 import { ClaudeSession } from "./providers/claude.ts";
 import { CodexSession } from "./providers/codex.ts";
@@ -31,16 +32,20 @@ export type RunnerHooks = {
   turnEnded?: (item: WorkItem, result: TurnResult) => void;
   // A limit or failed resume restarts the item; clear its timer until turnStarted re-arms it.
   turnRequeued?: (item: WorkItem) => void;
+  retryRoutine?: (message: Message) => Message;
 };
 
 const IDLE_SHUTDOWN_MS = 10 * 60_000;
 const RECAP_MESSAGES = 20;
 const UNKNOWN_RESET_MS = 60 * 60_000;
 const MAX_TIMER_MS = 2 ** 31 - 1;
-const TURN_EVENTS = new Set<ProviderEvent["type"]>(["text", "text_end", "tool", "tool_done", "approval"]);
+const TURN_EVENTS = new Set<ProviderEvent["type"]>(["text", "tool", "approval"]);
 const RESTARTED = "Tjommie restarted while this was running.";
 
-type ActivityItem = { id: string; name: string; summary: string; status: "running" | "done" | "failed" };
+function retryData(item: WorkItem): ErrorData | null {
+  if (!item.messageId) return null;
+  return { retryMessageId: item.messageId, ...(item.source === "room" ? { retryBotId: item.botId } : {}) };
+}
 
 // What the runner knows about a bot that has (or recently had) a CLI session.
 type Live = {
@@ -57,12 +62,23 @@ type Live = {
   activity: { id: string; items: ActivityItem[] } | null;
   stopRequested: boolean;
   stopNotice: string | null;
+  stopPending: Promise<boolean | void> | null;
   limitHit: boolean;
   lastResetsAt: string | null;
   reload: boolean;
   approvals: Map<string, string>; // Tjommie approval id -> the provider's own request id
   idleTimer: NodeJS.Timeout | null;
   limitTimer: NodeJS.Timeout | null;
+};
+
+type Deleting = {
+  live: Live;
+  items: WorkItem[];
+  pid: number | undefined;
+  processExited: boolean;
+  closed: Promise<void>;
+  settled: boolean;
+  restoreWhenClosed: boolean;
 };
 
 export function botStateOf(
@@ -106,7 +122,7 @@ export class Runner {
   #createSession: SessionFactory;
   #hooks: RunnerHooks;
   #live = new Map<string, Live>();
-  #deleting = new Map<string, { live: Live; items: WorkItem[] }>();
+  #deleting = new Map<string, Deleting>();
   #recovered = false;
   #ready = true;
 
@@ -123,8 +139,8 @@ export class Runner {
     if (this.#recovered) return;
     this.#ready = false;
     for (const item of recoverAfterRestart(this.#db)) {
-      if (item.messageId) this.#emitMessage(updateMessage(this.#db, item.messageId, { status: "interrupted" }));
-      this.#notice(item.conversationId, "error", RESTARTED, item.messageId ? { retryMessageId: item.messageId } : null);
+      this.#setChatMessageStatus(item, "interrupted");
+      this.#notice(item.conversationId, "error", RESTARTED, retryData(item));
       this.#safely(() => this.#hooks.turnEnded?.(item, { outcome: "failed", text: null, textMessageId: null, error: RESTARTED }));
     }
     const streaming = this.#db.prepare("SELECT id FROM messages WHERE status = 'streaming' ORDER BY created_at, rowid").all() as { id: string }[];
@@ -150,7 +166,7 @@ export class Runner {
         signedIn: this.#isSignedIn(bot.provider),
         paused: bot.paused,
         limitedUntil: bot.limitedUntil,
-        waiting: (live?.approvals.size ?? 0) > 0,
+        waiting: (live?.approvals.size ?? 0) > 0 || this.#db.prepare("SELECT 1 FROM approvals WHERE bot_id = ? AND kind = 'routine' AND status = 'pending' LIMIT 1").get(bot.id) !== undefined,
         busy: live?.busy ?? false,
       },
       nowIso(),
@@ -170,13 +186,18 @@ export class Runner {
 
   submit(botId: string, text: string, files: string[]): Message {
     const bot = getStoredBot(this.#db, botId);
+    for (const file of files) {
+      let isFile = false;
+      try { isFile = statSync(file).isFile(); } catch { /* Report the selected path as a parameter error. */ }
+      if (!isFile) throw new RpcError("bad_params", `Attachment is missing or is not a file: ${file}`);
+    }
     const attached = files.map((file) => copyIntoInbox(bot.homeFolder, file));
     const message = addMessage(this.#db, {
       conversationId: botId,
       author: "you",
       kind: "text",
       body: text,
-      data: attached.length ? { files: attached } : null,
+      data: attached.length ? { files: attached } satisfies UserMessageData : null,
       status: "queued",
     });
     this.#emitMessage(message, "message.added");
@@ -188,6 +209,11 @@ export class Runner {
   // Start or steer new work, or wake work already queued atomically with its exchange.
   deliver(work: NewWork | WorkItem): WorkItem {
     const item = "id" in work ? getWorkItem(this.#db, work.id) : enqueue(this.#db, work);
+    const deleting = this.#deleting.get(item.botId);
+    if (deleting) {
+      if (!deleting.items.some((captured) => captured.id === item.id)) deleting.items.push(item);
+      return item;
+    }
     const live = this.#liveFor(item.botId);
     if (!live.busy) this.pump(item.botId);
     else if (live.sent) {
@@ -196,13 +222,23 @@ export class Runner {
     return item;
   }
 
-  retry(messageId: string): Message {
-    const previous = lastItemForMessage(this.#db, messageId);
+  retry(messageId: string, botId?: string): Message {
+    let previous = lastItemForMessage(this.#db, messageId, botId);
     if (!previous) throw new RpcError("not_found", "There's nothing to retry for this message");
+    if (previous.source === "room" && botId === undefined) {
+      const bots = this.#db.prepare("SELECT DISTINCT bot_id FROM work_items WHERE message_id = ?").all(messageId) as { bot_id: string }[];
+      const failed = bots.map((bot) => lastItemForMessage(this.#db, messageId, bot.bot_id)!).filter((item) => item.status === "failed" || item.status === "interrupted");
+      if (failed.length > 1) throw new RpcError("bad_params", "Choose the bot whose room turn you want to retry");
+      if (failed.length === 1) previous = failed[0];
+    }
     if (previous.status !== "failed" && previous.status !== "interrupted") {
       throw new RpcError("bad_state", "Only failed or interrupted work can be retried");
     }
-    this.#emitMessage(updateMessage(this.#db, messageId, { status: "queued" }));
+    if (previous.source === "routine") {
+      if (!this.#hooks.retryRoutine) throw new RpcError("bad_state", "Routine retry is unavailable");
+      return this.#hooks.retryRoutine(getMessage(this.#db, messageId));
+    }
+    this.#setChatMessageStatus(previous, "queued");
     this.deliver({ botId: previous.botId, source: previous.source, text: previous.text, messageId, conversationId: previous.conversationId, exchangeId: previous.exchangeId, chainId: newChain(this.#db) });
     return getMessage(this.#db, messageId);
   }
@@ -210,16 +246,29 @@ export class Runner {
   async stop(botId: string): Promise<void> {
     const live = this.#live.get(botId);
     if (!live?.busy) return;
+    const session = live.session;
+    const item = live.item;
     live.stopRequested = true;
-    await live.session?.interrupt();
+    try {
+      const pending = session?.interrupt() ?? Promise.resolve();
+      if (this.#live.get(botId) === live && live.session === session && live.item === item && live.busy) live.stopPending = pending;
+      await pending;
+    } catch (error) {
+      if (this.#live.get(botId) === live && live.session === session && live.item === item && live.busy) {
+        live.stopRequested = false;
+        live.stopNotice = null;
+      }
+      throw error;
+    }
   }
 
   // A stale routine timer must never interrupt a later item on the same bot.
-  stopItem(itemId: string, notice: string): void {
+  async stopItem(itemId: string, notice: string): Promise<void> {
     for (const [botId, live] of this.#live) {
       if (!live.busy || live.item?.id !== itemId) continue;
       live.stopNotice = notice;
-      void this.stop(botId).catch((error: unknown) => console.error("Tjommie: stopping a work item failed", error));
+      await this.stop(botId);
+      return;
     }
   }
 
@@ -246,21 +295,34 @@ export class Runner {
     else this.#closeSession(botId, live);
   }
 
-  // Release the CLI's folder locks without changing persisted work. pump restores it if deletion fails.
-  closeForDeletion(botId: string): void {
-    if (this.#deleting.has(botId)) return;
+  // Release folder locks without changing persisted work; only explicit cancellation may resume it.
+  closeForDeletion(botId: string): Promise<void> {
+    const existing = this.#deleting.get(botId);
+    if (existing) {
+      if (existing.restoreWhenClosed) throw new RpcError("busy", "The bot is still closing. Try again shortly.");
+      return existing.closed;
+    }
     const live = this.#liveFor(botId);
     const rows = this.#db.prepare("SELECT id FROM work_items WHERE bot_id = ? AND status IN ('queued', 'running') ORDER BY created_at, rowid").all(botId) as { id: string }[];
     const items = rows.map((row) => getWorkItem(this.#db, row.id));
     if (live.steeringItem && !items.some((item) => item.id === live.steeringItem?.id)) items.push(live.steeringItem);
-    this.#deleting.set(botId, { live, items });
+    const session = live.session;
+    const detached: Deleting = { live, items, pid: session?.pid(), processExited: false, closed: Promise.resolve(), settled: false, restoreWhenClosed: false };
+    this.#deleting.set(botId, detached);
     this.#live.delete(botId);
     this.#releaseSession(botId, live);
+    const exited = Promise.resolve(session?.waitForExit?.()).then(() => { detached.processExited = true; });
+    detached.closed = Promise.all([exited, closeBrowser(botId)]).then(() => {
+      detached.settled = true;
+    });
+    return detached.closed;
   }
 
   // Call only after deletion succeeds. Captured work survives the database cascade long enough for hooks.
   forget(botId: string): void {
-    if (!this.#deleting.has(botId) && this.#live.has(botId)) this.closeForDeletion(botId);
+    if (!this.#deleting.has(botId) && this.#live.has(botId)) {
+      void this.closeForDeletion(botId).catch((error: unknown) => console.error("Tjommie: closing a deleted bot failed", error));
+    }
     const detached = this.#deleting.get(botId);
     if (!detached) return;
     this.#deleting.delete(botId);
@@ -269,17 +331,47 @@ export class Runner {
     }
   }
 
-  pump(botId: string): void {
-    if (!this.#ready) return;
+  cancelDeletion(botId: string): void {
     const detached = this.#deleting.get(botId);
-    if (detached) {
-      this.#deleting.delete(botId);
-      // Use a new object so pending callbacks from the closed session cannot change resumed work.
-      this.#live.set(botId, { ...detached.live, session: null, sent: false, steering: false, steeringItem: null, idleTimer: null, limitTimer: null });
-      if (detached.live.steeringItem) setStatus(this.#db, detached.live.steeringItem.id, "queued");
+    if (!detached) return;
+    if (!detached.settled) {
+      if (!detached.restoreWhenClosed) {
+        detached.restoreWhenClosed = true;
+        void detached.closed.then(() => {
+          if (this.#deleting.get(botId) === detached) this.cancelDeletion(botId);
+        }).catch((error: unknown) => console.error("Tjommie: restoring a bot after deletion failed", error));
+      }
+      return;
     }
+    this.#deleting.delete(botId);
+    this.#flushText(detached.live, "interrupted");
+    this.#closeActivity(detached.live);
+    // Use a new object so pending callbacks from the closed session cannot change resumed work.
+    const live: Live = { ...detached.live, session: null, sent: false, steering: false, steeringItem: null,
+      text: null, activity: null, lastText: null, stopPending: null, idleTimer: null, limitTimer: null };
+    this.#live.set(botId, live);
+    if (detached.live.steeringItem) setStatus(this.#db, detached.live.steeringItem.id, "queued");
+    const bot = getStoredBot(this.#db, botId);
+    // These cards refer to the closed provider session, so cannot be answered by its replacement.
+    this.#expireApprovals(live);
+    if (bot.limitedUntil) this.#armLimitTimer(botId, bot.limitedUntil);
+    if (live.busy && live.stopRequested) {
+      this.#finishTurn(botId, false, null);
+      return;
+    }
+    if (live.busy && live.item) {
+      // Keep the same work and its routine timer after a failed folder removal.
+      this.#launchTurn(bot, live.item, live);
+      return;
+    }
+    live.busy = false;
+    this.pump(botId);
+  }
+
+  pump(botId: string): void {
+    if (!this.#ready || this.#deleting.has(botId)) return;
     const live = this.#liveFor(botId);
-    if (live.busy && !detached) return;
+    if (live.busy) return;
     let bot: StoredBot;
     try {
       bot = getStoredBot(this.#db, botId);
@@ -287,23 +379,8 @@ export class Runner {
       if (!(error instanceof RpcError && error.code === "not_found")) console.error("Tjommie: loading a bot failed", error);
       return;
     }
-    if (detached) {
-      // These cards refer to the closed provider session, so cannot be answered by its replacement.
-      for (const approvalId of live.approvals.keys()) this.#showApprovalStatus(resolveApproval(this.#db, approvalId, "deny"));
-      live.approvals.clear();
-      if (bot.limitedUntil) this.#armLimitTimer(botId, bot.limitedUntil);
-      if (live.busy && live.item) {
-        // Keep the same work and its routine timer after a failed folder removal.
-        this.#launchTurn(bot, live.item, live);
-        return;
-      }
-      if (live.busy) {
-        this.#flushText(live, "interrupted");
-        this.#closeActivity(live);
-        live.busy = false;
-      }
-    }
-    if (this.toBot(bot).state !== "idle") {
+    // A routine proposal changes the displayed state, but does not block work.
+    if (!this.#isSignedIn(bot.provider) || bot.paused || (bot.limitedUntil !== null && bot.limitedUntil > nowIso()) || live.approvals.size > 0 || live.busy) {
       this.#armIdle(botId, live);
       this.#emitBot(botId);
       return;
@@ -318,6 +395,7 @@ export class Runner {
     live.item = item;
     live.stopRequested = false;
     live.stopNotice = null;
+    live.stopPending = null;
     live.limitHit = false;
     live.lastText = null;
     if (live.idleTimer) {
@@ -325,7 +403,7 @@ export class Runner {
       live.idleTimer = null;
     }
     setStatus(this.#db, item.id, "running");
-    if (item.messageId) this.#emitMessage(updateMessage(this.#db, item.messageId, { status: "sent" }));
+    this.#setChatMessageStatus(item, "sent");
     this.#emitBot(botId);
     this.#safely(() => this.#hooks.turnStarted?.(item));
     this.#launchTurn(bot, item, live);
@@ -339,8 +417,14 @@ export class Runner {
     this.#ready = false;
     const live = [...this.#live];
     this.#live.clear();
+    for (const deleting of this.#deleting.values()) {
+      if (deleting.live.busy && !deleting.processExited) killTree(deleting.pid);
+    }
     this.#deleting.clear();
-    for (const [botId, state] of live) this.#releaseSession(botId, state);
+    for (const [botId, state] of live) {
+      if (state.busy) killTree(state.session?.pid());
+      this.#releaseSession(botId, state);
+    }
   }
 
   #liveFor(botId: string): Live {
@@ -360,6 +444,7 @@ export class Runner {
         activity: null,
         stopRequested: false,
         stopNotice: null,
+        stopPending: null,
         limitHit: false,
         lastResetsAt: null,
         reload: false,
@@ -439,7 +524,11 @@ export class Runner {
         this.#safely(() => this.#hooks.turnStarted?.(item)); // this retry starts directly, without pump
         return this.#startTurn(bot, item);
       }
-      if (!live.busy || live.item?.id !== item.id || live.session !== created) return;
+      if (live.session !== created) {
+        created.close();
+        return;
+      }
+      if (!live.busy || live.item?.id !== item.id) return;
       if (live.stopRequested) {
         this.#finishTurn(bot.id, false, null);
         return;
@@ -459,6 +548,20 @@ export class Runner {
     }
     if (!live.busy || live.item?.id !== item.id || live.session !== session) return;
     live.sent = true;
+    if (live.stopRequested) {
+      let handled = false;
+      if (live.stopPending) {
+        try {
+          handled = await live.stopPending === true;
+        } catch {
+          // stop() reports the rejection and clears Stop. The provider still owns this turn's outcome.
+          return;
+        }
+      }
+      if (this.#live.get(bot.id) !== live || !live.busy || live.item?.id !== item.id || live.session !== session) return;
+      if (live.stopRequested && !handled) await this.stop(bot.id);
+      return;
+    }
     await this.#steerQueued(bot.id); // anything sent while the turn was starting goes in now, in order
   }
 
@@ -488,7 +591,7 @@ export class Runner {
           setStatus(this.#db, item.id, "queued"); // it runs as the next turn instead
           break;
         }
-        if (item.messageId) this.#emitMessage(updateMessage(this.#db, item.messageId, { status: "sent" }));
+        this.#setChatMessageStatus(item, "sent");
       }
     } finally {
       live.steering = false;
@@ -579,7 +682,7 @@ export class Runner {
       author: botId,
       kind: "activity",
       body: activityBody([item]),
-      data: { items: [item] },
+      data: { items: [item] } satisfies ActivityData,
       status: "streaming",
     });
     live.activity = { id: message.id, items: [item] };
@@ -598,7 +701,7 @@ export class Runner {
     this.#emitMessage(
       updateMessage(this.#db, live.activity.id, {
         body: activityBody(live.activity.items),
-        data: { items: live.activity.items },
+        data: { items: live.activity.items } satisfies ActivityData,
         status,
       }),
     );
@@ -621,7 +724,7 @@ export class Runner {
       author: botId,
       kind: "approval",
       body: event.summary,
-      data: { approvalId, tool: event.tool, detail: event.detail, rule: event.rule, status: "pending" },
+      data: { approvalId, tool: event.tool, detail: event.detail, rule: event.rule, status: "pending" } satisfies ApprovalData,
       status: "done",
     });
     const approval = createApproval(this.#db, {
@@ -636,14 +739,30 @@ export class Runner {
     live.approvals.set(approvalId, event.id);
     this.#emitMessage(message, "message.added");
     this.#broadcast("approval.added", approval);
-    this.#broadcast("notify", { botId, title: `${getStoredBot(this.#db, botId).name} is waiting for you`, body: event.summary });
+    this.#broadcast("notify", { kind: "approval", botId, approvalId, title: `${getStoredBot(this.#db, botId).name} is waiting for you`, body: event.summary });
     this.#emitBot(botId);
   }
 
   #showApprovalStatus(approval: Approval): void {
     const message = getMessage(this.#db, approval.messageId);
-    this.#emitMessage(updateMessage(this.#db, message.id, { data: { ...message.data, status: approval.status } }));
+    const parsed = ApprovalData.safeParse(message.data);
+    // Preserve a damaged card's fields without letting it interrupt turn cleanup.
+    const data = parsed.success
+      ? { ...parsed.data, status: approval.status } satisfies ApprovalData
+      : { ...message.data, status: approval.status };
+    this.#emitMessage(updateMessage(this.#db, message.id, { data }));
     this.#broadcast("approval.resolved", approval);
+  }
+
+  #expireApprovals(live: Live): void {
+    for (const approvalId of live.approvals.keys()) {
+      try {
+        this.#showApprovalStatus(resolveApproval(this.#db, approvalId, "deny"));
+      } catch (error) {
+        if (!(error instanceof RpcError && error.code === "already_answered")) throw error;
+      }
+    }
+    live.approvals.clear();
   }
 
   #recordUsage(botId: string, event: Extract<ProviderEvent, { type: "usage" }>): void {
@@ -687,7 +806,7 @@ export class Runner {
     const when = new Date(until);
     const at = `${when.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} on ${when.toLocaleDateString([], { weekday: "long" })}`;
     this.#notice(botId, "notice", `${name} hit its usage limit. It will pick up again at ${at}.`, null);
-    this.#broadcast("notify", { botId, title: `${name} hit its usage limit`, body: `It will pick up again at ${at}.` });
+    this.#broadcast("notify", { kind: "limit", botId, title: `${name} hit its usage limit`, body: `It will pick up again at ${at}.` });
     this.#armLimitTimer(botId, until);
     this.#emitBot(botId);
   }
@@ -716,22 +835,20 @@ export class Runner {
     const requeued = live.limitHit && !ok && !live.stopRequested;
     if (item && requeued) {
       setStatus(this.#db, item.id, "queued"); // runs again once the limit resets
-      if (item.messageId) this.#emitMessage(updateMessage(this.#db, item.messageId, { status: "queued" }));
+      this.#setChatMessageStatus(item, "queued");
     } else if (item) {
       setStatus(this.#db, item.id, outcome);
       if (outcome === "interrupted") this.#notice(conversationId, "notice", live.stopNotice ?? "Stopped.", null);
-      if (outcome === "failed") this.#notice(conversationId, "error", error ?? "Something went wrong.", item.messageId ? { retryMessageId: item.messageId } : null);
+      if (outcome === "failed") this.#notice(conversationId, "error", error ?? "Something went wrong.", retryData(item));
     }
-    for (const approvalId of live.approvals.keys()) {
-      this.#showApprovalStatus(resolveApproval(this.#db, approvalId, "deny")); // the turn that asked is over
-    }
-    live.approvals.clear();
+    this.#expireApprovals(live); // the turn that asked is over
     const result: TurnResult = { outcome, text: live.lastText?.body ?? null, textMessageId: live.lastText?.id ?? null, error };
     live.busy = false;
     live.sent = false;
     live.item = null;
     live.stopRequested = false;
     live.stopNotice = null;
+    live.stopPending = null;
     live.limitHit = false;
     live.lastText = null;
     if (live.reload) {
@@ -800,7 +917,14 @@ export class Runner {
     live.idleTimer.unref();
   }
 
-  #notice(conversationId: string, kind: "notice" | "error", body: string, data: Record<string, unknown> | null): void {
+  #setChatMessageStatus(item: WorkItem, status: Message["status"]): void {
+    if (!item.messageId || item.conversationId !== item.botId) return;
+    const message = getMessage(this.#db, item.messageId);
+    if (message.conversationId !== item.botId || message.author !== "you" || message.kind !== "text") return;
+    this.#emitMessage(updateMessage(this.#db, message.id, { status }));
+  }
+
+  #notice(conversationId: string, kind: "notice" | "error", body: string, data: ErrorData | null): void {
     this.#emitMessage(
       addMessage(this.#db, { conversationId, author: "system", kind, body: body.slice(0, 500), data, status: "done" }),
       "message.added",

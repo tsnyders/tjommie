@@ -5,8 +5,9 @@ import { createBot, setPaused } from "./bots.ts";
 import { history } from "./chat.ts";
 import { openDb, type Db } from "./db.ts";
 import { enqueue, getWorkItem, setStatus, type NewWork } from "./queue.ts";
-import { addRun, createRoutine, deleteRoutine, getRoutine, getRun, hasOpenRun, listRuns } from "./routines.ts";
+import { addRun, createRoutine, deleteRoutine, getRoutine, getRun, hasOpenRun, listRuns, updateRoutine } from "./routines.ts";
 import { GRACE_MS, Scheduler, TICK_MS, duration, routinePrompt } from "./scheduler.ts";
+import { RpcError } from "./server.ts";
 import { tempRoot } from "./testing.ts";
 
 const at = (iso: string) => Date.parse(iso);
@@ -52,15 +53,87 @@ const digest = (extra: { timeLimitMinutes?: number; enabled?: boolean; days?: nu
   createRoutine(db, { botId, name: "Digest", prompt: "Summarize my inbox", days: [0, 1, 2, 3, 4, 5, 6], times: ["08:00", "17:00"], timeZone: "UTC", ...extra }, at("2026-09-20T00:00:00Z"));
 
 describe("Scheduler", () => {
+  it.each([
+    { reason: "missed", status: "missed", note: "The PC was off or asleep, or Tjommie wasn't running." },
+    { reason: "paused", status: "skipped", note: "Night Shift was paused." },
+    { reason: "running", status: "skipped", note: "The previous run was still going." },
+    { reason: "queued", status: "skipped", note: "The previous run was still going." },
+  ] as const)("publishes one final label when a due run is $reason", ({ reason, status, note }) => {
+    const routine = digest();
+    if (reason === "paused") setPaused(db, botId, true);
+    if (reason === "running" || reason === "queued") addRun(db, routine.id, "2026-09-19T17:00:00.000Z", reason);
+    scheduler().tick(at(reason === "missed" ? "2026-09-20T08:03:00Z" : "2026-09-20T08:00:10Z"));
+    const labels = history(db, botId, undefined, 10);
+    expect(labels).toMatchObject([{ kind: "routine", data: { status, note } }]);
+    expect(events.filter(({ event }) => event === "message.added" || event === "message.updated")).toEqual([
+      { event: "message.added", data: labels[0] },
+    ]);
+    expect(delivered).toEqual([]);
+  });
+
+  it.each([
+    { reason: "paused bot", message: "Unpause this bot before retrying its routine" },
+    { reason: "disabled routine", message: "Enable this routine before retrying it" },
+  ] as const)("refuses a routine retry for a $reason before creating work", ({ reason, message }) => {
+    const routine = digest();
+    const s = scheduler();
+    s.tick(at("2026-09-20T08:00:10Z"));
+    const item = enqueue(db, delivered[0]);
+    s.runStarted(item);
+    setStatus(db, item.id, "failed");
+    s.runEnded(item, { outcome: "failed", error: "CLI exited" });
+    if (reason === "paused bot") setPaused(db, botId, true);
+    else updateRoutine(db, routine.id, { enabled: false });
+    const state = () => ({
+      runs: listRuns(db, routine.id),
+      messages: history(db, botId, undefined, 10),
+      chains: db.prepare("SELECT * FROM chains ORDER BY id").all(),
+      work: db.prepare("SELECT * FROM work_items ORDER BY id").all(),
+      routine: getRoutine(db, routine.id),
+    });
+    const before = state();
+    delivered.length = 0;
+    events.length = 0;
+    let error: unknown;
+    try {
+      s.retry(before.messages[0]);
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toBeInstanceOf(RpcError);
+    expect(error).toMatchObject({ code: "bad_state", message });
+    expect(state()).toEqual(before);
+    expect(delivered).toEqual([]);
+    expect(events).toEqual([]);
+  });
+
+  it.each(["done", "failed", "interrupted"] as const)("keeps one routine label current through %s", (outcome) => {
+    const routine = digest();
+    const s = scheduler();
+    s.tick(at("2026-09-20T08:00:10Z"));
+    const [label] = history(db, botId, undefined, 10);
+    const [run] = listRuns(db, routine.id);
+    expect(label).toMatchObject({ kind: "routine", data: { runId: run.id, status: "queued" } });
+    expect(delivered[0].messageId).toBe(label.id);
+    const item = enqueue(db, delivered[0]);
+    s.runStarted(item);
+    s.runEnded(item, { outcome, error: outcome === "failed" ? "CLI exited" : null });
+    const status = outcome === "interrupted" ? "stopped" : outcome;
+    const note = outcome === "interrupted" ? "Stopped by you." : outcome === "failed" ? "CLI exited" : null;
+    const messages = history(db, botId, undefined, 10);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({ id: label.id, data: { status, note } });
+    expect(events).toContainEqual({ event: "message.updated", data: messages[0] });
+  });
   it("queues a due run for the bot, with a chain of its own", () => {
     const routine = digest();
     scheduler().tick(at("2026-09-20T08:00:10Z"));
     const [run] = listRuns(db, routine.id);
     expect(run).toMatchObject({ status: "queued", dueAt: "2026-09-20T08:00:00.000Z" });
-    expect(delivered).toEqual([{ botId, source: "routine", text: expect.stringContaining("Summarize my inbox"), chainId: expect.any(String), routineRunId: run.id }]);
+    expect(delivered).toEqual([{ botId, source: "routine", text: expect.stringContaining("Summarize my inbox"), messageId: expect.any(String), chainId: expect.any(String), routineRunId: run.id }]);
     expect(getRoutine(db, routine.id).nextRunAt).toBe("2026-09-20T17:00:00.000Z");
     expect(db.prepare("SELECT id, requests_made FROM chains").all()).toEqual([{ id: delivered[0].chainId, requests_made: 0 }]);
-    expect(history(db, botId, undefined, 10)).toEqual([]);
+    expect(history(db, botId, undefined, 10)).toMatchObject([{ kind: "routine", data: { runId: run.id, status: "queued" } }]);
     expect(events).toContainEqual({ event: "routine.run", data: run });
     expect(events).toContainEqual({ event: "routine.updated", data: getRoutine(db, routine.id) });
   });
@@ -156,7 +229,30 @@ describe("Scheduler", () => {
     s.runStarted(item);
     s.runEnded(item, { outcome: "failed", error: "Codex exited with code 1" });
     expect(getRun(db, item.routineRunId!)).toMatchObject({ status: "failed", note: "Codex exited with code 1" });
-    expect(events.find((e) => e.event === "notify")?.data).toEqual({ botId, title: "Night Shift's routine failed", body: "Digest: Codex exited with code 1" });
+    expect(events.find((e) => e.event === "notify")?.data).toEqual({ kind: "routine_failed", botId, routineId: getRun(db, item.routineRunId!)!.routineId, runId: item.routineRunId, title: "Night Shift's routine failed", body: "Digest: Codex exited with code 1" });
+  });
+
+  it.each(["throw", "reject"] as const)("records the actual outcome when the time limit stop fails by %s", async (failure) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(at("2026-09-20T08:00:10Z"));
+    digest({ timeLimitMinutes: 1 });
+    const error = new Error("Could not interrupt");
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    // Handle the rejected fixture itself so the red test reports the stale outcome only.
+    const rejected = Promise.reject(error);
+    void rejected.catch(() => {});
+    const s = new Scheduler({
+      db, broadcast: () => {}, deliver: (work) => { delivered.push(work); },
+      stopItem: () => { if (failure === "throw") throw error; return rejected; },
+    });
+    schedulers.push(s);
+    s.tick();
+    const item = enqueue(db, delivered[0]);
+    s.runStarted(item);
+    await vi.advanceTimersByTimeAsync(60_000);
+    s.runEnded(item, { outcome: "done", error: null });
+    expect(getRun(db, item.routineRunId!)).toMatchObject({ status: "done", note: null });
+    expect(log).toHaveBeenCalledWith("Routine time limit failed.", error);
   });
 
   it("waits until the due instant and queues a run exactly two minutes late", () => {
@@ -284,6 +380,9 @@ describe("Scheduler", () => {
     expect(getRoutine(db, routine.id).nextRunAt).toBe("2026-09-20T17:00:00.000Z");
     expect(log.mock.calls.flat()).toContain(error);
     expect(events).toContainEqual({ event: "routine.run", data: failed });
+    const [label] = history(db, botId, undefined, 10);
+    expect(label).toMatchObject({ data: { runId: failed.id, status: "failed", note: failed.note } });
+    expect(events).toContainEqual({ event: "message.updated", data: label });
     s.tick(at("2026-09-20T08:00:30Z"));
     expect(deliver).toHaveBeenCalledTimes(1);
     s.tick(at("2026-09-20T17:00:00Z"));
@@ -342,7 +441,7 @@ describe("Scheduler", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("ignores runner hooks after a queued routine has been deleted", () => {
+  it("settles the label after a queued routine has been deleted", () => {
     vi.useFakeTimers();
     const routine = digest({ timeLimitMinutes: 1 });
     const s = scheduler();
@@ -354,8 +453,8 @@ describe("Scheduler", () => {
     expect(() => s.runRequeued(item)).not.toThrow();
     expect(() => s.runEnded(item, { outcome: "failed", error: "Deleted" })).not.toThrow();
     expect(getRun(db, item.routineRunId!)).toBeNull();
-    expect(events).toEqual([]);
-    expect(history(db, botId, undefined, 10)).toEqual([]);
+    expect(history(db, botId, undefined, 10)).toMatchObject([{ data: { status: "stopped", note: "The routine was deleted." } }]);
+    expect(events.map((event) => event.event)).toEqual(["message.updated"]);
     expect(vi.getTimerCount()).toBe(0);
   });
 
@@ -375,7 +474,8 @@ describe("Scheduler", () => {
     expect(() => s.runRequeued(item)).not.toThrow();
     expect(() => s.runStarted(item)).not.toThrow();
     expect(() => s.runEnded(item, { outcome: "failed", error: "Deleted" })).not.toThrow();
-    expect(events).toEqual([]);
+    expect(events.map((event) => event.event)).toEqual(["message.updated"]);
+    expect(history(db, botId, undefined, 10)).toMatchObject([{ data: { status: "stopped", note: "The routine was deleted." } }]);
     expect(getRun(db, item.routineRunId!)).toBeNull();
     expect(getWorkItem(db, item.id).status).toBe("running");
     expect(vi.getTimerCount()).toBe(0);
