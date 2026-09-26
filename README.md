@@ -13,6 +13,7 @@ npm install
 npm run signin -w @tjommie/daemon    # once: sign Tjommie's own Claude and Codex accounts in
 npm start -w @tjommie/daemon         # the daemon, on http://127.0.0.1:47100
 npm run chat -w @tjommie/daemon -- "Researcher" claude   # chat with a bot from the terminal
+#   in the chat: /room <text> posts in the Team room; /allow <id> answers a card, including a routine a bot proposes
 npm run dev        # UI at http://localhost:3000
 npm run desktop    # Electron window showing that UI (keep npm run dev running)
 npm test           # fast tests

@@ -90,11 +90,12 @@ describe("typed daemon client", () => {
       expect(client.call("settings.get", {})).rejects.toThrow(/4401.*session ended/),
     ]);
     await expect(client.call("bots.list", {})).rejects.toThrow(/4401.*session ended/);
+    await expect(client.disconnected).resolves.toMatchObject({ code: 4401, reason: "session ended", opened: true });
   });
 
   it("rejects welcome when authentication closes the socket", async () => {
     server = await startServer({ port: 0, token: "different-token", allowedOrigins: [], handlers: {} });
-    await expect(connect(server.port, "test-token")).rejects.toThrow(/4401.*unauthorized/);
+    await expect(connect(server.port, "test-token")).rejects.toMatchObject({ code: 4401, reason: "unauthorized", opened: true });
   });
 
   it("rejects welcome on a connection error", async () => {
@@ -103,7 +104,7 @@ describe("typed daemon client", () => {
     await new Promise<void>((resolve) => listener.once("listening", resolve));
     const address = listener.address();
     if (typeof address === "string" || !address) throw new Error("Expected a TCP listener");
-    await expect(connect(address.port, "test-token")).rejects.toThrow(/1006.*error/i);
+    await expect(connect(address.port, "test-token")).rejects.toMatchObject({ code: 1006, reason: "WebSocket error", opened: false });
   });
 
   it("rejects every pending call on a WebSocket error", async () => {
@@ -118,6 +119,18 @@ describe("typed daemon client", () => {
       expect(client.call("bots.list", {})).rejects.toThrow(/1006.*error/i),
       expect(client.call("settings.get", {})).rejects.toThrow(/1006.*error/i),
     ]);
+    await expect(client.disconnected).resolves.toMatchObject({ code: 1006, reason: "WebSocket error", opened: true });
+  });
+
+  it("reports a normal remote close while idle", async () => {
+    const port = await peer((socket, message) => {
+      if (message.type === "hello") {
+        socket.send(JSON.stringify({ type: "welcome", protocol: 1 }));
+        socket.close(1000, "Daemon stopped");
+      }
+    });
+    const client = await open(port);
+    await expect(client.disconnected).resolves.toMatchObject({ code: 1000, reason: "Daemon stopped", opened: true });
   });
 
   it("rejects an incompatible welcome", async () => {
