@@ -49,11 +49,11 @@ export const CODEX_FEATURES_OFF = {
   skill_mcp_dependency_install: false,
 };
 
-// Per-thread config overrides. The unelevated Windows sandbox needs no admin rights. Shell commands still
-// can't reach the network inside it (TLS fails), so they ask; bots browse with the browser tool instead.
+// Per-thread config overrides. Network commands need approval; bots browse with the browser tool.
+// The unelevated Windows sandbox needs no admin rights.
 export function codexConfig(options: StartOptions, platform: NodeJS.Platform = process.platform): Record<string, unknown> {
   return {
-    sandbox_workspace_write: { network_access: true, writable_roots: options.extraDirs },
+    sandbox_workspace_write: { network_access: false, writable_roots: options.extraDirs },
     ...(platform === "win32" ? { windows: { sandbox: "unelevated" } } : {}),
     features: CODEX_FEATURES_OFF,
     mcp_servers: Object.fromEntries(
@@ -80,6 +80,10 @@ export class CodexSession implements ProviderSession {
   #threadId = "";
   #turnId: string | null = null;
   #model = "";
+  #closed = false;
+  #starting: Promise<void> | null = null;
+  #sending: Promise<void> | null = null;
+  #exited: Promise<void> = Promise.resolve();
 
   constructor(cmd: CliCommand, options: StartOptions) {
     this.#cmd = cmd;
@@ -94,8 +98,25 @@ export class CodexSession implements ProviderSession {
     return this.#server?.child.pid;
   }
 
-  async start(): Promise<void> {
+  start(): Promise<void> {
+    this.#starting = this.#start();
+    return this.#starting;
+  }
+
+  async #start(): Promise<void> {
+    if (this.#closed) throw new Error("The Codex session is closed");
     const server = await startCodexServer(this.#cmd, this.#options.env, this.#options.cwd);
+    this.#exited = new Promise<void>((resolve) => {
+      if (server.child.exitCode !== null && server.child.exitCode !== undefined || server.child.signalCode) resolve();
+      else {
+        server.child.once("exit", () => resolve());
+        server.child.once("error", () => resolve());
+      }
+    });
+    if (this.#closed) {
+      server.close();
+      throw new Error("The Codex session is closed");
+    }
     this.#server = server;
     server.child.on("exit", (code) => {
       if (this.#server !== server) return; // closed on purpose
@@ -134,12 +155,19 @@ export class CodexSession implements ProviderSession {
       this.close();
       throw error;
     }
+    if (this.#closed) throw new Error("The Codex session is closed");
     this.#emit({ type: "session", cliSessionId: this.#threadId });
   }
 
   async send(text: string): Promise<void> {
-    const response = await this.#rpc().request<{ turn: { id: string } }>("turn/start", { threadId: this.#threadId, input: [{ type: "text", text }] });
-    this.#turnId = response.turn.id;
+    const pending = this.#rpc().request<{ turn: { id: string } }>("turn/start", { threadId: this.#threadId, input: [{ type: "text", text }] })
+      .then((response) => { this.#turnId = response.turn.id; });
+    this.#sending = pending;
+    try {
+      await pending;
+    } finally {
+      if (this.#sending === pending) this.#sending = null;
+    }
   }
 
   async steer(text: string): Promise<boolean> {
@@ -154,6 +182,7 @@ export class CodexSession implements ProviderSession {
   }
 
   async interrupt(): Promise<void> {
+    await this.#sending;
     if (!this.#turnId || !this.#server) return;
     try {
       await this.#rpc().request("turn/interrupt", { threadId: this.#threadId, turnId: this.#turnId });
@@ -175,9 +204,15 @@ export class CodexSession implements ProviderSession {
   }
 
   close(): void {
+    this.#closed = true;
     const server = this.#server;
     this.#server = null;
     server?.close();
+  }
+
+  async waitForExit(): Promise<void> {
+    try { await this.#starting; } catch { /* A failed start still closes its process. */ }
+    await this.#exited;
   }
 
   // Codex asks before every MCP tool call. Tjommie's own servers marked autoAllow are answered at once; other

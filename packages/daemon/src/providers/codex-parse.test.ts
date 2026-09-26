@@ -143,7 +143,7 @@ describe("codex policy and config", () => {
     expect(codexPolicy("full")).toEqual({ approvalPolicy: "never", sandbox: "danger-full-access" });
   });
 
-  it("opens the network and extra folders to the sandbox, unelevated on Windows, with Codex's own extras off", () => {
+  it("blocks network and opens extra folders in the sandbox, unelevated on Windows, with Codex's own extras off", () => {
     const features = {
       apps: false,
       browser_use: false,
@@ -156,7 +156,7 @@ describe("codex policy and config", () => {
       tool_suggest: false,
       skill_mcp_dependency_install: false,
     };
-    const common = { sandbox_workspace_write: { network_access: true, writable_roots: ["C:\\home"] }, features, mcp_servers: {} };
+    const common = { sandbox_workspace_write: { network_access: false, writable_roots: ["C:\\home"] }, features, mcp_servers: {} };
     expect(codexConfig(options, "win32")).toEqual({ ...common, windows: { sandbox: "unelevated" } });
     expect(codexConfig(options, "darwin")).toEqual(common);
     expect(CODEX_FEATURES_OFF).toEqual({

@@ -131,6 +131,33 @@ describe("CodexSession MCP elicitations", () => {
 });
 
 describe("CodexSession steering", () => {
+  it("waits for an in-flight turn start before interrupting it", async () => {
+    const { codex, rpc, sent } = await session(true);
+    const send = codex.send("start");
+    const stopped = codex.interrupt();
+    rpc.handleLine(JSON.stringify({ id: 2, result: { turn: { id: "turn-1" } } }));
+    await send;
+    await Promise.resolve();
+    expect(sent).toContainEqual({ id: 3, method: "turn/interrupt", params: { threadId: "thread-1", turnId: "turn-1" } });
+    rpc.handleLine(JSON.stringify({ id: 3, result: {} }));
+    await stopped;
+  });
+
+  it("closes a server that finishes initializing after the session was closed", async () => {
+    const rpc = new JsonRpcLines(() => {});
+    const child = Object.assign(new EventEmitter(), { pid: 42, exitCode: null, signalCode: null }) as unknown as ChildProcessWithoutNullStreams;
+    const close = vi.fn();
+    let initialized!: (server: { rpc: JsonRpcLines; child: ChildProcessWithoutNullStreams; close: () => void }) => void;
+    vi.mocked(startCodexServer).mockReturnValueOnce(new Promise((resolve) => { initialized = resolve; }));
+    const codex = new CodexSession({ file: "codex", args: [] }, options);
+    const start = codex.start();
+    const rejected = expect(start).rejects.toThrow("closed");
+    codex.close();
+    initialized({ rpc, child, close });
+    await rejected;
+    expect(close).toHaveBeenCalledOnce();
+    child.emit("exit", 0);
+  });
   it("does not send a steer request when there is no local active turn", async () => {
     const { codex, sent } = await session(true);
     await expect(codex.steer("Follow up")).resolves.toBe(false);
