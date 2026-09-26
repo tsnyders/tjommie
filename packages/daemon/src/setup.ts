@@ -38,17 +38,30 @@ export function ensureAccounts(db: Db, accountsDir: string, dataRoot = dirname(a
 
 function hardenClaudeSettings(folder: string, dataRoot: string): void {
   const file = join(folder, "settings.json");
-  const settings: unknown = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
-  if (!isRecord(settings) || Array.isArray(settings)) throw new Error("Claude settings must contain a JSON object.");
-  const permissions = settings.permissions ?? {};
-  if (!isRecord(permissions) || Array.isArray(permissions)) throw new Error("Claude permissions must contain a JSON object.");
-  const existing = permissions.deny ?? [];
-  if (!Array.isArray(existing) || !existing.every((rule): rule is string => typeof rule === "string")) throw new Error("Claude deny rules must be a list of strings.");
+  const parsed = readClaudeSettings(file);
+  if (!parsed) return;
+  const { settings, permissions, existing } = parsed;
   // Claude matches absolute Windows paths as POSIX drive paths, prefixed with //.
   const root = resolve(dataRoot).replace(/\\/g, "/").replace(/^([A-Za-z]):/, (_match, drive: string) => `/${drive.toLowerCase()}`);
   const deny = [...new Set([...existing, "Edit(**/.claude/**)", "Write(**/.claude/**)", `Read(/${root}/accounts/**)`, `Read(/${root}/daemon-token)`, `Read(/${root}/tjommie.db*)`])];
   if (existing.length === deny.length && existing.every((rule, index) => rule === deny[index])) return;
   writeFileSync(file, `${JSON.stringify({ ...settings, permissions: { ...permissions, deny } }, null, 2)}\n`, { mode: 0o600 });
+}
+
+function readClaudeSettings(file: string): { settings: Record<string, unknown>; permissions: Record<string, unknown>; existing: string[] } | null {
+  try {
+    const settings: unknown = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
+    if (!isRecord(settings) || Array.isArray(settings)) throw new Error("Expected a settings object");
+    const permissions = settings.permissions === undefined ? {} : settings.permissions;
+    if (!isRecord(permissions) || Array.isArray(permissions)) throw new Error("Expected a permissions object");
+    const existing = permissions.deny === undefined ? [] : permissions.deny;
+    if (!Array.isArray(existing) || !existing.every((rule): rule is string => typeof rule === "string")) throw new Error("Expected a list of deny rules");
+    return { settings, permissions, existing };
+  } catch {
+    // Do not include a JSON parser error: it can contain values from the settings file.
+    console.error("Could not read Claude's settings. The existing file was left unchanged.", file);
+    return null;
+  }
 }
 
 export function accountFor(db: Db, provider: Provider): Account {

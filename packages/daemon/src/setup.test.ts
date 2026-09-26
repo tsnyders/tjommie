@@ -62,15 +62,27 @@ describe("accounts", () => {
     expect(JSON.parse(readFileSync(file, "utf8"))).toEqual(settings);
   });
 
-  it("creates the Claude settings file and leaves invalid existing settings intact", () => {
+  it.each([
+    "not JSON", "null", "[]", "3", '"text"',
+    '{"permissions":null}', '{"permissions":[]}', '{"permissions":"wrong"}',
+    '{"permissions":{"deny":null}}', '{"permissions":{"deny":"wrong"}}',
+    '{"permissions":{"deny":{}}}', '{"permissions":{"deny":[3]}}',
+  ])("keeps malformed Claude settings intact and continues account setup: %s", (invalid) => {
     const root = tempRoot();
     const db = openDb(join(root, "t.db"));
     ensureAccounts(db, join(root, "accounts"));
     const file = join(root, "accounts", "claude-main", "settings.json");
     expect(existsSync(file)).toBe(true);
-    writeFileSync(file, "not JSON");
-    expect(() => ensureAccounts(db, join(root, "accounts"))).toThrow();
-    expect(readFileSync(file, "utf8")).toBe("not JSON");
+    const bytes = Buffer.from(`  ${invalid}\r\n`, "utf8");
+    writeFileSync(file, bytes);
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(ensureAccounts(db, join(root, "accounts"))).toHaveLength(2);
+      expect(readFileSync(file)).toEqual(bytes);
+      expect(logged).toHaveBeenCalledOnce();
+    } finally {
+      logged.mockRestore();
+    }
   });
   it("creates one account per provider, once, each with its folder", () => {
     const root = tempRoot();
