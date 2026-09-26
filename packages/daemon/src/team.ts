@@ -1,4 +1,4 @@
-import { closeSync, constants, fstatSync, mkdirSync, mkdtempSync, openSync, readSync, realpathSync, rmSync, statSync, writeSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readSync, realpathSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { RoutineInput, TEAM_ROOM_ID, type Approval, type ApprovalDecision, type BotState, type EventData, type EventName, type Exchange, type Message } from "@tjommie/protocol";
 import { z } from "zod";
@@ -16,6 +16,7 @@ import { getSettings } from "./settings.ts";
 
 const ROOM_CONTEXT = 20;
 const MAX_SHARE_BYTES = 200 * 1024 * 1024;
+const SNAPSHOT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const DAYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"] as const;
 const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const STATE_WORDS: Record<BotState, string> = {
@@ -46,6 +47,12 @@ type ExchangeRow = {
   created_at: string;
   replied_at: string | null;
 };
+
+export type BotDeletionHandle = Readonly<{
+  bot: StoredBot;
+  exchanges: readonly Readonly<{ row: ExchangeRow; asker: StoredBot | null; replyTo: string; fromName: string; toName: string }>[];
+  snapshotFolders: readonly string[];
+}>;
 
 const toExchange = (row: ExchangeRow): Exchange => ({
   id: row.id,
@@ -144,7 +151,7 @@ export function fileInside(roots: string[], target: string): string {
 
 // Open once and read a bounded snapshot from that handle. A later rename, link swap,
 // deletion or growth of the source cannot change the file card or the delivered bytes.
-function snapshotFile(roots: string[], target: string, staging: string): { path: string; name: string; size: number } {
+function snapshotFile(roots: string[], target: string, staging: string, botId: string): { path: string; name: string; size: number } {
   const file = fileInside(roots, target);
   const source = openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
   let folder: string | null = null;
@@ -154,7 +161,7 @@ function snapshotFile(roots: string[], target: string, staging: string): { path:
     if (!opened.isFile() || opened.dev !== checked.dev || opened.ino !== checked.ino) throw new Error("The file changed while it was being shared. Please try again.");
     if (opened.size > MAX_SHARE_BYTES) throw new Error("That file is too big to share. The limit is 200 MB.");
     mkdirSync(staging, { recursive: true, mode: 0o700 });
-    folder = mkdtempSync(join(staging, "share-"));
+    folder = mkdtempSync(join(staging, `share-${botId}-`));
     const path = join(folder, basename(file));
     const destination = openSync(path, "wx", 0o600);
     let size = 0;
@@ -201,6 +208,8 @@ export class Team {
   #shared = new Map<string, string[]>(); // work item id -> files the bot shared during that turn
   #sessionChains = new Map<string, string>(); // autonomous CLI work shares one chain until sessionClosed
   #pending: (() => void)[] | null = null;
+  #deletionHandles = new WeakSet<BotDeletionHandle>();
+  #deletedBots = new Set<string>();
 
   constructor(deps: TeamDeps) {
     this.#db = deps.db;
@@ -208,6 +217,18 @@ export class Team {
     this.#deliver = deps.deliver;
     this.#currentWork = deps.currentWork;
     this.#stateOf = deps.stateOf;
+  }
+
+  // Call once at daemon startup, before starting work. Old folders survived a crash.
+  start(): void {
+    const staging = this.#staging();
+    if (!existsSync(staging)) return;
+    const cutoff = Date.now() - SNAPSHOT_MAX_AGE_MS;
+    for (const entry of readdirSync(staging, { withFileTypes: true })) {
+      if (!entry.isDirectory() || !/^(share|cleanup)-/.test(entry.name)) continue;
+      const folder = join(staging, entry.name);
+      if (lstatSync(folder).mtimeMs < cutoff) rmSync(folder, { recursive: true, force: true });
+    }
   }
 
   // The tools on Tjommie's MCP server. `botId` is the calling bot, known from its session's token.
@@ -298,21 +319,90 @@ export class Team {
     }
   }
 
-  // Call before deleting a bot, so no other bot is left waiting on it.
-  botDeleted(botId: string): void {
-    this.sessionClosed(botId);
-    const name = getStoredBot(this.#db, botId).name;
+  // Capture before closing the session or attempting the fallible folder-first delete.
+  // This does not change the queue, exchanges, snapshots or published state.
+  botDeleting(botId: string): BotDeletionHandle {
+    const bot = getStoredBot(this.#db, botId);
     const open = this.#db.prepare("SELECT * FROM exchanges WHERE status = 'waiting' AND (from_bot_id = ? OR to_bot_id = ?)").all(botId, botId) as ExchangeRow[];
-    for (const row of open) {
-      if (row.to_bot_id === botId) {
-        this.#fail(row, `${name} was deleted`);
-        this.#tell(row, failedPrompt(name, row.request, `${name} was deleted`));
-        continue;
+    const folders = new Set<string>();
+    const staging = this.#staging();
+    if (existsSync(staging)) {
+      for (const entry of readdirSync(staging, { withFileTypes: true })) {
+        if (entry.isDirectory() && entry.name.startsWith(`share-${botId}-`)) folders.add(join(staging, entry.name));
       }
-      // The asking bot is going. A request not started yet is dropped; one already running finishes with no one to tell.
-      const dropped = this.#db.prepare("DELETE FROM work_items WHERE exchange_id = ? AND source = 'bot_request' AND status = 'queued'").run(row.id);
-      if (Number(dropped.changes) > 0) this.#fail(row, `${name} was deleted`);
     }
+    // Also capture folders made by the earlier version, before names included the owner.
+    const cards = this.#db.prepare("SELECT json_extract(data, '$.path') AS path FROM messages WHERE kind = 'file' AND author = ?").all(botId) as { path: string | null }[];
+    for (const card of cards) {
+      if (card.path) {
+        const folder = this.#snapshotFolder(card.path);
+        if (folder) folders.add(folder);
+      }
+    }
+    const handle: BotDeletionHandle = Object.freeze({
+      bot: Object.freeze(bot),
+      exchanges: Object.freeze(open.map((row) => Object.freeze({
+        row: Object.freeze(row),
+        asker: this.#botOrNull(row.from_bot_id),
+        replyTo: row.reply_to,
+        fromName: this.#name(row.from_bot_id),
+        toName: this.#name(row.to_bot_id),
+      }))),
+      snapshotFolders: Object.freeze([...folders]),
+    });
+    this.#deletionHandles.add(handle);
+    return handle;
+  }
+
+  // Call only after deleteBot succeeds. The handle survives cascaded rows and repeated calls.
+  botDeleted(handle: BotDeletionHandle): void {
+    if (!this.#deletionHandles.has(handle)) throw new RpcError("bad_params", "Unknown bot deletion handle");
+    const botId = handle.bot.id;
+    if (this.#deletedBots.has(botId)) return;
+    if (this.#botOrNull(botId)) throw new RpcError("busy", "The bot must be deleted before finishing its exchanges");
+    const queued: WorkItem[] = [];
+    const moved: { from: string; to: string }[] = [];
+    try {
+      this.#atomic(() => {
+        for (const captured of handle.exchanges) {
+          const { row } = captured;
+          const existing = this.#exchange(row.id);
+          if (existing && existing.status !== "waiting") continue;
+          if (!existing) {
+            this.#db.prepare("INSERT INTO exchanges (id, from_bot_id, to_bot_id, request, reply, status, chain_id, reply_to, created_at, replied_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+              .run(row.id, row.from_bot_id, row.to_bot_id, row.request, row.reply, row.status, row.chain_id, row.reply_to, row.created_at, row.replied_at);
+          }
+          this.#db.prepare("DELETE FROM work_items WHERE exchange_id = ? AND source = 'bot_request' AND status = 'queued'").run(row.id);
+          this.#db.prepare("UPDATE work_items SET status = 'failed', ended_at = ? WHERE exchange_id = ? AND source = 'bot_request' AND status = 'running'").run(nowIso(), row.id);
+          this.#fail(row, `${handle.bot.name} was deleted`, captured);
+          if (row.to_bot_id === botId && captured.asker && this.#botOrNull(captured.asker.id)) {
+            const replyTo = this.#db.prepare("SELECT 1 FROM conversations WHERE id = ?").get(captured.replyTo) ? captured.replyTo : captured.asker.id;
+            queued.push(enqueue(this.#db, { botId: captured.asker.id, source: "bot_reply", text: failedPrompt(handle.bot.name, row.request, `${handle.bot.name} was deleted`), conversationId: replyTo, chainId: row.chain_id, exchangeId: row.id }));
+          }
+        }
+        // Renames are reversible if the transaction cannot commit. Delete the moved
+        // directories only after commit, before publishing any events.
+        for (const from of handle.snapshotFolders) {
+          if (!existsSync(from)) continue;
+          const to = join(this.#staging(), `cleanup-${botId}-${newId()}`);
+          renameSync(from, to);
+          moved.push({ from, to });
+        }
+      }, () => {
+        this.#deletedBots.add(botId);
+        this.sessionClosed(botId);
+        for (const [id, files] of this.#shared) {
+          const kept = files.filter((file) => !handle.snapshotFolders.includes(dirname(file)));
+          if (kept.length) this.#shared.set(id, kept);
+          else this.#shared.delete(id);
+        }
+        for (const move of moved) this.#removeSnapshotFolder(move.to);
+      });
+    } catch (error) {
+      for (const move of moved.reverse()) renameSync(move.to, move.from);
+      throw error;
+    }
+    for (const item of queued) this.#wake(item);
   }
 
   // The person answered a routine proposal: "Add routine" (once or always) or "Dismiss" (deny).
@@ -387,16 +477,21 @@ export class Team {
     const managed = realpathSync.native(dirname(bot.homeFolder));
     if (within(managed, file) && !within(realpathSync.native(bot.homeFolder), file)) throw new Error("You can only share files from your own folders.");
     const work = this.#currentWork(botId);
-    const database = this.#db.location();
-    if (!database) throw new Error("File sharing needs a saved database.");
-    const snapshot = snapshotFile(roots, file, join(dirname(database), "shared-files"));
+    const exchange = work ? this.#exchange(work.conversationId) : undefined;
+    const needsReply = exchange?.to_bot_id === botId && this.#botOrNull(exchange.from_bot_id) !== null;
+    const snapshot = snapshotFile(roots, file, this.#staging(), botId);
+    let durable: string | null = null;
     try {
-      this.#add({ conversationId: work?.conversationId ?? botId, author: botId, kind: "file", body: caption?.trim() || snapshot.name, data: snapshot, status: "done" });
+      // Without a bot recipient the person receives the file through this bot's inbox.
+      if (!needsReply) durable = join(bot.homeFolder, "inbox", copyIntoInbox(bot.homeFolder, snapshot.path));
+      this.#atomic(() => this.#add({ conversationId: work?.conversationId ?? botId, author: botId, kind: "file", body: caption?.trim() || snapshot.name, data: { ...snapshot, path: durable ?? snapshot.path }, status: "done" }));
     } catch (error) {
+      if (durable) rmSync(durable, { force: true });
       rmSync(dirname(snapshot.path), { recursive: true, force: true });
       throw error;
     }
-    if (work) this.#shared.set(work.id, [...(this.#shared.get(work.id) ?? []), snapshot.path]);
+    if (needsReply && work) this.#shared.set(work.id, [...(this.#shared.get(work.id) ?? []), snapshot.path]);
+    else this.#releaseSnapshots([snapshot.path]);
     return `Shared ${snapshot.name}.`;
   }
 
@@ -437,6 +532,12 @@ export class Team {
     const first = row.status !== "replied"; // a failed request may have been retried
     const to = this.#botOrNull(row.to_bot_id);
     if (!to) return;
+    const from = this.#botOrNull(row.from_bot_id);
+    // Deletion already settled this exchange. Late output must not revive it.
+    if (!from && row.status === "failed") {
+      if (files.length) this.#saveFilesForPerson(to, files);
+      return;
+    }
     if (result.outcome !== "done") {
       const reason = result.outcome === "interrupted" ? "it was stopped" : (result.error ?? "something went wrong");
       if (first) this.#fail(row, reason);
@@ -444,12 +545,12 @@ export class Team {
       return;
     }
     const reply = result.text ?? "(No written reply.)";
-    const from = this.#botOrNull(row.from_bot_id);
+    const recipient = from ?? to;
     const inbox: string[] = [];
     try {
-      if (from) for (const path of files) inbox.push(copyIntoInbox(from.homeFolder, path));
+      for (const path of files) inbox.push(copyIntoInbox(recipient.homeFolder, path));
     } catch {
-      if (from) for (const name of inbox) rmSync(join(from.homeFolder, "inbox", name), { force: true });
+      for (const name of inbox) rmSync(join(recipient.homeFolder, "inbox", name), { force: true });
       const reason = "the shared files could not be copied into your inbox";
       this.#atomic(() => this.#fail(row, reason));
       this.#tell(row, failedPrompt(to.name, row.request, reason));
@@ -459,13 +560,17 @@ export class Team {
     try {
       queued = this.#atomic(() => {
         if (first) this.#db.prepare("UPDATE exchanges SET status = 'replied', reply = ?, replied_at = ? WHERE id = ?").run(reply, nowIso(), row.id);
-        const shared = files.map((path) => ({ name: basename(path), path }));
+        const shared = files.map((path, index) => {
+          const durable = join(recipient.homeFolder, "inbox", inbox[index]);
+          this.#pointFileCards(path, durable);
+          return { name: basename(path), path: durable };
+        });
         this.#add({ conversationId: TEAM_ROOM_ID, author: to.id, kind: "text", body: reply, data: { exchangeId: row.id, toBotId: row.from_bot_id, files: shared }, status: "done" });
         this.#refreshRows(row.id);
         return this.#queueReply(row, replyPrompt(to.name, row.request, reply, inbox, first));
       });
     } catch (error) {
-      if (from) for (const name of inbox) rmSync(join(from.homeFolder, "inbox", name), { force: true });
+      for (const name of inbox) rmSync(join(recipient.homeFolder, "inbox", name), { force: true });
       this.#atomic(() => this.#fail(row, "the reply could not be saved"));
       throw error;
     }
@@ -477,17 +582,18 @@ export class Team {
         throw error;
       }
     }
+    this.#releaseSnapshots(files);
   }
 
   // Ends an exchange that won't get an answer, in its handoff rows and in the room.
-  #fail(row: ExchangeRow, reason: string): void {
+  #fail(row: ExchangeRow, reason: string, names?: { fromName: string; toName: string }): void {
     this.#db.prepare("UPDATE exchanges SET status = 'failed', reply = ?, replied_at = ? WHERE id = ?").run(reason, nowIso(), row.id);
     this.#refreshRows(row.id);
     this.#add({
       conversationId: TEAM_ROOM_ID,
       author: "system",
       kind: "notice",
-      body: `${this.#name(row.to_bot_id)} couldn't answer ${this.#name(row.from_bot_id)}: ${reason}.`,
+      body: `${names?.toName ?? this.#name(row.to_bot_id)} couldn't answer ${names?.fromName ?? this.#name(row.from_bot_id)}: ${reason}.`,
       data: { exchangeId: row.id },
       status: "done",
     });
@@ -533,6 +639,55 @@ export class Team {
     return this.#botOrNull(id)?.name ?? "A deleted bot";
   }
 
+  #staging(): string {
+    const database = this.#db.location();
+    if (!database) throw new Error("File sharing needs a saved database.");
+    return join(dirname(database), "shared-files");
+  }
+
+  #snapshotFolder(file: string): string | null {
+    const folder = dirname(file);
+    return dirname(folder) === this.#staging() && basename(folder).startsWith("share-") ? folder : null;
+  }
+
+  #removeSnapshotFolder(folder: string): void {
+    try {
+      rmSync(folder, { recursive: true, force: true });
+    } catch (error) {
+      // A locked orphan is retried by the next startup sweep.
+      console.error("Tjommie: shared file cleanup failed", error);
+    }
+  }
+
+  #releaseSnapshots(files: string[]): void {
+    for (const file of files) {
+      const folder = this.#snapshotFolder(file);
+      if (folder) this.#removeSnapshotFolder(folder);
+    }
+  }
+
+  #pointFileCards(snapshot: string, durable: string): void {
+    const cards = this.#db.prepare("SELECT id FROM messages WHERE kind = 'file' AND json_extract(data, '$.path') = ?").all(snapshot) as { id: string }[];
+    for (const { id } of cards) {
+      const message = getMessage(this.#db, id);
+      this.#emit("message.updated", updateMessage(this.#db, id, { data: { ...message.data, path: durable } }));
+    }
+  }
+
+  #saveFilesForPerson(bot: StoredBot, files: string[]): void {
+    const copies: string[] = [];
+    try {
+      for (const file of files) copies.push(join(bot.homeFolder, "inbox", copyIntoInbox(bot.homeFolder, file)));
+      this.#atomic(() => {
+        for (const [index, file] of files.entries()) this.#pointFileCards(file, copies[index]);
+      });
+    } catch (error) {
+      for (const copy of copies) rmSync(copy, { force: true });
+      throw error;
+    }
+    this.#releaseSnapshots(files);
+  }
+
   // Room messages as lines of text for a bot's prompt.
   #describe(messages: Message[]): string[] {
     const name = (id: string) => (id === "you" ? "Person" : id === "system" ? "Tjommie" : this.#name(id));
@@ -571,7 +726,7 @@ export class Team {
     else send();
   }
 
-  #atomic<T>(work: () => T): T {
+  #atomic<T>(work: () => T, afterCommit?: () => void): T {
     if (this.#pending) return work();
     const events: (() => void)[] = [];
     this.#pending = events;
@@ -581,6 +736,7 @@ export class Team {
     } finally {
       this.#pending = null;
     }
+    afterCommit?.();
     for (const send of events) send();
     return result;
   }

@@ -157,7 +157,7 @@ describe("Team reply routing with Runner", () => {
     expect(getWorkItem(db, retry.id).status).toBe("done");
   });
 
-  it("drops a deleted requester's queued request while allowing its running exchange to finish", async () => {
+  it("fails a deleted requester's queued and running exchanges without reviving them on late output", async () => {
     runner.submit(alice.id, "Prepare reports", []);
     await sent(alice);
     const running = ask(alice, bob, "First report");
@@ -166,17 +166,18 @@ describe("Team reply routing with Runner", () => {
     expect(getWorkItem(db, running.id).status).toBe("running");
     expect(getWorkItem(db, queued.id).status).toBe("queued");
 
-    team.botDeleted(alice.id);
-    runner.forget(alice.id);
+    const deleting = team.botDeleting(alice.id);
     deleteBot(db, alice.id);
+    team.botDeleted(deleting);
+    runner.forget(alice.id);
     expect(() => getWorkItem(db, queued.id)).toThrow(/No work item/);
     expect(getExchange(db, queued.exchangeId!).status).toBe("failed");
-    expect(getExchange(db, running.exchangeId!).status).toBe("waiting");
+    expect(getExchange(db, running.exchangeId!).status).toBe("failed");
     expect(() => bobSession.finish("Finished for the room")).not.toThrow();
-    expect(getExchange(db, running.exchangeId!)).toMatchObject({ status: "replied", reply: "Finished for the room" });
+    expect(getExchange(db, running.exchangeId!)).toMatchObject({ status: "failed", reply: "Alice was deleted" });
     expect(delivered).toHaveLength(2);
     expect(bobSession.sent).toHaveLength(1);
-    expect(history(db, TEAM_ROOM_ID, undefined, 20).at(-1)).toMatchObject({ author: bob.id, body: "Finished for the room", data: { exchangeId: running.exchangeId, toBotId: alice.id } });
+    expect(history(db, TEAM_ROOM_ID, undefined, 20).some((message) => message.body === "Finished for the room")).toBe(false);
   });
 
   it("routes help requested from the Team room back there and records the later room answer in the bot's chat", async () => {
