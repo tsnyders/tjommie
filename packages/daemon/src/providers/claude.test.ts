@@ -18,7 +18,7 @@ vi.mock("../cli.ts", async (importOriginal) => ({
 
 import { cliEnv, runCli } from "../cli.ts";
 import { ClaudeSession, claudeArgs, claudeMode } from "./claude.ts";
-import type { StartOptions } from "./types.ts";
+import type { ProviderEvent, StartOptions } from "./types.ts";
 
 const base: StartOptions = {
   cwd: "C:\\bots\\b1",
@@ -108,6 +108,47 @@ describe("claudeArgs", () => {
     writeFileSync(script, "process.stdout.write(JSON.stringify(process.argv.slice(2)))");
     const out = await runCli({ file: process.execPath, args: [script] }, args, cliEnv({}));
     expect(JSON.parse(out.stdout)).toEqual(args);
+  });
+});
+
+describe("ClaudeSession cost accounting", () => {
+  it.each([
+    { name: "a fresh session", resumeId: null, resumeCostUsd: undefined, total: 0.0140522, expected: 0.0140522 },
+    { name: "a fresh session with an unrelated baseline", resumeId: null, resumeCostUsd: 0.0169623, total: 0.0140522, expected: 0.0140522 },
+    { name: "a resumed session with its saved baseline", resumeId: "saved", resumeCostUsd: 0.0169623, total: 0.0198706, expected: 0.0029083 },
+    { name: "a legacy resumed session", resumeId: "saved", resumeCostUsd: undefined, total: 0.0198706, expected: null },
+    { name: "a resumed session with an unknown baseline", resumeId: "saved", resumeCostUsd: null, total: 0.0198706, expected: null },
+    { name: "a replacement CLI session", resumeId: "saved", resumeCostUsd: 0.0169623, total: 0.0140522, expected: 0.0140522, initSessionId: "replacement" },
+  ])("reports only new cost for $name", async ({ resumeId, resumeCostUsd, total, expected, initSessionId }) => {
+    cliMocks.spawnCli.mockReset();
+    const { child, stdin, stdout, stderr } = fakeChild();
+    cliMocks.spawnCli.mockReturnValue(child);
+    const claude = new ClaudeSession({ file: "claude", args: [] }, { ...base, resumeId, resumeCostUsd });
+    const usage: Extract<ProviderEvent, { type: "usage" }>[] = [];
+    claude.onEvent((event) => {
+      if (event.type === "usage") usage.push(event);
+    });
+
+    try {
+      await claude.start();
+      stdout.write(`${JSON.stringify({ type: "system", subtype: "init", session_id: initSessionId ?? resumeId ?? "fresh" })}\n`);
+      stdout.write(`${JSON.stringify({ type: "result", subtype: "success", total_cost_usd: total })}\n`);
+      expect(usage).toHaveLength(1);
+      if (expected === null) expect(usage[0].costUsd).toBeNull();
+      else expect(usage[0].costUsd).toBeCloseTo(expected, 10);
+      expect(usage[0].totalCostUsd).toBe(total);
+
+      stdout.write(`${JSON.stringify({ type: "system", subtype: "init", session_id: initSessionId ?? resumeId ?? "fresh" })}\n`);
+      stdout.write(`${JSON.stringify({ type: "result", subtype: "success", total_cost_usd: total + 0.003 })}\n`);
+      expect(usage).toHaveLength(2);
+      expect(usage[1].costUsd).toBeCloseTo(0.003, 10);
+      expect(usage[1].totalCostUsd).toBe(total + 0.003);
+    } finally {
+      child.emit("exit", 0, null);
+      stdin.destroy();
+      stdout.destroy();
+      stderr.destroy();
+    }
   });
 });
 

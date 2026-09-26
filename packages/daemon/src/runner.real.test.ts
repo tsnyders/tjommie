@@ -121,19 +121,25 @@ describe("Runner against the real CLIs", () => {
 
   it("gets back to Idle with a Retry when the CLI dies mid-turn (CLI killed mid-turn)", async () => {
     const h = harness();
-    const bot = newBot(h, { autonomy: "full" });
-    const message = h.runner.submit(bot.id, "Write a response of at least 2,000 words. Start immediately and do not use tools.", []);
-    await waitFor(() => h.events.find((event) => event.event === "message.delta" && event.data.conversationId === bot.id));
-    killTree(h.runner.processId(bot.id));
-    const error = await waitFor(() => h.firstAdded(bot.id, "error"));
+    const bot = newBot(h, { autonomy: "ask" });
+    const message = h.runner.submit(bot.id, "Use the Write tool to create crash.txt containing the word hi. Then reply DONE.", []);
+    // An unanswered permission request holds the real turn open, regardless of response length or kill latency.
+    const approval = await waitFor(() => h.events.find((event): event is Extract<SentEvent, { event: "approval.added" }> =>
+      event.event === "approval.added" && event.data.botId === bot.id,
+    ));
+    expect(approval.data.tool).toBe("Write");
+    expect(h.state(bot.id)).toBe("waiting");
+    expect(h.db.prepare("SELECT status FROM work_items WHERE message_id = ?").get(message.id)).toEqual({ status: "running" });
+    const pid = h.runner.processId(bot.id);
+    expect(pid).toBeDefined();
+    killTree(pid);
+    const error = await waitFor(() => h.firstAdded(bot.id, "error"), 20_000);
     expect(error.data).toEqual({ retryMessageId: message.id });
-    await waitFor(() => h.state(bot.id) === "idle");
+    await waitFor(() => h.state(bot.id) === "idle", 20_000);
+    expect(h.runner.processId(bot.id)).toBeUndefined();
     expect(h.db.prepare("SELECT status FROM work_items WHERE message_id = ?").get(message.id)).toEqual({ status: "failed" });
-    const partial = h.db
-      .prepare("SELECT body, status FROM messages WHERE conversation_id = ? AND author = ? AND kind = 'text' ORDER BY seq DESC LIMIT 1")
-      .get(bot.id, bot.id) as { body: string; status: string };
-    expect(partial.body.length).toBeGreaterThan(0);
-    expect(partial.status).toBe("failed");
+    expect(h.db.prepare("SELECT status FROM approvals WHERE id = ?").get(approval.data.id)).toEqual({ status: "denied" });
+    expect(existsSync(join(bot.homeFolder, "crash.txt"))).toBe(false);
   });
 
   it("keeps a conversation across a restart (resume) and across a fresh session (recap)", async () => {
@@ -144,12 +150,20 @@ describe("Runner against the real CLIs", () => {
     first.runner.submit(bot.id, "Remember the code word ZEBRA. Reply with just OK.", []);
     await waitFor(() => first.replies(bot.id).length > 0);
     await waitFor(() => first.state(bot.id) === "idle");
+    const sessionCost = () => (db.prepare("SELECT total_cost_usd FROM sessions WHERE bot_id = ?").get(bot.id) as { total_cost_usd: number }).total_cost_usd;
+    const turnCosts = () => (db.prepare("SELECT cost_usd FROM usage WHERE bot_id = ? ORDER BY rowid").all(bot.id) as { cost_usd: number }[]).map((row) => row.cost_usd);
+    const firstTotal = sessionCost();
+    expect(firstTotal).toBeGreaterThan(0);
+    expect(turnCosts()).toEqual([firstTotal]);
     first.runner.shutdown();
 
     const second = harness(root, db); // the same database: a restarted daemon
     second.runner.submit(bot.id, "What was the code word? Reply with just the word.", []);
     await waitFor(() => second.replies(bot.id).some((reply) => /ZEBRA/i.test(reply)));
     await waitFor(() => second.state(bot.id) === "idle");
+    expect(turnCosts()).toHaveLength(2);
+    expect(turnCosts()[1]).toBeCloseTo(sessionCost() - firstTotal, 10);
+    expect(turnCosts()[1]).toBeGreaterThan(0);
 
     db.prepare("DELETE FROM sessions WHERE bot_id = ?").run(bot.id); // the next turn has to start a fresh CLI session
     second.runner.botChanged(bot.id, false);
@@ -160,5 +174,9 @@ describe("Runner against the real CLIs", () => {
       const latest = replies.at(-1);
       return replies.length > before && latest !== undefined && /ZEBRA/i.test(latest);
     });
+    await waitFor(() => second.state(bot.id) === "idle");
+    expect(turnCosts()).toHaveLength(3);
+    expect(turnCosts()[2]).toBe(sessionCost());
+    expect(turnCosts()[2]).toBeGreaterThan(0);
   });
 });

@@ -5,7 +5,7 @@ import { allowRules, createApproval, expirePendingApprovals, resolveApproval } f
 import { botPrompt, getStoredBot, listStoredBots, setLimitedUntil, type StoredBot } from "./bots.ts";
 import { addMessage, buildRecap, getMessage, history, updateMessage } from "./chat.ts";
 import { resolveCli } from "./cli.ts";
-import { newId, nowIso, type Db } from "./db.ts";
+import { newId, nowIso, transaction, type Db } from "./db.ts";
 import { ClaudeSession } from "./providers/claude.ts";
 import { CodexSession } from "./providers/codex.ts";
 import type { ProviderEvent, ProviderSession, StartOptions } from "./providers/types.ts";
@@ -277,8 +277,8 @@ export class Runner {
     let session = live.session;
     if (!session) {
       const account = accountFor(this.#db, bot.provider);
-      const saved = this.#db.prepare("SELECT provider, account_id, cli_session_id FROM sessions WHERE bot_id = ?").get(bot.id) as
-        | { provider: string; account_id: string; cli_session_id: string }
+      const saved = this.#db.prepare("SELECT provider, account_id, cli_session_id, total_cost_usd FROM sessions WHERE bot_id = ?").get(bot.id) as
+        | { provider: string; account_id: string; cli_session_id: string; total_cost_usd: number | null }
         | undefined;
       const resumeId = saved && saved.provider === bot.provider && saved.account_id === account.id ? saved.cli_session_id : null;
       const created = this.#createSession(bot, {
@@ -289,6 +289,7 @@ export class Runner {
         autonomy: bot.autonomy,
         allowRules: allowRules(this.#db, bot.id),
         resumeId,
+        resumeCostUsd: resumeId === null ? null : saved?.total_cost_usd ?? null,
         env: accountEnv(account),
         mcpServers: [],
       });
@@ -399,7 +400,10 @@ export class Runner {
     this.#db
       .prepare(
         `INSERT INTO sessions (bot_id, provider, account_id, cli_session_id, updated_at) VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT(bot_id) DO UPDATE SET provider = excluded.provider, account_id = excluded.account_id,
+         ON CONFLICT(bot_id) DO UPDATE SET
+           total_cost_usd = CASE WHEN sessions.provider = excluded.provider AND sessions.account_id = excluded.account_id
+             AND sessions.cli_session_id = excluded.cli_session_id THEN sessions.total_cost_usd ELSE NULL END,
+           provider = excluded.provider, account_id = excluded.account_id,
            cli_session_id = excluded.cli_session_id, updated_at = excluded.updated_at`,
       )
       .run(botId, bot.provider, accountFor(this.#db, bot.provider).id, cliSessionId, nowIso());
@@ -504,25 +508,33 @@ export class Runner {
 
   #recordUsage(botId: string, event: Extract<ProviderEvent, { type: "usage" }>): void {
     const bot = getStoredBot(this.#db, botId);
-    this.#db
-      .prepare(
-        `INSERT INTO usage (id, bot_id, account_id, provider, model, input, cached_input, output, reasoning, cost_usd, cost_source, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        newId(),
-        botId,
-        accountFor(this.#db, bot.provider).id,
-        bot.provider,
-        event.model,
-        event.input,
-        event.cachedInput,
-        event.output,
-        event.reasoning,
-        event.costUsd,
-        event.costUsd === null ? null : "reported",
-        nowIso(),
-      );
+    const accountId = accountFor(this.#db, bot.provider).id;
+    transaction(this.#db, () => {
+      this.#db
+        .prepare(
+          `INSERT INTO usage (id, bot_id, account_id, provider, model, input, cached_input, output, reasoning, cost_usd, cost_source, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          newId(),
+          botId,
+          accountId,
+          bot.provider,
+          event.model,
+          event.input,
+          event.cachedInput,
+          event.output,
+          event.reasoning,
+          event.costUsd,
+          event.costUsd === null ? null : "reported",
+          nowIso(),
+        );
+      if (event.totalCostUsd !== undefined) {
+        this.#db
+          .prepare("UPDATE sessions SET total_cost_usd = ? WHERE bot_id = ? AND provider = ? AND account_id = ?")
+          .run(event.totalCostUsd, botId, bot.provider, accountId);
+      }
+    });
   }
 
   #onLimit(botId: string, live: Live, event: Extract<ProviderEvent, { type: "limit" }>): void {
