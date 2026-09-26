@@ -29,6 +29,7 @@ const base: StartOptions = {
   allowRules: [],
   resumeId: null,
   env: {},
+  mcpServers: [],
 };
 
 function fakeChild(): {
@@ -80,6 +81,24 @@ describe("claudeArgs", () => {
   it("adds extra folders, the session to resume, and saved rules last", () => {
     const args = claudeArgs({ ...base, extraDirs: ["C:\\home"], resumeId: "abc", allowRules: ["Write", "Bash(npm test *)"] });
     expect(args.slice(-7)).toEqual(["--add-dir", "C:\\home", "--resume", "abc", "--allowedTools", "Write", "Bash(npm test *)"]);
+  });
+
+  it("attaches MCP servers, and allows the tools of the ones marked autoAllow", () => {
+    const args = claudeArgs({
+      ...base,
+      allowRules: ["Write"],
+      mcpServers: [
+        { name: "tjommie", url: "http://127.0.0.1:47100/mcp", headers: { Authorization: "Bearer t0k" }, autoAllow: true },
+        { name: "browser", command: "C:\\node.exe", args: ["cli.js", "--headless"], env: {}, autoAllow: false },
+      ],
+    });
+    expect(JSON.parse(args[args.indexOf("--mcp-config") + 1])).toEqual({
+      mcpServers: {
+        tjommie: { type: "http", url: "http://127.0.0.1:47100/mcp", headers: { Authorization: "Bearer t0k" } },
+        browser: { type: "stdio", command: "C:\\node.exe", args: ["cli.js", "--headless"], env: {} },
+      },
+    });
+    expect(args.slice(-3)).toEqual(["--allowedTools", "mcp__tjommie", "Write"]);
   });
 
   it("passes awkward instructions through process arguments unchanged (argument round trip)", async () => {

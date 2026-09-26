@@ -15,6 +15,12 @@ export type ProviderEvent =
   | { type: "turn_done"; ok: boolean; error: string | null }
   | { type: "exit"; error: string | null };
 
+// An MCP server attached to one CLI session: Tjommie's own over HTTP, or a program the CLI starts (the browser).
+// autoAllow: its tools run without asking the person.
+export type McpServer =
+  | { name: string; url: string; headers: Record<string, string>; autoAllow: boolean }
+  | { name: string; command: string; args: string[]; env: Record<string, string>; autoAllow: boolean };
+
 export type StartOptions = {
   cwd: string;
   extraDirs: string[];
@@ -24,6 +30,7 @@ export type StartOptions = {
   allowRules: string[];
   resumeId: string | null;
   env: Record<string, string>;
+  mcpServers: McpServer[];
 };
 
 // One running CLI conversation. Claude and Codex each have an adapter that implements this.

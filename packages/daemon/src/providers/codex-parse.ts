@@ -144,3 +144,43 @@ export function mapCodexRequest(
   }
   return null;
 }
+
+type CodexMcpToolCall = {
+  serverName: string;
+  mode: "form";
+  message: string;
+  _meta: {
+    codex_approval_kind: "mcp_tool_call";
+    tool_description?: string;
+    tool_params?: Record<string, unknown>;
+  };
+};
+
+// Validate the tool-call fields independently of the wording used to build an approval card.
+export function isCodexMcpToolCall(params: unknown): params is CodexMcpToolCall {
+  if (!isRecord(params) || typeof params.serverName !== "string" || !params.serverName || params.mode !== "form" || typeof params.message !== "string") {
+    return false;
+  }
+  if (!isRecord(params._meta) || params._meta.codex_approval_kind !== "mcp_tool_call") return false;
+  const meta = params._meta;
+  if (meta.tool_description !== undefined && typeof meta.tool_description !== "string") return false;
+  if (meta.tool_params !== undefined && !isRecord(meta.tool_params)) return false;
+  return true;
+}
+
+// Codex asks before every MCP tool call. For a server that isn't allowed outright this becomes an approval
+// card. The tool's name only appears in the message text.
+export function mapCodexElicitation(id: number | string, params: unknown): Extract<ProviderEvent, { type: "approval" }> | null {
+  if (!isCodexMcpToolCall(params)) return null;
+  const meta = params._meta;
+  const tool = params.message.match(/tool "([^"]+)"/)?.[1];
+  if (!tool) return null;
+  return {
+    type: "approval",
+    id: String(id),
+    tool: `${params.serverName}.${tool}`,
+    summary: meta.tool_description ?? `Use ${tool}`,
+    detail: JSON.stringify(meta.tool_params ?? {}, null, 2).slice(0, 4000),
+    rule: `codex-mcp:${params.serverName}.${tool}`,
+  };
+}
