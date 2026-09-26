@@ -34,7 +34,7 @@ npm run build      # static export to packages/ui/out
 
 ## Autonomy
 
-"Own folder" protects your files from mistakes, and doesn't make a bot safe to point at untrusted content.
+Own folder protects your files from a bot's mistakes. It doesn't contain a bot that has been tricked by what it reads. On Windows, a Codex bot at Own folder can still read files your account can read and reach programs on this PC, including Tjommie itself. Until the desktop app ships, don't give a Codex bot at Own folder untrusted input such as web browsing or email; use Always ask for those bots.
 
 ## License
 

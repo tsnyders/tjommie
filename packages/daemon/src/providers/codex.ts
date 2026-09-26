@@ -30,6 +30,9 @@ function isTurnNotSteerable(error: unknown): boolean {
 
 export function codexPolicy(autonomy: Autonomy): Policy {
   if (autonomy === "ask") return { approvalPolicy: "untrusted", sandbox: "read-only" };
+  // Codex 0.155.1's unelevated Windows sandbox reaches loopback with networkAccess false,
+  // leaves reads unrestricted, and cannot enforce deny-read rules. See follow-up rounds 1 and 2:
+  // .superpowers/sdd/2026-09-26-tjommie-phase1ab-final-review/fix-A-report.md
   if (autonomy === "folder") return { approvalPolicy: "on-request", sandbox: "workspace-write" };
   return { approvalPolicy: "never", sandbox: "danger-full-access" };
 }
@@ -49,7 +52,7 @@ export const CODEX_FEATURES_OFF = {
   skill_mcp_dependency_install: false,
 };
 
-// Per-thread config overrides. Network commands need approval; bots browse with the browser tool.
+// Per-thread config overrides. Windows read and loopback limits are documented beside codexPolicy above.
 // The unelevated Windows sandbox needs no admin rights.
 export function codexConfig(options: StartOptions, platform: NodeJS.Platform = process.platform): Record<string, unknown> {
   return {
