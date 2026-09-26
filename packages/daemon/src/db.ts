@@ -6,7 +6,7 @@ export const newId = (): string => randomUUID();
 export const nowIso = (): string => new Date().toISOString();
 
 // Append-only: never edit a shipped migration, add a new one.
-const migrations = [
+export const migrations: readonly string[] = [
   `
   CREATE TABLE accounts (
     id TEXT PRIMARY KEY,
@@ -177,5 +177,7 @@ export function openDb(file: string): Db {
       db.exec(`PRAGMA user_version = ${version + 1}`);
     });
   }
+  // This lookup index also belongs on existing version 3 databases without changing stored data.
+  db.exec("CREATE INDEX IF NOT EXISTS approvals_pending_routine_by_bot ON approvals (bot_id) WHERE kind = 'routine' AND status = 'pending';");
   return db;
 }
