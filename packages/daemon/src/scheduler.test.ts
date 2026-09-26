@@ -72,10 +72,43 @@ describe("Scheduler", () => {
     expect(listRuns(db, routine.id).map((r) => [r.status, r.dueAt])).toEqual([["missed", "2026-09-20T08:00:00.000Z"]]);
     expect(delivered).toEqual([]);
     expect(getRoutine(db, routine.id).nextRunAt).toBe("2026-09-25T17:00:00.000Z");
-    s.tick(at("2026-09-25T09:00:30Z"));
-    expect(listRuns(db, routine.id)).toHaveLength(1);
+    for (const tickAt of ["2026-09-25T09:00:30Z", "2026-09-25T09:01:00Z", "2026-09-25T09:01:30Z"]) {
+      s.tick(at(tickAt));
+      expect(listRuns(db, routine.id).map((r) => [r.status, r.dueAt])).toEqual([["missed", "2026-09-20T08:00:00.000Z"]]);
+      expect(delivered).toEqual([]);
+      expect(getRoutine(db, routine.id).nextRunAt).toBe("2026-09-25T17:00:00.000Z");
+    }
     expect(history(db, botId, undefined, 10).map((m) => [m.kind, m.body, m.data?.status])).toEqual([["routine", "Routine: Digest", "missed"]]);
     expect(listRuns(db, routine.id)[0].note).toBe("The PC was off or asleep, or Tjommie wasn't running.");
+  });
+
+  it("queues the within-grace 17:00 run on the next tick after recording the missed 08:00 run", () => {
+    const routine = digest();
+    const s = scheduler();
+    s.tick(at("2026-09-20T07:59:00Z"));
+    expect(listRuns(db, routine.id)).toEqual([]);
+    expect(delivered).toEqual([]);
+
+    // The PC sleeps through 08:00 and wakes at 17:01, within the 17:00 run's grace period.
+    s.tick(at("2026-09-20T17:01:00Z"));
+    expect(listRuns(db, routine.id).map((r) => [r.status, r.dueAt])).toEqual([["missed", "2026-09-20T08:00:00.000Z"]]);
+    expect(delivered).toEqual([]);
+    expect(getRoutine(db, routine.id).nextRunAt).toBe("2026-09-20T17:00:00.000Z");
+
+    s.tick(at("2026-09-20T17:01:30Z"));
+    const runs = listRuns(db, routine.id);
+    expect(runs.map((r) => [r.status, r.dueAt])).toEqual([
+      ["queued", "2026-09-20T17:00:00.000Z"],
+      ["missed", "2026-09-20T08:00:00.000Z"],
+    ]);
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]).toMatchObject({ botId, source: "routine", routineRunId: runs[0].id });
+    expect(getRoutine(db, routine.id).nextRunAt).toBe("2026-09-21T08:00:00.000Z");
+
+    s.tick(at("2026-09-20T17:02:00Z"));
+    expect(listRuns(db, routine.id)).toEqual(runs);
+    expect(delivered).toHaveLength(1);
+    expect(getRoutine(db, routine.id).nextRunAt).toBe("2026-09-21T08:00:00.000Z");
   });
 
   it("skips a run while the bot is paused, or while the previous run is still going", () => {

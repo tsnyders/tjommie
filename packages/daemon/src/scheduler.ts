@@ -144,8 +144,8 @@ export class Scheduler {
     else if (bot.paused) run = addRun(this.#db, routine.id, dueAt, "skipped", `${bot.name} was paused.`);
     else if (hasOpenRun(this.#db, routine.id)) run = addRun(this.#db, routine.id, dueAt, "skipped", "The previous run was still going.");
     else run = addRun(this.#db, routine.id, dueAt, "queued");
-    // Advance strictly past now, even if several times were missed or the schedule contains duplicates.
-    const next = nextRunAfter(routine, Math.max(nowMs, Date.parse(dueAt)));
+    // Skip older missed times, preserve times within grace, and advance past this due time to avoid duplicates.
+    const next = nextRunAfter(routine, Math.max(nowMs - GRACE_MS, Date.parse(dueAt)));
     setNextRun(this.#db, routine.id, next === null ? null : new Date(next).toISOString());
     this.#broadcast("routine.updated", getRoutine(this.#db, routine.id));
     this.#broadcast("routine.run", run);
