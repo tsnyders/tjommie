@@ -6,9 +6,10 @@ import { createApproval } from "./approvals.ts";
 import { createBot, getStoredBot } from "./bots.ts";
 import { addMessage, getMessage, history } from "./chat.ts";
 import { openDb, type Db } from "./db.ts";
+import { McpTokens } from "./mcp.ts";
 import type { ProviderEvent, ProviderSession, StartOptions } from "./providers/types.ts";
-import { enqueue, getWorkItem, setStatus, type WorkStatus } from "./queue.ts";
-import { activityBody, botStateOf, copyIntoInbox, Runner, type SessionFactory } from "./runner.ts";
+import { enqueue, getWorkItem, newChain, setStatus, type WorkItem, type WorkStatus } from "./queue.ts";
+import { activityBody, botStateOf, copyIntoInbox, Runner, type RunnerHooks, type SessionFactory, type TurnResult } from "./runner.ts";
 import { RpcError, type Broadcast } from "./server.ts";
 import { ensureAccounts } from "./setup.ts";
 import { tempRoot, waitFor } from "./testing.ts";
@@ -25,6 +26,8 @@ class FakeSession implements ProviderSession {
   interrupts = 0;
   closed = false;
   steerResult = true;
+  steerError: Error | null = null;
+  interruptError: Error | null = null;
 
   start(): Promise<void> {
     return this.startPromise;
@@ -37,11 +40,13 @@ class FakeSession implements ProviderSession {
 
   async steer(text: string): Promise<boolean> {
     this.steered.push(text);
+    if (this.steerError) throw this.steerError;
     return this.steerResult;
   }
 
   async interrupt(): Promise<void> {
     this.interrupts++;
+    if (this.interruptError) throw this.interruptError;
   }
 
   answer(id: string, answer: "once" | "always" | "deny"): void {
@@ -81,19 +86,22 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function harness(factory: (options: StartOptions) => FakeSession = () => new FakeSession(), signedIn = true): Harness {
+function harness(factory: (options: StartOptions) => FakeSession = () => new FakeSession(), signedIn = true, hooks: RunnerHooks = {}, onBroadcast?: Broadcast): Harness {
   const root = tempRoot();
   const db = openDb(join(root, "t.db"));
   ensureAccounts(db, join(root, "accounts"));
   const events: SentEvent[] = [];
   const sessions: FakeSession[] = [];
-  const broadcast: Broadcast = (event, data) => events.push({ event, data } as SentEvent);
+  const broadcast: Broadcast = (event, data) => {
+    events.push({ event, data } as SentEvent);
+    onBroadcast?.(event, data);
+  };
   const createSession: SessionFactory = (_bot, options) => {
     const session = factory(options);
     sessions.push(session);
     return session;
   };
-  const runner = new Runner({ db, broadcast, isSignedIn: () => signedIn, createSession });
+  const runner = new Runner({ db, broadcast, isSignedIn: () => signedIn, createSession, hooks });
   runners.push(runner);
   return { root, db, runner, events, sessions };
 }
@@ -578,5 +586,670 @@ describe("Runner approvals", () => {
     expect(getMessage(h.db, card.id).data?.status).toBe("denied");
     expect(h.events.some((event) => event.event === "message.updated" && event.data.id === card.id && event.data.data?.status === "denied")).toBe(true);
     expect(h.events.some((event) => event.event === "approval.resolved" && event.data.id === "a-restart" && event.data.status === "denied")).toBe(true);
+  });
+});
+
+describe("Runner.start", () => {
+  it("reports a turn a restart cut off to the hooks, and says so where the turn was writing", () => {
+    const root = tempRoot();
+    const db = openDb(join(root, "t.db"));
+    const bot = createBot(db, join(root, "bots"), { name: "Writer", color: "blue", shape: "circle", instructions: "", provider: "claude", model: "sonnet" });
+    const item = enqueue(db, { botId: bot.id, source: "room", text: "@Writer hi", conversationId: "team" });
+    setStatus(db, item.id, "running");
+    const ended: [string, TurnResult][] = [];
+    const runner = new Runner({ db, broadcast: () => {}, isSignedIn: () => true, hooks: { turnEnded: (work, result) => ended.push([work.id, result]) } });
+    runners.push(runner);
+    runner.start();
+    expect(ended).toEqual([[item.id, { outcome: "failed", text: null, textMessageId: null, error: "Tjommie restarted while this was running." }]]);
+    expect(history(db, "team", undefined, 1)[0]).toMatchObject({ author: "system", kind: "error", body: "Tjommie restarted while this was running." });
+    runner.shutdown();
+  });
+});
+
+describe("Runner destinations and delivery", () => {
+  it.each(["chat", "team", "exchange"] as const)("writes text, deltas, activity, errors and Stop to the %s destination", async (destination) => {
+    const h = harness();
+    const bot = newBot(h);
+    const conversationId = destination === "chat" ? bot.id : destination;
+    if (destination === "exchange") h.db.prepare("INSERT INTO conversations (id, kind) VALUES (?, 'exchange')").run(conversationId);
+    const first = h.runner.deliver({ botId: bot.id, source: "bot_request", text: "answer here", conversationId, chainId: "chain-a", exchangeId: "request-a" });
+    expect(first).toMatchObject({ botId: bot.id, conversationId, chainId: "chain-a", exchangeId: "request-a" });
+    expect(h.runner.currentWork(bot.id)?.id).toBe(first.id);
+    await waitFor(() => h.sessions[0]?.sent.length);
+    const session = h.sessions[0];
+    session.emit({ type: "text", delta: "A thought" });
+    session.emit({ type: "text_end" });
+    session.emit({ type: "tool", id: "read", name: "Read", summary: "Read notes.md" });
+    session.emit({ type: "tool_done", id: "read", ok: true });
+    session.emit({ type: "text", delta: "unfinished answer" });
+    session.emit({ type: "turn_done", ok: false, error: "answer failed" });
+
+    expect(h.runner.currentWork(bot.id)).toBeNull();
+    expect(getWorkItem(h.db, first.id).status).toBe("failed");
+    expect(history(h.db, conversationId, undefined, 20)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ author: bot.id, kind: "text", body: "A thought", status: "done" }),
+      expect.objectContaining({ author: bot.id, kind: "activity", body: "1 step: Read notes.md", status: "done" }),
+      expect.objectContaining({ author: bot.id, kind: "text", body: "unfinished answer", status: "failed" }),
+      expect.objectContaining({ author: "system", kind: "error", body: "answer failed" }),
+    ]));
+    const deltas = h.events.filter((event) => event.event === "message.delta");
+    expect(deltas.map((event) => event.data.conversationId)).toEqual([conversationId, conversationId]);
+
+    const second = h.runner.deliver({ botId: bot.id, source: "routine", text: "stop here", conversationId });
+    await waitFor(() => session.sent.length === 2);
+    await h.runner.stop(bot.id);
+    session.emit({ type: "turn_done", ok: false, error: null });
+    expect(getWorkItem(h.db, second.id).status).toBe("interrupted");
+    expect(history(h.db, conversationId, undefined, 20).at(-1)).toMatchObject({ kind: "notice", body: "Stopped." });
+    if (destination !== "chat") expect(history(h.db, bot.id, undefined, 20)).toEqual([]);
+  });
+
+  it.each(["team", "exchange"] as const)("keeps approvals and usage-limit notices in the bot's chat while writing to %s", async (conversationId) => {
+    const h = harness();
+    const bot = newBot(h);
+    if (conversationId === "exchange") h.db.prepare("INSERT INTO conversations (id, kind) VALUES (?, 'exchange')").run(conversationId);
+    h.runner.deliver({ botId: bot.id, source: "bot_request", text: "write", conversationId });
+    await waitFor(() => h.sessions[0]?.sent.length);
+    const session = h.sessions[0];
+    session.emit({ type: "text", delta: "Working here" });
+    session.emit({ type: "approval", id: "approval-1", tool: "Write", summary: "Write a file", detail: "{}", rule: null });
+    session.emit({ type: "limit", state: "reached", usedPercent: 100, resetsAt: "2099-09-25T10:00:00.000Z" });
+    expect(history(h.db, bot.id, undefined, 20)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "approval", body: "Write a file" }),
+      expect.objectContaining({ kind: "notice", body: expect.stringContaining("hit its usage limit") }),
+    ]));
+    expect(history(h.db, conversationId, undefined, 20)).toEqual([expect.objectContaining({ kind: "text", body: "Working here" })]);
+    expect(h.events.filter((event) => event.event === "notify").map((event) => event.data.botId)).toEqual([bot.id, bot.id]);
+    session.emit({ type: "turn_done", ok: true, error: null });
+  });
+
+  it("starts a separate chain for every submitted message and every retry", () => {
+    const h = harness(undefined, false);
+    const bot = newBot(h);
+    const first = h.runner.submit(bot.id, "first", []);
+    const second = h.runner.submit(bot.id, "second", []);
+    const firstItem = getWorkItem(h.db, itemForMessage(h.db, first.id).id);
+    const secondItem = getWorkItem(h.db, itemForMessage(h.db, second.id).id);
+    setStatus(h.db, firstItem.id, "failed");
+    h.runner.retry(first.id);
+    const retried = getWorkItem(h.db, itemForMessage(h.db, first.id).id);
+    const chainIds = [firstItem.chainId, secondItem.chainId, retried.chainId];
+    expect(chainIds.every((id) => typeof id === "string" && id.length > 0)).toBe(true);
+    expect(new Set(chainIds).size).toBe(3);
+    expect(h.db.prepare("SELECT count(*) AS count FROM chains WHERE requests_made = 0").get()).toEqual({ count: 3 });
+    expect(retried).toMatchObject({ conversationId: bot.id, source: "you", text: "first", messageId: first.id });
+  });
+
+  it("retry preserves the prior destination and routes through delivery", async () => {
+    const h = harness();
+    const bot = newBot(h);
+    const message = addMessage(h.db, { conversationId: "team", author: "you", kind: "text", body: "room retry", status: "failed" });
+    const failed = enqueue(h.db, { botId: bot.id, source: "room", text: "room retry", conversationId: "team", messageId: message.id });
+    setStatus(h.db, failed.id, "failed");
+    h.runner.retry(message.id);
+    await waitFor(() => h.sessions[0]?.sent.length);
+    expect(h.runner.currentWork(bot.id)).toMatchObject({ conversationId: "team", source: "room", messageId: message.id });
+    h.sessions[0].emit({ type: "text", delta: "ROOM" });
+    h.sessions[0].emit({ type: "turn_done", ok: true, error: null });
+    expect(history(h.db, "team", undefined, 20).at(-1)).toMatchObject({ body: "ROOM", status: "done" });
+  });
+
+  it("retry preserves a failed bot request's exchange link for the completion hook but starts a new chain without the old routine run", async () => {
+    const ended: [WorkItem, TurnResult][] = [];
+    const h = harness(undefined, true, { turnEnded: (item, result) => ended.push([item, result]) });
+    const bot = newBot(h);
+    const exchangeId = "exchange-to-retry";
+    h.db.prepare("INSERT INTO conversations (id, kind) VALUES (?, 'exchange')").run(exchangeId);
+    const message = addMessage(h.db, { conversationId: exchangeId, author: bot.id, kind: "text", body: "Please help", status: "failed" });
+    const originalChain = newChain(h.db);
+    const failed = enqueue(h.db, {
+      botId: bot.id, source: "bot_request", text: "Please help", messageId: message.id,
+      conversationId: exchangeId, exchangeId, chainId: originalChain, routineRunId: "original-run",
+    });
+    setStatus(h.db, failed.id, "failed");
+
+    h.runner.retry(message.id);
+    await waitFor(() => h.sessions[0]?.sent.length);
+    const retried = getWorkItem(h.db, itemForMessage(h.db, message.id).id);
+    expect(retried).toMatchObject({
+      botId: bot.id, source: "bot_request", text: "Please help", messageId: message.id,
+      conversationId: exchangeId, exchangeId, routineRunId: null, status: "running",
+    });
+    expect(retried.id).not.toBe(failed.id);
+    expect(retried.chainId).toBeTypeOf("string");
+    expect(retried.chainId).not.toBe(originalChain);
+    expect(h.db.prepare("SELECT count(*) AS count FROM chains").get()).toEqual({ count: 2 });
+    expect(getWorkItem(h.db, failed.id).status).toBe("failed");
+    h.sessions[0].emit({ type: "text", delta: "Here is the help" });
+    h.sessions[0].emit({ type: "turn_done", ok: true, error: null });
+    expect(ended).toHaveLength(1);
+    expect(ended[0][0]).toMatchObject({ id: retried.id, conversationId: exchangeId, exchangeId, chainId: retried.chainId, routineRunId: null });
+    expect(ended[0][1]).toMatchObject({ outcome: "done", text: "Here is the help", error: null });
+    expect(history(h.db, exchangeId, undefined, 1)[0]).toMatchObject({ body: "Here is the help", status: "done" });
+  });
+
+  it("stopItem only interrupts its current item and resets its custom notice before later work", async () => {
+    const h = harness();
+    const bot = newBot(h);
+    const item = h.runner.deliver({ botId: bot.id, source: "routine", text: "first", conversationId: "team", routineRunId: "run-1" });
+    await waitFor(() => h.sessions[0]?.sent.length);
+    const session = h.sessions[0];
+    h.runner.stopItem("another-item", "Wrong notice");
+    expect(session.interrupts).toBe(0);
+    expect(h.runner.currentWork(bot.id)).toMatchObject({ id: item.id, routineRunId: "run-1" });
+    h.runner.stopItem(item.id, "Routine time limit reached.");
+    expect(session.interrupts).toBe(1);
+    session.emit({ type: "turn_done", ok: false, error: null });
+    expect(h.runner.currentWork(bot.id)).toBeNull();
+    expect(history(h.db, "team", undefined, 1)[0].body).toBe("Routine time limit reached.");
+
+    const later = h.runner.deliver({ botId: bot.id, source: "routine", text: "second", conversationId: "team" });
+    await waitFor(() => session.sent.length === 2);
+    h.runner.stopItem(item.id, "Stale timer");
+    expect(session.interrupts).toBe(1);
+    expect(h.runner.currentWork(bot.id)?.id).toBe(later.id);
+    await h.runner.stop(bot.id);
+    session.emit({ type: "exit", error: null });
+    expect(history(h.db, "team", undefined, 1)[0].body).toBe("Stopped.");
+  });
+});
+
+describe("Runner steering boundaries", () => {
+  it("steers only same-conversation messages and replies past older non-steerable queue entries", async () => {
+    let releaseSend: () => void = () => { throw new Error("Send was not held"); };
+    const session = new FakeSession();
+    session.sendPromise = new Promise<void>((resolve) => { releaseSend = resolve; });
+    const h = harness(() => session);
+    const bot = newBot(h);
+    const running = h.runner.deliver({ botId: bot.id, source: "room", text: "running", conversationId: "team" });
+    await waitFor(() => session.sent.length > 0);
+    const room = h.runner.deliver({ botId: bot.id, source: "room", text: "room waits", conversationId: "team" });
+    const request = h.runner.deliver({ botId: bot.id, source: "bot_request", text: "request waits", conversationId: "team" });
+    const routine = h.runner.deliver({ botId: bot.id, source: "routine", text: "routine waits", conversationId: "team" });
+    const chat = h.runner.submit(bot.id, "chat waits", []);
+    const replyElsewhere = h.runner.deliver({ botId: bot.id, source: "bot_reply", text: "other reply waits", conversationId: bot.id });
+    const reply = h.runner.deliver({ botId: bot.id, source: "bot_reply", text: "reply now", conversationId: "team" });
+    const message = addMessage(h.db, { conversationId: "team", author: "you", kind: "text", body: "steer now", status: "queued" });
+    const yours = h.runner.deliver({ botId: bot.id, source: "you", text: "steer now", conversationId: "team", messageId: message.id });
+    expect(session.steered).toEqual([]);
+    releaseSend();
+    await waitFor(() => session.steered.length === 2);
+    expect(session.steered).toEqual(["reply now", "steer now"]);
+    expect(getWorkItem(h.db, reply.id).status).toBe("done");
+    expect(getWorkItem(h.db, yours.id).status).toBe("done");
+    expect(getMessage(h.db, message.id).status).toBe("sent");
+    for (const item of [room, request, routine, replyElsewhere]) expect(getWorkItem(h.db, item.id).status).toBe("queued");
+    expect(getMessage(h.db, chat.id).status).toBe("queued");
+    expect(h.runner.currentWork(bot.id)?.id).toBe(running.id);
+  });
+
+  it.each([false, true])("queues a declined steer and logs only an unexpected rejection (unexpected: %s)", async (unexpected) => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const session = new FakeSession();
+    session.steerResult = false;
+    const failure = new Error("steer transport failed");
+    if (unexpected) session.steerError = failure;
+    const h = harness(() => session);
+    const bot = newBot(h);
+    h.runner.submit(bot.id, "first", []);
+    await waitFor(() => session.sent.length);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const second = h.runner.submit(bot.id, "second", []);
+    await waitFor(() => session.steered.length);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(itemForMessage(h.db, second.id).status).toBe("queued");
+    expect(getMessage(h.db, second.id).status).toBe("queued");
+    if (unexpected) expect(logged.mock.calls.some((call) => call.includes(failure))).toBe(true);
+    else expect(logged).not.toHaveBeenCalled();
+    session.emit({ type: "turn_done", ok: true, error: null });
+    await waitFor(() => session.sent.length === 2);
+    expect(session.sent[1]).toBe("second");
+    expect(itemForMessage(h.db, second.id).status).toBe("running");
+  });
+});
+
+describe("Runner turn hooks", () => {
+  it.each(["done", "failed", "interrupted"] as const)("reports the %s outcome with its last finished nonblank text", async (outcome) => {
+    const started: WorkItem[] = [];
+    const ended: [WorkItem, TurnResult][] = [];
+    const h = harness(undefined, true, { turnStarted: (item) => started.push(item), turnEnded: (item, result) => ended.push([item, result]) });
+    const bot = newBot(h);
+    const item = h.runner.deliver({ botId: bot.id, source: "bot_request", text: "reply", conversationId: "team" });
+    expect(started.map((work) => work.id)).toEqual([item.id]);
+    await waitFor(() => h.sessions[0]?.sent.length);
+    const session = h.sessions[0];
+    session.emit({ type: "text", delta: "first thought" });
+    session.emit({ type: "text_end" });
+    session.emit({ type: "text", delta: "finished answer" });
+    session.emit({ type: "text_end" });
+    const finishedMessage = history(h.db, "team", undefined, 1)[0];
+    session.emit({ type: "text", delta: "  " });
+    session.emit({ type: "text_end" });
+    session.emit({ type: "text", delta: "final fragment" });
+    if (outcome === "interrupted") await h.runner.stop(bot.id);
+    const error = outcome === "failed" ? "failed after answer" : null;
+    session.emit({ type: "turn_done", ok: outcome === "done", error });
+    const lastMessage = history(h.db, "team", undefined, 20).find((message) => message.body === "final fragment");
+    expect(lastMessage?.status).toBe(outcome);
+    expect(ended).toHaveLength(1);
+    expect(ended[0][0].id).toBe(item.id);
+    expect(ended[0][1]).toEqual({
+      outcome,
+      text: outcome === "done" ? "final fragment" : "finished answer",
+      textMessageId: outcome === "done" ? lastMessage?.id : finishedMessage.id,
+      error,
+    });
+    session.emit({ type: "turn_done", ok: false, error: "duplicate terminal event" });
+    expect(ended).toHaveLength(1);
+  });
+
+  it("resets result text between turns and leaves provider-started turns without a work item", async () => {
+    const ended: [WorkItem, TurnResult][] = [];
+    const started: WorkItem[] = [];
+    const h = harness(undefined, true, { turnStarted: (item) => started.push(item), turnEnded: (item, result) => ended.push([item, result]) });
+    const bot = newBot(h);
+    h.runner.submit(bot.id, "first", []);
+    await waitFor(() => h.sessions[0]?.sent.length);
+    const session = h.sessions[0];
+    session.emit({ type: "text", delta: "answer one" });
+    session.emit({ type: "turn_done", ok: true, error: null });
+    h.runner.submit(bot.id, "second", []);
+    await waitFor(() => session.sent.length === 2);
+    session.emit({ type: "turn_done", ok: true, error: null });
+    expect(ended[1][1]).toEqual({ outcome: "done", text: null, textMessageId: null, error: null });
+    session.emit({ type: "text", delta: "background answer" });
+    expect(h.runner.currentWork(bot.id)).toBeNull();
+    session.emit({ type: "turn_done", ok: true, error: null });
+    expect(started).toHaveLength(2);
+    expect(ended).toHaveLength(2);
+    expect(history(h.db, bot.id, undefined, 1)[0]).toMatchObject({ body: "background answer", status: "done" });
+    h.runner.submit(bot.id, "third", []);
+    await waitFor(() => session.sent.length === 3);
+    session.emit({ type: "turn_done", ok: true, error: null });
+    expect(ended[2][1]).toEqual({ outcome: "done", text: null, textMessageId: null, error: null });
+  });
+
+  it("calls turnRequeued instead of turnEnded for a failed limit turn and starts its same item again", async () => {
+    const started: WorkItem[] = [];
+    const requeued: WorkItem[] = [];
+    const ended: [WorkItem, TurnResult][] = [];
+    const h = harness(undefined, true, {
+      turnStarted: (item) => started.push(item),
+      turnRequeued: (item) => requeued.push(item),
+      turnEnded: (item, result) => ended.push([item, result]),
+    });
+    const bot = newBot(h);
+    const message = h.runner.submit(bot.id, "wait through limit", []);
+    await waitFor(() => h.sessions[0]?.sent.length);
+    const session = h.sessions[0];
+    const itemId = itemForMessage(h.db, message.id).id;
+    session.emit({ type: "limit", state: "reached", usedPercent: 100, resetsAt: "2099-09-25T10:00:00.000Z" });
+    session.emit({ type: "turn_done", ok: false, error: "Usage limit reached" });
+    expect(getWorkItem(h.db, itemId).status).toBe("queued");
+    expect(getMessage(h.db, message.id).status).toBe("queued");
+    expect(requeued.map((item) => item.id)).toEqual([itemId]);
+    expect(ended).toEqual([]);
+    expect(h.runner.currentWork(bot.id)).toBeNull();
+    h.db.prepare("UPDATE bots SET limited_until = NULL WHERE id = ?").run(bot.id);
+    h.runner.pump(bot.id);
+    await waitFor(() => session.sent.length === 2);
+    expect(started.map((item) => item.id)).toEqual([itemId, itemId]);
+    session.emit({ type: "turn_done", ok: true, error: null });
+    expect(requeued).toHaveLength(1);
+    expect(ended).toHaveLength(1);
+    expect(ended[0][0].id).toBe(itemId);
+    expect(ended[0][1].outcome).toBe("done");
+  });
+
+  it.each(["success", "stop"] as const)("ends a limited turn normally after %s without a requeue callback", async (end) => {
+    const requeued: WorkItem[] = [];
+    const ended: [WorkItem, TurnResult][] = [];
+    const h = harness(undefined, true, { turnRequeued: (item) => requeued.push(item), turnEnded: (item, result) => ended.push([item, result]) });
+    const bot = newBot(h);
+    const message = h.runner.submit(bot.id, "finish once", []);
+    await waitFor(() => h.sessions[0]?.sent.length);
+    const session = h.sessions[0];
+    session.emit({ type: "limit", state: "reached", usedPercent: 100, resetsAt: "2099-09-25T10:00:00.000Z" });
+    if (end === "stop") await h.runner.stop(bot.id);
+    session.emit({ type: "turn_done", ok: end === "success", error: null });
+    const expectedOutcome = end === "success" ? "done" : "interrupted";
+    expect(itemForMessage(h.db, message.id).status).toBe(expectedOutcome);
+    expect(ended.map(([item, result]) => [item.id, result.outcome])).toEqual([[itemForMessage(h.db, message.id).id, expectedOutcome]]);
+    expect(requeued).toEqual([]);
+    h.db.prepare("UPDATE bots SET limited_until = NULL WHERE id = ?").run(bot.id);
+    h.runner.pump(bot.id);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(session.sent).toHaveLength(1);
+  });
+
+  it("honors stopItem called synchronously by turnStarted before creating the session", async () => {
+    const ended: TurnResult[] = [];
+    let runner: Runner | undefined;
+    const h = harness(undefined, true, {
+      turnStarted: (item) => runner?.stopItem(item.id, "Already out of time."),
+      turnEnded: (_item, result) => ended.push(result),
+    });
+    runner = h.runner;
+    const bot = newBot(h);
+    const item = h.runner.deliver({ botId: bot.id, source: "routine", text: "do not send", conversationId: "team" });
+    await waitFor(() => ended.length);
+    expect(getWorkItem(h.db, item.id).status).toBe("interrupted");
+    expect(h.sessions.flatMap((session) => session.sent)).toEqual([]);
+    expect(history(h.db, "team", undefined, 1)[0].body).toBe("Already out of time.");
+  });
+
+  it.each(["turnStarted", "turnEnded", "turnRequeued", "sessionClosed"] as const)("logs a throwing %s hook without leaving the bot stuck", async (boundary) => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const failure = new Error(`${boundary} failed`);
+    const hooks: RunnerHooks = { [boundary]: () => { throw failure; } };
+    const h = harness(undefined, true, hooks);
+    const bot = newBot(h);
+    const message = h.runner.submit(bot.id, "first", []);
+    await waitFor(() => h.sessions[0]?.sent.length);
+    const session = h.sessions[0];
+    if (boundary === "turnRequeued") session.emit({ type: "limit", state: "reached", usedPercent: 100, resetsAt: "2099-09-25T10:00:00.000Z" });
+    if (boundary === "sessionClosed") session.emit({ type: "exit", error: "session died" });
+    else session.emit({ type: "turn_done", ok: boundary !== "turnRequeued", error: null });
+    expect(logged.mock.calls.some((call) => call.includes(failure))).toBe(true);
+    expect(h.runner.currentWork(bot.id)).toBeNull();
+    expect(h.runner.toBot(getStoredBot(h.db, bot.id)).state).toBe(boundary === "turnRequeued" ? "limited" : "idle");
+    expect(itemForMessage(h.db, message.id).status).toBe(boundary === "turnRequeued" ? "queued" : boundary === "sessionClosed" ? "failed" : "done");
+    h.db.prepare("UPDATE bots SET limited_until = NULL WHERE id = ?").run(bot.id);
+    if (boundary === "turnRequeued") h.runner.pump(bot.id);
+    else h.runner.submit(bot.id, "next", []);
+    await waitFor(() => h.sessions.reduce((count, active) => count + active.sent.length, 0) === 2);
+    expect(h.runner.currentWork(bot.id)).not.toBeNull();
+  });
+});
+
+describe("Runner session hooks", () => {
+  it("settles Stop during a rejected resumed start without a fresh attempt and revokes its token", async () => {
+    let rejectStart: (error: Error) => void = () => { throw new Error("Start was not held"); };
+    const session = new FakeSession();
+    session.startPromise = new Promise<void>((_resolve, reject) => { rejectStart = reject; });
+    const options: StartOptions[] = [];
+    const tokens = new McpTokens();
+    let token = "";
+    const closed: string[] = [];
+    const ended: TurnResult[] = [];
+    const h = harness((startOptions) => { options.push(startOptions); return session; }, true, {
+      mcpServers: (bot) => { token = tokens.issue(bot.id); return []; },
+      sessionClosed: (botId) => { closed.push(botId); tokens.revoke(botId); },
+      turnEnded: (_item, result) => ended.push(result),
+    });
+    const bot = newBot(h);
+    h.db.prepare("INSERT INTO sessions (bot_id, provider, account_id, cli_session_id, updated_at) VALUES (?, 'claude', 'claude-main', 'saved', 'then')").run(bot.id);
+    const message = h.runner.submit(bot.id, "never send", []);
+    await h.runner.stop(bot.id);
+    rejectStart(new Error("start rejected after Stop"));
+    await waitFor(() => ended.length);
+    expect(options.map((option) => option.resumeId)).toEqual(["saved"]);
+    expect(h.sessions).toHaveLength(1);
+    expect(session.sent).toEqual([]);
+    expect(session.closed).toBe(true);
+    expect(itemForMessage(h.db, message.id).status).toBe("interrupted");
+    expect(ended[0]).toEqual({ outcome: "interrupted", text: null, textMessageId: null, error: null });
+    expect(tokens.botFor(token)).toBeNull();
+    expect(closed).toEqual([bot.id]);
+    expect(h.db.prepare("SELECT cli_session_id FROM sessions WHERE bot_id = ?").get(bot.id)).toEqual({ cli_session_id: "saved" });
+    expect(history(h.db, bot.id, undefined, 20).some((item) => item.kind === "error")).toBe(false);
+  });
+
+  it.each([
+    { boundary: "exit", throws: false },
+    { boundary: "start", throws: false },
+    { boundary: "exit", throws: true },
+    { boundary: "start", throws: true },
+  ] as const)("brackets the same resumed item's $boundary fallback with requeue and start hooks (requeue hook throws: $throws)", async ({ boundary, throws }) => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const hookFailure = new Error("requeue hook failed");
+    const lifecycle: ["started" | "requeued" | "ended", string][] = [];
+    const ended: TurnResult[] = [];
+    let rejectStart: (error: Error) => void = () => { throw new Error("Start was not held"); };
+    const resumed = new FakeSession();
+    if (boundary === "start") resumed.startPromise = new Promise<void>((_resolve, reject) => { rejectStart = reject; });
+    const fresh = new FakeSession();
+    const available = [resumed, fresh];
+    let nextSession = 0;
+    const h = harness(() => {
+      const session = available[nextSession++];
+      if (!session) throw new Error("Unexpected extra session");
+      return session;
+    }, true, {
+      turnStarted: (item) => lifecycle.push(["started", item.id]),
+      turnRequeued: (item) => {
+        lifecycle.push(["requeued", item.id]);
+        if (throws) throw hookFailure;
+      },
+      turnEnded: (item, result) => { lifecycle.push(["ended", item.id]); ended.push(result); },
+    });
+    const bot = newBot(h);
+    h.db.prepare("INSERT INTO sessions (bot_id, provider, account_id, cli_session_id, updated_at) VALUES (?, 'claude', 'claude-main', 'missing', 'then')").run(bot.id);
+    const message = h.runner.submit(bot.id, "continue the same item", []);
+    const itemId = itemForMessage(h.db, message.id).id;
+    expect(lifecycle).toEqual([["started", itemId]]);
+    if (boundary === "exit") {
+      await waitFor(() => resumed.sent.length);
+      resumed.emit({ type: "exit", error: null });
+    } else rejectStart(new Error("resume start rejected"));
+    await waitFor(() => fresh.sent.length);
+
+    expect(lifecycle).toEqual([["started", itemId], ["requeued", itemId], ["started", itemId]]);
+    expect(ended).toEqual([]);
+    expect(h.runner.currentWork(bot.id)?.id).toBe(itemId);
+    expect(getWorkItem(h.db, itemId).status).toBe("running");
+    if (throws) expect(logged.mock.calls.some((call) => call.includes(hookFailure))).toBe(true);
+    else expect(logged).not.toHaveBeenCalled();
+    fresh.emit({ type: "text", delta: "final answer" });
+    fresh.emit({ type: "turn_done", ok: true, error: null });
+    expect(lifecycle).toEqual([["started", itemId], ["requeued", itemId], ["started", itemId], ["ended", itemId]]);
+    expect(ended).toEqual([{ outcome: "done", text: "final answer", textMessageId: history(h.db, bot.id, undefined, 1)[0].id, error: null }]);
+    expect(getWorkItem(h.db, itemId).status).toBe("done");
+    expect(h.sessions).toHaveLength(2);
+  });
+
+  it.each([false, true])("retries a rejected resumed start only once with a renewed token (fresh startup fails: %s)", async (freshFails) => {
+    const tokens = new McpTokens();
+    const issued: string[] = [];
+    const options: StartOptions[] = [];
+    const closed: string[] = [];
+    const ended: TurnResult[] = [];
+    const h = harness((startOptions) => {
+      options.push(startOptions);
+      const session = new FakeSession();
+      if (options.length === 1 || freshFails) session.startPromise = Promise.reject(new Error(options.length === 1 ? "resume rejected" : "fresh rejected"));
+      return session;
+    }, true, {
+      mcpServers: (bot) => { issued.push(tokens.issue(bot.id)); return []; },
+      sessionClosed: (botId) => { closed.push(botId); tokens.revoke(botId); },
+      turnEnded: (_item, result) => ended.push(result),
+    });
+    const bot = newBot(h);
+    addMessage(h.db, { conversationId: bot.id, author: "you", kind: "text", body: "Remember ZEBRA", status: "done" });
+    h.db.prepare("INSERT INTO sessions (bot_id, provider, account_id, cli_session_id, updated_at) VALUES (?, 'claude', 'claude-main', 'missing', 'then')").run(bot.id);
+    const message = h.runner.submit(bot.id, "continue", []);
+    if (freshFails) await waitFor(() => ended.length);
+    else await waitFor(() => h.sessions[1]?.sent.length);
+    expect(options.map((option) => option.resumeId)).toEqual(["missing", null]);
+    expect(h.sessions).toHaveLength(2);
+    expect(h.sessions[0].closed).toBe(true);
+    expect(tokens.botFor(issued[0])).toBeNull();
+    expect(h.db.prepare("SELECT cli_session_id FROM sessions WHERE bot_id = ?").get(bot.id)).toBeUndefined();
+    if (freshFails) {
+      expect(closed).toEqual([bot.id, bot.id]);
+      expect(tokens.botFor(issued[1])).toBeNull();
+      expect(itemForMessage(h.db, message.id).status).toBe("failed");
+      expect(ended[0].error).toBe("fresh rejected");
+      expect(h.runner.currentWork(bot.id)).toBeNull();
+    } else {
+      expect(closed).toEqual([bot.id]);
+      expect(tokens.botFor(issued[1])).toBe(bot.id);
+      expect(h.sessions[1].sent[0]).toContain("Person: Remember ZEBRA");
+      expect(h.sessions[1].sent[0]).toContain("continue");
+      expect(itemForMessage(h.db, message.id).status).toBe("running");
+      expect(ended).toEqual([]);
+      h.sessions[1].emit({ type: "exit", error: null });
+      expect(itemForMessage(h.db, message.id).status).toBe("failed");
+      expect(h.sessions).toHaveLength(2);
+      expect(tokens.botFor(issued[1])).toBeNull();
+    }
+  });
+
+  it("constructs MCP servers once per session and revokes the old token when settings close it", async () => {
+    const options: StartOptions[] = [];
+    const tokens = new McpTokens();
+    const issued: string[] = [];
+    const closed: string[] = [];
+    const h = harness((startOptions) => { options.push(startOptions); return new FakeSession(); }, true, {
+      mcpServers: (bot) => {
+        const token = tokens.issue(bot.id);
+        issued.push(token);
+        return [{ name: "tjommie", url: "http://127.0.0.1:47100/mcp", headers: { Authorization: `Bearer ${token}` }, autoAllow: true }];
+      },
+      sessionClosed: (botId) => { closed.push(botId); tokens.revoke(botId); },
+    });
+    const bot = newBot(h);
+    h.runner.submit(bot.id, "first", []);
+    await waitFor(() => h.sessions[0]?.sent.length);
+    expect(options[0].mcpServers).toEqual([{ name: "tjommie", url: "http://127.0.0.1:47100/mcp", headers: { Authorization: `Bearer ${issued[0]}` }, autoAllow: true }]);
+    expect(tokens.botFor(issued[0])).toBe(bot.id);
+    h.sessions[0].emit({ type: "turn_done", ok: true, error: null });
+    h.runner.submit(bot.id, "reuse", []);
+    await waitFor(() => h.sessions[0].sent.length === 2);
+    expect(issued).toHaveLength(1);
+    h.runner.botChanged(bot.id, false);
+    expect(closed).toEqual([]);
+    h.sessions[0].emit({ type: "turn_done", ok: true, error: null });
+    expect(closed).toEqual([bot.id]);
+    expect(tokens.botFor(issued[0])).toBeNull();
+    h.runner.submit(bot.id, "new settings", []);
+    await waitFor(() => h.sessions[1]?.sent.length);
+    expect(issued).toHaveLength(2);
+    expect(tokens.botFor(issued[1])).toBe(bot.id);
+    h.runner.forget(bot.id);
+    expect(tokens.botFor(issued[1])).toBeNull();
+    expect(closed).toEqual([bot.id, bot.id]);
+    h.sessions[1].emit({ type: "exit", error: null });
+    expect(closed).toHaveLength(2);
+  });
+
+  it.each(["factory", "start", "mcpServers"] as const)("revokes an issued MCP token when %s fails before startup", async (boundary) => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const tokens = new McpTokens();
+    let token = "";
+    const closed: string[] = [];
+    const ended: TurnResult[] = [];
+    const failure = new Error(`${boundary} startup failed`);
+    const h = harness(() => {
+      if (boundary === "factory") throw failure;
+      const session = new FakeSession();
+      session.startPromise = Promise.reject(failure);
+      return session;
+    }, true, {
+      mcpServers: (bot) => {
+        token = tokens.issue(bot.id);
+        if (boundary === "mcpServers") throw failure;
+        return [];
+      },
+      sessionClosed: (botId) => { closed.push(botId); tokens.revoke(botId); },
+      turnEnded: (_item, result) => ended.push(result),
+    });
+    const bot = newBot(h);
+    const message = h.runner.submit(bot.id, "cannot start", []);
+    await waitFor(() => ended.length);
+    expect(token.length).toBeGreaterThan(0);
+    expect(tokens.botFor(token)).toBeNull();
+    expect(closed).toEqual([bot.id]);
+    expect(h.sessions.flatMap((session) => session.sent)).toEqual([]);
+    expect(h.sessions.every((session) => session.closed)).toBe(true);
+    expect(itemForMessage(h.db, message.id).status).toBe("failed");
+    expect(ended[0]).toEqual({ outcome: "failed", text: null, textMessageId: null, error: failure.message });
+    expect(h.runner.toBot(getStoredBot(h.db, bot.id)).state).toBe("idle");
+    if (boundary === "mcpServers") expect(logged.mock.calls.some((call) => call.includes(failure))).toBe(true);
+  });
+
+  it("revokes once when a live session exits and ignores later events from that session", async () => {
+    const closed: string[] = [];
+    const h = harness(undefined, true, { sessionClosed: (botId) => closed.push(botId) });
+    const bot = newBot(h);
+    h.runner.submit(bot.id, "first", []);
+    await waitFor(() => h.sessions[0]?.sent.length);
+    const oldSession = h.sessions[0];
+    oldSession.emit({ type: "exit", error: null });
+    expect(closed).toEqual([bot.id]);
+    h.runner.submit(bot.id, "next", []);
+    await waitFor(() => h.sessions[1]?.sent.length);
+    oldSession.emit({ type: "exit", error: "late duplicate" });
+    oldSession.emit({ type: "text", delta: "stale" });
+    expect(closed).toEqual([bot.id]);
+    expect(h.runner.currentWork(bot.id)?.text).toBe("next");
+    expect(history(h.db, bot.id, undefined, 20).some((message) => message.body === "stale")).toBe(false);
+  });
+
+  it("adds exactly the last 20 chat messages only for a fresh session", async () => {
+    const options: StartOptions[] = [];
+    const h = harness((startOptions) => { options.push(startOptions); return new FakeSession(); });
+    const bot = newBot(h);
+    for (let index = 0; index < 25; index++) addMessage(h.db, { conversationId: bot.id, author: "you", kind: "text", body: `history-${index}`, status: "sent" });
+    h.runner.submit(bot.id, "fresh request", []);
+    await waitFor(() => h.sessions[0]?.sent.length);
+    const session = h.sessions[0];
+    expect(session.sent[0].split("\n").filter((line) => line.startsWith("Person: history-"))).toEqual(Array.from({ length: 20 }, (_, index) => `Person: history-${index + 5}`));
+    expect(session.sent[0]).toContain("fresh request");
+    session.emit({ type: "session", cliSessionId: "remembered" });
+    session.emit({ type: "turn_done", ok: true, error: null });
+    h.runner.submit(bot.id, "same session", []);
+    await waitFor(() => session.sent.length === 2);
+    expect(session.sent[1]).toBe("same session");
+    session.emit({ type: "turn_done", ok: true, error: null });
+    h.runner.botChanged(bot.id, false);
+    h.runner.submit(bot.id, "resumed request", []);
+    await waitFor(() => h.sessions[1]?.sent.length);
+    expect(options[1].resumeId).toBe("remembered");
+    expect(h.sessions[1].sent).toEqual(["resumed request"]);
+  });
+});
+
+describe("Runner unexpected error boundaries", () => {
+  it("logs a rejected stopItem interrupt and can settle the turn afterwards", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const failure = new Error("interrupt transport failed");
+    const h = harness();
+    const bot = newBot(h);
+    const item = h.runner.deliver({ botId: bot.id, source: "routine", text: "run" });
+    await waitFor(() => h.sessions[0]?.sent.length);
+    h.sessions[0].interruptError = failure;
+    h.runner.stopItem(item.id, "Routine timed out.");
+    await waitFor(() => logged.mock.calls.some((call) => call.includes(failure)));
+    h.sessions[0].emit({ type: "exit", error: null });
+    expect(getWorkItem(h.db, item.id).status).toBe("interrupted");
+    expect(history(h.db, bot.id, undefined, 1)[0].body).toBe("Routine timed out.");
+    expect(h.runner.currentWork(bot.id)).toBeNull();
+  });
+
+  it.each([new Error("bot broadcast failed"), new RpcError("not_found", "broadcast target missing")])("logs an unexpected bot broadcast error and still starts and settles the work: %s", async (failure) => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const h = harness(undefined, true, {}, (event) => { if (event === "bot.updated") throw failure; });
+    const bot = newBot(h);
+    const message = h.runner.submit(bot.id, "still run", []);
+    await waitFor(() => h.sessions[0]?.sent.length);
+    h.sessions[0].emit({ type: "turn_done", ok: true, error: null });
+    expect(logged.mock.calls.some((call) => call.includes(failure))).toBe(true);
+    expect(itemForMessage(h.db, message.id).status).toBe("done");
+    expect(h.runner.currentWork(bot.id)).toBeNull();
+  });
+
+  it("does not log a bot deleted by the turn-ended hook as an unexpected error", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    let db: Db | undefined;
+    const h = harness(undefined, true, { turnEnded: (item) => db?.prepare("DELETE FROM bots WHERE id = ?").run(item.botId) });
+    db = h.db;
+    const bot = newBot(h);
+    h.runner.submit(bot.id, "last turn", []);
+    await waitFor(() => h.sessions[0]?.sent.length);
+    h.sessions[0].emit({ type: "turn_done", ok: true, error: null });
+    expect(h.db.prepare("SELECT id FROM bots WHERE id = ?").get(bot.id)).toBeUndefined();
+    expect(logged).not.toHaveBeenCalled();
+    expect(h.runner.currentWork(bot.id)).toBeNull();
   });
 });
