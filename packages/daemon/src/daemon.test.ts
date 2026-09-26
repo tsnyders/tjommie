@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { createBot, getStoredBot, setLimitedUntil } from "./bots.ts";
 import { showBrowser } from "./browser.ts";
-import { history } from "./chat.ts";
+import { history, updateMessage } from "./chat.ts";
 import { connect, type Client } from "./client.ts";
 import { startDaemon, type Daemon } from "./daemon.ts";
 import { newId, openDb, type Db } from "./db.ts";
@@ -193,6 +193,30 @@ it.each([false, true])("keeps a pending routine proposal waiting and clears it o
   await h.client.call("approvals.respond", { approvalId: card.data.id, decision: "deny" });
   expect(await h.client.call("bots.list", {})).toMatchObject([{ id: bot.id, state: "idle" }]);
   expect(h.client.events).toContainEqual({ type: "event", event: "bot.updated", data: expect.objectContaining({ id: bot.id, state: "idle" }) });
+});
+
+it.each(["once", "deny"] as const)("answers a damaged routine card and clears Waiting through the API (%s)", async (decision) => {
+  const { client, db, sessions } = await harness();
+  const bot = await client.call("bots.create", input("Damaged card"));
+  await client.call("chat.send", { botId: bot.id, text: "Begin" });
+  sessions[0].session.finish("Ready");
+  await tool(sessions[0].options, "add_routine", { name: "Check", prompt: "Check", days: ["mon"], times: ["08:48"] });
+  const card = await waitFor(() => client.events.find((event) => event.event === "approval.added" && event.data.kind === "routine"));
+  if (card.event !== "approval.added") throw new Error("Expected routine approval card");
+  updateMessage(db, card.data.messageId, { data: { corrupt: "missing routine card fields" } });
+  expect(await client.call("bots.list", {})).toMatchObject([{ id: bot.id, state: "waiting" }]);
+  const from = client.events.length;
+
+  const resolved = await client.call("approvals.respond", { approvalId: card.data.id, decision });
+  const status = decision === "deny" ? "denied" : "allowed";
+  expect(resolved).toMatchObject({ id: card.data.id, status });
+  expect((await client.call("chat.history", { botId: bot.id })).messages).toContainEqual(expect.objectContaining({
+    id: card.data.messageId, data: { corrupt: "missing routine card fields", status },
+  }));
+  expect(await client.call("bots.list", {})).toMatchObject([{ id: bot.id, state: "idle" }]);
+  expect(client.events.slice(from)).toContainEqual({ type: "event", event: "bot.updated", data: expect.objectContaining({ id: bot.id, state: "idle" }) });
+  expect(await client.call("routines.list", { botId: bot.id })).toHaveLength(decision === "deny" ? 0 : 1);
+  await expect(client.call("approvals.respond", { approvalId: card.data.id, decision })).rejects.toThrow(/already_answered/);
 });
 
 it.each(["once", "deny"] as const)("runs queued room work while a routine proposal stays pending (%s)", async (decision) => {

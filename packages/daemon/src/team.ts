@@ -435,7 +435,11 @@ export class Team {
         this.#emit("routine.updated", createRoutine(this.#db, input));
       }
       const message = getMessage(this.#db, approval.messageId);
-      const data = { ...RoutineApprovalData.parse(message.data), status: approval.status } satisfies RoutineApprovalData;
+      const parsed = RoutineApprovalData.safeParse(message.data);
+      // A malformed saved card must not prevent the person from answering its approval.
+      const data = parsed.success
+        ? ({ ...parsed.data, status: approval.status } satisfies RoutineApprovalData)
+        : { ...message.data, status: approval.status };
       this.#emit("message.updated", updateMessage(this.#db, message.id, { data }));
       this.#emit("approval.resolved", approval);
       const bot = getStoredBot(this.#db, approval.botId);

@@ -33,7 +33,7 @@ function makeTeam(deliver: (work: WorkItem) => void = (work) => { delivered.push
     deliver,
     stopItem: () => {},
     currentWork: (botId) => current.get(botId) ?? null,
-    stateOf: () => "idle",
+    stateOf: (bot) => db.prepare("SELECT 1 FROM approvals WHERE bot_id = ? AND kind = 'routine' AND status = 'pending' LIMIT 1").get(bot.id) ? "waiting" : "idle",
   });
 }
 
@@ -162,6 +162,34 @@ describe("Team routine transactions", () => {
     expect(observations).toEqual(Array.from({ length: 4 }, () => ({ approval: "allowed", card: "allowed", routines: 1 })));
     expect(() => team.answerRoutineProposal(pending.id, "once")).toThrow(/already answered/);
     expect(listRoutines(db, writer.id)).toHaveLength(1);
+  });
+
+  it.each([
+    { corruption: "null", data: null, decision: "once" },
+    { corruption: "null", data: null, decision: "deny" },
+    { corruption: "malformed", data: { approvalId: 7, detail: false, retained: "original value" }, decision: "once" },
+    { corruption: "malformed", data: { approvalId: 7, detail: false, retained: "original value" }, decision: "deny" },
+  ] as const)("resolves $decision with $corruption card data and clears Waiting after commit", ({ data, decision }) => {
+    const pending = proposal();
+    expect(events).toContainEqual({ event: "bot.updated", data: expect.objectContaining({ id: writer.id, state: "waiting" }) });
+    db.prepare("UPDATE messages SET data = ? WHERE id = ?").run(data === null ? null : JSON.stringify(data), pending.messageId);
+    events.length = 0;
+    const observations: { approval: string; card: unknown; routines: number }[] = [];
+    team = makeTeam(undefined, () => {
+      observations.push({ approval: getApproval(observer, pending.id).status, card: getMessage(observer, pending.messageId).data, routines: listRoutines(observer, writer.id).length });
+    });
+    const status = decision === "once" ? "allowed" : "denied";
+    const result = team.answerRoutineProposal(pending.id, decision);
+    const expectedData = { ...data, status };
+    expect(result.status).toBe(status);
+    expect(getApproval(db, pending.id).status).toBe(status);
+    expect(getMessage(db, pending.messageId).data).toEqual(expectedData);
+    expect(listRoutines(db, writer.id)).toHaveLength(decision === "once" ? 1 : 0);
+    expect(events).toContainEqual({ event: "message.updated", data: getMessage(db, pending.messageId) });
+    expect(events).toContainEqual({ event: "approval.resolved", data: result });
+    expect(events).toContainEqual({ event: "bot.updated", data: expect.objectContaining({ id: writer.id, state: "idle" }) });
+    expect(observations).toEqual(Array.from({ length: decision === "once" ? 4 : 3 }, () => ({ approval: status, card: expectedData, routines: decision === "once" ? 1 : 0 })));
+    expect(() => team.answerRoutineProposal(pending.id, decision)).toThrow(/already answered/);
   });
 
   it.each([
