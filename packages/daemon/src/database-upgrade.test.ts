@@ -33,7 +33,7 @@ it("upgrades and recovers a version 1 chat before resuming its queued work", asy
       INSERT INTO conversations (id, kind, bot_id) VALUES ('legacy-bot', 'bot', 'legacy-bot');
       INSERT INTO messages (id, conversation_id, author, kind, body, data, status, created_at, seq) VALUES
         ('running-message', 'legacy-bot', 'you', 'text', 'First request', NULL, 'sent', '2026-09-25T10:01:00.000Z', 1),
-        ('approval-card', 'legacy-bot', 'system', 'approval', 'Run a command', '{"approvalId":"legacy-approval","status":"pending"}', 'done', '2026-09-25T10:02:00.000Z', 2),
+        ('approval-card', 'legacy-bot', 'legacy-bot', 'approval', 'Run a command', '{"approvalId":"legacy-approval","tool":"Bash","detail":"echo hello","rule":null,"status":"pending"}', 'done', '2026-09-25T10:02:00.000Z', 2),
         ('partial-reply', 'legacy-bot', 'legacy-bot', 'text', 'Unfinished answer', NULL, 'streaming', '2026-09-25T10:03:00.000Z', 3),
         ('queued-message', 'legacy-bot', 'you', 'text', 'Next request', NULL, 'queued', '2026-09-25T10:04:00.000Z', 4);
       INSERT INTO approvals (id, bot_id, tool, summary, detail, rule, status, message_id, created_at)
@@ -86,6 +86,9 @@ it("upgrades and recovers a version 1 chat before resuming its queued work", asy
     ]);
     expect(getStoredBot(db, "legacy-bot")).toMatchObject({ name: "Writer", homeFolder: home });
     expect(getApproval(db, "legacy-approval")).toMatchObject({ kind: "tool", status: "pending", payload: null });
+    expect(getMessage(db, "approval-card").data).toEqual({
+      approvalId: "legacy-approval", tool: "Bash", detail: "echo hello", rule: null, status: "pending",
+    });
     expect(db.prepare("SELECT cli_session_id, total_cost_usd FROM sessions WHERE bot_id = 'legacy-bot'").get()).toEqual({
       cli_session_id: "saved-session", total_cost_usd: null,
     });
@@ -97,7 +100,9 @@ it("upgrades and recovers a version 1 chat before resuming its queued work", asy
     expect(getMessage(db, "running-message").status).toBe("interrupted");
     expect(getMessage(db, "partial-reply")).toMatchObject({ body: "Unfinished answer", status: "interrupted" });
     expect(getApproval(db, "legacy-approval")).toMatchObject({ kind: "tool", status: "denied", payload: null });
-    expect(getMessage(db, "approval-card").data).toEqual({ approvalId: "legacy-approval", status: "denied" });
+    expect(getMessage(db, "approval-card").data).toEqual({
+      approvalId: "legacy-approval", tool: "Bash", detail: "echo hello", rule: null, status: "denied",
+    });
     const notices = db.prepare("SELECT id FROM messages WHERE conversation_id = 'legacy-bot' AND kind = 'error'").all() as { id: string }[];
     expect(notices).toHaveLength(1);
     expect(getMessage(db, notices[0].id)).toMatchObject({
