@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -24,8 +24,17 @@ export function dataPaths(root: string = defaultRoot()): Paths {
 
 // ponytail: on Windows the file mode is ignored; the per-user ACL of %LOCALAPPDATA% protects the token.
 export function readOrCreateToken(file: string): string {
-  if (existsSync(file)) return readFileSync(file, "utf8").trim();
+  if (existsSync(file)) {
+    const existing = readFileSync(file, "utf8").trim();
+    if (existing.length >= 43) return existing;
+  }
   const token = randomBytes(32).toString("base64url");
-  writeFileSync(file, token, { mode: 0o600 });
+  const temporary = `${file}.${randomBytes(12).toString("hex")}.tmp`;
+  try {
+    writeFileSync(temporary, token, { mode: 0o600, flag: "wx" });
+    renameSync(temporary, file);
+  } finally {
+    rmSync(temporary, { force: true });
+  }
   return token;
 }

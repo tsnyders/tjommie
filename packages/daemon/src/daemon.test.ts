@@ -2,12 +2,13 @@ import { existsSync, mkdirSync, utimesSync } from "node:fs";
 import { join } from "node:path";
 import type { BotInput, ProviderSetup } from "@tjommie/protocol";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import WebSocket from "ws";
 import { createBot, getStoredBot, setLimitedUntil } from "./bots.ts";
 import { showBrowser } from "./browser.ts";
 import { history } from "./chat.ts";
 import { connect, type Client } from "./client.ts";
 import { startDaemon, type Daemon } from "./daemon.ts";
-import { openDb, type Db } from "./db.ts";
+import { newId, openDb, type Db } from "./db.ts";
 import { dataPaths } from "./paths.ts";
 import type { ProviderEvent, ProviderSession, StartOptions } from "./providers/types.ts";
 import { enqueue, getWorkItem, newChain, setStatus } from "./queue.ts";
@@ -21,12 +22,12 @@ import { tempRoot, waitFor } from "./testing.ts";
 const removal = vi.hoisted(() => ({ failPath: "", beforeRemove: () => {} }));
 vi.mock("node:fs", async (original) => {
   const fs = await original<typeof import("node:fs")>();
-  return { ...fs, rmSync: (...args: Parameters<typeof fs.rmSync>) => {
+  return { ...fs, renameSync: (...args: Parameters<typeof fs.renameSync>) => {
     if (String(args[0]) === removal.failPath) {
       removal.beforeRemove();
       throw new Error("Forced locked folder");
     }
-    return fs.rmSync(...args);
+    return fs.renameSync(...args);
   } };
 });
 vi.mock("./setup.ts", async (original) => ({
@@ -68,6 +69,7 @@ const daemons: Daemon[] = [];
 const clients: Client[] = [];
 const databases: Db[] = [];
 beforeEach(() => {
+  vi.stubEnv("TJOMMIE_DEV", "");
   vi.mocked(checkSetup).mockResolvedValue(setup());
   vi.mocked(showBrowser).mockResolvedValue(undefined);
   removal.failPath = "";
@@ -78,6 +80,7 @@ afterEach(async () => {
   for (const daemon of daemons.splice(0)) await daemon.close();
   for (const db of databases.splice(0)) db.close();
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
 });
 
 async function harness(root = tempRoot()) {
@@ -413,15 +416,18 @@ it("recovers an interrupted routine and sweeps stale shares before starting queu
   const queued = enqueue(db, { botId: bot.id, source: "you", text: "Queued", chainId: newChain(db) });
   const stale = join(root, "shared-files", "share-old");
   mkdirSync(stale, { recursive: true });
+  const deleted = join(paths.bots, `${newId()}.deleting-${newId()}`);
+  mkdirSync(deleted);
   const old = new Date(Date.now() - 25 * 60 * 60_000);
   utimesSync(stale, old, old);
   const listen = serverModule.startServer;
   const server = vi.spyOn(serverModule, "startServer").mockImplementation((options) => {
-    expect(options.allowedOrigins).toEqual(["app://tjommie", "http://localhost:3000"]);
-    expect(getWorkItem(db, item.id).status).toBe("interrupted");
-    expect(getRun(db, run.id)?.status).toBe("failed");
+    expect(options.allowedOrigins).toEqual(["app://tjommie"]);
+    expect(getWorkItem(db, item.id).status).toBe("running");
+    expect(getRun(db, run.id)?.status).toBe("running");
     expect(getWorkItem(db, queued.id).status).toBe("queued");
-    expect(existsSync(stale)).toBe(false);
+    expect(existsSync(stale)).toBe(true);
+    expect(existsSync(deleted)).toBe(true);
     return listen(options);
   });
   const { sessions } = await harness(root);
@@ -432,6 +438,142 @@ it("recovers an interrupted routine and sweeps stale shares before starting queu
   expect(getWorkItem(db, queued.id).status).toBe("running");
   expect(appServer(sessions[0].options).url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/mcp$/);
   expect(existsSync(stale)).toBe(false);
+  expect(existsSync(deleted)).toBe(false);
+});
+
+it("leaves the live daemon's work, approvals and streaming messages untouched on a second start", async () => {
+  const { daemon, client, db, sessions, root } = await harness();
+  const bot = await client.call("bots.create", input("Still working"));
+  await client.call("chat.send", { botId: bot.id, text: "Begin" });
+  sessions[0].session.emit({ type: "approval", id: "waiting", tool: "Write", summary: "Write", detail: "file", rule: null });
+  sessions[0].session.emit({ type: "text", delta: "In progress" });
+  const before = {
+    work: db.prepare("SELECT * FROM work_items").all(),
+    approvals: db.prepare("SELECT * FROM approvals").all(),
+    messages: db.prepare("SELECT * FROM messages").all(),
+  };
+  expect(before.work).toMatchObject([{ status: "running" }]);
+  expect(before.approvals).toMatchObject([{ status: "pending" }]);
+  expect(before.messages.some((row) => row.status === "streaming")).toBe(true);
+  const deleted = join(dataPaths(root).bots, `${newId()}.deleting-${newId()}`);
+  mkdirSync(deleted);
+  vi.mocked(checkSetup).mockClear();
+  await expect(startDaemon({ root, port: daemon.port })).rejects.toMatchObject({ code: "EADDRINUSE" });
+  expect(db.prepare("SELECT * FROM work_items").all()).toEqual(before.work);
+  expect(db.prepare("SELECT * FROM approvals").all()).toEqual(before.approvals);
+  expect(db.prepare("SELECT * FROM messages").all()).toEqual(before.messages);
+  expect(checkSetup).not.toHaveBeenCalled();
+  expect(existsSync(deleted)).toBe(true);
+});
+
+it.each(["", "0", "1"])("allows the dev origin only with TJOMMIE_DEV=1 (%s)", async (dev) => {
+  vi.stubEnv("TJOMMIE_DEV", dev);
+  const { daemon } = await harness();
+  const upgrade = (origin: string) => new Promise<boolean>((resolve) => {
+    const socket = new WebSocket(`ws://127.0.0.1:${daemon.port}`, { origin });
+    socket.once("open", () => { socket.close(); resolve(true); });
+    socket.once("error", () => resolve(false));
+  });
+  expect(await upgrade("app://tjommie")).toBe(true);
+  expect(await upgrade("http://localhost:3000")).toBe(dev === "1");
+});
+
+it("waits for a delayed session close before capturing exchanges and deleting the bot", async () => {
+  const { client, db, sessions } = await harness();
+  const bot = await client.call("bots.create", input("Delayed close"));
+  await client.call("chat.send", { botId: bot.id, text: "Begin" });
+  sessions[0].session.finish("Done");
+  const exited = Promise.withResolvers<void>();
+  const closing = Promise.withResolvers<void>();
+  vi.spyOn(sessions[0].session, "close").mockImplementation(() => {
+    closing.resolve();
+  });
+  Object.assign(sessions[0].session, { waitForExit: () => exited.promise });
+  const captured = vi.spyOn(Team.prototype, "botDeleting");
+  const deletion = client.call("bots.delete", { id: bot.id });
+  try {
+    await closing.promise;
+    expect(captured).not.toHaveBeenCalled();
+    expect(getStoredBot(db, bot.id).id).toBe(bot.id);
+    expect(existsSync(bot.homeFolder)).toBe(true);
+  } finally {
+    exited.resolve();
+    await deletion;
+  }
+  expect(captured).toHaveBeenCalledExactlyOnceWith(bot.id);
+  expect(existsSync(bot.homeFolder)).toBe(false);
+  expect(db.prepare("SELECT * FROM work_items WHERE bot_id = ?").all(bot.id)).toEqual([]);
+});
+
+it("returns busy after fifteen seconds and restores work only when the delayed exit arrives", async () => {
+  const { daemon, client, db, sessions } = await harness();
+  const bot = await client.call("bots.create", input("Slow close"));
+  const message = await client.call("chat.send", { botId: bot.id, text: "Still running" });
+  const exited = Promise.withResolvers<void>();
+  const closing = Promise.withResolvers<void>();
+  vi.spyOn(sessions[0].session, "close").mockImplementation(() => { closing.resolve(); });
+  Object.assign(sessions[0].session, { waitForExit: () => exited.promise });
+  const captured = vi.spyOn(Team.prototype, "botDeleting");
+  let outcome: unknown;
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const deletion = client.call("bots.delete", { id: bot.id }).then(
+    (result) => { outcome = result; },
+    (error: unknown) => { outcome = error; },
+  );
+  try {
+    await closing.promise;
+    await vi.advanceTimersByTimeAsync(14_999);
+    expect(outcome).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.waitFor(() => expect(outcome).toBeInstanceOf(Error), { timeout: 200, interval: 10 });
+    expect((outcome as Error).message).toMatch(/^busy: The bot is taking too long to close\./);
+    expect(captured).not.toHaveBeenCalled();
+    expect(getStoredBot(db, bot.id).id).toBe(bot.id);
+    expect(existsSync(bot.homeFolder)).toBe(true);
+    expect(db.prepare("SELECT status FROM work_items WHERE message_id = ?").get(message.id)).toEqual({ status: "running" });
+    daemon.runner.pump(bot.id);
+    expect(sessions).toHaveLength(1);
+    exited.resolve();
+    await vi.waitFor(() => expect(sessions).toHaveLength(2), { timeout: 200, interval: 10 });
+    expect(sessions[1].session.sent).toContain("Still running");
+    expect(client.events.some((event) => event.event === "bot.deleted" && event.data.id === bot.id)).toBe(false);
+    expect(captured).not.toHaveBeenCalled();
+  } finally {
+    exited.resolve();
+    vi.useRealTimers();
+    await deletion;
+  }
+});
+
+it("rejects a second Delete while the first request waits for the same process", async () => {
+  const { daemon, client, db, sessions } = await harness();
+  const bot = await client.call("bots.create", input("One deletion"));
+  await client.call("chat.send", { botId: bot.id, text: "Running" });
+  const exited = Promise.withResolvers<void>();
+  const closing = Promise.withResolvers<void>();
+  vi.spyOn(sessions[0].session, "close").mockImplementation(() => { closing.resolve(); });
+  Object.assign(sessions[0].session, { waitForExit: () => exited.promise });
+  const cancelled = vi.spyOn(daemon.runner, "cancelDeletion");
+  const deletion = client.call("bots.delete", { id: bot.id });
+  await closing.promise;
+  let outcome: unknown;
+  const duplicate = client.call("bots.delete", { id: bot.id }).then(
+    (result) => { outcome = result; },
+    (error: unknown) => { outcome = error; },
+  );
+  try {
+    await vi.waitFor(() => expect(outcome).toBeInstanceOf(Error), { timeout: 200, interval: 10 });
+    expect((outcome as Error).message).toMatch(/^busy:/);
+    expect(cancelled).not.toHaveBeenCalled();
+    expect(getStoredBot(db, bot.id).id).toBe(bot.id);
+    expect(sessions).toHaveLength(1);
+  } finally {
+    exited.resolve();
+    await deletion;
+    await duplicate;
+  }
+  expect(existsSync(bot.homeFolder)).toBe(false);
+  expect(sessions).toHaveLength(1);
 });
 
 it("pumps waiting work after unpause and a successful setup refresh", async () => {

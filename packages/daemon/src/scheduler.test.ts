@@ -232,6 +232,29 @@ describe("Scheduler", () => {
     expect(events.find((e) => e.event === "notify")?.data).toEqual({ kind: "routine_failed", botId, routineId: getRun(db, item.routineRunId!)!.routineId, runId: item.routineRunId, title: "Night Shift's routine failed", body: "Digest: Codex exited with code 1" });
   });
 
+  it.each(["throw", "reject"] as const)("records the actual outcome when the time limit stop fails by %s", async (failure) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(at("2026-09-20T08:00:10Z"));
+    digest({ timeLimitMinutes: 1 });
+    const error = new Error("Could not interrupt");
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    // Handle the rejected fixture itself so the red test reports the stale outcome only.
+    const rejected = Promise.reject(error);
+    void rejected.catch(() => {});
+    const s = new Scheduler({
+      db, broadcast: () => {}, deliver: (work) => { delivered.push(work); },
+      stopItem: () => { if (failure === "throw") throw error; return rejected; },
+    });
+    schedulers.push(s);
+    s.tick();
+    const item = enqueue(db, delivered[0]);
+    s.runStarted(item);
+    await vi.advanceTimersByTimeAsync(60_000);
+    s.runEnded(item, { outcome: "done", error: null });
+    expect(getRun(db, item.routineRunId!)).toMatchObject({ status: "done", note: null });
+    expect(log).toHaveBeenCalledWith("Routine time limit failed.", error);
+  });
+
   it("waits until the due instant and queues a run exactly two minutes late", () => {
     expect(TICK_MS).toBe(30_000);
     expect(GRACE_MS).toBe(120_000);

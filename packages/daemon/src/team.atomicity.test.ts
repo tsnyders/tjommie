@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { Approval, type EventData, type EventName } from "@tjommie/protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getApproval } from "./approvals.ts";
-import { createBot, updateBot, type StoredBot } from "./bots.ts";
+import { createBot, deleteBot, updateBot, type StoredBot } from "./bots.ts";
 import { getMessage } from "./chat.ts";
 import { openDb, type Db } from "./db.ts";
 import { enqueue, getWorkItem, newChain, type WorkItem } from "./queue.ts";
@@ -31,6 +31,7 @@ function makeTeam(deliver: (work: WorkItem) => void = (work) => { delivered.push
       observe?.(event, data);
     },
     deliver,
+    stopItem: () => {},
     currentWork: (botId) => current.get(botId) ?? null,
     stateOf: () => "idle",
   });
@@ -88,6 +89,20 @@ function stateCounts(connection = db): Record<string, number> {
 }
 
 describe("Team routine transactions", () => {
+  it("caps pending proposals at five per bot and frees a slot when one is answered", () => {
+    const first = proposal();
+    for (let index = 1; index < 5; index++) propose();
+    const before = stateCounts();
+    const published = events.length;
+    expect(() => propose()).toThrow("You already have 5 routine proposals waiting for the person. Wait for them to answer before proposing another.");
+    expect(stateCounts()).toEqual(before);
+    expect(events).toHaveLength(published);
+    expect(call(researcher.id, "add_routine", { name: "Other bot", days: ["mon"], times: ["08:30"], prompt: "Check" })).toMatch(/^Proposed/);
+    team.answerRoutineProposal(first.id, "deny");
+    expect(propose()).toMatch(/^Proposed/);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM approvals WHERE bot_id = ? AND kind = 'routine' AND status = 'pending'").get(writer.id)).toEqual({ n: 5 });
+  });
+
   it("rolls back the proposal card when creating its approval fails", () => {
     const before = stateCounts();
     db.exec("CREATE TRIGGER reject_proposal BEFORE INSERT ON approvals BEGIN SELECT RAISE(ABORT, 'approval insert failed'); END");
@@ -175,6 +190,34 @@ describe("Team routine transactions", () => {
 });
 
 describe("Team request transactions", () => {
+  it("rolls back the exchange and handoffs when recording a failed turn cannot finish", () => {
+    chatTurn();
+    call(researcher.id, "message_bot", { bot: "Writer", message: "Please summarize." });
+    const request = delivered[0];
+    const exchange = getExchange(db, request.exchangeId!);
+    const handoffs = db.prepare("SELECT * FROM messages WHERE kind = 'handoff'").all();
+    events.length = 0;
+    db.exec("CREATE TRIGGER reject_failure_notice BEFORE INSERT ON messages WHEN NEW.kind = 'notice' BEGIN SELECT RAISE(ABORT, 'failure notice failed'); END");
+    expect(() => team.turnEnded(request, { outcome: "failed", text: null, textMessageId: null, error: "CLI exited" })).toThrow("failure notice failed");
+    expect(getExchange(db, request.exchangeId!)).toEqual(exchange);
+    expect(db.prepare("SELECT * FROM messages WHERE kind = 'handoff'").all()).toEqual(handoffs);
+    expect(events).toEqual([]);
+  });
+
+  it("rejects nested transactions that have an after-commit action", () => {
+    const handle = team.botDeleting(researcher.id);
+    deleteBot(db, researcher.id);
+    const prepare = db.prepare.bind(db);
+    vi.spyOn(db, "prepare").mockImplementation((sql) => {
+      if (sql.includes("INSERT INTO approvals")) team.botDeleted(handle);
+      return prepare(sql);
+    });
+    const before = stateCounts();
+    expect(propose).toThrow("An after-commit action cannot run inside another Team transaction.");
+    expect(stateCounts()).toEqual(before);
+    expect(events).toEqual([]);
+  });
+
   it("logs a broadcast failure and still delivers the committed request", () => {
     const work = chatTurn();
     const log = vi.spyOn(console, "error").mockImplementation(() => {});

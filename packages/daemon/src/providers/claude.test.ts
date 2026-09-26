@@ -1,8 +1,8 @@
-import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 
@@ -16,12 +16,17 @@ vi.mock("../cli.ts", async (importOriginal) => ({
   ...cliMocks,
 }));
 
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return { ...actual, spawnSync: vi.fn(actual.spawnSync) };
+});
+
 import { cliEnv, runCli } from "../cli.ts";
 import { ClaudeSession, claudeArgs, claudeMode } from "./claude.ts";
 import type { ProviderEvent, StartOptions } from "./types.ts";
 
 const base: StartOptions = {
-  cwd: "C:\\bots\\b1",
+  cwd: mkdtempSync(join(tmpdir(), "tjommie claude-")),
   extraDirs: [],
   model: "sonnet",
   instructions: "Be brief.",
@@ -31,6 +36,7 @@ const base: StartOptions = {
   env: {},
   mcpServers: [],
 };
+const files = { instructions: "instructions.txt", mcp: "mcp.json" };
 
 function fakeChild(): {
   child: ChildProcessWithoutNullStreams;
@@ -58,7 +64,7 @@ describe("claudeArgs", () => {
   });
 
   it("starts a headless stream-json session with approvals over stdio and no outside MCP servers", () => {
-    expect(claudeArgs(base)).toEqual([
+    expect(claudeArgs(base, files)).toEqual([
       "-p",
       "--input-format",
       "stream-json",
@@ -72,14 +78,14 @@ describe("claudeArgs", () => {
       "acceptEdits",
       "--model",
       "sonnet",
-      "--append-system-prompt",
-      "Be brief.",
+      "--append-system-prompt-file",
+      "instructions.txt",
       "--strict-mcp-config",
     ]);
   });
 
   it("adds extra folders, the session to resume, and saved rules last", () => {
-    const args = claudeArgs({ ...base, extraDirs: ["C:\\home"], resumeId: "abc", allowRules: ["Write", "Bash(npm test *)"] });
+    const args = claudeArgs({ ...base, extraDirs: ["C:\\home"], resumeId: "abc", allowRules: ["Write", "Bash(npm test *)"] }, files);
     expect(args.slice(-7)).toEqual(["--add-dir", "C:\\home", "--resume", "abc", "--allowedTools", "Write", "Bash(npm test *)"]);
   });
 
@@ -91,23 +97,39 @@ describe("claudeArgs", () => {
         { name: "tjommie", url: "http://127.0.0.1:47100/mcp", headers: { Authorization: "Bearer t0k" }, autoAllow: true },
         { name: "browser", command: "C:\\node.exe", args: ["cli.js", "--headless"], env: {}, autoAllow: false },
       ],
-    });
-    expect(JSON.parse(args[args.indexOf("--mcp-config") + 1])).toEqual({
-      mcpServers: {
-        tjommie: { type: "http", url: "http://127.0.0.1:47100/mcp", headers: { Authorization: "Bearer t0k" } },
-        browser: { type: "stdio", command: "C:\\node.exe", args: ["cli.js", "--headless"], env: {} },
-      },
-    });
+    }, files);
+    expect(args[args.indexOf("--mcp-config") + 1]).toBe(files.mcp);
+    expect(args.join(" ")).not.toContain("Bearer t0k");
     expect(args.slice(-3)).toEqual(["--allowedTools", "mcp__tjommie", "Write"]);
   });
 
   it("passes awkward instructions through process arguments unchanged (argument round trip)", async () => {
     const instructions = `Say "hi" & 'bye'\n100% ^caret <tag> | pipe naïve ✓ C:\\Users\\Thabo Mokoena`;
-    const args = claudeArgs({ ...base, instructions });
+    const args = claudeArgs({ ...base, instructions }, files);
     const script = join(mkdtempSync(join(tmpdir(), "tjommie args ñ-")), "print-args.js");
     writeFileSync(script, "process.stdout.write(JSON.stringify(process.argv.slice(2)))");
     const out = await runCli({ file: process.execPath, args: [script] }, args, cliEnv({}));
     expect(JSON.parse(out.stdout)).toEqual(args);
+  });
+});
+
+describe("ClaudeSession folder permissions", () => {
+  it.skipIf(process.platform !== "win32")("looks up the user SID once and applies an ACL to every new session folder", async () => {
+    vi.mocked(spawnSync).mockClear();
+    const children = [fakeChild(), fakeChild()];
+    const sessions = children.map(({ child }) => {
+      cliMocks.spawnCli.mockReturnValueOnce(child);
+      return new ClaudeSession({ file: "claude", args: [] }, base);
+    });
+    try {
+      for (const claude of sessions) await claude.start();
+      const commands = vi.mocked(spawnSync).mock.calls.map(([command]) => command);
+      expect(commands.filter((command) => command === "whoami")).toHaveLength(1);
+      expect(commands.filter((command) => command === "icacls")).toHaveLength(2);
+    } finally {
+      sessions.forEach((claude) => claude.close());
+      children.forEach(({ child }) => child.emit("exit", 0, null));
+    }
   });
 });
 
@@ -208,6 +230,52 @@ describe("ClaudeSession fallback kills", () => {
 });
 
 describe("ClaudeSession lifecycle", () => {
+  it("stores instructions and MCP config in private files and removes them when closing", async () => {
+    const { child } = fakeChild();
+    cliMocks.spawnCli.mockImplementationOnce((_cmd: unknown, args: string[]) => {
+      const promptFile = args[args.indexOf("--append-system-prompt-file") + 1];
+      expect(JSON.parse(readFileSync(join(dirname(promptFile), "owner.json"), "utf8"))).toEqual({ version: 1, ownerPid: process.pid, phase: "starting", childPid: null });
+      return child;
+    });
+    const instructions = `Say "hi" & 'bye'\n100% ^caret <tag> | pipe`;
+    const claude = new ClaudeSession({ file: "claude", args: [] }, { ...base, instructions, mcpServers: [{ name: "test", url: "http://127.0.0.1:1/mcp", headers: { Authorization: "Bearer test-only-value" }, autoAllow: true }] });
+    await claude.start();
+    const args = cliMocks.spawnCli.mock.lastCall![1] as string[];
+    const promptFile = args[args.indexOf("--append-system-prompt-file") + 1];
+    const mcpFile = args[args.indexOf("--mcp-config") + 1];
+    expect(readFileSync(promptFile, "utf8")).toBe(instructions);
+    expect(JSON.parse(readFileSync(mcpFile, "utf8"))).toMatchObject({ mcpServers: { test: { headers: { Authorization: "Bearer test-only-value" } } } });
+    expect(args.join(" ")).not.toContain(instructions);
+    expect(args.join(" ")).not.toContain("test-only-value");
+    expect(JSON.parse(readFileSync(join(dirname(promptFile), "owner.json"), "utf8"))).toEqual({ version: 1, ownerPid: process.pid, phase: "started", childPid: child.pid });
+    claude.close();
+    expect(existsSync(promptFile)).toBe(false);
+    expect(existsSync(mcpFile)).toBe(false);
+    child.emit("exit", 0, null);
+  });
+
+  it("keeps managing a live child if recording its PID fails", async () => {
+    const { child } = fakeChild();
+    let folder = "";
+    cliMocks.spawnCli.mockImplementationOnce((_cmd: unknown, args: string[]) => {
+      folder = dirname(args[args.indexOf("--append-system-prompt-file") + 1]);
+      mkdirSync(join(folder, "owner.json.tmp"));
+      return child;
+    });
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const claude = new ClaudeSession({ file: "claude", args: [] }, base);
+    try {
+      await expect(claude.start()).resolves.toBeUndefined();
+      expect(claude.pid()).toBe(child.pid);
+      expect(JSON.parse(readFileSync(join(folder, "owner.json"), "utf8"))).toMatchObject({ phase: "starting", childPid: null });
+      expect(logged).toHaveBeenCalledOnce();
+    } finally {
+      claude.close();
+      child.emit("exit", 0, null);
+      logged.mockRestore();
+    }
+    expect(existsSync(folder)).toBe(false);
+  });
   it("does not write after close and reports the intentional exit quietly", async () => {
     cliMocks.killTree.mockClear();
     cliMocks.spawnCli.mockReset();

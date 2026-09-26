@@ -143,18 +143,23 @@ export function createRoutine(db: Db, input: RoutineInput, nowMs = Date.now()): 
 }
 
 export function updateRoutine(db: Db, id: string, patch: RoutinePatch, nowMs = Date.now()): Routine {
-  const next = { ...getRoutine(db, id), ...patch };
+  const previous = getRoutine(db, id);
+  const next = { ...previous, ...patch };
+  next.days = [...new Set(next.days)].sort((a, b) => a - b);
+  next.times = [...new Set(next.times)].sort();
   db.prepare("UPDATE routines SET name = ?, prompt = ?, days = ?, times = ?, time_zone = ?, time_limit_minutes = ?, enabled = ? WHERE id = ?").run(
     next.name,
     next.prompt,
-    JSON.stringify([...new Set(next.days)].sort((a, b) => a - b)),
-    JSON.stringify([...new Set(next.times)].sort()),
+    JSON.stringify(next.days),
+    JSON.stringify(next.times),
     checkTimeZone(next.timeZone),
     next.timeLimitMinutes,
     next.enabled ? 1 : 0,
     id,
   );
-  setNextRun(db, id, nextRunIso(getRoutine(db, id), nowMs));
+  if (next.enabled !== previous.enabled || next.timeZone !== previous.timeZone || JSON.stringify(next.days) !== JSON.stringify(previous.days) || JSON.stringify(next.times) !== JSON.stringify(previous.times)) {
+    setNextRun(db, id, nextRunIso(next, nowMs));
+  }
   return getRoutine(db, id);
 }
 

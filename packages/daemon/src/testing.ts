@@ -10,7 +10,8 @@ import type { Account } from "./setup.ts";
 // A fresh folder whose path has a space and an accented letter, like many Windows profile paths.
 export const tempRoot = (): string => mkdtempSync(join(tmpdir(), "tjommie test ñ-"));
 
-// The real Tjommie account folders, signed in once with `npm run signin -w @tjommie/daemon`.
+// Use the real Tjommie accounts so CLI credential refreshes stay where the daemon reads them.
+// Tests never read or copy credential contents. Databases, bots and browser profiles stay disposable.
 export const realAccountsDir = (): string => dataPaths().accounts;
 
 export const realAccount = (provider: Provider): Account => ({

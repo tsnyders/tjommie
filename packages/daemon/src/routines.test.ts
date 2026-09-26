@@ -129,6 +129,17 @@ describe("routines store", () => {
     expect(() => createRoutine(db, { ...input(), timeZone: "Mars/Olympus" })).toThrow(/time zone/);
   });
 
+  it.each([
+    { name: "Renamed" },
+    { prompt: "Updated instructions" },
+    { timeLimitMinutes: 15 },
+    { days: [5, 1, 5], times: ["12:47", "08:48"], timeZone: "Africa/Johannesburg", enabled: true },
+  ])("preserves an already due occurrence when the schedule has not changed: %j", (patch) => {
+    const routine = createRoutine(db, input(), at("2026-09-25T07:00:00Z"));
+    const updated = updateRoutine(db, routine.id, patch, at("2026-09-25T10:47:15Z"));
+    expect(updated.nextRunAt).toBe(routine.nextRunAt);
+  });
+
   it("keeps the newest 20 runs", () => {
     const routine = createRoutine(db, input());
     for (let day = 1; day <= 25; day++) addRun(db, routine.id, `2026-08-${String(day).padStart(2, "0")}T06:48:00.000Z`, "done");

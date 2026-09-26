@@ -1,11 +1,14 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import type { StoredBot } from "./bots.ts";
+import { killTree } from "./cli.ts";
 import type { McpServer } from "./providers/types.ts";
 
 const require = createRequire(import.meta.url);
+type OwnedBrowser = { child: ChildProcess; exited: Promise<void>; closing: boolean };
+const ownedBrowsers = new Map<string, Set<OwnedBrowser>>();
 
 const chromePaths = (env: NodeJS.ProcessEnv) => [
   join(env.ProgramFiles ?? "C:\\Program Files", "Google", "Chrome", "Application", "chrome.exe"),
@@ -54,10 +57,33 @@ export function showBrowser(bot: StoredBot, env: NodeJS.ProcessEnv = process.env
       detached: true,
       stdio: "ignore",
     });
+    const exit = Promise.withResolvers<void>();
+    const owned: OwnedBrowser = { child, exited: exit.promise, closing: false };
+    const browsers = ownedBrowsers.get(bot.id) ?? new Set<OwnedBrowser>();
+    browsers.add(owned);
+    ownedBrowsers.set(bot.id, browsers);
+    const finished = (): void => {
+      browsers.delete(owned);
+      if (browsers.size === 0 && ownedBrowsers.get(bot.id) === browsers) ownedBrowsers.delete(bot.id);
+      exit.resolve();
+    };
+    child.once("close", finished);
+    child.once("error", finished);
     child.once("error", reject);
     child.once("spawn", () => {
+      if (owned.closing) killTree(child.pid);
       child.unref();
       resolve();
     });
   });
+}
+
+// Only windows started by this daemon are ours to close. A CLI's MCP browser exits with its process tree.
+export async function closeBrowser(botId: string): Promise<void> {
+  const browsers = [...(ownedBrowsers.get(botId) ?? [])];
+  for (const browser of browsers) {
+    browser.closing = true;
+    killTree(browser.child.pid);
+  }
+  await Promise.all(browsers.map((browser) => browser.exited));
 }

@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { cliEnv, openUrl, resolveCli, runCli } from "./cli.ts";
+import { cliEnv, openUrl, resolveCli, runCli, spawnCli } from "./cli.ts";
 
 const dir = () => mkdtempSync(join(tmpdir(), "tjommie cli ñ-"));
 
@@ -28,6 +28,11 @@ describe("resolveCli", () => {
 });
 
 describe("cliEnv", () => {
+  it("strips endpoint overrides, secret suffixes and cloud variables while preserving ordinary CLI environment", () => {
+    const denied = ["ANTHROPIC_BASE_URL", "ANTHROPIC_CUSTOM_HEADERS", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "OPENAI_BASE_URL", "OPENAI_API_BASE", "gh_token", "NPM_SECRET", "DB_PASSWORD", "DB_PASSWD", "CREDENTIAL", "CREDENTIALS", "PRIVATE_KEY", "API_KEY", "ACCESS_KEY", "THING_KEY", "AWS_REGION", "azure_location", "GOOGLE_PROJECT", "GCP_PROJECT"];
+    const base = { Path: "bin", TEMP: "tmp", USERPROFILE: "profile", KEEP: "1", ...Object.fromEntries(denied.map((name) => [name, "discard"])) };
+    expect(cliEnv({ CODEX_HOME: "account" }, base)).toEqual({ Path: "bin", TEMP: "tmp", USERPROFILE: "profile", KEEP: "1", CODEX_HOME: "account" });
+  });
   it("strips inherited keys and config folders case-insensitively, then adds extras", () => {
     const env = cliEnv({ CLAUDE_CONFIG_DIR: "C:\\acct" }, { Path: "x", anthropic_api_key: "sk", CODEX_HOME: "h", ClaudeCode: "1", KEEP: "1" });
     expect(env).toEqual({ Path: "x", KEEP: "1", CLAUDE_CONFIG_DIR: "C:\\acct" });
@@ -35,6 +40,20 @@ describe("cliEnv", () => {
 });
 
 describe("runCli", () => {
+  it("runs short commands and session commands as Node when hosted by Electron", async () => {
+    Object.defineProperty(process.versions, "electron", { value: "44.4.5", configurable: true });
+    try {
+      const args = ["-e", "process.stdout.write(process.env.ELECTRON_RUN_AS_NODE ?? 'missing')"];
+      expect((await runCli({ file: process.execPath, args: [] }, args, {})).stdout).toBe("1");
+      const child = spawnCli({ file: process.execPath, args: [] }, args, { cwd: process.cwd(), env: {} });
+      let output = "";
+      child.stdout.on("data", (chunk: Buffer) => { output += chunk.toString(); });
+      await new Promise<void>((resolve) => child.on("close", () => resolve()));
+      expect(output).toBe("1");
+    } finally {
+      Reflect.deleteProperty(process.versions, "electron");
+    }
+  });
   it("captures stdout and the exit code", async () => {
     const out = await runCli({ file: process.execPath, args: [] }, ["-e", "console.log('hi'); process.exit(3)"], cliEnv({}));
     expect(out.code).toBe(3);

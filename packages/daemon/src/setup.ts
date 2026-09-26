@@ -1,9 +1,10 @@
-import { mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import type { ModelInfo, Provider, ProviderSetup } from "@tjommie/protocol";
 import { cliEnv, openConsole, openUrl, resolveCli, runCli } from "./cli.ts";
 import { nowIso, type Db } from "./db.ts";
 import { startCodexServer } from "./providers/codex-rpc.ts";
+import { sweepClaudeSessionFiles } from "./providers/claude-files.ts";
 import { RpcError } from "./server.ts";
 
 export type Account = { id: string; provider: Provider; label: string; folder: string };
@@ -19,11 +20,15 @@ export const CLAUDE_MODELS: ModelInfo[] = [
 
 // Phase 1 has one Tjommie-owned account per provider. Its folder is the CLI's config home, so bots never
 // load the person's own CLI setup (hooks, plugins, skills, memories, MCP servers).
-export function ensureAccounts(db: Db, accountsDir: string): Account[] {
+export function ensureAccounts(db: Db, accountsDir: string, dataRoot = dirname(accountsDir)): Account[] {
   for (const provider of ["claude", "codex"] as const) {
     const id = `${provider}-main`;
     const folder = join(accountsDir, id);
     mkdirSync(folder, { recursive: true });
+    if (provider === "claude") {
+      sweepClaudeSessionFiles(folder);
+      hardenClaudeSettings(folder, dataRoot);
+    }
     db.prepare("INSERT OR IGNORE INTO accounts (id, provider, label, kind, folder, created_at) VALUES (?, ?, ?, 'subscription', ?, ?)").run(
       id,
       provider,
@@ -33,6 +38,35 @@ export function ensureAccounts(db: Db, accountsDir: string): Account[] {
     );
   }
   return db.prepare("SELECT id, provider, label, folder FROM accounts ORDER BY created_at, id").all() as Account[];
+}
+
+function hardenClaudeSettings(folder: string, dataRoot: string): void {
+  const file = join(folder, "settings.json");
+  const parsed = readClaudeSettings(file);
+  if (!parsed) return;
+  const { settings, permissions, existing } = parsed;
+  // Claude matches absolute Windows paths as POSIX drive paths, prefixed with //.
+  const root = resolve(dataRoot).replace(/\\/g, "/").replace(/^([A-Za-z]):/, (_match, drive: string) => `/${drive.toLowerCase()}`);
+  const deny = [...new Set([...existing, "Edit(**/.claude/**)", "Write(**/.claude/**)", `Read(/${root}/accounts/**)`, `Read(/${root}/daemon-token)`, `Read(/${root}/tjommie.db*)`])];
+  if (existing.length === deny.length && existing.every((rule, index) => rule === deny[index])) return;
+  writeFileSync(file, `${JSON.stringify({ ...settings, permissions: { ...permissions, deny } }, null, 2)}\n`, { mode: 0o600 });
+}
+
+function readClaudeSettings(file: string): { settings: Record<string, unknown>; permissions: Record<string, unknown>; existing: string[] } | null {
+  const contents = existsSync(file) ? readFileSync(file, "utf8") : "{}";
+  try {
+    const settings: unknown = JSON.parse(contents);
+    if (!isRecord(settings) || Array.isArray(settings)) throw new Error("Expected a settings object");
+    const permissions = settings.permissions === undefined ? {} : settings.permissions;
+    if (!isRecord(permissions) || Array.isArray(permissions)) throw new Error("Expected a permissions object");
+    const existing = permissions.deny === undefined ? [] : permissions.deny;
+    if (!Array.isArray(existing) || !existing.every((rule): rule is string => typeof rule === "string")) throw new Error("Expected a list of deny rules");
+    return { settings, permissions, existing };
+  } catch {
+    // Do not include a JSON parser error: it can contain values from the settings file.
+    console.error("Could not read Claude's settings. The existing file was left unchanged.", file);
+    return null;
+  }
 }
 
 export function accountFor(db: Db, provider: Provider): Account {

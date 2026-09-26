@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { BotInput, EventData, EventName, Message } from "@tjommie/protocol";
 import { afterEach, describe, expect, it } from "vitest";
@@ -6,6 +6,7 @@ import { createBot, getStoredBot } from "./bots.ts";
 import { killTree } from "./cli.ts";
 import { openDb, type Db } from "./db.ts";
 import { McpTokens } from "./mcp.ts";
+import type { ProviderEvent } from "./providers/types.ts";
 import type { WorkItem } from "./queue.ts";
 import { Runner, cliSessionFactory, type RunnerHooks, type TurnResult } from "./runner.ts";
 import type { Broadcast } from "./server.ts";
@@ -25,6 +26,7 @@ afterEach(() => {
 function harness(root = tempRoot(), db: Db = openDb(join(root, "t.db")), hooks: RunnerHooks = {}) {
   ensureAccounts(db, realAccountsDir());
   const events: SentEvent[] = [];
+  const providerEvents: ProviderEvent[] = [];
   let sessions = 0;
   const broadcast: Broadcast = (event, data) => events.push({ event, data } as SentEvent);
   const runner = new Runner({
@@ -33,7 +35,9 @@ function harness(root = tempRoot(), db: Db = openDb(join(root, "t.db")), hooks: 
     isSignedIn: () => true,
     createSession: (bot, options) => {
       sessions++;
-      return cliSessionFactory(bot, options);
+      const session = cliSessionFactory(bot, options);
+      session.onEvent((event) => providerEvents.push(event));
+      return session;
     },
     hooks,
   });
@@ -44,6 +48,7 @@ function harness(root = tempRoot(), db: Db = openDb(join(root, "t.db")), hooks: 
     db,
     runner,
     events,
+    providerEvents,
     sessions: () => sessions,
     state: (botId: string) => runner.toBot(getStoredBot(db, botId)).state,
     replies: (botId: string) =>
@@ -102,6 +107,33 @@ describe("Runner against the real CLIs", () => {
     h.runner.submit(bot.id, "Reply with exactly: PONG", []);
     await waitFor(() => h.replies(bot.id).some((reply) => reply.includes("PONG")));
     await waitFor(() => h.state(bot.id) === "idle");
+  });
+
+  it("stops a Codex long command and stays idle for five seconds after interrupt", async () => {
+    const h = harness();
+    const model = (await listModels(h.db, "codex")).find((item) => item.isDefault)?.id;
+    if (!model) throw new Error("Codex did not report a default model");
+    const bot = newBot(h, { provider: "codex", model, autonomy: "full" });
+    const started = join(bot.homeFolder, "stop-started.txt");
+    const finished = join(bot.homeFolder, "stop-finished.txt");
+    const command = `Set-Content -LiteralPath '${started.replaceAll("'", "''")}' -Value started; Start-Sleep -Seconds 60; Set-Content -LiteralPath '${finished.replaceAll("'", "''")}' -Value finished`;
+    const message = h.runner.submit(bot.id, `Run this exact PowerShell command in the foreground using your shell tool. Wait for it to finish, then say DONE. Command: ${command}`, []);
+    await waitFor(() => existsSync(started));
+    expect(h.state(bot.id)).toBe("working");
+    expect(h.providerEvents.some((event) => event.type === "tool")).toBe(true);
+    const interruptFrom = h.providerEvents.length;
+    await h.runner.stop(bot.id);
+    await waitFor(() => h.state(bot.id) === "idle", 20_000);
+    const idleFrom = h.events.length;
+    expect(h.db.prepare("SELECT status FROM work_items WHERE message_id = ?").get(message.id)).toEqual({ status: "interrupted" });
+    await new Promise<void>((resolve) => setTimeout(resolve, 5_000));
+    expect(h.state(bot.id)).toBe("idle");
+    expect(h.events.slice(idleFrom).some((event) => event.event === "bot.updated" && event.data.id === bot.id && event.data.state === "working")).toBe(false);
+    expect(existsSync(finished)).toBe(false);
+    const eventOrder = h.providerEvents.slice(interruptFrom).map((event) => event.type);
+    const evidence = join(h.root, "codex-stop-event-order.json");
+    writeFileSync(evidence, JSON.stringify({ eventOrder, stableIdleMs: 5_000, itemStatus: "interrupted" }, null, 2));
+    console.log("Codex provider events after turn/interrupt:", eventOrder.join(", "), "Evidence:", evidence);
   });
 
   it("two quick messages to an idle bot start one session and reach it in order (double send)", async () => {

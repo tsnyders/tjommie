@@ -131,6 +131,10 @@ export async function startCodexServer(
   createInterface({ input: child.stdout, crlfDelay: Infinity }).on("line", (line) => rpc.handleLine(line));
   child.stderr.resume(); // Codex logs to stderr; drain it so a full pipe can never block the process
   let exited = false;
+  const exitPromise = new Promise<void>((resolve) => {
+    child.once("exit", () => resolve());
+    child.once("error", () => resolve());
+  });
   let killTimer: NodeJS.Timeout | undefined;
   child.on("exit", () => {
     exited = true;
@@ -161,6 +165,7 @@ export async function startCodexServer(
     rpc.notify("initialized");
   } catch (error) {
     close();
+    await exitPromise;
     throw error;
   }
   return { rpc, child, close };

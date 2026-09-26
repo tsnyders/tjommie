@@ -39,9 +39,10 @@ export interface ProviderSession {
   start(): Promise<void>;
   send(text: string): Promise<void>;
   steer(text: string): Promise<boolean>; // false: couldn't add it to the current turn, so the caller queues it
-  interrupt(): Promise<void>;
+  interrupt(): Promise<boolean | void>; // true: the provider handled this Stop, including a pending send
   answer(approvalId: string, answer: ApprovalAnswer): void;
   close(): void;
+  waitForExit?(): Promise<void>; // resolves after the underlying process has exited, including a pending start
   pid(): number | undefined;
   onEvent(listener: (event: ProviderEvent) => void): void;
 }

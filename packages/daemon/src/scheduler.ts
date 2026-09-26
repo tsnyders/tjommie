@@ -25,12 +25,12 @@ export class Scheduler {
   #db: Db;
   #broadcast: Broadcast;
   #deliver: (work: NewWork) => void;
-  #stopItem: (itemId: string, notice: string) => void;
+  #stopItem: (itemId: string, notice: string) => void | Promise<void>;
   #timer: NodeJS.Timeout | null = null;
   #limits = new Map<string, NodeJS.Timeout>(); // run id -> its time limit
   #timedOut = new Set<string>();
 
-  constructor(deps: { db: Db; broadcast: Broadcast; deliver: (work: NewWork) => void; stopItem: (itemId: string, notice: string) => void }) {
+  constructor(deps: { db: Db; broadcast: Broadcast; deliver: (work: NewWork) => void; stopItem: (itemId: string, notice: string) => void | Promise<void> }) {
     this.#db = deps.db;
     this.#broadcast = deps.broadcast;
     this.#deliver = deps.deliver;
@@ -93,13 +93,17 @@ export class Scheduler {
     const notice = `Stopped at the time limit (${duration(routine.timeLimitMinutes)}).`;
     const timer = setTimeout(() => {
       this.#limits.delete(id);
+      const failed = (error: unknown) => {
+        this.#timedOut.delete(id);
+        console.error("Routine time limit failed.", error);
+      };
       try {
         const current = getRun(this.#db, id);
         if (!current || current.status !== "running") return; // deleted or already finished
         this.#timedOut.add(id);
-        this.#stopItem(item.id, notice);
+        void Promise.resolve(this.#stopItem(item.id, notice)).catch(failed);
       } catch (error) {
-        console.error("Routine time limit failed.", error);
+        failed(error);
       }
     }, routine.timeLimitMinutes * 60_000);
     timer.unref();

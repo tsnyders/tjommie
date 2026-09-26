@@ -5,13 +5,16 @@ import { afterAll, beforeAll, expect, it } from "vitest";
 import { z } from "zod";
 import { connect, type Client } from "./client.ts";
 import { startDaemon, type Daemon } from "./daemon.ts";
+import { openDb } from "./db.ts";
+import { dataPaths } from "./paths.ts";
 import { realAccountsDir, tempRoot, waitFor } from "./testing.ts";
 
 process.env.TJOMMIE_BROWSER_HEADLESS = "1";
 
 let daemon: Daemon | undefined;
+const root = tempRoot();
 beforeAll(async () => {
-  daemon = await startDaemon({ root: tempRoot(), port: 0, accountsDir: realAccountsDir() });
+  daemon = await startDaemon({ root, port: 0, accountsDir: realAccountsDir() });
 });
 afterAll(async () => {
   await daemon?.close();
@@ -84,6 +87,26 @@ it("creates a bot and chats with it over the WebSocket API", async () => {
     expect(history.map((message) => message.author)).toEqual(["you", bot.id]);
     expect(hasMore).toBe(false);
     await expect(client.call("chat.send", { botId: bot.id, text: "   " })).rejects.toThrow(/bad_params/);
+  });
+});
+
+it("deletes a Claude bot immediately after a turn and removes its folder and rows", async () => {
+  await withClient(async (client) => {
+    const bot = await claudeBot(client, "Delete after turn");
+    await client.call("chat.send", { botId: bot.id, text: "Reply with exactly: DELETE-READY" });
+    await said(client, bot.id, bot.id, "DELETE-READY");
+    await client.call("bots.delete", { id: bot.id });
+    expect(existsSync(bot.homeFolder)).toBe(false);
+    expect((await client.call("bots.list", {})).some((row) => row.id === bot.id)).toBe(false);
+    const db = openDb(dataPaths(root).db);
+    try {
+      for (const table of ["bots", "conversations", "messages", "work_items", "sessions"]) {
+        const column = table === "bots" ? "id" : table === "messages" ? "conversation_id" : "bot_id";
+        expect(db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE ${column} = ?`).get(bot.id)).toEqual({ n: 0 });
+      }
+    } finally {
+      db.close();
+    }
   });
 });
 

@@ -3,8 +3,9 @@ import { basename, join } from "node:path";
 import { ApprovalData, type ActivityData, type ActivityItem, type Approval, type ApprovalDecision, type Bot, type BotState, type ErrorData, type Message, type UserMessageData } from "@tjommie/protocol";
 import { allowRules, createApproval, expirePendingApprovals, resolveApproval } from "./approvals.ts";
 import { botPrompt, getStoredBot, listStoredBots, setLimitedUntil, type StoredBot } from "./bots.ts";
+import { closeBrowser } from "./browser.ts";
 import { addMessage, buildRecap, getMessage, history, updateMessage } from "./chat.ts";
-import { resolveCli } from "./cli.ts";
+import { killTree, resolveCli } from "./cli.ts";
 import { newId, nowIso, transaction, type Db } from "./db.ts";
 import { ClaudeSession } from "./providers/claude.ts";
 import { CodexSession } from "./providers/codex.ts";
@@ -38,7 +39,7 @@ const IDLE_SHUTDOWN_MS = 10 * 60_000;
 const RECAP_MESSAGES = 20;
 const UNKNOWN_RESET_MS = 60 * 60_000;
 const MAX_TIMER_MS = 2 ** 31 - 1;
-const TURN_EVENTS = new Set<ProviderEvent["type"]>(["text", "text_end", "tool", "tool_done", "approval"]);
+const TURN_EVENTS = new Set<ProviderEvent["type"]>(["text", "tool", "approval"]);
 const RESTARTED = "Tjommie restarted while this was running.";
 
 function retryData(item: WorkItem): ErrorData | null {
@@ -61,12 +62,23 @@ type Live = {
   activity: { id: string; items: ActivityItem[] } | null;
   stopRequested: boolean;
   stopNotice: string | null;
+  stopPending: Promise<boolean | void> | null;
   limitHit: boolean;
   lastResetsAt: string | null;
   reload: boolean;
   approvals: Map<string, string>; // Tjommie approval id -> the provider's own request id
   idleTimer: NodeJS.Timeout | null;
   limitTimer: NodeJS.Timeout | null;
+};
+
+type Deleting = {
+  live: Live;
+  items: WorkItem[];
+  pid: number | undefined;
+  processExited: boolean;
+  closed: Promise<void>;
+  settled: boolean;
+  restoreWhenClosed: boolean;
 };
 
 export function botStateOf(
@@ -110,7 +122,7 @@ export class Runner {
   #createSession: SessionFactory;
   #hooks: RunnerHooks;
   #live = new Map<string, Live>();
-  #deleting = new Map<string, { live: Live; items: WorkItem[] }>();
+  #deleting = new Map<string, Deleting>();
   #recovered = false;
   #ready = true;
 
@@ -197,6 +209,11 @@ export class Runner {
   // Start or steer new work, or wake work already queued atomically with its exchange.
   deliver(work: NewWork | WorkItem): WorkItem {
     const item = "id" in work ? getWorkItem(this.#db, work.id) : enqueue(this.#db, work);
+    const deleting = this.#deleting.get(item.botId);
+    if (deleting) {
+      if (!deleting.items.some((captured) => captured.id === item.id)) deleting.items.push(item);
+      return item;
+    }
     const live = this.#liveFor(item.botId);
     if (!live.busy) this.pump(item.botId);
     else if (live.sent) {
@@ -229,16 +246,29 @@ export class Runner {
   async stop(botId: string): Promise<void> {
     const live = this.#live.get(botId);
     if (!live?.busy) return;
+    const session = live.session;
+    const item = live.item;
     live.stopRequested = true;
-    await live.session?.interrupt();
+    try {
+      const pending = session?.interrupt() ?? Promise.resolve();
+      if (this.#live.get(botId) === live && live.session === session && live.item === item && live.busy) live.stopPending = pending;
+      await pending;
+    } catch (error) {
+      if (this.#live.get(botId) === live && live.session === session && live.item === item && live.busy) {
+        live.stopRequested = false;
+        live.stopNotice = null;
+      }
+      throw error;
+    }
   }
 
   // A stale routine timer must never interrupt a later item on the same bot.
-  stopItem(itemId: string, notice: string): void {
+  async stopItem(itemId: string, notice: string): Promise<void> {
     for (const [botId, live] of this.#live) {
       if (!live.busy || live.item?.id !== itemId) continue;
       live.stopNotice = notice;
-      void this.stop(botId).catch((error: unknown) => console.error("Tjommie: stopping a work item failed", error));
+      await this.stop(botId);
+      return;
     }
   }
 
@@ -265,21 +295,34 @@ export class Runner {
     else this.#closeSession(botId, live);
   }
 
-  // Release the CLI's folder locks without changing persisted work. pump restores it if deletion fails.
-  closeForDeletion(botId: string): void {
-    if (this.#deleting.has(botId)) return;
+  // Release folder locks without changing persisted work; only explicit cancellation may resume it.
+  closeForDeletion(botId: string): Promise<void> {
+    const existing = this.#deleting.get(botId);
+    if (existing) {
+      if (existing.restoreWhenClosed) throw new RpcError("busy", "The bot is still closing. Try again shortly.");
+      return existing.closed;
+    }
     const live = this.#liveFor(botId);
     const rows = this.#db.prepare("SELECT id FROM work_items WHERE bot_id = ? AND status IN ('queued', 'running') ORDER BY created_at, rowid").all(botId) as { id: string }[];
     const items = rows.map((row) => getWorkItem(this.#db, row.id));
     if (live.steeringItem && !items.some((item) => item.id === live.steeringItem?.id)) items.push(live.steeringItem);
-    this.#deleting.set(botId, { live, items });
+    const session = live.session;
+    const detached: Deleting = { live, items, pid: session?.pid(), processExited: false, closed: Promise.resolve(), settled: false, restoreWhenClosed: false };
+    this.#deleting.set(botId, detached);
     this.#live.delete(botId);
     this.#releaseSession(botId, live);
+    const exited = Promise.resolve(session?.waitForExit?.()).then(() => { detached.processExited = true; });
+    detached.closed = Promise.all([exited, closeBrowser(botId)]).then(() => {
+      detached.settled = true;
+    });
+    return detached.closed;
   }
 
   // Call only after deletion succeeds. Captured work survives the database cascade long enough for hooks.
   forget(botId: string): void {
-    if (!this.#deleting.has(botId) && this.#live.has(botId)) this.closeForDeletion(botId);
+    if (!this.#deleting.has(botId) && this.#live.has(botId)) {
+      void this.closeForDeletion(botId).catch((error: unknown) => console.error("Tjommie: closing a deleted bot failed", error));
+    }
     const detached = this.#deleting.get(botId);
     if (!detached) return;
     this.#deleting.delete(botId);
@@ -288,39 +331,53 @@ export class Runner {
     }
   }
 
-  pump(botId: string): void {
-    if (!this.#ready) return;
+  cancelDeletion(botId: string): void {
     const detached = this.#deleting.get(botId);
-    if (detached) {
-      this.#deleting.delete(botId);
-      // Use a new object so pending callbacks from the closed session cannot change resumed work.
-      this.#live.set(botId, { ...detached.live, session: null, sent: false, steering: false, steeringItem: null, idleTimer: null, limitTimer: null });
-      if (detached.live.steeringItem) setStatus(this.#db, detached.live.steeringItem.id, "queued");
+    if (!detached) return;
+    if (!detached.settled) {
+      if (!detached.restoreWhenClosed) {
+        detached.restoreWhenClosed = true;
+        void detached.closed.then(() => {
+          if (this.#deleting.get(botId) === detached) this.cancelDeletion(botId);
+        }).catch((error: unknown) => console.error("Tjommie: restoring a bot after deletion failed", error));
+      }
+      return;
     }
+    this.#deleting.delete(botId);
+    this.#flushText(detached.live, "interrupted");
+    this.#closeActivity(detached.live);
+    // Use a new object so pending callbacks from the closed session cannot change resumed work.
+    const live: Live = { ...detached.live, session: null, sent: false, steering: false, steeringItem: null,
+      text: null, activity: null, lastText: null, stopPending: null, idleTimer: null, limitTimer: null };
+    this.#live.set(botId, live);
+    if (detached.live.steeringItem) setStatus(this.#db, detached.live.steeringItem.id, "queued");
+    const bot = getStoredBot(this.#db, botId);
+    // These cards refer to the closed provider session, so cannot be answered by its replacement.
+    this.#expireApprovals(live);
+    if (bot.limitedUntil) this.#armLimitTimer(botId, bot.limitedUntil);
+    if (live.busy && live.stopRequested) {
+      this.#finishTurn(botId, false, null);
+      return;
+    }
+    if (live.busy && live.item) {
+      // Keep the same work and its routine timer after a failed folder removal.
+      this.#launchTurn(bot, live.item, live);
+      return;
+    }
+    live.busy = false;
+    this.pump(botId);
+  }
+
+  pump(botId: string): void {
+    if (!this.#ready || this.#deleting.has(botId)) return;
     const live = this.#liveFor(botId);
-    if (live.busy && !detached) return;
+    if (live.busy) return;
     let bot: StoredBot;
     try {
       bot = getStoredBot(this.#db, botId);
     } catch (error) {
       if (!(error instanceof RpcError && error.code === "not_found")) console.error("Tjommie: loading a bot failed", error);
       return;
-    }
-    if (detached) {
-      // These cards refer to the closed provider session, so cannot be answered by its replacement.
-      for (const approvalId of live.approvals.keys()) this.#showApprovalStatus(resolveApproval(this.#db, approvalId, "deny"));
-      live.approvals.clear();
-      if (bot.limitedUntil) this.#armLimitTimer(botId, bot.limitedUntil);
-      if (live.busy && live.item) {
-        // Keep the same work and its routine timer after a failed folder removal.
-        this.#launchTurn(bot, live.item, live);
-        return;
-      }
-      if (live.busy) {
-        this.#flushText(live, "interrupted");
-        this.#closeActivity(live);
-        live.busy = false;
-      }
     }
     // A routine proposal changes the displayed state, but does not block work.
     if (!this.#isSignedIn(bot.provider) || bot.paused || (bot.limitedUntil !== null && bot.limitedUntil > nowIso()) || live.approvals.size > 0 || live.busy) {
@@ -338,6 +395,7 @@ export class Runner {
     live.item = item;
     live.stopRequested = false;
     live.stopNotice = null;
+    live.stopPending = null;
     live.limitHit = false;
     live.lastText = null;
     if (live.idleTimer) {
@@ -359,8 +417,14 @@ export class Runner {
     this.#ready = false;
     const live = [...this.#live];
     this.#live.clear();
+    for (const deleting of this.#deleting.values()) {
+      if (deleting.live.busy && !deleting.processExited) killTree(deleting.pid);
+    }
     this.#deleting.clear();
-    for (const [botId, state] of live) this.#releaseSession(botId, state);
+    for (const [botId, state] of live) {
+      if (state.busy) killTree(state.session?.pid());
+      this.#releaseSession(botId, state);
+    }
   }
 
   #liveFor(botId: string): Live {
@@ -380,6 +444,7 @@ export class Runner {
         activity: null,
         stopRequested: false,
         stopNotice: null,
+        stopPending: null,
         limitHit: false,
         lastResetsAt: null,
         reload: false,
@@ -459,7 +524,11 @@ export class Runner {
         this.#safely(() => this.#hooks.turnStarted?.(item)); // this retry starts directly, without pump
         return this.#startTurn(bot, item);
       }
-      if (!live.busy || live.item?.id !== item.id || live.session !== created) return;
+      if (live.session !== created) {
+        created.close();
+        return;
+      }
+      if (!live.busy || live.item?.id !== item.id) return;
       if (live.stopRequested) {
         this.#finishTurn(bot.id, false, null);
         return;
@@ -479,6 +548,20 @@ export class Runner {
     }
     if (!live.busy || live.item?.id !== item.id || live.session !== session) return;
     live.sent = true;
+    if (live.stopRequested) {
+      let handled = false;
+      if (live.stopPending) {
+        try {
+          handled = await live.stopPending === true;
+        } catch {
+          // stop() reports the rejection and clears Stop. The provider still owns this turn's outcome.
+          return;
+        }
+      }
+      if (this.#live.get(bot.id) !== live || !live.busy || live.item?.id !== item.id || live.session !== session) return;
+      if (live.stopRequested && !handled) await this.stop(bot.id);
+      return;
+    }
     await this.#steerQueued(bot.id); // anything sent while the turn was starting goes in now, in order
   }
 
@@ -671,6 +754,17 @@ export class Runner {
     this.#broadcast("approval.resolved", approval);
   }
 
+  #expireApprovals(live: Live): void {
+    for (const approvalId of live.approvals.keys()) {
+      try {
+        this.#showApprovalStatus(resolveApproval(this.#db, approvalId, "deny"));
+      } catch (error) {
+        if (!(error instanceof RpcError && error.code === "already_answered")) throw error;
+      }
+    }
+    live.approvals.clear();
+  }
+
   #recordUsage(botId: string, event: Extract<ProviderEvent, { type: "usage" }>): void {
     const bot = getStoredBot(this.#db, botId);
     const accountId = accountFor(this.#db, bot.provider).id;
@@ -747,16 +841,14 @@ export class Runner {
       if (outcome === "interrupted") this.#notice(conversationId, "notice", live.stopNotice ?? "Stopped.", null);
       if (outcome === "failed") this.#notice(conversationId, "error", error ?? "Something went wrong.", retryData(item));
     }
-    for (const approvalId of live.approvals.keys()) {
-      this.#showApprovalStatus(resolveApproval(this.#db, approvalId, "deny")); // the turn that asked is over
-    }
-    live.approvals.clear();
+    this.#expireApprovals(live); // the turn that asked is over
     const result: TurnResult = { outcome, text: live.lastText?.body ?? null, textMessageId: live.lastText?.id ?? null, error };
     live.busy = false;
     live.sent = false;
     live.item = null;
     live.stopRequested = false;
     live.stopNotice = null;
+    live.stopPending = null;
     live.limitHit = false;
     live.lastText = null;
     if (live.reload) {
