@@ -66,6 +66,16 @@ type Live = {
   limitTimer: NodeJS.Timeout | null;
 };
 
+type Deleting = {
+  live: Live;
+  items: WorkItem[];
+  pid: number | undefined;
+  processExited: boolean;
+  closed: Promise<void>;
+  settled: boolean;
+  restoreWhenClosed: boolean;
+};
+
 export function botStateOf(
   state: { signedIn: boolean; paused: boolean; limitedUntil: string | null; waiting: boolean; busy: boolean },
   now: string,
@@ -107,7 +117,7 @@ export class Runner {
   #createSession: SessionFactory;
   #hooks: RunnerHooks;
   #live = new Map<string, Live>();
-  #deleting = new Map<string, { live: Live; session: ProviderSession | null; items: WorkItem[]; closed: Promise<void>; settled: boolean }>();
+  #deleting = new Map<string, Deleting>();
   #recovered = false;
   #ready = true;
 
@@ -266,17 +276,21 @@ export class Runner {
   // Release folder locks without changing persisted work; only explicit cancellation may resume it.
   closeForDeletion(botId: string): Promise<void> {
     const existing = this.#deleting.get(botId);
-    if (existing) return existing.closed;
+    if (existing) {
+      if (existing.restoreWhenClosed) throw new RpcError("busy", "The bot is still closing. Try again shortly.");
+      return existing.closed;
+    }
     const live = this.#liveFor(botId);
     const rows = this.#db.prepare("SELECT id FROM work_items WHERE bot_id = ? AND status IN ('queued', 'running') ORDER BY created_at, rowid").all(botId) as { id: string }[];
     const items = rows.map((row) => getWorkItem(this.#db, row.id));
     if (live.steeringItem && !items.some((item) => item.id === live.steeringItem?.id)) items.push(live.steeringItem);
     const session = live.session;
-    const detached = { live, session, items, closed: Promise.resolve(), settled: false };
+    const detached: Deleting = { live, items, pid: session?.pid(), processExited: false, closed: Promise.resolve(), settled: false, restoreWhenClosed: false };
     this.#deleting.set(botId, detached);
     this.#live.delete(botId);
     this.#releaseSession(botId, live);
-    detached.closed = Promise.all([session?.waitForExit?.(), closeBrowser(botId)]).then(() => {
+    const exited = Promise.resolve(session?.waitForExit?.()).then(() => { detached.processExited = true; });
+    detached.closed = Promise.all([exited, closeBrowser(botId)]).then(() => {
       detached.settled = true;
     });
     return detached.closed;
@@ -298,20 +312,31 @@ export class Runner {
   cancelDeletion(botId: string): void {
     const detached = this.#deleting.get(botId);
     if (!detached) return;
-    if (!detached.settled) throw new RpcError("busy", "The bot is still closing. Try again shortly.");
+    if (!detached.settled) {
+      if (!detached.restoreWhenClosed) {
+        detached.restoreWhenClosed = true;
+        void detached.closed.then(() => {
+          if (this.#deleting.get(botId) === detached) this.cancelDeletion(botId);
+        }).catch((error: unknown) => console.error("Tjommie: restoring a bot after deletion failed", error));
+      }
+      return;
+    }
     this.#deleting.delete(botId);
     this.#flushText(detached.live, "interrupted");
     this.#closeActivity(detached.live);
     // Use a new object so pending callbacks from the closed session cannot change resumed work.
     const live: Live = { ...detached.live, session: null, sent: false, steering: false, steeringItem: null,
-      text: null, activity: null, lastText: null, stopRequested: false, stopNotice: null, idleTimer: null, limitTimer: null };
+      text: null, activity: null, lastText: null, idleTimer: null, limitTimer: null };
     this.#live.set(botId, live);
     if (detached.live.steeringItem) setStatus(this.#db, detached.live.steeringItem.id, "queued");
     const bot = getStoredBot(this.#db, botId);
     // These cards refer to the closed provider session, so cannot be answered by its replacement.
-    for (const approvalId of live.approvals.keys()) this.#showApprovalStatus(resolveApproval(this.#db, approvalId, "deny"));
-    live.approvals.clear();
+    this.#expireApprovals(live);
     if (bot.limitedUntil) this.#armLimitTimer(botId, bot.limitedUntil);
+    if (live.busy && live.stopRequested) {
+      this.#finishTurn(botId, false, null);
+      return;
+    }
     if (live.busy && live.item) {
       // Keep the same work and its routine timer after a failed folder removal.
       this.#launchTurn(bot, live.item, live);
@@ -369,7 +394,7 @@ export class Runner {
     const live = [...this.#live];
     this.#live.clear();
     for (const deleting of this.#deleting.values()) {
-      if (deleting.live.busy) killTree(deleting.session?.pid());
+      if (deleting.live.busy && !deleting.processExited) killTree(deleting.pid);
     }
     this.#deleting.clear();
     for (const [botId, state] of live) {
@@ -689,6 +714,17 @@ export class Runner {
     this.#broadcast("approval.resolved", approval);
   }
 
+  #expireApprovals(live: Live): void {
+    for (const approvalId of live.approvals.keys()) {
+      try {
+        this.#showApprovalStatus(resolveApproval(this.#db, approvalId, "deny"));
+      } catch (error) {
+        if (!(error instanceof RpcError && error.code === "already_answered")) throw error;
+      }
+    }
+    live.approvals.clear();
+  }
+
   #recordUsage(botId: string, event: Extract<ProviderEvent, { type: "usage" }>): void {
     const bot = getStoredBot(this.#db, botId);
     const accountId = accountFor(this.#db, bot.provider).id;
@@ -765,10 +801,7 @@ export class Runner {
       if (outcome === "interrupted") this.#notice(conversationId, "notice", live.stopNotice ?? "Stopped.", null);
       if (outcome === "failed") this.#notice(conversationId, "error", error ?? "Something went wrong.", item.messageId ? { retryMessageId: item.messageId } : null);
     }
-    for (const approvalId of live.approvals.keys()) {
-      this.#showApprovalStatus(resolveApproval(this.#db, approvalId, "deny")); // the turn that asked is over
-    }
-    live.approvals.clear();
+    this.#expireApprovals(live); // the turn that asked is over
     const result: TurnResult = { outcome, text: live.lastText?.body ?? null, textMessageId: live.lastText?.id ?? null, error };
     live.busy = false;
     live.sent = false;

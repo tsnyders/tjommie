@@ -347,6 +347,46 @@ it("waits for a delayed session close before capturing exchanges and deleting th
   expect(db.prepare("SELECT * FROM work_items WHERE bot_id = ?").all(bot.id)).toEqual([]);
 });
 
+it("returns busy after fifteen seconds and restores work only when the delayed exit arrives", async () => {
+  const { daemon, client, db, sessions } = await harness();
+  const bot = await client.call("bots.create", input("Slow close"));
+  const message = await client.call("chat.send", { botId: bot.id, text: "Still running" });
+  const exited = Promise.withResolvers<void>();
+  const closing = Promise.withResolvers<void>();
+  vi.spyOn(sessions[0].session, "close").mockImplementation(() => { closing.resolve(); });
+  Object.assign(sessions[0].session, { waitForExit: () => exited.promise });
+  const captured = vi.spyOn(Team.prototype, "botDeleting");
+  let outcome: unknown;
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const deletion = client.call("bots.delete", { id: bot.id }).then(
+    (result) => { outcome = result; },
+    (error: unknown) => { outcome = error; },
+  );
+  try {
+    await closing.promise;
+    await vi.advanceTimersByTimeAsync(14_999);
+    expect(outcome).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.waitFor(() => expect(outcome).toBeInstanceOf(Error), { timeout: 200, interval: 10 });
+    expect((outcome as Error).message).toMatch(/^busy: The bot is taking too long to close\./);
+    expect(captured).not.toHaveBeenCalled();
+    expect(getStoredBot(db, bot.id).id).toBe(bot.id);
+    expect(existsSync(bot.homeFolder)).toBe(true);
+    expect(db.prepare("SELECT status FROM work_items WHERE message_id = ?").get(message.id)).toEqual({ status: "running" });
+    daemon.runner.pump(bot.id);
+    expect(sessions).toHaveLength(1);
+    exited.resolve();
+    await vi.waitFor(() => expect(sessions).toHaveLength(2), { timeout: 200, interval: 10 });
+    expect(sessions[1].session.sent).toContain("Still running");
+    expect(client.events.some((event) => event.event === "bot.deleted" && event.data.id === bot.id)).toBe(false);
+    expect(captured).not.toHaveBeenCalled();
+  } finally {
+    exited.resolve();
+    vi.useRealTimers();
+    await deletion;
+  }
+});
+
 it("pumps waiting work after unpause and a successful setup refresh", async () => {
   const { client, sessions } = await harness();
   const bot = await client.call("bots.create", input("Paused"));

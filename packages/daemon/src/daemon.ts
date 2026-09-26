@@ -18,6 +18,20 @@ import { Team, getExchange } from "./team.ts";
 // The desktop app loads the UI from app://tjommie (plan 1D); `npm run dev` serves it on localhost:3000.
 const allowedOrigins = () => ["app://tjommie", ...(process.env.TJOMMIE_DEV === "1" ? ["http://localhost:3000"] : [])];
 
+async function waitForBotClose(closed: Promise<void>): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      closed,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new RpcError("busy", "The bot is taking too long to close. Try deleting it again shortly.")), 15_000);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export type Daemon = { port: number; token: string; runner: Runner; scheduler: Scheduler; close: () => Promise<void> };
 
 type DaemonOptions = { root?: string; port?: number; accountsDir?: string; createSession?: SessionFactory };
@@ -123,7 +137,7 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
       getStoredBot(db, id);
       let handle: ReturnType<Team["botDeleting"]>;
       try {
-        await runner.closeForDeletion(id);
+        await waitForBotClose(runner.closeForDeletion(id));
         handle = team.botDeleting(id);
         deleteBot(db, id);
       } catch (error) {
