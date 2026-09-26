@@ -1,11 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { Approval, BotInput, BotPatch, ClientMessage, PROTOCOL_VERSION, RoutineInput, RoutinePatch, Settings, TEAM_ROOM_ID, methods } from "./index.ts";
+import { Approval, BotInput, BotPatch, ClientMessage, ErrorCode, PROTOCOL_VERSION, RoutineInput, RoutinePatch, Settings, TEAM_ROOM_ID, methods } from "./index.ts";
 
 const bot = { name: "Writer", color: "blue", shape: "circle", instructions: "", provider: "claude", model: "sonnet" } as const;
 
 describe("protocol", () => {
   it("is version 1", () => {
     expect(PROTOCOL_VERSION).toBe(1);
+  });
+
+  it("lists every daemon error code and rejects unknown codes", () => {
+    const codes = ["bad_params", "not_found", "busy", "name_taken", "already_answered", "bad_state", "not_installed", "no_account", "unknown_method", "internal"];
+    expect(ErrorCode.options).toEqual(codes);
+    for (const code of codes) expect(ErrorCode.parse(code)).toBe(code);
+    expect(ErrorCode.safeParse("unexpected").success).toBe(false);
   });
 
   it("parses hello and request messages and rejects anything else", () => {

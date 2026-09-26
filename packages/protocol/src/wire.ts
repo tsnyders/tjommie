@@ -19,6 +19,12 @@ import {
 
 export const PROTOCOL_VERSION = 1;
 
+export const ErrorCode = z.enum([
+  "bad_params", "not_found", "busy", "name_taken", "already_answered", "bad_state",
+  "not_installed", "no_account", "unknown_method", "internal",
+]);
+export type ErrorCode = z.infer<typeof ErrorCode>;
+
 const Empty = z.object({});
 const Id = z.object({ id: z.string() });
 const Page = { before: z.string().optional(), limit: z.number().int().min(1).max(200).default(50) };
@@ -87,5 +93,5 @@ export type ClientMessage = z.infer<typeof ClientMessage>;
 export type ServerMessage =
   | { type: "welcome"; protocol: number }
   | { type: "res"; id: number; ok: true; result: unknown }
-  | { type: "res"; id: number; ok: false; error: { code: string; message: string } }
+  | { type: "res"; id: number; ok: false; error: { code: ErrorCode; message: string } }
   | { type: "event"; event: EventName; data: unknown };

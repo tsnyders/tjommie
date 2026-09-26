@@ -6,6 +6,7 @@ import {
   ClientMessage,
   PROTOCOL_VERSION,
   methods,
+  type ErrorCode,
   type EventData,
   type EventName,
   type MethodName,
@@ -15,8 +16,8 @@ import {
 } from "@tjommie/protocol";
 
 export class RpcError extends Error {
-  code: string;
-  constructor(code: string, message: string) {
+  readonly code: ErrorCode;
+  constructor(code: ErrorCode, message: string) {
     super(message);
     this.code = code;
   }
