@@ -607,6 +607,36 @@ describe("Runner.start", () => {
 });
 
 describe("Runner destinations and delivery", () => {
+  it("starts prequeued work only when delivered, without duplicating it, and uses its persisted destination and hooks", async () => {
+    const started: WorkItem[] = [];
+    const ended: [WorkItem, TurnResult][] = [];
+    const h = harness(undefined, true, { turnStarted: (item) => started.push(item), turnEnded: (item, result) => ended.push([item, result]) });
+    const bot = newBot(h);
+    const other = newBot(h);
+    const queued = enqueue(h.db, { botId: bot.id, source: "bot_request", text: "Persisted request", conversationId: "team", chainId: newChain(h.db), exchangeId: "exchange-1" });
+    await Promise.resolve();
+    expect(h.sessions).toHaveLength(0);
+    expect(started).toEqual([]);
+    expect(getWorkItem(h.db, queued.id).status).toBe("queued");
+
+    const delivered = h.runner.deliver({ ...queued, botId: other.id, text: "Stale request" });
+    expect(delivered).toEqual(queued);
+    expect(h.runner.currentWork(bot.id)?.id).toBe(queued.id);
+    expect(h.runner.currentWork(other.id)).toBeNull();
+    await waitFor(() => h.sessions[0]?.sent.length);
+    h.runner.deliver(queued);
+    expect(h.db.prepare("SELECT COUNT(*) AS n FROM work_items").get()).toMatchObject({ n: 1 });
+    expect(h.sessions[0].sent).toEqual(["Persisted request"]);
+    expect(started.map((item) => item.id)).toEqual([queued.id]);
+    h.sessions[0].emit({ type: "text", delta: "The answer" });
+    h.sessions[0].emit({ type: "text_end" });
+    h.sessions[0].emit({ type: "turn_done", ok: true, error: null });
+    expect(ended).toHaveLength(1);
+    expect(ended[0]).toMatchObject([{ id: queued.id, conversationId: "team", exchangeId: "exchange-1" }, { outcome: "done", text: "The answer" }]);
+    expect(getWorkItem(h.db, queued.id).status).toBe("done");
+    expect(h.db.prepare("SELECT COUNT(*) AS n FROM work_items").get()).toMatchObject({ n: 1 });
+  });
+
   it.each(["chat", "team", "exchange"] as const)("writes text, deltas, activity, errors and Stop to the %s destination", async (destination) => {
     const h = harness();
     const bot = newBot(h);

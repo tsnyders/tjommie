@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { existsSync, mkdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Bot, BotInput, BotPatch } from "@tjommie/protocol";
 import { newId, nowIso, transaction, type Db } from "./db.ts";
 import { RpcError } from "./server.ts";
@@ -53,7 +53,7 @@ export function listStoredBots(db: Db): StoredBot[] {
 
 export function createBot(db: Db, botsDir: string, input: BotInput): StoredBot {
   assertNameFree(db, input.name, null);
-  const projectFolder = checkProjectFolder(input.projectFolder ?? null);
+  const projectFolder = checkProjectFolder(input.projectFolder ?? null, botsDir);
   const id = newId();
   const home = join(botsDir, id);
   mkdirSync(join(home, "inbox"), { recursive: true });
@@ -80,7 +80,7 @@ export function updateBot(db: Db, id: string, patch: BotPatch): StoredBot {
     throw new RpcError("bad_params", "A model is required when changing provider");
   }
   if (patch.name !== undefined) assertNameFree(db, patch.name, id);
-  const next = { ...bot, ...patch, projectFolder: patch.projectFolder === undefined ? bot.projectFolder : checkProjectFolder(patch.projectFolder) };
+  const next = { ...bot, ...patch, projectFolder: patch.projectFolder === undefined ? bot.projectFolder : checkProjectFolder(patch.projectFolder, dirname(bot.homeFolder)) };
   transaction(db, () => {
     db.prepare("UPDATE bots SET name = ?, color = ?, shape = ?, instructions = ?, provider = ?, model = ?, autonomy = ?, project_folder = ?, browser = ? WHERE id = ?").run(
       next.name,
@@ -128,6 +128,10 @@ export function botPrompt(bot: StoredBot): string {
     `Your home folder is ${bot.homeFolder}.${bot.projectFolder ? ` You work in the project folder ${bot.projectFolder}.` : ""}`,
     "Keep notes.md in your home folder up to date with the person's preferences, important facts and short summaries of finished work, and read it when a new session starts.",
     "Files the person attaches are copied into the inbox folder inside your home folder.",
+    "Tjommie's tools: list_bots shows the bots you may ask for help; message_bot sends one a request, and its answer arrives later as a new message, so don't wait for it; share_file shows the person a file; add_routine proposes work on a schedule.",
+    ...(bot.browser
+      ? ["You have your own browser through the browser tools. Sites the person signed in to there stay signed in. If the browser says it's already in use, ask the person to close your browser window."]
+      : []),
     "Reply in plain, friendly language, and keep replies short unless the person asks for detail.",
     "",
     "What the person wants from you:",
@@ -142,10 +146,18 @@ function assertNameFree(db: Db, name: string, exceptId: string | null): void {
   }
 }
 
-function checkProjectFolder(folder: string | null): string | null {
+function checkProjectFolder(folder: string | null, botsDir: string): string | null {
   if (folder === null) return null;
   if (!isAbsolute(folder) || !existsSync(folder) || !statSync(folder).isDirectory()) {
     throw new RpcError("bad_params", "The project folder must be an existing folder");
+  }
+  const atOrInside = (base: string, target: string): boolean => {
+    const path = relative(base, target);
+    return path === "" || (path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path));
+  };
+  // Reject both configured paths and junction aliases, including a managed root that is itself a junction.
+  if (atOrInside(resolve(botsDir), resolve(folder)) || (existsSync(botsDir) && atOrInside(realpathSync.native(botsDir), realpathSync.native(folder)))) {
+    throw new RpcError("bad_params", "The project folder must be outside the managed bots folder");
   }
   return folder;
 }
