@@ -31,8 +31,7 @@ function isTurnNotSteerable(error: unknown): boolean {
 export function codexPolicy(autonomy: Autonomy): Policy {
   if (autonomy === "ask") return { approvalPolicy: "untrusted", sandbox: "read-only" };
   // Codex 0.155.1's unelevated Windows sandbox reaches loopback with networkAccess false,
-  // leaves reads unrestricted, and cannot enforce deny-read rules. See follow-up rounds 1 and 2:
-  // .superpowers/sdd/2026-09-26-tjommie-phase1ab-final-review/fix-A-report.md
+  // leaves reads unrestricted, and cannot enforce deny-read rules. See README's Autonomy section.
   if (autonomy === "folder") return { approvalPolicy: "on-request", sandbox: "workspace-write" };
   return { approvalPolicy: "never", sandbox: "danger-full-access" };
 }
