@@ -56,12 +56,6 @@ export type BotInput = z.output<typeof BotInput>;
 export const BotPatch = z.object(botFields).partial();
 export type BotPatch = z.output<typeof BotPatch>;
 
-// What `data` holds for the newer kinds:
-// - handoff, for an exchange: { exchangeId, fromBotId, toBotId, messages, status: "waiting" | "replied" | "failed" };
-//   the body is the request's first line. For an answer given in the Team room: { roomMessageId }.
-// - routine: { routineId, runId, status, note }, the "Routine: <name>" label above a run.
-// - file: { path, name, size }, a file a bot shared; the body is its caption.
-// - text posts in the Team room that belong to an exchange: { exchangeId, toBotId, files?: { name, path }[] }.
 export const MessageKind = z.enum(["text", "activity", "approval", "notice", "error", "handoff", "routine", "file"]);
 export type MessageKind = z.infer<typeof MessageKind>;
 
@@ -143,6 +137,7 @@ export const RoutineRunStatus = z.enum(["queued", "running", "done", "stopped", 
 export type RoutineRunStatus = z.infer<typeof RoutineRunStatus>;
 export const RoutineRun = z.object({
   id: z.string(),
+  botId: z.string(),
   routineId: z.string(),
   dueAt: z.string(),
   startedAt: z.string().nullable(),
@@ -163,6 +158,93 @@ export const Exchange = z.object({
   repliedAt: z.string().nullable(),
 });
 export type Exchange = z.infer<typeof Exchange>;
+
+// Payload schemas are separate from Message.data so existing wire readers keep
+// accepting records. messageData validates a payload before a typed reader uses it.
+export const ExchangeHandoffData = z.strictObject({
+  exchangeId: z.string(),
+  fromBotId: z.string(),
+  toBotId: z.string(),
+  messages: z.number().int().nonnegative(),
+  status: Exchange.shape.status,
+});
+export type ExchangeHandoffData = z.infer<typeof ExchangeHandoffData>;
+export const RoomHandoffData = z.strictObject({ roomMessageId: z.string() });
+export type RoomHandoffData = z.infer<typeof RoomHandoffData>;
+export const HandoffData = z.union([ExchangeHandoffData, RoomHandoffData]);
+export type HandoffData = z.infer<typeof HandoffData>;
+
+export const RoutineLabelData = z.strictObject({
+  routineId: z.string(),
+  runId: z.string(),
+  status: RoutineRunStatus,
+  note: z.string().nullable(),
+});
+export type RoutineLabelData = z.infer<typeof RoutineLabelData>;
+
+export const FileData = z.strictObject({ path: z.string(), name: z.string(), size: z.number().int().nonnegative() });
+export type FileData = z.infer<typeof FileData>;
+
+const approvalDataFields = {
+  approvalId: z.string(),
+  tool: z.string(),
+  detail: z.string(),
+  status: Approval.shape.status,
+};
+export const ToolApprovalData = z.strictObject({
+  ...approvalDataFields,
+  kind: z.literal("tool").optional(), // Older tool cards omit kind.
+  rule: z.string().nullable(),
+});
+export type ToolApprovalData = z.infer<typeof ToolApprovalData>;
+export const RoutineApprovalData = z.strictObject({ ...approvalDataFields, kind: z.literal("routine") });
+export type RoutineApprovalData = z.infer<typeof RoutineApprovalData>;
+export const ApprovalData = z.union([ToolApprovalData, RoutineApprovalData]);
+export type ApprovalData = z.infer<typeof ApprovalData>;
+
+export const ActivityItem = z.strictObject({
+  id: z.string(),
+  name: z.string(),
+  summary: z.string(),
+  status: z.enum(["running", "done", "failed"]),
+});
+export type ActivityItem = z.infer<typeof ActivityItem>;
+export const ActivityData = z.strictObject({ items: z.array(ActivityItem) });
+export type ActivityData = z.infer<typeof ActivityData>;
+
+export const ErrorData = z.strictObject({ retryMessageId: z.string(), retryBotId: z.string().optional() });
+export type ErrorData = z.infer<typeof ErrorData>;
+export const NoticeData = z.strictObject({ exchangeId: z.string() });
+export type NoticeData = z.infer<typeof NoticeData>;
+
+// Your attachments store inbox names. Exchange posts store the recipient's paths.
+export const UserMessageData = z.strictObject({ files: z.array(z.string()) });
+export type UserMessageData = z.infer<typeof UserMessageData>;
+export const ExchangePostData = z.strictObject({
+  exchangeId: z.string(),
+  toBotId: z.string(),
+  files: z.array(z.strictObject({ name: z.string(), path: z.string() })).optional(),
+});
+export type ExchangePostData = z.infer<typeof ExchangePostData>;
+export const TextData = z.union([UserMessageData, ExchangePostData]);
+export type TextData = z.infer<typeof TextData>;
+
+export const MessageData = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("text"), data: TextData.nullable() }),
+  z.object({ kind: z.literal("activity"), data: ActivityData }),
+  z.object({ kind: z.literal("approval"), data: ApprovalData }),
+  z.object({ kind: z.literal("notice"), data: NoticeData.nullable() }),
+  z.object({ kind: z.literal("error"), data: ErrorData.nullable() }),
+  z.object({ kind: z.literal("handoff"), data: HandoffData }),
+  z.object({ kind: z.literal("routine"), data: RoutineLabelData }),
+  z.object({ kind: z.literal("file"), data: FileData }),
+]);
+export type MessageData = z.infer<typeof MessageData>;
+
+// Check the returned kind to narrow data. Invalid payloads throw a ZodError.
+export function messageData(message: Pick<Message, "kind" | "data">): MessageData {
+  return MessageData.parse(message);
+}
 
 // chainLimit: how many bot-to-bot requests one chain (a message from you, a room post or a routine run) may make.
 export const Settings = z.object({ chainLimit: z.number().int().min(1).max(20) });
