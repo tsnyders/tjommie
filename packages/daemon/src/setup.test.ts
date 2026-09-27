@@ -126,16 +126,20 @@ describe("accounts", () => {
       const file = join(accountsDir, "claude-main", "settings.json");
       const staleRules = rulesFor(staleRoot);
       const liveRules = rulesFor(liveRoot);
+      const legacyDb = (folder: string) => rulesFor(folder)[0].replace("accounts/**", "tjommie.db*");
+      const staleLegacy = legacyDb(staleRoot);
+      const liveLegacy = legacyDb(liveRoot);
+      const legacyOnly = legacyDb(join(root, "legacy-only"));
       const userRules = ["Bash(rm *)", "Read(//unrelated/private/**)", "Read(**/daemon-token)",
         ...rulesFor(join(root, "user-only")).slice(0, 1),
         ...rulesFor(join(root, "user-*")),
         staleRules[0].replace("Read(", "Write("), staleRules[2].replace("data/**", "private/**")];
-      writeFileSync(file, JSON.stringify({ theme: "dark", permissions: { allow: ["Read"], deny: [...staleRules, ...liveRules, ...userRules] } }));
+      writeFileSync(file, JSON.stringify({ theme: "dark", permissions: { allow: ["Read"], deny: [...staleRules, staleLegacy, ...liveRules, liveLegacy, legacyOnly, ...userRules] } }));
       ensureAccounts(db, accountsDir);
       const settings = JSON.parse(readFileSync(file, "utf8")) as { theme: string; permissions: { allow: string[]; deny: string[] } };
       expect(settings.theme).toBe("dark");
       expect(settings.permissions.allow).toEqual(["Read"]);
-      expect(settings.permissions.deny).toEqual([...liveRules, ...userRules, "Edit(**/.claude/**)", "Write(**/.claude/**)", ...rulesFor(root)]);
+      expect(settings.permissions.deny).toEqual([...liveRules, liveLegacy, ...userRules, "Edit(**/.claude/**)", "Write(**/.claude/**)", ...rulesFor(root)]);
       ensureAccounts(db, accountsDir);
       expect(JSON.parse(readFileSync(file, "utf8"))).toEqual(settings);
     } finally {

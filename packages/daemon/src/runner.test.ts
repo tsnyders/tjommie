@@ -199,6 +199,7 @@ it("closes an active Codex session when its sandbox becomes unready", async () =
   expect(session.interrupts).toBe(1);
   session.emit({ type: "turn_done", ok: false, error: null });
   expect(session.closed).toBe(true);
+  expect(history(h.db, bot.id, undefined, 20).some((item) => item.kind === "notice" && item.body === "Codex's sandbox is no longer ready. Set it up again to continue.")).toBe(true);
   expect(runner.toBot(bot)).toMatchObject({ state: "needs_setup", setupReason: reason });
 });
 

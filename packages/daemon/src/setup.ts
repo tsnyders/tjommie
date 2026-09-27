@@ -63,19 +63,24 @@ function staleClaudeReadRules(existing: string[]): Set<string> {
   const checked = new Set<string>();
   const stale = new Set<string>();
   for (const rule of rules) {
-    const root = /^Read\((\/\/.+)\/(?:accounts\/\*\*|daemon-token|data\/\*\*)\)$/.exec(rule)?.[1];
+    const root = /^Read\((\/\/.+)\/(?:accounts\/\*\*|daemon-token|data\/\*\*|tjommie\.db\*)\)$/.exec(rule)?.[1];
     if (!root || /[*?\[\]{}]/.test(root) || checked.has(root)) continue;
     checked.add(root);
     const folder = process.platform === "win32" ? root.slice(1).replace(/^\/([a-z])(?=\/|$)/, "$1:") : root.slice(1);
     if (!isAbsolute(folder)) continue;
     const managed = claudeReadRules(folder);
     // Tjommie always writes this exact group together. Preserve partial groups and user globs.
-    if (!managed.includes(rule) || !managed.every((entry) => rules.has(entry))) continue;
+    const legacyDbRule = `Read(${root}/tjommie.db*)`;
+    if (!managed.includes(rule) && rule !== legacyDbRule) continue;
+    if (!managed.every((entry) => rules.has(entry)) && !(rule === legacyDbRule && rules.has(legacyDbRule))) continue;
     try {
       lstatSync(folder);
     } catch (error) {
       // Keep live roots, links and uncertain states such as access denied.
-      if (isRecord(error) && error.code === "ENOENT") for (const entry of managed) stale.add(entry);
+      if (isRecord(error) && error.code === "ENOENT") {
+        for (const entry of managed) stale.add(entry);
+        if (rules.has(legacyDbRule)) stale.add(legacyDbRule);
+      }
     }
   }
   return stale;

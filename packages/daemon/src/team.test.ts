@@ -23,6 +23,7 @@ let writer: StoredBot;
 
 beforeEach(() => {
   root = tempRoot();
+  mkdirSync(join(root, "shared-files"));
   db = openDb(join(root, "t.db"));
   const bots = join(root, "bots");
   writer = createBot(db, bots, { name: "Writer", color: "blue", shape: "circle", instructions: "Writes one-page summaries.\nMore detail here.", provider: "codex", model: "gpt-5.6-sol" });

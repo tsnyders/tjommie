@@ -427,7 +427,9 @@ export class Runner {
       if (!live?.session) continue;
       if (live.busy) {
         live.reload = true;
-        void this.stop(bot.id).catch((error: unknown) => console.error("Could not stop a bot after setup changed.", error));
+        const item = live.item;
+        if (item) void this.stopItem(item.id, "Codex's sandbox is no longer ready. Set it up again to continue.")
+          .catch((error: unknown) => console.error("Could not stop a bot after setup changed.", error));
       } else this.#closeSession(bot.id, live);
     }
     this.pumpAll();

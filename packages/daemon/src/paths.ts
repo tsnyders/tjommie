@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 export const DEFAULT_PORT = 47100;
 
-export type Paths = { root: string; data: string; db: string; token: string; bots: string; accounts: string; logs: string };
+export type Paths = { root: string; data: string; db: string; token: string; bots: string; accounts: string; logs: string; sharedFiles: string };
 
 const defaultRoot = () => process.env.TJOMMIE_HOME ?? join(process.env.LOCALAPPDATA ?? join(homedir(), ".local", "share"), "Tjommie");
 
@@ -18,8 +18,9 @@ export function dataPaths(root: string = defaultRoot()): Paths {
     bots: join(root, "bots"),
     accounts: join(root, "accounts"),
     logs: join(root, "logs"),
+    sharedFiles: join(root, "shared-files"),
   };
-  for (const dir of [p.root, p.bots, p.accounts, p.logs, p.data]) mkdirSync(dir, { recursive: true });
+  for (const dir of [p.root, p.bots, p.accounts, p.logs, p.data, p.sharedFiles]) mkdirSync(dir, { recursive: true });
   return p;
 }
 

@@ -1,101 +1,171 @@
+import { spawn, spawnSync } from "node:child_process";
 import { lstatSync, readdirSync } from "node:fs";
-import { spawnSync } from "node:child_process";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import type { Provider } from "@tjommie/protocol";
 import type { Paths } from "./paths.ts";
 
-type Target = { path: string; folder: boolean };
-export type AclCommand = { file: "icacls.exe"; args: string[] };
+export type BotHome = { id: string; homeFolder: string; provider: Provider };
+export type AclTarget = { path: string; folder: boolean; mode: "deny" | "allow" | "removeDeny" | "verifyBin" | "checkDeny" | "checkAllow" | "checkNoDeny"; codexDependent?: boolean };
+export type AclPassResult = { sid: string | null; groupMissing: boolean; failures: string[]; applied: number };
 export type AclDriver = {
-  lookupSid: () => string | null;
-  hasDeny: (path: string, sid: string, folder: boolean) => boolean;
-  hasAllow: (path: string, sid: string, folder: boolean) => boolean;
-  sandboxBinReady: (path: string, sid: string) => boolean;
-  apply: (command: AclCommand) => void;
+  runSync: (targets: AclTarget[]) => AclPassResult;
+  run: (targets: AclTarget[]) => Promise<AclPassResult>;
 };
 export type Protection = { ready: boolean; reason: string | null };
 
-// Measured on Codex 0.155.1. Only these account entries receive or require Tjommie's ACL checks.
-// .sandbox-secrets keeps Codex's own deny and is never changed here.
+// Measured on Codex 0.155.1. Codex owns the protected .sandbox-bin ACL.
 export const CODEX_MAIN_ACL_RECIPE = {
-  home: { entry: ".", ace: "deny" },
-  sandbox: { entry: ".sandbox", ace: "allow" },
-  sandboxBin: { entry: ".sandbox-bin", ace: "verifyProtectedAllow" },
+  home: { entry: ".", mode: "deny" },
+  sandbox: { entry: ".sandbox", mode: "allow" },
+  sandboxBin: { entry: ".sandbox-bin", mode: "verifyBin" },
 } as const;
 
+const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT ?? "C:\\Windows";
+const powershell = join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+const icacls = join(systemRoot, "System32", "icacls.exe");
+const failureReason = "Tjommie couldn't check Codex's sandbox. If Codex was updated, run its sandbox setup again.";
+let cachedSid: string | null = null;
+
+export type AclCommand = { file: string; args: string[] };
 function buildAceCommand(path: string, sid: string, folder: boolean, ace: "deny" | "allow"): AclCommand {
   if (!/^S-1-\d+(?:-\d+)+$/.test(sid)) throw new Error("Invalid Codex sandbox group SID");
-  return { file: "icacls.exe", args: [path, ace === "deny" ? "/deny" : "/grant", `*${sid}:${folder ? "(OI)(CI)" : ""}(RX,W)`] };
+  return { file: icacls, args: [path, ace === "deny" ? "/deny" : "/grant", `*${sid}:${folder ? "(OI)(CI)" : ""}(RX,W)`] };
 }
-
 export const buildDenyCommand = (path: string, sid: string, folder: boolean): AclCommand => buildAceCommand(path, sid, folder, "deny");
 export const buildAllowCommand = (path: string, sid: string, folder: boolean): AclCommand => buildAceCommand(path, sid, folder, "allow");
 
-function run(file: string, args: string[], env: NodeJS.ProcessEnv = process.env): string {
-  const result = spawnSync(file, args, { encoding: "utf8", windowsHide: true, env, timeout: 30_000 });
-  if (result.error) throw result.error;
-  if (result.status !== 0) throw new Error(`${file} exited with code ${result.status}: ${result.stderr.trim()}`);
-  return result.stdout.trim();
+// One PowerShell process resolves the SID, checks every target, applies missing ACEs and verifies them.
+// Paths and the cached SID arrive on stdin as JSON so a large bot list does not hit the Windows env limit.
+const passScript = `
+$ErrorActionPreference = 'Stop'
+[Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$payload = [Console]::In.ReadToEnd() | ConvertFrom-Json
+$sid = [string]$payload.sid
+if (-not $sid) {
+  try {
+    $sid = ([System.Security.Principal.NTAccount]::new($env:COMPUTERNAME, 'CodexSandboxUsers')).Translate([System.Security.Principal.SecurityIdentifier]).Value
+  } catch [System.Security.Principal.IdentityNotMappedException] {
+    @{ sid = $null; groupMissing = $true; failures = @(); applied = 0 } | ConvertTo-Json -Compress -Depth 4
+    exit 0
+  }
 }
-
-const lookupScript = "$ErrorActionPreference='Stop'; try { ([System.Security.Principal.NTAccount]::new($env:COMPUTERNAME,'CodexSandboxUsers')).Translate([System.Security.Principal.SecurityIdentifier]).Value } catch { exit 2 }";
-
-const inspectScript = `
-$ErrorActionPreference='Stop'
-$acl = Get-Acl -LiteralPath $env:TJOMMIE_ACL_PATH
+if ($sid -notmatch '^S-1-\\d+(?:-\\d+)+$') { throw 'Invalid Codex sandbox group SID' }
 $rx = [int][System.Security.AccessControl.FileSystemRights]::ReadAndExecute
 $write = [int][System.Security.AccessControl.FileSystemRights]::Write
 $oi = [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
 $ci = [System.Security.AccessControl.InheritanceFlags]::ContainerInherit
-$found = $false
-foreach ($rule in $acl.Access) {
-  try { $identity = $rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value } catch { continue }
-  $rights = [int]$rule.FileSystemRights
-  $inheritable = (($rule.InheritanceFlags -band $oi) -eq $oi) -and (($rule.InheritanceFlags -band $ci) -eq $ci)
-  if ($identity -eq $env:TJOMMIE_ACL_SID -and $rule.AccessControlType -eq $env:TJOMMIE_ACL_KIND -and
-      ($rights -band $rx) -eq $rx -and ($rights -band $write) -eq $write -and
-      (-not $env:TJOMMIE_ACL_FOLDER -or (-not $rule.IsInherited -and $inheritable))) { $found = $true; break }
-}
-Write-Output $found
-`;
-
-const inspectSandboxBinScript = `
-$ErrorActionPreference='Stop'
-$acl = Get-Acl -LiteralPath $env:TJOMMIE_ACL_PATH
-$rx = [int][System.Security.AccessControl.FileSystemRights]::ReadAndExecute
-$found = $false
-if ($acl.AreAccessRulesProtected) {
+$failures = [System.Collections.Generic.List[string]]::new()
+$applied = 0
+$codexBinReady = $true
+function Test-Target($target) {
+  $acl = Get-Acl -LiteralPath $target.path
+  if ($target.mode -eq 'verifyBin' -and -not $acl.AreAccessRulesProtected) { return $false }
   foreach ($rule in $acl.Access) {
     try { $identity = $rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value } catch { continue }
+    if ($identity -ne $sid) { continue }
     $rights = [int]$rule.FileSystemRights
-    if ($identity -eq $env:TJOMMIE_ACL_SID -and -not $rule.IsInherited -and
-        $rule.AccessControlType -eq 'Allow' -and ($rights -band $rx) -eq $rx) { $found = $true; break }
+    if ($target.mode -eq 'removeDeny' -or $target.mode -eq 'checkNoDeny') {
+      if ($rule.AccessControlType -eq 'Deny') { return $false }
+      continue
+    }
+    if ($rule.IsInherited) { continue }
+    if ($target.mode -eq 'verifyBin') {
+      if ($rule.AccessControlType -eq 'Allow' -and ($rights -band $rx) -eq $rx) { return $true }
+      continue
+    }
+    $kind = if ($target.mode -eq 'deny' -or $target.mode -eq 'checkDeny') { 'Deny' } else { 'Allow' }
+    if ($rule.AccessControlType -ne $kind -or ($rights -band $rx) -ne $rx -or ($rights -band $write) -ne $write) { continue }
+    if ($target.folder) {
+      $inheritable = (($rule.InheritanceFlags -band $oi) -eq $oi) -and (($rule.InheritanceFlags -band $ci) -eq $ci)
+      if (-not $inheritable) { continue }
+    }
+    return $true
+  }
+  return ($target.mode -eq 'removeDeny' -or $target.mode -eq 'checkNoDeny')
+}
+foreach ($target in $payload.targets) {
+  if ($target.codexDependent -and -not $codexBinReady) { continue }
+  try {
+    $present = Test-Target $target
+    if ($target.mode -eq 'verifyBin') {
+      if (-not $present) { $codexBinReady = $false; $failures.Add("$($target.path): .sandbox-bin needs a protected CodexSandboxUsers ReadAndExecute allow") }
+      continue
+    }
+    if ($target.mode -like 'check*') {
+      if (-not $present) { $failures.Add("$($target.path): expected ACL state was not found") }
+      continue
+    }
+    if (-not $present) {
+      if ($target.mode -eq 'removeDeny') {
+        & $payload.icacls $target.path '/remove:d' "*$sid" | Out-Null
+      } else {
+        $verb = if ($target.mode -eq 'deny') { '/deny' } else { '/grant' }
+        $inheritance = if ($target.folder) { '(OI)(CI)' } else { '' }
+        & $payload.icacls $target.path $verb "*\${sid}:\${inheritance}(RX,W)" | Out-Null
+      }
+      if ($LASTEXITCODE -ne 0) { throw "icacls exited with code $LASTEXITCODE" }
+      $applied++
+      if (-not (Test-Target $target)) { throw 'ACE was not verified after applying' }
+    }
+  } catch {
+    if ($target.mode -eq 'verifyBin') { $codexBinReady = $false }
+    $failures.Add("$($target.path): $($_.Exception.Message)")
   }
 }
-Write-Output $found
+@{ sid = $sid; groupMissing = $false; failures = @($failures); applied = $applied } | ConvertTo-Json -Compress -Depth 4
 `;
 
-function hasAce(path: string, sid: string, folder: boolean, kind: "Deny" | "Allow"): boolean {
-  return run("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", inspectScript], {
-    ...process.env, TJOMMIE_ACL_PATH: path, TJOMMIE_ACL_SID: sid, TJOMMIE_ACL_FOLDER: folder ? "1" : "", TJOMMIE_ACL_KIND: kind,
-  }).toLowerCase() === "true";
+function passInput(targets: AclTarget[]): string {
+  return JSON.stringify({ sid: cachedSid, icacls, targets });
+}
+
+function parsePass(stdout: string): AclPassResult {
+  const parsed: unknown = JSON.parse(stdout.trim());
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("PowerShell returned an invalid ACL result");
+  const result = parsed as Record<string, unknown>;
+  if ((result.sid !== null && (typeof result.sid !== "string" || !/^S-1-\d+(?:-\d+)+$/.test(result.sid))) ||
+      typeof result.groupMissing !== "boolean" || !Array.isArray(result.failures) ||
+      !result.failures.every((failure) => typeof failure === "string") || typeof result.applied !== "number") {
+    throw new Error("PowerShell returned an invalid ACL result");
+  }
+  if (result.sid) cachedSid = result.sid;
+  return { sid: result.sid, groupMissing: result.groupMissing, failures: result.failures, applied: result.applied };
+}
+
+function commandFailure(code: number | null, stderr: string): Error {
+  return new Error(`PowerShell ACL pass exited with code ${code}: ${stderr.trim()}`);
 }
 
 export const windowsAclDriver: AclDriver = {
-  lookupSid: () => {
-    try {
-      const sid = run("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", lookupScript]);
-      return /^S-1-\d+(?:-\d+)+$/.test(sid) ? sid : null;
-    } catch { return null; }
+  runSync: (targets) => {
+    const result = spawnSync(powershell, ["-NoProfile", "-NonInteractive", "-Command", passScript], {
+      input: passInput(targets), encoding: "utf8", windowsHide: true, timeout: 60_000, maxBuffer: 1024 * 1024,
+    });
+    if (result.error) throw new Error(`PowerShell ACL pass could not start: ${result.error.message}`);
+    if (result.status !== 0) throw commandFailure(result.status, result.stderr);
+    return parsePass(result.stdout);
   },
-  hasDeny: (path, sid, folder) => hasAce(path, sid, folder, "Deny"),
-  hasAllow: (path, sid, folder) => hasAce(path, sid, folder, "Allow"),
-  sandboxBinReady: (path, sid) => run("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", inspectSandboxBinScript], {
-    ...process.env, TJOMMIE_ACL_PATH: path, TJOMMIE_ACL_SID: sid,
-  }).toLowerCase() === "true",
-  apply: (command) => { run(command.file, command.args); },
+  run: (targets) => new Promise((resolvePass, rejectPass) => {
+    const child = spawn(powershell, ["-NoProfile", "-NonInteractive", "-Command", passScript], { windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    const timer = setTimeout(() => child.kill(), 60_000);
+    child.stdout.setEncoding("utf8").on("data", (chunk: string) => { stdout += chunk; });
+    child.stderr.setEncoding("utf8").on("data", (chunk: string) => { stderr += chunk; });
+    child.on("error", (error) => { clearTimeout(timer); rejectPass(new Error(`PowerShell ACL pass could not start: ${error.message}`)); });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (code !== 0) rejectPass(commandFailure(code, stderr));
+      else {
+        try { resolvePass(parsePass(stdout)); } catch (error) { rejectPass(error); }
+      }
+    });
+    child.stdin.end(passInput(targets));
+  }),
 };
 
-function targetIfPresent(root: string, path: string, folder: boolean): Target | null {
+function targetIfPresent(root: string, path: string, folder: boolean): AclTarget | null {
   try {
     const base = resolve(root);
     const target = resolve(path);
@@ -109,82 +179,89 @@ function targetIfPresent(root: string, path: string, folder: boolean): Target | 
     }
     const stat = lstatSync(path);
     if (stat.isSymbolicLink() || (folder ? !stat.isDirectory() : !stat.isFile())) throw new Error("unexpected path type");
-    return { path, folder };
+    return { path, folder, mode: "deny" };
   } catch (error) {
     if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return null;
     throw error;
   }
 }
 
-function codexEntry(home: string, entry: string, homeEntry = false): string {
-  const path = resolve(home, entry);
-  const rel = relative(home, path);
-  if ((homeEntry && rel) || (!homeEntry && (!rel || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)))) {
-    throw new Error("codex-main protection entry is outside its expected folder");
-  }
-  return path;
-}
-
-export function protectCodexData(paths: Paths, driver: AclDriver = windowsAclDriver, platform: NodeJS.Platform = process.platform): Protection {
-  if (platform !== "win32") {
-    console.info("Codex data ACLs: Windows only; no changes made.");
-    return { ready: true, reason: null };
-  }
-  const sid = driver.lookupSid();
-  if (!sid) {
-    console.error("Codex data ACLs: CodexSandboxUsers group was not found. Own folder is unavailable.");
-    return { ready: false, reason: "Set up Codex's sandbox" };
-  }
-  let ready = true;
-  const protect = (path: string, folder: boolean, required: boolean, ace: "deny" | "allow" = "deny"): void => {
+type AclPlan = { targets: AclTarget[]; failures: string[]; expected: string[]; setupMissing: boolean };
+function planTargets(paths: Paths, botHomes: BotHome[]): AclPlan {
+  const plan: AclPlan = { targets: [], failures: [], expected: [], setupMissing: false };
+  const add = (path: string, folder: boolean, mode: AclTarget["mode"], required: boolean, codexDependent = false): boolean => {
     try {
       const target = targetIfPresent(paths.root, path, folder);
       if (!target) {
-        if (required) throw new Error("required folder is missing");
-        return;
+        if (required) plan.expected.push(`${path}: required folder is missing`);
+        return false;
       }
-      const hasAce = ace === "deny" ? driver.hasDeny : driver.hasAllow;
-      if (!hasAce(target.path, sid, target.folder)) driver.apply(buildAceCommand(target.path, sid, target.folder, ace));
-      if (!hasAce(target.path, sid, target.folder)) throw new Error(`${ace} ACE not found after applying`);
+      plan.targets.push({ ...target, mode, codexDependent });
+      return true;
     } catch (error) {
-      ready = false;
-      console.error(`Codex data ACLs: could not protect ${path}: ${String(error)}`);
+      plan.failures.push(`${path}: ${String(error)}`);
+      return false;
     }
   };
-
-  for (const target of [
-    { path: join(paths.accounts, "claude-main"), folder: true, required: true },
-    { path: paths.logs, folder: true, required: true },
-    { path: paths.data, folder: true, required: true },
-    { path: paths.token, folder: false, required: false },
-  ]) protect(target.path, target.folder, target.required);
-
+  add(join(paths.accounts, "claude-main"), true, "deny", true);
+  for (const folder of [paths.logs, paths.data, paths.sharedFiles]) add(folder, true, "deny", true);
+  add(paths.token, false, "deny", false);
   try {
     for (const name of readdirSync(paths.data).filter((entry) => /^tjommie\.db(?:$|[-.])/.test(entry))) {
-      protect(join(paths.data, name), false, false);
+      add(join(paths.data, name), false, "deny", false);
     }
-  } catch (error) {
-    ready = false;
-    console.error(`Codex data ACLs: could not list database files: ${String(error)}`);
+  } catch (error) { plan.failures.push(`database files: ${String(error)}`); }
+  for (const bot of botHomes) {
+    const expected = resolve(paths.bots, bot.id);
+    if (resolve(bot.homeFolder).toLowerCase() !== expected.toLowerCase()) {
+      plan.failures.push(`${bot.homeFolder}: bot folder does not match its id`);
+      continue;
+    }
+    add(bot.homeFolder, true, bot.provider === "claude" ? "deny" : "removeDeny", true);
+    if (bot.provider === "codex") {
+      add(join(bot.homeFolder, "notes.md"), false, "checkNoDeny", false);
+      add(join(bot.homeFolder, "inbox"), true, "checkNoDeny", false);
+    }
   }
+  const home = join(paths.accounts, "codex-main");
+  const sandbox = join(home, ".sandbox");
+  const sandboxBin = join(home, ".sandbox-bin");
+  const homePresent = add(home, true, "verifyBin", false);
+  if (homePresent) plan.targets.pop();
+  const sandboxPresent = homePresent && add(sandbox, true, "verifyBin", false);
+  if (sandboxPresent) plan.targets.pop();
+  if (!homePresent || !sandboxPresent || !add(sandboxBin, true, "verifyBin", false)) {
+    plan.setupMissing = true;
+  } else {
+    add(home, true, "deny", true, true);
+    add(sandbox, true, "allow", true, true);
+  }
+  return plan;
+}
 
-  const codexHome = join(paths.accounts, "codex-main");
-  try {
-    const home = targetIfPresent(paths.root, codexEntry(codexHome, CODEX_MAIN_ACL_RECIPE.home.entry, true), true);
-    const sandboxPath = codexEntry(codexHome, CODEX_MAIN_ACL_RECIPE.sandbox.entry);
-    const sandbox = targetIfPresent(paths.root, sandboxPath, true);
-    const sandboxBinPath = codexEntry(codexHome, CODEX_MAIN_ACL_RECIPE.sandboxBin.entry);
-    const sandboxBin = targetIfPresent(paths.root, sandboxBinPath, true);
-    if (!home) throw new Error("codex-main folder is missing");
-    if (!sandbox) throw new Error(".sandbox folder is missing");
-    if (!sandboxBin || !driver.sandboxBinReady(sandboxBin.path, sid)) {
-      throw new Error(".sandbox-bin must have a protected ACL with a CodexSandboxUsers ReadAndExecute allow");
-    }
-    protect(home.path, true, true, CODEX_MAIN_ACL_RECIPE.home.ace);
-    protect(sandbox.path, true, true, CODEX_MAIN_ACL_RECIPE.sandbox.ace);
-  } catch (error) {
-    ready = false;
-    console.error(`Codex data ACLs: could not verify ${codexHome}: ${String(error)}`);
-  }
-  return { ready, reason: ready ? null : "Tjommie could not protect its data" };
+function finish(plan: AclPlan, result: AclPassResult): Protection {
+  if (result.groupMissing) console.info("Codex data ACLs: CodexSandboxUsers group does not exist yet. Set up Codex's sandbox.");
+  for (const message of plan.expected) console.info(`Codex data ACLs: ${message}`);
+  if (plan.setupMissing) console.info("Codex data ACLs: Codex setup marker is not present yet.");
+  for (const message of [...plan.failures, ...result.failures]) console.error(`Codex data ACLs: ${message}`);
+  if (plan.failures.length || result.failures.length || plan.expected.length) return { ready: false, reason: failureReason };
+  if (result.groupMissing || plan.setupMissing) return { ready: false, reason: "Set up Codex's sandbox" };
+  return { ready: true, reason: null };
+}
+
+function failedPass(error: unknown): Protection {
+  console.error(`Codex data ACLs: ${String(error)}`);
+  return { ready: false, reason: failureReason };
+}
+
+export function protectCodexData(paths: Paths, botHomes: BotHome[] = [], driver: AclDriver = windowsAclDriver, platform: NodeJS.Platform = process.platform): Protection {
+  if (platform !== "win32") { console.info("Codex data ACLs: Windows only; no changes made."); return { ready: true, reason: null }; }
+  const plan = planTargets(paths, botHomes);
+  try { return finish(plan, driver.runSync(plan.targets)); } catch (error) { return failedPass(error); }
+}
+
+export async function protectCodexDataAsync(paths: Paths, botHomes: BotHome[] = [], driver: AclDriver = windowsAclDriver, platform: NodeJS.Platform = process.platform): Promise<Protection> {
+  if (platform !== "win32") { console.info("Codex data ACLs: Windows only; no changes made."); return { ready: true, reason: null }; }
+  const plan = planTargets(paths, botHomes);
+  try { return finish(plan, await driver.run(plan.targets)); } catch (error) { return failedPass(error); }
 }

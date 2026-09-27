@@ -15,7 +15,7 @@ import { RpcError, startServer, type Broadcast, type Handlers, type Server } fro
 import { getSettings, setSettings } from "./settings.ts";
 import { checkSetup, ensureAccounts, listModels, prepareCodexSandbox, signIn } from "./setup.ts";
 import { Team, getExchange } from "./team.ts";
-import { protectCodexData } from "./windows-acl.ts";
+import { protectCodexData, protectCodexDataAsync, type BotHome } from "./windows-acl.ts";
 
 // The desktop app loads the UI from app://tjommie (plan 1D); `npm run dev` serves it on localhost:3000.
 const allowedOrigins = (mode: DaemonAuth["mode"]) => ["app://tjommie", ...(mode === "development" ? ["http://localhost:3000"] : [])];
@@ -69,14 +69,34 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
     }
     if (leftover) console.log("Removed a leftover development daemon-token file.");
   }
-  // Protect the data directory before SQLite can create WAL or SHM files.
+  // This is the only synchronous ACL pass. It finishes before SQLite opens.
   let protection = protectCodexData(paths);
   const db = openDb(paths.db);
   onCleanup(() => db.close());
   const token = options.auth.mode === "development" ? readOrCreateToken(paths.token) : options.auth.token;
   ensureAccounts(db, options.accountsDir ?? paths.accounts, paths.root);
-  // ensureAccounts and development token creation may have made protected paths.
-  protection = protectCodexData(paths);
+  // Account and token creation, plus existing bot homes, need a fresh pass.
+  protection = await protectCodexDataAsync(paths, listStoredBots(db));
+  let lastProtectionAt = Date.now();
+  let aclQueue: Promise<void> = Promise.resolve();
+  const refreshProtection = (force = false, override?: BotHome): Promise<void> => {
+    const task = aclQueue.then(async () => {
+      if (!force && Date.now() - lastProtectionAt < 60_000) return;
+      const homes = listStoredBots(db).map((bot) => bot.id === override?.id ? override : bot);
+      protection = await protectCodexDataAsync(paths, homes);
+      lastProtectionAt = Date.now();
+    });
+    aclQueue = task.catch(() => {});
+    return task;
+  };
+  let loggedCodexVersion: string | null = null;
+  const logVersionDrift = (statuses: ProviderSetup[]): void => {
+    const version = statuses.find((status) => status.provider === "codex")?.version;
+    if (version && version !== "0.155.1" && version !== loggedCodexVersion) {
+      console.info(`Codex CLI ${version} differs from the measured ACL recipe version 0.155.1.`);
+      loggedCodexVersion = version;
+    }
+  };
   let setup: ProviderSetup[] = [];
   let broadcast: Broadcast = () => {};
   const send: Broadcast = (event, data) => broadcast(event, data);
@@ -135,9 +155,10 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
     }
   }
 
-  const refreshSetup = async (): Promise<ProviderSetup[]> => {
-    protection = protectCodexData(paths);
+  const refreshSetup = async (forceAcl = false): Promise<ProviderSetup[]> => {
+    await refreshProtection(forceAcl);
     setup = await checkSetup(db);
+    logVersionDrift(setup);
     broadcast("setup.changed", setup);
     for (const bot of listStoredBots(db)) broadcast("bot.updated", runner.toBot(bot));
     runner.setupChanged();
@@ -145,7 +166,7 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
   };
 
   const refreshSetupInBackground = (): void => {
-    void refreshSetup().catch((error: unknown) => console.error("Failed to refresh provider setup.", error));
+    void refreshSetup(true).catch((error: unknown) => console.error("Failed to refresh provider setup.", error));
   };
 
   const deletionRequests = new Set<string>();
@@ -156,7 +177,7 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
       try {
         await prepareCodexSandbox(db);
       } finally {
-        await refreshSetup();
+        await refreshSetup(true);
       }
       const status = setup.find((entry) => entry.provider === "codex");
       if (!status || status.provider !== "codex") throw new RpcError("internal", "Codex setup status is missing.");
@@ -164,15 +185,44 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
     },
     "models.list": ({ provider }) => listModels(db, provider),
     "bots.list": () => listStoredBots(db).map((bot) => runner.toBot(bot)),
-    "bots.create": (input) => {
-      const bot = runner.toBot(createBot(db, paths.bots, input));
+    "bots.create": async (input) => {
+      if (input.provider === "claude") {
+        protection = { ready: false, reason: "Codex's sandbox is no longer ready. Set it up again to continue." };
+        runner.setupChanged();
+      }
+      let created;
+      try { created = createBot(db, paths.bots, input); }
+      catch (error) { await refreshProtection(true); runner.setupChanged(); throw error; }
+      await refreshProtection(true);
+      runner.setupChanged();
+      const bot = runner.toBot(created);
       broadcast("bot.updated", bot);
       return bot;
     },
-    "bots.update": ({ id, patch }) => {
+    "bots.update": async ({ id, patch }) => {
       const before = getStoredBot(db, id);
-      const bot = runner.toBot(updateBot(db, id, patch));
-      runner.botChanged(id, before.provider !== bot.provider);
+      const providerChanged = patch.provider !== undefined && patch.provider !== before.provider;
+      if (providerChanged) {
+        await runner.stop(id);
+        runner.botChanged(id, true);
+        protection = { ready: false, reason: "Codex's sandbox is no longer ready. Set it up again to continue." };
+        runner.setupChanged();
+        await refreshProtection(true, { id, homeFolder: before.homeFolder, provider: patch.provider! });
+        if (!protection.ready && protection.reason !== "Set up Codex's sandbox") {
+          await refreshProtection(true);
+          runner.setupChanged();
+          throw new RpcError("bad_state", "Could not update the bot folder protection. Try again after checking Codex's sandbox setup.");
+        }
+      }
+      let updated;
+      try { updated = updateBot(db, id, patch); }
+      catch (error) {
+        if (providerChanged) { await refreshProtection(true); runner.setupChanged(); }
+        throw error;
+      }
+      if (!providerChanged) runner.botChanged(id, false);
+      else runner.setupChanged();
+      const bot = runner.toBot(updated);
       broadcast("bot.updated", bot);
       return bot;
     },
@@ -272,6 +322,7 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
   team.start();
   runner.recover(); // Synchronous after binding, before setup yields or requests can be served.
   setup = await checkSetup(db);
+  logVersionDrift(setup);
   mcpUrl = `http://127.0.0.1:${server.port}/mcp`;
   broadcast = server.broadcast;
   runner.start();

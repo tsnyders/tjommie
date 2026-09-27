@@ -1,4 +1,4 @@
-import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readSync, realpathSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdtempSync, openSync, readdirSync, readSync, realpathSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
   ExchangeHandoffData, FileData, RoutineApprovalData, RoutineInput, TEAM_ROOM_ID,
@@ -165,7 +165,10 @@ function snapshotFile(roots: string[], target: string, staging: string, botId: s
     const checked = statSync(fileInside(roots, file));
     if (!opened.isFile() || opened.dev !== checked.dev || opened.ino !== checked.ino) throw new Error("The file changed while it was being shared. Please try again.");
     if (opened.size > MAX_SHARE_BYTES) throw new Error("That file is too big to share. The limit is 200 MB.");
-    mkdirSync(staging, { recursive: true, mode: 0o700 });
+    // The daemon creates and protects this folder before serving tools. A missing or
+    // replaced staging directory must not be silently recreated without its ACL.
+    const stagingStat = lstatSync(staging);
+    if (stagingStat.isSymbolicLink() || !stagingStat.isDirectory()) throw new Error("The protected shared-files folder is unavailable.");
     folder = mkdtempSync(join(staging, `share-${botId}-`));
     const path = join(folder, basename(file));
     const destination = openSync(path, "wx", 0o600);
