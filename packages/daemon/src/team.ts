@@ -1,7 +1,7 @@
 import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdtempSync, openSync, readdirSync, readSync, realpathSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
-  ExchangeHandoffData, FileData, RoutineApprovalData, RoutineInput, TEAM_ROOM_ID,
+  ExchangeHandoffData, FileData, RoutineApprovalData, RoutineInput, TEAM_ROOM_ID, findMentions,
   type Approval, type ApprovalDecision, type Bot, type BotState, type EventData, type EventName,
   type Exchange, type ExchangePostData, type Message, type NoticeData, type RoomHandoffData,
 } from "@tjommie/protocol";
@@ -32,8 +32,6 @@ const STATE_WORDS: Record<BotState, string> = {
   limited: "at its usage limit",
   needs_setup: "not set up yet",
 };
-const WORD = /[\p{L}\p{N}\p{M}_]/u;
-const EMAIL_END = /[.\-+%]/u;
 
 const within = (root: string, target: string): boolean => {
   const rel = relative(root, target);
@@ -106,26 +104,6 @@ export function getExchange(db: Db, id: string): Exchange {
   const row = db.prepare("SELECT * FROM exchanges WHERE id = ?").get(id) as ExchangeRow | undefined;
   if (!row) throw new RpcError("not_found", "No such exchange");
   return toExchange(row);
-}
-
-// The bots a Team room post mentions: "@Name" for whole names, longest names first, or "@everyone".
-export function findMentions(text: string, bots: { id: string; name: string }[]): string[] {
-  let rest = text.toLowerCase();
-  const take = (name: string): boolean => {
-    const tag = `@${name.toLowerCase()}`;
-    let hit = false;
-    for (let at = rest.indexOf(tag); at !== -1; at = rest.indexOf(tag, at + tag.length)) {
-      const before = rest[at - 1] ?? "";
-      if (WORD.test(before) || EMAIL_END.test(before) || WORD.test(rest[at + tag.length] ?? "")) continue;
-      rest = rest.slice(0, at) + " ".repeat(tag.length) + rest.slice(at + tag.length);
-      hit = true;
-    }
-    return hit;
-  };
-  if (take("everyone")) return bots.map((bot) => bot.id);
-  const found = new Set<string>();
-  for (const bot of [...bots].sort((a, b) => b.name.length - a.name.length)) if (take(bot.name)) found.add(bot.id);
-  return bots.filter((bot) => found.has(bot.id)).map((bot) => bot.id);
 }
 
 // The real path of `target` when it's an existing file inside one of `roots`, with links followed.

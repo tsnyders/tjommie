@@ -9,7 +9,7 @@ import { openDb, type Db } from "./db.ts";
 import { enqueue, newChain, setStatus, type WorkItem } from "./queue.ts";
 import { listRoutines } from "./routines.ts";
 import { setSettings } from "./settings.ts";
-import { Team, fileInside, findMentions, getExchange } from "./team.ts";
+import { Team, fileInside, getExchange } from "./team.ts";
 import { tempRoot } from "./testing.ts";
 
 let db: Db;
@@ -198,25 +198,6 @@ describe("Team room", () => {
     team.postToRoom("@Writer hi");
     team.turnEnded(delivered[0], done("Hello!", "m1"));
     expect(history(db, writer.id, undefined, 1)[0]).toMatchObject({ kind: "handoff", body: "Answered in the Team room", data: { roomMessageId: "m1" } });
-  });
-});
-
-describe("findMentions", () => {
-  const bots = [
-    { id: "w", name: "Writer" },
-    { id: "cv", name: "CV Writer" },
-    { id: "b", name: "Bot" },
-    { id: "b2", name: "Bot 2" },
-  ];
-
-  it("matches whole names, longest first, and ignores email addresses", () => {
-    expect(findMentions("@CV Writer can you help?", bots)).toEqual(["cv"]);
-    expect(findMentions("@writer and @cv writer!", bots)).toEqual(["w", "cv"]);
-    expect(findMentions("@Bot 2 and @Bot 2 again", bots)).toEqual(["b2"]);
-    expect(findMentions("mail me@writer.com or @Writers", bots)).toEqual([]);
-    expect(findMentions("mail me_@writer.com or me+@writer.com or @Writer_extra", bots)).toEqual([]);
-    expect(findMentions("@everyone stop", bots)).toEqual(["w", "cv", "b", "b2"]);
-    expect(findMentions("@everyone stop", [...bots, { id: "all", name: "Everyone" }])).toEqual(["w", "cv", "b", "b2", "all"]);
   });
 });
 
