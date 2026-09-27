@@ -5,7 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, expect, it } from "vitest";
 import WebSocket from "ws";
-import { connect } from "./client.ts";
+import { connect } from "@tjommie/client";
 
 const workspace = fileURLToPath(new URL("../../../", import.meta.url));
 const main = fileURLToPath(new URL("./main.ts", import.meta.url));

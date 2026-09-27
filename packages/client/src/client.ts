@@ -3,10 +3,17 @@ import { ErrorCode, PROTOCOL_VERSION, events, methods, type EventData, type Even
 export type ClientEvent = { [E in EventName]: { type: "event"; event: E; data: EventData<E> } }[EventName];
 export type Client = {
   call: <M extends MethodName>(method: M, params: ParamsIn<M>) => Promise<Result<M>>;
+  // Every event since connecting, unless the client was opened with recordEvents: false.
   events: ClientEvent[];
   subscribe: (listener: (event: ClientEvent) => void) => () => void;
   disconnected: Promise<ClientConnectionError>;
   close: () => Promise<void>;
+};
+
+export type ConnectOptions = {
+  // Tests and the terminal chat read `events`. Long-lived clients (the desktop app and the UI) turn this
+  // off so the list doesn't grow for the life of the connection; subscribers still get every event.
+  recordEvents?: boolean;
 };
 
 type PendingCall = { accept: (result: unknown) => void; reject: (error: Error) => void };
@@ -39,8 +46,9 @@ export class ClientConnectionError extends Error {
   }
 }
 
-// Node's built-in WebSocket speaks the same protocol as the desktop client.
-export async function connect(port: number, token: string): Promise<Client> {
+// Uses the global WebSocket, so the same client runs in Node 24, in Electron's main process and in the UI.
+export async function connect(port: number, token: string, options: ConnectOptions = {}): Promise<Client> {
+  const recordEvents = options.recordEvents ?? true;
   const socket = new WebSocket(`ws://127.0.0.1:${port}`);
   const received: ClientEvent[] = [];
   const subscribers = new Set<(event: ClientEvent) => void>();
@@ -134,7 +142,7 @@ export async function connect(port: number, token: string): Promise<Client> {
         const name = frame.event as EventName;
         // The name selects the matching schema, preserving the event/data pairing.
         const message = { type: "event", event: name, data: events[name].parse(frame.data) } as ClientEvent;
-        received.push(message);
+        if (recordEvents) received.push(message);
         for (const subscriber of subscribers) {
           try { subscriber(message); }
           catch (error: unknown) { console.error(error); }

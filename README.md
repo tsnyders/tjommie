@@ -32,6 +32,7 @@ npm run build      # static export to packages/ui/out
 | Package | What it is |
 |---|---|
 | `packages/protocol` | Messages shared by the daemon and the UI |
+| `packages/client` | The typed WebSocket client for the daemon, shared by the UI, the desktop app and the terminal chat |
 | `packages/daemon` | The background process that runs the bots |
 | `packages/ui` | The UI: Next.js static export, shadcn/ui, Tailwind |
 | `packages/desktop` | Electron shell |
