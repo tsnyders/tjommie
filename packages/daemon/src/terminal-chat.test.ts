@@ -237,8 +237,8 @@ it("prints Team room posts, bot names, local cards and streaming text", async ()
     "Waiting for you: Write a file\n  /allow tool-card   /always tool-card   /deny tool-card",
     "  Approval proposal is allowed: Add a routine: News",
     "  Approval denied-card is denied: Write declined",
-    "  [Editor] Routine finished: News checked",
-    "  [A bot] Needs attention: Unknown bot report",
+    "  Editor: Routine finished: News checked",
+    "  A bot: Needs attention: Unknown bot report",
     "  [Tester] Ready: Your bot report",
   ]) expect(output).toContain(line);
   expect(output).not.toContain("Hidden");
@@ -325,19 +325,49 @@ it("prints the chat header before replaying events received during bot setup", a
     { type: "event", event: "approval.added", data: approval({ summary: "Setup approval" }) },
     { type: "event", event: "notify", data: { kind: "approval", approvalId: "a", botId: writer.id, title: "Setup notification", body: "Setup complete" } },
   ] });
-  await chat.waitFor("[Editor] Setup notification: Setup complete");
+  await chat.waitFor("Editor: Setup notification: Setup complete");
   const output = chat.output();
   const headerIndex = output.indexOf("Chatting with Tester");
   expect(headerIndex).toBeGreaterThanOrEqual(0);
   for (const row of [
     "[Team room] Editor to Tester: Setup room post", "(Setup local notice)", "Waiting for you: Setup approval",
-    "[Editor] Setup notification: Setup complete",
+    "Editor: Setup notification: Setup complete",
   ]) {
     expect(output.indexOf(row)).toBeGreaterThan(headerIndex);
     expect(output.split(row)).toHaveLength(2);
   }
   chat.close();
   expect(await chat.waitForExit()).toBe(0);
+});
+
+it("labels another bot's waiting notification without repeating its name", async () => {
+  const chat = await terminal();
+  await chat.waitFor("Chatting with Tester");
+  chat.emit("notify", { kind: "approval", approvalId: "other-card", botId: writer.id, title: "Writer is waiting for you", body: "Add a routine: News" });
+  chat.emit("notify", { kind: "limit", botId: writer.id, title: "Writer hit its usage limit", body: "Try again later" });
+  chat.emit("notify", { kind: "routine_failed", routineId: "other-routine", runId: "other-run", botId: writer.id, title: "Writer's routine failed", body: "News check stopped" });
+  chat.emit("notify", { kind: "approval", approvalId: "own-card", botId: tester.id, title: "Tester is waiting for you", body: "Review a file" });
+  await chat.waitFor("[Tester] Tester is waiting for you: Review a file");
+  const output = chat.output();
+  expect(output).toContain("  Writer: Waiting for you: Add a routine: News");
+  expect(output).toContain("  Writer: Hit its usage limit: Try again later");
+  expect(output).toContain("  Writer: Routine failed: News check stopped");
+  expect(output).not.toContain("[Writer] Writer is waiting for you");
+  chat.close();
+  expect(await chat.waitForExit()).toBe(0);
+});
+
+it("exits with a notice when the active bot is deleted", async () => {
+  const chat = await terminal();
+  await chat.waitFor("Chatting with Tester");
+  chat.emit("bot.deleted", { id: writer.id });
+  chat.emit("message.added", message({ kind: "notice", body: "Still chatting" }));
+  await chat.waitFor("(Still chatting)");
+  expect(chat.output()).not.toContain("(This bot was deleted.)");
+  chat.emit("bot.deleted", { id: tester.id });
+  expect(await chat.waitForExit()).toBe(0);
+  expect(chat.output()).toContain("(This bot was deleted.)");
+  expect(chat.output()).not.toContain("Disconnected from the daemon.");
 });
 
 it("prints usage for incomplete commands and continues accepting valid commands", async () => {
