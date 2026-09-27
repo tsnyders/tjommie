@@ -1,4 +1,4 @@
-import type { Autonomy, Bot } from "@tjommie/protocol";
+import type { Autonomy, Bot, BotState } from "@tjommie/protocol";
 import { clock } from "./format";
 
 export const DELETED_BOT = "A deleted bot";
@@ -43,6 +43,26 @@ export function stateLabel(bot: Pick<Bot, "state" | "limitedUntil">): string {
       return "Idle";
   }
 }
+
+// The short state, for tight rows (the mention popover, the Agents overview's chips).
+export const SHORT_STATE: Record<BotState, string> = {
+  idle: "Idle",
+  working: "Working",
+  waiting: "Waiting",
+  paused: "Paused",
+  limited: "Limited",
+  needs_setup: "Needs setup",
+};
+
+// The color of a state's words in lists (WF5's members, the mention popover).
+export const STATE_TEXT: Record<BotState, string> = {
+  idle: "text-secondary",
+  working: "text-working",
+  waiting: "text-accent",
+  paused: "text-secondary",
+  limited: "text-secondary",
+  needs_setup: "text-secondary",
+};
 
 // A daemon error as a sentence. The client's errors start with their code ("bad_params: ...").
 export function errorText(error: unknown): string {

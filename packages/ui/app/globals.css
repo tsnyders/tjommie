@@ -1,17 +1,26 @@
 @import "tailwindcss";
 
+/* Tailwind's dark: variant follows the app's .dark class, not the Windows setting. */
+@custom-variant dark (&:is(.dark *));
+
 /* Tjommie's colors: the token table in docs/design/wireframe-spec.md ("Colors and type") and its approved
    exceptions. Light values follow design/openpencil/recolor-light.js, the map WF1 light was drawn with; the
    light composer's 1 px #EAEAEA stroke is from WF1 light (dark draws none, so its stroke is the fill).
    --highlight is a popover's highlighted row: the map turns both #1A1A1A and #262626 into #EFEFEF, so light
    mode uses the selected color there instead.
+   Light --code is #E4E4E4, because the map's #EFEFEF would vanish inside the #EFEFEF bot bubble.
+   Light --mention is #459FFF: the map has no entry for #1D6FE0, and the light user bubble is dark.
+   --drawer and --nav-selected (the Settings nav) have no map entry either; their light values keep the dark
+   ones' places: between the canvas and the card, and next to the card stroke.
    Components use these names only; bot colors and the Chrome logo are the only raw colors in components. */
 :root {
+  color-scheme: light;
   --canvas: #fcfcfc;
   --rail: #f5f5f5;
   --rail-edge: #ebebeb;
   --card: #f5f5f5;
   --card-stroke: #ebebeb;
+  --drawer: #f7f7f7;
   --divider: #e4e4e4;
   --bubble: #efefef;
   --pill: #efefef;
@@ -19,6 +28,7 @@
   --composer: #ffffff;
   --composer-stroke: #eaeaea;
   --selected: #e1e1e1;
+  --nav-selected: #ebebeb;
   --popover: #efefef;
   --highlight: #e1e1e1;
   --input-stroke: #d6d6d6;
@@ -45,11 +55,13 @@
 }
 
 .dark {
+  color-scheme: dark;
   --canvas: #070707;
   --rail: #111111;
   --rail-edge: #080808;
   --card: #111111;
   --card-stroke: #1c1c1c;
+  --drawer: #0b0b0b;
   --divider: #252525;
   --bubble: #262626;
   --pill: #262626;
@@ -57,6 +69,7 @@
   --composer: #2f2f2f;
   --composer-stroke: #2f2f2f;
   --selected: #303030;
+  --nav-selected: #1f1f1f;
   --popover: #1a1a1a;
   --highlight: #262626;
   --input-stroke: #2a2a2a;
@@ -89,6 +102,7 @@
   --color-rail-edge: var(--rail-edge);
   --color-card: var(--card);
   --color-card-stroke: var(--card-stroke);
+  --color-drawer: var(--drawer);
   --color-divider: var(--divider);
   --color-bubble: var(--bubble);
   --color-pill: var(--pill);
@@ -96,6 +110,7 @@
   --color-composer: var(--composer);
   --color-composer-stroke: var(--composer-stroke);
   --color-selected: var(--selected);
+  --color-nav-selected: var(--nav-selected);
   --color-popover: var(--popover);
   --color-highlight: var(--highlight);
   --color-input-stroke: var(--input-stroke);
@@ -153,17 +168,18 @@
 .drag {
   -webkit-app-region: drag;
 }
-.drag :where(a, button, input, textarea, select, [role="button"], [role="menu"]) {
+.drag :where(a, button, input, textarea, select, [role="button"], [role="menu"], [role="radiogroup"], [role="switch"], [role="combobox"]) {
   -webkit-app-region: no-drag;
 }
 
-/* Buttons press in slightly. Keyboard actions and actions repeated all day don't animate. */
+/* Buttons press in slightly under the mouse. A keyboard press doesn't animate (the button is :focus-visible
+   then), and buttons for actions repeated all day, like Send, leave .press off. */
 .press {
   transition:
     transform 150ms cubic-bezier(0.23, 1, 0.32, 1),
     background-color 150ms cubic-bezier(0.23, 1, 0.32, 1);
 }
-.press:active:not(:disabled) {
+.press:active:not(:disabled):not(:focus-visible) {
   transform: scale(0.97);
 }
 
