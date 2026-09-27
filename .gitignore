@@ -1,4 +1,5 @@
 node_modules/
+dist-desktop/
 .next/
 out/
 *.tsbuildinfo

@@ -14,6 +14,7 @@
     "dev": "npm run dev -w @tjommie/ui",
     "desktop": "npm start -w @tjommie/desktop",
     "build": "npm run build -w @tjommie/ui",
+    "package": "node --disable-warning=ExperimentalWarning packages/desktop/scripts/package.ts",
     "lint": "npm run lint -w @tjommie/ui",
     "typecheck": "tsc -p . && npm run typecheck -w @tjommie/ui",
     "test": "vitest run --passWithNoTests",
@@ -21,6 +22,8 @@
   },
   "devDependencies": {
     "@types/node": "^24.13.6",
+    "electron-builder": "^26.15.3",
+    "rolldown": "^1.2.11",
     "typescript": "^5.9.3",
     "vitest": "^5.0.1"
   }
