@@ -20,14 +20,14 @@ type Fixture = {
 };
 const fixtures: Fixture[] = [];
 
-function launch(args: string[], options: { root?: string; dev?: string } = {}): Fixture {
+function launch(args: string[], options: { root?: string; dev?: string; env?: Record<string, string> } = {}): Fixture {
   mkdirSync(cache, { recursive: true });
   const root = options.root ?? mkdtempSync(join(cache, "tjommie-token-pipe-"));
   mkdirSync(root, { recursive: true });
   const inheritedEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toUpperCase() !== "PATH"));
   const child = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", main, ...args], {
     cwd: workspace,
-    env: { ...inheritedEnv, PATH: "", TJOMMIE_HOME: root, TJOMMIE_PORT: "0", TJOMMIE_DEV: options.dev ?? "" },
+    env: { ...inheritedEnv, PATH: "", TJOMMIE_HOME: root, TJOMMIE_PORT: "0", TJOMMIE_DEV: options.dev ?? "", ...options.env },
     stdio: "pipe",
     windowsHide: true,
   });
@@ -95,14 +95,14 @@ afterEach(async () => {
   }
 });
 
-it.each([false, true])("authenticates a piped production token, removes a stale file (%s), and stays up after stdin closes", async (stale) => {
+it.each([false, true])("authenticates a piped production token and removes a stale file (%s)", async (stale) => {
   mkdirSync(cache, { recursive: true });
   const root = mkdtempSync(join(cache, "tjommie-token-pipe-"));
   const tokenFile = join(root, "daemon-token");
   if (stale) writeFileSync(tokenFile, randomBytes(32).toString("base64url"));
   const token = randomBytes(32).toString("base64url");
   const fixture = launch(["--token-stdin"], { root });
-  fixture.child.stdin.end(`${token}\nignored second line\n`);
+  fixture.child.stdin.write(`${token}\nignored second line\n`);
   const port = await ready(fixture);
   expect(await originAllowed(port, "http://localhost:3000")).toBe(false);
   expect(existsSync(tokenFile)).toBe(false);
@@ -116,6 +116,29 @@ it.each([false, true])("authenticates a piped production token, removes a stale 
   }
   expect(fixture.child.exitCode).toBeNull();
   expect(existsSync(tokenFile)).toBe(false);
+}, 30_000);
+
+it("stops when the desktop app closes its stdin", async () => {
+  const token = randomBytes(32).toString("base64url");
+  const fixture = launch(["--token-stdin"]);
+  fixture.child.stdin.write(`${token}\n`);
+  const port = await ready(fixture);
+  const client = await connect(port, token);
+  fixture.child.stdin.end();
+  expect(await exited(fixture)).toBe(0);
+  await client.disconnected;
+}, 30_000);
+
+it("keeps the account folders where TJOMMIE_ACCOUNTS_DIR points", async () => {
+  mkdirSync(cache, { recursive: true });
+  const root = mkdtempSync(join(cache, "tjommie-token-pipe-"));
+  const accounts = join(root, "signed-in-accounts");
+  const token = randomBytes(32).toString("base64url");
+  const fixture = launch(["--token-stdin"], { root, env: { TJOMMIE_ACCOUNTS_DIR: accounts } });
+  fixture.child.stdin.write(`${token}\n`);
+  await ready(fixture);
+  expect(existsSync(join(accounts, "claude-main"))).toBe(true);
+  expect(existsSync(join(accounts, "codex-main"))).toBe(true);
 }, 30_000);
 
 it.each(["short", "invalid", "missing", "timeout"] as const)("exits plainly for a %s production token", async (caseName) => {
