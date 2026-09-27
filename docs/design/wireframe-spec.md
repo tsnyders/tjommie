@@ -129,3 +129,233 @@ Frame "WF4 Logins (dark)", 1440x900. Rail with lucide:settings active.
   - "Signed in on" : "Pnet apply's Chrome profile" with logos:chrome 14px.
   - "Last used by Pnet apply, 2 minutes ago" (Inter 12 #989898).
   - Bottom: "Delete login" (Inter 13 #EA4144, lucide:trash-2) left-aligned.
+
+## Phase 1 screens (plan 1C, 2026-09-25)
+
+Frames on the "Wireframes" page of `design/tjommie-wireframes.fig`, exported to `docs/wireframes/`. Find frames and layers by name: node ids change every time the file is reopened.
+
+| Frame | Export | What it shows |
+|---|---|---|
+| WF1 Main chat, Phase 1 (dark) | wf1-phase1-main-chat-dark.png | Phase 1 chat: header chip "Working", routine label, activity row, handoff rows, file card, approval card (Allow once, Always allow, Deny), Stop button, bot panel (summary, Browser with Show window, Routines with Add, Recent activity). Careers24 scout is Limited in the rail |
+| WF2 Agents overview, Phase 1 (dark) | wf2-phase1-agents-overview-dark.png | The overview without live thumbnails: a 56 px avatar placeholder with a state line ("Working", "Waiting for you", "Idle", "Paused"); header "6 bots, 2 working, 1 waiting for you"; filter All, Working, Waiting, Paused; no store icon (ruling 1C-01) |
+| WF3 New bot, Phase 1 (dark) | wf3-phase1-new-bot-dark.png | Settings rows: Model, Folder, Autonomy (Always ask, Own folder, Full auto), Browser (with an on switch), Can message, Routines |
+| WF5 Team room (dark) | wf5-team-room-dark.png | Bot-to-bot posts ("to <bot>", Open exchange), @mentions in the person's bubble, the mention popover filtered to the typed "@Ca", members with states, the chain limit line |
+| WF6 Exchange view (dark) | wf6-exchange-view-dark.png | An opened exchange in the right panel, with its handoff row selected in the chat. The panel composer replies in the Team room with both bots mentioned as chips |
+| WF7 Routine editor (dark) | wf7-routine-editor-dark.png | A dialog over the dimmed chat: on switch, name (focused), what to do, days, times, time zone, stop after, recent runs (Done, Stopped, Failed, Missed, Skipped), Delete routine, Cancel, Save |
+| WF8 Bot settings (dark) | wf8-bot-settings-dark.png | Header chip with the bot's state, the 96 px avatar preview (orange and cloud selected), the New bot rows, About this bot (created, home folder, notes.md preview), Delete bot, Pause bot, Cancel, Save changes |
+| WF9 First-run setup (dark) | wf9-first-run-dark.png | Provider cards: signed in, signing in, not signed in, not installed; Create your first bot. The rail has no bots yet |
+| WF10 Settings: Bots (dark) | wf10-settings-bots-dark.png | Settings nav (General, Bots) and the Chain limit stepper (default 5) |
+| WF10 Settings: General (dark) | wf10-settings-general-dark.png | The Appearance row with Dark, Light and System (the WF7 "Stop after" control style) (ruling 1C-08) |
+| WF11 Chat states (dark) | wf11-chat-states-dark.png | Every message, card, row, composer, rail and dialog state, plus the empty, long-text and focus states. 1440x2274 |
+
+- Every export also has a 2x file with "@2x" before ".png" (2880x1800). WF11's is 2594x4096, because exports cap the long edge at 4096.
+- For Phase 1, these frames replace WF1 dark, WF2 and WF3. WF1 light and WF4 Logins have no Phase 1 version: the light theme maps from the tokens, and logins arrive in Phase 4.
+
+### Colors and type
+
+The Phase 1 frames use only these tokens (from `docs/design/brief.md` and WF1 to WF4) plus the approved exceptions below, so the light theme is a mechanical swap:
+
+| Token | Value |
+|---|---|
+| Canvas | `#070707` |
+| Rail | `#111111` |
+| Card | `#111111` |
+| Card stroke | `#1C1C1C` |
+| Drawer | `#0B0B0B` |
+| Divider | `#252525` |
+| Bot bubble | `#262626` |
+| Secondary pill | `#262626` |
+| Header chip | `#181818` |
+| Composer | `#2F2F2F` |
+| Selected | `#303030` |
+| Popover | `#1A1A1A` |
+| Input stroke | `#2A2A2A` |
+| Text | `#F5F5F5` |
+| Title | `#FCFCFC` |
+| Muted body | `#BDBDBD` |
+| Secondary | `#989898` |
+| Captions | `#909090` |
+| Section label | `#9C9C9C` |
+| Placeholder | `#6E6E6E` |
+| Icon | `#ACACAC` |
+| Accent (waiting, links, focus) | `#459FFF` |
+| Working and success | `#3FA37A` |
+| Destructive only | `#EA4144` |
+| Waiting card | fill `#101722`, stroke `#1E3A5F` |
+| Mention in a light bubble | `#1D6FE0` |
+
+Approved exceptions (ruling 1C-04 and the inherited-color rulings):
+- `#3A3A3A`: the disabled send button; also the inherited Attach button.
+- `#000000` at 60%: the routine editor scrim.
+- `#1F1F1F`: the selected Settings nav item.
+- Radius 8 for popover rows (model picker, mention popover). The Settings nav rows and the file tile also use 8, inherited.
+- Colors inherited unchanged from WF1 to WF4:
+  - `#777777`: the user avatar.
+  - `#080808`: the rail's right edge.
+  - `#3A2020` with `#EA4144`: the file tile and its PDF icon.
+  - The Chrome logo's brand colors (`#1A73E8`, `#229342`, `#E33B2E`, `#FBC116`) in the Browser card.
+  - `#8A8A8A`: WF2's "Talking with" and "No bot chats today" labels, and the Team room card's message headers.
+- Bot colors appear only inside avatars and the avatar color and shape pickers.
+
+Type: Inter only.
+- Sizes 12, 13, 14, 15, 17 and 20. Size 11 only for the smallest labels: "Queued", the model picker caption, WF2's Team room card and WF11's captions.
+- Weights 400, 500 and 600.
+- Line heights: 14/21 for bubbles and body text, 12/18 for helper text.
+
+Radius: bubbles 18; cards 12; large cards 14; dialogs and popovers 16; inputs and rows 10; popover rows 8; pills and chips fully round.
+
+### Avatars
+
+Every avatar is an instance of a component drawn at its own size, never a scaled instance: a save and reopen resets a scaled instance's children.
+- 40 px masters: "Bot avatar / <bot>" for all six bots.
+- Size components, "Bot avatar / <bot> / <size>", in the component column left of the frames:
+
+  | Bot | Sizes (px) |
+  |---|---|
+  | Chief of Staff | 9.8, 14, 18, 24, 28, 56 |
+  | Pnet apply | 9.8, 14, 18, 24, 28, 56, 96 |
+  | CV Writer | 9.8, 14, 18, 24, 28, 56 |
+  | Inbox Triage | 18, 24, 28, 56 |
+  | Night Shift | 24, 28, 56 |
+  | Careers24 scout | 18, 24, 28, 56 |
+
+1D renders each bot from one SVG, at any size. The sizes in use:
+
+| Size | Where |
+|---|---|
+| 9.8 | Only inside the WF2 Team room card icon |
+| 14 | The Team room cluster in the rail |
+| 18 | Handoff rows, mention rows, exchange author rows and composer chips, "Can message", "Talking with" |
+| 24 | Header chips, member rows, the exchange header |
+| 28 | Team room posts, WF2 card titles |
+| 40 | Rail, bot summary, Suggestions, empty chat |
+| 56 | WF2 overview placeholders |
+| 96 | The New bot and Bot settings preview, in its 156 px tile. WF3 Phase 1 draws it as loose vectors; WF8 uses "Bot avatar / Pnet apply / 96" |
+
+Dimmed avatars: 35% for Idle placeholders and the empty chat, 50% for Paused and Limited, 40% for the inactive Team room tile in WF9.
+
+### Rules these frames settle
+
+**Rail and header**
+- Rail states:
+  - Working: green dot, bottom right.
+  - Waiting for you: blue dot, top right.
+  - Paused: 50% opacity.
+  - Limited: 50% opacity plus an hourglass badge.
+  - Needs setup: a plug badge, at full opacity.
+  - Idle: no mark.
+- Dots are 10 px with a 2 px ring in the rail color (`#111111`). On the selected bot the ring is `#303030`, the selected square's color. Badges are 16 px `#262626` circles with a 2 px `#111111` ring and a 10 px `#ACACAC` icon, centered 3 px in from the avatar's bottom-right corner.
+- 50% opacity in the rail means Limited (or Night Shift's Paused), never "not selected". The roster's Careers24 scout is Idle. Only frames whose story makes it Limited dim it: WF1 Phase 1, its clones WF6 and WF7, WF5 and WF11.
+- The selected item (a bot, the Team room, or a bottom-cluster destination) sits on a 52 px `#303030` square, radius 12.
+- The Phase 1 bottom cluster is Agents overview, New bot and Settings, 44 px apart, then the user avatar 50 px below Settings, anchored to the bottom.
+- With no bots yet (WF9), the rail shows only the Team room at 40%, the divider and the bottom cluster.
+- The header chip shows the state in words ("Working", "Limited until 3:45 PM"):
+  - Working: a green dot and green text.
+  - Limited: an hourglass and `#989898` text.
+  - The Team room's chip: a users icon, "Team room" and "6 bots".
+- The header's right icons are panel-right (shows or hides the right panel) and ellipsis (More).
+- The frames show "Working" in four styles, by place:
+  - Header chip: green dot and green text.
+  - Bot summary and WF2 card titles: a `#262626` chip with a loader icon and `#F5F5F5` text.
+  - Member list and mention popover: green text.
+  - WF2 placeholders: a loader and "Working" in `#BDBDBD`.
+
+**Chat**
+- The composer's round button:
+  - Disabled send (`#3A3A3A`) when the field is empty and the bot is idle.
+  - White send when there's text. Sending while the bot works steers it.
+  - White Stop when the field is empty and the bot works.
+- Attachments sit above the composer as chips: `#262626`, fully round, height 28, with a paperclip, the file name and an x. Files go with a message: send stays disabled until there's text, even with files attached (the daemon's `chat.send` requires non-empty text).
+- Approval cards offer Allow once, Always allow and Deny. Under the buttons, a note says what Always allow saves ("Always allow saves: Write, for Pnet apply only"). WF11 shows it; WF1 Phase 1 and its clones leave it out, and 1D shows it everywhere. Routine proposals offer Add routine and Dismiss.
+- Answered approvals collapse to one line: a check or an x, then "Allowed once: ..." or "Denied: ...".
+- Handoff rows: pending (spinner, "waiting for a reply"), replied (message count), failed ("no reply"), incoming ("<bot> asked: …", one avatar, no arrow), room answer ("Answered in the Team room", a users icon, no count). In long rows the text truncates; the count and the chevron stay visible.
+- The handoff row whose exchange is open (WF6) is selected: fill `#111111`, 1 px `#303030` stroke.
+- Activity rows:
+  - Collapsed: list-checks, "N steps: <latest step>", chevron-down.
+  - Expanded: a card with one row per step (check for done, loader for running, x for failed).
+  - They sit with the bot that did the work, in time order.
+  - Padding 0 12, and the summary truncates.
+- A run starts with a routine label: a green clock and "Routine: <name>". A missed run has a gray clock and "Missed, the PC was off".
+- Bubbles wrap long text. Main-chat bot bubbles go up to 600 px (WF1 Phase 1 draws its two-line bubbles at the full 600). Team room bot bubbles hug their text up to 560 px, and the person's Team room post is also capped at 560. Exchange bubbles go up to 400 px.
+- WF11 also settles: streaming (a 2x16 caret after the text), queued ("Queued" under the bubble), the notices, errors with Retry, the Needs setup banner (waiting-card colors, a plug icon, a white "Sign in" pill) and the empty chat (40 px avatar at 35%, a centered hint).
+- Bot panel order: summary card, Browser card with Show window, Routines with Add, Recent activity. There are 16 px between cards and 24 px above a section label. Empty states: "No routines yet." and "No recent activity."
+- Dialogs: 320 wide, padding 20, radius 16, `#111111` with a `#252525` stroke, and the buttons right-aligned on one line. The Full auto warning confirms Full auto. The Delete bot dialog confirms a delete, and its button is a `#262626` pill with red text and icon.
+- The model picker and the mention popover: `#1A1A1A`, radius 16, `#252525` stroke, 36 px rows (radius 8, gap 4), highlighted row `#262626`.
+- Focus: a 2 px `#459FFF` ring on inputs and buttons. On an input it replaces the border, inside the box. On a button it sits 2 px outside the pill.
+
+**Team room and exchanges**
+- A post: the 28 px avatar, then a header line with the name (13/600), an optional "to <bot>" (13, `#989898`) and the time (12, `#909090`), then the bubble. Bot-to-bot posts end with "Open exchange" and a chevron (12, `#459FFF`).
+- The person's post is a right-aligned user bubble with no header. Its @mentions are `#1D6FE0` at weight 600.
+- Members: a 24 px avatar, the name, and the state in words at the right. Working is green, Waiting for you is blue, and Idle, Paused and "Limited until 3:45 PM" are `#989898`. Under the list, the chain limit line has a "Change" link (the setting lives in Settings: Bots).
+- The mention popover:
+  - It opens above the composer: left edge at 16 px, bottom 8 px above the composer.
+  - It filters by the typed prefix. A bare "@" lists every bot plus "@everyone" ("All 6 bots"). WF11 shows a short sample: CV Writer, Chief of Staff, @everyone.
+  - Its rows use the short state ("Limited"); the member list uses the full one ("Limited until 3:45 PM").
+  - While it's open, the room list gets bottom padding equal to the popover's height, so the newest post stays visible.
+- The exchange view:
+  - It opens in the right panel, in place of the bot panel, and the chat stays.
+  - Header: both 24 px avatars with an arrow, "<bot> asked <bot>", a meta line ("Today 9:31 AM · Replied after 2 minutes") and a close x.
+  - Order: Author / Pnet apply, request bubble, Author / CV Writer, activity row, reply bubble, attachment card, caption. Author rows are an 18 px avatar and the name (12/600, `#989898`).
+  - The composer has no Attach button. Both bots are pre-mentioned as chips, and the placeholder ("Reply in Team room") fills the remaining width and truncates. Send is disabled while the field is empty.
+
+**Bot screens**
+- New bot and Bot settings share the rows Model, Folder, Autonomy, Browser, Can message and Routines.
+  - Autonomy expands in place: Always ask, Own folder, Full auto, and a helper line.
+  - Browser shows "Its own Chrome profile" and an on switch.
+- The avatar preview is 96 px in the 156 px tile on both screens. The selected color swatch has a white ring. The selected shape tile is `#303030` with a 1 px `#459FFF` stroke. The shape tiles preview in the bot's color.
+- Bot settings:
+  - The header chip shows the bot and its state.
+  - About this bot: Created (sample "Monday 21 September"), Home folder with "Open folder", Notes with a notes.md preview (12/18 `#BDBDBD` on `#070707`, radius 10, padding 12), then "Open notes.md".
+  - The action bar has Delete bot (red icon and text, no pill) and Pause bot (a `#262626` pill) at the left, and Cancel and Save changes at the right.
+- Switches: 36x20. On is a `#F5F5F5` track with a 16 px `#070707` knob at the right, 2 px inset. Off (WF4) is a `#303030` track with a `#989898` knob.
+- Segmented controls (Autonomy, Stop after, Appearance, the model picker's provider switch): a `#1A1A1A` track. The selected option is a `#303030` pill with a `#F5F5F5` label at weight 600 (as in WF7 and WF10); the others are `#989898`. The Autonomy row in WF3 Phase 1 and WF8 draws its selected label at 500: that's a drawing inconsistency, so use 600 there too.
+- The routine editor:
+  - A 560 px dialog over a 60% black scrim, with the title, the On switch and a close x in its header.
+  - Days are seven round chips; selected ones are white with a dark bold letter. Times are chips with an x, then an outlined "Add time" chip. The time zone sits on its own line.
+  - Stop after: No limit, 1 hour, 2 hours, 3 hours.
+  - Recent runs: icon, date, status, duration, and "Last 20 runs are kept". Statuses: Done, Stopped at the time limit, Failed: <reason>, Missed: the PC was off, Skipped: <bot> was paused. Missed and Skipped have no duration.
+  - The footer has Delete routine (red) at the left, and Cancel and Save at the right.
+- The agents overview:
+  - Working and waiting bots show their avatar at full opacity with a state line. Idle is at 35%. Paused is at 50%, with a pause icon.
+  - The waiting card has a 2 px `#459FFF` inner border on its placeholder, a `#1E3A5F` card stroke and a "Review replies" pill.
+  - The Pnet apply card is drawn hovered: it shows the "..." menu and a `#2A2A2A` stroke.
+
+**Settings and first run**
+- The Settings nav has General and Bots only. The selected item is `#1F1F1F` with a `#F5F5F5` label (500) and a white icon. The others have a `#BDBDBD` label and a `#989898` icon.
+- Setting cards are `#111111`, radius 12, with 16 px padding, and they hug their content.
+- Chain limit: a 120x32 stepper with minus and plus, default 5.
+- First run: one card per provider (Claude Code, Codex) side by side. WF9 adds an "Other states" row below, showing the not-signed-in and not-installed cards as specimens. Each card has a 36 px icon tile, the name, and the version (or "Not installed"). Then "Create your first bot", with "You can sign in to the other one later in Settings." under it.
+
+**Copy**
+- Routine names are the person's own free text, so a name like "Pnet apply 9am" is fine as typed.
+- Times the app formats itself (message times, the next run, "Limited until") use the "9:00 AM" style.
+
+**Phase 1 hides**
+- The store icon, Share, mic and voice, the live screen and computer controls (Take over, Pause, Stop, the This PC / Virtual machine switch), the Chrome profile card's controls, logins and usage numbers.
+- The "Live" state: Working replaces it.
+
+### Notes for 1D (OpenPencil workarounds, not design intent)
+
+- **Truncation:** long rows use a typed "..." because OpenPencil's truncate mode is broken. Build them with CSS `text-overflow: ellipsis`, and keep the trailing element (time, chevron, count) fixed.
+- **Line height:** OpenPencil can't set line height, so "14/21" and "12/18" texts render at default leading. Use the stated line heights, and let card heights follow from the content. For example, the Chain limit card hugs its content with 16 px padding: about 94 px with 12/18 leading, not the drawn 88 or the brief's 108.
+- **Fixed sizes:** these containers are FIXED in the file only because auto-layout wouldn't re-flow in this OpenPencil session. Build them as hugging, content-sized containers:
+  - The 14 containers fixed during the avatar repair in WF1 dark, WF1 light, WF1 Phase 1 and WF3 (handoff rows, header chips, Messages lists, the "Can message" avatars).
+  - The WF2 Phase 1 header filter.
+  - The WF10 header, nav list, segmented control and selected nav labels.
+  - WF5's header chip, Messages list and "Draft" (the draft fills the composer).
+  - WF6's author names and chip labels.
+  - WF8's header chip, buttons, Save changes, About this bot, Delete bot and Pause bot.
+- **Drawn positions, not rules:**
+  - WF3 Phase 1's Autonomy row places its switch and helper at 48 and 88 in a fixed 128 px row. Build it as padding plus content.
+  - WF1 Phase 1's bot summary uses absolute positions and a 336 px Access line. Build it as a column of icon and text rows.
+  - "Show window" is part of the Browser card's title row.
+  - Recent activity rows are icon, then text (fills and truncates), then time (hugs).
+  - WF6's activity row has 0 10 padding only to fit the drawing; use 0 12.
+- **Fills:** the layout-only containers filled `#111111` in WF7 (Day chips, Time chips, Time zone, run rows, Delete routine) are transparent in the UI. The fill only hides OpenPencil's white default. WF2 Phase 1's Inbox Triage thumbnail also carries an inherited 0.1 px `#459FFF` stroke; build only the 2 px inner border.
+- **Focus ring:** build it in CSS, not as a wrapper element (WF11 draws the button ring as an emptied icon frame). Buttons: `outline: 2px solid #459FFF; outline-offset: 2px`. Inputs: the ring replaces the border, for example `border-color: #459FFF` at 2 px, or `outline-offset: -2px`, so the box size doesn't change.
+- **Card action rows** (WF9's pills) are bottom-anchored with 16 px bottom padding, not a fixed gap under the text.
+- **Layer names:**
+  - The rail's green "Live dot" in every Phase 1 frame is the Working dot.
+  - The typed draft in "Composer / Typing" is a draft, not placeholder text.
+  - WF9's bottom cards list Actions before Detail in the layer tree, but read top to bottom as header, detail, actions.
+- **Icons:** after a file reopen, OpenPencil resets Lucide stroke caps, so the .fig can show `circle-alert` without its "!" and with thinner strokes. The PNGs are the reference; 1D uses the Lucide icons by name.
