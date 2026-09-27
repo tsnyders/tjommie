@@ -1,5 +1,5 @@
 import { connect, type Client, type ClientEvent } from "@tjommie/client";
-import type { Message } from "@tjommie/protocol";
+import type { Message, MethodName, ParamsIn, Result } from "@tjommie/protocol";
 import { desktop, type DesktopConnection } from "./desktop";
 import { addOlder, applyEvent, connected, finishLoading, forgetConversation, startLoading } from "./state";
 import { getState, update } from "./store";
@@ -16,6 +16,11 @@ type Page = { messages: Message[]; hasMore: boolean };
 export function daemon(): Client {
   if (!client) throw new Error("Tjommie isn't connected right now.");
   return client;
+}
+
+// Calls the daemon, or rejects when Tjommie isn't connected, so a call made from an effect never throws.
+export function request<M extends MethodName>(method: M, params: ParamsIn<M>): Promise<Result<M>> {
+  return client ? client.call(method, params) : Promise.reject(new Error("Tjommie isn't connected right now."));
 }
 
 // Connects once for the life of the window, and again whenever the desktop app restarts the daemon.
@@ -124,6 +129,17 @@ export const botHistory =
   (botId: string) =>
   (before?: string): Promise<Page> =>
     daemon().call("chat.history", { botId, before, limit: PAGE });
+
+// The Team room's pages, newest first.
+export const roomHistory = (before?: string): Promise<Page> => request("room.history", { before, limit: PAGE });
+
+// An exchange's messages: the newest 200, with no older pages to load.
+export const exchangePage =
+  (exchangeId: string) =>
+  async (): Promise<Page> => {
+    const { messages } = await request("exchanges.get", { id: exchangeId });
+    return { messages, hasMore: false };
+  };
 
 // Loads a conversation's newest page once; events keep it current from then on.
 export async function loadConversation(conversationId: string, fetchPage: (before?: string) => Promise<Page>): Promise<void> {
