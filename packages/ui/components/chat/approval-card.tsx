@@ -20,7 +20,7 @@ export function ApprovalCard({ summary, data, bot }: { summary: string; data: Ap
   async function answer(decision: ApprovalDecision): Promise<void> {
     setBusy(true);
     setProblem(null);
-    decided.set(data.approvalId, decision);
+    decided.set(data.approvalId, decision === "always" && !("rule" in data && data.rule) ? "once" : decision);
     try {
       await daemon().call("approvals.respond", { approvalId: data.approvalId, decision });
     } catch (error) {
