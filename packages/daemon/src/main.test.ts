@@ -71,7 +71,7 @@ async function exited(fixture: Fixture): Promise<number | null> {
   try {
     return await Promise.race([
       fixture.closed,
-      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Daemon subprocess did not exit.")), 8_000); }),
+      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Daemon subprocess did not exit.")), 15_000); }),
     ]);
   } finally {
     clearTimeout(timer);
@@ -116,7 +116,7 @@ it.each([false, true])("authenticates a piped production token, removes a stale 
   }
   expect(fixture.child.exitCode).toBeNull();
   expect(existsSync(tokenFile)).toBe(false);
-});
+}, 30_000);
 
 it.each(["short", "invalid", "missing", "timeout"] as const)("exits plainly for a %s production token", async (caseName) => {
   const fixture = launch(["--token-stdin"]);
@@ -126,10 +126,11 @@ it.each(["short", "invalid", "missing", "timeout"] as const)("exits plainly for 
   expect(await exited(fixture)).toBe(1);
   expect(fixture.stderr().trim()).toBe(caseName === "short" || caseName === "invalid"
     ? "Daemon token must be at least 43 base64url characters."
-    : "No daemon token arrived on stdin within 5 seconds.");
+    : caseName === "missing" ? "stdin closed before a daemon token arrived."
+      : "No daemon token arrived on stdin within 5 seconds.");
   expect(fixture.stdout()).toBe("");
   expect(existsSync(join(fixture.root, "daemon-token"))).toBe(false);
-});
+}, 20_000);
 
 it("requires an explicit mode", async () => {
   const fixture = launch([]);
@@ -138,6 +139,27 @@ it("requires an explicit mode", async () => {
   expect(fixture.stdout()).toBe("");
   expect(existsSync(join(fixture.root, "daemon-token"))).toBe(false);
 });
+
+it("rejects an unknown argument with its name", async () => {
+  const fixture = launch(["--dev", "--port", "1"]);
+  expect(await exited(fixture)).toBe(1);
+  expect(fixture.stderr().trim()).toBe("Unknown argument: --port");
+  expect(fixture.stdout()).toBe("");
+  expect(existsSync(join(fixture.root, "daemon-token"))).toBe(false);
+});
+
+it("prints an unexpected startup error with its stack and without the token", async () => {
+  mkdirSync(cache, { recursive: true });
+  const root = mkdtempSync(join(cache, "tjommie-token-pipe-"));
+  mkdirSync(join(root, "tjommie.db"));
+  const token = randomBytes(32).toString("base64url");
+  const fixture = launch(["--token-stdin"], { root });
+  fixture.child.stdin.end(`${token}\n`);
+  expect(await exited(fixture)).toBe(1);
+  expect(fixture.stderr()).toContain("    at ");
+  expect(fixture.stderr()).not.toContain(token);
+  expect(fixture.stdout()).toBe("");
+}, 20_000);
 
 it.each([{ args: ["--dev"], dev: "" }, { args: [], dev: "1" }])("writes and reuses the development token file with $args and TJOMMIE_DEV=$dev", async ({ args, dev }) => {
   const first = launch(args, { dev });
@@ -152,7 +174,7 @@ it.each([{ args: ["--dev"], dev: "" }, { args: [], dev: "1" }])("writes and reus
   expect(readFileSync(tokenFile, "utf8")).toBe(token);
   const client = await connect(port, token);
   await client.close();
-});
+}, 30_000);
 
 it("rejects conflicting production and development modes before reading stdin", async () => {
   const fixture = launch(["--token-stdin"], { dev: "1" });

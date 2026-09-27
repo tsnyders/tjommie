@@ -12,7 +12,7 @@ Install the Claude Code and Codex CLIs and put them on PATH. Tjommie stores its 
 
 `npm start -w @tjommie/daemon` starts development mode. It saves a `daemon-token` file in the Tjommie data folder so the terminal chat can connect. Development mode also allows the UI at `http://localhost:3000`. Running `src/main.ts --dev` directly or setting `$env:TJOMMIE_DEV = '1'` does the same thing. The desktop origin `app://tjommie` is always allowed.
 
-The installed desktop app starts the daemon with `--token-stdin`. It passes a fresh token as the first line of a pipe to the daemon's standard input. The daemon requires at least 43 base64url characters within 5 seconds, never saves this token to a file, and deletes an old `daemon-token` file left by development mode. The terminal chat only works with a development daemon. Starting the daemon with neither mode exits with instructions to use the desktop app or the development command.
+The installed desktop app starts the daemon with `--token-stdin`. It must start the daemon with `TJOMMIE_DEV` unset. It passes a fresh token as the first line of a pipe to the daemon's standard input. The daemon requires at least 43 base64url characters within 5 seconds, never saves this token to a file, and deletes an old `daemon-token` file left by development mode. The terminal chat only works with a development daemon. Starting the daemon with neither mode exits with instructions to use the desktop app or the development command.
 
 ```sh
 npm install

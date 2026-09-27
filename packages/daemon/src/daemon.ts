@@ -1,4 +1,4 @@
-import { existsSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, rmSync } from "node:fs";
 import { TEAM_ROOM_ID, type ProviderSetup } from "@tjommie/protocol";
 import { getApproval } from "./approvals.ts";
 import { createBot, deleteBot, getStoredBot, listStoredBots, setPaused, sweepDeletedBotFolders, updateBot } from "./bots.ts";
@@ -38,9 +38,11 @@ export type Daemon = { port: number; token: string; runner: Runner; scheduler: S
 export type DaemonAuth = { mode: "development" } | { mode: "production"; token: string };
 type DaemonOptions = { auth: DaemonAuth; root?: string; port?: number; accountsDir?: string; createSession?: SessionFactory };
 
+export class PlainStartupError extends Error {}
+
 export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
   if (options.auth.mode === "production" && !/^[A-Za-z0-9_-]{43,}$/.test(options.auth.token)) {
-    throw new Error("Daemon token must be at least 43 base64url characters.");
+    throw new PlainStartupError("Daemon token must be at least 43 base64url characters.");
   }
   // The listening port is the lock. A duplicate launch must not even open the database.
   const server = await startServer({ port: options.port ?? DEFAULT_PORT, token: "", handlers: {}, allowedOrigins: allowedOrigins(options.auth.mode), deferRequests: true });
@@ -57,7 +59,12 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
   const paths = dataPaths(options.root);
   if (options.auth.mode === "production") {
     const leftover = existsSync(paths.token);
-    rmSync(paths.token, { force: true });
+    try {
+      if (leftover && !lstatSync(paths.token).isFile()) throw new Error("Not a regular file");
+      rmSync(paths.token, { force: true, recursive: true, maxRetries: 3 });
+    } catch {
+      throw new PlainStartupError("Could not remove the development daemon-token file. Close programs using it and start Tjommie again.");
+    }
     if (leftover) console.log("Removed a leftover development daemon-token file.");
   }
   const db = openDb(paths.db);
