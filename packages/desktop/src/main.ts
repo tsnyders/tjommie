@@ -16,6 +16,7 @@ const assets = join(here, "..", "assets");
 const uiDir = join(here, "..", "..", "ui", "out");
 const daemonEntry = join(here, "..", "..", "daemon", "src", "main.ts");
 const appIcon = join(assets, "icon-256.png");
+// Next's static export needs 'unsafe-inline' bootstrap scripts; Task 8's Markdown sanitizer, not this CSP, blocks injected script.
 const CSP =
   "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' ws://127.0.0.1:*; object-src 'none'; base-uri 'none'; frame-src 'none'";
 const THEMES = { dark: { color: "#070707", symbolColor: "#ACACAC" }, light: { color: "#FCFCFC", symbolColor: "#5C5C5C" } } as const;
@@ -28,6 +29,7 @@ let tray: Tray | null = null;
 let quitting = false;
 let daemon: RunningDaemon | null = null;
 let current: Promise<DaemonConnection> | null = null;
+let starting = false;
 let notifier: Client | null = null;
 let restarts: number[] = [];
 const notifications = new Set<Notification>(); // kept alive until closed, so their click handlers fire
@@ -55,11 +57,13 @@ if (!app.requestSingleInstanceLock()) {
     quitting = true;
   });
   app.on("will-quit", (event) => {
+    const activeNotifier = notifier;
+    notifier = null;
+    void activeNotifier?.close().catch(() => {});
     if (!daemon) return;
     event.preventDefault(); // stop the daemon first, so its bots close cleanly
     const running = daemon;
     daemon = null;
-    void notifier?.close().catch(() => {});
     void running.stop().finally(() => app.quit());
   });
   app.on("window-all-closed", () => {}); // the window only hides; Tjommie keeps running in the tray
@@ -97,13 +101,18 @@ async function serveUi(request: Request): Promise<Response> {
 // Opens a new connection: a new daemon with a new token in production, the development daemon otherwise.
 // After a restart the UI gets it pushed when it's ready, or the reason it failed.
 function reconnect(push = true): void {
+  starting = true;
   const next = openConnection();
   current = next;
   next.then(
     (connection) => {
+      if (current !== next) return;
+      starting = false;
       if (push) win?.webContents.send("daemon:connection", connection);
     },
     (error: unknown) => {
+      if (current !== next) return;
+      starting = false;
       const reason = error instanceof Error ? error.message : String(error);
       log(`The daemon didn't start: ${reason}`);
       if (push) win?.webContents.send("daemon:failed", reason);
@@ -124,7 +133,16 @@ function developmentConnection(): DaemonConnection {
 }
 
 async function launchDaemon(): Promise<DaemonConnection> {
-  const running = await startDaemonProcess({ execPath: process.execPath, args: ["--disable-warning=ExperimentalWarning", daemonEntry], env: process.env }, log);
+  const running = await startDaemonProcess(
+    {
+      execPath: process.execPath,
+      args: ["--disable-warning=ExperimentalWarning", daemonEntry],
+      env: process.env,
+      // Only an isolated desktop test may redirect the daemon's account folders.
+      testAccountsDir: process.env.TJOMMIE_USER_DATA ? process.env.TJOMMIE_ACCOUNTS_DIR || undefined : undefined,
+    },
+    log,
+  );
   daemon = running;
   void running.exited.then(({ code }) => onDaemonExit(running, code));
   return running.connection;
@@ -183,7 +201,7 @@ function registerIpc(): void {
     }
   });
   ipcMain.handle("daemon:restart", () => {
-    if (daemon) return; // it's running; nothing to restart
+    if (daemon || starting) return; // a running or starting daemon needs no second launch
     restarts = [];
     reconnect();
   });
