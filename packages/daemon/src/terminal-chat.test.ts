@@ -73,8 +73,8 @@ async function waitForExit(closed: Promise<number | null>, diagnostic: () => str
   }
 }
 
-async function terminal(options: { beforeWelcome?: { code: number; reason: string }; setupEvents?: ClientEvent[]; history?: Message[] } = {}) {
-  const { beforeWelcome, setupEvents = [], history = [] } = options;
+async function terminal(options: { beforeWelcome?: { code: number; reason: string }; setupEvents?: ClientEvent[]; history?: Message[]; historyNotFound?: boolean } = {}) {
+  const { beforeWelcome, setupEvents = [], history = [], historyNotFound = false } = options;
   mkdirSync(cache, { recursive: true });
   const root = mkdtempSync(join(cache, "terminal-chat-"));
   writeFileSync(join(root, "daemon-token"), "terminal-test-token");
@@ -108,6 +108,11 @@ async function terminal(options: { beforeWelcome?: { code: number; reason: strin
           break;
         case "chat.history": {
           const params = methods["chat.history"].params.parse(request.params);
+          if (historyNotFound) {
+            connected.send(JSON.stringify({ type: "event", event: "bot.deleted", data: { id: params.botId } }));
+            connected.send(JSON.stringify({ type: "res", id: request.id, ok: false, error: { code: "not_found", message: "No such bot" } }));
+            return;
+          }
           const messages = history.filter((row) => row.conversationId === params.botId);
           result = methods["chat.history"].result.parse({
             messages: messages.slice(-params.limit), hasMore: messages.length > params.limit,
@@ -286,6 +291,27 @@ it("replays recent history with the stored restart notice and an actionable pend
   chat.write("/allow card-7\n");
   await chat.waitForRequests(3);
   expect(chat.requests.at(-1)).toMatchObject({ method: "approvals.respond", params: { approvalId: "card-7", decision: "once" } });
+  chat.close();
+  expect(await chat.waitForExit()).toBe(0);
+});
+
+it("exits normally with the deleted bot notice when history fails during startup", async () => {
+  const chat = await terminal({ historyNotFound: true });
+  expect(await chat.waitForExit()).toBe(0);
+  expect(chat.output()).toContain("Chatting with Tester");
+  expect(chat.output().split("(This bot was deleted.)")).toHaveLength(2);
+  expect(chat.output()).not.toContain("not_found: No such bot");
+});
+
+it("continues a streaming history message on the same line as live deltas", async () => {
+  const chat = await terminal({ history: [message({ id: "stream", status: "streaming", body: "Hello" })] });
+  await chat.waitFor("Now:\nHello");
+  chat.emit("message.delta", { id: "stream", conversationId: tester.id, delta: " world" });
+  chat.emit("message.updated", message({ id: "stream", body: "Hello world" }));
+  await chat.waitFor("Now:\nHello world\n");
+  expect(chat.output()).toContain("Earlier:\nNow:\nHello world\n");
+  expect(chat.output()).not.toContain("Hello\n world");
+  expect(chat.output()).not.toContain("Now:\nHello world\n\n");
   chat.close();
   expect(await chat.waitForExit()).toBe(0);
 });

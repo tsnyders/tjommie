@@ -5,7 +5,7 @@
 import { readFileSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
 import { Autonomy, Provider, TEAM_ROOM_ID, messageData, type ApprovalDecision } from "@tjommie/protocol";
-import { ClientConnectionError, connect, type Client, type ClientEvent } from "../src/client.ts";
+import { ClientConnectionError, ClientRpcError, connect, type Client, type ClientEvent } from "../src/client.ts";
 import { DEFAULT_PORT, dataPaths } from "../src/paths.ts";
 
 function describeClose(code: number, reason: string): string {
@@ -130,10 +130,19 @@ try {
   botId = bot.id;
   names.set(bot.id, bot.name);
   console.log(`Chatting with ${bot.name} (${bot.provider}, ${bot.autonomy}, ${bot.state}). /room <text> posts in the Team room, /stop interrupts, Ctrl+C quits.`);
-  const { messages } = await client.call("chat.history", { botId, limit: 10 });
+  const { messages } = await client.call("chat.history", { botId, limit: 10 }).catch(async (error: unknown) => {
+    if (error instanceof ClientRpcError && error.code === "not_found") {
+      await new Promise<void>((resolve) => process.stdout.write("(This bot was deleted.)\n", () => resolve()));
+      process.exit(0);
+    }
+    throw error;
+  });
+  const streamingRows = messages.filter((row) => row.kind === "text" && row.author === botId && row.status === "streaming");
+  const streamingIds = new Set(streamingRows.map((row) => row.id));
   console.log("Earlier:");
   for (const row of messages) {
     if (row.kind === "text") {
+      if (streamingIds.has(row.id)) continue;
       if (row.body) console.log(row.author === "you" ? `  You: ${row.body}` : row.body);
     } else if (row.kind === "activity") {
       console.log(`  [${row.body}]`);
@@ -155,10 +164,15 @@ try {
     }
   }
   console.log("Now:");
+  for (const row of streamingRows) if (row.body) process.stdout.write(row.body);
   const historyIds = new Set(messages.map((row) => row.id));
   // Replay events received during setup before subscribing to new ones.
   for (const event of client.events) {
-    if ((event.event === "message.added" || event.event === "message.updated" || event.event === "message.delta") && historyIds.has(event.data.id)) continue;
+    if (
+      (event.event === "message.added" || event.event === "message.updated" || event.event === "message.delta") &&
+      historyIds.has(event.data.id) &&
+      !(event.event === "message.updated" && streamingIds.has(event.data.id))
+    ) continue;
     if (event.event === "approval.added" && historyIds.has(event.data.messageId)) continue;
     showEvent(event);
   }

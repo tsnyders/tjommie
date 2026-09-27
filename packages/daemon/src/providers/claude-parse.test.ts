@@ -105,10 +105,18 @@ describe("toolSummary", () => {
     expect(toolSummary("TodoWrite", { todos: [] })).toBe("TodoWrite");
   });
 
-  it("omits Claude's tool loading steps and selector queries", () => {
+  it("omits Claude's tool loading steps while keeping other searches visible", () => {
     expect(toolSummary("ToolSearch", { query: "select:mcp__tjommie__add_routine" })).toBeNull();
     expect(toolSummary("ToolSearch", { query: "other tools" })).toBeNull();
-    expect(toolSummary("Search", { query: "select:mcp__browser__browser_navigate" })).toBeNull();
+    expect(toolSummary("WebSearch", { query: "select: best laptops" })).toBe("best laptops");
+  });
+
+  it("keeps double underscores in ordinary read paths", () => {
+    expect(toolSummary("Read", { file_path: "src/__tests__/chat.test.ts" })).toBe("src/__tests__/chat.test.ts");
+    expect(toolSummary("Read", { file_path: "C:\\proj\\pkg\\__init__.py" })).toBe("C:\\proj\\pkg\\__init__.py");
+    expect(toolSummary("Read", { description: "Read src/__tests__/chat.test.ts" })).toBe("Read src/__tests__/chat.test.ts");
+    expect(toolSummary("Read", { description: "Read C:\\proj\\pkg\\__init__.py" })).toBe("Read C:\\proj\\pkg\\__init__.py");
+    expect(toolSummary("Read", { description: "Read mcp__ notes" })).toBe("Read notes");
   });
 
   it("gives each Tjommie tool a plain activity label from its input", () => {

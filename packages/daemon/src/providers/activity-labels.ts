@@ -4,7 +4,6 @@ export function plainActivityText(value: string): string {
     .replace(/select:\s*/gi, "")
     .replace(/mcp__[a-z0-9_-]+?__([a-z0-9_-]+)/gi, (_match, tool: string) => tool.replace(/_/g, " "))
     .replace(/mcp__/gi, "")
-    .replace(/__+/g, " ")
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 200);
@@ -47,7 +46,7 @@ function browserLabel(tool: string, input: Record<string, unknown>): string {
 }
 
 export function activityLabel(name: string, input: Record<string, unknown>, serverName?: string): string | null {
-  if (/^ToolSearch$/i.test(name) || /^select:/i.test(name) || /^select:/i.test(String(input.query ?? "").trim())) return null;
+  if (/^ToolSearch$/i.test(name)) return null;
 
   const fullName = /^mcp__(.+?)__(.+)$/.exec(name);
   const server = fullName?.[1] ?? serverName;

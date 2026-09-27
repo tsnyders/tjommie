@@ -72,6 +72,12 @@ describe("mapCodexNotification", () => {
     expect(mapCodexNotification(COMMAND_COMPLETED.method, COMMAND_COMPLETED.params, MODEL)).toEqual([{ type: "tool_done", id: "exec-3c0027d3-0c5b-41fa-92ac-fb29fa1d3974", ok: true }]);
   });
 
+  it("keeps double underscores in a shell command", () => {
+    const command = "python -c 'print(__name__)'";
+    expect(mapCodexNotification("item/started", { item: { type: "commandExecution", id: "shell-1", commandActions: [{ command }] } }, MODEL))
+      .toEqual([{ type: "tool", id: "shell-1", name: "Shell", summary: command }]);
+  });
+
   it.each([
     { server: "tjommie", tool: "list_bots", args: {}, label: "Looked at the team" },
     { server: "tjommie", tool: "message_bot", args: { bot: "Writer" }, label: "Messaged Writer" },
