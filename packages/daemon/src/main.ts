@@ -34,9 +34,14 @@ try {
   const auth = development
     ? { mode: "development" as const }
     : { mode: "production" as const, token: await tokenFromStdin() };
-  const daemon = await startDaemon({ port, auth });
+  // Test hook: the desktop app's real-CLI tests pair a disposable data root with the signed-in account folders.
+  const accountsDir = process.env.TJOMMIE_ACCOUNTS_DIR || undefined;
+  const daemon = await startDaemon({ port, auth, accountsDir });
   console.log(`Tjommie daemon listening on http://127.0.0.1:${daemon.port}`);
+  let stopping = false;
   const stop = (): void => {
+    if (stopping) return;
+    stopping = true;
     void daemon
       .close()
       .catch((error: unknown) => console.error("Failed to stop the Tjommie daemon cleanly.", error))
@@ -44,6 +49,13 @@ try {
   };
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
+  if (production) {
+    // The desktop app keeps the other end of stdin open for as long as it runs. When it quits or crashes the
+    // pipe closes and the daemon stops too, so no daemon is left holding the port with a token nobody has.
+    process.stdin.once("end", stop);
+    process.stdin.resume();
+    if (process.stdin.readableEnded) stop(); // it closed while the daemon was starting
+  }
 } catch (error) {
   if (error && typeof error === "object" && "code" in error && error.code === "EADDRINUSE") {
     console.error(`Tjommie is already running: port ${port} is in use.`);
