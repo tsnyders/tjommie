@@ -33,5 +33,6 @@ describe("setup against the installed CLIs", () => {
       ["claude", true],
       ["codex", true],
     ]);
+    expect(setup[1]).toMatchObject({ provider: "codex", sandbox: "ready" });
   });
 });

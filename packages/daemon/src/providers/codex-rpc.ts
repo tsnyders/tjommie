@@ -117,6 +117,7 @@ export type CodexServer = {
   rpc: JsonRpcLines;
   child: ChildProcessWithoutNullStreams;
   close: () => void;
+  waitForExit?: () => Promise<void>;
 };
 
 // Starts `codex app-server` with the given environment (CODEX_HOME = the account folder) and completes
@@ -168,5 +169,5 @@ export async function startCodexServer(
     await exitPromise;
     throw error;
   }
-  return { rpc, child, close };
+  return { rpc, child, close, waitForExit: () => exitPromise };
 }

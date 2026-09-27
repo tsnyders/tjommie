@@ -1,9 +1,30 @@
 import { describe, expect, it } from "vitest";
-import { Approval, BotInput, BotPatch, ClientMessage, ErrorCode, PROTOCOL_VERSION, RoutineInput, RoutinePatch, Settings, TEAM_ROOM_ID, events, methods } from "./index.ts";
+import { Approval, Bot, BotInput, BotPatch, ClientMessage, ErrorCode, PROTOCOL_VERSION, ProviderSetup, RoutineInput, RoutinePatch, Settings, TEAM_ROOM_ID, events, methods } from "./index.ts";
 
 const bot = { name: "Writer", color: "blue", shape: "circle", instructions: "", provider: "claude", model: "sonnet" } as const;
 
 describe("protocol", () => {
+  it("requires a typed Codex sandbox status and a setup reason on bots", () => {
+    const base = { installed: true, version: "0.155.1", signedIn: true, account: null, plan: null, error: null };
+    expect(ProviderSetup.parse({ ...base, provider: "codex", sandbox: "ready" })).toMatchObject({ sandbox: "ready" });
+    for (const sandbox of ["notConfigured", "updateRequired", "unavailable"]) {
+      expect(ProviderSetup.parse({ ...base, provider: "codex", sandbox })).toMatchObject({ sandbox });
+    }
+    expect(ProviderSetup.safeParse({ ...base, provider: "codex" }).success).toBe(false);
+    expect(ProviderSetup.safeParse({ ...base, provider: "codex", sandbox: "unknown" }).success).toBe(false);
+    const minimalBot = { id: "b", ...bot, autonomy: "folder", homeFolder: "C:\\b", projectFolder: null, browser: false,
+      paused: false, canMessage: [], state: "needs_setup", setupReason: "Set up Codex's sandbox", limitedUntil: null, createdAt: "t" };
+    expect(Bot.parse(minimalBot).setupReason).toBe("Set up Codex's sandbox");
+    expect(Bot.safeParse({ ...minimalBot, setupReason: undefined }).success).toBe(false);
+    expect(events["bot.updated"].parse(minimalBot).setupReason).toBe("Set up Codex's sandbox");
+    expect(events["setup.changed"].parse([{ ...base, provider: "codex", sandbox: "ready" }])).toHaveLength(1);
+  });
+
+  it("types the one-time Codex sandbox setup call", () => {
+    expect(methods["setup.prepareCodexSandbox"].params.parse({})).toEqual({});
+    const status = { provider: "codex", installed: true, version: "0.155.1", signedIn: true, account: null, plan: null, error: null, sandbox: "ready" };
+    expect(methods["setup.prepareCodexSandbox"].result.parse(status)).toEqual(status);
+  });
   it("is version 1", () => {
     expect(PROTOCOL_VERSION).toBe(1);
   });

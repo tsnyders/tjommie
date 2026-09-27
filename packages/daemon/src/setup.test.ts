@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, unlinkSync, w
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { openDb } from "./db.ts";
-import { accountEnv, accountFor, checkSetup, ensureAccounts, parseClaudeStatus, parseVersion } from "./setup.ts";
+import { accountEnv, accountFor, checkSetup, ensureAccounts, parseClaudeStatus, parseVersion, prepareCodexSandbox } from "./setup.ts";
 import { tempRoot } from "./testing.ts";
 
 type CliCommand = { file: string; args: string[] };
@@ -105,7 +105,7 @@ describe("accounts", () => {
     expect(settings.permissions.allow).toEqual(["Read"]);
     expect(settings.permissions.defaultMode).toBe("manual");
     const absolute = root.replace(/\\/g, "/").replace(/^([A-Za-z]):/, (_match, drive: string) => `/${drive.toLowerCase()}`);
-    expect(settings.permissions.deny).toEqual(["Bash(rm *)", "Edit(**/.claude/**)", "Write(**/.claude/**)", `Read(/${absolute}/accounts/**)`, `Read(/${absolute}/daemon-token)`, `Read(/${absolute}/tjommie.db*)`]);
+    expect(settings.permissions.deny).toEqual(["Bash(rm *)", "Edit(**/.claude/**)", "Write(**/.claude/**)", `Read(/${absolute}/accounts/**)`, `Read(/${absolute}/daemon-token)`, `Read(/${absolute}/data/**)`]);
     ensureAccounts(db, accountsDir);
     expect(JSON.parse(readFileSync(file, "utf8"))).toEqual(settings);
   });
@@ -119,7 +119,7 @@ describe("accounts", () => {
     mkdirSync(liveRoot);
     const rulesFor = (folder: string): string[] => {
       const absolute = folder.replace(/\\/g, "/").replace(/^([A-Za-z]):/, (_match, drive: string) => `/${drive.toLowerCase()}`);
-      return [`Read(/${absolute}/accounts/**)`, `Read(/${absolute}/daemon-token)`, `Read(/${absolute}/tjommie.db*)`];
+      return [`Read(/${absolute}/accounts/**)`, `Read(/${absolute}/daemon-token)`, `Read(/${absolute}/data/**)`];
     };
     try {
       ensureAccounts(db, accountsDir);
@@ -129,7 +129,7 @@ describe("accounts", () => {
       const userRules = ["Bash(rm *)", "Read(//unrelated/private/**)", "Read(**/daemon-token)",
         ...rulesFor(join(root, "user-only")).slice(0, 1),
         ...rulesFor(join(root, "user-*")),
-        staleRules[0].replace("Read(", "Write("), staleRules[2].replace("db*", "db")];
+        staleRules[0].replace("Read(", "Write("), staleRules[2].replace("data/**", "private/**")];
       writeFileSync(file, JSON.stringify({ theme: "dark", permissions: { allow: ["Read"], deny: [...staleRules, ...liveRules, ...userRules] } }));
       ensureAccounts(db, accountsDir);
       const settings = JSON.parse(readFileSync(file, "utf8")) as { theme: string; permissions: { allow: string[]; deny: string[] } };
@@ -238,6 +238,31 @@ describe("parsers", () => {
 });
 
 describe("setup checks", () => {
+  it("requires both elevated account config and app-server readiness", async () => {
+    const root = tempRoot();
+    const db = openDb(join(root, "t.db"));
+    ensureAccounts(db, join(root, "accounts"));
+    const request = vi.fn(async (method: string) => {
+      if (method === "account/read") return { account: null };
+      if (method === "config/read") return { config: { windows: { sandbox: "elevated" } } };
+      if (method === "windowsSandbox/readiness") return { status: "ready" };
+      throw new Error(method);
+    });
+    codexMocks.startCodexServer.mockResolvedValue({ rpc: { request }, close: vi.fn() });
+    expect((await checkSetup(db))[1]).toMatchObject({ sandbox: "ready" });
+    expect(request).toHaveBeenCalledWith("config/read", { cwd: accountFor(db, "codex").folder });
+    expect(request).toHaveBeenCalledWith("windowsSandbox/readiness", {});
+    request.mockImplementation(async (method: string) => method === "config/read"
+      ? { config: { windows: { sandbox: "unelevated" } } }
+      : method === "windowsSandbox/readiness" ? { status: "ready" } : { account: null });
+    expect((await checkSetup(db))[1]).toMatchObject({ sandbox: "notConfigured" });
+    request.mockImplementation(async (method: string) => {
+      if (method === "windowsSandbox/readiness") throw new Error("query failed");
+      return method === "config/read" ? { config: { windows: { sandbox: "elevated" } } } : { account: null };
+    });
+    expect((await checkSetup(db))[1]).toMatchObject({ sandbox: "unavailable" });
+  });
+
   it("treats Claude's exit-1 signed-out JSON as a successful check", async () => {
     cliMocks.runCli.mockImplementation(async (cmd, args) => {
       if (cmd.file === "claude" && args[0] === "auth") {
@@ -309,5 +334,62 @@ describe("setup checks", () => {
       error: "Codex version check failed",
     });
     expect(codexMocks.startCodexServer).not.toHaveBeenCalled();
+  });
+});
+
+describe("Codex sandbox setup action", () => {
+  const fixture = () => {
+    const root = tempRoot();
+    const db = openDb(join(root, "t.db"));
+    ensureAccounts(db, join(root, "accounts"));
+    return db;
+  };
+
+  it("starts once, waits for completion, restarts the app-server and checks readiness", async () => {
+    const db = fixture();
+    let notify: (method: string, params: unknown) => void = () => {};
+    const first = {
+      rpc: {
+        request: vi.fn(async (method: string, params: unknown) => {
+          if (method === "windowsSandbox/setupStart") {
+            expect(params).toMatchObject({ mode: "elevated", cwd: expect.stringContaining("tjommie-codex-setup-") });
+            queueMicrotask(() => notify("windowsSandbox/setupCompleted", { mode: "elevated", success: true, error: null }));
+            return { started: true };
+          }
+          throw new Error(method);
+        }),
+        set onNotification(listener: (method: string, params: unknown) => void) { notify = listener; },
+      },
+      close: vi.fn(), waitForExit: vi.fn(async () => {}),
+    };
+    const second = { rpc: { request: vi.fn(async (method: string) => method === "config/read"
+      ? { config: { windows: { sandbox: "elevated" } } } : { status: "ready" }) }, close: vi.fn() };
+    codexMocks.startCodexServer.mockResolvedValueOnce(first).mockResolvedValueOnce(second);
+    await prepareCodexSandbox(db, 100);
+    expect(first.rpc.request).toHaveBeenCalledTimes(1);
+    expect(first.close).toHaveBeenCalledOnce();
+    expect(first.waitForExit).toHaveBeenCalledOnce();
+    expect(second.rpc.request).toHaveBeenCalledWith("windowsSandbox/readiness", {});
+    expect(second.close).toHaveBeenCalledOnce();
+  });
+
+  it("reports a declined setup without retrying", async () => {
+    const db = fixture();
+    let notify: (method: string, params: unknown) => void = () => {};
+    const request = vi.fn(async () => {
+      queueMicrotask(() => notify("windowsSandbox/setupCompleted", { mode: "elevated", success: false, error: "Declined" }));
+      return { started: true };
+    });
+    codexMocks.startCodexServer.mockResolvedValue({ rpc: { request, set onNotification(listener: typeof notify) { notify = listener; } }, close: vi.fn() });
+    await expect(prepareCodexSandbox(db, 100)).rejects.toThrow(/Declined/);
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops waiting after the deadline without retrying", async () => {
+    const db = fixture();
+    const request = vi.fn(async () => ({ started: true }));
+    codexMocks.startCodexServer.mockResolvedValue({ rpc: { request }, close: vi.fn() });
+    await expect(prepareCodexSandbox(db, 5)).rejects.toThrow(/timed out/i);
+    expect(request).toHaveBeenCalledTimes(1);
   });
 });

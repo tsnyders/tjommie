@@ -30,8 +30,6 @@ function isTurnNotSteerable(error: unknown): boolean {
 
 export function codexPolicy(autonomy: Autonomy): Policy {
   if (autonomy === "ask") return { approvalPolicy: "untrusted", sandbox: "read-only" };
-  // Codex 0.155.1's unelevated Windows sandbox reaches loopback with networkAccess false,
-  // leaves reads unrestricted, and cannot enforce deny-read rules. See README's Autonomy section.
   if (autonomy === "folder") return { approvalPolicy: "on-request", sandbox: "workspace-write" };
   return { approvalPolicy: "never", sandbox: "danger-full-access" };
 }
@@ -51,12 +49,13 @@ export const CODEX_FEATURES_OFF = {
   skill_mcp_dependency_install: false,
 };
 
-// Per-thread config overrides. Windows read and loopback limits are documented beside codexPolicy above.
-// The unelevated Windows sandbox needs no admin rights.
+// Per-thread config overrides. The daemon gates Own folder before this session starts.
 export function codexConfig(options: StartOptions, platform: NodeJS.Platform = process.platform): Record<string, unknown> {
+  const windowsSandbox = options.autonomy === "folder" || (options.autonomy === "ask" && options.codexSandboxReady)
+    ? "elevated" : "unelevated";
   return {
     sandbox_workspace_write: { network_access: false, writable_roots: options.extraDirs },
-    ...(platform === "win32" ? { windows: { sandbox: "unelevated" } } : {}),
+    ...(platform === "win32" ? { windows: { sandbox: windowsSandbox } } : {}),
     features: CODEX_FEATURES_OFF,
     mcp_servers: Object.fromEntries(
       options.mcpServers.map((server) => [

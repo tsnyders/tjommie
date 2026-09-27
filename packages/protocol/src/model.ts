@@ -34,6 +34,7 @@ export const Bot = z.object({
   paused: z.boolean(),
   canMessage: z.array(z.string()),
   state: BotState,
+  setupReason: z.string().nullable(),
   limitedUntil: z.string().nullable(),
   createdAt: z.string(),
 });
@@ -93,15 +94,20 @@ export const Approval = z.object({
 });
 export type Approval = z.infer<typeof Approval>;
 
-export const ProviderSetup = z.object({
-  provider: Provider,
+const ProviderSetupFields = {
   installed: z.boolean(),
   version: z.string().nullable(),
   signedIn: z.boolean(),
   account: z.string().nullable(),
   plan: z.string().nullable(),
   error: z.string().nullable(),
-});
+};
+export const CodexSandboxReadiness = z.enum(["ready", "notConfigured", "updateRequired", "unavailable"]);
+export type CodexSandboxReadiness = z.infer<typeof CodexSandboxReadiness>;
+export const ProviderSetup = z.discriminatedUnion("provider", [
+  z.object({ provider: z.literal("claude"), ...ProviderSetupFields }),
+  z.object({ provider: z.literal("codex"), ...ProviderSetupFields, sandbox: CodexSandboxReadiness }),
+]);
 export type ProviderSetup = z.infer<typeof ProviderSetup>;
 
 export const ModelInfo = z.object({ id: z.string(), label: z.string(), isDefault: z.boolean() });

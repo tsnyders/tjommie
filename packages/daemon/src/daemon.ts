@@ -6,15 +6,16 @@ import { browserServer, showBrowser } from "./browser.ts";
 import { historyPage } from "./chat.ts";
 import { openDb } from "./db.ts";
 import { McpTokens, mcpHandler } from "./mcp.ts";
-import { DEFAULT_PORT, dataPaths, readOrCreateToken } from "./paths.ts";
+import { DEFAULT_PORT, dataPaths, migrateLegacyDb, readOrCreateToken } from "./paths.ts";
 import { getWorkItem, type WorkItem } from "./queue.ts";
 import { createRoutine, deleteRoutine, getRoutine, listRoutines, listRuns, updateRoutine } from "./routines.ts";
 import { Runner, type SessionFactory, type TurnResult } from "./runner.ts";
 import { Scheduler } from "./scheduler.ts";
 import { RpcError, startServer, type Broadcast, type Handlers, type Server } from "./server.ts";
 import { getSettings, setSettings } from "./settings.ts";
-import { checkSetup, ensureAccounts, listModels, signIn } from "./setup.ts";
+import { checkSetup, ensureAccounts, listModels, prepareCodexSandbox, signIn } from "./setup.ts";
 import { Team, getExchange } from "./team.ts";
+import { protectCodexData } from "./windows-acl.ts";
 
 // The desktop app loads the UI from app://tjommie (plan 1D); `npm run dev` serves it on localhost:3000.
 const allowedOrigins = (mode: DaemonAuth["mode"]) => ["app://tjommie", ...(mode === "development" ? ["http://localhost:3000"] : [])];
@@ -57,6 +58,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
 
 async function initializeDaemon(options: DaemonOptions, server: Server, onCleanup: (cleanup: () => void) => void): Promise<Daemon> {
   const paths = dataPaths(options.root);
+  migrateLegacyDb(paths);
   if (options.auth.mode === "production") {
     const leftover = existsSync(paths.token);
     try {
@@ -67,10 +69,14 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
     }
     if (leftover) console.log("Removed a leftover development daemon-token file.");
   }
+  // Protect the data directory before SQLite can create WAL or SHM files.
+  let protection = protectCodexData(paths);
   const db = openDb(paths.db);
   onCleanup(() => db.close());
   const token = options.auth.mode === "development" ? readOrCreateToken(paths.token) : options.auth.token;
   ensureAccounts(db, options.accountsDir ?? paths.accounts, paths.root);
+  // ensureAccounts and development token creation may have made protected paths.
+  protection = protectCodexData(paths);
   let setup: ProviderSetup[] = [];
   let broadcast: Broadcast = () => {};
   const send: Broadcast = (event, data) => broadcast(event, data);
@@ -80,6 +86,12 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
     db,
     broadcast: send,
     isSignedIn: (provider) => setup.some((status) => status.provider === provider && status.signedIn),
+    codexSandboxReady: () => setup.some((status) => status.provider === "codex" && status.sandbox === "ready"),
+    setupIssue: (bot) => {
+      if (bot.provider !== "codex" || bot.autonomy !== "folder") return null;
+      if (!setup.some((status) => status.provider === "codex" && status.sandbox === "ready")) return "Set up Codex's sandbox";
+      return protection.reason;
+    },
     createSession: options.createSession,
     hooks: {
       retryRoutine: (message) => scheduler.retry(message),
@@ -105,6 +117,7 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
     deliver: (work) => runner.deliver(work),
     currentWork: (botId) => runner.currentWork(botId),
     stateOf: (bot) => runner.toBot(bot).state,
+    botView: (bot) => runner.toBot(bot),
     stopItem: (itemId, notice) => runner.stopItem(itemId, notice),
   });
   const scheduler: Scheduler = new Scheduler({
@@ -123,10 +136,11 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
   }
 
   const refreshSetup = async (): Promise<ProviderSetup[]> => {
+    protection = protectCodexData(paths);
     setup = await checkSetup(db);
     broadcast("setup.changed", setup);
     for (const bot of listStoredBots(db)) broadcast("bot.updated", runner.toBot(bot));
-    runner.pumpAll();
+    runner.setupChanged();
     return setup;
   };
 
@@ -138,6 +152,16 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
   const handlers: Handlers = {
     "setup.status": () => refreshSetup(),
     "setup.signIn": ({ provider }) => signIn(db, provider, refreshSetupInBackground),
+    "setup.prepareCodexSandbox": async () => {
+      try {
+        await prepareCodexSandbox(db);
+      } finally {
+        await refreshSetup();
+      }
+      const status = setup.find((entry) => entry.provider === "codex");
+      if (!status || status.provider !== "codex") throw new RpcError("internal", "Codex setup status is missing.");
+      return status;
+    },
     "models.list": ({ provider }) => listModels(db, provider),
     "bots.list": () => listStoredBots(db).map((bot) => runner.toBot(bot)),
     "bots.create": (input) => {

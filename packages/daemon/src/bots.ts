@@ -4,7 +4,7 @@ import type { Bot, BotInput, BotPatch } from "@tjommie/protocol";
 import { newId, nowIso, transaction, type Db } from "./db.ts";
 import { RpcError } from "./server.ts";
 
-export type StoredBot = Omit<Bot, "state">;
+export type StoredBot = Omit<Bot, "state" | "setupReason">;
 
 type BotRow = {
   id: string;

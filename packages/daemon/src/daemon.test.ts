@@ -16,7 +16,8 @@ import { enqueue, getWorkItem, newChain, setStatus } from "./queue.ts";
 import { addRun, createRoutine, getRun, listRuns } from "./routines.ts";
 import { Scheduler } from "./scheduler.ts";
 import * as serverModule from "./server.ts";
-import { checkSetup, ensureAccounts, signIn } from "./setup.ts";
+import { checkSetup, ensureAccounts, prepareCodexSandbox, signIn } from "./setup.ts";
+import { protectCodexData } from "./windows-acl.ts";
 import { Team } from "./team.ts";
 import { tempRoot, waitFor } from "./testing.ts";
 
@@ -43,7 +44,10 @@ vi.mock("node:fs", async (original) => {
   } };
 });
 vi.mock("./setup.ts", async (original) => ({
-  ...await original<typeof import("./setup.ts")>(), checkSetup: vi.fn(), signIn: vi.fn(),
+  ...await original<typeof import("./setup.ts")>(), checkSetup: vi.fn(), signIn: vi.fn(), prepareCodexSandbox: vi.fn(),
+}));
+vi.mock("./windows-acl.ts", async (original) => ({
+  ...await original<typeof import("./windows-acl.ts")>(), protectCodexData: vi.fn(),
 }));
 vi.mock("./browser.ts", async (original) => ({
   ...await original<typeof import("./browser.ts")>(), showBrowser: vi.fn(),
@@ -70,10 +74,10 @@ class Session implements ProviderSession {
   }
 }
 
-const setup = (signedIn = true): ProviderSetup[] => ["claude", "codex"].map((provider) => ({
-  provider: provider as ProviderSetup["provider"], installed: true, version: "test", signedIn,
-  account: null, plan: null, error: null,
-}));
+const setup = (signedIn = true, sandbox: "ready" | "notConfigured" | "updateRequired" | "unavailable" = "ready"): ProviderSetup[] => [
+  { provider: "claude", installed: true, version: "test", signedIn, account: null, plan: null, error: null },
+  { provider: "codex", installed: true, version: "test", signedIn, account: null, plan: null, error: null, sandbox },
+];
 const input = (name: string, extra: Partial<BotInput> = {}): BotInput => ({
   name, color: "green", shape: "pill", instructions: "Be terse", provider: "claude", model: "haiku", ...extra,
 });
@@ -82,6 +86,8 @@ const clients: Client[] = [];
 const databases: Db[] = [];
 beforeEach(() => {
   vi.mocked(checkSetup).mockResolvedValue(setup());
+  vi.mocked(protectCodexData).mockReturnValue({ ready: true, reason: null });
+  vi.mocked(prepareCodexSandbox).mockResolvedValue(undefined);
   vi.mocked(showBrowser).mockResolvedValue(undefined);
   removal.failPath = "";
   removal.beforeRemove = () => {};
@@ -658,6 +664,43 @@ it("pumps waiting work after unpause and a successful setup refresh", async () =
   vi.mocked(checkSetup).mockResolvedValue(setup());
   await client.call("setup.status", {});
   await waitFor(() => sessions[0].session.sent.length === 2);
+});
+
+it("moves an existing SQLite database before opening the daemon database", async () => {
+  const root = tempRoot();
+  const legacy = join(root, "tjommie.db");
+  const old = openDb(legacy);
+  old.prepare("INSERT INTO settings (key, value) VALUES ('migration-probe', 'kept')").run();
+  old.close();
+  const { db } = await harness(root);
+  expect(existsSync(legacy)).toBe(false);
+  expect(existsSync(dataPaths(root).db)).toBe(true);
+  expect(db.prepare("SELECT value FROM settings WHERE key = 'migration-probe'").get()).toEqual({ value: "kept" });
+});
+
+it("keeps Codex Own folder queued until sandbox setup succeeds and broadcasts the change", async () => {
+  vi.mocked(checkSetup).mockResolvedValue(setup(true, "notConfigured"));
+  const { client, sessions } = await harness();
+  const bot = await client.call("bots.create", input("Codex protected", { provider: "codex", model: "test", autonomy: "folder" }));
+  expect(bot).toMatchObject({ state: "needs_setup", setupReason: "Set up Codex's sandbox" });
+  await client.call("chat.send", { botId: bot.id, text: "Wait" });
+  expect(sessions).toHaveLength(0);
+  vi.mocked(checkSetup).mockResolvedValue(setup());
+  const status = await client.call("setup.prepareCodexSandbox", {});
+  expect(prepareCodexSandbox).toHaveBeenCalledOnce();
+  expect(status).toMatchObject({ provider: "codex", sandbox: "ready" });
+  expect(client.events.some((event) => event.event === "setup.changed" && event.data.some((entry) => entry.provider === "codex" && entry.sandbox === "ready"))).toBe(true);
+  expect(client.events.some((event) => event.event === "bot.updated" && event.data.id === bot.id && event.data.state === "idle")).toBe(true);
+  await waitFor(() => sessions.length === 1);
+});
+
+it("fails Codex Own folder closed when a required ACL cannot be verified", async () => {
+  vi.mocked(protectCodexData).mockReturnValue({ ready: false, reason: "Tjommie could not protect its data" });
+  const { client, sessions } = await harness();
+  const bot = await client.call("bots.create", input("Codex ACL", { provider: "codex", model: "test", autonomy: "folder" }));
+  expect(bot).toMatchObject({ state: "needs_setup", setupReason: "Tjommie could not protect its data" });
+  await client.call("chat.send", { botId: bot.id, text: "Wait" });
+  expect(sessions).toHaveLength(0);
 });
 
 it("logs a rejected background setup refresh from the sign-in callback", async () => {

@@ -17,7 +17,7 @@ const timestamp = "2026-09-26T10:00:00.000Z";
 const tester = Bot.parse({
   id: "tester", name: "Tester", color: "blue", shape: "circle", instructions: "", provider: "claude",
   model: "haiku", autonomy: "folder", homeFolder: "unused", projectFolder: null, browser: false,
-  paused: false, canMessage: [], state: "idle", limitedUntil: null, createdAt: timestamp,
+  paused: false, canMessage: [], state: "idle", setupReason: null, limitedUntil: null, createdAt: timestamp,
 });
 const writer = { ...tester, id: "writer", name: "Writer" };
 const message = (patch: Partial<Message> = {}): Message => Message.parse({
