@@ -5,7 +5,7 @@
 import { readFileSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
 import { Autonomy, Provider, TEAM_ROOM_ID, messageData, type ApprovalDecision } from "@tjommie/protocol";
-import { ClientConnectionError, ClientRpcError, connect, type Client, type ClientEvent } from "../src/client.ts";
+import { ClientConnectionError, ClientRpcError, connect, type Client, type ClientEvent } from "@tjommie/client";
 import { DEFAULT_PORT, dataPaths } from "../src/paths.ts";
 
 function describeClose(code: number, reason: string): string {

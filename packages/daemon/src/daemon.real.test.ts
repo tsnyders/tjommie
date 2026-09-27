@@ -4,7 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import { Bot, ProviderSetup, type BotInput } from "@tjommie/protocol";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { z } from "zod";
-import { connect, type Client } from "./client.ts";
+import { connect, type Client } from "@tjommie/client";
 import { startDaemon, type Daemon } from "./daemon.ts";
 import { openDb } from "./db.ts";
 import { dataPaths } from "./paths.ts";

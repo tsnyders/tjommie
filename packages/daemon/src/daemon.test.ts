@@ -7,7 +7,7 @@ import WebSocket from "ws";
 import { createBot, getStoredBot, setLimitedUntil } from "./bots.ts";
 import { showBrowser } from "./browser.ts";
 import { history, updateMessage } from "./chat.ts";
-import { connect, type Client } from "./client.ts";
+import { connect, type Client } from "@tjommie/client";
 import { startDaemon, type Daemon } from "./daemon.ts";
 import { newId, openDb, type Db } from "./db.ts";
 import { dataPaths } from "./paths.ts";

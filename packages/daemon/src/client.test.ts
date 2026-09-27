@@ -1,7 +1,7 @@
 import { ClientMessage, type ClientMessage as Request } from "@tjommie/protocol";
 import { afterEach, describe, expect, it } from "vitest";
 import { WebSocketServer, type WebSocket } from "ws";
-import { ClientRpcError, connect, type Client } from "./client.ts";
+import { ClientRpcError, connect, type Client } from "@tjommie/client";
 import { RpcError, startServer, type Server } from "./server.ts";
 
 const clients: Client[] = [];
@@ -35,6 +35,23 @@ async function open(port: number): Promise<Client> {
 }
 
 describe("typed daemon client", () => {
+  it("can leave events unrecorded for a long-lived client and still notify subscribers", async () => {
+    const port = await peer((socket, message) => {
+      if (message.type === "hello") socket.send(JSON.stringify({ type: "welcome", protocol: 1 }));
+      if (message.type === "req") {
+        socket.send(JSON.stringify({ type: "event", event: "settings.changed", data: { chainLimit: 4 } }));
+        socket.send(JSON.stringify({ type: "res", id: message.id, ok: true, result: { chainLimit: 4 } }));
+      }
+    });
+    const client = await connect(port, "test-token", { recordEvents: false });
+    clients.push(client);
+    const seen: string[] = [];
+    client.subscribe((event) => seen.push(event.event));
+    expect(await client.call("settings.get", {})).toEqual({ chainLimit: 4 });
+    expect(seen).toEqual(["settings.changed"]);
+    expect(client.events).toEqual([]);
+  });
+
   it("sends the hello and typed calls, and subscribes to validated events", async () => {
     const requests: Request[] = [];
     const port = await peer((socket, message) => {

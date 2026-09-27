@@ -8,7 +8,7 @@ import {
 } from "@tjommie/protocol";
 import { afterEach, expect, it } from "vitest";
 import { WebSocketServer, type WebSocket } from "ws";
-import type { ClientEvent } from "./client.ts";
+import type { ClientEvent } from "@tjommie/client";
 
 const workspace = fileURLToPath(new URL("../../../", import.meta.url));
 const script = fileURLToPath(new URL("../scripts/chat.ts", import.meta.url));
