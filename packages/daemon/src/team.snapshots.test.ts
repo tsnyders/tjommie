@@ -64,7 +64,7 @@ describe("Team snapshot lifecycle", () => {
     writeFileSync(source, "fixture");
     const staging = join(root, "shared-files");
     rmSync(staging, { recursive: true });
-    expect(() => call(writer.id, "share_file", { path: source })).toThrow();
+    expect(() => call(writer.id, "share_file", { path: source })).toThrow("The protected shared-files folder is unavailable.");
     expect(existsSync(staging)).toBe(false);
   });
   it.each(["failed", "interrupted"] as const)("keeps files from a %s turn in the target bot inbox and releases staging", (outcome) => {

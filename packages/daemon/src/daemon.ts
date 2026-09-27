@@ -102,12 +102,14 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
   const send: Broadcast = (event, data) => broadcast(event, data);
   let mcpUrl = ""; // Set before queued work can start a CLI session.
   const tokens = new McpTokens();
+  const switchingBots = new Set<string>();
   const runner: Runner = new Runner({
     db,
     broadcast: send,
     isSignedIn: (provider) => setup.some((status) => status.provider === provider && status.signedIn),
     codexSandboxReady: () => setup.some((status) => status.provider === "codex" && status.sandbox === "ready"),
     setupIssue: (bot) => {
+      if (switchingBots.has(bot.id)) return "This bot is changing provider. Try again shortly.";
       if (bot.provider !== "codex" || bot.autonomy !== "folder") return null;
       if (!setup.some((status) => status.provider === "codex" && status.sandbox === "ready")) return "Set up Codex's sandbox";
       return protection.reason;
@@ -186,10 +188,6 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
     "models.list": ({ provider }) => listModels(db, provider),
     "bots.list": () => listStoredBots(db).map((bot) => runner.toBot(bot)),
     "bots.create": async (input) => {
-      if (input.provider === "claude") {
-        protection = { ready: false, reason: "Codex's sandbox is no longer ready. Set it up again to continue." };
-        runner.setupChanged();
-      }
       let created;
       try { created = createBot(db, paths.bots, input); }
       catch (error) { await refreshProtection(true); runner.setupChanged(); throw error; }
@@ -203,26 +201,31 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
       const before = getStoredBot(db, id);
       const providerChanged = patch.provider !== undefined && patch.provider !== before.provider;
       if (providerChanged) {
-        await runner.stop(id);
-        runner.botChanged(id, true);
-        protection = { ready: false, reason: "Codex's sandbox is no longer ready. Set it up again to continue." };
-        runner.setupChanged();
-        await refreshProtection(true, { id, homeFolder: before.homeFolder, provider: patch.provider! });
-        if (!protection.ready && protection.reason !== "Set up Codex's sandbox") {
-          await refreshProtection(true);
+        if (switchingBots.has(id)) throw new RpcError("busy", "This bot is already changing provider. Try again shortly.");
+        switchingBots.add(id);
+      }
+      let passAttempted = false;
+      let changed: ReturnType<typeof updateBot>;
+      try {
+        if (providerChanged) {
+          await runner.stop(id);
+          runner.botChanged(id, true);
+          passAttempted = true;
+          await refreshProtection(true, { id, homeFolder: before.homeFolder, provider: patch.provider! });
+          if (!protection.ready) throw new RpcError("bad_state", "Could not update the bot folder protection. Try again after checking Codex's sandbox setup.");
+        }
+        changed = updateBot(db, id, patch);
+      } catch (error) {
+        if (providerChanged && passAttempted) await refreshProtection(true);
+        throw error;
+      } finally {
+        if (providerChanged) {
+          switchingBots.delete(id);
           runner.setupChanged();
-          throw new RpcError("bad_state", "Could not update the bot folder protection. Try again after checking Codex's sandbox setup.");
         }
       }
-      let updated;
-      try { updated = updateBot(db, id, patch); }
-      catch (error) {
-        if (providerChanged) { await refreshProtection(true); runner.setupChanged(); }
-        throw error;
-      }
       if (!providerChanged) runner.botChanged(id, false);
-      else runner.setupChanged();
-      const bot = runner.toBot(updated);
+      const bot = runner.toBot(changed);
       broadcast("bot.updated", bot);
       return bot;
     },

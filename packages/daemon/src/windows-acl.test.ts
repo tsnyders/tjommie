@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { dataPaths } from "./paths.ts";
@@ -67,6 +67,16 @@ describe("Codex data ACLs", () => {
     expect(acl.run).toHaveBeenCalledOnce();
     expect(acl.runSync).not.toHaveBeenCalled();
     expect(acl.run.mock.calls[0][0]).toContainEqual(expect.objectContaining({ path: claude.homeFolder, mode: "deny" }));
+  });
+
+  it("skips a missing Claude bot home without taking down Codex protection", () => {
+    const { paths, claude } = fixture();
+    rmSync(claude.homeFolder, { recursive: true });
+    const acl = driver();
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    expect(protectCodexData(paths, [claude], acl, "win32")).toEqual({ ready: true, reason: null });
+    expect(acl.runSync.mock.calls[0][0].some((target) => target.path === claude.homeFolder)).toBe(false);
+    expect(info.mock.calls.some((call) => String(call[0]).includes(`${claude.homeFolder}: Claude bot folder is missing`))).toBe(true);
   });
 
   it("distinguishes an absent group and setup marker from a failed PowerShell spawn", () => {

@@ -167,7 +167,9 @@ function snapshotFile(roots: string[], target: string, staging: string, botId: s
     if (opened.size > MAX_SHARE_BYTES) throw new Error("That file is too big to share. The limit is 200 MB.");
     // The daemon creates and protects this folder before serving tools. A missing or
     // replaced staging directory must not be silently recreated without its ACL.
-    const stagingStat = lstatSync(staging);
+    let stagingStat: ReturnType<typeof lstatSync>;
+    try { stagingStat = lstatSync(staging); }
+    catch { throw new Error("The protected shared-files folder is unavailable."); }
     if (stagingStat.isSymbolicLink() || !stagingStat.isDirectory()) throw new Error("The protected shared-files folder is unavailable.");
     folder = mkdtempSync(join(staging, `share-${botId}-`));
     const path = join(folder, basename(file));

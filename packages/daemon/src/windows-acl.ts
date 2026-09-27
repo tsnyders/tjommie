@@ -24,7 +24,6 @@ const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT ?? "C:\\Wind
 const powershell = join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
 const icacls = join(systemRoot, "System32", "icacls.exe");
 const failureReason = "Tjommie couldn't check Codex's sandbox. If Codex was updated, run its sandbox setup again.";
-let cachedSid: string | null = null;
 
 export type AclCommand = { file: string; args: string[] };
 function buildAceCommand(path: string, sid: string, folder: boolean, ace: "deny" | "allow"): AclCommand {
@@ -35,20 +34,17 @@ export const buildDenyCommand = (path: string, sid: string, folder: boolean): Ac
 export const buildAllowCommand = (path: string, sid: string, folder: boolean): AclCommand => buildAceCommand(path, sid, folder, "allow");
 
 // One PowerShell process resolves the SID, checks every target, applies missing ACEs and verifies them.
-// Paths and the cached SID arrive on stdin as JSON so a large bot list does not hit the Windows env limit.
+// Paths arrive on stdin as JSON so a large bot list does not hit the Windows env limit.
 const passScript = `
 $ErrorActionPreference = 'Stop'
 [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 $payload = [Console]::In.ReadToEnd() | ConvertFrom-Json
-$sid = [string]$payload.sid
-if (-not $sid) {
-  try {
-    $sid = ([System.Security.Principal.NTAccount]::new($env:COMPUTERNAME, 'CodexSandboxUsers')).Translate([System.Security.Principal.SecurityIdentifier]).Value
-  } catch [System.Security.Principal.IdentityNotMappedException] {
-    @{ sid = $null; groupMissing = $true; failures = @(); applied = 0 } | ConvertTo-Json -Compress -Depth 4
-    exit 0
-  }
+try {
+  $sid = ([System.Security.Principal.NTAccount]::new($env:COMPUTERNAME, 'CodexSandboxUsers')).Translate([System.Security.Principal.SecurityIdentifier]).Value
+} catch [System.Security.Principal.IdentityNotMappedException] {
+  @{ sid = $null; groupMissing = $true; failures = @(); applied = 0 } | ConvertTo-Json -Compress -Depth 4
+  exit 0
 }
 if ($sid -notmatch '^S-1-\\d+(?:-\\d+)+$') { throw 'Invalid Codex sandbox group SID' }
 $rx = [int][System.Security.AccessControl.FileSystemRights]::ReadAndExecute
@@ -117,7 +113,7 @@ foreach ($target in $payload.targets) {
 `;
 
 function passInput(targets: AclTarget[]): string {
-  return JSON.stringify({ sid: cachedSid, icacls, targets });
+  return JSON.stringify({ icacls, targets });
 }
 
 function parsePass(stdout: string): AclPassResult {
@@ -129,7 +125,6 @@ function parsePass(stdout: string): AclPassResult {
       !result.failures.every((failure) => typeof failure === "string") || typeof result.applied !== "number") {
     throw new Error("PowerShell returned an invalid ACL result");
   }
-  if (result.sid) cachedSid = result.sid;
   return { sid: result.sid, groupMissing: result.groupMissing, failures: result.failures, applied: result.applied };
 }
 
@@ -142,7 +137,10 @@ export const windowsAclDriver: AclDriver = {
     const result = spawnSync(powershell, ["-NoProfile", "-NonInteractive", "-Command", passScript], {
       input: passInput(targets), encoding: "utf8", windowsHide: true, timeout: 60_000, maxBuffer: 1024 * 1024,
     });
-    if (result.error) throw new Error(`PowerShell ACL pass could not start: ${result.error.message}`);
+    if (result.error) {
+      if ("code" in result.error && result.error.code === "ETIMEDOUT") throw new Error("PowerShell ACL pass timed out.");
+      throw new Error(`PowerShell ACL pass could not start: ${result.error.message}`);
+    }
     if (result.status !== 0) throw commandFailure(result.status, result.stderr);
     return parsePass(result.stdout);
   },
@@ -150,7 +148,10 @@ export const windowsAclDriver: AclDriver = {
     const child = spawn(powershell, ["-NoProfile", "-NonInteractive", "-Command", passScript], { windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
-    const timer = setTimeout(() => child.kill(), 60_000);
+    const timer = setTimeout(() => {
+      rejectPass(new Error("PowerShell ACL pass timed out."));
+      child.kill();
+    }, 60_000);
     child.stdout.setEncoding("utf8").on("data", (chunk: string) => { stdout += chunk; });
     child.stderr.setEncoding("utf8").on("data", (chunk: string) => { stderr += chunk; });
     child.on("error", (error) => { clearTimeout(timer); rejectPass(new Error(`PowerShell ACL pass could not start: ${error.message}`)); });
@@ -186,14 +187,15 @@ function targetIfPresent(root: string, path: string, folder: boolean): AclTarget
   }
 }
 
-type AclPlan = { targets: AclTarget[]; failures: string[]; expected: string[]; setupMissing: boolean };
+type AclPlan = { targets: AclTarget[]; failures: string[]; expected: string[]; skipped: string[]; setupMissing: boolean };
 function planTargets(paths: Paths, botHomes: BotHome[]): AclPlan {
-  const plan: AclPlan = { targets: [], failures: [], expected: [], setupMissing: false };
-  const add = (path: string, folder: boolean, mode: AclTarget["mode"], required: boolean, codexDependent = false): boolean => {
+  const plan: AclPlan = { targets: [], failures: [], expected: [], skipped: [], setupMissing: false };
+  const add = (path: string, folder: boolean, mode: AclTarget["mode"], required: boolean, codexDependent = false, missingMessage?: string): boolean => {
     try {
       const target = targetIfPresent(paths.root, path, folder);
       if (!target) {
         if (required) plan.expected.push(`${path}: required folder is missing`);
+        else if (missingMessage) plan.skipped.push(`${path}: ${missingMessage}`);
         return false;
       }
       plan.targets.push({ ...target, mode, codexDependent });
@@ -217,7 +219,8 @@ function planTargets(paths: Paths, botHomes: BotHome[]): AclPlan {
       plan.failures.push(`${bot.homeFolder}: bot folder does not match its id`);
       continue;
     }
-    add(bot.homeFolder, true, bot.provider === "claude" ? "deny" : "removeDeny", true);
+    add(bot.homeFolder, true, bot.provider === "claude" ? "deny" : "removeDeny", bot.provider !== "claude", false,
+      bot.provider === "claude" ? "Claude bot folder is missing; nothing to protect." : undefined);
     if (bot.provider === "codex") {
       add(join(bot.homeFolder, "notes.md"), false, "checkNoDeny", false);
       add(join(bot.homeFolder, "inbox"), true, "checkNoDeny", false);
@@ -242,6 +245,7 @@ function planTargets(paths: Paths, botHomes: BotHome[]): AclPlan {
 function finish(plan: AclPlan, result: AclPassResult): Protection {
   if (result.groupMissing) console.info("Codex data ACLs: CodexSandboxUsers group does not exist yet. Set up Codex's sandbox.");
   for (const message of plan.expected) console.info(`Codex data ACLs: ${message}`);
+  for (const message of plan.skipped) console.info(`Codex data ACLs: ${message}`);
   if (plan.setupMissing) console.info("Codex data ACLs: Codex setup marker is not present yet.");
   for (const message of [...plan.failures, ...result.failures]) console.error(`Codex data ACLs: ${message}`);
   if (plan.failures.length || result.failures.length || plan.expected.length) return { ready: false, reason: failureReason };
