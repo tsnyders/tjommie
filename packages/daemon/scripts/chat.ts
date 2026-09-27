@@ -119,8 +119,38 @@ try {
   botId = bot.id;
   names.set(bot.id, bot.name);
   console.log(`Chatting with ${bot.name} (${bot.provider}, ${bot.autonomy}, ${bot.state}). /room <text> posts in the Team room, /stop interrupts, Ctrl+C quits.`);
+  const { messages } = await client.call("chat.history", { botId, limit: 10 });
+  console.log("Earlier:");
+  for (const row of messages) {
+    if (row.kind === "text") {
+      if (row.body) console.log(row.author === "you" ? `  You: ${row.body}` : row.body);
+    } else if (row.kind === "activity") {
+      console.log(`  [${row.body}]`);
+    } else if (row.kind === "approval") {
+      try {
+        const parsed = messageData(row);
+        if (parsed.kind === "approval") {
+          const { approvalId, status } = parsed.data;
+          if (status === "pending") console.log(`\n  Waiting for you: ${row.body}\n  /allow ${approvalId}   /always ${approvalId}   /deny ${approvalId}`);
+          else console.log(`  Approval ${approvalId} is ${status}: ${row.body}`);
+          continue;
+        }
+      } catch {
+        // Show the saved card body if its older payload cannot be typed.
+      }
+      console.log(`  (${row.body})`);
+    } else {
+      console.log(`  (${row.body})`);
+    }
+  }
+  console.log("Now:");
+  const historyIds = new Set(messages.map((row) => row.id));
   // Replay events received during setup before subscribing to new ones.
-  for (const event of client.events) showEvent(event);
+  for (const event of client.events) {
+    if ((event.event === "message.added" || event.event === "message.updated" || event.event === "message.delta") && historyIds.has(event.data.id)) continue;
+    if (event.event === "approval.added" && historyIds.has(event.data.messageId)) continue;
+    showEvent(event);
+  }
   client.subscribe(showEvent);
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));

@@ -73,8 +73,8 @@ async function waitForExit(closed: Promise<number | null>, diagnostic: () => str
   }
 }
 
-async function terminal(options: { beforeWelcome?: { code: number; reason: string }; setupEvents?: ClientEvent[] } = {}) {
-  const { beforeWelcome, setupEvents = [] } = options;
+async function terminal(options: { beforeWelcome?: { code: number; reason: string }; setupEvents?: ClientEvent[]; history?: Message[] } = {}) {
+  const { beforeWelcome, setupEvents = [], history = [] } = options;
   mkdirSync(cache, { recursive: true });
   const root = mkdtempSync(join(cache, "terminal-chat-"));
   writeFileSync(join(root, "daemon-token"), "terminal-test-token");
@@ -106,6 +106,14 @@ async function terminal(options: { beforeWelcome?: { code: number; reason: strin
           }
           result = methods["bots.list"].result.parse([tester, writer]);
           break;
+        case "chat.history": {
+          const params = methods["chat.history"].params.parse(request.params);
+          const messages = history.filter((row) => row.conversationId === params.botId);
+          result = methods["chat.history"].result.parse({
+            messages: messages.slice(-params.limit), hasMore: messages.length > params.limit,
+          });
+          break;
+        }
         case "chat.send": {
           const params = methods["chat.send"].params.parse(request.params);
           result = methods["chat.send"].result.parse(message({ author: "you", body: params.text }));
@@ -242,9 +250,10 @@ it("routes room posts, approval decisions, stop and ordinary chat through typed 
   const chat = await terminal();
   await chat.waitFor("Chatting with Tester");
   chat.write("/room @Writer hello team\n/allow once-card\n/always always-card\n/deny deny-card\n/stop\n  ordinary chat  \n\n");
-  await chat.waitForRequests(7);
+  await chat.waitForRequests(8);
   expect(chat.requests.map(({ method, params }) => ({ method, params }))).toEqual([
     { method: "bots.list", params: {} },
+    { method: "chat.history", params: { botId: tester.id, limit: 10 } },
     { method: "room.post", params: { text: "@Writer hello team" } },
     { method: "approvals.respond", params: { approvalId: "once-card", decision: "once" } },
     { method: "approvals.respond", params: { approvalId: "always-card", decision: "always" } },
@@ -252,6 +261,58 @@ it("routes room posts, approval decisions, stop and ordinary chat through typed 
     { method: "chat.stop", params: { botId: tester.id } },
     { method: "chat.send", params: { botId: tester.id, text: "  ordinary chat  " } },
   ]);
+  chat.close();
+  expect(await chat.waitForExit()).toBe(0);
+});
+
+it("replays recent history with the stored restart notice and an actionable pending card", async () => {
+  const stored = [
+    ...Array.from({ length: 9 }, (_, index) => message({ id: `older-${index}`, kind: "notice", author: "system", body: `Older ${index}` })),
+    message({ id: "restart", kind: "error", author: "system", body: "Tjommie restarted while this was running." }),
+    message({
+      id: "approval-message", kind: "approval", body: "Write a file",
+      data: { approvalId: "card-7", tool: "Write", detail: "notes.txt", rule: null, status: "pending" },
+    }),
+  ];
+  const chat = await terminal({ history: stored });
+  await chat.waitFor("Now:");
+  const output = chat.output();
+  expect(output).not.toContain("Older 0");
+  expect(output).toContain("  (Tjommie restarted while this was running.)");
+  expect(output).toContain("Waiting for you: Write a file\n  /allow card-7   /always card-7   /deny card-7");
+  expect(output.indexOf("Chatting with Tester")).toBeLessThan(output.indexOf("Earlier:"));
+  expect(output.indexOf("Earlier:")).toBeLessThan(output.indexOf("(Tjommie restarted"));
+  expect(output.indexOf("/deny card-7")).toBeLessThan(output.indexOf("Now:"));
+  chat.write("/allow card-7\n");
+  await chat.waitForRequests(3);
+  expect(chat.requests.at(-1)).toMatchObject({ method: "approvals.respond", params: { approvalId: "card-7", decision: "once" } });
+  chat.close();
+  expect(await chat.waitForExit()).toBe(0);
+});
+
+it("prints a stored message and pending card only once when setup events overlap history", async () => {
+  const restart = message({ id: "restart", kind: "error", author: "system", body: "Tjommie restarted while this was running." });
+  const card = message({
+    id: "approval-message", kind: "approval", body: "Write a file",
+    data: { approvalId: "card-7", tool: "Write", detail: "notes.txt", rule: null, status: "pending" },
+  });
+  const chat = await terminal({
+    history: [restart, card],
+    setupEvents: [
+      { type: "event", event: "message.added", data: restart },
+      { type: "event", event: "message.updated", data: restart },
+      { type: "event", event: "approval.added", data: approval({ id: "card-7", kind: "tool", tool: "Write", summary: "Write a file" }) },
+      { type: "event", event: "message.added", data: message({ id: "fresh", kind: "notice", author: "system", body: "Fresh setup notice" }) },
+    ],
+  });
+  await chat.waitFor("(Fresh setup notice)");
+  const output = chat.output();
+  expect(output).toContain("Earlier:");
+  expect(output).toContain("Now:");
+  expect(output.split("(Tjommie restarted while this was running.)")).toHaveLength(2);
+  expect(output.split("Waiting for you: Write a file")).toHaveLength(2);
+  expect(output.split("(Fresh setup notice)")).toHaveLength(2);
+  expect(output.indexOf("Now:")).toBeLessThan(output.indexOf("(Fresh setup notice)"));
   chat.close();
   expect(await chat.waitForExit()).toBe(0);
 });
@@ -291,6 +352,7 @@ it("prints usage for incomplete commands and continues accepting valid commands"
   ]) expect(chat.output()).toContain(usage);
   expect(chat.requests.map(({ method, params }) => ({ method, params }))).toEqual([
     { method: "bots.list", params: {} },
+    { method: "chat.history", params: { botId: tester.id, limit: 10 } },
     { method: "chat.stop", params: { botId: tester.id } },
   ]);
   chat.close();
