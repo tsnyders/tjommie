@@ -15,7 +15,7 @@ The Phase 1 spikes ran against Claude Code 2.1.280 and Codex CLI 0.155.1 while t
 2. **Claude approvals go over stdin/stdout, not through our MCP server.** `--permission-prompt-tool stdio` makes Claude send `can_use_tool` control requests on stdout, and we answer on stdin. The `approve` MCP tool is gone. Claude's "default" permission mode is now called `manual`.
 3. **Claude reports usage percentages.** `rate_limit_event` includes the five-hour and seven-day utilization, so Claude shows live percentages like Codex. Its `total_cost_usd` is cumulative per CLI process, so each turn's cost is the difference from the previous one.
 4. **Bots don't get the person's MCP servers.** Because their CLI folder is Tjommie's own, bots only get the MCP servers Tjommie attaches. The per-bot Tools picker (Later) becomes the way to add Gmail, GitHub and similar tools.
-5. **Codex's Windows sandbox needs no admin.** A per-thread setting, `windows.sandbox = "unelevated"`, enforces writes (inside the bot's folders allowed, outside asks). Shell commands can't reach the network from inside the Windows sandbox (TLS fails), so network commands ask for approval. Bots do web work through the browser tool or Codex's built-in web search.
+5. **Codex bots at "Own folder" use Codex's elevated Windows sandbox (revised 2026-09-27).** The first spike used `windows.sandbox = "unelevated"`, which needs no admin and enforces writes. Later measurements (Codex 0.155.1) showed it doesn't limit reads or local connections: a bot's shell could read any file of the person's and reach `127.0.0.1` without asking, so it could have read the daemon token and acted as the person. The elevated mode runs sandboxed commands as a separate Windows user (`CodexSandboxOffline`, group `CodexSandboxUsers`) after a one-time admin setup. It still reads most of the person's profile and still reaches `127.0.0.1`, but because it's a separate user, Tjommie can deny that group its sign-in folders, logs and database (section 5.4). Bots do web work through the browser tool or Codex's built-in web search.
 6. **Codex sign-in doesn't need a terminal.** The app-server's `account/login/start` returns OpenAI's own sign-in URL, which the app opens in the browser. Claude's sign-in opens its own `claude auth login` in a console window.
 7. **Stop and steering work on both CLIs.** Claude reads a message written mid-turn at its next step, and stops on an `interrupt` control message. Codex uses `turn/steer` and `turn/interrupt`.
 8. **Playwright MCP starts each bot's browser (spike 5).** Both CLIs drove Playwright MCP on a per-bot profile folder, and the profile kept its data. In Phase 1 the daemon doesn't run Chrome itself. "Show window" opens the bot's profile in Chrome. Phase 4's live view revisits this.
@@ -122,7 +122,7 @@ packages/relay      Cloudflare Worker (Phase 3)
 ### 3.2 On disk: `%LOCALAPPDATA%\Tjommie\`
 
 ```
-tjommie.db
+data\tjommie.db          the database, in its own folder so Codex's sandbox group can be denied it (section 5.4)
 daemon-token             development only (section 3); the installed app never writes it
 bots\<bot-id>\           the bot's home folder (its working folder unless a project is attached)
     notes.md             the bot's memory
@@ -130,6 +130,7 @@ bots\<bot-id>\           the bot's home folder (its working folder unless a proj
     chrome-profile\      the bot's own Chrome profile
 accounts\<account-id>\   CLAUDE_CONFIG_DIR or CODEX_HOME for that account (claude-main, codex-main from Phase 1)
 logs\
+shared-files\            files one bot shares with another, held until delivery (denied to Codex's sandbox group)
 ```
 
 ### 3.3 WebSocket API
@@ -195,7 +196,7 @@ Each bot does one turn at a time. The queue is stored in the database, so nothin
 | Idle | Nothing to do |
 | Paused | You paused it |
 | Limited | Its account hit a usage limit. Shows the reset time |
-| Needs setup | Its CLI is missing or signed out |
+| Needs setup | Its CLI is missing or signed out, or (a Codex bot at "Own folder") Codex's sandbox isn't set up or Tjommie couldn't check its protection. The bot carries a plain `setupReason` saying which |
 
 ## 5. Running the CLIs
 
@@ -257,7 +258,7 @@ We run `codex app-server`: JSON-RPC over stdio, the interface OpenAI built for i
 - **Approvals.** The server sends `item/commandExecution/requestApproval` and `item/fileChange/requestApproval` and waits for our answer.
 - **Usage and limits.** `thread/tokenUsage/updated` gives input, cached, output and reasoning tokens. `account/rateLimits/updated` gives `usedPercent` and `resetsAt`. A turn fails with `UsageLimitExceeded` at the limit. Codex reports no cost; see section 8.3.
 - **Environment.** `CODEX_HOME` points at the bot's Tjommie account folder. Remove `OPENAI_API_KEY` and `CODEX_API_KEY` from the inherited environment.
-- **Windows.** npm installs `codex` as a `.ps1`/`.cmd` shim, so we run its JavaScript entry (`node_modules\@openai\codex\bin\codex.js`) with our own Node. Each thread's config sets `windows.sandbox = "unelevated"` (no admin needed). Inside that sandbox shell commands can't reach the network, so they ask for approval.
+- **Windows.** npm installs `codex` as a `.ps1`/`.cmd` shim, so we run its JavaScript entry (`node_modules\@openai\codex\bin\codex.js`) with our own Node. Each "Own folder" thread sets `windows.sandbox = "elevated"`; "Always ask" uses elevated when it's ready and unelevated otherwise. The elevated sandbox needs a one-time setup with a Windows admin prompt (section 5.8). The daemon asks the app-server for `windowsSandbox/readiness` and runs the setup with `windowsSandbox/setupStart`.
 
 ### 5.4 Autonomy
 
@@ -266,10 +267,16 @@ Each level maps onto the CLI's own permission system. We don't build a sandbox.
 | Level | Claude | Codex |
 |---|---|---|
 | Always ask | `manual` mode: every change becomes a card | approval `untrusted`, `read-only` sandbox |
-| Own folder (default) | `acceptEdits`: edits inside its folders go through; shell commands and anything outside become a card | approval `on-request`, `workspace-write` sandbox on its folders, network on |
+| Own folder (default) | `acceptEdits`: edits inside its folders go through; shell commands and anything outside become a card | approval `on-request`, `workspace-write` sandbox on its folders, network off, elevated Windows sandbox |
 | Full auto | `bypassPermissions` | approval `never`, full access |
 
 Claude has no operating-system sandbox on Windows, so under "Own folder" Claude bots ask about every shell command. Choosing Full auto shows a warning first.
+
+**What "Own folder" protects, and what it doesn't (decision 2026-09-27).**
+- **Changes:** a bot changes only its own folders and its project folder without asking.
+- **Tjommie's own data:** Claude bots have deny rules in their account settings (edit `.claude\`, read the accounts folder, the daemon token and the database). For Codex bots, Tjommie denies the `CodexSandboxUsers` group read and write on `accounts\claude-main`, `accounts\codex-main` (with an allow on Codex's own `.sandbox`; Codex keeps `.sandbox-bin` under its own protected permissions, which Tjommie checks), `logs\`, `data\` (the database), `shared-files\`, a development `daemon-token`, and every Claude bot's folder. The daemon applies and checks these rules at startup, after sign-in, after the sandbox setup, when it creates one of these folders, when a bot switches provider, and on a setup check (at most once a minute). If it can't, Codex "Own folder" isn't ready. Re-checking every time, rather than trusting a Codex version, is what protects against Codex updates changing its sandbox.
+- **Not protected, and said plainly in the app:** a Codex bot can read the rest of the person's user profile (Codex's sandbox limits writes, not reads). It can also read the folders of the person's other Codex bots (their notes and attached files), whether or not they're running, because every Codex bot's commands run as the same sandbox user; a deny there would lock the active bot out of its own folder. Browser cookies stay unreadable because they're encrypted for the person's own Windows user. A tricked bot can reach programs listening on this PC, but not Tjommie itself: the daemon's WebSocket needs the token, which never touches the disk in the installed app (section 3), and each bot's MCP token only acts as that bot.
+- **No fallback:** if the elevated sandbox isn't set up, a Codex bot at "Own folder" shows "Needs setup" instead of running with less protection.
 
 ### 5.5 Approval cards
 
@@ -299,6 +306,8 @@ Bots get only the MCP servers Tjommie attaches (this one and the browser), becau
 ### 5.8 Setup check
 
 At startup, and when the setup screen asks, the daemon runs `claude --version` and `claude auth status` (JSON) with the Claude account folder, and `codex --version` plus the app-server's `account/read` with the Codex account folder. Bots whose CLI is missing or signed out show "Needs setup". First-run setup offers "Sign in to Claude" and "Sign in to Codex" (section 8.1).
+
+For Codex it also reports whether the elevated Windows sandbox is ready (`windowsSandbox/readiness`: ready, not configured, update required; or unavailable when it isn't Windows, the CLI is missing or the query failed). If it isn't, Codex bots at "Own folder" show "Needs setup", and setup offers "Set up Codex's sandbox". That runs Codex's own one-time setup (`windowsSandbox/setupStart`); Windows asks for admin once. It creates Codex's sandbox users and firewall rules. The app never answers the admin prompt itself and never retries a declined setup on its own.
 
 ## 6. Bots talking to each other
 
