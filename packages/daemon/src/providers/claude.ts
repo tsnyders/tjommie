@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import type { Autonomy } from "@tjommie/protocol";
 import { killTree, spawnCli, type CliCommand } from "../cli.ts";
+import { plainActivityText } from "./activity-labels.ts";
 import { parseClaudeLine, toolSummary } from "./claude-parse.ts";
 import { recordClaudeSessionOwner } from "./claude-files.ts";
 import type { ApprovalAnswer, McpServer, ProviderEvent, ProviderSession, StartOptions } from "./types.ts";
@@ -245,7 +246,10 @@ export class ClaudeSession implements ProviderSession {
           this.#streamed = "";
           this.#emit({ type: "text_end" });
         }
-        for (const tool of out.tools) this.#emit({ type: "tool", id: tool.id, name: tool.name, summary: toolSummary(tool.name, tool.input) });
+        for (const tool of out.tools) {
+          const summary = toolSummary(tool.name, tool.input);
+          if (summary) this.#emit({ type: "tool", id: tool.id, name: tool.name.startsWith("mcp__") ? summary : plainActivityText(tool.name), summary });
+        }
         return;
       case "tool_results":
         for (const result of out.results) this.#emit({ type: "tool_done", id: result.id, ok: result.ok });

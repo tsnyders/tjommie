@@ -1,4 +1,5 @@
 import type { ProviderEvent } from "./types.ts";
+import { activityLabel, plainActivityText } from "./activity-labels.ts";
 
 const TOOL_ITEMS = new Set(["commandExecution", "fileChange", "mcpToolCall", "webSearch"]);
 const toIso = (seconds: unknown): string | null => (typeof seconds === "number" ? new Date(seconds * 1000).toISOString() : null);
@@ -21,19 +22,20 @@ function toolStarted(value: unknown): ProviderEvent[] {
 
   switch (itemType) {
     case "commandExecution":
-      return [{ type: "tool", id: itemId, name: "Shell", summary: String(firstCommand(item)).slice(0, 200) }];
+      return [{ type: "tool", id: itemId, name: "Shell", summary: plainActivityText(String(firstCommand(item))) }];
     case "fileChange": {
       const changes = Array.isArray(item.changes) ? item.changes : [];
       const summary = changes.map((change) => (isRecord(change) ? change.path : undefined)).join(", ").slice(0, 200);
-      return [{ type: "tool", id: itemId, name: "Edit", summary: summary || "Change files" }];
+      return [{ type: "tool", id: itemId, name: "Edit", summary: plainActivityText(summary) || "Change files" }];
     }
     case "mcpToolCall": {
       const argumentsValue = isRecord(item.arguments) ? item.arguments : {};
-      const tool = String(item.tool);
-      return [{ type: "tool", id: itemId, name: `${String(item.server)}.${tool}`, summary: String(argumentsValue.title ?? tool).slice(0, 200) }];
+      if (typeof item.tool !== "string" || typeof item.server !== "string") return [];
+      const label = activityLabel(item.tool, argumentsValue, item.server);
+      return label ? [{ type: "tool", id: itemId, name: label, summary: label }] : [];
     }
     case "webSearch":
-      return [{ type: "tool", id: itemId, name: "Web search", summary: String(item.query ?? "Search the web").slice(0, 200) }];
+      return [{ type: "tool", id: itemId, name: "Web search", summary: plainActivityText(String(item.query ?? "Search the web")) }];
     default:
       return [];
   }
