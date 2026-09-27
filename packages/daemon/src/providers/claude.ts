@@ -3,7 +3,7 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import type { Autonomy } from "@tjommie/protocol";
-import { killTree, spawnCli, type CliCommand } from "../cli.ts";
+import { cliEnv, killTree, spawnCli, type CliCommand } from "../cli.ts";
 import { plainActivityText } from "./activity-labels.ts";
 import { parseClaudeLine, toolSummary } from "./claude-parse.ts";
 import { recordClaudeSessionOwner } from "./claude-files.ts";
@@ -296,11 +296,11 @@ function restrictSessionFolder(folder: string): void {
     return;
   }
   if (userSid === undefined) {
-    const identity = spawnSync("whoami", ["/user", "/fo", "csv", "/nh"], { encoding: "utf8", windowsHide: true });
+    const identity = spawnSync("whoami", ["/user", "/fo", "csv", "/nh"], { encoding: "utf8", env: cliEnv({}), stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
     userSid = identity.stdout?.match(/S-1-[0-9-]+/)?.[0];
     if (!userSid) throw new Error("Could not identify the user for Claude's session files.");
   }
-  const result = spawnSync("icacls", [folder, "/inheritance:r", "/grant:r", `*${userSid}:(OI)(CI)F`], { windowsHide: true });
+  const result = spawnSync("icacls", [folder, "/inheritance:r", "/grant:r", `*${userSid}:(OI)(CI)F`], { env: cliEnv({}), stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
   if (result.status !== 0) throw new Error("Could not make Claude's session files private.");
 }
 

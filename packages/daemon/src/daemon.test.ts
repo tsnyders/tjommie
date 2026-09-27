@@ -1,5 +1,6 @@
-import { existsSync, mkdirSync, utimesSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { BotInput, ProviderSetup } from "@tjommie/protocol";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import WebSocket from "ws";
@@ -19,10 +20,21 @@ import { checkSetup, ensureAccounts, signIn } from "./setup.ts";
 import { Team } from "./team.ts";
 import { tempRoot, waitFor } from "./testing.ts";
 
-const removal = vi.hoisted(() => ({ failPath: "", beforeRemove: () => {} }));
+const removal = vi.hoisted(() => ({
+  failPath: "",
+  beforeRemove: () => {},
+  failTokenPath: "",
+  tokenOptions: undefined as Parameters<typeof import("node:fs").rmSync>[1],
+}));
 vi.mock("node:fs", async (original) => {
   const fs = await original<typeof import("node:fs")>();
-  return { ...fs, renameSync: (...args: Parameters<typeof fs.renameSync>) => {
+  return { ...fs, rmSync: (...args: Parameters<typeof fs.rmSync>) => {
+    if (String(args[0]) === removal.failTokenPath) {
+      removal.tokenOptions = args[1];
+      throw Object.assign(new Error("Forced locked token file"), { code: "EBUSY" });
+    }
+    return fs.rmSync(...args);
+  }, renameSync: (...args: Parameters<typeof fs.renameSync>) => {
     if (String(args[0]) === removal.failPath) {
       removal.beforeRemove();
       throw new Error("Forced locked folder");
@@ -69,23 +81,23 @@ const daemons: Daemon[] = [];
 const clients: Client[] = [];
 const databases: Db[] = [];
 beforeEach(() => {
-  vi.stubEnv("TJOMMIE_DEV", "");
   vi.mocked(checkSetup).mockResolvedValue(setup());
   vi.mocked(showBrowser).mockResolvedValue(undefined);
   removal.failPath = "";
   removal.beforeRemove = () => {};
+  removal.failTokenPath = "";
+  removal.tokenOptions = undefined;
 });
 afterEach(async () => {
   for (const client of clients.splice(0)) await client.close();
   for (const daemon of daemons.splice(0)) await daemon.close();
   for (const db of databases.splice(0)) db.close();
   vi.restoreAllMocks();
-  vi.unstubAllEnvs();
 });
 
-async function harness(root = tempRoot()) {
+async function harness(root = tempRoot(), auth: { mode: "development" } | { mode: "production"; token: string } = { mode: "development" }) {
   const sessions: { botId: string; options: StartOptions; session: Session }[] = [];
-  const daemon = await startDaemon({ root, port: 0, createSession: (bot, options) => {
+  const daemon = await startDaemon({ root, port: 0, auth, createSession: (bot, options) => {
     const session = new Session();
     sessions.push({ botId: bot.id, options, session });
     return session;
@@ -446,7 +458,7 @@ it("recovers an interrupted routine and sweeps stale shares before starting queu
   utimesSync(stale, old, old);
   const listen = serverModule.startServer;
   const server = vi.spyOn(serverModule, "startServer").mockImplementation((options) => {
-    expect(options.allowedOrigins).toEqual(["app://tjommie"]);
+    expect(options.allowedOrigins).toEqual(["app://tjommie", "http://localhost:3000"]);
     expect(getWorkItem(db, item.id).status).toBe("running");
     expect(getRun(db, run.id)?.status).toBe("running");
     expect(getWorkItem(db, queued.id).status).toBe("queued");
@@ -482,7 +494,7 @@ it("leaves the live daemon's work, approvals and streaming messages untouched on
   const deleted = join(dataPaths(root).bots, `${newId()}.deleting-${newId()}`);
   mkdirSync(deleted);
   vi.mocked(checkSetup).mockClear();
-  await expect(startDaemon({ root, port: daemon.port })).rejects.toMatchObject({ code: "EADDRINUSE" });
+  await expect(startDaemon({ root, port: daemon.port, auth: { mode: "development" } })).rejects.toMatchObject({ code: "EADDRINUSE" });
   expect(db.prepare("SELECT * FROM work_items").all()).toEqual(before.work);
   expect(db.prepare("SELECT * FROM approvals").all()).toEqual(before.approvals);
   expect(db.prepare("SELECT * FROM messages").all()).toEqual(before.messages);
@@ -490,16 +502,46 @@ it("leaves the live daemon's work, approvals and streaming messages untouched on
   expect(existsSync(deleted)).toBe(true);
 });
 
-it.each(["", "0", "1"])("allows the dev origin only with TJOMMIE_DEV=1 (%s)", async (dev) => {
-  vi.stubEnv("TJOMMIE_DEV", dev);
-  const { daemon } = await harness();
+it.each(["development", "production"] as const)("allows the dev origin only in development mode (%s)", async (mode) => {
+  const { daemon } = await harness(tempRoot(), mode === "development" ? { mode } : { mode, token: "p".repeat(43) });
   const upgrade = (origin: string) => new Promise<boolean>((resolve) => {
     const socket = new WebSocket(`ws://127.0.0.1:${daemon.port}`, { origin });
     socket.once("open", () => { socket.close(); resolve(true); });
     socket.once("error", () => resolve(false));
   });
   expect(await upgrade("app://tjommie")).toBe(true);
-  expect(await upgrade("http://localhost:3000")).toBe(dev === "1");
+  expect(await upgrade("http://localhost:3000")).toBe(mode === "development");
+});
+
+it("uses a supplied production token without creating or keeping a token file", async () => {
+  const root = tempRoot();
+  const tokenFile = dataPaths(root).token;
+  writeFileSync(tokenFile, "old-development-token");
+  const { daemon } = await harness(root, { mode: "production", token: "p".repeat(43) });
+  expect(daemon.token).toBe("p".repeat(43));
+  expect(existsSync(tokenFile)).toBe(false);
+});
+
+it("reports a plain error when the old development token file cannot be removed", async () => {
+  const cache = join(fileURLToPath(new URL("../../../", import.meta.url)), "node_modules", ".cache");
+  mkdirSync(cache, { recursive: true });
+  const root = mkdtempSync(join(cache, "tjommie-token-removal-"));
+  const target = resolve(root);
+  if (dirname(target) !== resolve(cache) || !target.startsWith(join(resolve(cache), "tjommie-token-removal-"))) {
+    throw new Error("Refusing to remove a folder outside the test root.");
+  }
+  const tokenFile = join(root, "daemon-token");
+  try {
+    writeFileSync(tokenFile, "old-development-token");
+    removal.failTokenPath = tokenFile;
+    await expect(startDaemon({ root, port: 0, auth: { mode: "production", token: "p".repeat(43) } }))
+      .rejects.toThrow("Could not remove the development daemon-token file. Close programs using it and start Tjommie again.");
+    expect(removal.tokenOptions).toMatchObject({ force: true, recursive: true, maxRetries: 3 });
+    expect(existsSync(tokenFile)).toBe(true);
+  } finally {
+    removal.failTokenPath = "";
+    rmSync(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
 });
 
 it("waits for a delayed session close before capturing exchanges and deleting the bot", async () => {

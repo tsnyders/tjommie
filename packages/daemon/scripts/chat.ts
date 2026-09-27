@@ -54,7 +54,9 @@ try {
 } catch (error) {
   if (error instanceof ClientConnectionError) disconnected(error);
   const missingToken = error instanceof Error && "code" in error && error.code === "ENOENT";
-  console.error(missingToken ? connectionHelp : error instanceof Error ? error.message : String(error));
+  console.error(missingToken
+    ? "The terminal chat only works with a development daemon (npm start -w @tjommie/daemon)."
+    : error instanceof Error ? error.message : String(error));
   process.exit(1);
 }
 void client.disconnected.then(disconnected);

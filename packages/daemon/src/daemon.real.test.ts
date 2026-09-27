@@ -16,7 +16,7 @@ let daemon: Daemon | undefined;
 const accounts = realAccountsDir();
 const root = tempRoot();
 beforeAll(async () => {
-  daemon = await startDaemon({ root, port: 0, accountsDir: accounts });
+  daemon = await startDaemon({ root, port: 0, accountsDir: accounts, auth: { mode: "development" } });
 });
 afterAll(async () => {
   try {

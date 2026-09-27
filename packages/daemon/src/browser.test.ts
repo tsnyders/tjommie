@@ -29,9 +29,12 @@ describe("browser", () => {
     const owned = Object.assign(new EventEmitter(), { pid: 4123, unref: vi.fn() }) as unknown as ChildProcess;
     const other = Object.assign(new EventEmitter(), { pid: 5678, unref: vi.fn() }) as unknown as ChildProcess;
     childProcessMocks.spawn.mockReturnValueOnce(owned).mockReturnValueOnce(other);
-    const shown = showBrowser(bot);
+    const shown = showBrowser(bot, { ...env, TJOMMIE_DAEMON_TOKEN: "test-only-token" });
     owned.emit("spawn");
     await shown;
+    const spawnOptions: unknown = childProcessMocks.spawn.mock.calls[0]?.[2];
+    expect(spawnOptions).toMatchObject({ stdio: "ignore" });
+    expect(spawnOptions).not.toHaveProperty("env.TJOMMIE_DAEMON_TOKEN");
     const otherShown = showBrowser({ ...bot, id: "other" });
     other.emit("spawn");
     await otherShown;

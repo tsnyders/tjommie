@@ -10,12 +10,14 @@ You need Windows and Node 24 or newer.
 
 Install the Claude Code and Codex CLIs and put them on PATH. Tjommie stores its data in `%LOCALAPPDATA%\Tjommie`; set `TJOMMIE_HOME` to use another folder and `TJOMMIE_PORT` to change the default port, 47100. The browser feature needs Chrome or Edge. From the repo root, `npm run chat -w @tjommie/daemon -- <name>` creates the named bot if it does not exist.
 
-Set `$env:TJOMMIE_DEV = '1'` in PowerShell before starting the daemon to allow the development UI at `http://localhost:3000`. The desktop origin `app://tjommie` is always allowed.
+`npm start -w @tjommie/daemon` starts development mode. It saves a `daemon-token` file in the Tjommie data folder so the terminal chat can connect. Development mode also allows the UI at `http://localhost:3000`. Running `src/main.ts --dev` directly or setting `$env:TJOMMIE_DEV = '1'` does the same thing. The desktop origin `app://tjommie` is always allowed.
+
+The installed desktop app starts the daemon with `--token-stdin`. It must start the daemon with `TJOMMIE_DEV` unset. It passes a fresh token as the first line of a pipe to the daemon's standard input. The daemon requires at least 43 base64url characters within 5 seconds, never saves this token to a file, and deletes an old `daemon-token` file left by development mode. The terminal chat only works with a development daemon. Starting the daemon with neither mode exits with instructions to use the desktop app or the development command.
 
 ```sh
 npm install
 npm run signin -w @tjommie/daemon    # once: sign Tjommie's own Claude and Codex accounts in
-npm start -w @tjommie/daemon         # the daemon, on http://127.0.0.1:47100
+npm start -w @tjommie/daemon         # development daemon, on http://127.0.0.1:47100
 npm run chat -w @tjommie/daemon -- "Researcher" claude   # chat with a bot from the terminal
 #   in the chat: /room <text> posts in the Team room; /allow <id> answers a card, including a routine a bot proposes
 npm run dev        # UI at http://localhost:3000

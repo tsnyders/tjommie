@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import type { StoredBot } from "./bots.ts";
-import { killTree } from "./cli.ts";
+import { cliEnv, killTree } from "./cli.ts";
 import type { McpServer } from "./providers/types.ts";
 
 const require = createRequire(import.meta.url);
@@ -56,6 +56,7 @@ export function showBrowser(bot: StoredBot, env: NodeJS.ProcessEnv = process.env
     const child = spawn(findBrowser(existsSync, env).path, [`--user-data-dir=${browserProfile(bot)}`, "--no-first-run", "--no-default-browser-check"], {
       detached: true,
       stdio: "ignore",
+      env: cliEnv({}, env),
     });
     const exit = Promise.withResolvers<void>();
     const owned: OwnedBrowser = { child, exited: exit.promise, closing: false };
