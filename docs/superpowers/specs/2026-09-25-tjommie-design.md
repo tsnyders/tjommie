@@ -104,7 +104,9 @@ Phase 3: daemon ⇄ relay (Cloudflare Worker) ⇄ phone (Capacitor) or another P
 - **Desktop app.** A thin Electron shell: starts the daemon, shows the UI, owns the tray and notifications. The Windows installer is built with electron-builder.
 - **UI.** A Next.js static export and a pure client of the daemon API, so the same bundle runs in Electron, in Capacitor and on other PCs. A static export can't have dynamic path segments, so pages take IDs as query parameters (`/chat?bot=...`). The build uses the system font (Segoe UI); the wireframes used Inter. Colors come from `docs/design/brief.md` section 3. Motion follows section 6 of `2026-09-24-grokbot-clone-design.md`.
 - **Storage.** SQLite through Node's built-in `node:sqlite`, so there's no native build step.
-- **Local security.** The daemon listens on 127.0.0.1 only and requires a random token kept in a file only the Windows user can read. It checks the Host and Origin headers so web pages can't reach it.
+- **Local security.** The daemon listens on 127.0.0.1 only and requires a random token on every connection. It checks the Host and Origin headers so web pages can't reach it.
+  - **The token never touches the disk in the installed app** (decision 2026-09-27). The desktop app generates it, starts the daemon with `--token-stdin`, and writes it as the first line of the daemon's stdin. Only the desktop app and the daemon ever hold it. The reason: on Windows every process of the same user can read that user's files, and a Codex bot at "Own folder" can read files outside its folders (section 5.4), so a token file would let a tricked bot talk to the daemon as the person.
+  - **Development keeps a token file.** `npm start -w @tjommie/daemon` (the `--dev` flag, or `TJOMMIE_DEV=1`) writes `daemon-token` so the terminal chat can connect. The installed app deletes a leftover file when it starts.
 
 ### 3.1 Repo (npm workspaces)
 
@@ -121,7 +123,7 @@ packages/relay      Cloudflare Worker (Phase 3)
 
 ```
 tjommie.db
-daemon-token
+daemon-token             development only (section 3); the installed app never writes it
 bots\<bot-id>\           the bot's home folder (its working folder unless a project is attached)
     notes.md             the bot's memory
     inbox\               files you attach
