@@ -1,128 +1,245 @@
 @import "tailwindcss";
-@import "tw-animate-css";
-@import "shadcn/tailwind.css";
 
-@custom-variant dark (&:is(.dark *));
-
-@theme inline {
-    --font-heading: var(--font-sans);
-    --color-sidebar-ring: var(--sidebar-ring);
-    --color-sidebar-border: var(--sidebar-border);
-    --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
-    --color-sidebar-accent: var(--sidebar-accent);
-    --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
-    --color-sidebar-primary: var(--sidebar-primary);
-    --color-sidebar-foreground: var(--sidebar-foreground);
-    --color-sidebar: var(--sidebar);
-    --color-chart-5: var(--chart-5);
-    --color-chart-4: var(--chart-4);
-    --color-chart-3: var(--chart-3);
-    --color-chart-2: var(--chart-2);
-    --color-chart-1: var(--chart-1);
-    --color-ring: var(--ring);
-    --color-input: var(--input);
-    --color-border: var(--border);
-    --color-destructive: var(--destructive);
-    --color-accent-foreground: var(--accent-foreground);
-    --color-accent: var(--accent);
-    --color-muted-foreground: var(--muted-foreground);
-    --color-muted: var(--muted);
-    --color-secondary-foreground: var(--secondary-foreground);
-    --color-secondary: var(--secondary);
-    --color-primary-foreground: var(--primary-foreground);
-    --color-primary: var(--primary);
-    --color-popover-foreground: var(--popover-foreground);
-    --color-popover: var(--popover);
-    --color-card-foreground: var(--card-foreground);
-    --color-card: var(--card);
-    --color-foreground: var(--foreground);
-    --color-background: var(--background);
-    --radius-sm: calc(var(--radius) * 0.6);
-    --radius-md: calc(var(--radius) * 0.8);
-    --radius-lg: var(--radius);
-    --radius-xl: calc(var(--radius) * 1.4);
-    --radius-2xl: calc(var(--radius) * 1.8);
-    --radius-3xl: calc(var(--radius) * 2.2);
-    --radius-4xl: calc(var(--radius) * 2.6);
-}
-
+/* Tjommie's colors: the token table in docs/design/wireframe-spec.md ("Colors and type") and its approved
+   exceptions. Light values follow design/openpencil/recolor-light.js, the map WF1 light was drawn with; the
+   light composer's 1 px #EAEAEA stroke is from WF1 light (dark draws none, so its stroke is the fill).
+   --highlight is a popover's highlighted row: the map turns both #1A1A1A and #262626 into #EFEFEF, so light
+   mode uses the selected color there instead.
+   Components use these names only; bot colors and the Chrome logo are the only raw colors in components. */
 :root {
-    --background: oklch(1 0 0);
-    --foreground: oklch(0.145 0 0);
-    --card: oklch(1 0 0);
-    --card-foreground: oklch(0.145 0 0);
-    --popover: oklch(1 0 0);
-    --popover-foreground: oklch(0.145 0 0);
-    --primary: oklch(0.205 0 0);
-    --primary-foreground: oklch(0.985 0 0);
-    --secondary: oklch(0.97 0 0);
-    --secondary-foreground: oklch(0.205 0 0);
-    --muted: oklch(0.97 0 0);
-    --muted-foreground: oklch(0.556 0 0);
-    --accent: oklch(0.97 0 0);
-    --accent-foreground: oklch(0.205 0 0);
-    --destructive: oklch(0.577 0.245 27.325);
-    --border: oklch(0.922 0 0);
-    --input: oklch(0.922 0 0);
-    --ring: oklch(0.708 0 0);
-    --chart-1: oklch(0.87 0 0);
-    --chart-2: oklch(0.556 0 0);
-    --chart-3: oklch(0.439 0 0);
-    --chart-4: oklch(0.371 0 0);
-    --chart-5: oklch(0.269 0 0);
-    --radius: 0.625rem;
-    --sidebar: oklch(0.985 0 0);
-    --sidebar-foreground: oklch(0.145 0 0);
-    --sidebar-primary: oklch(0.205 0 0);
-    --sidebar-primary-foreground: oklch(0.985 0 0);
-    --sidebar-accent: oklch(0.97 0 0);
-    --sidebar-accent-foreground: oklch(0.205 0 0);
-    --sidebar-border: oklch(0.922 0 0);
-    --sidebar-ring: oklch(0.708 0 0);
+  --canvas: #fcfcfc;
+  --rail: #f5f5f5;
+  --rail-edge: #ebebeb;
+  --card: #f5f5f5;
+  --card-stroke: #ebebeb;
+  --divider: #e4e4e4;
+  --bubble: #efefef;
+  --pill: #efefef;
+  --chip: #f0f0f0;
+  --composer: #ffffff;
+  --composer-stroke: #eaeaea;
+  --selected: #e1e1e1;
+  --popover: #efefef;
+  --highlight: #e1e1e1;
+  --input-stroke: #d6d6d6;
+  --disabled: #f0f0f0;
+  --code: #e4e4e4;
+  --user-bubble: #0a0a0a;
+  --user-text: #ffffff;
+  --text: #0a0a0a;
+  --title: #0a0a0a;
+  --body: #404040;
+  --secondary: #6b6b6b;
+  --caption: #6b6b6b;
+  --label: #6b6b6b;
+  --placeholder: #767676;
+  --icon: #5c5c5c;
+  --accent: #2563eb;
+  --working: #17804f;
+  --danger: #dc2626;
+  --waiting-fill: #eef4ff;
+  --waiting-stroke: #c7dbff;
+  --mention: #459fff;
+  --file-tile: #fdecec;
+  --user-avatar: #777777;
 }
 
 .dark {
-    --background: oklch(0.145 0 0);
-    --foreground: oklch(0.985 0 0);
-    --card: oklch(0.205 0 0);
-    --card-foreground: oklch(0.985 0 0);
-    --popover: oklch(0.205 0 0);
-    --popover-foreground: oklch(0.985 0 0);
-    --primary: oklch(0.922 0 0);
-    --primary-foreground: oklch(0.205 0 0);
-    --secondary: oklch(0.269 0 0);
-    --secondary-foreground: oklch(0.985 0 0);
-    --muted: oklch(0.269 0 0);
-    --muted-foreground: oklch(0.708 0 0);
-    --accent: oklch(0.269 0 0);
-    --accent-foreground: oklch(0.985 0 0);
-    --destructive: oklch(0.704 0.191 22.216);
-    --border: oklch(1 0 0 / 10%);
-    --input: oklch(1 0 0 / 15%);
-    --ring: oklch(0.556 0 0);
-    --chart-1: oklch(0.87 0 0);
-    --chart-2: oklch(0.556 0 0);
-    --chart-3: oklch(0.439 0 0);
-    --chart-4: oklch(0.371 0 0);
-    --chart-5: oklch(0.269 0 0);
-    --sidebar: oklch(0.205 0 0);
-    --sidebar-foreground: oklch(0.985 0 0);
-    --sidebar-primary: oklch(0.488 0.243 264.376);
-    --sidebar-primary-foreground: oklch(0.985 0 0);
-    --sidebar-accent: oklch(0.269 0 0);
-    --sidebar-accent-foreground: oklch(0.985 0 0);
-    --sidebar-border: oklch(1 0 0 / 10%);
-    --sidebar-ring: oklch(0.556 0 0);
+  --canvas: #070707;
+  --rail: #111111;
+  --rail-edge: #080808;
+  --card: #111111;
+  --card-stroke: #1c1c1c;
+  --divider: #252525;
+  --bubble: #262626;
+  --pill: #262626;
+  --chip: #181818;
+  --composer: #2f2f2f;
+  --composer-stroke: #2f2f2f;
+  --selected: #303030;
+  --popover: #1a1a1a;
+  --highlight: #262626;
+  --input-stroke: #2a2a2a;
+  --disabled: #3a3a3a;
+  --code: #1a1a1a;
+  --user-bubble: #f5f5f5;
+  --user-text: #070707;
+  --text: #f5f5f5;
+  --title: #fcfcfc;
+  --body: #bdbdbd;
+  --secondary: #989898;
+  --caption: #909090;
+  --label: #9c9c9c;
+  --placeholder: #6e6e6e;
+  --icon: #acacac;
+  --accent: #459fff;
+  --working: #3fa37a;
+  --danger: #ea4144;
+  --waiting-fill: #101722;
+  --waiting-stroke: #1e3a5f;
+  --mention: #1d6fe0;
+  --file-tile: #3a2020;
+  --user-avatar: #777777;
+}
+
+@theme inline {
+  --font-sans: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --color-canvas: var(--canvas);
+  --color-rail: var(--rail);
+  --color-rail-edge: var(--rail-edge);
+  --color-card: var(--card);
+  --color-card-stroke: var(--card-stroke);
+  --color-divider: var(--divider);
+  --color-bubble: var(--bubble);
+  --color-pill: var(--pill);
+  --color-chip: var(--chip);
+  --color-composer: var(--composer);
+  --color-composer-stroke: var(--composer-stroke);
+  --color-selected: var(--selected);
+  --color-popover: var(--popover);
+  --color-highlight: var(--highlight);
+  --color-input-stroke: var(--input-stroke);
+  --color-disabled: var(--disabled);
+  --color-user-bubble: var(--user-bubble);
+  --color-user-text: var(--user-text);
+  --color-text: var(--text);
+  --color-title: var(--title);
+  --color-body: var(--body);
+  --color-secondary: var(--secondary);
+  --color-caption: var(--caption);
+  --color-label: var(--label);
+  --color-placeholder: var(--placeholder);
+  --color-icon: var(--icon);
+  --color-accent: var(--accent);
+  --color-working: var(--working);
+  --color-danger: var(--danger);
+  --color-waiting-fill: var(--waiting-fill);
+  --color-waiting-stroke: var(--waiting-stroke);
+  --color-mention: var(--mention);
+  --color-file-tile: var(--file-tile);
+  --color-user-avatar: var(--user-avatar);
 }
 
 @layer base {
-  * {
-    @apply border-border outline-ring/50;
-    }
+  html,
   body {
-    @apply bg-background text-foreground;
-    }
-  html {
-    @apply font-sans;
-    }
+    height: 100%;
+  }
+  body {
+    overflow: hidden;
+    background: var(--canvas);
+    color: var(--text);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 21px;
+    -webkit-font-smoothing: antialiased;
+  }
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--selected) transparent;
+  }
+  /* A 2 px accent ring: outside buttons, inside inputs (it replaces their border). */
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  input:focus-visible,
+  textarea:focus-visible {
+    outline-offset: -2px;
+  }
+}
+
+/* Header strips drag the window; the controls in them stay clickable. */
+.drag {
+  -webkit-app-region: drag;
+}
+.drag :where(a, button, input, textarea, select, [role="button"], [role="menu"]) {
+  -webkit-app-region: no-drag;
+}
+
+/* Buttons press in slightly. Keyboard actions and actions repeated all day don't animate. */
+.press {
+  transition:
+    transform 150ms cubic-bezier(0.23, 1, 0.32, 1),
+    background-color 150ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+.press:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+/* Bot replies are Markdown. */
+.markdown {
+  overflow-wrap: anywhere;
+}
+.markdown > * + * {
+  margin-top: 10px;
+}
+.markdown ul {
+  list-style: disc;
+  padding-left: 20px;
+}
+.markdown ol {
+  list-style: decimal;
+  padding-left: 20px;
+}
+.markdown li + li {
+  margin-top: 4px;
+}
+.markdown a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.markdown strong {
+  font-weight: 600;
+}
+.markdown h1,
+.markdown h2,
+.markdown h3,
+.markdown h4 {
+  font-size: 15px;
+  font-weight: 600;
+}
+.markdown code {
+  border-radius: 6px;
+  background: var(--code);
+  padding: 1px 5px;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 13px;
+}
+.markdown pre {
+  overflow-x: auto;
+  border-radius: 10px;
+  background: var(--code);
+  padding: 12px;
+}
+.markdown pre code {
+  background: none;
+  padding: 0;
+}
+.markdown blockquote {
+  border-left: 2px solid var(--divider);
+  padding-left: 12px;
+  color: var(--body);
+}
+.markdown table {
+  display: block;
+  overflow-x: auto;
+  border-collapse: collapse;
+}
+.markdown th,
+.markdown td {
+  border: 1px solid var(--divider);
+  padding: 4px 8px;
+  text-align: left;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
