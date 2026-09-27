@@ -1,6 +1,6 @@
 import { copyFileSync, existsSync, mkdirSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
-import { ApprovalData, type ActivityData, type ActivityItem, type Approval, type ApprovalDecision, type Bot, type BotState, type ErrorData, type Message, type UserMessageData } from "@tjommie/protocol";
+import { ActivityData, ApprovalData, type ActivityItem, type Approval, type ApprovalDecision, type Bot, type BotState, type ErrorData, type Message, type UserMessageData } from "@tjommie/protocol";
 import { allowRules, createApproval, expirePendingApprovals, resolveApproval } from "./approvals.ts";
 import { botPrompt, getStoredBot, listStoredBots, setLimitedUntil, type StoredBot } from "./bots.ts";
 import { closeBrowser } from "./browser.ts";
@@ -150,7 +150,14 @@ export class Runner {
       this.#safely(() => this.#hooks.turnEnded?.(item, { outcome: "failed", text: null, textMessageId: null, error: RESTARTED }));
     }
     const streaming = this.#db.prepare("SELECT id FROM messages WHERE status = 'streaming' ORDER BY created_at, rowid").all() as { id: string }[];
-    for (const message of streaming) this.#emitMessage(updateMessage(this.#db, message.id, { status: "interrupted" }));
+    for (const row of streaming) {
+      const message = getMessage(this.#db, row.id);
+      const activity = message.kind === "activity" ? ActivityData.safeParse(message.data) : null;
+      const data = activity?.success
+        ? { items: activity.data.items.map((item) => item.status === "running" ? { ...item, status: "failed" as const } : item) } satisfies ActivityData
+        : undefined;
+      this.#emitMessage(updateMessage(this.#db, row.id, { data, status: "interrupted" }));
+    }
     for (const approval of expirePendingApprovals(this.#db)) this.#showApprovalStatus(approval);
     this.#recovered = true;
   }
@@ -319,6 +326,7 @@ export class Runner {
     const detached: Deleting = { live, items, pid: session?.pid(), processExited: false, closed: Promise.resolve(), settled: false, restoreWhenClosed: false };
     this.#deleting.set(botId, detached);
     this.#live.delete(botId);
+    this.#closeActivity(live, "failed");
     this.#releaseSession(botId, live);
     const exited = Promise.resolve(session?.waitForExit?.()).then(() => { detached.processExited = true; });
     detached.closed = Promise.all([exited, closeBrowser(botId)]).then(() => {
@@ -354,7 +362,7 @@ export class Runner {
     }
     this.#deleting.delete(botId);
     this.#flushText(detached.live, "interrupted");
-    this.#closeActivity(detached.live);
+    this.#closeActivity(detached.live, "failed");
     // Use a new object so pending callbacks from the closed session cannot change resumed work.
     const live: Live = { ...detached.live, session: null, sent: false, steering: false, steeringItem: null,
       text: null, activity: null, lastText: null, stopPending: null, idleTimer: null, limitTimer: null };
@@ -734,7 +742,10 @@ export class Runner {
     );
   }
 
-  #closeActivity(live: Live): void {
+  #closeActivity(live: Live, unfinished: "done" | "failed" = "done"): void {
+    for (const item of live.activity?.items ?? []) {
+      if (item.status === "running") item.status = unfinished;
+    }
     this.#saveActivity(live, "done");
     live.activity = null;
   }
@@ -856,7 +867,7 @@ export class Runner {
     if (!live?.busy) return;
     const outcome = ok ? "done" : live.stopRequested ? "interrupted" : "failed";
     this.#flushText(live, outcome);
-    if (live.activity) this.#closeActivity(live);
+    if (live.activity) this.#closeActivity(live, outcome === "done" ? "done" : "failed");
     const item = live.item;
     const conversationId = this.#dest(botId, live);
     const requeued = live.limitHit && !ok && !live.stopRequested;
@@ -899,6 +910,9 @@ export class Runner {
     if (resumeFailed && live.item && !live.stopRequested) {
       // The CLI couldn't resume this session: start fresh with a recap instead.
       const item = live.item;
+      this.#flushText(live, "interrupted");
+      if (live.activity) this.#closeActivity(live, "failed");
+      live.lastText = null;
       this.#db.prepare("DELETE FROM sessions WHERE bot_id = ?").run(botId);
       setStatus(this.#db, item.id, "queued");
       live.busy = false;
