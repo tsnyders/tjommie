@@ -36,6 +36,7 @@ try {
     : { mode: "production" as const, token: await tokenFromStdin() };
   // Test hook: the desktop app's real-CLI tests pair a disposable data root with the signed-in account folders.
   const accountsDir = process.env.TJOMMIE_ACCOUNTS_DIR || undefined;
+  if (accountsDir !== undefined) console.error("Using account folders from TJOMMIE_ACCOUNTS_DIR.");
   const daemon = await startDaemon({ port, auth, accountsDir });
   console.log(`Tjommie daemon listening on http://127.0.0.1:${daemon.port}`);
   let stopping = false;
@@ -53,6 +54,7 @@ try {
     // The desktop app keeps the other end of stdin open for as long as it runs. When it quits or crashes the
     // pipe closes and the daemon stops too, so no daemon is left holding the port with a token nobody has.
     process.stdin.once("end", stop);
+    process.stdin.once("error", stop);
     process.stdin.resume();
     if (process.stdin.readableEnded) stop(); // it closed while the daemon was starting
   }
