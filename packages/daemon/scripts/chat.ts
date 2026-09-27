@@ -65,6 +65,8 @@ let botId = "";
 function showEvent(message: ClientEvent): void {
   if (message.event === "bot.updated") {
     names.set(message.data.id, message.data.name);
+  } else if (message.event === "bot.deleted" && message.data.id === botId) {
+    process.stdout.write("(This bot was deleted.)\n", () => process.exit(0));
   } else if (message.event === "message.delta") {
     if (message.data.conversationId === botId) process.stdout.write(message.data.delta);
   } else if (message.event === "message.added" || message.event === "message.updated") {
@@ -94,7 +96,16 @@ function showEvent(message: ClientEvent): void {
     console.log(`  Approval ${data.id} is ${data.status}: ${data.summary}`);
   } else if (message.event === "notify") {
     const data = message.data;
-    console.log(`  [${names.get(data.botId) ?? "A bot"}] ${data.title}: ${data.body}`);
+    const botName = names.get(data.botId) ?? "A bot";
+    if (data.botId === botId) {
+      console.log(`  [${botName}] ${data.title}: ${data.body}`);
+    } else {
+      let title = data.title;
+      if (title.startsWith(`${botName} is `)) title = title.slice(botName.length + 4);
+      else if (title.startsWith(`${botName}'s `)) title = title.slice(botName.length + 3);
+      else if (title.startsWith(`${botName} `)) title = title.slice(botName.length + 1);
+      console.log(`  ${botName}: ${title.charAt(0).toUpperCase()}${title.slice(1)}: ${data.body}`);
+    }
   }
 }
 
