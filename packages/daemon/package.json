@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node --disable-warning=ExperimentalWarning src/main.ts",
+    "start": "node --disable-warning=ExperimentalWarning src/main.ts --dev",
     "signin": "node --disable-warning=ExperimentalWarning scripts/signin.ts",
     "chat": "node --disable-warning=ExperimentalWarning scripts/chat.ts"
   },

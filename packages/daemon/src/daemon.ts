@@ -1,3 +1,4 @@
+import { existsSync, rmSync } from "node:fs";
 import { TEAM_ROOM_ID, type ProviderSetup } from "@tjommie/protocol";
 import { getApproval } from "./approvals.ts";
 import { createBot, deleteBot, getStoredBot, listStoredBots, setPaused, sweepDeletedBotFolders, updateBot } from "./bots.ts";
@@ -16,7 +17,7 @@ import { checkSetup, ensureAccounts, listModels, signIn } from "./setup.ts";
 import { Team, getExchange } from "./team.ts";
 
 // The desktop app loads the UI from app://tjommie (plan 1D); `npm run dev` serves it on localhost:3000.
-const allowedOrigins = () => ["app://tjommie", ...(process.env.TJOMMIE_DEV === "1" ? ["http://localhost:3000"] : [])];
+const allowedOrigins = (mode: DaemonAuth["mode"]) => ["app://tjommie", ...(mode === "development" ? ["http://localhost:3000"] : [])];
 
 async function waitForBotClose(closed: Promise<void>): Promise<void> {
   let timer: NodeJS.Timeout | undefined;
@@ -34,11 +35,15 @@ async function waitForBotClose(closed: Promise<void>): Promise<void> {
 
 export type Daemon = { port: number; token: string; runner: Runner; scheduler: Scheduler; close: () => Promise<void> };
 
-type DaemonOptions = { root?: string; port?: number; accountsDir?: string; createSession?: SessionFactory };
+export type DaemonAuth = { mode: "development" } | { mode: "production"; token: string };
+type DaemonOptions = { auth: DaemonAuth; root?: string; port?: number; accountsDir?: string; createSession?: SessionFactory };
 
-export async function startDaemon(options: DaemonOptions = {}): Promise<Daemon> {
+export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
+  if (options.auth.mode === "production" && !/^[A-Za-z0-9_-]{43,}$/.test(options.auth.token)) {
+    throw new Error("Daemon token must be at least 43 base64url characters.");
+  }
   // The listening port is the lock. A duplicate launch must not even open the database.
-  const server = await startServer({ port: options.port ?? DEFAULT_PORT, token: "", handlers: {}, allowedOrigins: allowedOrigins(), deferRequests: true });
+  const server = await startServer({ port: options.port ?? DEFAULT_PORT, token: "", handlers: {}, allowedOrigins: allowedOrigins(options.auth.mode), deferRequests: true });
   let cleanup = () => {};
   try {
     return await initializeDaemon(options, server, (next) => { cleanup = next; });
@@ -50,9 +55,14 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<Daemon> 
 
 async function initializeDaemon(options: DaemonOptions, server: Server, onCleanup: (cleanup: () => void) => void): Promise<Daemon> {
   const paths = dataPaths(options.root);
+  if (options.auth.mode === "production") {
+    const leftover = existsSync(paths.token);
+    rmSync(paths.token, { force: true });
+    if (leftover) console.log("Removed a leftover development daemon-token file.");
+  }
   const db = openDb(paths.db);
   onCleanup(() => db.close());
-  const token = readOrCreateToken(paths.token);
+  const token = options.auth.mode === "development" ? readOrCreateToken(paths.token) : options.auth.token;
   ensureAccounts(db, options.accountsDir ?? paths.accounts, paths.root);
   let setup: ProviderSetup[] = [];
   let broadcast: Broadcast = () => {};

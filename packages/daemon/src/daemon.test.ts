@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, utimesSync } from "node:fs";
+import { existsSync, mkdirSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { BotInput, ProviderSetup } from "@tjommie/protocol";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -83,9 +83,9 @@ afterEach(async () => {
   vi.unstubAllEnvs();
 });
 
-async function harness(root = tempRoot()) {
+async function harness(root = tempRoot(), auth: { mode: "development" } | { mode: "production"; token: string } = { mode: "development" }) {
   const sessions: { botId: string; options: StartOptions; session: Session }[] = [];
-  const daemon = await startDaemon({ root, port: 0, createSession: (bot, options) => {
+  const daemon = await startDaemon({ root, port: 0, auth, createSession: (bot, options) => {
     const session = new Session();
     sessions.push({ botId: bot.id, options, session });
     return session;
@@ -446,7 +446,7 @@ it("recovers an interrupted routine and sweeps stale shares before starting queu
   utimesSync(stale, old, old);
   const listen = serverModule.startServer;
   const server = vi.spyOn(serverModule, "startServer").mockImplementation((options) => {
-    expect(options.allowedOrigins).toEqual(["app://tjommie"]);
+    expect(options.allowedOrigins).toEqual(["app://tjommie", "http://localhost:3000"]);
     expect(getWorkItem(db, item.id).status).toBe("running");
     expect(getRun(db, run.id)?.status).toBe("running");
     expect(getWorkItem(db, queued.id).status).toBe("queued");
@@ -482,7 +482,7 @@ it("leaves the live daemon's work, approvals and streaming messages untouched on
   const deleted = join(dataPaths(root).bots, `${newId()}.deleting-${newId()}`);
   mkdirSync(deleted);
   vi.mocked(checkSetup).mockClear();
-  await expect(startDaemon({ root, port: daemon.port })).rejects.toMatchObject({ code: "EADDRINUSE" });
+  await expect(startDaemon({ root, port: daemon.port, auth: { mode: "development" } })).rejects.toMatchObject({ code: "EADDRINUSE" });
   expect(db.prepare("SELECT * FROM work_items").all()).toEqual(before.work);
   expect(db.prepare("SELECT * FROM approvals").all()).toEqual(before.approvals);
   expect(db.prepare("SELECT * FROM messages").all()).toEqual(before.messages);
@@ -490,16 +490,24 @@ it("leaves the live daemon's work, approvals and streaming messages untouched on
   expect(existsSync(deleted)).toBe(true);
 });
 
-it.each(["", "0", "1"])("allows the dev origin only with TJOMMIE_DEV=1 (%s)", async (dev) => {
-  vi.stubEnv("TJOMMIE_DEV", dev);
-  const { daemon } = await harness();
+it.each(["development", "production"] as const)("allows the dev origin only in development mode (%s)", async (mode) => {
+  const { daemon } = await harness(tempRoot(), mode === "development" ? { mode } : { mode, token: "p".repeat(43) });
   const upgrade = (origin: string) => new Promise<boolean>((resolve) => {
     const socket = new WebSocket(`ws://127.0.0.1:${daemon.port}`, { origin });
     socket.once("open", () => { socket.close(); resolve(true); });
     socket.once("error", () => resolve(false));
   });
   expect(await upgrade("app://tjommie")).toBe(true);
-  expect(await upgrade("http://localhost:3000")).toBe(dev === "1");
+  expect(await upgrade("http://localhost:3000")).toBe(mode === "development");
+});
+
+it("uses a supplied production token without creating or keeping a token file", async () => {
+  const root = tempRoot();
+  const tokenFile = dataPaths(root).token;
+  writeFileSync(tokenFile, "old-development-token");
+  const { daemon } = await harness(root, { mode: "production", token: "p".repeat(43) });
+  expect(daemon.token).toBe("p".repeat(43));
+  expect(existsSync(tokenFile)).toBe(false);
 });
 
 it("waits for a delayed session close before capturing exchanges and deleting the bot", async () => {

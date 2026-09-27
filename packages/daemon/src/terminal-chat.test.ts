@@ -73,11 +73,11 @@ async function waitForExit(closed: Promise<number | null>, diagnostic: () => str
   }
 }
 
-async function terminal(options: { beforeWelcome?: { code: number; reason: string }; setupEvents?: ClientEvent[]; history?: Message[]; historyNotFound?: boolean } = {}) {
-  const { beforeWelcome, setupEvents = [], history = [], historyNotFound = false } = options;
+async function terminal(options: { beforeWelcome?: { code: number; reason: string }; setupEvents?: ClientEvent[]; history?: Message[]; historyNotFound?: boolean; tokenFile?: boolean } = {}) {
+  const { beforeWelcome, setupEvents = [], history = [], historyNotFound = false, tokenFile = true } = options;
   mkdirSync(cache, { recursive: true });
   const root = mkdtempSync(join(cache, "terminal-chat-"));
-  writeFileSync(join(root, "daemon-token"), "terminal-test-token");
+  if (tokenFile) writeFileSync(join(root, "daemon-token"), "terminal-test-token");
   const server = new WebSocketServer({ port: 0, host: "127.0.0.1" });
   const fixture: Fixture = { root, server };
   fixtures.push(fixture);
@@ -187,6 +187,13 @@ async function terminal(options: { beforeWelcome?: { code: number; reason: strin
     },
   };
 }
+
+it("explains that terminal chat requires a development daemon when there is no token file", async () => {
+  const chat = await terminal({ tokenFile: false });
+  expect(await chat.waitForExit()).toBe(1);
+  expect(chat.output().trim()).toBe("The terminal chat only works with a development daemon (npm start -w @tjommie/daemon).");
+  expect(chat.hello()).toBeUndefined();
+});
 
 it("prints Team room posts, bot names, local cards and streaming text", async () => {
   const chat = await terminal();

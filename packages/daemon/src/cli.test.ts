@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -37,6 +38,14 @@ describe("cliEnv", () => {
     const env = cliEnv({ CLAUDE_CONFIG_DIR: "C:\\acct" }, { Path: "x", anthropic_api_key: "sk", CODEX_HOME: "h", ClaudeCode: "1", KEEP: "1" });
     expect(env).toEqual({ Path: "x", KEEP: "1", CLAUDE_CONFIG_DIR: "C:\\acct" });
   });
+  it("removes daemon token variables before building a CLI environment", () => {
+    const token = randomBytes(32).toString("base64url");
+    const env = cliEnv({ CODEX_HOME: "account", TJOMMIE_DAEMON_TOKEN: token }, {
+      PATH: "bin", TJOMMIE_DAEMON_TOKEN: token, tjommie_token: token, SESSION_SECRET: token,
+    });
+    expect(env).toEqual({ PATH: "bin", CODEX_HOME: "account" });
+    expect(Object.values(env)).not.toContain(token);
+  });
 });
 
 describe("runCli", () => {
@@ -58,6 +67,21 @@ describe("runCli", () => {
     const out = await runCli({ file: process.execPath, args: [] }, ["-e", "console.log('hi'); process.exit(3)"], cliEnv({}));
     expect(out.code).toBe(3);
     expect(out.stdout.trim()).toBe("hi");
+  });
+  it("gives a session CLI its own stdin pipe", async () => {
+    const token = randomBytes(32).toString("base64url");
+    const child = spawnCli(
+      { file: process.execPath, args: [] },
+      ["-e", "let input = ''; process.stdin.on('data', chunk => input += chunk); process.stdin.on('end', () => process.stdout.write(JSON.stringify({ input, hasToken: 'TJOMMIE_DAEMON_TOKEN' in process.env })));"],
+      { cwd: process.cwd(), env: { TJOMMIE_DAEMON_TOKEN: token } },
+    );
+    let output = "";
+    child.stdout.setEncoding("utf8").on("data", (chunk: string) => { output += chunk; });
+    child.stdin.end("CLI protocol only\n");
+    const code = await new Promise<number | null>((resolve) => child.once("close", resolve));
+    expect(code).toBe(0);
+    expect(JSON.parse(output)).toEqual({ input: "CLI protocol only\n", hasToken: false });
+    expect(output).not.toContain(token);
   });
 });
 

@@ -126,6 +126,9 @@ describe("ClaudeSession folder permissions", () => {
       const commands = vi.mocked(spawnSync).mock.calls.map(([command]) => command);
       expect(commands.filter((command) => command === "whoami")).toHaveLength(1);
       expect(commands.filter((command) => command === "icacls")).toHaveLength(2);
+      for (const [, , options] of vi.mocked(spawnSync).mock.calls) {
+        expect(options?.stdio).toEqual(["ignore", "pipe", "pipe"]);
+      }
     } finally {
       sessions.forEach((claude) => claude.close());
       children.forEach(({ child }) => child.emit("exit", 0, null));
