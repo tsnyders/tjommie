@@ -133,6 +133,36 @@ describe("ClaudeSession folder permissions", () => {
   });
 });
 
+describe("ClaudeSession activity", () => {
+  it("emits no activity for tool loading and emits a plain label for the selected tool", async () => {
+    cliMocks.spawnCli.mockReset();
+    const { child, stdin, stdout, stderr } = fakeChild();
+    cliMocks.spawnCli.mockReturnValue(child);
+    const claude = new ClaudeSession({ file: "claude", args: [] }, base);
+    const tools: Extract<ProviderEvent, { type: "tool" }>[] = [];
+    claude.onEvent((event) => {
+      if (event.type === "tool") tools.push(event);
+    });
+
+    try {
+      await claude.start();
+      const assistant = (id: string, name: string, input: Record<string, unknown>) => JSON.stringify({
+        type: "assistant", message: { content: [{ type: "tool_use", id, name, input }] },
+      });
+      stdout.write(`${assistant("search-1", "ToolSearch", { query: "select:mcp__tjommie__add_routine" })}\n`);
+      expect(tools).toEqual([]);
+
+      stdout.write(`${assistant("routine-1", "mcp__tjommie__add_routine", { name: "Morning check" })}\n`);
+      expect(tools).toEqual([{ type: "tool", id: "routine-1", name: "Proposed a routine: Morning check", summary: "Proposed a routine: Morning check" }]);
+    } finally {
+      child.emit("exit", 0, null);
+      stdin.destroy();
+      stdout.destroy();
+      stderr.destroy();
+    }
+  });
+});
+
 describe("ClaudeSession cost accounting", () => {
   it.each([
     { name: "a fresh session", resumeId: null, resumeCostUsd: undefined, total: 0.0140522, expected: 0.0140522 },

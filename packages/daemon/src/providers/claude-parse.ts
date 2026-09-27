@@ -1,3 +1,5 @@
+import { activityLabel } from "./activity-labels.ts";
+
 // One line of `claude -p --output-format stream-json` output, reduced to what Tjommie uses.
 export type ClaudeLine =
   | { kind: "init"; sessionId: string }
@@ -150,10 +152,6 @@ export function parseClaudeLine(line: string): ClaudeLine {
 }
 
 // A one-line description of a tool call for the chat's activity row.
-export function toolSummary(name: string, input: Record<string, unknown>): string {
-  for (const key of ["description", "command", "file_path", "url", "pattern", "query"]) {
-    const value = input[key];
-    if (typeof value === "string" && value.trim()) return value.trim().slice(0, 200);
-  }
-  return name;
+export function toolSummary(name: string, input: Record<string, unknown>): string | null {
+  return activityLabel(name, input);
 }
