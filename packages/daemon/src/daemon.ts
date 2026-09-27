@@ -1,20 +1,21 @@
 import { existsSync, lstatSync, rmSync } from "node:fs";
 import { TEAM_ROOM_ID, type ProviderSetup } from "@tjommie/protocol";
 import { getApproval } from "./approvals.ts";
-import { createBot, deleteBot, getStoredBot, listStoredBots, setPaused, sweepDeletedBotFolders, updateBot } from "./bots.ts";
+import { createBot, deleteBot, getStoredBot, listStoredBots, setPaused, sweepDeletedBotFolders, updateBot, validateBotPatch } from "./bots.ts";
 import { browserServer, showBrowser } from "./browser.ts";
 import { historyPage } from "./chat.ts";
 import { openDb } from "./db.ts";
 import { McpTokens, mcpHandler } from "./mcp.ts";
-import { DEFAULT_PORT, dataPaths, readOrCreateToken } from "./paths.ts";
+import { DEFAULT_PORT, dataPaths, migrateLegacyDb, readOrCreateToken } from "./paths.ts";
 import { getWorkItem, type WorkItem } from "./queue.ts";
 import { createRoutine, deleteRoutine, getRoutine, listRoutines, listRuns, updateRoutine } from "./routines.ts";
 import { Runner, type SessionFactory, type TurnResult } from "./runner.ts";
 import { Scheduler } from "./scheduler.ts";
 import { RpcError, startServer, type Broadcast, type Handlers, type Server } from "./server.ts";
 import { getSettings, setSettings } from "./settings.ts";
-import { checkSetup, ensureAccounts, listModels, signIn } from "./setup.ts";
+import { checkSetup, ensureAccounts, listModels, prepareCodexSandbox, signIn } from "./setup.ts";
 import { Team, getExchange } from "./team.ts";
+import { protectCodexData, protectCodexDataAsync, type BotHome } from "./windows-acl.ts";
 
 // The desktop app loads the UI from app://tjommie (plan 1D); `npm run dev` serves it on localhost:3000.
 const allowedOrigins = (mode: DaemonAuth["mode"]) => ["app://tjommie", ...(mode === "development" ? ["http://localhost:3000"] : [])];
@@ -57,6 +58,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
 
 async function initializeDaemon(options: DaemonOptions, server: Server, onCleanup: (cleanup: () => void) => void): Promise<Daemon> {
   const paths = dataPaths(options.root);
+  migrateLegacyDb(paths);
   if (options.auth.mode === "production") {
     const leftover = existsSync(paths.token);
     try {
@@ -67,19 +69,52 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
     }
     if (leftover) console.log("Removed a leftover development daemon-token file.");
   }
+  // This is the only synchronous ACL pass. It finishes before SQLite opens.
+  let protection = protectCodexData(paths);
   const db = openDb(paths.db);
   onCleanup(() => db.close());
   const token = options.auth.mode === "development" ? readOrCreateToken(paths.token) : options.auth.token;
   ensureAccounts(db, options.accountsDir ?? paths.accounts, paths.root);
+  // Account and token creation, plus existing bot homes, need a fresh pass.
+  protection = await protectCodexDataAsync(paths, listStoredBots(db));
+  let lastProtectionAt = Date.now();
+  let aclQueue: Promise<void> = Promise.resolve();
+  const refreshProtection = (force = false, override?: BotHome): Promise<void> => {
+    const task = aclQueue.then(async () => {
+      if (!force && Date.now() - lastProtectionAt < 60_000) return;
+      const homes = listStoredBots(db).map((bot) => bot.id === override?.id ? override : bot);
+      protection = await protectCodexDataAsync(paths, homes);
+      lastProtectionAt = Date.now();
+    });
+    aclQueue = task.catch(() => {});
+    return task;
+  };
+  let loggedCodexVersion: string | null = null;
+  const logVersionDrift = (statuses: ProviderSetup[]): void => {
+    const version = statuses.find((status) => status.provider === "codex")?.version;
+    if (version && version !== "0.155.1" && version !== loggedCodexVersion) {
+      console.info(`Codex CLI ${version} differs from the measured ACL recipe version 0.155.1.`);
+      loggedCodexVersion = version;
+    }
+  };
   let setup: ProviderSetup[] = [];
   let broadcast: Broadcast = () => {};
   const send: Broadcast = (event, data) => broadcast(event, data);
   let mcpUrl = ""; // Set before queued work can start a CLI session.
   const tokens = new McpTokens();
+  const switchingBots = new Set<string>();
   const runner: Runner = new Runner({
     db,
     broadcast: send,
     isSignedIn: (provider) => setup.some((status) => status.provider === provider && status.signedIn),
+    codexSandboxReady: () => setup.some((status) => status.provider === "codex" && status.sandbox === "ready"),
+    setupIssue: (bot) => {
+      if (switchingBots.has(bot.id)) return "This bot is changing provider. Try again shortly.";
+      if (bot.provider !== "codex" || bot.autonomy !== "folder") return null;
+      if (!setup.some((status) => status.provider === "codex" && status.sandbox === "ready")) return "Set up Codex's sandbox";
+      return protection.reason;
+    },
+    isHeld: (botId) => switchingBots.has(botId),
     createSession: options.createSession,
     hooks: {
       retryRoutine: (message) => scheduler.retry(message),
@@ -105,6 +140,7 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
     deliver: (work) => runner.deliver(work),
     currentWork: (botId) => runner.currentWork(botId),
     stateOf: (bot) => runner.toBot(bot).state,
+    botView: (bot) => runner.toBot(bot),
     stopItem: (itemId, notice) => runner.stopItem(itemId, notice),
   });
   const scheduler: Scheduler = new Scheduler({
@@ -122,33 +158,76 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
     }
   }
 
-  const refreshSetup = async (): Promise<ProviderSetup[]> => {
+  const refreshSetup = async (forceAcl = false): Promise<ProviderSetup[]> => {
+    await refreshProtection(forceAcl);
     setup = await checkSetup(db);
+    logVersionDrift(setup);
     broadcast("setup.changed", setup);
     for (const bot of listStoredBots(db)) broadcast("bot.updated", runner.toBot(bot));
-    runner.pumpAll();
+    runner.setupChanged();
     return setup;
   };
 
   const refreshSetupInBackground = (): void => {
-    void refreshSetup().catch((error: unknown) => console.error("Failed to refresh provider setup.", error));
+    void refreshSetup(true).catch((error: unknown) => console.error("Failed to refresh provider setup.", error));
   };
 
   const deletionRequests = new Set<string>();
   const handlers: Handlers = {
     "setup.status": () => refreshSetup(),
     "setup.signIn": ({ provider }) => signIn(db, provider, refreshSetupInBackground),
+    "setup.prepareCodexSandbox": async () => {
+      try {
+        await prepareCodexSandbox(db);
+      } finally {
+        await refreshSetup(true);
+      }
+      const status = setup.find((entry) => entry.provider === "codex");
+      if (!status || status.provider !== "codex") throw new RpcError("internal", "Codex setup status is missing.");
+      return status;
+    },
     "models.list": ({ provider }) => listModels(db, provider),
     "bots.list": () => listStoredBots(db).map((bot) => runner.toBot(bot)),
-    "bots.create": (input) => {
-      const bot = runner.toBot(createBot(db, paths.bots, input));
+    "bots.create": async (input) => {
+      let created;
+      try { created = createBot(db, paths.bots, input); }
+      catch (error) { await refreshProtection(true); runner.setupChanged(); throw error; }
+      await refreshProtection(true);
+      runner.setupChanged();
+      const bot = runner.toBot(created);
       broadcast("bot.updated", bot);
       return bot;
     },
-    "bots.update": ({ id, patch }) => {
+    "bots.update": async ({ id, patch }) => {
       const before = getStoredBot(db, id);
-      const bot = runner.toBot(updateBot(db, id, patch));
-      runner.botChanged(id, before.provider !== bot.provider);
+      const providerChanged = patch.provider !== undefined && patch.provider !== before.provider;
+      if (providerChanged) {
+        if (switchingBots.has(id)) throw new RpcError("busy", "This bot is already changing provider. Try again shortly.");
+        validateBotPatch(db, before, patch);
+        switchingBots.add(id);
+      }
+      let passAttempted = false;
+      let changed: ReturnType<typeof updateBot>;
+      try {
+        if (providerChanged) {
+          await runner.stop(id);
+          runner.botChanged(id, true);
+          passAttempted = true;
+          await refreshProtection(true, { id, homeFolder: before.homeFolder, provider: patch.provider! });
+          if (protection.status === "check_failed") throw new RpcError("bad_state", "Could not update the bot folder protection. Try again after checking Codex's sandbox setup.");
+        }
+        changed = updateBot(db, id, patch);
+      } catch (error) {
+        if (providerChanged && passAttempted) await refreshProtection(true);
+        throw error;
+      } finally {
+        if (providerChanged) {
+          switchingBots.delete(id);
+          runner.setupChanged();
+        }
+      }
+      if (!providerChanged) runner.botChanged(id, false);
+      const bot = runner.toBot(changed);
       broadcast("bot.updated", bot);
       return bot;
     },
@@ -248,6 +327,7 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
   team.start();
   runner.recover(); // Synchronous after binding, before setup yields or requests can be served.
   setup = await checkSetup(db);
+  logVersionDrift(setup);
   mcpUrl = `http://127.0.0.1:${server.port}/mcp`;
   broadcast = server.broadcast;
   runner.start();

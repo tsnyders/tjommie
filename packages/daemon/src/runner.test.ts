@@ -154,12 +154,53 @@ describe("botStateOf", () => {
 
   it("ranks states: needs setup, paused, limited, waiting, working, idle", () => {
     expect(botStateOf({ ...base, signedIn: false, paused: true }, now)).toBe("needs_setup");
+    expect(botStateOf({ ...base, setupReason: "Set up Codex's sandbox", busy: true }, now)).toBe("needs_setup");
     expect(botStateOf({ ...base, paused: true, busy: true }, now)).toBe("paused");
     expect(botStateOf({ ...base, limitedUntil: "2026-09-25T11:00:00.000Z", waiting: true }, now)).toBe("limited");
     expect(botStateOf({ ...base, limitedUntil: "2026-09-25T09:00:00.000Z", waiting: true, busy: true }, now)).toBe("waiting");
     expect(botStateOf({ ...base, busy: true }, now)).toBe("working");
     expect(botStateOf(base, now)).toBe("idle");
   });
+});
+
+it("holds a Codex Own folder bot until sandbox readiness clears, then pumps queued work", async () => {
+  const h = harness();
+  let reason: string | null = "Set up Codex's sandbox";
+  const sessions: FakeSession[] = [];
+  const runner = new Runner({ db: h.db, broadcast: () => {}, isSignedIn: () => true,
+    setupIssue: (bot) => bot.provider === "codex" && bot.autonomy === "folder" ? reason : null,
+    createSession: () => { const session = new FakeSession(); sessions.push(session); return session; },
+  });
+  runners.push(runner);
+  const bot = newBot(h, { provider: "codex", model: "test-model", autonomy: "folder" });
+  expect(runner.toBot(bot)).toMatchObject({ state: "needs_setup", setupReason: "Set up Codex's sandbox" });
+  runner.submit(bot.id, "Begin", []);
+  expect(sessions).toHaveLength(0);
+  reason = null;
+  runner.pumpAll();
+  await waitFor(() => sessions.length === 1);
+  expect(runner.toBot(bot).setupReason).toBeNull();
+});
+
+it("closes an active Codex session when its sandbox becomes unready", async () => {
+  const h = harness();
+  let reason: string | null = null;
+  const session = new FakeSession();
+  const runner = new Runner({ db: h.db, broadcast: () => {}, isSignedIn: () => true,
+    setupIssue: (bot) => bot.provider === "codex" && bot.autonomy === "folder" ? reason : null,
+    createSession: () => session,
+  });
+  runners.push(runner);
+  const bot = newBot(h, { provider: "codex", model: "test-model", autonomy: "folder" });
+  runner.submit(bot.id, "Begin", []);
+  await waitFor(() => session.sent.length === 1);
+  reason = "Set up Codex's sandbox";
+  runner.setupChanged();
+  expect(session.interrupts).toBe(1);
+  session.emit({ type: "turn_done", ok: false, error: null });
+  expect(session.closed).toBe(true);
+  expect(history(h.db, bot.id, undefined, 20).some((item) => item.kind === "notice" && item.body === "Codex's sandbox is no longer ready. Set it up again to continue.")).toBe(true);
+  expect(runner.toBot(bot)).toMatchObject({ state: "needs_setup", setupReason: reason });
 });
 
 describe("activityBody", () => {

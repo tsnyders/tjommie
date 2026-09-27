@@ -27,6 +27,7 @@ export type StartOptions = {
   model: string;
   instructions: string;
   autonomy: Autonomy;
+  codexSandboxReady?: boolean; // Always ask uses elevated only after the account setup is ready.
   allowRules: string[];
   resumeId: string | null;
   resumeCostUsd?: number | null; // last reported cumulative cost for this saved CLI session

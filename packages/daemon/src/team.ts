@@ -1,8 +1,8 @@
-import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readSync, realpathSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdtempSync, openSync, readdirSync, readSync, realpathSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
   ExchangeHandoffData, FileData, RoutineApprovalData, RoutineInput, TEAM_ROOM_ID,
-  type Approval, type ApprovalDecision, type BotState, type EventData, type EventName,
+  type Approval, type ApprovalDecision, type Bot, type BotState, type EventData, type EventName,
   type Exchange, type ExchangePostData, type Message, type NoticeData, type RoomHandoffData,
 } from "@tjommie/protocol";
 import { z } from "zod";
@@ -165,7 +165,12 @@ function snapshotFile(roots: string[], target: string, staging: string, botId: s
     const checked = statSync(fileInside(roots, file));
     if (!opened.isFile() || opened.dev !== checked.dev || opened.ino !== checked.ino) throw new Error("The file changed while it was being shared. Please try again.");
     if (opened.size > MAX_SHARE_BYTES) throw new Error("That file is too big to share. The limit is 200 MB.");
-    mkdirSync(staging, { recursive: true, mode: 0o700 });
+    // The daemon creates and protects this folder before serving tools. A missing or
+    // replaced staging directory must not be silently recreated without its ACL.
+    let stagingStat: ReturnType<typeof lstatSync>;
+    try { stagingStat = lstatSync(staging); }
+    catch { throw new Error("The protected shared-files folder is unavailable."); }
+    if (stagingStat.isSymbolicLink() || !stagingStat.isDirectory()) throw new Error("The protected shared-files folder is unavailable.");
     folder = mkdtempSync(join(staging, `share-${botId}-`));
     const path = join(folder, basename(file));
     const destination = openSync(path, "wx", 0o600);
@@ -202,6 +207,7 @@ export type TeamDeps = {
   stopItem: (itemId: string, notice: string) => void | Promise<void>;
   currentWork: (botId: string) => WorkItem | null;
   stateOf: (bot: StoredBot) => BotState;
+  botView?: (bot: StoredBot) => Bot;
 };
 
 // Bots working together: the tools on Tjommie's MCP server, exchanges between bots, and the Team room.
@@ -212,6 +218,7 @@ export class Team {
   #stopItem: TeamDeps["stopItem"];
   #currentWork: (botId: string) => WorkItem | null;
   #stateOf: (bot: StoredBot) => BotState;
+  #botView: (bot: StoredBot) => Bot;
   #shared = new Map<string, string[]>(); // work item id -> files the bot shared during that turn
   #sessionChains = new Map<string, string>(); // autonomous CLI work shares one chain until sessionClosed
   #pending: (() => void)[] | null = null;
@@ -225,6 +232,7 @@ export class Team {
     this.#stopItem = deps.stopItem;
     this.#currentWork = deps.currentWork;
     this.#stateOf = deps.stateOf;
+    this.#botView = deps.botView ?? ((bot) => ({ ...bot, state: this.#stateOf(bot), setupReason: null }));
   }
 
   // Call once at daemon startup, before starting work. Old folders survived a crash.
@@ -443,7 +451,7 @@ export class Team {
       this.#emit("message.updated", updateMessage(this.#db, message.id, { data }));
       this.#emit("approval.resolved", approval);
       const bot = getStoredBot(this.#db, approval.botId);
-      this.#emit("bot.updated", { ...bot, state: this.#stateOf(bot) });
+      this.#emit("bot.updated", this.#botView(bot));
       return approval;
     });
   }
@@ -550,7 +558,7 @@ export class Team {
       });
       this.#emit("approval.added", approval);
       this.#emit("notify", { kind: "approval", botId, approvalId, title: `${bot.name} is waiting for you`, body: summary });
-      this.#emit("bot.updated", { ...bot, state: this.#stateOf(bot) });
+      this.#emit("bot.updated", this.#botView(bot));
     });
     return "Proposed. The person sees a card and decides; nothing is saved until they approve it.";
   }
@@ -676,7 +684,9 @@ export class Team {
   #staging(): string {
     const database = this.#db.location();
     if (!database) throw new Error("File sharing needs a saved database.");
-    return join(dirname(database), "shared-files");
+    const databaseFolder = dirname(database);
+    const root = basename(database) === "tjommie.db" && basename(databaseFolder) === "data" ? dirname(databaseFolder) : databaseFolder;
+    return join(root, "shared-files");
   }
 
   #snapshotFolder(file: string): string | null {

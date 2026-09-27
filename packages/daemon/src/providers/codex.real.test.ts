@@ -16,6 +16,7 @@ function session(overrides: Partial<StartOptions> = {}, cwd = tempRoot()) {
     model: "", // the account's default model
     instructions: "You are a terse test bot.",
     autonomy: "folder",
+    codexSandboxReady: true, // This PC has the elevated sandbox set up for the real Tjommie Codex account.
     allowRules: [],
     resumeId: null,
     env: accountEnv(realAccount("codex")),

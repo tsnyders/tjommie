@@ -25,6 +25,7 @@ const done = { outcome: "done" as const, text: "Here is the file.", textMessageI
 
 beforeEach(() => {
   root = tempRoot();
+  mkdirSync(join(root, "shared-files"));
   db = openDb(join(root, "team.db"));
   writer = createBot(db, join(root, "bots"), { name: "Writer", color: "blue", shape: "circle", instructions: "", provider: "codex", model: "gpt-5.6-sol" });
   asker = createBot(db, join(root, "bots"), { name: "Asker", color: "blue", shape: "circle", instructions: "", provider: "claude", model: "sonnet", canMessage: [writer.id] });
@@ -58,6 +59,14 @@ const share = (conversationId: string, name = "answer.txt") => {
 };
 
 describe("Team snapshot lifecycle", () => {
+  it("refuses a share if the protected staging folder was removed", () => {
+    const source = join(writer.homeFolder, "unshared.txt");
+    writeFileSync(source, "fixture");
+    const staging = join(root, "shared-files");
+    rmSync(staging, { recursive: true });
+    expect(() => call(writer.id, "share_file", { path: source })).toThrow("The protected shared-files folder is unavailable.");
+    expect(existsSync(staging)).toBe(false);
+  });
   it.each(["failed", "interrupted"] as const)("keeps files from a %s turn in the target bot inbox and releases staging", (outcome) => {
     const request = ask();
     const card = share(request.conversationId);

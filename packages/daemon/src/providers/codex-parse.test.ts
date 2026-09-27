@@ -169,7 +169,7 @@ describe("codex policy and config", () => {
     expect(codexPolicy("full")).toEqual({ approvalPolicy: "never", sandbox: "danger-full-access" });
   });
 
-  it("blocks network and opens extra folders in the sandbox, unelevated on Windows, with Codex's own extras off", () => {
+  it("chooses elevated for Own folder, elevated for ready Always ask, and leaves Full auto as is", () => {
     const features = {
       apps: false,
       browser_use: false,
@@ -183,7 +183,10 @@ describe("codex policy and config", () => {
       skill_mcp_dependency_install: false,
     };
     const common = { sandbox_workspace_write: { network_access: false, writable_roots: ["C:\\home"] }, features, mcp_servers: {} };
-    expect(codexConfig(options, "win32")).toEqual({ ...common, windows: { sandbox: "unelevated" } });
+    expect(codexConfig(options, "win32")).toEqual({ ...common, windows: { sandbox: "elevated" } });
+    expect(codexConfig({ ...options, autonomy: "ask", codexSandboxReady: false }, "win32")).toEqual({ ...common, windows: { sandbox: "unelevated" } });
+    expect(codexConfig({ ...options, autonomy: "ask", codexSandboxReady: true }, "win32")).toEqual({ ...common, windows: { sandbox: "elevated" } });
+    expect(codexConfig({ ...options, autonomy: "full", codexSandboxReady: true }, "win32")).toEqual({ ...common, windows: { sandbox: "unelevated" } });
     expect(codexConfig(options, "darwin")).toEqual(common);
     expect(CODEX_FEATURES_OFF).toEqual({
       apps: false,

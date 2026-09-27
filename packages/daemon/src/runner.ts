@@ -82,10 +82,10 @@ type Deleting = {
 };
 
 export function botStateOf(
-  state: { signedIn: boolean; paused: boolean; limitedUntil: string | null; waiting: boolean; busy: boolean },
+  state: { signedIn: boolean; setupReason?: string | null; paused: boolean; limitedUntil: string | null; waiting: boolean; busy: boolean },
   now: string,
 ): BotState {
-  if (!state.signedIn) return "needs_setup";
+  if (!state.signedIn || state.setupReason) return "needs_setup";
   if (state.paused) return "paused";
   if (state.limitedUntil !== null && state.limitedUntil > now) return "limited";
   if (state.waiting) return "waiting";
@@ -119,6 +119,9 @@ export class Runner {
   #db: Db;
   #broadcast: Broadcast;
   #isSignedIn: (provider: Bot["provider"]) => boolean;
+  #setupIssue: (bot: StoredBot) => string | null;
+  #isHeld: (botId: string) => boolean;
+  #codexSandboxReady: () => boolean;
   #createSession: SessionFactory;
   #hooks: RunnerHooks;
   #live = new Map<string, Live>();
@@ -126,10 +129,13 @@ export class Runner {
   #recovered = false;
   #ready = true;
 
-  constructor(deps: { db: Db; broadcast: Broadcast; isSignedIn: (provider: Bot["provider"]) => boolean; createSession?: SessionFactory; hooks?: RunnerHooks }) {
+  constructor(deps: { db: Db; broadcast: Broadcast; isSignedIn: (provider: Bot["provider"]) => boolean; setupIssue?: (bot: StoredBot) => string | null; isHeld?: (botId: string) => boolean; codexSandboxReady?: () => boolean; createSession?: SessionFactory; hooks?: RunnerHooks }) {
     this.#db = deps.db;
     this.#broadcast = deps.broadcast;
     this.#isSignedIn = deps.isSignedIn;
+    this.#setupIssue = deps.setupIssue ?? (() => null);
+    this.#isHeld = deps.isHeld ?? (() => false);
+    this.#codexSandboxReady = deps.codexSandboxReady ?? (() => false);
     this.#createSession = deps.createSession ?? cliSessionFactory;
     this.#hooks = deps.hooks ?? {};
   }
@@ -161,9 +167,12 @@ export class Runner {
 
   toBot(bot: StoredBot): Bot {
     const live = this.#live.get(bot.id);
+    const signedIn = this.#isSignedIn(bot.provider);
+    const setupReason = signedIn ? this.#setupIssue(bot) : `Sign in to ${bot.provider === "codex" ? "Codex" : "Claude"}`;
     const state = botStateOf(
       {
-        signedIn: this.#isSignedIn(bot.provider),
+        signedIn,
+        setupReason,
         paused: bot.paused,
         limitedUntil: bot.limitedUntil,
         waiting: (live?.approvals.size ?? 0) > 0 || this.#db.prepare("SELECT 1 FROM approvals WHERE bot_id = ? AND kind = 'routine' AND status = 'pending' LIMIT 1").get(bot.id) !== undefined,
@@ -171,7 +180,7 @@ export class Runner {
       },
       nowIso(),
     );
-    return { ...bot, state };
+    return { ...bot, state, setupReason };
   }
 
   processId(botId: string): number | undefined {
@@ -380,7 +389,7 @@ export class Runner {
       return;
     }
     // A routine proposal changes the displayed state, but does not block work.
-    if (!this.#isSignedIn(bot.provider) || bot.paused || (bot.limitedUntil !== null && bot.limitedUntil > nowIso()) || live.approvals.size > 0 || live.busy) {
+    if (!this.#isSignedIn(bot.provider) || this.#setupIssue(bot) || bot.paused || (bot.limitedUntil !== null && bot.limitedUntil > nowIso()) || live.approvals.size > 0 || live.busy) {
       this.#armIdle(botId, live);
       this.#emitBot(botId);
       return;
@@ -411,6 +420,22 @@ export class Runner {
 
   pumpAll(): void {
     for (const bot of listStoredBots(this.#db)) this.pump(bot.id);
+  }
+
+  setupChanged(): void {
+    for (const bot of listStoredBots(this.#db)) {
+      if (this.#isHeld(bot.id)) continue;
+      if (!this.#setupIssue(bot)) continue;
+      const live = this.#live.get(bot.id);
+      if (!live?.session) continue;
+      if (live.busy) {
+        live.reload = true;
+        const item = live.item;
+        if (item) void this.stopItem(item.id, "Codex's sandbox is no longer ready. Set it up again to continue.")
+          .catch((error: unknown) => console.error("Could not stop a bot after setup changed.", error));
+      } else this.#closeSession(bot.id, live);
+    }
+    this.pumpAll();
   }
 
   shutdown(): void {
@@ -470,6 +495,7 @@ export class Runner {
 
   async #startTurn(bot: StoredBot, item: WorkItem): Promise<void> {
     const live = this.#liveFor(bot.id);
+    if (this.#setupIssue(bot)) throw new Error("The bot needs setup before it can run.");
     if (live.stopRequested) {
       this.#finishTurn(bot.id, false, null);
       return;
@@ -490,6 +516,7 @@ export class Runner {
           model: bot.model,
           instructions: botPrompt(bot),
           autonomy: bot.autonomy,
+          codexSandboxReady: this.#codexSandboxReady(),
           allowRules: allowRules(this.#db, bot.id),
           resumeId,
           resumeCostUsd: resumeId === null ? null : saved?.total_cost_usd ?? null,

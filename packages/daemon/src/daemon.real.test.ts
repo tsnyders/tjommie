@@ -35,7 +35,13 @@ afterAll(async () => {
   if (dirname(disposable) !== resolve(tmpdir()) || disposable === resolve(dirname(accounts)) || disposable === resolve(accounts) || lstatSync(disposable).isSymbolicLink()) {
     throw new Error("Refusing to remove a test folder outside the disposable temp root.");
   }
-  rmSync(disposable, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  for (let attempt = 0; attempt < 20 && existsSync(disposable); attempt++) {
+    try { rmSync(disposable, { recursive: true, force: true }); }
+    catch (error) {
+      if (!error || typeof error !== "object" || !("code" in error) || !["EPERM", "EBUSY", "ENOTEMPTY"].includes(String(error.code))) throw error;
+      await new Promise<void>((done) => setTimeout(done, 500));
+    }
+  }
   expect(existsSync(disposable)).toBe(false);
 });
 
@@ -141,7 +147,11 @@ it("a Claude bot asks a Codex bot for help and gets the answer back", async () =
       instructions: "Answer requests in as few words as possible.",
       provider: "codex",
       model: model.id,
+      // The daemon root is disposable, but this test uses the real account home.
+      // Own folder correctly stays gated because its account ACL is not in that root.
+      autonomy: "ask",
     });
+    expect(writer.state).toBe("idle");
     const researcher = await claudeBot(client, "Researcher", { canMessage: [writer.id] });
     await client.call("chat.send", {
       botId: researcher.id,

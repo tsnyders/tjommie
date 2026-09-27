@@ -34,6 +34,7 @@ const MessagePage = z.object({ messages: z.array(Message), hasMore: z.boolean() 
 export const methods = {
   "setup.status": { params: Empty, result: z.array(ProviderSetup) },
   "setup.signIn": { params: z.object({ provider: Provider }), result: z.object({ url: z.string().nullable() }) },
+  "setup.prepareCodexSandbox": { params: Empty, result: ProviderSetup.options[1] },
   "models.list": { params: z.object({ provider: Provider }), result: z.array(ModelInfo) },
   "bots.list": { params: Empty, result: z.array(Bot) },
   "bots.create": { params: BotInput, result: Bot },

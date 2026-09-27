@@ -38,7 +38,9 @@ npm run build      # static export to packages/ui/out
 
 ## Autonomy
 
-Own folder protects your files from a bot's mistakes. It doesn't contain a bot that has been tricked by what it reads. On Windows, a Codex bot at Own folder can still read files your account can read and reach programs on this PC, including Tjommie itself. Until the desktop app ships, don't give a Codex bot at Own folder untrusted input such as web browsing or email; use Always ask for those bots.
+On Windows, Codex bots at Own folder need Codex's elevated sandbox. Setting it up may show one Windows admin prompt. Until it is ready, those bots show Needs setup and do not run. Tjommie denies sandboxed Codex commands access to its sign-in folders, Claude bots' folders, logs, database and shared-files folder. The installed daemon token is passed through a pipe; a development token file is protected if present.
+
+Codex bots can still read the rest of your user profile. A Codex bot at Own folder can read the folders of your other Codex bots (their notes and attached files), whether or not they're running. Claude bots' folders are protected. Browser cookies stay unreadable. Local services, including Tjommie's health endpoint, may be reachable from a sandboxed command.
 
 ## License
 
