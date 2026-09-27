@@ -42,6 +42,7 @@ export const methods = {
   "bots.delete": { params: Id, result: Empty },
   "bots.pause": { params: z.object({ id: z.string(), paused: z.boolean() }), result: Bot },
   "bots.showBrowser": { params: Id, result: Empty },
+  "bots.notes": { params: Id, result: z.object({ text: z.string() }) },
   "chat.history": { params: z.object({ botId: z.string(), ...Page }), result: MessagePage },
   "chat.send": {
     params: z.object({ botId: z.string(), text: z.string().trim().min(1).max(100_000), files: z.array(z.string()).max(20).default([]) }),

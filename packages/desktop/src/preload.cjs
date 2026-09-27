@@ -18,6 +18,8 @@ contextBridge.exposeInMainWorld("tjommie", {
   pathForFile: (file) => webUtils.getPathForFile(file),
   showFile: (path) => ipcRenderer.send("file:show", path),
   openFolder: (path) => ipcRenderer.invoke("folder:open", path),
+  pickFolder: () => ipcRenderer.invoke("folder:pick"),
+  openNotes: (homeFolder) => ipcRenderer.invoke("notes:open", homeFolder),
   setTheme: (theme) => ipcRenderer.send("theme:set", theme),
   info: () => ipcRenderer.invoke("app:info"),
 });

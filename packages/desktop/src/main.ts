@@ -5,6 +5,7 @@ import { isAbsolute, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { connect, type Client } from "@tjommie/client";
 import { navigationFor, uiFile } from "./app-protocol.ts";
+import { notesFile } from "./bot-files.ts";
 import { startDaemonProcess, type DaemonConnection, type RunningDaemon } from "./daemon-process.ts";
 
 const here = import.meta.dirname;
@@ -223,6 +224,15 @@ function registerIpc(): void {
     win?.setBackgroundColor(colors.color);
   });
   ipcMain.handle("app:info", () => ({ username: userInfo().username }));
+  ipcMain.handle("folder:pick", async () => {
+    const options: Electron.OpenDialogOptions = { properties: ["openDirectory"] };
+    const result = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
+    return result.canceled ? null : (result.filePaths[0] ?? null);
+  });
+  ipcMain.handle("notes:open", async (_event, homeFolder: unknown) => {
+    const file = typeof homeFolder === "string" ? notesFile(join(dataRoot, "bots"), homeFolder) : null;
+    if (file) await shell.openPath(file);
+  });
 }
 
 function createWindow(): void {
