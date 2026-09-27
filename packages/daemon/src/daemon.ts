@@ -1,4 +1,5 @@
-import { existsSync, lstatSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import { TEAM_ROOM_ID, type ProviderSetup } from "@tjommie/protocol";
 import { getApproval } from "./approvals.ts";
 import { createBot, deleteBot, getStoredBot, listStoredBots, setPaused, sweepDeletedBotFolders, updateBot, validateBotPatch } from "./bots.ts";
@@ -16,6 +17,8 @@ import { getSettings, setSettings } from "./settings.ts";
 import { checkSetup, ensureAccounts, listModels, prepareCodexSandbox, signIn } from "./setup.ts";
 import { Team, getExchange } from "./team.ts";
 import { protectCodexData, protectCodexDataAsync, type BotHome } from "./windows-acl.ts";
+
+const NOTES_PREVIEW_CHARS = 4_000;
 
 // The desktop app loads the UI from app://tjommie (plan 1D); `npm run dev` serves it on localhost:3000.
 const allowedOrigins = (mode: DaemonAuth["mode"]) => ["app://tjommie", ...(mode === "development" ? ["http://localhost:3000"] : [])];
@@ -268,6 +271,11 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
       if (!bot.browser) throw new RpcError("bad_params", "This bot's browser is off");
       await showBrowser(bot);
       return {};
+    },
+    // Bot settings shows the start of the bot's own notes.
+    "bots.notes": ({ id }) => {
+      const file = join(getStoredBot(db, id).homeFolder, "notes.md");
+      return { text: existsSync(file) ? readFileSync(file, "utf8").slice(0, NOTES_PREVIEW_CHARS) : "" };
     },
     "chat.history": ({ botId, before, limit }) => {
       getStoredBot(db, botId);

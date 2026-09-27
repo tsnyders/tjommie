@@ -974,3 +974,14 @@ it("awaits browser launch errors and rejects showing a disabled browser", async 
   await expect(client.call("bots.showBrowser", { id: on.id })).rejects.toThrow(/Browser could not start/);
   await expect(client.call("bots.showBrowser", { id: on.id })).resolves.toEqual({});
 });
+
+it("reads the start of a bot's notes.md for Bot settings", async () => {
+  const { client } = await harness();
+  const bot = await client.call("bots.create", input("Noter"));
+  expect(await client.call("bots.notes", { id: bot.id })).toEqual({ text: "# Noter's notes\n" });
+  writeFileSync(join(bot.homeFolder, "notes.md"), "x".repeat(5000));
+  expect((await client.call("bots.notes", { id: bot.id })).text).toHaveLength(4000);
+  rmSync(join(bot.homeFolder, "notes.md"));
+  expect(await client.call("bots.notes", { id: bot.id })).toEqual({ text: "" });
+  await expect(client.call("bots.notes", { id: "missing" })).rejects.toThrow(/not_found/);
+});

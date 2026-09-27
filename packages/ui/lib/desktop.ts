@@ -12,6 +12,8 @@ export type DesktopApi = {
   pathForFile(file: File): string;
   showFile(path: string): void;
   openFolder(path: string): Promise<void>;
+  pickFolder(): Promise<string | null>;
+  openNotes(homeFolder: string): Promise<void>;
   setTheme(theme: "dark" | "light"): void;
   info(): Promise<{ username: string }>;
 };
