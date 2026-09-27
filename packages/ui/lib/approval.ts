@@ -19,3 +19,18 @@ export function approvalDetail(detail: string): string {
   }
   return oneLine(detail);
 }
+
+// What "Always allow" saves, in words. Claude's rules read as they are ("Write", "Bash(npm test:*)"). Codex's are a
+// command prefix (codex:["npm","test"]) or an MCP tool (codex-mcp:browser.browser_navigate).
+export function approvalRule(rule: string): string {
+  if (rule.startsWith("codex-mcp:")) return oneLine(rule.slice("codex-mcp:".length));
+  if (rule.startsWith("codex:")) {
+    try {
+      const words: unknown = JSON.parse(rule.slice("codex:".length));
+      if (Array.isArray(words) && words.length > 0) return oneLine(words.join(" "));
+    } catch {
+      // not the list Codex sends: show it as it is
+    }
+  }
+  return oneLine(rule);
+}

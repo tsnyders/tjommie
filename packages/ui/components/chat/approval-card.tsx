@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { Check, CircleAlert, X } from "lucide-react";
 import type { ApprovalData, ApprovalDecision, Bot } from "@tjommie/protocol";
-import { approvalDetail } from "@/lib/approval";
+import { approvalDetail, approvalRule } from "@/lib/approval";
 import { daemon } from "@/lib/connection";
 import { errorText } from "@/lib/labels";
 import { Pill } from "../pill";
@@ -37,7 +37,7 @@ export function ApprovalCard({ summary, data, bot }: { summary: string; data: Ap
       </p>
       <p className="mt-2 text-[14px] leading-[21px] text-text">{summary}</p>
       <p className={routine ? "mt-1 line-clamp-2 text-[12px] leading-[18px] text-secondary" : "mt-1 truncate text-[12px] leading-[18px] text-secondary"}>
-        {routine ? `It will: ${data.detail}` : `${data.tool} · ${approvalDetail(data.detail)}`}
+        {routine ? `It will: ${data.detail}` : [data.tool, approvalDetail(data.detail)].filter(Boolean).join(" · ")}
       </p>
       <div className="mt-3 flex flex-wrap gap-2">
         {routine ? (
@@ -65,7 +65,7 @@ export function ApprovalCard({ summary, data, bot }: { summary: string; data: Ap
       </div>
       {data.kind !== "routine" && data.rule && bot && (
         <p className="mt-2 text-[12px] leading-[18px] text-placeholder">
-          Always allow saves: {data.rule}, for {bot.name} only
+          Always allow saves: {approvalRule(data.rule)}, for {bot.name} only
         </p>
       )}
       {problem && <p className="mt-2 text-[12px] leading-[18px] text-danger">{problem}</p>}
