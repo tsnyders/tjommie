@@ -1,7 +1,9 @@
 import type { ClientEvent } from "@tjommie/client";
 import type { Bot, Message, Routine } from "@tjommie/protocol";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { loadConversation } from "./connection";
 import { addOlder, applyEvent, connected, finishLoading, initialState, startLoading, type AppState } from "./state";
+import { getState, update } from "./store";
 
 const bot = (id: string, createdAt: string): Bot => ({
   id,
@@ -103,5 +105,23 @@ describe("app state", () => {
     state = connected(state, { bots: [], settings: { chainLimit: 5 }, routines: [] });
     expect(state.conversations).toEqual({});
     expect(state.connection).toEqual({ status: "ready" });
+  });
+
+  it("keeps a failed history load until a new connection clears it", async () => {
+    update(() => initialState);
+    const fetchPage = vi.fn(async () => {
+      throw new Error("History unavailable");
+    });
+
+    await loadConversation("b1", fetchPage);
+    expect(getState().conversations.b1.status).toBe("failed");
+    await loadConversation("b1", fetchPage);
+    expect(fetchPage).toHaveBeenCalledTimes(1);
+
+    update((state) => connected(state, { bots: [], settings: { chainLimit: 5 }, routines: [] }));
+    expect(getState().conversations.b1).toBeUndefined();
+    await loadConversation("b1", fetchPage);
+    expect(fetchPage).toHaveBeenCalledTimes(2);
+    update(() => initialState);
   });
 });

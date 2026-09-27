@@ -1,7 +1,7 @@
 import { connect, type Client, type ClientEvent } from "@tjommie/client";
 import type { Message } from "@tjommie/protocol";
 import { desktop, type DesktopConnection } from "./desktop";
-import { addOlder, applyEvent, connected, finishLoading, forgetConversation, startLoading } from "./state";
+import { addOlder, applyEvent, connected, finishLoading, startLoading } from "./state";
 import { getState, update } from "./store";
 
 const PAGE = 50;
@@ -111,7 +111,7 @@ function lost(connection: DesktopConnection, error: unknown): void {
     update((state) => ({ ...state, connection: { status: "update" } }));
     return;
   }
-  update((state) => (state.connection.status === "failed" ? state : { ...state, connection: { status: "reconnecting" } }));
+  update((state) => (state.connection.status === "connecting" ? state : { ...state, connection: { status: "reconnecting" } }));
   // If the daemon restarts, the desktop app sends a new connection. Until then, keep trying this one in
   // case only the socket dropped.
   retry = setTimeout(() => {
@@ -133,7 +133,17 @@ export async function loadConversation(conversationId: string, fetchPage: (befor
     const page = await fetchPage();
     update((state) => finishLoading(state, conversationId, page));
   } catch {
-    update((state) => forgetConversation(state, conversationId));
+    update((state) => {
+      const conversation = state.conversations[conversationId];
+      if (!conversation || conversation.status !== "loading") return state;
+      return {
+        ...state,
+        conversations: {
+          ...state.conversations,
+          [conversationId]: { ...conversation, status: "failed" as const, pending: [] },
+        },
+      };
+    });
   }
 }
 

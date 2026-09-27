@@ -1,11 +1,13 @@
 import type { ClientEvent } from "@tjommie/client";
 import type { Bot, Message, ProviderSetup, Routine, Settings } from "@tjommie/protocol";
 
+export type MessageEvent = Extract<ClientEvent, { event: "message.added" | "message.updated" | "message.delta" }>;
+
 export type Conversation = {
-  status: "loading" | "ready";
+  status: "loading" | "ready" | "failed";
   messages: Message[];
   hasMore: boolean;
-  pending: ClientEvent[]; // message events that arrived while the first page was loading
+  pending: MessageEvent[]; // message events that arrived while the first page was loading
 };
 
 export type Connection =
@@ -28,7 +30,6 @@ export type AppState = {
 export const initialState: AppState = { connection: { status: "connecting" }, bots: [], setup: null, settings: null, routines: [], conversations: {} };
 
 type Page = { messages: Message[]; hasMore: boolean };
-type MessageEvent = Extract<ClientEvent, { event: "message.added" | "message.updated" | "message.delta" }>;
 
 const byCreated = <T extends { createdAt: string }>(a: T, b: T): number => a.createdAt.localeCompare(b.createdAt);
 
@@ -55,6 +56,7 @@ function applyMessageEvent(messages: Message[], event: MessageEvent): Message[] 
 export function applyEvent(state: AppState, event: ClientEvent): AppState {
   switch (event.event) {
     case "bot.updated":
+      // ponytail: Re-sorting each state tick is fine below 100 bots; above that, preserve positions for unchanged createdAt.
       return { ...state, bots: upsert(state.bots, event.data) };
     case "bot.deleted":
       return {
@@ -97,7 +99,7 @@ export function startLoading(state: AppState, conversationId: string): AppState 
 export function finishLoading(state: AppState, conversationId: string, page: Page): AppState {
   const conversation = state.conversations[conversationId];
   if (!conversation || conversation.status !== "loading") return state;
-  const messages = conversation.pending.reduce((list, event) => applyMessageEvent(list, event as MessageEvent), page.messages);
+  const messages = conversation.pending.reduce((list, event) => applyMessageEvent(list, event), page.messages);
   return { ...state, conversations: { ...state.conversations, [conversationId]: { status: "ready", messages, hasMore: page.hasMore, pending: [] } } };
 }
 
