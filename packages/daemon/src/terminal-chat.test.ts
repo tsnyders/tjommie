@@ -73,8 +73,8 @@ async function waitForExit(closed: Promise<number | null>, diagnostic: () => str
   }
 }
 
-async function terminal(options: { beforeWelcome?: { code: number; reason: string }; setupEvents?: ClientEvent[] } = {}) {
-  const { beforeWelcome, setupEvents = [] } = options;
+async function terminal(options: { beforeWelcome?: { code: number; reason: string }; setupEvents?: ClientEvent[]; history?: Message[]; historyNotFound?: boolean } = {}) {
+  const { beforeWelcome, setupEvents = [], history = [], historyNotFound = false } = options;
   mkdirSync(cache, { recursive: true });
   const root = mkdtempSync(join(cache, "terminal-chat-"));
   writeFileSync(join(root, "daemon-token"), "terminal-test-token");
@@ -106,6 +106,19 @@ async function terminal(options: { beforeWelcome?: { code: number; reason: strin
           }
           result = methods["bots.list"].result.parse([tester, writer]);
           break;
+        case "chat.history": {
+          const params = methods["chat.history"].params.parse(request.params);
+          if (historyNotFound) {
+            connected.send(JSON.stringify({ type: "event", event: "bot.deleted", data: { id: params.botId } }));
+            connected.send(JSON.stringify({ type: "res", id: request.id, ok: false, error: { code: "not_found", message: "No such bot" } }));
+            return;
+          }
+          const messages = history.filter((row) => row.conversationId === params.botId);
+          result = methods["chat.history"].result.parse({
+            messages: messages.slice(-params.limit), hasMore: messages.length > params.limit,
+          });
+          break;
+        }
         case "chat.send": {
           const params = methods["chat.send"].params.parse(request.params);
           result = methods["chat.send"].result.parse(message({ author: "you", body: params.text }));
@@ -229,8 +242,8 @@ it("prints Team room posts, bot names, local cards and streaming text", async ()
     "Waiting for you: Write a file\n  /allow tool-card   /always tool-card   /deny tool-card",
     "  Approval proposal is allowed: Add a routine: News",
     "  Approval denied-card is denied: Write declined",
-    "  [Editor] Routine finished: News checked",
-    "  [A bot] Needs attention: Unknown bot report",
+    "  Editor: Routine finished: News checked",
+    "  A bot: Needs attention: Unknown bot report",
     "  [Tester] Ready: Your bot report",
   ]) expect(output).toContain(line);
   expect(output).not.toContain("Hidden");
@@ -242,9 +255,10 @@ it("routes room posts, approval decisions, stop and ordinary chat through typed 
   const chat = await terminal();
   await chat.waitFor("Chatting with Tester");
   chat.write("/room @Writer hello team\n/allow once-card\n/always always-card\n/deny deny-card\n/stop\n  ordinary chat  \n\n");
-  await chat.waitForRequests(7);
+  await chat.waitForRequests(8);
   expect(chat.requests.map(({ method, params }) => ({ method, params }))).toEqual([
     { method: "bots.list", params: {} },
+    { method: "chat.history", params: { botId: tester.id, limit: 10 } },
     { method: "room.post", params: { text: "@Writer hello team" } },
     { method: "approvals.respond", params: { approvalId: "once-card", decision: "once" } },
     { method: "approvals.respond", params: { approvalId: "always-card", decision: "always" } },
@@ -252,6 +266,79 @@ it("routes room posts, approval decisions, stop and ordinary chat through typed 
     { method: "chat.stop", params: { botId: tester.id } },
     { method: "chat.send", params: { botId: tester.id, text: "  ordinary chat  " } },
   ]);
+  chat.close();
+  expect(await chat.waitForExit()).toBe(0);
+});
+
+it("replays recent history with the stored restart notice and an actionable pending card", async () => {
+  const stored = [
+    ...Array.from({ length: 9 }, (_, index) => message({ id: `older-${index}`, kind: "notice", author: "system", body: `Older ${index}` })),
+    message({ id: "restart", kind: "error", author: "system", body: "Tjommie restarted while this was running." }),
+    message({
+      id: "approval-message", kind: "approval", body: "Write a file",
+      data: { approvalId: "card-7", tool: "Write", detail: "notes.txt", rule: null, status: "pending" },
+    }),
+  ];
+  const chat = await terminal({ history: stored });
+  await chat.waitFor("Now:");
+  const output = chat.output();
+  expect(output).not.toContain("Older 0");
+  expect(output).toContain("  (Tjommie restarted while this was running.)");
+  expect(output).toContain("Waiting for you: Write a file\n  /allow card-7   /always card-7   /deny card-7");
+  expect(output.indexOf("Chatting with Tester")).toBeLessThan(output.indexOf("Earlier:"));
+  expect(output.indexOf("Earlier:")).toBeLessThan(output.indexOf("(Tjommie restarted"));
+  expect(output.indexOf("/deny card-7")).toBeLessThan(output.indexOf("Now:"));
+  chat.write("/allow card-7\n");
+  await chat.waitForRequests(3);
+  expect(chat.requests.at(-1)).toMatchObject({ method: "approvals.respond", params: { approvalId: "card-7", decision: "once" } });
+  chat.close();
+  expect(await chat.waitForExit()).toBe(0);
+});
+
+it("exits normally with the deleted bot notice when history fails during startup", async () => {
+  const chat = await terminal({ historyNotFound: true });
+  expect(await chat.waitForExit()).toBe(0);
+  expect(chat.output()).toContain("Chatting with Tester");
+  expect(chat.output().split("(This bot was deleted.)")).toHaveLength(2);
+  expect(chat.output()).not.toContain("not_found: No such bot");
+});
+
+it("continues a streaming history message on the same line as live deltas", async () => {
+  const chat = await terminal({ history: [message({ id: "stream", status: "streaming", body: "Hello" })] });
+  await chat.waitFor("Now:\nHello");
+  chat.emit("message.delta", { id: "stream", conversationId: tester.id, delta: " world" });
+  chat.emit("message.updated", message({ id: "stream", body: "Hello world" }));
+  await chat.waitFor("Now:\nHello world\n");
+  expect(chat.output()).toContain("Earlier:\nNow:\nHello world\n");
+  expect(chat.output()).not.toContain("Hello\n world");
+  expect(chat.output()).not.toContain("Now:\nHello world\n\n");
+  chat.close();
+  expect(await chat.waitForExit()).toBe(0);
+});
+
+it("prints a stored message and pending card only once when setup events overlap history", async () => {
+  const restart = message({ id: "restart", kind: "error", author: "system", body: "Tjommie restarted while this was running." });
+  const card = message({
+    id: "approval-message", kind: "approval", body: "Write a file",
+    data: { approvalId: "card-7", tool: "Write", detail: "notes.txt", rule: null, status: "pending" },
+  });
+  const chat = await terminal({
+    history: [restart, card],
+    setupEvents: [
+      { type: "event", event: "message.added", data: restart },
+      { type: "event", event: "message.updated", data: restart },
+      { type: "event", event: "approval.added", data: approval({ id: "card-7", kind: "tool", tool: "Write", summary: "Write a file" }) },
+      { type: "event", event: "message.added", data: message({ id: "fresh", kind: "notice", author: "system", body: "Fresh setup notice" }) },
+    ],
+  });
+  await chat.waitFor("(Fresh setup notice)");
+  const output = chat.output();
+  expect(output).toContain("Earlier:");
+  expect(output).toContain("Now:");
+  expect(output.split("(Tjommie restarted while this was running.)")).toHaveLength(2);
+  expect(output.split("Waiting for you: Write a file")).toHaveLength(2);
+  expect(output.split("(Fresh setup notice)")).toHaveLength(2);
+  expect(output.indexOf("Now:")).toBeLessThan(output.indexOf("(Fresh setup notice)"));
   chat.close();
   expect(await chat.waitForExit()).toBe(0);
 });
@@ -264,19 +351,49 @@ it("prints the chat header before replaying events received during bot setup", a
     { type: "event", event: "approval.added", data: approval({ summary: "Setup approval" }) },
     { type: "event", event: "notify", data: { kind: "approval", approvalId: "a", botId: writer.id, title: "Setup notification", body: "Setup complete" } },
   ] });
-  await chat.waitFor("[Editor] Setup notification: Setup complete");
+  await chat.waitFor("Editor: Setup notification: Setup complete");
   const output = chat.output();
   const headerIndex = output.indexOf("Chatting with Tester");
   expect(headerIndex).toBeGreaterThanOrEqual(0);
   for (const row of [
     "[Team room] Editor to Tester: Setup room post", "(Setup local notice)", "Waiting for you: Setup approval",
-    "[Editor] Setup notification: Setup complete",
+    "Editor: Setup notification: Setup complete",
   ]) {
     expect(output.indexOf(row)).toBeGreaterThan(headerIndex);
     expect(output.split(row)).toHaveLength(2);
   }
   chat.close();
   expect(await chat.waitForExit()).toBe(0);
+});
+
+it("labels another bot's waiting notification without repeating its name", async () => {
+  const chat = await terminal();
+  await chat.waitFor("Chatting with Tester");
+  chat.emit("notify", { kind: "approval", approvalId: "other-card", botId: writer.id, title: "Writer is waiting for you", body: "Add a routine: News" });
+  chat.emit("notify", { kind: "limit", botId: writer.id, title: "Writer hit its usage limit", body: "Try again later" });
+  chat.emit("notify", { kind: "routine_failed", routineId: "other-routine", runId: "other-run", botId: writer.id, title: "Writer's routine failed", body: "News check stopped" });
+  chat.emit("notify", { kind: "approval", approvalId: "own-card", botId: tester.id, title: "Tester is waiting for you", body: "Review a file" });
+  await chat.waitFor("[Tester] Tester is waiting for you: Review a file");
+  const output = chat.output();
+  expect(output).toContain("  Writer: Waiting for you: Add a routine: News");
+  expect(output).toContain("  Writer: Hit its usage limit: Try again later");
+  expect(output).toContain("  Writer: Routine failed: News check stopped");
+  expect(output).not.toContain("[Writer] Writer is waiting for you");
+  chat.close();
+  expect(await chat.waitForExit()).toBe(0);
+});
+
+it("exits with a notice when the active bot is deleted", async () => {
+  const chat = await terminal();
+  await chat.waitFor("Chatting with Tester");
+  chat.emit("bot.deleted", { id: writer.id });
+  chat.emit("message.added", message({ kind: "notice", body: "Still chatting" }));
+  await chat.waitFor("(Still chatting)");
+  expect(chat.output()).not.toContain("(This bot was deleted.)");
+  chat.emit("bot.deleted", { id: tester.id });
+  expect(await chat.waitForExit()).toBe(0);
+  expect(chat.output()).toContain("(This bot was deleted.)");
+  expect(chat.output()).not.toContain("Disconnected from the daemon.");
 });
 
 it("prints usage for incomplete commands and continues accepting valid commands", async () => {
@@ -291,6 +408,7 @@ it("prints usage for incomplete commands and continues accepting valid commands"
   ]) expect(chat.output()).toContain(usage);
   expect(chat.requests.map(({ method, params }) => ({ method, params }))).toEqual([
     { method: "bots.list", params: {} },
+    { method: "chat.history", params: { botId: tester.id, limit: 10 } },
     { method: "chat.stop", params: { botId: tester.id } },
   ]);
   chat.close();

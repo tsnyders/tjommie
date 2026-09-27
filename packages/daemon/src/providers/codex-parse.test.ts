@@ -72,6 +72,32 @@ describe("mapCodexNotification", () => {
     expect(mapCodexNotification(COMMAND_COMPLETED.method, COMMAND_COMPLETED.params, MODEL)).toEqual([{ type: "tool_done", id: "exec-3c0027d3-0c5b-41fa-92ac-fb29fa1d3974", ok: true }]);
   });
 
+  it("keeps double underscores in a shell command", () => {
+    const command = "python -c 'print(__name__)'";
+    expect(mapCodexNotification("item/started", { item: { type: "commandExecution", id: "shell-1", commandActions: [{ command }] } }, MODEL))
+      .toEqual([{ type: "tool", id: "shell-1", name: "Shell", summary: command }]);
+  });
+
+  it.each([
+    { server: "tjommie", tool: "list_bots", args: {}, label: "Looked at the team" },
+    { server: "tjommie", tool: "message_bot", args: { bot: "Writer" }, label: "Messaged Writer" },
+    { server: "tjommie", tool: "share_file", args: { path: "output/notes.md" }, label: "Shared notes.md" },
+    { server: "tjommie", tool: "add_routine", args: { name: "Morning check" }, label: "Proposed a routine: Morning check" },
+    { server: "browser", tool: "browser_navigate", args: { url: "https://pnet.co.za/jobs" }, label: "Browser: opened pnet.co.za" },
+    { server: "browser", tool: "browser_click", args: { element: "Apply" }, label: "Browser: clicked Apply" },
+    { server: "weather", tool: "check_forecast", args: {}, label: "check forecast" },
+  ])("gives Codex MCP $server $tool a plain activity label", ({ server, tool, args, label }) => {
+    const events = mapCodexNotification("item/started", { item: { type: "mcpToolCall", id: "mcp-1", server, tool, arguments: args } }, MODEL);
+    expect(events).toEqual([{ type: "tool", id: "mcp-1", name: label, summary: label }]);
+    expect(JSON.stringify(events)).not.toMatch(/mcp__|select:/);
+  });
+
+  it("normalizes a prefixed Codex MCP tool name and hides selector calls", () => {
+    expect(mapCodexNotification("item/started", { item: { type: "mcpToolCall", id: "mcp-2", server: "tjommie", tool: "mcp__tjommie__add_routine", arguments: { name: "Morning check" } } }, MODEL))
+      .toEqual([{ type: "tool", id: "mcp-2", name: "Proposed a routine: Morning check", summary: "Proposed a routine: Morning check" }]);
+    expect(mapCodexNotification("item/started", { item: { type: "mcpToolCall", id: "mcp-3", server: "tjommie", tool: "ToolSearch", arguments: { query: "select:mcp__tjommie__add_routine" } } }, MODEL)).toEqual([]);
+  });
+
   it("reports each model call's tokens, uncached input separately", () => {
     expect(mapCodexNotification(TOKEN_USAGE.method, TOKEN_USAGE.params, MODEL)).toEqual([
       { type: "usage", model: MODEL, input: 26025 - 25600, cachedInput: 25600, output: 138, reasoning: 9, costUsd: null },

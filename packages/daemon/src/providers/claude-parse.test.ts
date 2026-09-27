@@ -104,4 +104,43 @@ describe("toolSummary", () => {
     expect(toolSummary("Read", { file_path: "C:\\bots\\notes.md" })).toBe("C:\\bots\\notes.md");
     expect(toolSummary("TodoWrite", { todos: [] })).toBe("TodoWrite");
   });
+
+  it("omits Claude's tool loading steps while keeping other searches visible", () => {
+    expect(toolSummary("ToolSearch", { query: "select:mcp__tjommie__add_routine" })).toBeNull();
+    expect(toolSummary("ToolSearch", { query: "other tools" })).toBeNull();
+    expect(toolSummary("WebSearch", { query: "select: best laptops" })).toBe("best laptops");
+  });
+
+  it("keeps double underscores in ordinary read paths", () => {
+    expect(toolSummary("Read", { file_path: "src/__tests__/chat.test.ts" })).toBe("src/__tests__/chat.test.ts");
+    expect(toolSummary("Read", { file_path: "C:\\proj\\pkg\\__init__.py" })).toBe("C:\\proj\\pkg\\__init__.py");
+    expect(toolSummary("Read", { description: "Read src/__tests__/chat.test.ts" })).toBe("Read src/__tests__/chat.test.ts");
+    expect(toolSummary("Read", { description: "Read C:\\proj\\pkg\\__init__.py" })).toBe("Read C:\\proj\\pkg\\__init__.py");
+    expect(toolSummary("Read", { description: "Read mcp__ notes" })).toBe("Read notes");
+  });
+
+  it("gives each Tjommie tool a plain activity label from its input", () => {
+    expect(toolSummary("mcp__tjommie__list_bots", {})).toBe("Looked at the team");
+    expect(toolSummary("mcp__tjommie__message_bot", { bot: "Writer", message: "Hello" })).toBe("Messaged Writer");
+    expect(toolSummary("mcp__tjommie__share_file", { path: "output\\notes.md" })).toBe("Shared notes.md");
+    expect(toolSummary("mcp__tjommie__add_routine", { name: "Morning check" })).toBe("Proposed a routine: Morning check");
+  });
+
+  it("describes browser actions and other MCP tools without protocol names", () => {
+    expect(toolSummary("mcp__browser__browser_navigate", { url: "https://pnet.co.za/jobs" })).toBe("Browser: opened pnet.co.za");
+    expect(toolSummary("mcp__browser__browser_click", { element: "Apply" })).toBe("Browser: clicked Apply");
+    expect(toolSummary("mcp__weather__check_forecast", {})).toBe("check forecast");
+  });
+
+  it("does not leak protocol markers through activity inputs", () => {
+    expect(toolSummary("mcp__tjommie__message_bot", { bot: "mcp__my_server__Writer" })).toBe("Messaged Writer");
+    for (const label of [
+      toolSummary("mcp__tjommie__message_bot", { bot: "select:mcp__team__bot" }),
+      toolSummary("mcp__tjommie__message_bot", { bot: "mcp__my_server__Writer" }),
+      toolSummary("mcp__tjommie__add_routine", { name: "select:mcp__news__brief" }),
+      toolSummary("Bash", { description: "select:mcp__browser__browser_navigate" }),
+    ]) {
+      expect(label).not.toMatch(/mcp__|select:/);
+    }
+  });
 });

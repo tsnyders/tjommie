@@ -5,7 +5,7 @@
 import { readFileSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
 import { Autonomy, Provider, TEAM_ROOM_ID, messageData, type ApprovalDecision } from "@tjommie/protocol";
-import { ClientConnectionError, connect, type Client, type ClientEvent } from "../src/client.ts";
+import { ClientConnectionError, ClientRpcError, connect, type Client, type ClientEvent } from "../src/client.ts";
 import { DEFAULT_PORT, dataPaths } from "../src/paths.ts";
 
 function describeClose(code: number, reason: string): string {
@@ -65,6 +65,8 @@ let botId = "";
 function showEvent(message: ClientEvent): void {
   if (message.event === "bot.updated") {
     names.set(message.data.id, message.data.name);
+  } else if (message.event === "bot.deleted" && message.data.id === botId) {
+    process.stdout.write("(This bot was deleted.)\n", () => process.exit(0));
   } else if (message.event === "message.delta") {
     if (message.data.conversationId === botId) process.stdout.write(message.data.delta);
   } else if (message.event === "message.added" || message.event === "message.updated") {
@@ -94,7 +96,16 @@ function showEvent(message: ClientEvent): void {
     console.log(`  Approval ${data.id} is ${data.status}: ${data.summary}`);
   } else if (message.event === "notify") {
     const data = message.data;
-    console.log(`  [${names.get(data.botId) ?? "A bot"}] ${data.title}: ${data.body}`);
+    const botName = names.get(data.botId) ?? "A bot";
+    if (data.botId === botId) {
+      console.log(`  [${botName}] ${data.title}: ${data.body}`);
+    } else {
+      let title = data.title;
+      if (title.startsWith(`${botName} is `)) title = title.slice(botName.length + 4);
+      else if (title.startsWith(`${botName}'s `)) title = title.slice(botName.length + 3);
+      else if (title.startsWith(`${botName} `)) title = title.slice(botName.length + 1);
+      console.log(`  ${botName}: ${title.charAt(0).toUpperCase()}${title.slice(1)}: ${data.body}`);
+    }
   }
 }
 
@@ -119,8 +130,52 @@ try {
   botId = bot.id;
   names.set(bot.id, bot.name);
   console.log(`Chatting with ${bot.name} (${bot.provider}, ${bot.autonomy}, ${bot.state}). /room <text> posts in the Team room, /stop interrupts, Ctrl+C quits.`);
+  const { messages } = await client.call("chat.history", { botId, limit: 10 }).catch(async (error: unknown) => {
+    if (error instanceof ClientRpcError && error.code === "not_found") {
+      await new Promise<void>((resolve) => process.stdout.write("(This bot was deleted.)\n", () => resolve()));
+      process.exit(0);
+    }
+    throw error;
+  });
+  const streamingRows = messages.filter((row) => row.kind === "text" && row.author === botId && row.status === "streaming");
+  const streamingIds = new Set(streamingRows.map((row) => row.id));
+  console.log("Earlier:");
+  for (const row of messages) {
+    if (row.kind === "text") {
+      if (streamingIds.has(row.id)) continue;
+      if (row.body) console.log(row.author === "you" ? `  You: ${row.body}` : row.body);
+    } else if (row.kind === "activity") {
+      console.log(`  [${row.body}]`);
+    } else if (row.kind === "approval") {
+      try {
+        const parsed = messageData(row);
+        if (parsed.kind === "approval") {
+          const { approvalId, status } = parsed.data;
+          if (status === "pending") console.log(`\n  Waiting for you: ${row.body}\n  /allow ${approvalId}   /always ${approvalId}   /deny ${approvalId}`);
+          else console.log(`  Approval ${approvalId} is ${status}: ${row.body}`);
+          continue;
+        }
+      } catch {
+        // Show the saved card body if its older payload cannot be typed.
+      }
+      console.log(`  (${row.body})`);
+    } else {
+      console.log(`  (${row.body})`);
+    }
+  }
+  console.log("Now:");
+  for (const row of streamingRows) if (row.body) process.stdout.write(row.body);
+  const historyIds = new Set(messages.map((row) => row.id));
   // Replay events received during setup before subscribing to new ones.
-  for (const event of client.events) showEvent(event);
+  for (const event of client.events) {
+    if (
+      (event.event === "message.added" || event.event === "message.updated" || event.event === "message.delta") &&
+      historyIds.has(event.data.id) &&
+      !(event.event === "message.updated" && streamingIds.has(event.data.id))
+    ) continue;
+    if (event.event === "approval.added" && historyIds.has(event.data.messageId)) continue;
+    showEvent(event);
+  }
   client.subscribe(showEvent);
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));
