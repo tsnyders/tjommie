@@ -76,10 +76,7 @@ export function createBot(db: Db, botsDir: string, input: BotInput): StoredBot {
 
 export function updateBot(db: Db, id: string, patch: BotPatch): StoredBot {
   const bot = getStoredBot(db, id);
-  if (patch.provider !== undefined && patch.provider !== bot.provider && patch.model === undefined) {
-    throw new RpcError("bad_params", "A model is required when changing provider");
-  }
-  if (patch.name !== undefined) assertNameFree(db, patch.name, id);
+  validateBotPatch(db, bot, patch);
   const next = { ...bot, ...patch, projectFolder: patch.projectFolder === undefined ? bot.projectFolder : checkProjectFolder(patch.projectFolder, dirname(bot.homeFolder)) };
   transaction(db, () => {
     db.prepare("UPDATE bots SET name = ?, color = ?, shape = ?, instructions = ?, provider = ?, model = ?, autonomy = ?, project_folder = ?, browser = ? WHERE id = ?").run(
@@ -99,6 +96,15 @@ export function updateBot(db: Db, id: string, patch: BotPatch): StoredBot {
     if (next.provider !== bot.provider) db.prepare("DELETE FROM allow_rules WHERE bot_id = ?").run(id);
   });
   return getStoredBot(db, id);
+}
+
+export function validateBotPatch(db: Db, bot: StoredBot, patch: BotPatch): void {
+  if (patch.provider !== undefined && patch.provider !== bot.provider && patch.model === undefined) {
+    throw new RpcError("bad_params", "A model is required when changing provider");
+  }
+  if (patch.name !== undefined) assertNameFree(db, patch.name, bot.id);
+  if (patch.projectFolder !== undefined) checkProjectFolder(patch.projectFolder, dirname(bot.homeFolder));
+  if (patch.canMessage !== undefined) validateLinks(db, bot.id, patch.canMessage);
 }
 
 // Deletes the bot, its chat and its home folder. An attached project folder is never touched.
@@ -212,10 +218,16 @@ function checkProjectFolder(folder: string | null, botsDir: string): string | nu
 }
 
 function setLinks(db: Db, botId: string, targets: string[]): void {
+  validateLinks(db, botId, targets);
   db.prepare("DELETE FROM bot_links WHERE bot_id = ?").run(botId);
+  for (const target of new Set(targets)) {
+    db.prepare("INSERT INTO bot_links (bot_id, target_bot_id) VALUES (?, ?)").run(botId, target);
+  }
+}
+
+function validateLinks(db: Db, botId: string, targets: string[]): void {
   for (const target of new Set(targets)) {
     if (target === botId) throw new RpcError("bad_params", "A bot can't message itself");
     if (!db.prepare("SELECT 1 FROM bots WHERE id = ?").get(target)) throw new RpcError("not_found", "Can message: no such bot");
-    db.prepare("INSERT INTO bot_links (bot_id, target_bot_id) VALUES (?, ?)").run(botId, target);
   }
 }

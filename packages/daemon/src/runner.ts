@@ -120,6 +120,7 @@ export class Runner {
   #broadcast: Broadcast;
   #isSignedIn: (provider: Bot["provider"]) => boolean;
   #setupIssue: (bot: StoredBot) => string | null;
+  #isHeld: (botId: string) => boolean;
   #codexSandboxReady: () => boolean;
   #createSession: SessionFactory;
   #hooks: RunnerHooks;
@@ -128,11 +129,12 @@ export class Runner {
   #recovered = false;
   #ready = true;
 
-  constructor(deps: { db: Db; broadcast: Broadcast; isSignedIn: (provider: Bot["provider"]) => boolean; setupIssue?: (bot: StoredBot) => string | null; codexSandboxReady?: () => boolean; createSession?: SessionFactory; hooks?: RunnerHooks }) {
+  constructor(deps: { db: Db; broadcast: Broadcast; isSignedIn: (provider: Bot["provider"]) => boolean; setupIssue?: (bot: StoredBot) => string | null; isHeld?: (botId: string) => boolean; codexSandboxReady?: () => boolean; createSession?: SessionFactory; hooks?: RunnerHooks }) {
     this.#db = deps.db;
     this.#broadcast = deps.broadcast;
     this.#isSignedIn = deps.isSignedIn;
     this.#setupIssue = deps.setupIssue ?? (() => null);
+    this.#isHeld = deps.isHeld ?? (() => false);
     this.#codexSandboxReady = deps.codexSandboxReady ?? (() => false);
     this.#createSession = deps.createSession ?? cliSessionFactory;
     this.#hooks = deps.hooks ?? {};
@@ -422,6 +424,7 @@ export class Runner {
 
   setupChanged(): void {
     for (const bot of listStoredBots(this.#db)) {
+      if (this.#isHeld(bot.id)) continue;
       if (!this.#setupIssue(bot)) continue;
       const live = this.#live.get(bot.id);
       if (!live?.session) continue;

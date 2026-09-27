@@ -1,7 +1,7 @@
 import { existsSync, lstatSync, rmSync } from "node:fs";
 import { TEAM_ROOM_ID, type ProviderSetup } from "@tjommie/protocol";
 import { getApproval } from "./approvals.ts";
-import { createBot, deleteBot, getStoredBot, listStoredBots, setPaused, sweepDeletedBotFolders, updateBot } from "./bots.ts";
+import { createBot, deleteBot, getStoredBot, listStoredBots, setPaused, sweepDeletedBotFolders, updateBot, validateBotPatch } from "./bots.ts";
 import { browserServer, showBrowser } from "./browser.ts";
 import { historyPage } from "./chat.ts";
 import { openDb } from "./db.ts";
@@ -114,6 +114,7 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
       if (!setup.some((status) => status.provider === "codex" && status.sandbox === "ready")) return "Set up Codex's sandbox";
       return protection.reason;
     },
+    isHeld: (botId) => switchingBots.has(botId),
     createSession: options.createSession,
     hooks: {
       retryRoutine: (message) => scheduler.retry(message),
@@ -202,6 +203,7 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
       const providerChanged = patch.provider !== undefined && patch.provider !== before.provider;
       if (providerChanged) {
         if (switchingBots.has(id)) throw new RpcError("busy", "This bot is already changing provider. Try again shortly.");
+        validateBotPatch(db, before, patch);
         switchingBots.add(id);
       }
       let passAttempted = false;
@@ -212,7 +214,7 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
           runner.botChanged(id, true);
           passAttempted = true;
           await refreshProtection(true, { id, homeFolder: before.homeFolder, provider: patch.provider! });
-          if (!protection.ready) throw new RpcError("bad_state", "Could not update the bot folder protection. Try again after checking Codex's sandbox setup.");
+          if (protection.status === "check_failed") throw new RpcError("bad_state", "Could not update the bot folder protection. Try again after checking Codex's sandbox setup.");
         }
         changed = updateBot(db, id, patch);
       } catch (error) {

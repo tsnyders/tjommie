@@ -11,7 +11,9 @@ export type AclDriver = {
   runSync: (targets: AclTarget[]) => AclPassResult;
   run: (targets: AclTarget[]) => Promise<AclPassResult>;
 };
-export type Protection = { ready: boolean; reason: string | null };
+export type Protection =
+  | { status: "ready"; ready: true; reason: null }
+  | { status: "not_configured" | "check_failed"; ready: false; reason: string };
 
 // Measured on Codex 0.155.1. Codex owns the protected .sandbox-bin ACL.
 export const CODEX_MAIN_ACL_RECIPE = {
@@ -219,9 +221,9 @@ function planTargets(paths: Paths, botHomes: BotHome[]): AclPlan {
       plan.failures.push(`${bot.homeFolder}: bot folder does not match its id`);
       continue;
     }
-    add(bot.homeFolder, true, bot.provider === "claude" ? "deny" : "removeDeny", bot.provider !== "claude", false,
-      bot.provider === "claude" ? "Claude bot folder is missing; nothing to protect." : undefined);
-    if (bot.provider === "codex") {
+    const homePresent = add(bot.homeFolder, true, bot.provider === "claude" ? "deny" : "removeDeny", false, false,
+      `${bot.provider === "claude" ? "Claude" : "Codex"} bot folder is missing; nothing to protect.`);
+    if (bot.provider === "codex" && homePresent) {
       add(join(bot.homeFolder, "notes.md"), false, "checkNoDeny", false);
       add(join(bot.homeFolder, "inbox"), true, "checkNoDeny", false);
     }
@@ -248,24 +250,24 @@ function finish(plan: AclPlan, result: AclPassResult): Protection {
   for (const message of plan.skipped) console.info(`Codex data ACLs: ${message}`);
   if (plan.setupMissing) console.info("Codex data ACLs: Codex setup marker is not present yet.");
   for (const message of [...plan.failures, ...result.failures]) console.error(`Codex data ACLs: ${message}`);
-  if (plan.failures.length || result.failures.length || plan.expected.length) return { ready: false, reason: failureReason };
-  if (result.groupMissing || plan.setupMissing) return { ready: false, reason: "Set up Codex's sandbox" };
-  return { ready: true, reason: null };
+  if (plan.failures.length || result.failures.length || plan.expected.length) return { status: "check_failed", ready: false, reason: failureReason };
+  if (result.groupMissing || plan.setupMissing) return { status: "not_configured", ready: false, reason: "Set up Codex's sandbox" };
+  return { status: "ready", ready: true, reason: null };
 }
 
 function failedPass(error: unknown): Protection {
   console.error(`Codex data ACLs: ${String(error)}`);
-  return { ready: false, reason: failureReason };
+  return { status: "check_failed", ready: false, reason: failureReason };
 }
 
 export function protectCodexData(paths: Paths, botHomes: BotHome[] = [], driver: AclDriver = windowsAclDriver, platform: NodeJS.Platform = process.platform): Protection {
-  if (platform !== "win32") { console.info("Codex data ACLs: Windows only; no changes made."); return { ready: true, reason: null }; }
+  if (platform !== "win32") { console.info("Codex data ACLs: Windows only; no changes made."); return { status: "ready", ready: true, reason: null }; }
   const plan = planTargets(paths, botHomes);
   try { return finish(plan, driver.runSync(plan.targets)); } catch (error) { return failedPass(error); }
 }
 
 export async function protectCodexDataAsync(paths: Paths, botHomes: BotHome[] = [], driver: AclDriver = windowsAclDriver, platform: NodeJS.Platform = process.platform): Promise<Protection> {
-  if (platform !== "win32") { console.info("Codex data ACLs: Windows only; no changes made."); return { ready: true, reason: null }; }
+  if (platform !== "win32") { console.info("Codex data ACLs: Windows only; no changes made."); return { status: "ready", ready: true, reason: null }; }
   const plan = planTargets(paths, botHomes);
   try { return finish(plan, await driver.run(plan.targets)); } catch (error) { return failedPass(error); }
 }

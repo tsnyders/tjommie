@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { BotInput, ProviderSetup } from "@tjommie/protocol";
+import type { BotInput, BotPatch, ProviderSetup } from "@tjommie/protocol";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { createBot, getStoredBot, setLimitedUntil } from "./bots.ts";
@@ -88,8 +88,8 @@ const databases: Db[] = [];
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(checkSetup).mockResolvedValue(setup());
-  vi.mocked(protectCodexData).mockReturnValue({ ready: true, reason: null });
-  vi.mocked(protectCodexDataAsync).mockResolvedValue({ ready: true, reason: null });
+  vi.mocked(protectCodexData).mockReturnValue({ status: "ready", ready: true, reason: null });
+  vi.mocked(protectCodexDataAsync).mockResolvedValue({ status: "ready", ready: true, reason: null });
   vi.mocked(prepareCodexSandbox).mockResolvedValue(undefined);
   vi.mocked(showBrowser).mockResolvedValue(undefined);
   removal.failPath = "";
@@ -698,7 +698,7 @@ it("keeps Codex Own folder queued until sandbox setup succeeds and broadcasts th
 });
 
 it("fails Codex Own folder closed when a required ACL cannot be verified", async () => {
-  vi.mocked(protectCodexDataAsync).mockResolvedValue({ ready: false, reason: "Tjommie could not protect its data" });
+  vi.mocked(protectCodexDataAsync).mockResolvedValue({ status: "check_failed", ready: false, reason: "Tjommie could not protect its data" });
   const { client, sessions } = await harness();
   const bot = await client.call("bots.create", input("Codex ACL", { provider: "codex", model: "test", autonomy: "folder" }));
   expect(bot).toMatchObject({ state: "needs_setup", setupReason: "Tjommie could not protect its data" });
@@ -710,7 +710,7 @@ it("protects each new Claude bot and reconciles both provider switches before re
   const passes: { id: string; provider: string }[][] = [];
   vi.mocked(protectCodexDataAsync).mockImplementation(async (_paths, homes) => {
     passes.push((homes ?? []).map((home) => ({ id: home.id, provider: home.provider })));
-    return { ready: true, reason: null };
+    return { status: "ready", ready: true, reason: null };
   });
   const { client } = await harness();
   const bot = await client.call("bots.create", input("Changing provider"));
@@ -737,7 +737,7 @@ it.each(["create", "switch"] as const)("keeps an unrelated busy Codex Own folder
   vi.mocked(protectCodexDataAsync).mockImplementationOnce(async () => {
     markEntered?.();
     await pending;
-    return { ready: true, reason: null };
+    return { status: "ready", ready: true, reason: null };
   });
   const change = other
     ? client.call("bots.update", { id: other.id, patch: { provider: "claude", model: "haiku" } })
@@ -767,7 +767,7 @@ it("holds a switching bot before its stopped turn can pump queued work on the ol
   vi.mocked(protectCodexDataAsync).mockImplementationOnce(async () => {
     markEntered?.();
     await pending;
-    return { ready: true, reason: null };
+    return { status: "ready", ready: true, reason: null };
   });
   const change = client.call("bots.update", { id: bot.id, patch: { provider: "codex", model: "test" } });
   await entered;
@@ -796,7 +796,7 @@ it("keeps a provider switch held when an earlier ACL pass finishes", async () =>
     const index = pass++;
     entered[index]?.();
     await passes[index];
-    return { ready: true, reason: null };
+    return { status: "ready", ready: true, reason: null };
   });
   vi.spyOn(Date, "now").mockReturnValue(Date.now() + 61_000);
   const status = client.call("setup.status", {});
@@ -825,7 +825,7 @@ it("waits for Claude deny removal before the first Codex turn", async () => {
   vi.mocked(protectCodexDataAsync).mockImplementationOnce(async () => {
     markEntered?.();
     await pending;
-    return { ready: true, reason: null };
+    return { status: "ready", ready: true, reason: null };
   });
   const change = client.call("bots.update", { id: bot.id, patch: { provider: "codex", model: "test" } });
   await entered;
@@ -839,6 +839,70 @@ it("waits for Claude deny removal before the first Codex turn", async () => {
   expect(sessions[0].options.autonomy).toBe("folder");
 });
 
+it("allows both provider switch directions while Codex sandbox setup is absent", async () => {
+  vi.mocked(checkSetup).mockResolvedValue(setup(true, "notConfigured"));
+  const { client, db } = await harness();
+  const claude = await client.call("bots.create", input("Claude ask", { autonomy: "ask" }));
+  const codex = await client.call("bots.create", input("Codex ask", { provider: "codex", model: "test", autonomy: "ask" }));
+  vi.mocked(protectCodexDataAsync).mockResolvedValue({ ready: false, status: "not_configured", reason: "Set up Codex's sandbox" });
+  expect(await client.call("bots.update", { id: claude.id, patch: { provider: "codex", model: "test" } })).toMatchObject({ provider: "codex", state: "idle" });
+  expect(await client.call("bots.update", { id: codex.id, patch: { provider: "claude", model: "haiku" } })).toMatchObject({ provider: "claude", state: "idle" });
+  expect(getStoredBot(db, claude.id).provider).toBe("codex");
+  expect(getStoredBot(db, codex.id).provider).toBe("claude");
+});
+
+it("rejects invalid provider switches before stopping or dropping the running session", async () => {
+  const { client, db, root, sessions } = await harness();
+  const bot = await client.call("bots.create", input("Switch validation"));
+  const taken = await client.call("bots.create", input("Taken name"));
+  await client.call("chat.send", { botId: bot.id, text: "Keep working" });
+  await waitFor(() => sessions[0]?.session.sent.length);
+  sessions[0].session.emit({ type: "session", cliSessionId: "fixture-session" });
+  const before = getStoredBot(db, bot.id);
+  const item = db.prepare("SELECT id FROM work_items WHERE bot_id = ?").get(bot.id) as { id: string };
+  const passes = vi.mocked(protectCodexDataAsync).mock.calls.length;
+  const invalid: BotPatch[] = [
+    { provider: "codex" },
+    { provider: "codex", model: "test", name: taken.name },
+    { provider: "codex", model: "test", projectFolder: join(root, "missing-project") },
+    { provider: "codex", model: "test", canMessage: ["missing-bot"] },
+  ];
+  for (const patch of invalid) {
+    await expect(client.call("bots.update", { id: bot.id, patch })).rejects.toThrow();
+    expect(getStoredBot(db, bot.id)).toEqual(before);
+    expect(getWorkItem(db, item.id).status).toBe("running");
+    expect(sessions[0].session.interruptions).toBe(0);
+    expect(sessions[0].session.closed).toBe(false);
+    expect(db.prepare("SELECT COUNT(*) AS count FROM sessions WHERE bot_id = ?").get(bot.id)).toEqual({ count: 1 });
+    expect(vi.mocked(protectCodexDataAsync)).toHaveBeenCalledTimes(passes);
+  }
+});
+
+it("keeps a held bot's stop notice when setup changes during its stop", async () => {
+  const { client, db, sessions } = await harness();
+  const bot = await client.call("bots.create", input("Held Claude"));
+  await client.call("chat.send", { botId: bot.id, text: "Working" });
+  await waitFor(() => sessions[0]?.session.sent.length);
+  const session = sessions[0].session;
+  let release: (() => void) | undefined;
+  const pending = new Promise<void>((resolve) => { release = resolve; });
+  vi.spyOn(session, "interrupt").mockImplementation(async () => {
+    session.interruptions++;
+    await pending;
+    session.emit({ type: "turn_done", ok: false, error: null });
+  });
+  const change = client.call("bots.update", { id: bot.id, patch: { provider: "codex", model: "test" } });
+  await waitFor(() => session.interruptions === 1);
+  const now = Date.now();
+  vi.spyOn(Date, "now").mockReturnValue(now + 61_000);
+  await client.call("setup.status", {});
+  release?.();
+  await change;
+  expect(session.interruptions).toBe(1);
+  expect(history(db, bot.id, undefined, 50)).toContainEqual(expect.objectContaining({ kind: "notice", body: "Stopped." }));
+  expect(history(db, bot.id, undefined, 50).some((message) => message.body.includes("sandbox is no longer ready"))).toBe(false);
+});
+
 it("refuses a failed provider switch and releases its hold for old-provider work", async () => {
   const { client, db, sessions } = await harness();
   const bot = await client.call("bots.create", input("Failed switch"));
@@ -849,7 +913,7 @@ it("refuses a failed provider switch and releases its hold for old-provider work
   vi.mocked(protectCodexDataAsync).mockImplementationOnce(async () => {
     markEntered?.();
     await pending;
-    return { ready: false, reason: "Could not verify the ACL" };
+    return { ready: false, status: "check_failed", reason: "Could not verify the ACL" };
   });
   const change = client.call("bots.update", { id: bot.id, patch: { provider: "codex", model: "test" } });
   await entered;
@@ -857,7 +921,7 @@ it("refuses a failed provider switch and releases its hold for old-provider work
   expect(sessions).toHaveLength(0);
   release?.();
   await expect(change).rejects.toThrow(/bad_state/);
-  expect(getStoredBot(db, bot.id).provider).toBe("claude");
+  expect(getStoredBot(db, bot.id)).toMatchObject({ provider: "claude", model: "haiku" });
   await waitFor(() => sessions[0]?.session.sent.length);
   expect(sessions[0].botId).toBe(bot.id);
   expect(vi.mocked(protectCodexDataAsync)).toHaveBeenCalledTimes(4);

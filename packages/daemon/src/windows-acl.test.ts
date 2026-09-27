@@ -74,9 +74,23 @@ describe("Codex data ACLs", () => {
     rmSync(claude.homeFolder, { recursive: true });
     const acl = driver();
     const info = vi.spyOn(console, "info").mockImplementation(() => {});
-    expect(protectCodexData(paths, [claude], acl, "win32")).toEqual({ ready: true, reason: null });
+    expect(protectCodexData(paths, [claude], acl, "win32")).toEqual({ status: "ready", ready: true, reason: null });
     expect(acl.runSync.mock.calls[0][0].some((target) => target.path === claude.homeFolder)).toBe(false);
     expect(info.mock.calls.some((call) => String(call[0]).includes(`${claude.homeFolder}: Claude bot folder is missing`))).toBe(true);
+  });
+
+  it("skips a missing Codex bot home without taking down other Codex bots", () => {
+    const { paths, codex } = fixture();
+    const other: BotHome = { id: "other-codex", homeFolder: join(paths.bots, "other-codex"), provider: "codex" };
+    mkdirSync(join(other.homeFolder, "inbox"), { recursive: true });
+    writeFileSync(join(other.homeFolder, "notes.md"), "fixture");
+    rmSync(codex.homeFolder, { recursive: true });
+    const acl = driver();
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    expect(protectCodexData(paths, [codex, other], acl, "win32")).toMatchObject({ ready: true, status: "ready" });
+    expect(acl.runSync.mock.calls[0][0].some((target) => target.path.startsWith(codex.homeFolder))).toBe(false);
+    expect(acl.runSync.mock.calls[0][0]).toContainEqual(expect.objectContaining({ path: other.homeFolder, mode: "removeDeny" }));
+    expect(info.mock.calls.some((call) => String(call[0]).includes(`${codex.homeFolder}: Codex bot folder is missing`))).toBe(true);
   });
 
   it("distinguishes an absent group and setup marker from a failed PowerShell spawn", () => {
@@ -85,12 +99,12 @@ describe("Codex data ACLs", () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     const missing = driver();
     missing.runSync.mockReturnValue({ sid: null, groupMissing: true, failures: [], applied: 0 });
-    expect(protectCodexData(paths, [], missing, "win32")).toEqual({ ready: false, reason: "Set up Codex's sandbox" });
+    expect(protectCodexData(paths, [], missing, "win32")).toMatchObject({ ready: false, status: "not_configured", reason: "Set up Codex's sandbox" });
     expect(info).toHaveBeenCalled();
     expect(error).not.toHaveBeenCalled();
     const broken = driver();
     broken.runSync.mockImplementation(() => { throw new Error("PowerShell ACL pass could not start: ENOENT"); });
-    expect(protectCodexData(paths, [], broken, "win32").reason).toContain("couldn't check Codex's sandbox");
+    expect(protectCodexData(paths, [], broken, "win32")).toMatchObject({ ready: false, status: "check_failed", reason: expect.stringContaining("couldn't check Codex's sandbox") });
     expect(error.mock.calls.some((call) => String(call[0]).includes("could not start"))).toBe(true);
   });
 
@@ -99,7 +113,7 @@ describe("Codex data ACLs", () => {
     mkdirSync(join(paths.accounts, "claude-main"));
     const acl = driver();
     const info = vi.spyOn(console, "info").mockImplementation(() => {});
-    expect(protectCodexData(paths, [], acl, "win32").reason).toBe("Set up Codex's sandbox");
+    expect(protectCodexData(paths, [], acl, "win32")).toMatchObject({ status: "not_configured", reason: "Set up Codex's sandbox" });
     expect(acl.runSync.mock.calls[0][0].some((target) => target.path.includes("codex-main"))).toBe(false);
     expect(info).toHaveBeenCalled();
   });
@@ -109,7 +123,7 @@ describe("Codex data ACLs", () => {
     writeFileSync(join(paths.accounts, name), "fixture");
     const acl = driver();
     const log = vi.spyOn(console, "error").mockImplementation(() => {});
-    expect(protectCodexData(paths, [], acl, "win32").ready).toBe(false);
+    expect(protectCodexData(paths, [], acl, "win32")).toMatchObject({ ready: false, status: "check_failed" });
     expect(log).toHaveBeenCalled();
   });
 
