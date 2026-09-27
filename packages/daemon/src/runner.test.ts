@@ -1,6 +1,6 @@
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { BotInput, EventData, EventName } from "@tjommie/protocol";
+import { ActivityData, type BotInput, type EventData, type EventName } from "@tjommie/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApproval, resolveApproval } from "./approvals.ts";
 import { createBot, getStoredBot, setLimitedUntil } from "./bots.ts";
@@ -146,6 +146,20 @@ function itemForMessage(db: Db, messageId: string): { id: string; status: WorkSt
     | undefined;
   if (!row) throw new Error(`No work item for ${messageId}`);
   return row;
+}
+
+function activityFor(h: Harness, conversationId: string) {
+  const message = history(h.db, conversationId, undefined, 20).filter((row) => row.kind === "activity").at(-1);
+  if (!message) throw new Error(`No activity row in ${conversationId}`);
+  return message;
+}
+
+function expectActivitySettlement(h: Harness, messageId: string, statuses: ("done" | "failed")[], since = 0): void {
+  const saved = getMessage(h.db, messageId);
+  expect(ActivityData.parse(saved.data).items.map((item) => item.status)).toEqual(statuses);
+  const updates = h.events.slice(since).filter((event) => event.event === "message.updated" && event.data.id === messageId);
+  expect(updates).toHaveLength(1);
+  expect(updates[0]?.data).toEqual(saved);
 }
 
 describe("botStateOf", () => {
@@ -373,6 +387,88 @@ describe("Runner session costs", () => {
 });
 
 describe("Runner turn settlement", () => {
+  it("settles a Stop mid-tool before broadcasting the final activity row", async () => {
+    const h = harness();
+    const bot = newBot(h);
+    const message = h.runner.submit(bot.id, "read", []);
+    await waitFor(() => h.sessions[0]?.sent.length);
+    h.sessions[0].emit({ type: "tool", id: "read", name: "Read", summary: "Read notes.md" });
+    const activity = activityFor(h, bot.id);
+    const before = h.events.length;
+
+    await h.runner.stop(bot.id);
+    h.sessions[0].emit({ type: "turn_done", ok: false, error: null });
+
+    expect(itemForMessage(h.db, message.id).status).toBe("interrupted");
+    expectActivitySettlement(h, activity.id, ["failed"], before);
+  });
+
+  it("settles a tool left open when the CLI exits mid-turn", async () => {
+    const h = harness();
+    const bot = newBot(h);
+    const message = h.runner.submit(bot.id, "read", []);
+    await waitFor(() => h.sessions[0]?.sent.length);
+    h.sessions[0].emit({ type: "tool", id: "read", name: "Read", summary: "Read notes.md" });
+    const activity = activityFor(h, bot.id);
+    const before = h.events.length;
+
+    h.sessions[0].emit({ type: "exit", error: "The CLI crashed." });
+
+    expect(itemForMessage(h.db, message.id).status).toBe("failed");
+    expectActivitySettlement(h, activity.id, ["failed"], before);
+  });
+
+  it("settles only unfinished steps when a turn fails", async () => {
+    const h = harness();
+    const bot = newBot(h);
+    const message = h.runner.submit(bot.id, "read and write", []);
+    await waitFor(() => h.sessions[0]?.sent.length);
+    h.sessions[0].emit({ type: "tool", id: "read", name: "Read", summary: "Read notes.md" });
+    h.sessions[0].emit({ type: "tool_done", id: "read", ok: true });
+    h.sessions[0].emit({ type: "tool", id: "write", name: "Write", summary: "Write notes.md" });
+    const activity = activityFor(h, bot.id);
+    const before = h.events.length;
+
+    h.sessions[0].emit({ type: "turn_done", ok: false, error: "Write failed." });
+
+    expect(itemForMessage(h.db, message.id).status).toBe("failed");
+    expectActivitySettlement(h, activity.id, ["done", "failed"], before);
+  });
+
+  it("finishes a step left open by an otherwise successful turn", async () => {
+    const h = harness();
+    const bot = newBot(h);
+    h.runner.submit(bot.id, "read", []);
+    await waitFor(() => h.sessions[0]?.sent.length);
+    h.sessions[0].emit({ type: "tool", id: "read", name: "Read", summary: "Read notes.md" });
+    const activity = activityFor(h, bot.id);
+    const before = h.events.length;
+
+    h.sessions[0].emit({ type: "turn_done", ok: true, error: null });
+
+    expectActivitySettlement(h, activity.id, ["done"], before);
+  });
+
+  it("settles an abandoned step before retrying a session that could not resume", async () => {
+    const h = harness();
+    const bot = newBot(h);
+    h.db.prepare("INSERT INTO sessions (bot_id, provider, account_id, cli_session_id, updated_at) VALUES (?, ?, ?, ?, ?)")
+      .run(bot.id, "claude", "claude-main", "saved-session", "2026-09-25T10:00:00.000Z");
+    const message = h.runner.submit(bot.id, "read", []);
+    await waitFor(() => h.sessions[0]?.sent.length);
+    h.sessions[0].emit({ type: "tool", id: "old-read", name: "Read", summary: "Read old.txt" });
+    const activity = activityFor(h, bot.id);
+    const before = h.events.length;
+
+    h.sessions[0].emit({ type: "exit", error: null });
+    await waitFor(() => h.sessions[1]?.sent.length);
+
+    expect(itemForMessage(h.db, message.id).status).toBe("running");
+    expectActivitySettlement(h, activity.id, ["failed"], before);
+    h.sessions[1].emit({ type: "tool", id: "new-read", name: "Read", summary: "Read new.txt" });
+    expect(activityFor(h, bot.id).id).not.toBe(activity.id);
+  });
+
   it("keeps a turn running when its pending-send Stop request fails", async () => {
     const session = new FakeSession();
     const sending = Promise.withResolvers<void>();
@@ -834,6 +930,35 @@ describe("Runner linked messages", () => {
 });
 
 describe("Runner.start", () => {
+  it("settles a crashed daemon's running activity during restart recovery once", async () => {
+    const h = harness();
+    const bot = newBot(h);
+    const message = h.runner.submit(bot.id, "read", []);
+    await waitFor(() => h.sessions[0]?.sent.length);
+    h.sessions[0].emit({ type: "tool", id: "read", name: "Read", summary: "Read notes.md" });
+    const activity = activityFor(h, bot.id);
+    h.runner.shutdown();
+    const before = h.events.length;
+    const restarted = new Runner({
+      db: h.db,
+      broadcast: (event, data) => {
+        if (event === "message.updated" && "id" in data && data.id === activity.id && "data" in data) {
+          expect(getMessage(h.db, activity.id).data).toEqual(data.data);
+        }
+        h.events.push({ event, data } as SentEvent);
+      },
+      isSignedIn: () => true,
+    });
+    runners.push(restarted);
+
+    restarted.recover();
+    restarted.recover();
+
+    expect(itemForMessage(h.db, message.id).status).toBe("interrupted");
+    expect(getMessage(h.db, activity.id).status).toBe("interrupted");
+    expectActivitySettlement(h, activity.id, ["failed"], before);
+  });
+
   it("recovers before listening and holds work delivered by recovery hooks until start", async () => {
     let runner: Runner | undefined;
     const h = harness(undefined, true, {
@@ -872,6 +997,22 @@ describe("Runner.start", () => {
 });
 
 describe("Runner bot deletion", () => {
+  it("settles an activity row in a shared conversation when its bot is deleted", async () => {
+    const h = harness();
+    const bot = newBot(h);
+    h.runner.deliver({ botId: bot.id, source: "room", text: "read", conversationId: "team" });
+    await waitFor(() => h.sessions[0]?.sent.length);
+    h.sessions[0].emit({ type: "tool", id: "read", name: "Read", summary: "Read notes.md" });
+    const activity = activityFor(h, "team");
+    const before = h.events.length;
+
+    await h.runner.closeForDeletion(bot.id);
+    h.db.prepare("DELETE FROM bots WHERE id = ?").run(bot.id);
+    h.runner.forget(bot.id);
+
+    expectActivitySettlement(h, activity.id, ["failed"], before);
+  });
+
   it("clears text, activity and the last answer when a failed deletion restores unstopped work", async () => {
     const ended: TurnResult[] = [];
     const h = harness(undefined, true, { turnEnded: (_item, result) => ended.push(result) });
