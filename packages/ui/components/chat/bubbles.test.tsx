@@ -16,4 +16,8 @@ describe("BotBubble", () => {
     expect(done).toContain("<strong>Done.</strong>");
     expect(done).not.toContain('aria-hidden="true"');
   });
+
+  it("shows nothing for a reply that ended with only whitespace", () => {
+    expect(renderToStaticMarkup(<BotBubble message={reply("\n\n", "done")} />)).toBe("");
+  });
 });

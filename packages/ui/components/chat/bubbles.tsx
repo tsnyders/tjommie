@@ -2,9 +2,11 @@ import { Paperclip } from "lucide-react";
 import type { Message } from "@tjommie/protocol";
 import { MarkdownText } from "./markdown";
 
-// While the text streams it stays plain, with a caret; Markdown renders once it's done.
+// While the text streams it stays plain, with a caret (alone until the first text arrives); Markdown renders once
+// it's done. A reply that ended with only whitespace (the daemon keeps those) shows nothing.
 export function BotBubble({ message }: { message: Message }) {
   const streaming = message.status === "streaming";
+  if (!streaming && !message.body.trim()) return null;
   return (
     <div data-author="bot" className="w-fit max-w-[600px] rounded-[18px] bg-bubble px-4 py-[14px] text-[14px] leading-[21px] text-text">
       {streaming ? (
