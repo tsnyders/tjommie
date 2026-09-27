@@ -58,7 +58,8 @@ export function ErrorNotice({ text, retry }: { text: string; retry: ErrorData | 
 // "Routine: <name>" above a run. A missed or skipped run says why, with a gray clock.
 export function RoutineLabel({ text, data }: { text: string; data: RoutineLabelData }) {
   const quiet = data.status === "missed" || data.status === "skipped";
-  const why = data.status === "missed" ? "Missed, the PC was off" : data.status === "skipped" ? `Skipped: ${(data.note ?? "").replace(/\.$/, "")}` : null;
+  const note = (data.note ?? "").trim().replace(/\.$/, "");
+  const why = data.status === "missed" ? "Missed, the PC was off" : data.status === "skipped" ? (note ? `Skipped: ${note}` : "Skipped") : null;
   return (
     <div className="flex items-center gap-2 py-1 text-[12px] font-medium leading-[18px] text-caption">
       <Clock className={cn("size-3.5 shrink-0", quiet ? "text-secondary" : "text-working")} aria-hidden />
