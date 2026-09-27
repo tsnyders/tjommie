@@ -2,7 +2,7 @@
 
 Tjommie is a free, open-source desktop and phone app for AI bots that chat with you, work on your PC, talk to each other and run routines. The bots run on your own computer through the official Claude Code and Codex CLIs, signed in with your own accounts.
 
-**Status:** early development, nothing to install yet. The design is in [`docs/superpowers/specs/2026-09-25-tjommie-design.md`](docs/superpowers/specs/2026-09-25-tjommie-design.md).
+**Status:** early development. The design is in [`docs/superpowers/specs/2026-09-25-tjommie-design.md`](docs/superpowers/specs/2026-09-25-tjommie-design.md).
 
 ## Develop
 
@@ -36,6 +36,10 @@ npm run build      # static export to packages/ui/out
 | `packages/daemon` | The background process that runs the bots |
 | `packages/ui` | The UI: Next.js static export, shadcn/ui, Tailwind |
 | `packages/desktop` | Electron shell |
+
+## Install
+
+`npm run package` builds the Windows installer, `dist-desktop\installer\Tjommie Setup 0.1.0.exe`. It installs Tjommie for the current Windows user, without admin rights, and starts it. The installer isn't signed yet, so Windows SmartScreen asks once: choose "More info", then "Run anyway". Uninstalling keeps your bots and their data in `%LOCALAPPDATA%\Tjommie`. `npm run test:real` also runs a smoke test on the unpacked build when there is one.
 
 ## Autonomy
 

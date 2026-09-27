@@ -9,14 +9,17 @@ import { notesFile } from "./bot-files.ts";
 import { startDaemonProcess, type DaemonConnection, type RunningDaemon } from "./daemon-process.ts";
 
 const here = import.meta.dirname;
-// Development: the development daemon and `npm run dev` run separately. Production: this process starts the
-// daemon and serves the static export. Packaged builds (resources paths, the app id) are plan 1E.
-const production = process.env.TJOMMIE_DESKTOP === "production";
+const packaged = app.isPackaged;
+// Three ways to run. Development: the development daemon and `npm run dev` run separately. Production from source
+// (TJOMMIE_DESKTOP=production): this process starts the daemon and serves the static export. Installed: the same,
+// with the daemon, the UI and the icons as plain files in resources (npm run package).
+const production = packaged || process.env.TJOMMIE_DESKTOP === "production";
 const dataRoot = process.env.TJOMMIE_HOME ?? join(process.env.LOCALAPPDATA ?? join(homedir(), ".local", "share"), "Tjommie");
-const assets = join(here, "..", "assets");
-const uiDir = join(here, "..", "..", "ui", "out");
-const daemonEntry = join(here, "..", "..", "daemon", "src", "main.ts");
+const assets = packaged ? join(process.resourcesPath, "assets") : join(here, "..", "assets");
+const uiDir = packaged ? join(process.resourcesPath, "ui") : join(here, "..", "..", "ui", "out");
+const daemonEntry = packaged ? join(process.resourcesPath, "daemon", "main.mjs") : join(here, "..", "..", "daemon", "src", "main.ts");
 const appIcon = join(assets, "icon-256.png");
+const APP_ID = "com.tsnyders.tjommie";
 // Next's static export needs 'unsafe-inline' bootstrap scripts; Task 8's Markdown sanitizer, not this CSP, blocks injected script.
 const CSP =
   "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' ws://127.0.0.1:*; object-src 'none'; base-uri 'none'; frame-src 'none'";
@@ -51,8 +54,8 @@ protocol.registerSchemesAsPrivileged([{ scheme: "app", privileges: { standard: t
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-  // An unpackaged Electron needs its own id for Windows to show its notifications.
-  app.setAppUserModelId(process.execPath);
+  // Windows shows notifications under this id; the installer gives the Start menu shortcut the same one.
+  app.setAppUserModelId(packaged ? APP_ID : process.execPath);
   app.on("second-instance", showWindow);
   app.on("before-quit", () => {
     quitting = true;
