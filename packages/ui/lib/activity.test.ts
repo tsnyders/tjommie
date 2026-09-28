@@ -30,7 +30,7 @@ describe("recentActivity", () => {
       ["Read listing PN-48213", "done", "2026-09-27T09:31:00.000Z"],
       ["Searched pnet.co.za for Full Stack roles", "done", "2026-09-27T09:15:00.000Z"],
     ]);
-    expect(recentActivity(messages, 2)).toHaveLength(2);
+    expect(recentActivity(messages, 2).map((step) => step.summary)).toEqual(["Filling the Apply form on pnet.co.za", "Read listing PN-48213"]);
   });
 
   it("skips activity rows whose payload doesn't match", () => {
