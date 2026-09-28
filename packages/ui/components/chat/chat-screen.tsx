@@ -1,0 +1,91 @@
+"use client";
+
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+import { RotateCcw } from "lucide-react";
+import type { Bot, Message } from "@tjommie/protocol";
+import { botHistory, loadConversation, loadOlder, retryConversation } from "@/lib/connection";
+import { AUTONOMY_HINT } from "@/lib/labels";
+import { useApp } from "@/lib/store";
+import { BotAvatar } from "../bot-avatar";
+import { Pill } from "../pill";
+import { BotPanel } from "./bot-panel";
+import { ChatHeader } from "./chat-header";
+import { Composer } from "./composer";
+import { MessageList } from "./message-list";
+import { SetupBanner } from "./setup-banner";
+
+const PANEL_KEY = "tjommie.panel";
+const NO_MESSAGES: Message[] = [];
+
+// A bot's chat (WF1 Phase 1): the header, the setup banner, the messages, the composer and the bot panel.
+export function ChatScreen({ botId }: { botId: string }) {
+  const router = useRouter();
+  const bots = useApp((state) => state.bots);
+  const bot = useMemo(() => bots.find((candidate) => candidate.id === botId), [bots, botId]);
+  const conversation = useApp((state) => state.conversations[botId]);
+  const ready = useApp((state) => state.connection.status === "ready");
+  // This screen renders only in the window, never in the static build, so localStorage is there.
+  const [panel, setPanel] = useState(() => localStorage.getItem(PANEL_KEY) !== "closed");
+
+  // Loads the newest page when the chat opens, and again when a new connection clears it.
+  useEffect(() => {
+    if (ready && bot && !conversation) void loadConversation(botId, botHistory(botId));
+  }, [ready, bot, conversation, botId]);
+  // An unknown or deleted bot has no chat.
+  useEffect(() => {
+    if (!bot) router.replace("/");
+  }, [bot, router]);
+  const older = useCallback(() => loadOlder(botId, botHistory(botId)), [botId]);
+
+  if (!bot) return null;
+  const loaded = conversation?.status === "ready" ? conversation : null;
+  const messages = loaded?.messages ?? NO_MESSAGES;
+  const showPanel = (open: boolean): void => {
+    localStorage.setItem(PANEL_KEY, open ? "open" : "closed");
+    setPanel(open);
+  };
+  return (
+    <div className="flex min-h-0 flex-1">
+      <section aria-label={`Chat with ${bot.name}`} className="flex min-w-0 flex-1 flex-col">
+        <ChatHeader bot={bot} panelOpen={panel} onTogglePanel={() => showPanel(!panel)} />
+        {bot.state === "needs_setup" && <SetupBanner bot={bot} />}
+        {conversation?.status === "failed" ? (
+          <FailedChat onRetry={() => void retryConversation(botId, botHistory(botId))} />
+        ) : !loaded ? (
+          <div className="flex-1" />
+        ) : messages.length === 0 ? (
+          <EmptyChat bot={bot} />
+        ) : (
+          <MessageList messages={messages} hasMore={loaded.hasMore} bot={bot} bots={bots} conversationId={botId} onOlder={older} />
+        )}
+        <Composer bot={bot} />
+      </section>
+      {panel && <BotPanel bot={bot} messages={messages} onHide={() => showPanel(false)} />}
+    </div>
+  );
+}
+
+function EmptyChat({ bot }: { bot: Bot }) {
+  return (
+    <div className="flex flex-1 flex-col items-center justify-center gap-4 px-8 text-center">
+      <BotAvatar color={bot.color} shape={bot.shape} size={40} className="opacity-35" />
+      <p className="max-w-[360px] text-[14px] leading-[21px] text-body">
+        Say hi to {bot.name}. {AUTONOMY_HINT[bot.autonomy]}
+      </p>
+    </div>
+  );
+}
+
+// The history didn't load. A new connection also loads it again.
+function FailedChat({ onRetry }: { onRetry: () => void }) {
+  return (
+    <div className="flex flex-1 flex-col items-center justify-center gap-3 px-8 text-center">
+      <p className="text-[14px] leading-[21px] text-body">Couldn&apos;t load this chat.</p>
+      <Pill onClick={onRetry}>
+        <RotateCcw className="size-3.5" aria-hidden />
+        Retry
+      </Pill>
+    </div>
+  );
+}
