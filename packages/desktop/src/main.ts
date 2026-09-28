@@ -219,7 +219,7 @@ function registerIpc(): void {
     await shell.openPath(path);
   });
   ipcMain.on("file:show", (_event, path: unknown) => {
-    if (typeof path === "string" && isAbsolute(path)) shell.showItemInFolder(path);
+    if (typeof path === "string" && isAbsolute(path) && existsSync(path) && statSync(path).isFile()) shell.showItemInFolder(path);
   });
   ipcMain.on("theme:set", (_event, theme: unknown) => {
     const colors = theme === "light" ? THEMES.light : THEMES.dark;

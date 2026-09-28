@@ -1,6 +1,6 @@
 import { existsSync, lstatSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { TEAM_ROOM_ID, type ProviderSetup } from "@tjommie/protocol";
+import { SETUP_CODEX_SANDBOX_REASON, TEAM_ROOM_ID, type ProviderSetup } from "@tjommie/protocol";
 import { getApproval } from "./approvals.ts";
 import { createBot, deleteBot, getStoredBot, listStoredBots, setPaused, sweepDeletedBotFolders, updateBot, validateBotPatch } from "./bots.ts";
 import { browserServer, showBrowser } from "./browser.ts";
@@ -114,7 +114,7 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
     setupIssue: (bot) => {
       if (switchingBots.has(bot.id)) return "This bot is changing provider. Try again shortly.";
       if (bot.provider !== "codex" || bot.autonomy !== "folder") return null;
-      if (!setup.some((status) => status.provider === "codex" && status.sandbox === "ready")) return "Set up Codex's sandbox";
+      if (!setup.some((status) => status.provider === "codex" && status.sandbox === "ready")) return SETUP_CODEX_SANDBOX_REASON;
       return protection.reason;
     },
     isHeld: (botId) => switchingBots.has(botId),

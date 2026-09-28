@@ -1,6 +1,6 @@
 import { copyFileSync, existsSync, mkdirSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
-import { ActivityData, ApprovalData, type ActivityItem, type Approval, type ApprovalDecision, type Bot, type BotState, type ErrorData, type Message, type UserMessageData } from "@tjommie/protocol";
+import { ActivityData, ApprovalData, SETUP_SIGN_IN_PREFIX, type ActivityItem, type Approval, type ApprovalDecision, type Bot, type BotState, type ErrorData, type Message, type UserMessageData } from "@tjommie/protocol";
 import { allowRules, createApproval, expirePendingApprovals, resolveApproval } from "./approvals.ts";
 import { botPrompt, getStoredBot, listStoredBots, setLimitedUntil, type StoredBot } from "./bots.ts";
 import { closeBrowser } from "./browser.ts";
@@ -175,7 +175,7 @@ export class Runner {
   toBot(bot: StoredBot): Bot {
     const live = this.#live.get(bot.id);
     const signedIn = this.#isSignedIn(bot.provider);
-    const setupReason = signedIn ? this.#setupIssue(bot) : `Sign in to ${bot.provider === "codex" ? "Codex" : "Claude"}`;
+    const setupReason = signedIn ? this.#setupIssue(bot) : `${SETUP_SIGN_IN_PREFIX} ${bot.provider === "codex" ? "Codex" : "Claude"}`;
     const state = botStateOf(
       {
         signedIn,
@@ -326,6 +326,7 @@ export class Runner {
     const detached: Deleting = { live, items, pid: session?.pid(), processExited: false, closed: Promise.resolve(), settled: false, restoreWhenClosed: false };
     this.#deleting.set(botId, detached);
     this.#live.delete(botId);
+    this.#flushText(live, "interrupted");
     this.#closeActivity(live, "failed");
     this.#releaseSession(botId, live);
     const exited = Promise.resolve(session?.waitForExit?.()).then(() => { detached.processExited = true; });

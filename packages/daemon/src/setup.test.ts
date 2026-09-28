@@ -473,7 +473,7 @@ describe("sign-in", () => {
     expect(done).toHaveBeenCalledWith(false);
   });
 
-  it("rejects a second Claude sign-in and allows another after the console closes", async () => {
+  it("reuses a running Claude console and starts fresh after it closes", async () => {
     const db = fixture();
     useClaudeStatus(() => "old@example.com");
     const children: EventEmitter[] = [];
@@ -482,10 +482,15 @@ describe("sign-in", () => {
       children.push(child);
       return child;
     });
-    await signIn(db, "claude", vi.fn());
-    await expect(signIn(db, "claude", vi.fn())).rejects.toMatchObject({ code: "busy" });
+    const firstDone = vi.fn();
+    const repeatDone = vi.fn();
+    await signIn(db, "claude", firstDone);
+    await expect(signIn(db, "claude", repeatDone)).resolves.toEqual({ url: null });
     expect(children).toHaveLength(1);
+    expect(cliMocks.runCli).toHaveBeenCalledTimes(1);
     children[0]?.emit("close", 0);
+    expect(firstDone).toHaveBeenCalledExactlyOnceWith(false);
+    expect(repeatDone).not.toHaveBeenCalled();
     await expect(signIn(db, "claude", vi.fn())).resolves.toEqual({ url: null });
     expect(children).toHaveLength(2);
     children[1]?.emit("close", 0);
@@ -504,7 +509,7 @@ describe("sign-in", () => {
     cliMocks.openConsole.mock.results[0]?.value.emit("close", 0);
   });
 
-  it("rejects a second Codex sign-in and allows another after completion", async () => {
+  it("reopens the same Codex sign-in page without a second app-server, then starts fresh after completion", async () => {
     const db = fixture();
     const notifications: ((method: string, params: unknown) => void)[] = [];
     codexMocks.startCodexServer.mockImplementation(async () => ({
@@ -516,12 +521,18 @@ describe("sign-in", () => {
     }));
     const done = vi.fn();
     await signIn(db, "codex", done);
-    await expect(signIn(db, "codex", vi.fn())).rejects.toMatchObject({ code: "busy" });
+    const repeatDone = vi.fn();
+    await expect(signIn(db, "codex", repeatDone)).resolves.toEqual({ url: "https://example.com/login" });
     expect(codexMocks.startCodexServer).toHaveBeenCalledOnce();
+    expect(cliMocks.openUrl).toHaveBeenCalledTimes(2);
+    expect(cliMocks.openUrl).toHaveBeenNthCalledWith(1, "https://example.com/login");
+    expect(cliMocks.openUrl).toHaveBeenNthCalledWith(2, "https://example.com/login");
     notifications[0]?.("account/login/completed", { success: true });
     expect(done).toHaveBeenCalledExactlyOnceWith(true);
+    expect(repeatDone).not.toHaveBeenCalled();
     await expect(signIn(db, "codex", vi.fn())).resolves.toEqual({ url: "https://example.com/login" });
     expect(codexMocks.startCodexServer).toHaveBeenCalledTimes(2);
+    expect(cliMocks.openUrl).toHaveBeenCalledTimes(3);
     notifications[1]?.("account/login/completed", { success: true });
   });
 

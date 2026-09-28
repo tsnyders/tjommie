@@ -997,6 +997,26 @@ describe("Runner.start", () => {
 });
 
 describe("Runner bot deletion", () => {
+  it("interrupts a streaming Team room reply exactly once when its bot is deleted", async () => {
+    const h = harness();
+    const bot = newBot(h);
+    h.runner.deliver({ botId: bot.id, source: "room", text: "reply", conversationId: "team" });
+    await waitFor(() => h.sessions[0]?.sent.length);
+    h.sessions[0].emit({ type: "text", delta: "partial reply" });
+    const text = history(h.db, "team", undefined, 10).find((message) => message.author === bot.id && message.kind === "text");
+    if (!text) throw new Error("Streaming reply was not saved");
+    const before = h.events.length;
+
+    await h.runner.closeForDeletion(bot.id);
+    h.db.prepare("DELETE FROM bots WHERE id = ?").run(bot.id);
+    h.runner.forget(bot.id);
+
+    expect(getMessage(h.db, text.id)).toMatchObject({ body: "partial reply", status: "interrupted" });
+    const updates = h.events.slice(before).filter((event) => event.event === "message.updated" && event.data.id === text.id);
+    expect(updates).toHaveLength(1);
+    expect(updates[0]?.data).toEqual(getMessage(h.db, text.id));
+  });
+
   it("settles an activity row in a shared conversation when its bot is deleted", async () => {
     const h = harness();
     const bot = newBot(h);

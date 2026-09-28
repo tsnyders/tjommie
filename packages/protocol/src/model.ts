@@ -2,6 +2,8 @@ import { z } from "zod";
 
 // The conversation id of the Team room, the one room every bot is in.
 export const TEAM_ROOM_ID = "team";
+export const SETUP_SIGN_IN_PREFIX = "Sign in to";
+export const SETUP_CODEX_SANDBOX_REASON = "Set up Codex's sandbox";
 
 export const Provider = z.enum(["claude", "codex"]);
 export type Provider = z.infer<typeof Provider>;
