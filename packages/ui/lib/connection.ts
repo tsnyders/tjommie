@@ -133,7 +133,7 @@ function lost(connection: DesktopConnection, error: unknown): void {
 export const botHistory =
   (botId: string) =>
   (before?: string): Promise<Page> =>
-    daemon().call("chat.history", { botId, before, limit: PAGE });
+    request("chat.history", { botId, before, limit: PAGE });
 
 // The Team room's pages, newest first.
 export const roomHistory = (before?: string): Promise<Page> => request("room.history", { before, limit: PAGE });

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type Ref } from "react";
 import { useRouter } from "next/navigation";
 import { Menu } from "@base-ui/react/menu";
 import { Ellipsis, FolderOpen, Globe, Hourglass, PanelRight, Pause, Play, Plug, Settings } from "lucide-react";
@@ -15,7 +15,8 @@ import { MENU_ITEM, MENU_POPUP } from "../menu";
 
 // Windows draws its caption buttons over the window's top-right 138 x 44 px. With the bot panel hidden they sit
 // over this header, so its buttons move 154 px in. The chip stays centered, with room for the buttons both sides.
-export function ChatHeader({ bot, panelOpen, onTogglePanel }: { bot: Bot; panelOpen: boolean; onTogglePanel: () => void }) {
+// panelButton reaches the panel button, so the chat can give it focus.
+export function ChatHeader({ bot, panelOpen, onTogglePanel, panelButton }: { bot: Bot; panelOpen: boolean; onTogglePanel: () => void; panelButton?: Ref<HTMLButtonElement> }) {
   const [problem, setProblem] = useState<string | null>(null);
   return (
     <header className="drag relative flex h-14 shrink-0 items-center justify-center px-4">
@@ -25,7 +26,7 @@ export function ChatHeader({ bot, panelOpen, onTogglePanel }: { bot: Bot; panelO
         <HeaderState bot={bot} />
       </div>
       <div className={cn("absolute top-3 flex items-center gap-2", panelOpen ? "right-4" : "right-[154px]")}>
-        <IconButton label="Bot panel" active={panelOpen} onClick={onTogglePanel}>
+        <IconButton ref={panelButton} label="Bot panel" active={panelOpen} onClick={onTogglePanel}>
           <PanelRight aria-hidden />
         </IconButton>
         <MoreMenu bot={bot} onProblem={setProblem} />

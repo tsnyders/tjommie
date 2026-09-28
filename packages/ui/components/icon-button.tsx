@@ -1,8 +1,8 @@
-import type { ButtonHTMLAttributes } from "react";
+import type { ComponentProps } from "react";
 import { cn } from "@/lib/utils";
 
-// A 32 px icon button. Its label is also its tooltip.
-export function IconButton({ label, active = false, className, ...props }: ButtonHTMLAttributes<HTMLButtonElement> & { label: string; active?: boolean }) {
+// A 32 px icon button. Its label is also its tooltip. A ref reaches the button.
+export function IconButton({ label, active = false, className, ...props }: ComponentProps<"button"> & { label: string; active?: boolean }) {
   return (
     <button
       type="button"
