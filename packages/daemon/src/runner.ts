@@ -326,6 +326,7 @@ export class Runner {
     const detached: Deleting = { live, items, pid: session?.pid(), processExited: false, closed: Promise.resolve(), settled: false, restoreWhenClosed: false };
     this.#deleting.set(botId, detached);
     this.#live.delete(botId);
+    this.#flushText(live, "interrupted");
     this.#closeActivity(live, "failed");
     this.#releaseSession(botId, live);
     const exited = Promise.resolve(session?.waitForExit?.()).then(() => { detached.processExited = true; });
