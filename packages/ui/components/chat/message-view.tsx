@@ -8,7 +8,14 @@ import { ErrorNotice, Notice, RoutineLabel } from "./notices";
 
 // One chat message, drawn by its kind. A payload that doesn't match its schema shows as plain text.
 // (safeParse is messageData() without the throw; React's lint rules reject JSX inside try/catch.)
-export function MessageView({ message, bot, bots, conversationId }: { message: Message; bot: Bot | undefined; bots: Bot[]; conversationId: string }) {
+export function MessageView({ message, bot, bots, conversationId, onOpenExchange, openExchangeId = null }: {
+  message: Message;
+  bot: Bot | undefined;
+  bots: Bot[];
+  conversationId: string;
+  onOpenExchange?: (exchangeId: string) => void;
+  openExchangeId?: string | null;
+}) {
   const parsed = MessageData.safeParse(message);
   if (!parsed.success) return <Notice text={message.body} />;
   const payload = parsed.data;
@@ -27,7 +34,16 @@ export function MessageView({ message, bot, bots, conversationId }: { message: M
     case "error":
       return <ErrorNotice text={message.body} retry={payload.data} />;
     case "handoff":
-      return <HandoffRow body={message.body} data={payload.data} bots={bots} conversationId={conversationId} />;
+      return (
+        <HandoffRow
+          body={message.body}
+          data={payload.data}
+          bots={bots}
+          conversationId={conversationId}
+          onOpen={onOpenExchange}
+          selected={"exchangeId" in payload.data && payload.data.exchangeId === openExchangeId}
+        />
+      );
     case "routine":
       return <RoutineLabel text={message.body} data={payload.data} />;
     case "file":

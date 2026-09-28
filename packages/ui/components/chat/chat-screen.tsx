@@ -8,17 +8,21 @@ import { botHistory, loadConversation, loadOlder, retryConversation } from "@/li
 import { AUTONOMY_HINT } from "@/lib/labels";
 import { useApp } from "@/lib/store";
 import { BotAvatar } from "../bot-avatar";
+import { ExchangeView } from "../exchange/exchange-view";
+import { PanelBar } from "../panel-bar";
 import { Pill } from "../pill";
 import { BotPanel } from "./bot-panel";
 import { ChatHeader } from "./chat-header";
 import { Composer } from "./composer";
 import { MessageList } from "./message-list";
+import { MessageView } from "./message-view";
 import { SetupBanner } from "./setup-banner";
 
 const PANEL_KEY = "tjommie.panel";
 const NO_MESSAGES: Message[] = [];
 
-// A bot's chat (WF1 Phase 1): the header, the setup banner, the messages, the composer and the bot panel.
+// A bot's chat (WF1 Phase 1): the header, the setup banner, the messages, the composer, and the right panel, which
+// shows an open exchange (WF6) or else the bot panel.
 export function ChatScreen({ botId }: { botId: string }) {
   const router = useRouter();
   const bots = useApp((state) => state.bots);
@@ -27,6 +31,7 @@ export function ChatScreen({ botId }: { botId: string }) {
   const ready = useApp((state) => state.connection.status === "ready");
   // This screen renders only in the window, never in the static build, so localStorage is there.
   const [panel, setPanel] = useState(() => localStorage.getItem(PANEL_KEY) !== "closed");
+  const [exchangeId, setExchangeId] = useState<string | null>(null);
 
   // Loads the newest page when the chat opens, and again when a new connection clears it.
   useEffect(() => {
@@ -37,6 +42,10 @@ export function ChatScreen({ botId }: { botId: string }) {
     if (!bot) router.replace("/");
   }, [bot, router]);
   const older = useCallback(() => loadOlder(botId, botHistory(botId)), [botId]);
+  const render = useCallback(
+    (message: Message) => <MessageView message={message} bot={bot} bots={bots} conversationId={botId} onOpenExchange={setExchangeId} openExchangeId={exchangeId} />,
+    [bot, bots, botId, exchangeId],
+  );
 
   if (!bot) return null;
   const loaded = conversation?.status === "ready" ? conversation : null;
@@ -45,10 +54,15 @@ export function ChatScreen({ botId }: { botId: string }) {
     localStorage.setItem(PANEL_KEY, open ? "open" : "closed");
     setPanel(open);
   };
+  const togglePanel = (): void => {
+    if (exchangeId) setExchangeId(null);
+    else showPanel(!panel);
+  };
+  const settings = `/bots/settings/?bot=${encodeURIComponent(bot.id)}`;
   return (
     <div className="flex min-h-0 flex-1">
       <section aria-label={`Chat with ${bot.name}`} className="flex min-w-0 flex-1 flex-col">
-        <ChatHeader bot={bot} panelOpen={panel} onTogglePanel={() => showPanel(!panel)} />
+        <ChatHeader bot={bot} panelOpen={panel || exchangeId !== null} onTogglePanel={togglePanel} />
         {bot.state === "needs_setup" && <SetupBanner bot={bot} />}
         {conversation?.status === "failed" ? (
           <FailedChat onRetry={() => void retryConversation(botId, botHistory(botId))} />
@@ -57,11 +71,20 @@ export function ChatScreen({ botId }: { botId: string }) {
         ) : messages.length === 0 ? (
           <EmptyChat bot={bot} />
         ) : (
-          <MessageList messages={messages} hasMore={loaded.hasMore} bot={bot} bots={bots} conversationId={botId} onOlder={older} />
+          <MessageList messages={messages} hasMore={loaded.hasMore} onOlder={older} render={render} />
         )}
         <Composer bot={bot} />
       </section>
-      {panel && <BotPanel bot={bot} messages={messages} onHide={() => showPanel(false)} />}
+      {exchangeId ? (
+        <ExchangeView
+          key={exchangeId}
+          exchangeId={exchangeId}
+          onClose={() => setExchangeId(null)}
+          bar={<PanelBar settingsHref={settings} settingsLabel="Bot settings" hideLabel="Hide the panel" onHide={() => setExchangeId(null)} />}
+        />
+      ) : (
+        panel && <BotPanel bot={bot} messages={messages} onHide={() => showPanel(false)} />
+      )}
     </div>
   );
 }

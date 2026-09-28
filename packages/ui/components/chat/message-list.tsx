@@ -1,16 +1,18 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
-import type { Bot, Message } from "@tjommie/protocol";
+import { useEffect, useLayoutEffect, useMemo, useRef, type ReactNode } from "react";
+import type { Message } from "@tjommie/protocol";
 import { timeline } from "@/lib/timeline";
-import { MessageView, shownMessages } from "./message-view";
+import { shownMessages } from "./message-view";
 import { Timestamp } from "./notices";
 
-type Props = { messages: Message[]; hasMore: boolean; bot: Bot; bots: Bot[]; conversationId: string; onOlder: () => Promise<void> };
+type Props = { messages: Message[]; hasMore: boolean; onOlder: () => Promise<void>; render: (message: Message) => ReactNode };
 
-// Follows the newest message while the person is at the bottom. Near the top it loads the older page, and the
-// messages in view stay put: the browser's own scroll anchoring is off, and the list moves by what was added.
-export function MessageList({ messages, hasMore, bot, bots, conversationId, onOlder }: Props) {
+// A conversation's messages with their time labels: a bot's chat or the Team room. The caller draws each message.
+// It follows the newest message while the person is at the bottom, even when the list's own height changes, and
+// jumps there when they send one. Near the top it loads the older page and keeps the messages in view where they
+// were: the browser's own scroll anchoring is off, and the list moves by what was added.
+export function MessageList({ messages, hasMore, onOlder, render }: Props) {
   const scroller = useRef<HTMLDivElement>(null);
   const sentinel = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
@@ -36,6 +38,17 @@ export function MessageList({ messages, hasMore, bot, bots, conversationId, onOl
     const first = element.querySelector<HTMLElement>("[data-message]");
     firstShown.current = first?.dataset.message ? { id: first.dataset.message, top: first.offsetTop } : null;
   }, [shown]);
+
+  // A popover or attachments under the list, or a resized window, change its height: stay at the bottom.
+  useEffect(() => {
+    const element = scroller.current;
+    if (!element) return;
+    const observer = new ResizeObserver(() => {
+      if (pinned.current) element.scrollTop = element.scrollHeight;
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
 
   // Observes again after each older page (a new first message): an observer only reports changes, so a page too
   // short to push the top out of range would otherwise stop the loading.
@@ -79,7 +92,7 @@ export function MessageList({ messages, hasMore, bot, bots, conversationId, onOl
             </li>
           ) : (
             <li key={item.key} data-message={item.message.id} className="flex flex-col items-start">
-              <MessageView message={item.message} bot={bot} bots={bots} conversationId={conversationId} />
+              {render(item.message)}
             </li>
           ),
         )}

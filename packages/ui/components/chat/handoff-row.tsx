@@ -1,22 +1,33 @@
-import { ArrowRight, Loader, Users } from "lucide-react";
+import Link from "next/link";
+import { ArrowRight, ChevronRight, Loader, Users } from "lucide-react";
 import type { Bot, HandoffData } from "@tjommie/protocol";
 import { DELETED_BOT } from "@/lib/labels";
+import { cn } from "@/lib/utils";
 import { BotAvatar, MissingAvatar } from "../bot-avatar";
 
-const ROW = "flex max-w-full items-center gap-2 rounded-[10px] border border-divider px-3 py-2 text-[13px]";
+const ROW = "flex max-w-full items-center gap-2 rounded-[10px] border border-divider px-3 py-2 text-left text-[13px] hover:bg-card";
 
 function Avatar({ bot }: { bot: Bot | undefined }) {
   return bot ? <BotAvatar color={bot.color} shape={bot.shape} size={18} className="shrink-0" /> : <MissingAvatar size={18} />;
 }
 
-// A one-line row for work with another bot: an exchange, or an answer given in the Team room.
-export function HandoffRow({ body, data, bots, conversationId }: { body: string; data: HandoffData; bots: Bot[]; conversationId: string }) {
+// A one-line row for work with another bot (WF1, WF11). An exchange's row opens the exchange in the right panel,
+// and it's selected while that exchange is open (WF6). A Team room answer's row opens the room.
+export function HandoffRow({ body, data, bots, conversationId, onOpen, selected = false }: {
+  body: string;
+  data: HandoffData;
+  bots: Bot[];
+  conversationId: string;
+  onOpen?: (exchangeId: string) => void;
+  selected?: boolean;
+}) {
   if ("roomMessageId" in data) {
     return (
-      <div className={ROW}>
+      <Link href="/room/" className={ROW}>
         <Users className="size-3.5 shrink-0 text-secondary" aria-hidden />
         <span className="min-w-0 truncate text-body">Answered in the Team room</span>
-      </div>
+        <ChevronRight className="size-3.5 shrink-0 text-caption" aria-hidden />
+      </Link>
     );
   }
   const from = bots.find((bot) => bot.id === data.fromBotId);
@@ -25,7 +36,7 @@ export function HandoffRow({ body, data, bots, conversationId }: { body: string;
   const fromName = from?.name ?? DELETED_BOT;
   const text = incoming ? `${fromName} asked: ${body}` : `${fromName} asked ${to?.name ?? DELETED_BOT}: ${body}`;
   return (
-    <div className={ROW}>
+    <button type="button" aria-pressed={selected} onClick={() => onOpen?.(data.exchangeId)} className={cn(ROW, selected && "border-selected bg-card")}>
       <Avatar bot={from} />
       {!incoming && (
         <>
@@ -46,6 +57,7 @@ export function HandoffRow({ body, data, bots, conversationId }: { body: string;
           `${data.messages} ${data.messages === 1 ? "message" : "messages"}`
         )}
       </span>
-    </div>
+      <ChevronRight className="size-3.5 shrink-0 text-caption" aria-hidden />
+    </button>
   );
 }
