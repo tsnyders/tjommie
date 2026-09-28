@@ -18,7 +18,7 @@
     "lint": "npm run lint -w @tjommie/ui",
     "typecheck": "tsc -p . && npm run typecheck -w @tjommie/ui",
     "test": "vitest run --passWithNoTests",
-    "test:real": "vitest run --mode real --passWithNoTests"
+    "test:real": "npm run build && vitest run --mode real --passWithNoTests"
   },
   "devDependencies": {
     "@types/node": "^24.13.6",
