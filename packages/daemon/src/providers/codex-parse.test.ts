@@ -137,24 +137,9 @@ describe("mapCodexRequest", () => {
     });
   });
 
-  it("gives a file-change card a rule for the bot's writable folders and refuses unknown requests", () => {
-    expect(mapCodexRequest(4, "item/fileChange/requestApproval", FILE_APPROVAL, ["C:\\work"], ["C:\\work\\notes.md"])).toEqual({
-      type: "approval", id: "4", tool: "Edit", summary: "Change files", detail: "C:\\work",
-      rule: 'codex-edit:["C:\\\\work"]', autoAllow: true,
-    });
+  it("turns a file-change approval into a card without a rule, and refuses unknown requests", () => {
+    expect(mapCodexRequest(4, "item/fileChange/requestApproval", FILE_APPROVAL)).toEqual({ type: "approval", id: "4", tool: "Edit", summary: "Change files", detail: "C:\\work", rule: null });
     expect(mapCodexRequest(5, "item/tool/requestUserInput", {})).toBeNull();
-  });
-
-  it("keeps edits outside the bot's folders and edits with unknown paths on the approval path", () => {
-    const roots = ["C:\\work", "C:\\bots\\writer"];
-    const rule = `codex-edit:${JSON.stringify(roots)}`;
-    const request = (paths: string[] | null, grantRoot: string | null = null) =>
-      mapCodexRequest(4, "item/fileChange/requestApproval", { ...FILE_APPROVAL, grantRoot }, roots, paths);
-    expect(request(["C:\\work\\notes.md", "C:\\bots\\writer\\notes.md"])).toMatchObject({ rule, autoAllow: true });
-    expect(request(["C:\\work\\notes.md", "C:\\other\\secrets.txt"])).toMatchObject({ rule, autoAllow: false });
-    expect(request(["C:\\work-other\\notes.md"])).toMatchObject({ rule, autoAllow: false });
-    expect(request(["C:\\work\\notes.md"], "C:\\other")).toMatchObject({ rule, autoAllow: false });
-    expect(request(null)).toMatchObject({ rule, autoAllow: false });
   });
 
   it("turns the question before an MCP tool call into a card with a reusable rule", () => {
