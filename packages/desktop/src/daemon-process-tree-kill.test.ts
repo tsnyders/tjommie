@@ -39,7 +39,11 @@ describe("daemon process tree kill", () => {
 
     const stopping = daemon.stop();
     await vi.advanceTimersByTimeAsync(10_000);
-    expect(execFileSync).toHaveBeenCalledWith("taskkill", ["/PID", "4242", "/T", "/F"], { stdio: "ignore" });
+    if (process.platform === "win32") {
+      expect(execFileSync).toHaveBeenCalledWith("taskkill", ["/PID", "4242", "/T", "/F"], { stdio: "ignore" });
+    } else {
+      expect(fake.child.kill).toHaveBeenCalledWith("SIGKILL");
+    }
 
     fake.child.emit("close", 1, null);
     await stopping;
@@ -54,7 +58,11 @@ describe("daemon process tree kill", () => {
 
     await vi.advanceTimersByTimeAsync(100);
     await rejected;
-    expect(execFileSync).toHaveBeenCalledWith("taskkill", ["/PID", "4242", "/T", "/F"], { stdio: "ignore" });
+    if (process.platform === "win32") {
+      expect(execFileSync).toHaveBeenCalledWith("taskkill", ["/PID", "4242", "/T", "/F"], { stdio: "ignore" });
+    } else {
+      expect(fake.child.kill).toHaveBeenCalledWith("SIGKILL");
+    }
 
     fake.child.emit("close", null, "SIGKILL");
   });
@@ -69,5 +77,6 @@ describe("daemon process tree kill", () => {
 
     await rejected;
     expect(execFileSync).not.toHaveBeenCalled();
+    expect(fake.child.kill).not.toHaveBeenCalled();
   });
 });
