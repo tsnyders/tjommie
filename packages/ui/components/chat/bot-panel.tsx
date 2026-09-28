@@ -61,7 +61,7 @@ function PanelRoutines({ bot, routines }: { bot: Bot; routines: Routine[] }) {
     <>
       <div className="mb-2 mt-6 flex items-center justify-between">
         <h3 className="text-[13px] font-semibold leading-[18px] text-label">Routines</h3>
-        <button type="button" onClick={() => setEditing("new")} className="text-[13px] leading-[18px] text-accent hover:underline">
+        <button type="button" aria-label="Add a routine" onClick={() => setEditing("new")} className="text-[13px] leading-[18px] text-accent hover:underline">
           Add
         </button>
       </div>

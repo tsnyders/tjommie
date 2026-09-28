@@ -30,6 +30,9 @@ describe("the routine editor", () => {
     expect(routineProblem({ ...EMPTY_ROUTINE, name: "Check" })).toBe("Say what the bot should do.");
     expect(routineProblem({ ...EMPTY_ROUTINE, name: "Check", prompt: "Check", days: [] })).toBe("Pick at least one day.");
     expect(routineProblem({ ...EMPTY_ROUTINE, name: "Check", prompt: "Check", times: [] })).toBe("Add at least one time.");
+    const twelve = Array.from({ length: 12 }, (_, hour) => `${String(hour).padStart(2, "0")}:00`);
+    expect(routineProblem({ ...EMPTY_ROUTINE, name: "Check", prompt: "Check", times: twelve })).toBeNull();
+    expect(routineProblem({ ...EMPTY_ROUTINE, name: "Check", prompt: "Check", times: [...twelve, "12:00"] })).toBe("Keep it to 12 times.");
     expect(routineProblem({ ...EMPTY_ROUTINE, name: "Check", prompt: "Check" })).toBeNull();
     expect(stopAfterOptions(180).map((option) => option.label)).toEqual(["No limit", "1 hour", "2 hours", "3 hours"]);
     expect(stopAfterOptions(90).at(-1)).toEqual({ value: "90", label: "1h 30m" });

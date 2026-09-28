@@ -36,6 +36,7 @@ export function routineProblem(draft: RoutineDraft): string | null {
   if (!draft.prompt.trim()) return "Say what the bot should do.";
   if (draft.days.length === 0) return "Pick at least one day.";
   if (draft.times.length === 0) return "Add at least one time.";
+  if (draft.times.length > 12) return "Keep it to 12 times.";
   return null;
 }
 

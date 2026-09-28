@@ -29,14 +29,15 @@ type Props = {
 export function RoutineEditor({ title, initial, timeZone, runsFor, onClose, onSave, onDelete }: Props) {
   const [draft, setDraft] = useState(initial);
   const [adding, setAdding] = useState(false);
-  const [runs, setRuns] = useState<RoutineRun[] | null>(null);
+  const addAnother = useRef(false); // Enter added a time: Add time takes focus back for the next one
+  const [runs, setRuns] = useState<RoutineRun[] | "failed" | null>(null);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const nameField = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!runsFor) return;
-    request("routines.runs", { routineId: runsFor }).then(setRuns, () => setRuns([]));
+    request("routines.runs", { routineId: runsFor }).then(setRuns, () => setRuns("failed"));
   }, [runsFor]);
 
   async function act(action: () => Promise<void>): Promise<void> {
@@ -124,15 +125,16 @@ export function RoutineEditor({ title, initial, timeZone, runsFor, onClose, onSa
         ))}
         {adding ? (
           // A time field has a value as soon as each part has a digit (typing 08:4 gives 08:04), so the time is added
-          // on Enter, which clears the field for another, or when the field loses focus, never while it's typed.
+          // when the field loses focus (Enter does that too), never while it's typed.
           <input
             type="time"
             autoFocus
             aria-label="New time"
             onKeyDown={(event) => {
               if (event.key !== "Enter") return;
-              setDraft({ ...draft, times: addTime(draft.times, event.currentTarget.value) });
-              event.currentTarget.value = "";
+              event.preventDefault(); // or the same Enter goes on to press Add time once it has focus
+              addAnother.current = true;
+              event.currentTarget.blur();
             }}
             onBlur={(event) => {
               setDraft({ ...draft, times: addTime(draft.times, event.target.value) });
@@ -141,7 +143,16 @@ export function RoutineEditor({ title, initial, timeZone, runsFor, onClose, onSa
             className="h-8 rounded-full border border-divider bg-transparent px-3 text-[13px] text-text"
           />
         ) : (
-          <button type="button" onClick={() => setAdding(true)} className="inline-flex h-8 items-center gap-1.5 rounded-full border border-divider px-3 text-[13px] text-text hover:bg-pill">
+          <button
+            ref={(button) => {
+              if (!button || !addAnother.current) return;
+              addAnother.current = false;
+              button.focus();
+            }}
+            type="button"
+            onClick={() => setAdding(true)}
+            className="inline-flex h-8 items-center gap-1.5 rounded-full border border-divider px-3 text-[13px] text-text hover:bg-pill"
+          >
             <Plus className="size-3.5" aria-hidden />
             Add time
           </button>
@@ -166,8 +177,9 @@ export function RoutineEditor({ title, initial, timeZone, runsFor, onClose, onSa
             <h3 className="text-[13px] font-semibold leading-[18px] text-label">Recent runs</h3>
             <span className="text-[12px] leading-[18px] text-caption">Last 20 runs are kept</span>
           </div>
-          {runs && runs.length === 0 && <p className="mt-2 text-[13px] leading-[18px] text-secondary">No runs yet.</p>}
-          {runs && runs.length > 0 && (
+          {runs === "failed" && <p className="mt-2 text-[13px] leading-[18px] text-secondary">Couldn&apos;t load the runs.</p>}
+          {Array.isArray(runs) && runs.length === 0 && <p className="mt-2 text-[13px] leading-[18px] text-secondary">No runs yet.</p>}
+          {Array.isArray(runs) && runs.length > 0 && (
             <ul className="mt-2 flex flex-col">
               {runs.map((run) => {
                 const line = runLine(run);
