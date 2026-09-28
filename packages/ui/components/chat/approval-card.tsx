@@ -39,7 +39,7 @@ export function ApprovalCard({ summary, data, bot }: { summary: string; data: Ap
       <p className={routine ? "mt-1 line-clamp-2 text-[12px] leading-[18px] text-secondary" : "mt-1 truncate text-[12px] leading-[18px] text-secondary"}>
         {routine ? `It will: ${data.detail}` : [data.tool, approvalDetail(data.detail)].filter(Boolean).join(" · ")}
       </p>
-      <div className="mt-3 flex flex-wrap gap-2">
+      <div className="mt-2 flex flex-wrap gap-2">
         {routine ? (
           <>
             <Pill primary disabled={busy} onClick={() => void answer("once")}>
@@ -89,7 +89,7 @@ function AnsweredApproval({ summary, data }: { summary: string; data: ApprovalDa
             ? "Allowed once"
             : "Allowed";
   return (
-    <div className="inline-flex max-w-full items-center gap-2 rounded-[10px] border border-divider bg-canvas px-3 py-2 text-[13px] text-secondary">
+    <div className="inline-flex max-w-full items-center gap-2 rounded-[10px] border border-divider bg-canvas px-3 py-2 text-[13px] leading-[18px] text-secondary">
       {allowed ? <Check className="size-3.5 shrink-0 text-working" aria-hidden /> : <X className="size-3.5 shrink-0" aria-hidden />}
       <span className="min-w-0 truncate">
         {label}: {summary}

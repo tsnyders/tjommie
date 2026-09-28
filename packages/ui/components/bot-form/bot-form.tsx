@@ -22,7 +22,7 @@ export function BotFormFields({ form, onChange, bots, selfId, nameError, routine
   return (
     <div className="flex flex-col">
       <Identity form={form} onChange={onChange} nameError={nameError} />
-      <div className="mt-6 flex flex-col gap-2">
+      <div className="mt-6 flex flex-col gap-1.5">
         <Label htmlFor="bot-instructions">What should this bot do?</Label>
         <textarea
           id="bot-instructions"

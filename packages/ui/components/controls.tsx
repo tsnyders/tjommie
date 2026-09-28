@@ -5,6 +5,7 @@ import { Minus, Plus } from "lucide-react";
 import { Radio } from "@base-ui/react/radio";
 import { RadioGroup } from "@base-ui/react/radio-group";
 import { Switch as BaseSwitch } from "@base-ui/react/switch";
+import { cn } from "@/lib/utils";
 
 // Text inputs and areas (WF3): radius 10 on the card fill, with a 1 px stroke. Add h-11 for one line. The global
 // focus ring draws inside the box, over the stroke.
@@ -34,14 +35,30 @@ export function Switch({ label, checked, onChange, disabled = false }: { label: 
 }
 
 // A segmented control (Autonomy, Stop after, Appearance, the model picker's provider): radio buttons on a track.
-export function Segmented<T extends string>({ label, value, options, onChange }: { label: string; value: T; options: readonly { value: T; label: string }[]; onChange: (value: T) => void }) {
+// A full one spans its container in equal parts (the model picker, WF11); className recolors the track.
+export function Segmented<T extends string>({ label, value, options, onChange, full = false, className }: {
+  label: string;
+  value: T;
+  options: readonly { value: T; label: string }[];
+  onChange: (value: T) => void;
+  full?: boolean;
+  className?: string;
+}) {
   return (
-    <RadioGroup aria-label={label} value={value} onValueChange={(next) => onChange(next as T)} className="inline-flex h-8 shrink-0 items-center gap-0.5 rounded-full bg-popover p-1">
+    <RadioGroup
+      aria-label={label}
+      value={value}
+      onValueChange={(next) => onChange(next as T)}
+      className={cn("h-8 shrink-0 items-center gap-0.5 rounded-full bg-popover p-1", full ? "flex w-full" : "inline-flex", className)}
+    >
       {options.map((option) => (
         <Radio.Root
           key={option.value}
           value={option.value}
-          className="flex h-6 cursor-default items-center whitespace-nowrap rounded-full px-3 text-[13px] text-secondary hover:text-body data-[checked]:bg-selected data-[checked]:font-semibold data-[checked]:text-text"
+          className={cn(
+            "flex h-6 cursor-default items-center whitespace-nowrap rounded-full px-3 text-[13px] text-secondary hover:text-body data-[checked]:bg-selected data-[checked]:font-semibold data-[checked]:text-text",
+            full && "flex-1 justify-center",
+          )}
         >
           {option.label}
         </Radio.Root>
@@ -56,13 +73,13 @@ export function Stepper({ label, value, min, max, onChange }: { label: string; v
   return (
     <div role="group" aria-label={label} className="flex h-8 w-[120px] shrink-0 items-center justify-between rounded-full bg-popover px-1">
       <button type="button" aria-label="Decrease" disabled={value <= min} onClick={() => onChange(value - 1)} className={button}>
-        <Minus className="size-4" aria-hidden />
+        <Minus className="size-3.5" aria-hidden />
       </button>
       <span aria-live="polite" className="text-[14px] font-semibold text-text">
         {value}
       </span>
       <button type="button" aria-label="Increase" disabled={value >= max} onClick={() => onChange(value + 1)} className={button}>
-        <Plus className="size-4" aria-hidden />
+        <Plus className="size-3.5" aria-hidden />
       </button>
     </div>
   );

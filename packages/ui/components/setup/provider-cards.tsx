@@ -75,7 +75,7 @@ export function ProviderCards() {
         const Icon = provider === "claude" ? Sparkles : Terminal;
         return (
           <section key={provider} aria-label={PROVIDER_NAME[provider]} className="flex min-h-[200px] flex-col rounded-[14px] border border-card-stroke bg-card p-5">
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-4">
               <span className="flex size-9 shrink-0 items-center justify-center rounded-[10px] bg-pill text-icon">
                 <Icon className="size-[18px]" aria-hidden />
               </span>
@@ -84,8 +84,9 @@ export function ProviderCards() {
                 <p className="text-[12px] leading-[18px] text-secondary">{entry?.version ? `Version ${entry.version}` : view.kind === "not_installed" ? "Not installed" : "\u00a0"}</p>
               </div>
             </div>
-            <div className="mt-5 flex-1 text-[14px] leading-[21px] text-text">{body}</div>
-            {actions && <div className="mt-4 flex flex-wrap items-center gap-3">{actions}</div>}
+            <div className="mt-7 flex-1 text-[14px] leading-[21px] text-text">{body}</div>
+            {/* As tall as a pill even when it holds only a link, so every card's last line sits in the same place. */}
+            {actions && <div className="mt-4 flex min-h-8 flex-wrap items-center gap-3">{actions}</div>}
             {problem?.provider === provider && (
               <p role="alert" className="mt-2 text-[12px] leading-[18px] text-danger">
                 {problem.text}

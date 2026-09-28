@@ -9,9 +9,10 @@ import { Timestamp } from "./notices";
 type Props = { messages: Message[]; hasMore: boolean; onOlder: () => Promise<void>; render: (message: Message) => ReactNode };
 
 // A conversation's messages with their time labels: a bot's chat or the Team room. The caller draws each message.
-// It follows the newest message while the person is at the bottom, even when the list's own height changes, and
-// jumps there when they send one. Near the top it loads the older page and keeps the messages in view where they
-// were: the browser's own scroll anchoring is off, and the list moves by what was added.
+// A short conversation sits at the bottom, next to the composer (WF1, WF5). It follows the newest message while the
+// person is at the bottom, even when the list's own height changes, and jumps there when they send one. Near the top
+// it loads the older page and keeps the messages in view where they were: the browser's own scroll anchoring is off,
+// and the list moves by what was added.
 export function MessageList({ messages, hasMore, onOlder, render }: Props) {
   const scroller = useRef<HTMLDivElement>(null);
   const sentinel = useRef<HTMLDivElement>(null);
@@ -81,10 +82,10 @@ export function MessageList({ messages, hasMore, onOlder, render }: Props) {
         const element = event.currentTarget;
         pinned.current = element.scrollHeight - element.scrollTop - element.clientHeight < 48;
       }}
-      className="relative min-h-0 flex-1 overflow-y-auto [overflow-anchor:none]"
+      className="relative flex min-h-0 flex-1 flex-col overflow-y-auto [overflow-anchor:none]"
     >
-      <div ref={sentinel} aria-hidden className="h-px" />
-      <ol className="flex flex-col gap-3 px-6 pb-4 pt-2">
+      <div ref={sentinel} aria-hidden className="h-px shrink-0" />
+      <ol className="mt-auto flex flex-col gap-3 px-6 pb-6 pt-2">
         {items.map((item) =>
           item.type === "stamp" ? (
             <li key={item.key}>

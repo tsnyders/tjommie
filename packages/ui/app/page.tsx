@@ -18,7 +18,7 @@ export default function Home() {
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="drag h-11 shrink-0" />
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto w-full max-w-[808px] px-6 pb-12 pt-10">
+        <div className="mx-auto w-full max-w-[808px] px-6 pb-12 pt-[72px]">
           <h1 className="text-[20px] font-semibold leading-[26px] text-title">Set up Tjommie</h1>
           <p className="mt-2 text-[14px] leading-[21px] text-secondary">
             Tjommie runs your bots with Claude Code and Codex on this PC. Sign in to each one once. Tjommie keeps its own sign-in, separate from how you use these tools yourself, and never sees your password.

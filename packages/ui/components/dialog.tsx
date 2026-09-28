@@ -3,6 +3,7 @@
 import type { ReactNode, RefObject } from "react";
 import { X } from "lucide-react";
 import { Dialog as BaseDialog } from "@base-ui/react/dialog";
+import { cn } from "@/lib/utils";
 import { Pill } from "./pill";
 
 type DialogProps = {
@@ -13,11 +14,12 @@ type DialogProps = {
   actions?: ReactNode; // beside the title, before the close button
   closable?: boolean;
   initialFocus?: RefObject<HTMLElement | null>;
+  className?: string; // the routine editor's wider padding
   children: ReactNode;
 };
 
 // Dialogs (WF7, WF11): the card fill with a divider stroke, radius 16, padding 20, over a 60% black scrim.
-export function Dialog({ open, onOpenChange, title, width = 320, actions, closable = false, initialFocus, children }: DialogProps) {
+export function Dialog({ open, onOpenChange, title, width = 320, actions, closable = false, initialFocus, className, children }: DialogProps) {
   return (
     <BaseDialog.Root open={open} onOpenChange={(next) => onOpenChange(next)}>
       <BaseDialog.Portal>
@@ -25,7 +27,10 @@ export function Dialog({ open, onOpenChange, title, width = 320, actions, closab
         <BaseDialog.Popup
           initialFocus={initialFocus}
           style={{ width }}
-          className="fixed left-1/2 top-1/2 z-50 flex max-h-[calc(100vh-48px)] max-w-[calc(100vw-48px)] -translate-x-1/2 -translate-y-1/2 flex-col overflow-y-auto rounded-[16px] border border-divider bg-card p-5 transition-[opacity,scale] duration-200 ease-[cubic-bezier(0.23,1,0.32,1)] data-[ending-style]:scale-95 data-[ending-style]:opacity-0 data-[starting-style]:scale-95 data-[starting-style]:opacity-0"
+          className={cn(
+            "fixed left-1/2 top-1/2 z-50 flex max-h-[calc(100vh-48px)] max-w-[calc(100vw-48px)] -translate-x-1/2 -translate-y-1/2 flex-col overflow-y-auto rounded-[16px] border border-divider bg-card p-5 transition-[opacity,scale] duration-200 ease-[cubic-bezier(0.23,1,0.32,1)] data-[ending-style]:scale-95 data-[ending-style]:opacity-0 data-[starting-style]:scale-95 data-[starting-style]:opacity-0",
+            className,
+          )}
         >
           <div className="flex items-start gap-3">
             <BaseDialog.Title className="flex-1 text-[17px] font-semibold leading-[22px] text-title">{title}</BaseDialog.Title>

@@ -25,7 +25,7 @@ export function ChatHeader({ bot, panelOpen, onTogglePanel, panelButton }: { bot
         <h1 className="min-w-0 truncate text-[15px] font-semibold text-title">{bot.name}</h1>
         <HeaderState bot={bot} />
       </div>
-      <div className={cn("absolute top-3 flex items-center gap-2", panelOpen ? "right-4" : "right-[154px]")}>
+      <div className={cn("absolute top-3 flex items-center gap-1", panelOpen ? "right-4" : "right-[154px]")}>
         <IconButton ref={panelButton} label="Bot panel" active={panelOpen} onClick={onTogglePanel}>
           <PanelRight aria-hidden />
         </IconButton>

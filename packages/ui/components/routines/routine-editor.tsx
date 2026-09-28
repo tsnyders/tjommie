@@ -14,6 +14,15 @@ import { Dialog } from "../dialog";
 import { Pill } from "../pill";
 
 const RUN_ICONS: Record<RunLine["icon"], LucideIcon> = { done: Check, stopped: TimerOff, failed: CircleAlert, missed: CircleDashed, skipped: Pause, running: Loader };
+// WF7 dims a run by how it went: Done reads brightest, Stopped and Failed less, Missed and Skipped least.
+const RUN_TONES: Record<RunLine["icon"], { icon: string; text: string }> = {
+  done: { icon: "text-working", text: "text-body" },
+  running: { icon: "animate-spin text-icon", text: "text-body" },
+  stopped: { icon: "text-secondary", text: "text-secondary" },
+  failed: { icon: "text-secondary", text: "text-secondary" },
+  missed: { icon: "text-placeholder", text: "text-placeholder" },
+  skipped: { icon: "text-placeholder", text: "text-placeholder" },
+};
 
 type Props = {
   title: string;
@@ -67,6 +76,7 @@ export function RoutineEditor({ title, initial, timeZone, runsFor, onClose, onSa
       }}
       title={title}
       width={560}
+      className="px-6 pb-3"
       closable
       initialFocus={nameField}
       actions={
@@ -76,11 +86,12 @@ export function RoutineEditor({ title, initial, timeZone, runsFor, onClose, onSa
         </span>
       }
     >
-      <div className="mt-5 flex flex-col gap-2">
+      {/* WF7's rhythm: 16 px from each control to the next label, 4 px from a label to its control. */}
+      <div className="mt-4 flex flex-col gap-1">
         <Label htmlFor="routine-name">Name</Label>
         <input id="routine-name" ref={nameField} value={draft.name} maxLength={60} onChange={(event) => setDraft({ ...draft, name: event.target.value })} className={cn(FIELD, "h-11")} />
       </div>
-      <div className="mt-4 flex flex-col gap-2">
+      <div className="mt-4 flex flex-col gap-1">
         <Label htmlFor="routine-prompt">What to do</Label>
         <textarea
           id="routine-prompt"
@@ -91,7 +102,7 @@ export function RoutineEditor({ title, initial, timeZone, runsFor, onClose, onSa
         />
       </div>
       <p className="mt-4 text-[13px] leading-[18px] text-secondary">Days</p>
-      <div role="group" aria-label="Days" className="mt-2 flex gap-2">
+      <div role="group" aria-label="Days" className="mt-1 flex gap-2">
         {WEEK.map(({ day, letter, name }) => {
           const on = draft.days.includes(day);
           return (
@@ -101,7 +112,7 @@ export function RoutineEditor({ title, initial, timeZone, runsFor, onClose, onSa
               aria-label={name}
               aria-pressed={on}
               onClick={() => setDraft({ ...draft, days: toggleDay(draft.days, day) })}
-              className={cn("flex size-8 items-center justify-center rounded-full text-[13px]", on ? "bg-user-bubble font-semibold text-user-text" : "bg-pill text-secondary")}
+              className={cn("flex h-8 w-10 items-center justify-center rounded-full text-[13px]", on ? "bg-user-bubble font-semibold text-user-text" : "bg-pill text-secondary")}
             >
               {letter}
             </button>
@@ -109,15 +120,15 @@ export function RoutineEditor({ title, initial, timeZone, runsFor, onClose, onSa
         })}
       </div>
       <p className="mt-4 text-[13px] leading-[18px] text-secondary">Times</p>
-      <div className="mt-2 flex flex-wrap items-center gap-2">
+      <div className="mt-1 flex flex-wrap items-center gap-2">
         {draft.times.map((time) => (
-          <span key={time} className="inline-flex h-8 items-center gap-1.5 rounded-full bg-pill pl-3 pr-1.5 text-[13px] text-text">
+          <span key={time} className="inline-flex h-8 items-center gap-1.5 rounded-full bg-pill pl-3 pr-1.5 text-[14px] text-text">
             {timesLabel([time])}
             <button
               type="button"
               aria-label={`Remove ${timesLabel([time])}`}
               onClick={() => setDraft({ ...draft, times: draft.times.filter((each) => each !== time) })}
-              className="flex size-5 items-center justify-center rounded-full text-icon hover:text-text"
+              className="flex size-5 items-center justify-center rounded-full text-secondary hover:text-text"
             >
               <X className="size-3" aria-hidden />
             </button>
@@ -140,7 +151,7 @@ export function RoutineEditor({ title, initial, timeZone, runsFor, onClose, onSa
               setDraft({ ...draft, times: addTime(draft.times, event.target.value) });
               setAdding(false);
             }}
-            className="h-8 rounded-full border border-divider bg-transparent px-3 text-[13px] text-text"
+            className="h-8 rounded-full border border-selected bg-canvas px-3 text-[14px] text-text"
           />
         ) : (
           <button
@@ -151,7 +162,7 @@ export function RoutineEditor({ title, initial, timeZone, runsFor, onClose, onSa
             }}
             type="button"
             onClick={() => setAdding(true)}
-            className="inline-flex h-8 items-center gap-1.5 rounded-full border border-divider px-3 text-[13px] text-text hover:bg-pill"
+            className="inline-flex h-8 items-center gap-1.5 rounded-full border border-selected bg-canvas px-3 text-[14px] text-body hover:bg-pill"
           >
             <Plus className="size-3.5" aria-hidden />
             Add time
@@ -162,8 +173,8 @@ export function RoutineEditor({ title, initial, timeZone, runsFor, onClose, onSa
         <Globe className="size-3.5 shrink-0" aria-hidden />
         {zoneLine(timeZone)}
       </p>
-      <p className="mt-4 text-[13px] leading-[18px] text-secondary">Stop after</p>
-      <div className="mt-2">
+      <p className="mt-3 text-[13px] leading-[18px] text-secondary">Stop after</p>
+      <div className="mt-1">
         <Segmented
           label="Stop after"
           value={limit}
@@ -184,11 +195,12 @@ export function RoutineEditor({ title, initial, timeZone, runsFor, onClose, onSa
               {runs.map((run) => {
                 const line = runLine(run);
                 const Icon = RUN_ICONS[line.icon];
+                const tone = RUN_TONES[line.icon];
                 return (
-                  <li key={run.id} className="flex h-[26px] items-center gap-3 text-[13px]">
-                    <Icon className={cn("size-3.5 shrink-0", line.icon === "done" ? "text-working" : "text-icon", line.icon === "running" && "animate-spin")} aria-hidden />
-                    <span className="w-[150px] shrink-0 text-text">{line.when}</span>
-                    <span className="min-w-0 flex-1 truncate text-body">{line.text}</span>
+                  <li key={run.id} className="flex h-[26px] items-center gap-2.5 text-[13px]">
+                    <Icon className={cn("size-3.5 shrink-0", tone.icon)} aria-hidden />
+                    <span className="w-[142px] shrink-0 text-body">{line.when}</span>
+                    <span className={cn("min-w-0 flex-1 truncate", tone.text)}>{line.text}</span>
                     {line.length && <span className="shrink-0 text-[12px] text-caption">{line.length}</span>}
                   </li>
                 );
@@ -197,7 +209,7 @@ export function RoutineEditor({ title, initial, timeZone, runsFor, onClose, onSa
           )}
         </div>
       )}
-      <div className="mt-5 flex items-center gap-3 border-t border-divider pt-4">
+      <div className="mt-5 flex items-center gap-3 border-t border-divider pt-3">
         {onDelete && (
           <button type="button" disabled={busy} onClick={() => void act(onDelete)} className="flex shrink-0 items-center gap-1.5 text-[14px] text-danger disabled:opacity-50">
             <Trash2 className="size-4" aria-hidden />
