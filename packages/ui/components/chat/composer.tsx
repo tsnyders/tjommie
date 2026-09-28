@@ -70,6 +70,7 @@ export function Composer({ bot }: { bot: Bot }) {
   }
 
   function onDrop(event: DragEvent<HTMLFormElement>): void {
+    if (!event.dataTransfer.types.includes("Files")) return;
     event.preventDefault();
     const api = desktop();
     if (api) attach(Array.from(event.dataTransfer.files, (file) => api.pathForFile(file)));
@@ -81,7 +82,10 @@ export function Composer({ bot }: { bot: Bot }) {
         event.preventDefault();
         submit();
       }}
-      onDragOver={(event) => event.preventDefault()}
+      // Only file drags are the form's. Accepting a text drag here would stop the field from taking the text.
+      onDragOver={(event) => {
+        if (event.dataTransfer.types.includes("Files")) event.preventDefault();
+      }}
       onDrop={onDrop}
       className="shrink-0 px-4 pb-4"
     >
