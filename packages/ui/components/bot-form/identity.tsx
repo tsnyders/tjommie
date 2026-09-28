@@ -21,14 +21,14 @@ export function Identity({ form, onChange, nameError }: { form: BotForm; onChang
           maxLength={40}
           aria-invalid={nameError ? true : undefined}
           onChange={(event) => onChange({ ...form, name: event.target.value })}
-          className={cn(FIELD, "mt-2 h-11")}
+          className={cn(FIELD, "mt-1.5 h-11")}
         />
         {nameError && (
           <p role="alert" className="mt-1 text-[12px] leading-[18px] text-danger">
             {nameError}
           </p>
         )}
-        <div role="radiogroup" aria-label="Color" className="mt-4 flex justify-between gap-2">
+        <div role="radiogroup" aria-label="Color" className="mt-3 flex justify-between gap-2">
           {BotColor.options.map((color) => (
             <button
               key={color}
@@ -53,7 +53,7 @@ export function Identity({ form, onChange, nameError }: { form: BotForm; onChang
               onClick={() => onChange({ ...form, shape })}
               className={cn("flex size-8 shrink-0 items-center justify-center rounded-[10px] bg-popover", form.shape === shape && "bg-selected ring-1 ring-inset ring-accent")}
             >
-              <BotAvatar color={form.color} shape={shape} size={20} />
+              <BotAvatar color={form.color} shape={shape} size={24} />
             </button>
           ))}
         </div>

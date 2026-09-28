@@ -16,7 +16,7 @@ export function RoomPost({ message, bots, onOpenExchange }: { message: Message; 
   const author = bots.find((bot) => bot.id === message.author);
   const to = post ? bots.find((bot) => bot.id === post.toBotId) : undefined;
   return (
-    <article className="flex w-full gap-3">
+    <article className="flex w-full gap-2.5">
       {author ? <BotAvatar color={author.color} shape={author.shape} size={28} className="mt-0.5 shrink-0" /> : <MissingAvatar size={28} />}
       <div className="flex min-w-0 flex-col items-start gap-1.5">
         <p className="flex items-baseline gap-1.5 text-[13px] leading-[18px]">

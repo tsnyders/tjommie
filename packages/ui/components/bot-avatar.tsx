@@ -73,18 +73,19 @@ export function MissingAvatar({ size = 18 }: { size?: number }) {
   return <span aria-hidden="true" className="inline-block shrink-0 rounded-full bg-selected" style={{ width: size, height: size }} />;
 }
 
-// The Team room mark: the rail's first item, and the app icon (packages/desktop/assets/icon.svg).
+// The Team room mark: the rail's first item and WF2's Team room card. Three 14 px avatars on a #262626 tile, placed
+// as the wireframes draw them. The app icon (packages/desktop/assets/icon.svg) is an older copy on a darker tile.
 export function TeamMark({ size = 40, dimmed = false }: { size?: number; dimmed?: boolean }) {
   return (
     <svg viewBox="0 0 64 64" width={size} height={size} aria-hidden="true" style={{ opacity: dimmed ? 0.4 : 1 }}>
-      <rect width="64" height="64" rx="14" fill="var(--chip)" />
-      <g transform="translate(7 7) scale(0.6)">
+      <rect width="64" height="64" rx="14" fill="var(--pill)" />
+      <g transform="translate(9.2 10.8) scale(0.56)">
         <Shape color="purple" shape="circle" />
       </g>
-      <g transform="translate(33 9) scale(0.6)">
+      <g transform="translate(31.5 11.3) scale(0.56)">
         <Shape color="orange" shape="cloud" />
       </g>
-      <g transform="translate(20 33) scale(0.6)">
+      <g transform="translate(20.4 30) scale(0.56)">
         <Shape color="green" shape="rounded-square" />
       </g>
     </svg>

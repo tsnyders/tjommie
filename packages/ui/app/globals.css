@@ -5,7 +5,8 @@
 
 /* Tjommie's colors: the token table in docs/design/wireframe-spec.md ("Colors and type") and its approved
    exceptions. Light values follow design/openpencil/recolor-light.js, the map WF1 light was drawn with; the
-   light composer's 1 px #EAEAEA stroke is from WF1 light (dark draws none, so its stroke is the fill).
+   light composer's 1 px #E4E4E4 stroke and soft shadow are from WF1 light (dark draws no stroke, so its stroke
+   is the fill, and the shadow doesn't show on the dark canvas).
    --highlight is a popover's highlighted row: the map turns both #1A1A1A and #262626 into #EFEFEF, so light
    mode uses the selected color there instead.
    Light --code is #E4E4E4, because the map's #EFEFEF would vanish inside the #EFEFEF bot bubble.
@@ -26,7 +27,7 @@
   --pill: #efefef;
   --chip: #f0f0f0;
   --composer: #ffffff;
-  --composer-stroke: #eaeaea;
+  --composer-stroke: #e4e4e4;
   --selected: #e1e1e1;
   --nav-selected: #ebebeb;
   --popover: #efefef;
@@ -134,6 +135,7 @@
   --color-mention: var(--mention);
   --color-file-tile: var(--file-tile);
   --color-user-avatar: var(--user-avatar);
+  --shadow-composer: 0 2px 6px rgb(0 0 0 / 0.08);
 }
 
 @layer base {

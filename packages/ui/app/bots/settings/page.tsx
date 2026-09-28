@@ -9,7 +9,7 @@ import { BotFormFields } from "@/components/bot-form/bot-form";
 import { RoutinesRow } from "@/components/bot-form/rows";
 import { HeaderState } from "@/components/chat/chat-header";
 import { ConfirmDialog } from "@/components/dialog";
-import { Pill } from "@/components/pill";
+import { BAR_PILL, Pill } from "@/components/pill";
 import { RoutineEditor } from "@/components/routines/routine-editor";
 import { RoutineRows } from "@/components/routines/routine-rows";
 import { formFromBot, nameProblem, patchFor, routinesSummary, type BotForm } from "@/lib/bot-form";
@@ -69,16 +69,19 @@ function BotSettings({ bot, bots }: { bot: Bot; bots: Bot[] }) {
   const routine = editing === "new" ? null : editing;
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <header className="drag flex h-14 shrink-0 items-center justify-center">
-        <div className="flex h-10 min-w-0 max-w-[calc(100%-352px)] items-center gap-2 rounded-full bg-chip px-3.5">
-          <BotAvatar color={bot.color} shape={bot.shape} size={24} className="shrink-0" />
-          <h1 className="min-w-0 truncate text-[15px] font-semibold text-title">{bot.name}</h1>
-          <HeaderState bot={bot} />
+      {/* The chip is centered over the form column, as on New bot (WF3). */}
+      <header className="drag flex h-14 shrink-0 items-center pl-[120px] pr-6 max-xl:pl-10">
+        <div className="flex w-[640px] min-w-0 shrink justify-center">
+          <div className="flex h-10 min-w-0 items-center gap-2 rounded-full bg-chip px-3.5">
+            <BotAvatar color={bot.color} shape={bot.shape} size={24} className="shrink-0" />
+            <h1 className="min-w-0 truncate text-[15px] font-semibold text-title">{bot.name}</h1>
+            <HeaderState bot={bot} />
+          </div>
         </div>
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto">
         {/* When the form and About this bot don't fit side by side, About moves under the form. 532 px holds the avatar tile and the color row. */}
-        <div className="flex flex-wrap justify-between gap-10 pb-10 pl-[120px] pr-6 pt-2 max-xl:pl-10">
+        <div className="flex flex-wrap justify-between gap-10 pb-6 pl-[120px] pr-6 pt-2 max-xl:pl-10">
           <div className="w-[640px] min-w-[532px] shrink">
             <BotFormFields
               form={form}
@@ -103,7 +106,7 @@ function BotSettings({ bot, bots }: { bot: Bot; bots: Bot[] }) {
         </div>
       </div>
       <footer className="flex h-16 shrink-0 items-center gap-2 border-t border-card-stroke px-6">
-        <button type="button" disabled={busy} onClick={() => setDeleting(true)} className="mr-2 flex shrink-0 items-center gap-1.5 text-[14px] text-danger disabled:opacity-50">
+        <button type="button" disabled={busy} onClick={() => setDeleting(true)} className="mr-4 flex shrink-0 items-center gap-1.5 text-[14px] text-danger disabled:opacity-50">
           <Trash2 className="size-4" aria-hidden />
           Delete bot
         </button>
@@ -117,8 +120,15 @@ function BotSettings({ bot, bots }: { bot: Bot; bots: Bot[] }) {
           </p>
         )}
         <span className="ml-auto flex shrink-0 gap-2">
-          <Pill onClick={() => router.push(chat)}>Cancel</Pill>
-          <Pill primary disabled={busy || !dirty || nameError !== null} onClick={() => void run(() => request("bots.update", { id: bot.id, patch }), () => router.push(chat))}>
+          <Pill className={BAR_PILL} onClick={() => router.push(chat)}>
+            Cancel
+          </Pill>
+          <Pill
+            primary
+            className={BAR_PILL}
+            disabled={busy || !dirty || nameError !== null}
+            onClick={() => void run(() => request("bots.update", { id: bot.id, patch }), () => router.push(chat))}
+          >
             Save changes
           </Pill>
         </span>
@@ -164,19 +174,19 @@ function About({ bot }: { bot: Bot }) {
     request("bots.notes", { id: bot.id }).then(setNotes, () => setNotes("failed"));
   }, [bot.id]);
   return (
-    <section className="mt-3 rounded-[14px] border border-card-stroke bg-card p-4">
+    <section className="mt-1.5 rounded-[14px] border border-card-stroke bg-card p-4">
       <p className="text-[12px] leading-[18px] text-secondary">Created</p>
       <p className="mt-0.5 text-[14px] text-text">{longDate(bot.createdAt)}</p>
-      <p className="mt-3 text-[12px] leading-[18px] text-secondary">Home folder</p>
+      <p className="mt-2 text-[12px] leading-[18px] text-secondary">Home folder</p>
       <button type="button" onClick={() => void desktop()?.openFolder(bot.homeFolder)} className="mt-0.5 flex items-center gap-1.5 text-[14px] text-accent hover:underline">
         <Folder className="size-4" aria-hidden />
         Open folder
       </button>
-      <p className="mt-3 text-[12px] leading-[18px] text-secondary">Notes</p>
+      <p className="mt-2 text-[12px] leading-[18px] text-secondary">Notes</p>
       <pre className="mt-1.5 max-h-[160px] overflow-hidden whitespace-pre-wrap rounded-[10px] bg-canvas p-3 font-sans text-[12px] leading-[18px] text-body [overflow-wrap:anywhere]">
         {notes === null ? "Loading" : notes === "failed" ? "Couldn't read the notes." : notes.text.trim() || "No notes yet."}
       </pre>
-      <button type="button" onClick={() => void desktop()?.openNotes(bot.homeFolder)} className="mt-3 text-[14px] text-accent hover:underline">
+      <button type="button" onClick={() => void desktop()?.openNotes(bot.homeFolder)} className="mt-2.5 text-[14px] text-accent hover:underline">
         Open notes.md
       </button>
     </section>

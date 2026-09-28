@@ -29,7 +29,8 @@ describe("the Agents overview", () => {
   it("says what each bot is doing", () => {
     const messages = [
       message("m1", "text", { body: "Morning briefing sent at 7:00 AM.\nDetails below." }),
-      message("m2", "approval", { body: "Pnet apply wants to save CV.pdf", data: { approvalId: "a1", tool: "Write", detail: "{}", status: "pending", rule: "Write" } }),
+      // Claude's description of a Write is just the file name.
+      message("m2", "approval", { body: "hello.txt", data: { approvalId: "a1", tool: "Write", detail: "{}", status: "pending", rule: "Write" } }),
       message("m3", "activity", {
         body: "2 steps",
         data: {
@@ -41,7 +42,9 @@ describe("the Agents overview", () => {
       }),
     ];
     expect(taskLine(bot("idle"), messages)).toBe("Morning briefing sent at 7:00 AM.");
-    expect(taskLine(bot("waiting"), messages)).toBe("Pnet apply wants to save CV.pdf");
+    expect(taskLine(bot("waiting"), messages)).toBe("Write: hello.txt");
+    const sentence = message("m4", "approval", { body: "Run npm test", data: { approvalId: "a2", tool: "Shell", detail: "npm test", status: "pending", rule: null } });
+    expect(taskLine(bot("waiting"), [sentence])).toBe("Run npm test");
     expect(taskLine(bot("working"), messages)).toBe("Filling the Apply form");
     expect(taskLine(bot("paused"), messages)).toBe("Paused by you");
     expect(taskLine(bot("needs_setup", { setupReason: "Sign in to Claude" }), messages)).toBe("Sign in to Claude");

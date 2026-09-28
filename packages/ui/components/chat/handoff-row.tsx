@@ -5,7 +5,7 @@ import { DELETED_BOT } from "@/lib/labels";
 import { cn } from "@/lib/utils";
 import { BotAvatar, MissingAvatar } from "../bot-avatar";
 
-const ROW = "flex max-w-full items-center gap-2 rounded-[10px] border border-divider px-3 py-2 text-left text-[13px] hover:bg-card";
+const ROW = "flex max-w-full items-center gap-2 rounded-[10px] border border-divider px-3 py-2.5 text-left text-[13px] leading-[18px] hover:bg-card";
 
 function Avatar({ bot }: { bot: Bot | undefined }) {
   return bot ? <BotAvatar color={bot.color} shape={bot.shape} size={18} className="shrink-0" /> : <MissingAvatar size={18} />;

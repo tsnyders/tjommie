@@ -75,7 +75,10 @@ export function RoomScreen() {
       <section aria-label="Team room" className="flex min-w-0 flex-1 flex-col">
         <header className="drag relative flex h-14 shrink-0 items-center justify-center px-4">
           <div className="flex h-10 items-center gap-2 rounded-full bg-chip px-3.5">
-            <Users className="size-[18px] text-icon" aria-hidden />
+            {/* The room's mark sits on a round tile, where a bot's chat shows its 24 px avatar (WF5). */}
+            <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-pill">
+              <Users className="size-3.5 text-icon" aria-hidden />
+            </span>
             <h1 className="text-[15px] font-semibold text-title">Team room</h1>
             <span className="text-[13px] text-secondary">
               {bots.length} {bots.length === 1 ? "bot" : "bots"}

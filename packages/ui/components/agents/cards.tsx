@@ -12,7 +12,11 @@ import { cn } from "@/lib/utils";
 import { BotAvatar, MissingAvatar, TeamMark } from "../bot-avatar";
 import { MENU_ITEM, MENU_POPUP } from "../menu";
 
-const CARD = "relative flex h-[368px] flex-col rounded-[14px] border bg-card p-3";
+const CARD = "relative flex h-[368px] flex-col rounded-[14px] border bg-card p-3 pb-4";
+// The footer (WF2): a divider, then a 28 px row 16 px under it.
+const FOOTER = "mt-auto flex h-[45px] items-center border-t border-card-stroke pt-4";
+const CARD_PILL = "flex h-7 items-center rounded-full px-3 text-[14px] font-medium";
+const SLIDE = "transition-transform duration-150 ease-[cubic-bezier(0.23,1,0.32,1)]";
 // The card's title is a link stretched over the whole card; the menu sits above it.
 const STRETCHED = "after:absolute after:inset-0 after:rounded-[14px]";
 const chatOf = (id: string): string => `/chat/?bot=${encodeURIComponent(id)}`;
@@ -26,7 +30,7 @@ export function BotCard({ bot, bots, messages, routines }: { bot: Bot; bots: Bot
     .filter((each): each is Bot => each !== undefined);
   return (
     <article className={cn(CARD, "group", waiting ? "border-waiting-stroke" : "border-card-stroke hover:border-input-stroke")}>
-      <div className={cn("flex h-[181px] shrink-0 flex-col items-center justify-center gap-3 rounded-[10px] bg-popover", waiting && "ring-2 ring-inset ring-accent")}>
+      <div className={cn("flex h-[181px] shrink-0 flex-col items-center justify-center gap-2 rounded-[10px] bg-popover leading-[18px]", waiting && "ring-2 ring-inset ring-accent")}>
         <BotAvatar color={bot.color} shape={bot.shape} size={56} className={dim} />
         <PlaceholderState bot={bot} />
       </div>
@@ -37,15 +41,20 @@ export function BotCard({ bot, bots, messages, routines }: { bot: Bot; bots: Bot
             {bot.name}
           </Link>
         </h2>
-        <StateChip bot={bot} />
-        <CardMenu bot={bot} />
+        {/* The chip sits flush right (WF2). The hidden menu button waits over the chip's right end, inside the card; when
+            it shows, the chip slides left to make room and the button stays put. Transforms only, so nothing else in
+            the row moves. */}
+        <span className={cn("relative flex shrink-0 group-hover:-translate-x-9 has-[:focus-visible]:-translate-x-9 has-[[data-popup-open]]:-translate-x-9", SLIDE)}>
+          <StateChip bot={bot} />
+          <CardMenu bot={bot} />
+        </span>
       </div>
-      <p className="mt-3 truncate text-[13px] leading-[18px] text-body">{taskLine(bot, messages)}</p>
+      <p className="mt-2.5 truncate text-[13px] leading-[18px] text-body">{taskLine(bot, messages)}</p>
       <p className="mt-1.5 flex items-center gap-1.5 text-[12px] leading-[18px] text-secondary">
         <Clock className="size-3.5 shrink-0" aria-hidden />
         <span className="truncate">{nextRoutineLine(bot, routines)}</span>
       </p>
-      <div className="mt-auto flex h-10 items-center gap-2 border-t border-card-stroke pt-3">
+      <div className={cn(FOOTER, "gap-2")}>
         {partners.length > 0 ? (
           <>
             <span className="text-[12px] text-caption">Talking with</span>
@@ -58,7 +67,7 @@ export function BotCard({ bot, bots, messages, routines }: { bot: Bot; bots: Bot
         ) : (
           <span className="text-[12px] text-caption">No bot chats today</span>
         )}
-        {waiting && <span className="ml-auto rounded-full bg-user-bubble px-3 py-1 text-[13px] font-medium text-user-text">Review</span>}
+        {waiting && <span className={cn(CARD_PILL, "ml-auto bg-user-bubble text-user-text")}>Review</span>}
       </div>
     </article>
   );
@@ -68,7 +77,7 @@ function PlaceholderState({ bot }: { bot: Bot }) {
   if (bot.state === "working")
     return (
       <span className="flex items-center gap-1.5 text-[13px] text-body">
-        <Loader className="size-3.5" aria-hidden />
+        <Loader className="size-3.5 animate-spin" aria-hidden />
         Working
       </span>
     );
@@ -91,7 +100,7 @@ function StateChip({ bot }: { bot: Bot }) {
     bot.state === "working" ? Loader : bot.state === "waiting" ? CircleAlert : bot.state === "paused" ? Pause : bot.state === "limited" ? Hourglass : bot.state === "needs_setup" ? Plug : null;
   return (
     <span className={cn("flex h-[22px] shrink-0 items-center gap-1 rounded-full px-2 text-[12px]", tone)}>
-      {Icon && <Icon className="size-3" aria-hidden />}
+      {Icon && <Icon className={cn("size-3", bot.state === "working" && "animate-spin")} aria-hidden />}
       {bot.state === "waiting" ? "Waiting for you" : SHORT_STATE[bot.state]}
     </span>
   );
@@ -103,7 +112,11 @@ function CardMenu({ bot }: { bot: Bot }) {
     <Menu.Root>
       <Menu.Trigger
         aria-label={`Menu for ${bot.name}`}
-        className="relative z-10 flex size-7 shrink-0 items-center justify-center rounded-full bg-pill text-icon opacity-0 hover:text-text focus-visible:opacity-100 group-hover:opacity-100 data-[popup-open]:opacity-100"
+        className={cn(
+          "absolute right-0 top-1/2 z-10 flex size-7 -translate-y-1/2 items-center justify-center rounded-full bg-pill text-icon opacity-0 hover:text-text",
+          "focus-visible:translate-x-9 focus-visible:opacity-100 group-hover:translate-x-9 group-hover:opacity-100 data-[popup-open]:translate-x-9 data-[popup-open]:opacity-100",
+          SLIDE,
+        )}
       >
         <Ellipsis className="size-4" aria-hidden />
       </Menu.Trigger>
@@ -163,9 +176,9 @@ export function TeamRoomCard({ messages, bots }: { messages: Message[]; bots: Bo
           </Link>
         </h2>
       </div>
-      <p className="mt-3 truncate text-[13px] leading-[18px] text-body">{roomLine(messages, bots)}</p>
-      <div className="mt-auto flex h-10 items-center justify-end pt-3">
-        <span className="rounded-full bg-pill px-3 py-1 text-[13px] text-text">Open room</span>
+      <p className="mt-2.5 truncate text-[13px] leading-[18px] text-body">{roomLine(messages, bots)}</p>
+      <div className={cn(FOOTER, "justify-end")}>
+        <span className={cn(CARD_PILL, "bg-pill text-text")}>Open room</span>
       </div>
     </article>
   );

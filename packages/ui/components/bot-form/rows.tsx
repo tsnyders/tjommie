@@ -25,14 +25,14 @@ export function RowHeader({ icon: Icon, title, value, chevron }: { icon: LucideI
   );
 }
 
-// A row that opens in place to show its controls.
+// A row that opens in place to show its controls. They start 48 px down, under the title, as Autonomy does in WF3.
 export function Row({ icon, title, value, open, onToggle, children }: { icon: LucideIcon; title: string; value?: ReactNode; open: boolean; onToggle: () => void; children: ReactNode }) {
   return (
     <section className="rounded-[12px] bg-card">
       <button type="button" aria-expanded={open} onClick={onToggle} className={ROW_BUTTON}>
         <RowHeader icon={icon} title={title} value={value} chevron={open ? "down" : "right"} />
       </button>
-      {open && <div className="px-4 pb-4 pl-[46px]">{children}</div>}
+      {open && <div className="-mt-2 px-4 pb-1.5 pl-[46px]">{children}</div>}
     </section>
   );
 }
@@ -77,7 +77,7 @@ export function AutonomyRow({ autonomy, provider, botName, onChange }: { autonom
   return (
     <Row icon={Shield} title="Autonomy" value={open ? undefined : AUTONOMY_LEVELS.find((level) => level.value === autonomy)?.label} open={open} onToggle={() => setOpen(!open)}>
       <Segmented label="Autonomy" value={autonomy} options={AUTONOMY_LEVELS} onChange={(next) => (next === "full" ? setConfirming(true) : onChange(next))} />
-      <p className="mt-3 text-[12px] leading-[18px] text-secondary">{autonomyHelp(autonomy, provider)}</p>
+      <p className="mt-1.5 text-[12px] leading-[18px] text-secondary">{autonomyHelp(autonomy, provider)}</p>
       <ConfirmDialog
         open={confirming}
         onOpenChange={setConfirming}

@@ -52,10 +52,10 @@ export default function AgentsPage() {
   const everything = filter === "all" && !query.trim();
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <header className="drag flex shrink-0 items-start justify-between gap-6 px-6 pb-6 pt-12">
+      <header className="drag flex shrink-0 items-center justify-between gap-6 px-6 pb-7 pt-12">
         <div>
           <h1 className="text-[20px] font-semibold leading-[26px] text-title">Agents</h1>
-          <p className="text-[13px] leading-[18px] text-secondary">{overviewSummary(bots)}</p>
+          <p className="mt-1 text-[13px] leading-[18px] text-secondary">{overviewSummary(bots)}</p>
         </div>
         <div className="flex items-center gap-2">
           <Segmented label="Show" value={filter} options={FILTERS} onChange={setFilter} />
@@ -76,8 +76,8 @@ export default function AgentsPage() {
               <Search aria-hidden />
             </IconButton>
           )}
-          <Link href="/bots/new/" className="press inline-flex h-8 items-center gap-1.5 rounded-full bg-user-bubble px-3.5 text-[13px] font-medium text-user-text">
-            <Plus className="size-4" aria-hidden />
+          <Link href="/bots/new/" className="press inline-flex h-8 items-center gap-1.5 rounded-full bg-user-bubble px-3 text-[14px] font-medium text-user-text">
+            <Plus className="size-3.5" aria-hidden />
             New bot
           </Link>
         </div>

@@ -107,7 +107,7 @@ export function Composer({ bot }: { bot: Bot }) {
           ))}
         </ul>
       )}
-      <div className="flex items-end gap-2 rounded-[22px] border border-composer-stroke bg-composer py-[5px] pl-2 pr-[5px]">
+      <div className="flex items-end gap-2 rounded-[22px] border border-composer-stroke bg-composer py-[5px] pl-2 pr-[5px] shadow-composer">
         <button
           type="button"
           aria-label="Attach files"

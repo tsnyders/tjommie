@@ -25,7 +25,7 @@ function SettingsScreen() {
     <div className="flex min-h-0 flex-1">
       <nav aria-label="Settings" className="flex w-[220px] shrink-0 flex-col border-r border-card-stroke bg-drawer px-3">
         <div className="drag h-11 shrink-0" />
-        <h1 className="mb-3 mt-1 px-3 text-[15px] font-semibold leading-[20px] text-title">Settings</h1>
+        <h1 className="mb-4 mt-2 px-3 text-[15px] font-semibold leading-[20px] text-title">Settings</h1>
         <div className="flex flex-col gap-1">
           <NavLink href="/settings/" icon={SlidersHorizontal} selected={section === "general"}>
             General
@@ -62,7 +62,7 @@ function General() {
   return (
     <>
       <h2 className="text-[20px] font-semibold leading-[26px] text-title">General</h2>
-      <section className="mt-6 flex max-w-[700px] items-center justify-between gap-4 rounded-[12px] bg-card p-4">
+      <section className="mt-[38px] flex max-w-[700px] items-center justify-between gap-4 rounded-[12px] bg-card p-4">
         <span className="text-[14px] text-text">Appearance</span>
         <Segmented
           label="Appearance"
@@ -96,8 +96,8 @@ function BotsSection() {
   return (
     <>
       <h2 className="text-[20px] font-semibold leading-[26px] text-title">Bots</h2>
-      <h3 className="mt-8 text-[13px] font-semibold leading-[18px] text-label">Bots asking each other</h3>
-      <section className="mt-3 flex max-w-[700px] items-start justify-between gap-6 rounded-[12px] bg-card p-4">
+      <h3 className="mt-9 text-[13px] font-semibold leading-[18px] text-label">Bots asking each other</h3>
+      <section className="mt-2.5 flex max-w-[700px] items-start justify-between gap-6 rounded-[12px] bg-card p-4">
         <div>
           <p className="text-[14px] text-text">Requests between bots per chain</p>
           <p className="mt-1 text-[12px] leading-[18px] text-secondary">

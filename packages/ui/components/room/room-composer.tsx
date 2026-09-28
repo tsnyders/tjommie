@@ -98,7 +98,7 @@ export function RoomComposer() {
                 event.preventDefault();
                 pick(option);
               }}
-              className={cn("flex h-9 cursor-default items-center gap-2.5 rounded-[8px] px-2.5 text-[14px] text-text", index === active && "bg-highlight")}
+              className={cn("flex h-9 cursor-default items-center gap-2 rounded-[8px] px-2.5 text-[14px] text-text", index === active && "bg-highlight")}
             >
               {option.bot ? <BotAvatar color={option.bot.color} shape={option.bot.shape} size={18} className="shrink-0" /> : <Users className="size-[18px] shrink-0 text-icon" aria-hidden />}
               <span className="min-w-0 flex-1 truncate">{option.bot ? option.name : "@everyone"}</span>
@@ -115,7 +115,7 @@ export function RoomComposer() {
           event.preventDefault();
           void send();
         }}
-        className="flex items-end gap-2 rounded-[22px] border border-composer-stroke bg-composer py-[5px] pl-4 pr-[5px]"
+        className="flex items-end gap-2 rounded-[22px] border border-composer-stroke bg-composer py-[5px] pl-4 pr-[5px] shadow-composer"
       >
         {/* The caret shows focus here, as in the chat's composer. */}
         <textarea

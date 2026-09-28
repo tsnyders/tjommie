@@ -9,14 +9,15 @@ export const clock = (value: string | Date): string => CLOCK.format(new Date(val
 
 const startOfDay = (date: Date): number => new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
 
-// "Today", "Yesterday", "Tomorrow", a weekday within a week either way, otherwise "21 September".
-export function dayName(value: string | Date, now: Date = new Date()): string {
+// "Today", "Yesterday", "Tomorrow", a weekday within a week either way ("Friday", or "Fri" when short), otherwise
+// "21 September".
+export function dayName(value: string | Date, now: Date = new Date(), short = false): string {
   const date = new Date(value);
   const days = Math.round((startOfDay(now) - startOfDay(date)) / DAY_MS);
   if (days === 0) return "Today";
   if (days === 1) return "Yesterday";
   if (days === -1) return "Tomorrow";
-  if (Math.abs(days) < 7) return WEEKDAY.format(date);
+  if (Math.abs(days) < 7) return short ? DAY_SHORT[date.getDay()] : WEEKDAY.format(date);
   return DAY_MONTH.format(date);
 }
 

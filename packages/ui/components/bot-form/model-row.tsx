@@ -57,12 +57,14 @@ export function ModelRow({ provider, model, onChange }: { provider: Provider; mo
               label="Provider"
               value={tab}
               options={PROVIDERS}
+              full
+              className="bg-card" // darker than the popover it sits on (WF11)
               onChange={(next) => {
                 setTab(next);
                 setProblems({});
               }}
             />
-            <div className="mt-2 flex flex-col gap-1">
+            <div className="mt-1 flex flex-col gap-1">
               {problem ? (
                 <p className="px-3 py-2 text-[13px] leading-[18px] text-danger">{problem}</p>
               ) : !models ? (
@@ -79,7 +81,7 @@ export function ModelRow({ provider, model, onChange }: { provider: Provider; mo
                         onChange({ provider: tab, model: info.id });
                         setOpen(false);
                       }}
-                      className={cn("flex h-9 items-center justify-between rounded-[8px] px-3 text-left text-[14px] text-text hover:bg-highlight", selected && "bg-highlight")}
+                      className={cn("flex h-9 items-center justify-between rounded-[8px] px-3 text-left text-[14px] text-body hover:bg-highlight", selected && "bg-highlight text-text")}
                     >
                       {tab === "claude" ? info.label.replace(/^Claude /, "") : info.label}
                       {selected && <Check className="size-4" aria-hidden />}
@@ -88,7 +90,7 @@ export function ModelRow({ provider, model, onChange }: { provider: Provider; mo
                 })
               )}
             </div>
-            <p className="px-3 pb-1 pt-2 text-[12px] leading-[18px] text-caption">{tab === "claude" ? "Latest versions are picked automatically." : "Models from Codex's own list."}</p>
+            <p className="px-3 pb-1 pt-2 text-[11px] leading-[16px] text-caption">{tab === "claude" ? "Latest versions are picked automatically." : "Models from Codex's own list."}</p>
           </Popover.Popup>
         </Popover.Positioner>
       </Popover.Portal>

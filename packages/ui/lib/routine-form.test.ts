@@ -48,7 +48,7 @@ describe("the routine editor", () => {
       length: "3h",
     });
     expect(runLine(run({ status: "failed", note: "Claude stopped unexpectedly" }), now)).toMatchObject({ icon: "failed", text: "Failed: Claude stopped unexpectedly", length: null });
-    expect(runLine(run({ status: "missed", dueAt: at(25, 8, 48) }), now)).toEqual({ icon: "missed", when: "Friday 8:48 AM", text: "Missed: the PC was off", length: null });
+    expect(runLine(run({ status: "missed", dueAt: at(25, 8, 48) }), now)).toEqual({ icon: "missed", when: "Fri 8:48 AM", text: "Missed: the PC was off", length: null });
     expect(runLine(run({ status: "skipped", note: "Pnet apply was paused." }), now)).toMatchObject({ icon: "skipped", text: "Skipped: Pnet apply was paused" });
   });
 });

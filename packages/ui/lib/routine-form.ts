@@ -63,9 +63,9 @@ export function zoneLine(timeZone: string): string {
 
 export type RunLine = { icon: "done" | "stopped" | "failed" | "missed" | "skipped" | "running"; when: string; text: string; length: string | null };
 
-// One row of Recent runs (WF7): when it was due, what happened, and how long it ran.
+// One row of Recent runs (WF7): when it was due ("Fri 8:48 AM"), what happened, and how long it ran.
 export function runLine(run: RoutineRun, now: Date = new Date()): RunLine {
-  const when = `${dayName(run.dueAt, now)} ${clock(run.dueAt)}`;
+  const when = `${dayName(run.dueAt, now, true)} ${clock(run.dueAt)}`;
   const length = run.startedAt && run.endedAt ? duration(Date.parse(run.endedAt) - Date.parse(run.startedAt)) : null;
   const note = run.note ? run.note.replace(/\.$/, "") : null;
   switch (run.status) {

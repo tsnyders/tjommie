@@ -39,8 +39,12 @@ export function taskLine(bot: Pick<Bot, "id" | "state" | "limitedUntil" | "setup
   if (bot.state === "needs_setup") return bot.setupReason ?? "Needs setup";
   const newest = [...messages].reverse();
   if (bot.state === "waiting") {
-    const card = newest.find((message) => message.kind === "approval" && ApprovalData.safeParse(message.data).data?.status === "pending");
-    return card?.body ?? "Waiting for you";
+    for (const message of newest) {
+      const card = message.kind === "approval" ? ApprovalData.safeParse(message.data).data : undefined;
+      // Claude describes a Write by its file name alone, so a body without spaces gets the tool: "Write: hello.txt".
+      if (card?.status === "pending") return /\s/.test(message.body.trim()) ? message.body : `${card.tool}: ${message.body}`;
+    }
+    return "Waiting for you";
   }
   if (bot.state === "working") {
     const row = newest.find((message) => message.kind === "activity");

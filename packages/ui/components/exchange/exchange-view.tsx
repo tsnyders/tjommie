@@ -61,8 +61,8 @@ export function ExchangeView({ exchangeId, rowStatus, onClose, bar }: { exchange
   return (
     <aside aria-label="Exchange" className="flex w-[460px] shrink-0 flex-col border-l border-divider bg-canvas">
       {bar}
-      <header className="mx-4 flex shrink-0 items-start gap-3 border-b border-divider pb-3 pt-1">
-        <span className="mt-0.5 flex shrink-0 items-center gap-1.5">
+      <header className="mx-4 flex shrink-0 items-start gap-3 border-b border-divider pb-2.5 pt-3">
+        <span className="mt-1 flex shrink-0 items-center gap-1.5">
           <Avatar bot={from} size={24} />
           <ArrowRight className="size-3.5 text-caption" aria-hidden />
           <Avatar bot={to} size={24} />
@@ -73,14 +73,15 @@ export function ExchangeView({ exchangeId, rowStatus, onClose, bar }: { exchange
           </h2>
           <p className="text-[12px] leading-[18px] text-caption">{exchange ? exchangeMeta(exchange) : (problem ?? "Loading")}</p>
         </div>
-        <IconButton label="Close the exchange" onClick={onClose}>
+        {/* The x lines up with the panel's right edge, as WF6 draws it. */}
+        <IconButton label="Close the exchange" onClick={onClose} className="-mr-2 -mt-0.5">
           <X aria-hidden />
         </IconButton>
       </header>
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
-        <ol className="flex flex-col gap-2">
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-3 pt-4">
+        <ol className="flex flex-col gap-3">
           {shown.map((message, index) => (
-            <li key={message.id} className="flex max-w-[400px] flex-col items-start gap-2">
+            <li key={message.id} className="flex max-w-[400px] flex-col items-start gap-3">
               {message.author !== "system" && message.author !== shown[index - 1]?.author && <AuthorRow id={message.author} bots={bots} />}
               <MessageView message={message} bot={undefined} bots={bots} conversationId={exchangeId} />
             </li>
@@ -140,7 +141,7 @@ function ExchangeComposer({ bots }: { bots: Bot[] }) {
           </Link>
         </p>
       )}
-      <div className="flex items-center gap-2 rounded-[22px] border border-composer-stroke bg-composer py-[5px] pl-2 pr-[5px]">
+      <div className="flex items-center gap-2 rounded-[22px] border border-composer-stroke bg-composer py-[5px] pl-2 pr-[5px] shadow-composer">
         {bots.map((bot) => (
           <span key={bot.id} className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full bg-pill px-2.5 text-[12px] text-text">
             <BotAvatar color={bot.color} shape={bot.shape} size={18} />@{bot.name}
