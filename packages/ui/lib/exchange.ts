@@ -1,4 +1,4 @@
-import type { Bot, Exchange, Message } from "@tjommie/protocol";
+import { ExchangeHandoffData, type Bot, type Exchange, type Message } from "@tjommie/protocol";
 import { stamp } from "./format";
 import { botName } from "./labels";
 
@@ -27,4 +27,14 @@ export function exchangeCaption(exchange: Exchange, messages: Message[], bots: P
   const files = messages.filter((message) => message.kind === "file").length;
   if (files === 0) return `Sent back to ${from}.`;
   return `Sent back to ${from}. ${files === 1 ? "The file is" : "The files are"} in ${from}'s inbox.`;
+}
+
+// An exchange's status on a chat's handoff row. The daemon updates the row when the exchange is answered or fails,
+// after the exchange's own last message, so an open exchange view fetches the exchange again when this changes.
+export function handoffStatus(messages: Message[], exchangeId: string): Exchange["status"] | undefined {
+  for (const message of messages) {
+    const row = message.kind === "handoff" ? ExchangeHandoffData.safeParse(message.data) : null;
+    if (row?.success && row.data.exchangeId === exchangeId) return row.data.status;
+  }
+  return undefined;
 }

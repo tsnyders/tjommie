@@ -1,10 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { RotateCcw } from "lucide-react";
 import type { Bot, Message } from "@tjommie/protocol";
 import { botHistory, loadConversation, loadOlder, retryConversation } from "@/lib/connection";
+import { handoffStatus } from "@/lib/exchange";
 import { AUTONOMY_HINT } from "@/lib/labels";
 import { useApp } from "@/lib/store";
 import { BotAvatar } from "../bot-avatar";
@@ -32,6 +33,8 @@ export function ChatScreen({ botId }: { botId: string }) {
   // This screen renders only in the window, never in the static build, so localStorage is there.
   const [panel, setPanel] = useState(() => localStorage.getItem(PANEL_KEY) !== "closed");
   const [exchangeId, setExchangeId] = useState<string | null>(null);
+  const section = useRef<HTMLElement>(null);
+  const panelButton = useRef<HTMLButtonElement>(null);
 
   // Loads the newest page when the chat opens, and again when a new connection clears it.
   useEffect(() => {
@@ -58,11 +61,18 @@ export function ChatScreen({ botId }: { botId: string }) {
     if (exchangeId) setExchangeId(null);
     else showPanel(!panel);
   };
+  // The view's own x and >> go with it, so focus goes back to the row that opened the exchange, or to the panel
+  // button if that row is gone. It doesn't scroll there: the chat may have moved on meanwhile.
+  const closeExchange = (id: string): void => {
+    const row = section.current?.querySelector<HTMLElement>(`[data-exchange="${CSS.escape(id)}"]`);
+    setExchangeId(null);
+    (row ?? panelButton.current)?.focus({ preventScroll: true });
+  };
   const settings = `/bots/settings/?bot=${encodeURIComponent(bot.id)}`;
   return (
     <div className="flex min-h-0 flex-1">
-      <section aria-label={`Chat with ${bot.name}`} className="flex min-w-0 flex-1 flex-col">
-        <ChatHeader bot={bot} panelOpen={panel || exchangeId !== null} onTogglePanel={togglePanel} />
+      <section ref={section} aria-label={`Chat with ${bot.name}`} className="flex min-w-0 flex-1 flex-col">
+        <ChatHeader bot={bot} panelOpen={panel || exchangeId !== null} onTogglePanel={togglePanel} panelButton={panelButton} />
         {bot.state === "needs_setup" && <SetupBanner bot={bot} />}
         {conversation?.status === "failed" ? (
           <FailedChat onRetry={() => void retryConversation(botId, botHistory(botId))} />
@@ -79,8 +89,9 @@ export function ChatScreen({ botId }: { botId: string }) {
         <ExchangeView
           key={exchangeId}
           exchangeId={exchangeId}
-          onClose={() => setExchangeId(null)}
-          bar={<PanelBar settingsHref={settings} settingsLabel="Bot settings" hideLabel="Hide the panel" onHide={() => setExchangeId(null)} />}
+          rowStatus={handoffStatus(messages, exchangeId)}
+          onClose={() => closeExchange(exchangeId)}
+          bar={<PanelBar settingsHref={settings} settingsLabel="Bot settings" hideLabel="Hide the panel" onHide={() => closeExchange(exchangeId)} />}
         />
       ) : (
         panel && <BotPanel bot={bot} messages={messages} onHide={() => showPanel(false)} />
