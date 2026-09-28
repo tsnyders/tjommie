@@ -63,6 +63,13 @@ describe("uiFile", () => {
     expect(uiFile(ui, "app://evil/chat/")).toBeNull();
     expect(uiFile(ui, "https://tjommie/chat/")).toBeNull();
   });
+
+  it("rejects encoded traversal and invalid paths in the file lookup branch", () => {
+    expect(uiFile(ui, "app://tjommie/..%2Fsecret.txt")).toBeNull();
+    expect(uiFile(ui, "app://tjommie/%252e%252e/secret.txt")).toBeNull();
+    expect(uiFile(ui, "app://tjommie/%00.txt")).toBeNull();
+    expect(uiFile(ui, "app://tjommie/../secret.txt")).toBeNull();
+  });
 });
 
 describe("navigationFor", () => {
