@@ -19,13 +19,14 @@ type Handlers = { onSignIn: () => void; onCancel: () => void; onPrepare: () => v
 export function ProviderCards() {
   const setup = useApp((state) => state.setup);
   const [signing, setSigning] = useState<{ provider: Provider; since: ProviderSetup | undefined } | null>(null);
+  const [pending, setPending] = useState<Provider[]>([]); // setup.signIn calls still waiting for the daemon
   const [preparing, setPreparing] = useState(false);
   const [checking, setChecking] = useState(false);
   const [problem, setProblem] = useState<{ provider: Provider; text: string } | null>(null);
   const setupFor = (provider: Provider): ProviderSetup | undefined => setup?.find((entry) => entry.provider === provider);
 
   async function run(provider: Provider, action: () => Promise<unknown>): Promise<boolean> {
-    setProblem(null);
+    setProblem((current) => (current?.provider === provider ? null : current));
     try {
       await action();
       return true;
@@ -35,9 +36,14 @@ export function ProviderCards() {
     }
   }
 
+  // The daemon can take seconds to answer (Codex starts its app server first). Until it does, Sign in and "Use a
+  // different account" stay disabled, so a second click can't open a second sign-in.
   async function signIn(provider: Provider): Promise<void> {
     const since = setupFor(provider);
-    if (await run(provider, () => request("setup.signIn", { provider }))) setSigning({ provider, since });
+    setPending((list) => [...list, provider]);
+    const ok = await run(provider, () => request("setup.signIn", { provider }));
+    setPending((list) => list.filter((entry) => entry !== provider));
+    if (ok) setSigning({ provider, since });
   }
 
   async function prepare(): Promise<void> {
@@ -60,7 +66,7 @@ export function ProviderCards() {
         // Signing in lasts until the daemon reports this provider again: it sends setup.changed when sign-in ends.
         const signingIn = signing?.provider === provider && entry === signing.since;
         const view = cardView(entry, { signingIn, preparing: provider === "codex" && preparing });
-        const { body, actions } = content(view, provider === "claude", checking, {
+        const { body, actions } = content(view, provider === "claude", checking, pending.includes(provider), {
           onSignIn: () => void signIn(provider),
           onCancel: () => setSigning(null),
           onPrepare: () => void prepare(),
@@ -104,7 +110,7 @@ function Line({ icon, className, children }: { icon: ReactNode; className?: stri
 const spinner = <Loader className="size-4 shrink-0 animate-spin text-icon" aria-hidden />;
 const helper = "text-[13px] leading-[18px] text-secondary";
 
-function content(view: CardView, claude: boolean, busy: boolean, on: Handlers): { body: ReactNode; actions: ReactNode } {
+function content(view: CardView, claude: boolean, busy: boolean, requesting: boolean, on: Handlers): { body: ReactNode; actions: ReactNode } {
   const checkAgain = (
     <Pill disabled={busy} onClick={on.onCheck}>
       Check again
@@ -136,7 +142,7 @@ function content(view: CardView, claude: boolean, busy: boolean, on: Handlers): 
       return {
         body: <p className={helper}>{claude ? "Opens Claude's sign-in in a new window." : "Opens OpenAI's sign-in page in your browser."}</p>,
         actions: (
-          <Pill primary onClick={on.onSignIn}>
+          <Pill primary disabled={requesting} onClick={on.onSignIn}>
             {claude ? "Sign in to Claude" : "Sign in to Codex"}
           </Pill>
         ),
@@ -184,7 +190,7 @@ function content(view: CardView, claude: boolean, busy: boolean, on: Handlers): 
               </Pill>
             )}
             {view.sandbox === "unavailable" && checkAgain}
-            <button type="button" onClick={on.onSignIn} className="text-[14px] text-accent hover:underline">
+            <button type="button" disabled={requesting} onClick={on.onSignIn} className="text-[14px] text-accent enabled:hover:underline disabled:opacity-50">
               Use a different account
             </button>
           </>

@@ -1,6 +1,6 @@
 import type { ProviderSetup } from "@tjommie/protocol";
 import { describe, expect, it } from "vitest";
-import { cardView, planLabel } from "./setup";
+import { cardView, failedSetup, planLabel } from "./setup";
 
 type Claude = Extract<ProviderSetup, { provider: "claude" }>;
 type Codex = Extract<ProviderSetup, { provider: "codex" }>;
@@ -27,5 +27,11 @@ describe("cardView", () => {
     expect(cardView(codex({ signedIn: true, sandbox: "ready" }), quiet)).toMatchObject({ sandbox: "ready" });
     expect(planLabel("max")).toBe("Max plan");
     expect(planLabel(null)).toBeNull();
+  });
+
+  it("shows a failed setup check on both cards, with Check again", () => {
+    const entries = failedSetup("The check failed");
+    expect(entries.map((entry) => entry.provider)).toEqual(["claude", "codex"]);
+    for (const entry of entries) expect(cardView(entry, quiet)).toEqual({ kind: "problem", reason: "The check failed" });
   });
 });

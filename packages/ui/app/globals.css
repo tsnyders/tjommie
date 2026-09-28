@@ -115,6 +115,7 @@
   --color-highlight: var(--highlight);
   --color-input-stroke: var(--input-stroke);
   --color-disabled: var(--disabled);
+  --color-code: var(--code);
   --color-user-bubble: var(--user-bubble);
   --color-user-text: var(--user-text);
   --color-text: var(--text);

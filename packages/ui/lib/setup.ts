@@ -30,5 +30,15 @@ export function cardView(setup: ProviderSetup | undefined, local: { signingIn: b
   return { kind: "signed_out" };
 }
 
+// Both providers' entries when the setup check itself fails, so each card shows the reason and Check again
+// instead of "Checking" forever.
+export function failedSetup(reason: string): ProviderSetup[] {
+  const failed = { installed: true, version: null, signedIn: false, account: null, plan: null, error: reason };
+  return [
+    { provider: "claude", ...failed },
+    { provider: "codex", ...failed, sandbox: "unavailable" },
+  ];
+}
+
 // "Max plan", from the CLI's plan name.
 export const planLabel = (plan: string | null): string | null => (plan ? `${plan.slice(0, 1).toUpperCase()}${plan.slice(1)} plan` : null);

@@ -1,6 +1,8 @@
 import { connect, type Client, type ClientEvent } from "@tjommie/client";
 import type { Message, MethodName, ParamsIn, Result } from "@tjommie/protocol";
 import { desktop, type DesktopConnection } from "./desktop";
+import { errorText } from "./labels";
+import { failedSetup } from "./setup";
 import { addOlder, applyEvent, connected, finishLoading, startLoading } from "./state";
 import { getState, update } from "./store";
 
@@ -97,12 +99,15 @@ async function attempt(connection: DesktopConnection): Promise<void> {
     lost(connection, error);
     return;
   }
-  // setup.status runs both CLIs' checks, so it's asked once per connection and never polled.
+  // setup.status runs both CLIs' checks, so it's asked once per connection and never polled. If the check
+  // fails, both setup cards say why and offer Check again.
   next.call("setup.status", {}).then(
     (setup) => {
       if (client === next) update((state) => ({ ...state, setup }));
     },
-    () => {},
+    (error: unknown) => {
+      if (client === next) update((state) => ({ ...state, setup: failedSetup(errorText(error)) }));
+    },
   );
   void next.disconnected.then((error) => {
     if (client === next) lost(connection, error);
