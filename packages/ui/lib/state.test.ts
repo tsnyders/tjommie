@@ -1,5 +1,5 @@
 import type { ClientEvent } from "@tjommie/client";
-import type { Bot, Message, Routine } from "@tjommie/protocol";
+import type { Bot, Message, Routine, RoutineRun } from "@tjommie/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { loadConversation } from "./connection";
 import { addOlder, applyEvent, connected, finishLoading, initialState, startLoading, type AppState } from "./state";
@@ -47,6 +47,11 @@ const routine = (id: string, botId: string): Routine => ({
   enabled: true,
   nextRunAt: null,
   createdAt: "2026-09-27T08:00:00.000Z",
+});
+const run = (id: string, routineId: string, status: RoutineRun["status"]): ClientEvent => ({
+  type: "event",
+  event: "routine.run",
+  data: { id, botId: "b1", routineId, dueAt: "2026-09-27T08:48:00.000Z", startedAt: null, endedAt: null, status, note: null },
 });
 const added = (data: Message): ClientEvent => ({ type: "event", event: "message.added", data });
 const updated = (data: Message): ClientEvent => ({ type: "event", event: "message.updated", data });
@@ -105,6 +110,17 @@ describe("app state", () => {
     state = connected(state, { bots: [], settings: { chainLimit: 5 }, routines: [] });
     expect(state.conversations).toEqual({});
     expect(state.connection).toEqual({ status: "ready" });
+  });
+
+  it("keeps each routine's newest run event, so an open routine editor can fetch its runs again", () => {
+    let state = applyEvent(initialState, run("u1", "r1", "running"));
+    const running = state.latestRuns.r1;
+    expect(running).toMatchObject({ id: "u1", status: "running" });
+    state = applyEvent(state, run("u2", "r2", "queued"));
+    expect(state.latestRuns.r1).toBe(running); // another routine's run leaves this one alone
+    state = applyEvent(state, run("u1", "r1", "done"));
+    expect(state.latestRuns.r1).toMatchObject({ id: "u1", status: "done" });
+    expect(connected(state, { bots: [], settings: { chainLimit: 5 }, routines: [] }).latestRuns).toEqual({});
   });
 
   it("keeps a failed history load until a new connection clears it", async () => {

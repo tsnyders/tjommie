@@ -1,5 +1,5 @@
 import type { ClientEvent } from "@tjommie/client";
-import type { Bot, Message, ProviderSetup, Routine, Settings } from "@tjommie/protocol";
+import type { Bot, Message, ProviderSetup, Routine, RoutineRun, Settings } from "@tjommie/protocol";
 
 export type MessageEvent = Extract<ClientEvent, { event: "message.added" | "message.updated" | "message.delta" }>;
 
@@ -24,10 +24,11 @@ export type AppState = {
   setup: ProviderSetup[] | null;
   settings: Settings | null;
   routines: Routine[];
+  latestRuns: Record<string, RoutineRun>; // each routine's newest routine.run event, by routine id
   conversations: Record<string, Conversation>;
 };
 
-export const initialState: AppState = { connection: { status: "connecting" }, bots: [], setup: null, settings: null, routines: [], conversations: {} };
+export const initialState: AppState = { connection: { status: "connecting" }, bots: [], setup: null, settings: null, routines: [], latestRuns: {}, conversations: {} };
 
 type Page = { messages: Message[]; hasMore: boolean };
 
@@ -73,6 +74,8 @@ export function applyEvent(state: AppState, event: ClientEvent): AppState {
       return { ...state, routines: upsert(state.routines, event.data) };
     case "routine.deleted":
       return { ...state, routines: state.routines.filter((routine) => routine.id !== event.data.id) };
+    case "routine.run":
+      return { ...state, latestRuns: { ...state.latestRuns, [event.data.routineId]: event.data } };
     case "message.added":
     case "message.updated":
     case "message.delta": {
@@ -123,6 +126,7 @@ export function connected(state: AppState, snapshot: { bots: Bot[]; settings: Se
     bots: [...snapshot.bots].sort(byCreated),
     settings: snapshot.settings,
     routines: [...snapshot.routines].sort(byCreated),
+    latestRuns: {},
     conversations: {},
   };
 }

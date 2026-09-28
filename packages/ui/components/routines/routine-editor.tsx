@@ -8,6 +8,7 @@ import { request } from "@/lib/connection";
 import { timesLabel } from "@/lib/format";
 import { errorText } from "@/lib/labels";
 import { addTime, routineProblem, runLine, stopAfterOptions, toggleDay, WEEK, zoneLine, type RunLine } from "@/lib/routine-form";
+import { useApp } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { FIELD, Label, Segmented, Switch } from "../controls";
 import { Dialog } from "../dialog";
@@ -43,11 +44,24 @@ export function RoutineEditor({ title, initial, timeZone, runsFor, onClose, onSa
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const nameField = useRef<HTMLInputElement>(null);
+  const latestRun = useApp((state) => (runsFor ? state.latestRuns[runsFor] : undefined));
 
+  // Recent runs load when the editor opens, and again each time the daemon reports a run of this routine.
   useEffect(() => {
     if (!runsFor) return;
-    request("routines.runs", { routineId: runsFor }).then(setRuns, () => setRuns("failed"));
-  }, [runsFor]);
+    let live = true;
+    request("routines.runs", { routineId: runsFor }).then(
+      (list) => {
+        if (live) setRuns(list);
+      },
+      () => {
+        if (live) setRuns("failed");
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, [runsFor, latestRun]);
 
   async function act(action: () => Promise<void>): Promise<void> {
     setBusy(true);

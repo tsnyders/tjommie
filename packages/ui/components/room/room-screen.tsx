@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { PanelRight, RotateCcw, Users } from "lucide-react";
+import { PanelRight, Users } from "lucide-react";
 import { TEAM_ROOM_ID, type Message } from "@tjommie/protocol";
 import { loadConversation, loadOlder, retryConversation, roomHistory } from "@/lib/connection";
 import { useApp } from "@/lib/store";
@@ -9,9 +9,9 @@ import { cn } from "@/lib/utils";
 import { MessageList } from "../chat/message-list";
 import { MessageView } from "../chat/message-view";
 import { ExchangeView } from "../exchange/exchange-view";
+import { FailedLoad } from "../failed-load";
 import { IconButton } from "../icon-button";
 import { PanelBar } from "../panel-bar";
-import { Pill } from "../pill";
 import { MembersPanel } from "./members-panel";
 import { RoomComposer } from "./room-composer";
 import { RoomPost } from "./room-post";
@@ -91,7 +91,7 @@ export function RoomScreen() {
           </div>
         </header>
         {conversation?.status === "failed" ? (
-          <FailedRoom onRetry={() => void retryConversation(TEAM_ROOM_ID, roomHistory)} />
+          <FailedLoad text="Couldn't load the Team room." onRetry={() => void retryConversation(TEAM_ROOM_ID, roomHistory)} />
         ) : !loaded ? (
           <div className="flex-1" />
         ) : loaded.messages.length === 0 ? (
@@ -105,26 +105,13 @@ export function RoomScreen() {
         <ExchangeView
           key={exchangeId}
           exchangeId={exchangeId}
-          rowStatus={exchangeKey}
+          refreshKey={exchangeKey}
           onClose={closeExchange}
           bar={<PanelBar settingsHref="/settings/?section=bots" settingsLabel="Bots settings" hideLabel="Hide the panel" onHide={closeExchange} />}
         />
       ) : (
         panel && <MembersPanel onHide={() => showPanel(false)} />
       )}
-    </div>
-  );
-}
-
-// The history didn't load, as in a bot's chat. A new connection also loads it again.
-function FailedRoom({ onRetry }: { onRetry: () => void }) {
-  return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-3 px-8 text-center">
-      <p className="text-[14px] leading-[21px] text-body">Couldn&apos;t load the Team room.</p>
-      <Pill onClick={onRetry}>
-        <RotateCcw className="size-3.5" aria-hidden />
-        Retry
-      </Pill>
     </div>
   );
 }

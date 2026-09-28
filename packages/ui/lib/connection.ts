@@ -1,4 +1,4 @@
-import { connect, type Client, type ClientEvent } from "@tjommie/client";
+import { ClientConnectionError, connect, type Client, type ClientEvent } from "@tjommie/client";
 import type { Message, MethodName, ParamsIn, Result } from "@tjommie/protocol";
 import { desktop, type DesktopConnection } from "./desktop";
 import { errorText } from "./labels";
@@ -7,9 +7,11 @@ import { addOlder, applyEvent, connected, finishLoading, forgetConversation, sta
 import { getState, update } from "./store";
 
 const PAGE = 50;
+const STARTING_TRIES = 3; // failed tries before "Starting Tjommie" says why it can't connect
 let client: Client | null = null;
 let latest: DesktopConnection | null = null;
 let retry: ReturnType<typeof setTimeout> | undefined;
+let failures = 0; // the latest connection's failed tries in a row
 let started = false;
 
 type Page = { messages: Message[]; hasMore: boolean };
@@ -58,6 +60,7 @@ export function restartDaemon(): void {
 function open(connection: DesktopConnection): void {
   if (latest?.token === connection.token) return; // already connecting with this one
   latest = connection;
+  failures = 0;
   void attempt(connection);
 }
 
@@ -65,6 +68,9 @@ async function attempt(connection: DesktopConnection): Promise<void> {
   clearTimeout(retry);
   const previous = client;
   client = null;
+  // A new connection is replacing one that still looked up (the daemon restarted): until it opens, calls fail as
+  // they do while reconnecting, so the pill says so.
+  if (previous) update((state) => (state.connection.status === "ready" ? { ...state, connection: { status: "reconnecting" } } : state));
   await previous?.close().catch(() => {});
   let next: Client;
   try {
@@ -93,6 +99,7 @@ async function attempt(connection: DesktopConnection): Promise<void> {
     const pending = early;
     early = null;
     client = next;
+    failures = 0;
     update((state) => pending.reduce((current, event) => applyEvent(current, event), connected(state, { bots, settings, routines })));
   } catch (error) {
     void next.close();
@@ -121,7 +128,15 @@ function lost(connection: DesktopConnection, error: unknown): void {
     update((state) => ({ ...state, connection: { status: "update" } }));
     return;
   }
-  update((state) => (state.connection.status === "connecting" ? state : { ...state, connection: { status: "reconnecting" } }));
+  failures += 1;
+  update((state) => {
+    if (state.connection.status === "ready") return { ...state, connection: { status: "reconnecting" } };
+    if (state.connection.status === "reconnecting" || failures < STARTING_TRIES) return state;
+    // Still starting (or after Try again): say why instead of spinning. The tries go on, so a daemon that recovers
+    // connects on its own.
+    const reason = error instanceof ClientConnectionError ? "Tjommie couldn't reach its background service." : errorText(error);
+    return { ...state, connection: { status: "failed", reason } };
+  });
   // If the daemon restarts, the desktop app sends a new connection. Until then, keep trying this one in
   // case only the socket dropped.
   retry = setTimeout(() => {
@@ -172,6 +187,11 @@ export async function loadConversation(conversationId: string, fetchPage: (befor
 export function retryConversation(conversationId: string, fetchPage: (before?: string) => Promise<Page>): Promise<void> {
   update((state) => forgetConversation(state, conversationId));
   return loadConversation(conversationId, fetchPage);
+}
+
+// A closed view's conversation (an exchange) is forgotten, so it stops following events. It loads again if reopened.
+export function closeConversation(conversationId: string): void {
+  update((state) => forgetConversation(state, conversationId));
 }
 
 // Loads the page before the oldest loaded message.

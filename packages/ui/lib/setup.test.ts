@@ -1,6 +1,6 @@
 import type { ProviderSetup } from "@tjommie/protocol";
 import { describe, expect, it } from "vitest";
-import { cardView, failedSetup, planLabel } from "./setup";
+import { cardView, failedSetup, planLabel, sameSignIn } from "./setup";
 
 type Claude = Extract<ProviderSetup, { provider: "claude" }>;
 type Codex = Extract<ProviderSetup, { provider: "codex" }>;
@@ -27,6 +27,16 @@ describe("cardView", () => {
     expect(cardView(codex({ signedIn: true, sandbox: "ready" }), quiet)).toMatchObject({ sandbox: "ready" });
     expect(planLabel("max")).toBe("Max plan");
     expect(planLabel(null)).toBeNull();
+  });
+
+  it("keeps a sign-in going through checks that report the same sign-in", () => {
+    const signedOut = claude();
+    expect(sameSignIn({ ...signedOut, version: "2.1.281" }, signedOut)).toBe(true); // a new check, a new object
+    expect(sameSignIn(failedSetup("The check failed")[0], signedOut)).toBe(true);
+    expect(sameSignIn(claude({ signedIn: true, account: "tyrel.jobs@gmail.com" }), signedOut)).toBe(false);
+    const signedIn = codex({ signedIn: true, account: "tyrel.jobs@gmail.com" });
+    expect(sameSignIn({ ...signedIn, sandbox: "ready" }, signedIn)).toBe(true);
+    expect(sameSignIn({ ...signedIn, account: "work@example.com" }, signedIn)).toBe(false);
   });
 
   it("shows a failed setup check on both cards, with Check again", () => {

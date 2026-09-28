@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { botHistory, loadConversation, request, retryConversation, roomHistory } from "./connection";
-import { initialState } from "./state";
+import { botHistory, closeConversation, loadConversation, request, retryConversation, roomHistory } from "./connection";
+import { applyEvent, initialState } from "./state";
 import { getState, update } from "./store";
 
 describe("connection", () => {
@@ -22,6 +22,20 @@ describe("connection", () => {
     expect(getState().conversations.b1.status).toBe("failed");
     await retryConversation("b1", fetchPage);
     expect(getState().conversations.b1).toMatchObject({ status: "ready", hasMore: true });
+    expect(fetchPage).toHaveBeenCalledTimes(2);
+    update(() => initialState);
+  });
+
+  it("forgets a closed exchange, so its messages stop arriving and a reopen loads it again", async () => {
+    update(() => initialState);
+    const fetchPage = vi.fn(async () => ({ messages: [], hasMore: false }));
+    await loadConversation("x1", fetchPage);
+    closeConversation("x1");
+    expect(getState().conversations.x1).toBeUndefined();
+    const reply = { id: "m1", conversationId: "x1", author: "b2", kind: "text" as const, body: "MANGO", data: null, status: "done" as const, createdAt: "2026-09-27T09:00:00.000Z" };
+    update((state) => applyEvent(state, { type: "event", event: "message.added", data: reply }));
+    expect(getState().conversations.x1).toBeUndefined();
+    await loadConversation("x1", fetchPage);
     expect(fetchPage).toHaveBeenCalledTimes(2);
     update(() => initialState);
   });

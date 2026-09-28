@@ -5,7 +5,7 @@ import { CircleCheck, Loader, Sparkles, Terminal } from "lucide-react";
 import type { Provider, ProviderSetup } from "@tjommie/protocol";
 import { request } from "@/lib/connection";
 import { errorText } from "@/lib/labels";
-import { cardView, planLabel, PROVIDER_NAME, type CardView } from "@/lib/setup";
+import { cardView, planLabel, PROVIDER_NAME, sameSignIn, type CardView } from "@/lib/setup";
 import { useApp } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { Pill } from "../pill";
@@ -24,6 +24,9 @@ export function ProviderCards() {
   const [checking, setChecking] = useState(false);
   const [problem, setProblem] = useState<{ provider: Provider; text: string } | null>(null);
   const setupFor = (provider: Provider): ProviderSetup | undefined => setup?.find((entry) => entry.provider === provider);
+  // Signing in lasts until the daemon reports the provider signed in, or signed in as another account. Once it has,
+  // the sign-in is over, even if a later report reads like the one before it (the account signed out elsewhere).
+  if (signing && !sameSignIn(setupFor(signing.provider), signing.since)) setSigning(null);
 
   async function run(provider: Provider, action: () => Promise<unknown>): Promise<boolean> {
     setProblem((current) => (current?.provider === provider ? null : current));
@@ -63,9 +66,7 @@ export function ProviderCards() {
     <div className="grid grid-cols-[repeat(auto-fit,minmax(300px,1fr))] gap-5">
       {PROVIDERS.map((provider) => {
         const entry = setupFor(provider);
-        // Signing in lasts until the daemon reports this provider again: it sends setup.changed when sign-in ends.
-        const signingIn = signing?.provider === provider && entry === signing.since;
-        const view = cardView(entry, { signingIn, preparing: provider === "codex" && preparing });
+        const view = cardView(entry, { signingIn: signing?.provider === provider, preparing: provider === "codex" && preparing });
         const { body, actions } = content(view, provider === "claude", checking, pending.includes(provider), {
           onSignIn: () => void signIn(provider),
           onCancel: () => setSigning(null),

@@ -88,11 +88,14 @@ function AnsweredApproval({ summary, data }: { summary: string; data: ApprovalDa
           : decision === "once"
             ? "Allowed once"
             : "Allowed";
+  // A routine card's summary is the daemon's proposal ("Add a routine: Morning digest, ..."); once answered, the
+  // label says what happened to it.
+  const subject = data.kind === "routine" ? summary.replace(/^Add a routine: /, "") : summary;
   return (
     <div className="inline-flex max-w-full items-center gap-2 rounded-[10px] border border-divider bg-canvas px-3 py-2 text-[13px] leading-[18px] text-secondary">
       {allowed ? <Check className="size-3.5 shrink-0 text-working" aria-hidden /> : <X className="size-3.5 shrink-0" aria-hidden />}
       <span className="min-w-0 truncate">
-        {label}: {summary}
+        {label}: {subject}
       </span>
     </div>
   );
