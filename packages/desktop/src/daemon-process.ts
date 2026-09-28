@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 
 export type DaemonConnection = { port: number; token: string };
@@ -65,13 +65,26 @@ export function startDaemonProcess(
   child.stdin.on("error", () => {}); // An early daemon exit is reported through exited below.
   child.stdin.write(`${token}\n`);
 
+  const killTree = (): void => {
+    if (child.exitCode !== null || child.signalCode !== null || child.pid === undefined) return;
+    if (process.platform === "win32") {
+      try {
+        execFileSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore" });
+      } catch {
+        // The process may have exited before taskkill runs.
+      }
+    } else {
+      child.kill("SIGKILL");
+    }
+  };
+
   const stop = async (): Promise<void> => {
     if (child.exitCode !== null || child.signalCode !== null) {
       await exited;
       return;
     }
     child.stdin.end();
-    const timer = setTimeout(() => child.kill(), STOP_GRACE_MS);
+    const timer = setTimeout(killTree, STOP_GRACE_MS);
     try {
       await exited;
     } finally {
@@ -85,7 +98,7 @@ export function startDaemonProcess(
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      child.kill();
+      killTree();
       reject(error);
     };
     const timer = setTimeout(() => fail(new Error("Tjommie's background service didn't start in time.")), timeoutMs);

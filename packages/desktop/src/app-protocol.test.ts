@@ -5,7 +5,9 @@ import { afterAll, describe, expect, it } from "vitest";
 import { navigationFor, uiFile } from "./app-protocol.ts";
 
 function exportFolder(): string {
-  const ui = mkdtempSync(join(tmpdir(), "tjommie ui ñ-"));
+  const root = mkdtempSync(join(tmpdir(), "tjommie ui ñ-"));
+  const ui = join(root, "ui");
+  mkdirSync(ui, { recursive: true });
   for (const file of [
     "index.html",
     "404.html",
@@ -28,7 +30,7 @@ function exportFolder(): string {
 
 describe("uiFile", () => {
   const ui = exportFolder();
-  afterAll(() => rmSync(ui, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
+  afterAll(() => rmSync(dirname(ui), { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
 
   it("maps pages, page data and assets to files in the static export", () => {
     expect(uiFile(ui, "app://tjommie/")).toBe(join(ui, "index.html"));
@@ -62,6 +64,11 @@ describe("uiFile", () => {
     expect(uiFile(ui, "app://tjommie/missing/")).toBeNull();
     expect(uiFile(ui, "app://evil/chat/")).toBeNull();
     expect(uiFile(ui, "https://tjommie/chat/")).toBeNull();
+  });
+
+  it("rejects encoded traversal to a sibling file outside the export", () => {
+    writeFileSync(join(dirname(ui), "secret.txt"), "outside the UI export");
+    expect(uiFile(ui, "app://tjommie/..%2Fsecret.txt")).toBeNull();
   });
 });
 
