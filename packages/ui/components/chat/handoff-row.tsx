@@ -12,7 +12,8 @@ function Avatar({ bot }: { bot: Bot | undefined }) {
 }
 
 // A one-line row for work with another bot (WF1, WF11). An exchange's row opens the exchange in the right panel,
-// and it's selected while that exchange is open (WF6). A Team room answer's row opens the room.
+// and it's selected while that exchange is open (WF6); the chat finds it by data-exchange to give it focus back
+// when the view closes. A Team room answer's row opens the room.
 export function HandoffRow({ body, data, bots, conversationId, onOpen, selected = false }: {
   body: string;
   data: HandoffData;
@@ -36,7 +37,13 @@ export function HandoffRow({ body, data, bots, conversationId, onOpen, selected 
   const fromName = from?.name ?? DELETED_BOT;
   const text = incoming ? `${fromName} asked: ${body}` : `${fromName} asked ${to?.name ?? DELETED_BOT}: ${body}`;
   return (
-    <button type="button" aria-pressed={selected} onClick={() => onOpen?.(data.exchangeId)} className={cn(ROW, selected && "border-selected bg-card")}>
+    <button
+      type="button"
+      data-exchange={data.exchangeId}
+      aria-pressed={selected}
+      onClick={() => onOpen?.(data.exchangeId)}
+      className={cn(ROW, selected && "border-selected bg-card")}
+    >
       <Avatar bot={from} />
       {!incoming && (
         <>

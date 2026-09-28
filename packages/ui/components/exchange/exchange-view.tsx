@@ -20,8 +20,10 @@ function Avatar({ bot, size }: { bot: Bot | undefined; size: number }) {
 }
 
 // The exchange view (WF6): who asked whom, the whole exchange, and a box that replies in the Team room with both
-// bots mentioned. It opens in the right panel, in place of the bot panel or the Team room's members.
-export function ExchangeView({ exchangeId, onClose, bar }: { exchangeId: string; onClose: () => void; bar: ReactNode }) {
+// bots mentioned. It opens in the right panel, in place of the bot panel or the Team room's members. rowStatus is
+// the exchange's status where it was opened from (a chat's handoff row), which the daemon updates when the
+// exchange is answered or fails.
+export function ExchangeView({ exchangeId, rowStatus, onClose, bar }: { exchangeId: string; rowStatus?: string; onClose: () => void; bar: ReactNode }) {
   const bots = useApp((state) => state.bots);
   const conversation = useApp((state) => state.conversations[exchangeId]);
   const ready = useApp((state) => state.connection.status === "ready");
@@ -34,8 +36,9 @@ export function ExchangeView({ exchangeId, onClose, bar }: { exchangeId: string;
     if (ready && !conversation) void loadConversation(exchangeId, exchangePage(exchangeId));
   }, [ready, conversation, exchangeId]);
 
-  // The header's status lives on the exchange, which has no event of its own, so it's fetched again whenever the
-  // exchange's messages move on.
+  // The header's status lives on the exchange, which has no event of its own. It's fetched again whenever the
+  // exchange's messages move on, and when rowStatus changes: the exchange is answered or fails at the end of the
+  // asked bot's turn, after its last message.
   useEffect(() => {
     let live = true;
     request("exchanges.get", { id: exchangeId }).then(
@@ -49,7 +52,7 @@ export function ExchangeView({ exchangeId, onClose, bar }: { exchangeId: string;
     return () => {
       live = false;
     };
-  }, [exchangeId, progress]);
+  }, [exchangeId, progress, rowStatus]);
 
   const from = exchange ? bots.find((bot) => bot.id === exchange.fromBotId) : undefined;
   const to = exchange ? bots.find((bot) => bot.id === exchange.toBotId) : undefined;
@@ -106,8 +109,9 @@ function ExchangeComposer({ bots }: { bots: Bot[] }) {
   const [busy, setBusy] = useState(false);
   const [posted, setPosted] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
+  const canSend = bots.length > 0 && text.trim() !== ""; // with both bots gone there's no one to mention
   async function send(): Promise<void> {
-    if (busy || !text.trim() || bots.length === 0) return;
+    if (busy || !canSend) return;
     setBusy(true);
     setProblem(null);
     try {
@@ -156,8 +160,8 @@ function ExchangeComposer({ bots }: { bots: Bot[] }) {
         <button
           type="submit"
           aria-label="Send"
-          disabled={busy || !text.trim()}
-          className={cn("flex size-8 shrink-0 items-center justify-center rounded-full", text.trim() ? "bg-user-bubble text-user-text" : "bg-disabled text-placeholder")}
+          disabled={busy || !canSend}
+          className={cn("flex size-8 shrink-0 items-center justify-center rounded-full", canSend ? "bg-user-bubble text-user-text" : "bg-disabled text-placeholder")}
         >
           <ArrowUp className="size-4" aria-hidden />
         </button>
