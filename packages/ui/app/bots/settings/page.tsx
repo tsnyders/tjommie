@@ -77,8 +77,9 @@ function BotSettings({ bot, bots }: { bot: Bot; bots: Bot[] }) {
         </div>
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="flex gap-10 pb-10 pl-[120px] pr-6 pt-2 max-xl:pl-10">
-          <div className="w-[640px] min-w-0 shrink">
+        {/* When the form and About this bot don't fit side by side, About moves under the form. 532 px holds the avatar tile and the color row. */}
+        <div className="flex flex-wrap justify-between gap-10 pb-10 pl-[120px] pr-6 pt-2 max-xl:pl-10">
+          <div className="w-[640px] min-w-[532px] shrink">
             <BotFormFields
               form={form}
               onChange={setForm}
@@ -95,14 +96,14 @@ function BotSettings({ bot, bots }: { bot: Bot; bots: Bot[] }) {
               }
             />
           </div>
-          <aside className="ml-auto w-[340px] shrink-0">
+          <aside className="w-[340px] shrink-0">
             <h2 className="text-[13px] font-semibold leading-[18px] text-label">About this bot</h2>
             <About bot={bot} />
           </aside>
         </div>
       </div>
       <footer className="flex h-16 shrink-0 items-center gap-2 border-t border-card-stroke px-6">
-        <button type="button" onClick={() => setDeleting(true)} className="mr-2 flex shrink-0 items-center gap-1.5 text-[14px] text-danger">
+        <button type="button" disabled={busy} onClick={() => setDeleting(true)} className="mr-2 flex shrink-0 items-center gap-1.5 text-[14px] text-danger disabled:opacity-50">
           <Trash2 className="size-4" aria-hidden />
           Delete bot
         </button>
@@ -155,14 +156,12 @@ function BotSettings({ bot, bots }: { bot: Bot; bots: Bot[] }) {
   );
 }
 
-// About this bot (WF8): when it was made, its home folder, and the start of its notes.md.
+// About this bot (WF8): when it was made, its home folder, and the start of its notes.md. A missing notes.md comes
+// back empty, so a failed call means the notes couldn't be read (or Tjommie isn't connected).
 function About({ bot }: { bot: Bot }) {
-  const [notes, setNotes] = useState<string | null>(null);
+  const [notes, setNotes] = useState<{ text: string } | "failed" | null>(null);
   useEffect(() => {
-    request("bots.notes", { id: bot.id }).then(
-      ({ text }) => setNotes(text),
-      () => setNotes(""),
-    );
+    request("bots.notes", { id: bot.id }).then(setNotes, () => setNotes("failed"));
   }, [bot.id]);
   return (
     <section className="mt-3 rounded-[14px] border border-card-stroke bg-card p-4">
@@ -175,7 +174,7 @@ function About({ bot }: { bot: Bot }) {
       </button>
       <p className="mt-3 text-[12px] leading-[18px] text-secondary">Notes</p>
       <pre className="mt-1.5 max-h-[160px] overflow-hidden whitespace-pre-wrap rounded-[10px] bg-canvas p-3 font-sans text-[12px] leading-[18px] text-body [overflow-wrap:anywhere]">
-        {notes === null ? "Loading" : notes.trim() || "No notes yet."}
+        {notes === null ? "Loading" : notes === "failed" ? "Couldn't read the notes." : notes.text.trim() || "No notes yet."}
       </pre>
       <button type="button" onClick={() => void desktop()?.openNotes(bot.homeFolder)} className="mt-3 text-[14px] text-accent hover:underline">
         Open notes.md
