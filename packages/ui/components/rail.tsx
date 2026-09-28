@@ -15,7 +15,7 @@ export function Rail() {
   const bots = useApp((state) => state.bots);
   const pathname = usePathname();
   const params = useSearchParams();
-  const openBot = pathname.startsWith("/chat") ? params.get("bot") : null;
+  const openBot = pathname.startsWith("/chat") || pathname.startsWith("/bots/settings") ? params.get("bot") : null;
   const [initial, setInitial] = useState("");
   useEffect(() => {
     void desktop()
@@ -27,13 +27,14 @@ export function Rail() {
       <RailLink href="/room/" label="Team room" selected={pathname.startsWith("/room")}>
         <TeamMark size={40} dimmed={bots.length === 0} />
       </RailLink>
-      <div className="mt-1.5 mb-[5px] h-px w-8 shrink-0 bg-divider" />
-      <div className="flex min-h-0 w-full flex-1 flex-col items-center overflow-y-auto">
+      <div className="mt-1.5 mb-[1px] h-px w-8 shrink-0 bg-divider" />
+      {/* The 4 px padding holds a focused bot's ring (2 px, 2 px out) inside the scrolling list; scroll-padding keeps it there when Tab scrolls. */}
+      <div className="flex min-h-0 w-full flex-1 flex-col items-center overflow-y-auto py-1 scroll-py-1">
         {bots.map((bot) => (
           <BotLink key={bot.id} bot={bot} selected={bot.id === openBot} />
         ))}
       </div>
-      <div className="mt-2 flex shrink-0 flex-col items-center">
+      <div className="mt-1 flex shrink-0 flex-col items-center">
         <RailLink href="/agents/" label="Agents" selected={pathname.startsWith("/agents")} compact>
           <LayoutGrid className="size-5 text-icon" aria-hidden />
         </RailLink>
