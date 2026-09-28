@@ -2,12 +2,10 @@
 
 import { useState } from "react";
 import { Plug } from "lucide-react";
-import type { Bot } from "@tjommie/protocol";
+import { SETUP_CODEX_SANDBOX_REASON, SETUP_SIGN_IN_PREFIX, type Bot } from "@tjommie/protocol";
 import { daemon } from "@/lib/connection";
 import { errorText } from "@/lib/labels";
 import { Pill } from "../pill";
-
-const SANDBOX = "Set up Codex's sandbox"; // the daemon's setupReason for a Codex bot at Own folder
 
 // The Needs setup banner (WF11): waiting-card colors, a plug, what's missing, and the fix when there is one.
 // When setup finishes, the daemon updates the bot and the banner goes away.
@@ -16,8 +14,8 @@ export function SetupBanner({ bot }: { bot: Bot }) {
   const [note, setNote] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const reason = bot.setupReason ?? "";
-  const signIn = reason.startsWith("Sign in to");
-  const sandbox = reason === SANDBOX;
+  const signIn = reason.startsWith(SETUP_SIGN_IN_PREFIX);
+  const sandbox = reason === SETUP_CODEX_SANDBOX_REASON;
   const provider = bot.provider === "claude" ? "Claude" : "Codex";
   const text = signIn ? `${provider} isn't signed in for Tjommie yet.` : sandbox ? "Codex's sandbox isn't set up yet. Windows asks for admin permission once." : reason;
 

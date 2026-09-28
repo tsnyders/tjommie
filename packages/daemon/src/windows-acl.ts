@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { lstatSync, readdirSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
-import type { Provider } from "@tjommie/protocol";
+import { SETUP_CODEX_SANDBOX_REASON, type Provider } from "@tjommie/protocol";
 import type { Paths } from "./paths.ts";
 
 export type BotHome = { id: string; homeFolder: string; provider: Provider };
@@ -245,13 +245,13 @@ function planTargets(paths: Paths, botHomes: BotHome[]): AclPlan {
 }
 
 function finish(plan: AclPlan, result: AclPassResult): Protection {
-  if (result.groupMissing) console.info("Codex data ACLs: CodexSandboxUsers group does not exist yet. Set up Codex's sandbox.");
+  if (result.groupMissing) console.info(`Codex data ACLs: CodexSandboxUsers group does not exist yet. ${SETUP_CODEX_SANDBOX_REASON}.`);
   for (const message of plan.expected) console.info(`Codex data ACLs: ${message}`);
   for (const message of plan.skipped) console.info(`Codex data ACLs: ${message}`);
   if (plan.setupMissing) console.info("Codex data ACLs: Codex setup marker is not present yet.");
   for (const message of [...plan.failures, ...result.failures]) console.error(`Codex data ACLs: ${message}`);
   if (plan.failures.length || result.failures.length || plan.expected.length) return { status: "check_failed", ready: false, reason: failureReason };
-  if (result.groupMissing || plan.setupMissing) return { status: "not_configured", ready: false, reason: "Set up Codex's sandbox" };
+  if (result.groupMissing || plan.setupMissing) return { status: "not_configured", ready: false, reason: SETUP_CODEX_SANDBOX_REASON };
   return { status: "ready", ready: true, reason: null };
 }
 
