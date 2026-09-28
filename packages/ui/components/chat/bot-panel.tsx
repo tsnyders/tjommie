@@ -1,17 +1,20 @@
 "use client";
 
-import Link from "next/link";
 import { useMemo, useState, type ReactNode } from "react";
-import { Check, ChevronsRight, Clock, Folder, Loader, Pause, Settings, Shield, Sparkles, X, type LucideIcon } from "lucide-react";
-import type { Bot, Message } from "@tjommie/protocol";
+import { Check, Folder, Loader, Shield, Sparkles, X, type LucideIcon } from "lucide-react";
+import type { Bot, Message, Routine } from "@tjommie/protocol";
 import { recentActivity } from "@/lib/activity";
-import { daemon } from "@/lib/connection";
+import { request } from "@/lib/connection";
 import { desktop } from "@/lib/desktop";
-import { clock, routineTitle, schedule } from "@/lib/format";
+import { clock } from "@/lib/format";
 import { AUTONOMY_LINE, errorText, modelLabel, stateLabel } from "@/lib/labels";
+import { draftFrom, EMPTY_ROUTINE, localZone } from "@/lib/routine-form";
+import { removeRoutine, saveRoutine } from "@/lib/routines";
 import { useApp } from "@/lib/store";
 import { BotAvatar } from "../bot-avatar";
-import { IconButton } from "../icon-button";
+import { PanelBar } from "../panel-bar";
+import { RoutineEditor } from "../routines/routine-editor";
+import { RoutineRows } from "../routines/routine-rows";
 
 // The right panel beside a bot's chat (WF1 Phase 1). 16 px between cards, 24 px above a section label.
 export function BotPanel({ bot, messages, onHide }: { bot: Bot; messages: Message[]; onHide: () => void }) {
@@ -20,39 +23,11 @@ export function BotPanel({ bot, messages, onHide }: { bot: Bot; messages: Messag
   const steps = useMemo(() => recentActivity(messages), [messages]);
   return (
     <aside aria-label={`About ${bot.name}`} className="flex w-[460px] shrink-0 flex-col border-l border-divider bg-canvas">
-      {/* Windows draws the caption buttons over this bar's right end. */}
-      <div className="drag flex h-11 shrink-0 items-center gap-1 px-3">
-        <Link
-          href={`/bots/settings/?bot=${encodeURIComponent(bot.id)}`}
-          aria-label="Bot settings"
-          title="Bot settings"
-          className="flex size-8 items-center justify-center rounded-[10px] text-icon hover:bg-pill hover:text-text"
-        >
-          <Settings className="size-4" aria-hidden />
-        </Link>
-        <IconButton label="Hide the bot panel" onClick={onHide}>
-          <ChevronsRight aria-hidden />
-        </IconButton>
-      </div>
+      <PanelBar settingsHref={`/bots/settings/?bot=${encodeURIComponent(bot.id)}`} settingsLabel="Bot settings" hideLabel="Hide the bot panel" onHide={onHide} />
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 pb-4">
         <Summary bot={bot} />
         {bot.browser && <BrowserCard bot={bot} />}
-        <SectionLabel>Routines</SectionLabel>
-        {routines.length === 0 ? (
-          <p className="text-[13px] leading-[18px] text-secondary">No routines yet.</p>
-        ) : (
-          <ul className="flex flex-col gap-3">
-            {routines.map((routine) => (
-              <li key={routine.id} className="flex items-start gap-2.5">
-                {routine.enabled ? <Clock className="mt-0.5 size-4 shrink-0 text-working" aria-hidden /> : <Pause className="mt-0.5 size-4 shrink-0 text-secondary" aria-hidden />}
-                <div className="min-w-0">
-                  <p className="truncate text-[13px] leading-[18px] text-title">{routineTitle(routine.name, routine.timeLimitMinutes)}</p>
-                  <p className="text-[12px] leading-[18px] text-secondary">{routine.enabled ? schedule(routine.days, routine.times) : "Paused"}</p>
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
+        <PanelRoutines bot={bot} routines={routines} />
         <SectionLabel>Recent activity</SectionLabel>
         {steps.length === 0 ? (
           <p className="text-[13px] leading-[18px] text-secondary">No recent activity.</p>
@@ -78,6 +53,35 @@ export function BotPanel({ bot, messages, onHide }: { bot: Bot; messages: Messag
   );
 }
 
+// Routines with Add (WF1 Phase 1). Rows and Add open the routine editor; saves go straight to the daemon.
+function PanelRoutines({ bot, routines }: { bot: Bot; routines: Routine[] }) {
+  const [editing, setEditing] = useState<Routine | "new" | null>(null);
+  const routine = editing === "new" ? null : editing;
+  return (
+    <>
+      <div className="mb-2 mt-6 flex items-center justify-between">
+        <h3 className="text-[13px] font-semibold leading-[18px] text-label">Routines</h3>
+        <button type="button" onClick={() => setEditing("new")} className="text-[13px] leading-[18px] text-accent hover:underline">
+          Add
+        </button>
+      </div>
+      <RoutineRows routines={routines.map((each) => ({ ...each, key: each.id }))} onOpen={(key) => setEditing(routines.find((each) => each.id === key) ?? null)} />
+      {editing && (
+        <RoutineEditor
+          key={routine?.id ?? "new"}
+          title={routine ? "Edit routine" : "New routine"}
+          initial={routine ? draftFrom(routine) : EMPTY_ROUTINE}
+          timeZone={routine?.timeZone ?? localZone()}
+          runsFor={routine?.id}
+          onClose={() => setEditing(null)}
+          onSave={(draft) => saveRoutine(bot.id, routine, draft)}
+          onDelete={routine ? () => removeRoutine(routine) : undefined}
+        />
+      )}
+    </>
+  );
+}
+
 function SectionLabel({ children }: { children: ReactNode }) {
   return <h3 className="mb-2 mt-6 text-[13px] font-semibold leading-[18px] text-label">{children}</h3>;
 }
@@ -92,9 +96,9 @@ function Row({ icon: Icon, children, action }: { icon: LucideIcon; children: Rea
   );
 }
 
-function OpenFolder({ path }: { path: string }) {
+function OpenFolder({ path, label }: { path: string; label: string }) {
   return (
-    <button type="button" onClick={() => void desktop()?.openFolder(path)} className="shrink-0 text-accent hover:underline">
+    <button type="button" aria-label={label} onClick={() => void desktop()?.openFolder(path)} className="shrink-0 text-accent hover:underline">
       Open
     </button>
   );
@@ -116,11 +120,11 @@ function Summary({ bot }: { bot: Bot }) {
       <div className="mt-3 flex flex-col gap-2 pl-[52px] text-[13px] leading-[18px] text-body">
         <Row icon={Sparkles}>{modelLabel(bot)}</Row>
         <Row icon={Shield}>{AUTONOMY_LINE[bot.autonomy]}</Row>
-        <Row icon={Folder} action={<OpenFolder path={bot.homeFolder} />}>
+        <Row icon={Folder} action={<OpenFolder path={bot.homeFolder} label="Open the home folder" />}>
           Home folder
         </Row>
         {bot.projectFolder && (
-          <Row icon={Folder} action={<OpenFolder path={bot.projectFolder} />}>
+          <Row icon={Folder} action={<OpenFolder path={bot.projectFolder} label="Open the project folder" />}>
             <span className="block truncate">Project folder: {bot.projectFolder}</span>
           </Row>
         )}
@@ -130,13 +134,17 @@ function Summary({ bot }: { bot: Bot }) {
 }
 
 function BrowserCard({ bot }: { bot: Bot }) {
+  const [showing, setShowing] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   async function show(): Promise<void> {
+    setShowing(true);
     setProblem(null);
     try {
-      await daemon().call("bots.showBrowser", { id: bot.id });
+      await request("bots.showBrowser", { id: bot.id });
     } catch (error) {
       setProblem(errorText(error));
+    } finally {
+      setShowing(false);
     }
   }
   return (
@@ -145,7 +153,7 @@ function BrowserCard({ bot }: { bot: Bot }) {
       <div className="min-w-0 flex-1">
         <div className="flex items-center justify-between gap-3">
           <h3 className="text-[13px] font-semibold leading-[18px] text-title">Browser</h3>
-          <button type="button" onClick={() => void show()} className="shrink-0 text-[13px] leading-[18px] text-accent hover:underline">
+          <button type="button" disabled={showing} onClick={() => void show()} className="shrink-0 text-[13px] leading-[18px] text-accent hover:underline disabled:opacity-50">
             Show window
           </button>
         </div>
