@@ -16,6 +16,7 @@ const repo = resolve(import.meta.dirname, "..", "..", "..");
 const electronPath = createRequire(import.meta.url)("electron") as string;
 
 type Bridge = { tjommie: { connection(): Promise<{ ok: true; port: number; token: string } | { ok: false; error: string }> } };
+type OwnedProcess = { image: string; path: string; started: string };
 
 let root: string | undefined;
 let userData: string | undefined;
@@ -23,11 +24,13 @@ let electronApp: ElectronApplication | undefined;
 let page: Page;
 let client: Client | undefined;
 let quit = false;
-const ownedPids = new Set<number>();
+let testStartedAt = 0;
+const ownedPids = new Map<number, OwnedProcess>();
 const next404s: string[] = [];
 let nextResponseCount = 0;
 
 beforeAll(async () => {
+  testStartedAt = Date.now();
   root = tempRoot();
   userData = mkdtempSync(join(tmpdir(), "tjommie-electron-"));
   execSync("npm run build", { cwd: repo, stdio: "inherit" }); // the static export the app serves
@@ -45,31 +48,32 @@ beforeAll(async () => {
       TJOMMIE_BROWSER_HEADLESS: "1",
     },
   });
-  const electronPid = electronApp.process().pid;
-  if (electronPid !== undefined) ownedPids.add(electronPid);
+  const electronPid = await electronApp.evaluate(() => process.pid);
+  rememberProcess(electronPid);
   page = await electronApp.firstWindow();
+  // This listener attaches after the first window, so the initial load's segment responses may be missed.
   page.on("response", (response) => {
+    if (!response.url().startsWith("app://tjommie/")) return;
     const url = new URL(response.url());
-    if (url.protocol === "app:" && url.hostname === "tjommie" && url.pathname.split("/").some((part) => part.startsWith("__next."))) {
+    if (url.pathname.split("/").some((part) => part.startsWith("__next."))) {
       nextResponseCount++;
       if (response.status() === 404) next404s.push(url.pathname);
     }
   });
   await page.getByRole("heading", { name: "Set up Tjommie" }).waitFor({ timeout: 120_000 });
   const { port, token } = await daemonConnection();
-  ownedPids.add(listeningPid(port));
+  rememberProcess(listeningPid(port));
   client = await connect(port, token);
 });
 
 afterAll(async () => {
   await client?.close().catch(() => {});
   if (electronApp && !quit) await electronApp.close().catch(() => {});
-  for (const pid of ownedPids) {
-    if (isRunning(pid)) {
-      try { execFileSync("taskkill", ["/PID", String(pid), "/T", "/F"]); }
-      catch { /* The process may have exited between the check and taskkill. */ }
-    }
-    expect(isRunning(pid)).toBe(false);
+  for (const [pid, identity] of ownedPids) {
+    if (!stillOwnsProcess(pid, identity)) continue;
+    try { execFileSync("taskkill", ["/PID", String(pid), "/T", "/F"]); }
+    catch { /* The process may have exited between the check and taskkill. */ }
+    await waitForOwnedProcessExit(pid);
   }
   for (const folder of [root, userData]) if (folder) await remove(folder);
 });
@@ -105,7 +109,7 @@ const claudeBot = (name: string, extra: Partial<BotInput> = {}): Promise<Bot> =>
 async function openChat(name: string): Promise<void> {
   await page.getByRole("link", { name: new RegExp(`^${name},`) }).click();
   await page.getByRole("heading", { level: 1, name }).waitFor();
-  await page.waitForLoadState("networkidle");
+  await page.getByRole("textbox", { name: `Message ${name}` }).waitFor();
   expect(next404s).toEqual([]);
 }
 
@@ -125,9 +129,41 @@ function listeningPid(port: number): number {
   return pid;
 }
 
-function isRunning(pid: number): boolean {
-  try { process.kill(pid, 0); return true; }
-  catch { return false; }
+function processIdentity(pid: number): OwnedProcess | undefined {
+  try {
+    const command = `$p = Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if ($p) { [pscustomobject]@{ Image = $p.ProcessName; Path = $p.Path; Started = $p.StartTime.ToUniversalTime().ToString('o') } | ConvertTo-Json -Compress }`;
+    const output = execFileSync("powershell.exe", ["-NoProfile", "-Command", command], { encoding: "utf8" }).trim();
+    if (!output) return undefined;
+    const value: unknown = JSON.parse(output);
+    if (typeof value !== "object" || value === null || !("Image" in value) || !("Path" in value) || !("Started" in value)) return undefined;
+    if (typeof value.Image !== "string" || typeof value.Path !== "string" || typeof value.Started !== "string") return undefined;
+    return { image: value.Image, path: value.Path, started: value.Started };
+  } catch {
+    return undefined;
+  }
+}
+
+function rememberProcess(pid: number): void {
+  const identity = processIdentity(pid);
+  const startedAt = identity ? Date.parse(identity.started) : NaN;
+  const imageAllowed = identity !== undefined && ["electron", "node"].includes(identity.image.toLowerCase());
+  const pathMatches = identity !== undefined && resolve(identity.path).toLowerCase() === resolve(electronPath).toLowerCase();
+  const startedAfterTest = Number.isFinite(startedAt) && startedAt >= testStartedAt;
+  if (!identity || !imageAllowed || !pathMatches || !startedAfterTest) {
+    throw new Error(`The test couldn't verify ownership of its process (found=${identity !== undefined}, image=${identity?.image ?? "none"}, pathMatches=${pathMatches}, startedAfterTest=${startedAfterTest}).`);
+  }
+  ownedPids.set(pid, identity);
+}
+
+function stillOwnsProcess(pid: number, identity: OwnedProcess): boolean {
+  const current = processIdentity(pid);
+  return current !== undefined && current.image === identity.image && current.path.toLowerCase() === identity.path.toLowerCase() && current.started === identity.started;
+}
+
+async function waitForOwnedProcessExit(pid: number): Promise<void> {
+  const identity = ownedPids.get(pid);
+  if (!identity) return;
+  await eventually(async () => stillOwnsProcess(pid, identity) ? undefined : true, 5_000);
 }
 
 function refused(port: number): Promise<boolean> {
@@ -207,15 +243,17 @@ describe("the desktop app with real bots", () => {
   it("reconnects after the daemon dies", async () => {
     const before = await daemonConnection();
     const pid = listeningPid(before.port);
-    ownedPids.add(pid);
+    rememberProcess(pid);
     execFileSync("taskkill", ["/PID", String(pid), "/T", "/F"]);
+    await waitForOwnedProcessExit(pid);
+    ownedPids.delete(pid);
     // The app starts a new daemon with a new token, and hands the UI the new connection.
     const after = await eventually(async () => {
       const next = await daemonConnection();
       return next.token === before.token ? undefined : next;
     });
     const nextPid = listeningPid(after.port);
-    ownedPids.add(nextPid);
+    rememberProcess(nextPid);
     expect(nextPid).not.toBe(pid);
     tokenAbsentFromLog(before.token);
     tokenAbsentFromLog(after.token);
@@ -232,6 +270,9 @@ describe("the desktop app with real bots", () => {
 
   it("quitting Tjommie stops its daemon", async () => {
     const { port, token } = await daemonConnection();
+    const daemonPid = listeningPid(port);
+    rememberProcess(daemonPid);
+    const electronPid = await runningApp().evaluate(() => process.pid);
     tokenAbsentFromLog(token);
     const closed = runningApp().waitForEvent("close");
     await runningApp()
@@ -240,6 +281,10 @@ describe("the desktop app with real bots", () => {
     await closed;
     quit = true;
     expect(await refused(port)).toBe(true);
+    await waitForOwnedProcessExit(daemonPid);
+    ownedPids.delete(daemonPid);
+    await waitForOwnedProcessExit(electronPid);
+    ownedPids.delete(electronPid);
     tokenAbsentFromLog(token);
     expect(next404s).toEqual([]);
   });
