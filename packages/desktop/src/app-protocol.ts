@@ -1,5 +1,5 @@
 import { existsSync, statSync } from "node:fs";
-import { extname, isAbsolute, join, normalize, relative } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, normalize, relative } from "node:path";
 
 export const DEV_ORIGIN = "http://localhost:3000";
 
@@ -19,7 +19,19 @@ export function uiFile(uiDir: string, url: string): string | null {
   const file = normalize(join(uiDir, path));
   const inside = relative(uiDir, file);
   if (inside.startsWith("..") || isAbsolute(inside)) return null;
-  return existsSync(file) && statSync(file).isFile() ? file : null;
+  if (existsSync(file)) return statSync(file).isFile() ? file : null;
+
+  // The client flattens segment paths with dots, but the Windows export keeps nested folders.
+  const parts = basename(file).split(".");
+  const segments = parts.slice(1, -1);
+  if (parts[0] !== "__next" || parts[parts.length - 1] !== "txt" || segments.length < 2) return null;
+  if (segments.some((segment) => !/^[A-Za-z0-9_!$@-]+$/.test(segment))) return null;
+  const alternate = normalize(
+    join(dirname(file), `__next.${segments[0]}`, ...segments.slice(1, -1), `${segments[segments.length - 1]}.txt`),
+  );
+  const alternateInside = relative(uiDir, alternate);
+  if (alternateInside.startsWith("..") || isAbsolute(alternateInside)) return null;
+  return existsSync(alternate) && statSync(alternate).isFile() ? alternate : null;
 }
 
 // Only Tjommie's own pages load in the window. Web links open in the default browser.

@@ -6,7 +6,20 @@ import { navigationFor, uiFile } from "./app-protocol.ts";
 
 function exportFolder(): string {
   const ui = mkdtempSync(join(tmpdir(), "tjommie ui ñ-"));
-  for (const file of ["index.html", "404.html", "chat/index.html", "chat/index.txt", "_next/static/chunks/app.js"]) {
+  for (const file of [
+    "index.html",
+    "404.html",
+    "chat/index.html",
+    "chat/index.txt",
+    "__next._tree.txt",
+    "__next._full.txt",
+    "__next.__PAGE__.txt",
+    "settings/__next._tree.txt",
+    "settings/__next._full.txt",
+    "settings/__next.settings/__PAGE__.txt",
+    "bots/new/__next.bots/new/__PAGE__.txt",
+    "_next/static/chunks/app.js",
+  ]) {
     mkdirSync(dirname(join(ui, file)), { recursive: true });
     writeFileSync(join(ui, file), file);
   }
@@ -25,8 +38,26 @@ describe("uiFile", () => {
     expect(uiFile(ui, "app://tjommie/_next/static/chunks/app.js")).toBe(join(ui, "_next", "static", "chunks", "app.js"));
   });
 
+  it("keeps existing flat segment data names", () => {
+    expect(uiFile(ui, "app://tjommie/__next._tree.txt")).toBe(join(ui, "__next._tree.txt"));
+    expect(uiFile(ui, "app://tjommie/__next._full.txt")).toBe(join(ui, "__next._full.txt"));
+    expect(uiFile(ui, "app://tjommie/__next.__PAGE__.txt")).toBe(join(ui, "__next.__PAGE__.txt"));
+    expect(uiFile(ui, "app://tjommie/settings/__next._tree.txt")).toBe(join(ui, "settings", "__next._tree.txt"));
+    expect(uiFile(ui, "app://tjommie/settings/__next._full.txt")).toBe(join(ui, "settings", "__next._full.txt"));
+  });
+
+  it("maps nested page segment requests to the export's folder form", () => {
+    expect(uiFile(ui, "app://tjommie/settings/__next.settings.__PAGE__.txt")).toBe(
+      join(ui, "settings", "__next.settings", "__PAGE__.txt"),
+    );
+    expect(uiFile(ui, "app://tjommie/bots/new/__next.bots.new.__PAGE__.txt?_rsc=abc")).toBe(
+      join(ui, "bots", "new", "__next.bots", "new", "__PAGE__.txt"),
+    );
+  });
+
   it("refuses paths that leave the export, and missing files", () => {
     expect(uiFile(ui, "app://tjommie/..%5C..%5Csecret.txt")).toBeNull();
+    expect(uiFile(ui, "app://tjommie/settings/..%5C..%5C__next.settings.__PAGE__.txt")).toBeNull();
     expect(uiFile(ui, "app://tjommie/%E0%A4%A")).toBeNull();
     expect(uiFile(ui, "app://tjommie/missing/")).toBeNull();
     expect(uiFile(ui, "app://evil/chat/")).toBeNull();
