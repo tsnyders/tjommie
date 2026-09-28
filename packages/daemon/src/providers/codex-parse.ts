@@ -1,3 +1,5 @@
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { existsSync, realpathSync } from "node:fs";
 import type { ProviderEvent } from "./types.ts";
 import { activityLabel, plainActivityText } from "./activity-labels.ts";
 
@@ -12,6 +14,48 @@ function firstCommand(item: Record<string, unknown>): unknown {
   const actions = Array.isArray(item.commandActions) ? item.commandActions : [];
   const first = actions.length > 0 && isRecord(actions[0]) ? actions[0] : null;
   return first?.command ?? item.command;
+}
+
+// The approval request contains an item id, not the changed paths. Codex sends the paths on
+// item/fileChange/patchUpdated (and sometimes item/started) before asking for approval.
+export function fileChangePaths(changes: unknown): string[] | null {
+  if (!Array.isArray(changes) || changes.length === 0) return null;
+  const paths: string[] = [];
+  for (const change of changes) {
+    if (!isRecord(change) || typeof change.path !== "string" || !change.path) return null;
+    paths.push(change.path);
+    if (isRecord(change.kind)) {
+      const moved = change.kind.move_path ?? change.kind.movePath;
+      if (moved !== undefined && moved !== null) {
+        if (typeof moved !== "string" || !moved) return null;
+        paths.push(moved);
+      }
+    }
+  }
+  return paths;
+}
+
+function canonicalPath(path: string): string {
+  let existing = path;
+  const missing: string[] = [];
+  while (!existsSync(existing)) {
+    const parent = dirname(existing);
+    if (parent === existing) return path;
+    missing.unshift(existing.slice(parent.length).replace(/^[/\\]/, ""));
+    existing = parent;
+  }
+  return join(realpathSync.native(existing), ...missing);
+}
+
+function atOrInside(folder: string, path: string): boolean {
+  const suffix = relative(canonicalPath(folder), canonicalPath(path));
+  return suffix === "" || (suffix !== ".." && !suffix.startsWith(`..${sep}`) && !isAbsolute(suffix));
+}
+
+function inWritableFolders(path: string, cwd: string, folders: string[]): boolean {
+  if (!path || /^[A-Za-z]:[^\\/]/.test(path)) return false;
+  const target = resolve(cwd, path);
+  return folders.some((folder) => atOrInside(folder, target));
 }
 
 function toolStarted(value: unknown): ProviderEvent[] {
@@ -119,6 +163,8 @@ export function mapCodexRequest(
   id: number | string,
   method: string,
   params: unknown,
+  writableFolders: string[] = [],
+  changedPaths: string[] | null = null,
 ): Extract<ProviderEvent, { type: "approval" }> | null {
   if (!isRecord(params)) return null;
 
@@ -135,13 +181,20 @@ export function mapCodexRequest(
     };
   }
   if (method === "item/fileChange/requestApproval") {
+    const folders = writableFolders.map((folder) => resolve(folder));
+    const grantRoot = params.grantRoot;
+    const safeGrant = grantRoot === null || grantRoot === undefined
+      || (typeof grantRoot === "string" && inWritableFolders(grantRoot, folders[0] ?? "", folders));
+    const autoAllow = safeGrant && changedPaths !== null && changedPaths.length > 0
+      && changedPaths.every((path) => inWritableFolders(path, folders[0] ?? "", folders));
     return {
       type: "approval",
       id: String(id),
       tool: "Edit",
       summary: typeof params.reason === "string" ? params.reason : "Change files",
       detail: typeof params.grantRoot === "string" ? params.grantRoot : "",
-      rule: null,
+      rule: folders.length > 0 ? `codex-edit:${JSON.stringify(folders)}` : null,
+      autoAllow,
     };
   }
   return null;

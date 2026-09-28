@@ -751,7 +751,8 @@ export class Runner {
   }
 
   #onApproval(botId: string, live: Live, event: { id: string; tool: string; summary: string; detail: string; rule: string | null }): void {
-    if (event.rule && allowRules(this.#db, botId).includes(event.rule)) {
+    if (event.rule && allowRules(this.#db, botId).includes(event.rule)
+      && (!event.rule.startsWith("codex-edit:") || event.autoAllow === true)) {
       live.session?.answer(event.id, "once"); // "Always allow" was chosen for this before
       return;
     }

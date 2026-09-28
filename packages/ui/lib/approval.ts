@@ -21,8 +21,9 @@ export function approvalDetail(detail: string): string {
 }
 
 // What "Always allow" saves, in words. Claude's rules read as they are ("Write", "Bash(npm test:*)"). Codex's are a
-// command prefix (codex:["npm","test"]) or an MCP tool (codex-mcp:browser.browser_navigate).
+// command prefix (codex:["npm","test"]), an MCP tool (codex-mcp:browser.browser_navigate), or edits in its folders.
 export function approvalRule(rule: string): string {
+  if (rule.startsWith("codex-edit:")) return "Edit files in its folders";
   if (rule.startsWith("codex-mcp:")) return oneLine(rule.slice("codex-mcp:".length));
   if (rule.startsWith("codex:")) {
     try {

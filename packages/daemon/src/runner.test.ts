@@ -852,6 +852,28 @@ describe("Runner approvals", () => {
     expect(h.events.some((event) => event.event === "approval.resolved" && event.data.id === added.data.id && event.data.status === "allowed")).toBe(true);
   });
 
+  it("answers a later Codex file change in its folder after Always allow, but asks for an outside change", async () => {
+    const session = new FakeSession();
+    const h = harness(() => session);
+    const bot = newBot(h, { provider: "codex" });
+    h.runner.submit(bot.id, "edit", []);
+    await waitFor(() => session.sent.length > 0);
+    const rule = `codex-edit:${JSON.stringify([bot.homeFolder])}`;
+
+    session.emit({ type: "approval", id: "edit-1", tool: "Edit", summary: "Change notes", detail: "", rule, autoAllow: true });
+    const first = h.events.find((event) => event.event === "approval.added");
+    if (!first) throw new Error("approval.added was not broadcast");
+    h.runner.answerApproval(first.data.id, "always");
+
+    session.emit({ type: "approval", id: "edit-2", tool: "Edit", summary: "Change notes again", detail: "", rule, autoAllow: true });
+    expect(session.answers).toEqual([{ id: "edit-1", answer: "always" }, { id: "edit-2", answer: "once" }]);
+    expect(h.events.filter((event) => event.event === "approval.added")).toHaveLength(1);
+
+    session.emit({ type: "approval", id: "edit-3", tool: "Edit", summary: "Change outside", detail: "", rule, autoAllow: false });
+    expect(session.answers).toHaveLength(2);
+    expect(h.events.filter((event) => event.event === "approval.added")).toHaveLength(2);
+  });
+
   it("updates and broadcasts every approval card expired at startup", () => {
     const h = harness(undefined, false);
     const bot = newBot(h);

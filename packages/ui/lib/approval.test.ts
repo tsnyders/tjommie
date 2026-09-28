@@ -21,5 +21,6 @@ describe("approvalRule", () => {
     expect(approvalRule("Bash(npm test:*)")).toBe("Bash(npm test:*)");
     expect(approvalRule('codex:["Set-Content","-LiteralPath","notes.txt","-Value","hi"]')).toBe("Set-Content -LiteralPath notes.txt -Value hi");
     expect(approvalRule("codex-mcp:browser.browser_navigate")).toBe("browser.browser_navigate");
+    expect(approvalRule('codex-edit:["C:\\\\bots\\\\writer","C:\\\\project"]')).toBe("Edit files in its folders");
   });
 });

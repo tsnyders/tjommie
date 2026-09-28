@@ -136,6 +136,17 @@ describe("CodexSession MCP elicitations", () => {
   });
 });
 
+describe("CodexSession file-change approvals", () => {
+  it("uses the file-change notification's paths for the approval request", async () => {
+    const { rpc, events } = await session(false);
+    rpc.handleLine(JSON.stringify({ method: "item/fileChange/patchUpdated", params: {
+      itemId: "edit-1", changes: [{ path: "C:\\bots\\b1\\notes.md" }, { path: "C:\\other\\outside.md" }],
+    } }));
+    rpc.handleLine(JSON.stringify({ id: 9, method: "item/fileChange/requestApproval", params: { itemId: "edit-1", grantRoot: null } }));
+    expect(events).toEqual([expect.objectContaining({ type: "approval", id: "9", autoAllow: false })]);
+  });
+});
+
 describe("CodexSession steering", () => {
   it("sends one provider interrupt when the runner stops during turn/start", async () => {
     const { codex, rpc, sent } = await session(true, false);

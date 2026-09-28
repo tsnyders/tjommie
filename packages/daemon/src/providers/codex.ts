@@ -1,7 +1,7 @@
 import type { Autonomy } from "@tjommie/protocol";
 import type { CliCommand } from "../cli.ts";
 import { RpcRemoteError, startCodexServer, type CodexServer, type JsonRpcLines } from "./codex-rpc.ts";
-import { isCodexMcpToolCall, mapCodexElicitation, mapCodexNotification, mapCodexRequest } from "./codex-parse.ts";
+import { fileChangePaths, isCodexMcpToolCall, mapCodexElicitation, mapCodexNotification, mapCodexRequest } from "./codex-parse.ts";
 import type { ApprovalAnswer, ProviderEvent, ProviderSession, StartOptions } from "./types.ts";
 
 type Policy = { approvalPolicy: "untrusted" | "on-request" | "never"; sandbox: "read-only" | "workspace-write" | "danger-full-access" };
@@ -78,6 +78,7 @@ export class CodexSession implements ProviderSession {
   #server: CodexServer | null = null;
   #listeners: ((event: ProviderEvent) => void)[] = [];
   #approvals = new Map<string, Pending>();
+  #fileChanges = new Map<string, string[] | null>();
   #threadId = "";
   #turnId: string | null = null;
   #model = "";
@@ -126,12 +127,25 @@ export class CodexSession implements ProviderSession {
     });
     server.rpc.onNotification = (method, params) => {
       if (method === "turn/started") this.#turnId = turnId(params);
-      if (method === "turn/completed") this.#turnId = null;
+      if (method === "turn/completed") {
+        this.#turnId = null;
+        this.#fileChanges.clear();
+      }
+      if (isRecord(params)) {
+        if (method === "item/fileChange/patchUpdated" && typeof params.itemId === "string") {
+          this.#fileChanges.set(params.itemId, fileChangePaths(params.changes));
+        } else if (method === "item/started" && isRecord(params.item) && params.item.type === "fileChange" && typeof params.item.id === "string") {
+          if (!this.#fileChanges.has(params.item.id)) this.#fileChanges.set(params.item.id, fileChangePaths(params.item.changes));
+        } else if (method === "item/completed" && isRecord(params.item) && params.item.type === "fileChange" && typeof params.item.id === "string") {
+          this.#fileChanges.delete(params.item.id);
+        }
+      }
       for (const event of mapCodexNotification(method, params, this.#model)) this.#emit(event);
     };
     server.rpc.onRequest = (id, method, params) => {
       if (method === "mcpServer/elicitation/request") return this.#onElicitation(server.rpc, id, params);
-      const approval = mapCodexRequest(id, method, params);
+      const itemId = isRecord(params) && typeof params.itemId === "string" ? params.itemId : "";
+      const approval = mapCodexRequest(id, method, params, [this.#options.cwd, ...this.#options.extraDirs], this.#fileChanges.get(itemId) ?? null);
       if (!approval) {
         server.rpc.respondError(id, -32601, "Not supported by Tjommie");
         return;
