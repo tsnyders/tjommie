@@ -264,38 +264,67 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 // Starts the provider's own sign-in for its Tjommie account and calls onDone once it finishes or times out.
 // Claude: `claude auth login` in a console window. Codex: OpenAI's sign-in URL from the app-server, opened
 // in the browser. Tjommie never sees a password or token; each CLI stores its login in the account folder.
+const signInProgress = new Set<string>();
+
 export async function signIn(db: Db, provider: Provider, onDone: (ok: boolean) => void): Promise<{ url: string | null }> {
   const account = accountFor(db, provider);
-  const cmd = resolveCli(provider);
-  if (!cmd) throw new RpcError("not_installed", notInstalled(provider).error!);
-  const env = accountEnv(account);
-
-  if (provider === "claude") {
-    openConsole("Sign in to Claude for Tjommie", "claude auth login", env);
-    const deadline = Date.now() + SIGN_IN_TIMEOUT_MS;
-    const poll = async (): Promise<void> => {
-      if (parseClaudeStatus((await runCli(cmd, ["auth", "status"], env)).stdout).signedIn) return onDone(true);
-      if (Date.now() > deadline) return onDone(false);
-      setTimeout(() => void poll(), 3000);
-    };
-    setTimeout(() => void poll(), 3000);
-    return { url: null };
-  }
-
-  const server = await startCodexServer(cmd, env, account.folder);
+  if (signInProgress.has(account.folder)) throw new RpcError("busy", `${provider === "claude" ? "Claude" : "Codex"} sign-in is already running.`);
+  signInProgress.add(account.folder);
   let finished = false;
+  let cleanup = (): void => {};
   const finish = (ok: boolean) => {
     if (finished) return;
     finished = true;
-    clearTimeout(timer);
-    server.close();
-    onDone(ok);
-  };
-  const timer = setTimeout(() => finish(false), SIGN_IN_TIMEOUT_MS);
-  server.rpc.onNotification = (method, params) => {
-    if (method === "account/login/completed" && isRecord(params)) finish(params.success === true);
+    try {
+      cleanup();
+    } finally {
+      signInProgress.delete(account.folder);
+      onDone(ok);
+    }
   };
   try {
+    const cmd = resolveCli(provider);
+    if (!cmd) throw new RpcError("not_installed", notInstalled(provider).error!);
+    const env = accountEnv(account);
+
+    if (provider === "claude") {
+      const beforeResult = await runCli(cmd, ["auth", "status"], env);
+      const before = tryParseClaudeStatus(beforeResult.stdout);
+      if (beforeResult.code === null || !before) throw new RpcError("bad_state", "Claude sign-in check failed.");
+      const child = openConsole("Sign in to Claude for Tjommie", "claude auth login", env);
+      let pollTimer: NodeJS.Timeout | undefined;
+      const deadlineTimer = setTimeout(() => finish(false), SIGN_IN_TIMEOUT_MS);
+      const onConsoleExit = () => finish(false);
+      cleanup = () => {
+        clearTimeout(deadlineTimer);
+        clearTimeout(pollTimer);
+        child.removeListener("close", onConsoleExit);
+      };
+      child.once("close", onConsoleExit);
+      const poll = async (): Promise<void> => {
+        try {
+          const result = await runCli(cmd, ["auth", "status"], env);
+          if (finished) return;
+          const status = result.code === null ? null : tryParseClaudeStatus(result.stdout);
+          if (status?.signedIn && (!before.signedIn || status.account !== before.account)) return finish(true);
+          pollTimer = setTimeout(() => void poll(), 3000);
+        } catch {
+          finish(false);
+        }
+      };
+      pollTimer = setTimeout(() => void poll(), 3000);
+      return { url: null };
+    }
+
+    const server = await startCodexServer(cmd, env, account.folder);
+    const timer = setTimeout(() => finish(false), SIGN_IN_TIMEOUT_MS);
+    cleanup = () => {
+      clearTimeout(timer);
+      server.close();
+    };
+    server.rpc.onNotification = (method, params) => {
+      if (method === "account/login/completed" && isRecord(params)) finish(params.success === true);
+    };
     const login = await server.rpc.request<{ authUrl: string }>("account/login/start", { type: "chatgpt" });
     openUrl(login.authUrl);
     return { url: login.authUrl };

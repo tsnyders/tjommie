@@ -1,8 +1,9 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { EventEmitter } from "node:events";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { openDb } from "./db.ts";
-import { accountEnv, accountFor, checkSetup, ensureAccounts, parseClaudeStatus, parseVersion, prepareCodexSandbox } from "./setup.ts";
+import { accountEnv, accountFor, checkSetup, ensureAccounts, parseClaudeStatus, parseVersion, prepareCodexSandbox, signIn } from "./setup.ts";
 import { tempRoot } from "./testing.ts";
 
 type CliCommand = { file: string; args: string[] };
@@ -11,6 +12,8 @@ type CliResult = { code: number | null; stdout: string; stderr: string };
 const cliMocks = vi.hoisted(() => ({
   resolveCli: vi.fn<(name: "claude" | "codex") => CliCommand | null>(),
   runCli: vi.fn<(cmd: CliCommand, args: string[], env: Record<string, string>) => Promise<CliResult>>(),
+  openConsole: vi.fn<(title: string, command: string, env: Record<string, string>) => EventEmitter>(),
+  openUrl: vi.fn<(url: string) => void>(),
 }));
 
 const codexMocks = vi.hoisted(() => ({
@@ -19,7 +22,7 @@ const codexMocks = vi.hoisted(() => ({
 
 vi.mock("./cli.ts", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./cli.ts")>();
-  return { ...actual, resolveCli: cliMocks.resolveCli, runCli: cliMocks.runCli };
+  return { ...actual, resolveCli: cliMocks.resolveCli, runCli: cliMocks.runCli, openConsole: cliMocks.openConsole, openUrl: cliMocks.openUrl };
 });
 
 vi.mock("./providers/codex-rpc.ts", () => codexMocks);
@@ -40,13 +43,14 @@ beforeEach(() => {
   vi.clearAllMocks();
   cliMocks.resolveCli.mockImplementation((name) => ({ file: name, args: [] }));
   cliMocks.runCli.mockImplementation(successfulCliRun);
+  cliMocks.openConsole.mockImplementation(() => new EventEmitter());
   codexMocks.startCodexServer.mockResolvedValue({
     rpc: { request: vi.fn().mockResolvedValue({ account: null }) },
     close: vi.fn(),
   });
 });
 
-afterEach(() => vi.unstubAllEnvs());
+afterEach(() => { vi.unstubAllEnvs(); vi.useRealTimers(); });
 
 describe("accounts", () => {
   it("sweeps only confirmed stale session folders and preserves live or uncertain owners", () => {
@@ -395,5 +399,160 @@ describe("Codex sandbox setup action", () => {
     codexMocks.startCodexServer.mockResolvedValue({ rpc: { request }, close: vi.fn() });
     await expect(prepareCodexSandbox(db, 5)).rejects.toThrow(/timed out/i);
     expect(request).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("sign-in", () => {
+  const fixture = () => {
+    const root = tempRoot();
+    const db = openDb(join(root, "t.db"));
+    ensureAccounts(db, join(root, "accounts"));
+    return db;
+  };
+  const claudeStatus = (email: string | null): CliResult => ({
+    code: email ? 0 : 1,
+    stdout: JSON.stringify({ loggedIn: email !== null, email }),
+    stderr: "",
+  });
+  const useClaudeStatus = (current: () => string | null) => {
+    cliMocks.runCli.mockImplementation(async (cmd, args) => args[0] === "auth" ? claudeStatus(current()) : successfulCliRun(cmd, args));
+  };
+
+  beforeEach(() => vi.useFakeTimers());
+
+  it("waits while Claude still reports the old account, then ends for the new one", async () => {
+    const db = fixture();
+    let current = "old@example.com";
+    useClaudeStatus(() => current);
+    const done = vi.fn();
+    await signIn(db, "claude", done);
+    expect(cliMocks.runCli).toHaveBeenCalledTimes(1);
+    expect(cliMocks.openConsole).toHaveBeenCalledOnce();
+
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(done).not.toHaveBeenCalled();
+    current = "new@example.com";
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(done).toHaveBeenCalledOnce();
+    expect(done).toHaveBeenCalledWith(true);
+  });
+
+  it("ends a first Claude sign-in at the first signed-in poll", async () => {
+    const db = fixture();
+    let current: string | null = null;
+    useClaudeStatus(() => current);
+    const done = vi.fn();
+    await signIn(db, "claude", done);
+    current = "first@example.com";
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(done).toHaveBeenCalledOnce();
+    expect(done).toHaveBeenCalledWith(true);
+  });
+
+  it("ends when the Claude console exits and ignores later polls", async () => {
+    const db = fixture();
+    useClaudeStatus(() => "old@example.com");
+    const child = new EventEmitter();
+    cliMocks.openConsole.mockReturnValue(child);
+    const done = vi.fn();
+    await signIn(db, "claude", done);
+    child.emit("close", 0);
+    await vi.advanceTimersByTimeAsync(6000);
+    expect(done).toHaveBeenCalledOnce();
+    expect(done).toHaveBeenCalledWith(false);
+    expect(cliMocks.runCli).toHaveBeenCalledTimes(1);
+  });
+
+  it("ends Claude sign-in at the deadline", async () => {
+    const db = fixture();
+    useClaudeStatus(() => "old@example.com");
+    const done = vi.fn();
+    await signIn(db, "claude", done);
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    expect(done).toHaveBeenCalledOnce();
+    expect(done).toHaveBeenCalledWith(false);
+  });
+
+  it("rejects a second Claude sign-in and allows another after the console closes", async () => {
+    const db = fixture();
+    useClaudeStatus(() => "old@example.com");
+    const children: EventEmitter[] = [];
+    cliMocks.openConsole.mockImplementation(() => {
+      const child = new EventEmitter();
+      children.push(child);
+      return child;
+    });
+    await signIn(db, "claude", vi.fn());
+    await expect(signIn(db, "claude", vi.fn())).rejects.toMatchObject({ code: "busy" });
+    expect(children).toHaveLength(1);
+    children[0]?.emit("close", 0);
+    await expect(signIn(db, "claude", vi.fn())).resolves.toEqual({ url: null });
+    expect(children).toHaveLength(2);
+    children[1]?.emit("close", 0);
+  });
+
+  it("rejects a second Claude request while the initial status check is pending", async () => {
+    const db = fixture();
+    let release: (result: CliResult) => void = () => {};
+    cliMocks.runCli.mockImplementationOnce(() => new Promise<CliResult>((resolve) => { release = resolve; }));
+    const first = signIn(db, "claude", vi.fn());
+    await expect(signIn(db, "claude", vi.fn())).rejects.toMatchObject({ code: "busy" });
+    expect(cliMocks.openConsole).not.toHaveBeenCalled();
+    release(claudeStatus(null));
+    await first;
+    expect(cliMocks.openConsole).toHaveBeenCalledOnce();
+    cliMocks.openConsole.mock.results[0]?.value.emit("close", 0);
+  });
+
+  it("rejects a second Codex sign-in and allows another after completion", async () => {
+    const db = fixture();
+    const notifications: ((method: string, params: unknown) => void)[] = [];
+    codexMocks.startCodexServer.mockImplementation(async () => ({
+      rpc: {
+        request: vi.fn(async () => ({ authUrl: "https://example.com/login" })),
+        set onNotification(listener: (method: string, params: unknown) => void) { notifications.push(listener); },
+      },
+      close: vi.fn(),
+    }));
+    const done = vi.fn();
+    await signIn(db, "codex", done);
+    await expect(signIn(db, "codex", vi.fn())).rejects.toMatchObject({ code: "busy" });
+    expect(codexMocks.startCodexServer).toHaveBeenCalledOnce();
+    notifications[0]?.("account/login/completed", { success: true });
+    expect(done).toHaveBeenCalledExactlyOnceWith(true);
+    await expect(signIn(db, "codex", vi.fn())).resolves.toEqual({ url: "https://example.com/login" });
+    expect(codexMocks.startCodexServer).toHaveBeenCalledTimes(2);
+    notifications[1]?.("account/login/completed", { success: true });
+  });
+
+  it("rejects a second Codex request while its app-server is starting", async () => {
+    const db = fixture();
+    let release: (server: { rpc: { request: () => Promise<{ authUrl: string }>; onNotification?: (method: string, params: unknown) => void }; close: () => void }) => void = () => {};
+    const pending = new Promise<Parameters<typeof release>[0]>((resolve) => { release = resolve; });
+    codexMocks.startCodexServer.mockReturnValueOnce(pending);
+    const first = signIn(db, "codex", vi.fn());
+    await expect(signIn(db, "codex", vi.fn())).rejects.toMatchObject({ code: "busy" });
+    expect(codexMocks.startCodexServer).toHaveBeenCalledOnce();
+    let notify: (method: string, params: unknown) => void = () => {};
+    const server = {
+      rpc: {
+        request: vi.fn(async () => ({ authUrl: "https://example.com/login" })),
+        set onNotification(listener: typeof notify) { notify = listener; },
+      },
+      close: vi.fn(),
+    };
+    release(server);
+    await first;
+    notify("account/login/completed", { success: true });
+  });
+
+  it("clears the sign-in guard after a launcher error", async () => {
+    const db = fixture();
+    useClaudeStatus(() => null);
+    cliMocks.openConsole.mockImplementationOnce(() => { throw new Error("Console unavailable"); });
+    const done = vi.fn();
+    await expect(signIn(db, "claude", done)).rejects.toThrow("Console unavailable");
+    expect(done).toHaveBeenCalledExactlyOnceWith(false);
+    await expect(signIn(db, "claude", vi.fn())).resolves.toEqual({ url: null });
   });
 });
