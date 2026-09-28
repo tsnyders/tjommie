@@ -89,7 +89,8 @@ describe("the Phase 1 screens with real bots", () => {
     await row.click();
     const view = page.getByRole("complementary", { name: "Exchange" });
     await view.getByText(/Replied after/).waitFor({ timeout: 30_000 });
-    await view.locator('[data-author="bot"]', { hasText: /^MANGO$/ }).waitFor();
+    // Researcher's request says MANGO too, so the check is on the last bubble, Writer's reply ("MANGO." passes).
+    await view.locator('[data-author="bot"]').last().filter({ hasText: "MANGO" }).waitFor();
     await view.getByRole("textbox", { name: "Reply in Team room" }).fill("Thanks, both of you.");
     await view.getByRole("button", { name: "Send" }).click();
     await view.getByText("Posted in the Team room.").waitFor();
@@ -108,6 +109,10 @@ describe("the Phase 1 screens with real bots", () => {
     await page.getByRole("button", { name: "Menu for Writer" }).click();
     await page.getByRole("menuitem", { name: "Resume bot" }).click();
     await page.getByRole("radio", { name: "All" }).click();
+    await page.getByRole("link", { name: "Job scout", exact: true }).waitFor();
+    // Writer may still be answering the Team room post from the exchange test before it settles to Idle.
+    const writer = page.getByRole("article").filter({ has: page.getByRole("link", { name: "Writer", exact: true }) });
+    await writer.getByText("Idle", { exact: true }).first().waitFor({ timeout: 180_000 });
   });
 
   it("switches the theme and keeps the chain limit", async () => {
@@ -116,6 +121,7 @@ describe("the Phase 1 screens with real bots", () => {
     await page.getByRole("radio", { name: "Light" }).click();
     await expect.poll(async () => (await page.locator("html").getAttribute("class")) ?? "").not.toContain("dark");
     await page.getByRole("radio", { name: "Dark" }).click();
+    await expect.poll(async () => (await page.locator("html").getAttribute("class")) ?? "").toContain("dark");
     await page.getByRole("link", { name: "Bots", exact: true }).click();
     await page.getByRole("button", { name: "Increase" }).click();
     await expect.poll(async () => (await client.call("settings.get", {})).chainLimit).toBe(6);
@@ -128,5 +134,9 @@ describe("the Phase 1 screens with real bots", () => {
     await page.getByRole("button", { name: "Delete bot" }).click();
     await page.getByRole("dialog", { name: "Delete Writer?" }).getByRole("button", { name: "Delete bot" }).click();
     await expect.poll(async () => (await client.call("bots.list", {})).some((bot) => bot.name === "Writer"), { timeout: 60_000 }).toBe(false);
+    // The UI leaves the deleted bot's page (for the first bot's chat) and drops it from the rail.
+    await page.getByRole("heading", { level: 1, name: "Writer", exact: true }).waitFor({ state: "detached" });
+    await page.getByRole("heading", { level: 1, name: "Job scout", exact: true }).waitFor();
+    await page.getByRole("link", { name: /^Writer,/ }).waitFor({ state: "detached" });
   });
 });
