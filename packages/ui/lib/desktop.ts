@@ -15,6 +15,7 @@ export type DesktopApi = {
   pickFolder(): Promise<string | null>;
   openNotes(homeFolder: string): Promise<void>;
   setTheme(theme: "dark" | "light"): void;
+  setDialogScrim(open: boolean): void; // dims the caption buttons while a dialog's scrim covers the page
   info(): Promise<{ username: string }>;
 };
 

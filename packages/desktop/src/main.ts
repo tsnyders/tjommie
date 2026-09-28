@@ -25,6 +25,9 @@ const CSP =
   "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' ws://127.0.0.1:*; object-src 'none'; base-uri 'none'; frame-src 'none'";
 const THEMES = { dark: { color: "#070707", symbolColor: "#ACACAC" }, light: { color: "#FCFCFC", symbolColor: "#5C5C5C" } } as const;
 const TITLE_BAR_HEIGHT = 44;
+// A dialog's scrim is 60% black (the UI's bg-black/60), so what it covers keeps 40% of each channel: #ACACAC is #454545.
+const underScrim = (hex: string): string =>
+  `#${[1, 3, 5].map((at) => Math.round(Number.parseInt(hex.slice(at, at + 2), 16) * 0.4).toString(16).padStart(2, "0")).join("").toUpperCase()}`;
 
 type ConnectionResult = ({ ok: true } & DaemonConnection) | { ok: false; error: string };
 
@@ -36,6 +39,8 @@ let current: Promise<DaemonConnection> | null = null;
 let starting = false;
 let notifier: Client | null = null;
 let restarts: number[] = [];
+let pageTheme: keyof typeof THEMES = "dark";
+let scrim = false; // a dialog is open in the page, its scrim over everything but the caption buttons
 const notifications = new Set<Notification>(); // kept alive until closed, so their click handlers fire
 
 function log(text: string): void {
@@ -222,9 +227,14 @@ function registerIpc(): void {
     if (typeof path === "string" && isAbsolute(path)) shell.showItemInFolder(path);
   });
   ipcMain.on("theme:set", (_event, theme: unknown) => {
-    const colors = theme === "light" ? THEMES.light : THEMES.dark;
-    win?.setTitleBarOverlay({ ...colors, height: TITLE_BAR_HEIGHT });
-    win?.setBackgroundColor(colors.color);
+    pageTheme = theme === "light" ? "light" : "dark";
+    paintTitleBar();
+    win?.setBackgroundColor(THEMES[pageTheme].color);
+  });
+  ipcMain.on("dialog:scrim", (_event, open: unknown) => {
+    if (typeof open !== "boolean") return;
+    scrim = open;
+    paintTitleBar();
   });
   ipcMain.handle("app:info", () => ({ username: userInfo().username }));
   ipcMain.handle("folder:pick", async () => {
@@ -254,6 +264,12 @@ function createWindow(): void {
   });
   win = window;
   window.once("ready-to-show", () => window.show());
+  // A reload starts the page with no dialog open, so a scrim left over from before it goes.
+  window.webContents.on("did-navigate", () => {
+    if (!scrim) return;
+    scrim = false;
+    paintTitleBar();
+  });
   window.on("close", (event) => {
     if (quitting) return;
     event.preventDefault();
@@ -271,6 +287,14 @@ function createWindow(): void {
     if (decision === "browser") void shell.openExternal(url);
   });
   void window.loadURL(production ? "app://tjommie/" : "http://localhost:3000/");
+}
+
+// The caption buttons in the page's theme. Windows draws them above the page, where a dialog's scrim can't reach, so
+// while a dialog is open they're dimmed the way the scrim dims the page.
+function paintTitleBar(): void {
+  const { color, symbolColor } = THEMES[pageTheme];
+  const shade = (hex: string): string => (scrim ? underScrim(hex) : hex);
+  win?.setTitleBarOverlay({ color: shade(color), symbolColor: shade(symbolColor), height: TITLE_BAR_HEIGHT });
 }
 
 function createTray(): void {

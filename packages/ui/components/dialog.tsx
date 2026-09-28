@@ -1,10 +1,34 @@
 "use client";
 
-import type { ReactNode, RefObject } from "react";
+import { useEffect, type ReactNode, type RefObject } from "react";
 import { X } from "lucide-react";
 import { Dialog as BaseDialog } from "@base-ui/react/dialog";
+import { desktop } from "@/lib/desktop";
 import { cn } from "@/lib/utils";
 import { Pill } from "./pill";
+
+// Windows draws its caption buttons above the page, out of the scrim's reach, so the desktop app dims them while any
+// dialog is open. Open dialogs are counted, and the buttons brighten only once the count stays at zero past the
+// current update: a dialog that opens as another closes keeps them dim.
+let openDialogs = 0;
+let dimmed = false;
+
+function paintCaptionButtons(): void {
+  const dim = openDialogs > 0;
+  if (dim === dimmed) return;
+  dimmed = dim;
+  desktop()?.setDialogScrim(dim);
+}
+
+// Counts a dialog as open; the returned function counts it closed.
+export function dialogOpened(): () => void {
+  openDialogs += 1;
+  paintCaptionButtons();
+  return () => {
+    openDialogs -= 1;
+    queueMicrotask(paintCaptionButtons);
+  };
+}
 
 type DialogProps = {
   open: boolean;
@@ -20,6 +44,7 @@ type DialogProps = {
 
 // Dialogs (WF7, WF11): the card fill with a divider stroke, radius 16, padding 20, over a 60% black scrim.
 export function Dialog({ open, onOpenChange, title, width = 320, actions, closable = false, initialFocus, className, children }: DialogProps) {
+  useEffect(() => (open ? dialogOpened() : undefined), [open]);
   return (
     <BaseDialog.Root open={open} onOpenChange={(next) => onOpenChange(next)}>
       <BaseDialog.Portal>
