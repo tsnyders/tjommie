@@ -39,7 +39,7 @@ describe("daemon process tree kill", () => {
 
     const stopping = daemon.stop();
     await vi.advanceTimersByTimeAsync(10_000);
-    expect(execFileSync).toHaveBeenCalledWith("taskkill", ["/PID", "4242", "/T", "/F"]);
+    expect(execFileSync).toHaveBeenCalledWith("taskkill", ["/PID", "4242", "/T", "/F"], { stdio: "ignore" });
 
     fake.child.emit("close", 1, null);
     await stopping;
@@ -54,8 +54,20 @@ describe("daemon process tree kill", () => {
 
     await vi.advanceTimersByTimeAsync(100);
     await rejected;
-    expect(execFileSync).toHaveBeenCalledWith("taskkill", ["/PID", "4242", "/T", "/F"]);
+    expect(execFileSync).toHaveBeenCalledWith("taskkill", ["/PID", "4242", "/T", "/F"], { stdio: "ignore" });
 
     fake.child.emit("close", null, "SIGKILL");
+  });
+
+  it("does not taskkill a child that exited before startup failure", async () => {
+    const fake = fakeChild();
+    vi.mocked(spawn).mockReturnValue(fake.child as ReturnType<typeof spawn>);
+    const starting = startDaemonProcess(launch());
+    const rejected = expect(starting).rejects.toThrow("Tjommie's background service stopped (exit code 1).");
+    Object.assign(fake.child, { exitCode: 1 });
+    fake.child.emit("close", 1, null);
+
+    await rejected;
+    expect(execFileSync).not.toHaveBeenCalled();
   });
 });

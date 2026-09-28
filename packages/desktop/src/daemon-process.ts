@@ -66,9 +66,9 @@ export function startDaemonProcess(
   child.stdin.write(`${token}\n`);
 
   const killTree = (): void => {
-    if (child.pid === undefined) return;
+    if (child.exitCode !== null || child.signalCode !== null || child.pid === undefined) return;
     try {
-      execFileSync("taskkill", ["/PID", String(child.pid), "/T", "/F"]);
+      execFileSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore" });
     } catch {
       // The process may have exited before taskkill runs.
     }
