@@ -1,4 +1,4 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync } from "node:fs";
 import { delimiter, join } from "node:path";
 
@@ -129,8 +129,8 @@ export function openUrl(url: string): void {
 
 // Opens a visible console window running a CLI's own interactive command (Claude's sign-in).
 // ponytail: Windows only, like the rest of Phase 1; macOS gets its own opener with the macOS build.
-export function openConsole(title: string, command: string, env: Record<string, string>): void {
-  const child = spawn("cmd.exe", ["/c", "start", `"${title}"`, "cmd.exe", "/k", command], {
+export function openConsole(title: string, command: string, env: Record<string, string>): ChildProcess {
+  const child = spawn("cmd.exe", ["/c", "start", "/wait", `"${title}"`, "cmd.exe", "/k", command], {
     env: safeChildEnv(env),
     detached: true,
     stdio: "ignore",
@@ -138,4 +138,5 @@ export function openConsole(title: string, command: string, env: Record<string, 
   });
   child.on("error", () => {});
   child.unref();
+  return child;
 }

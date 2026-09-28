@@ -965,6 +965,25 @@ it("logs a rejected background setup refresh from the sign-in callback", async (
   expect(log).toHaveBeenCalledWith("Failed to refresh provider setup.", failure);
 });
 
+it("checks setup once and broadcasts the fresh result when sign-in ends", async () => {
+  const { client } = await harness();
+  let done: ((ok: boolean) => void) | undefined;
+  vi.mocked(signIn).mockImplementation(async (_db, _provider, onDone) => {
+    done = onDone;
+    return { url: null };
+  });
+  await client.call("setup.signIn", { provider: "claude" });
+  const checksBefore = vi.mocked(checkSetup).mock.calls.length;
+  const eventsBefore = client.events.filter((event) => event.event === "setup.changed").length;
+  const fresh = setup(true).map((entry) => entry.provider === "claude" ? { ...entry, account: "new@example.com" } : entry);
+  vi.mocked(checkSetup).mockResolvedValue(fresh);
+
+  done?.(false);
+  await waitFor(() => client.events.filter((event) => event.event === "setup.changed").length === eventsBefore + 1);
+  expect(checkSetup).toHaveBeenCalledTimes(checksBefore + 1);
+  expect(client.events.filter((event) => event.event === "setup.changed").at(-1)?.data).toEqual(fresh);
+});
+
 it("awaits browser launch errors and rejects showing a disabled browser", async () => {
   const { client } = await harness();
   const off = await client.call("bots.create", input("Off"));
