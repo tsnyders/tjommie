@@ -14,6 +14,8 @@ Install the Claude Code and Codex CLIs and put them on PATH. Tjommie stores its 
 
 The installed desktop app starts the daemon with `--token-stdin`. It must start the daemon with `TJOMMIE_DEV` unset. It passes a fresh token as the first line of a pipe to the daemon's standard input and keeps that pipe open. The daemon requires at least 43 base64url characters within 5 seconds, never saves this token to a file, deletes an old `daemon-token` file left by development mode, and stops when the pipe closes, so quitting or crashing the desktop app never leaves a daemon running. The terminal chat only works with a development daemon. Starting the daemon with neither mode exits with instructions to use the desktop app or the development command. Tests can set `TJOMMIE_ACCOUNTS_DIR` to use signed-in account folders with a disposable data root.
 
+The desktop app has two modes. By default it reads the development daemon's `daemon-token` file and shows the UI from `http://localhost:3000`, so both must be running. With `$env:TJOMMIE_DESKTOP = 'production'` it starts its own daemon with `--token-stdin` and serves the static export in `packages/ui/out` (run `npm run build` first), the way the installed app will. Closing the window keeps Tjommie running in the tray; Quit Tjommie in the tray menu stops the daemon, and with it the bots and routines. `npm run test:real` also drives the desktop app in production mode.
+
 ```sh
 npm install
 npm run signin -w @tjommie/daemon    # once: sign Tjommie's own Claude and Codex accounts in
@@ -21,7 +23,7 @@ npm start -w @tjommie/daemon         # development daemon, on http://127.0.0.1:4
 npm run chat -w @tjommie/daemon -- "Researcher" claude   # chat with a bot from the terminal
 #   in the chat: /room <text> posts in the Team room; /allow <id> answers a card, including a routine a bot proposes
 npm run dev        # UI at http://localhost:3000
-npm run desktop    # Electron window showing that UI (keep npm run dev running)
+npm run desktop    # the desktop app, on that UI and the development daemon (keep both running)
 npm test           # fast tests
 npm run test:real  # tests that drive the real Claude and Codex CLIs (needs the sign-in above)
 npm run typecheck
