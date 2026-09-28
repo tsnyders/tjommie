@@ -3,7 +3,7 @@ import type { Message, MethodName, ParamsIn, Result } from "@tjommie/protocol";
 import { desktop, type DesktopConnection } from "./desktop";
 import { errorText } from "./labels";
 import { failedSetup } from "./setup";
-import { addOlder, applyEvent, connected, finishLoading, startLoading } from "./state";
+import { addOlder, applyEvent, connected, finishLoading, forgetConversation, startLoading } from "./state";
 import { getState, update } from "./store";
 
 const PAGE = 50;
@@ -166,6 +166,12 @@ export async function loadConversation(conversationId: string, fetchPage: (befor
       };
     });
   }
+}
+
+// Retry after a failed load: loadConversation keeps a failed chat until it's forgotten.
+export function retryConversation(conversationId: string, fetchPage: (before?: string) => Promise<Page>): Promise<void> {
+  update((state) => forgetConversation(state, conversationId));
+  return loadConversation(conversationId, fetchPage);
 }
 
 // Loads the page before the oldest loaded message.
