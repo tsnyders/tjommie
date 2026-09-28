@@ -48,7 +48,8 @@ export function Dialog({ open, onOpenChange, title, width = 320, actions, closab
   );
 }
 
-// A yes-or-no question (the Full auto warning, Delete bot), with the buttons right-aligned on one line.
+// A yes-or-no question (the Full auto warning, Delete bot), with the buttons right-aligned on one line. The body is
+// the dialog's description, so it's read out when the dialog opens.
 export function ConfirmDialog({ open, onOpenChange, title, body, confirm, danger = false, onConfirm }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -60,7 +61,7 @@ export function ConfirmDialog({ open, onOpenChange, title, body, confirm, danger
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange} title={title}>
-      <p className="mt-2 text-[13px] leading-[18px] text-body">{body}</p>
+      <BaseDialog.Description className="mt-2 text-[13px] leading-[18px] text-body">{body}</BaseDialog.Description>
       <div className="mt-5 flex justify-end gap-2">
         <Pill onClick={() => onOpenChange(false)}>Cancel</Pill>
         <Pill primary={!danger} className={danger ? "text-danger" : undefined} onClick={onConfirm}>

@@ -67,18 +67,35 @@ export function Segmented<T extends string>({ label, value, options, onChange, f
   );
 }
 
-// The 120 x 32 number stepper (Chain limit).
+// The 120 x 32 number stepper (Chain limit). A button at its bound is aria-disabled rather than disabled, so the
+// press that reaches the bound doesn't drop keyboard focus to the page.
 export function Stepper({ label, value, min, max, onChange }: { label: string; value: number; min: number; max: number; onChange: (value: number) => void }) {
-  const button = "flex size-6 items-center justify-center rounded-full text-icon hover:bg-pill hover:text-text disabled:opacity-40";
+  const button = "flex size-6 items-center justify-center rounded-full text-icon hover:bg-pill hover:text-text aria-disabled:opacity-40";
   return (
     <div role="group" aria-label={label} className="flex h-8 w-[120px] shrink-0 items-center justify-between rounded-full bg-popover px-1">
-      <button type="button" aria-label="Decrease" disabled={value <= min} onClick={() => onChange(value - 1)} className={button}>
+      <button
+        type="button"
+        aria-label="Decrease"
+        aria-disabled={value <= min}
+        onClick={() => {
+          if (value > min) onChange(value - 1);
+        }}
+        className={button}
+      >
         <Minus className="size-3.5" aria-hidden />
       </button>
       <span aria-live="polite" className="text-[14px] font-semibold text-text">
         {value}
       </span>
-      <button type="button" aria-label="Increase" disabled={value >= max} onClick={() => onChange(value + 1)} className={button}>
+      <button
+        type="button"
+        aria-label="Increase"
+        aria-disabled={value >= max}
+        onClick={() => {
+          if (value < max) onChange(value + 1);
+        }}
+        className={button}
+      >
         <Plus className="size-3.5" aria-hidden />
       </button>
     </div>

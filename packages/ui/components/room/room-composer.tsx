@@ -125,7 +125,7 @@ export function RoomComposer() {
           role="combobox"
           aria-label="Message the Team room"
           aria-expanded={open}
-          aria-controls="mention-list"
+          aria-controls={open ? "mention-list" : undefined}
           aria-activedescendant={open ? `mention-${active}` : undefined}
           aria-autocomplete="list"
           placeholder="Message the Team room. Type @ to mention a bot."

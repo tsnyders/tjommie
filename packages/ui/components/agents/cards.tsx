@@ -18,7 +18,8 @@ const CARD = "relative flex h-[368px] flex-col rounded-[14px] border bg-card p-3
 const FOOTER = "mt-auto flex h-[45px] items-center border-t border-card-stroke pt-4";
 const CARD_PILL = "flex h-7 items-center rounded-full px-3 text-[14px] font-medium";
 const SLIDE = "transition-transform duration-150 ease-[cubic-bezier(0.23,1,0.32,1)]";
-// The card's title is a link stretched over the whole card; the menu sits above it.
+// The card's title is a link stretched over the whole card; the menu sits above it. The footer's pill only shows
+// where a click on the card goes, so screen readers skip it and hear the link.
 const STRETCHED = "after:absolute after:inset-0 after:rounded-[14px]";
 const chatOf = (id: string): string => `/chat/?bot=${encodeURIComponent(id)}`;
 
@@ -76,7 +77,11 @@ export function BotCard({ bot, bots, messages, routines }: { bot: Bot; bots: Bot
         ) : (
           <span className="text-[12px] text-caption">No bot chats today</span>
         )}
-        {waiting && <span className={cn(CARD_PILL, "ml-auto bg-user-bubble text-user-text")}>Review</span>}
+        {waiting && (
+          <span aria-hidden className={cn(CARD_PILL, "ml-auto bg-user-bubble text-user-text")}>
+            Review
+          </span>
+        )}
       </div>
     </article>
   );
@@ -191,7 +196,9 @@ export function TeamRoomCard({ messages, bots }: { messages: Message[]; bots: Bo
       </div>
       <p className="mt-2.5 truncate text-[13px] leading-[18px] text-body">{roomLine(messages, bots)}</p>
       <div className={cn(FOOTER, "justify-end")}>
-        <span className={cn(CARD_PILL, "bg-pill text-text")}>Open room</span>
+        <span aria-hidden className={cn(CARD_PILL, "bg-pill text-text")}>
+          Open room
+        </span>
       </div>
     </article>
   );

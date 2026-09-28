@@ -20,11 +20,12 @@ function WebLink({ href, children }: { href?: string; children?: ReactNode }) {
   );
 }
 
-// Images never load. A web image becomes a link to it (just its alt text inside another link); any other image
-// shows its alt text.
+// Images never load. A web image becomes a link to it; any other image shows its alt text. Inside another link it
+// shows its alt text, or its address when it has none, so that link never ends up with nothing to read or click.
 function MarkdownImage({ src, alt }: ComponentProps<"img">) {
   const inLink = useContext(InLink);
-  return web(src) && !inLink ? <WebLink href={src}>{alt || src}</WebLink> : <>{alt}</>;
+  if (inLink) return <>{alt || src}</>;
+  return web(src) ? <WebLink href={src}>{alt || src}</WebLink> : <>{alt}</>;
 }
 
 // Bot replies are Markdown. Raw HTML never renders, unsafe link targets are dropped, and links open in the

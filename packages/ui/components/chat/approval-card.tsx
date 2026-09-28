@@ -68,7 +68,11 @@ export function ApprovalCard({ summary, data, bot }: { summary: string; data: Ap
           Always allow saves: {approvalRule(data.rule)}, for {bot.name} only
         </p>
       )}
-      {problem && <p className="mt-2 text-[12px] leading-[18px] text-danger">{problem}</p>}
+      {problem && (
+        <p role="alert" className="mt-2 text-[12px] leading-[18px] text-danger">
+          {problem}
+        </p>
+      )}
     </div>
   );
 }

@@ -34,4 +34,11 @@ describe("MarkdownText (markdown safety)", () => {
       '<div class="markdown"><p><a href="https://example.com/a.png" target="_blank" rel="noreferrer">Listing</a> <a href="https://example.com/b.png" target="_blank" rel="noreferrer">https://example.com/b.png</a> Saved <a href="https://github.com/x" target="_blank" rel="noreferrer">Badge</a> Run it Email me</p></div>',
     );
   });
+
+  it("never leaves a link without text when its image has no alt text", () => {
+    const html = renderToStaticMarkup(<MarkdownText text="[![](https://example.com/badge.svg)](https://github.com/x) [![](badge.png)](https://github.com/y)" />);
+    expect(html).toBe(
+      '<div class="markdown"><p><a href="https://github.com/x" target="_blank" rel="noreferrer">https://example.com/badge.svg</a> <a href="https://github.com/y" target="_blank" rel="noreferrer">badge.png</a></p></div>',
+    );
+  });
 });
