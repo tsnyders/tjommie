@@ -52,7 +52,7 @@ Tjommie is a free, open-source desktop and phone app. People create AI bots that
 | Bot to bot | Asynchronous `message_bot` through the app; Team room with @mentions; chain limit 5 |
 | Computer | Browser per bot in Phase 1; live panel, Take over and Logins vault in Phase 4 |
 | Platforms | Windows first, macOS later. Android first, iOS later (needs a Mac) |
-| UI stack | One web UI: Next.js static export + shadcn/ui + Tailwind. Electron on desktop, Capacitor on the phone |
+| UI stack | One web UI: Next.js static export + Base UI + Tailwind. Phase 1 built its own components on Base UI's unstyled primitives (menus, dialogs, popovers, radios, switches) instead of shadcn/ui. Electron on desktop, Capacitor on the phone |
 | Phone scope | Full parity with the desktop |
 | Remote reach | Anywhere, through an end-to-end encrypted relay (public one + self-host); direct on the same Wi-Fi |
 | Usage and cost | Token, limit and cost tracking like T3 Code, plus spending caps on API keys |
@@ -85,7 +85,7 @@ Tjommie is a free, open-source desktop and phone app. People create AI bots that
 Host PC (Windows)
 ┌──────────────────────────────────────────────────────────────┐
 │ Desktop app: Electron (window, tray, notifications)          │
-│   └─ UI: Next.js static export + shadcn/ui + Tailwind        │
+│   └─ UI: Next.js static export + Base UI + Tailwind          │
 │             │ WebSocket on 127.0.0.1 + token                 │
 │ Daemon: Node 24 + TypeScript, its own process                │
 │   ├─ Store: SQLite (node:sqlite)                             │
@@ -135,12 +135,12 @@ shared-files\            files one bot shares with another, held until delivery 
 
 ### 3.3 WebSocket API
 
-- The client sends `hello` with its protocol version. The daemon answers with its version and capabilities. On a mismatch, the UI shows "Update Tjommie on this device" instead of failing in strange ways. (Pattern from Paseo's `packages/protocol/src/messages.ts`.)
+- The client sends `hello` with its protocol version and the token. The daemon answers `{ type: "welcome", protocol }` with its own protocol version. On a mismatch, the UI shows "Update Tjommie on this device" instead of failing in strange ways. (Pattern from Paseo's `packages/protocol/src/messages.ts`.)
 - **Requests** (client to daemon) carry an id and get exactly one response. Groups:
   - Phase 1: `bots.*`, `chat.*` (send, stop, history), `approvals.respond`, `room.*`, `exchanges.get`, `routines.*`, `setup.status`, `settings.*`
   - Phase 2: `accounts.*`, `usage.query`, `terminal.*`
   - Phase 3: `devices.*`, `pairing.create`
-- **Events** (daemon to client): `message.added`, `message.delta` (streaming text), `message.updated`, `bot.state`, `approval.added`, `approval.resolved`, `routine.run`, `usage.updated`, `setup.changed`.
+- **Events** (daemon to client): `message.added`, `message.delta` (streaming text), `message.updated`, `bot.updated`, `approval.added`, `approval.resolved`, `routine.run`, `usage.updated`, `setup.changed`.
 - Every message is a zod schema in `packages/protocol`, validated at both ends.
 
 ## 4. Bots, chats and sessions
