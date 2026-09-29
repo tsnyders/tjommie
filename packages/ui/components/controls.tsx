@@ -70,7 +70,8 @@ export function Segmented<T extends string>({ label, value, options, onChange, f
 // The 120 x 32 number stepper (Chain limit). A button at its bound is aria-disabled rather than disabled, so the
 // press that reaches the bound doesn't drop keyboard focus to the page.
 export function Stepper({ label, value, min, max, onChange }: { label: string; value: number; min: number; max: number; onChange: (value: number) => void }) {
-  const button = "flex size-6 items-center justify-center rounded-full text-icon hover:bg-pill hover:text-text aria-disabled:opacity-40";
+  const button =
+    "flex size-6 items-center justify-center rounded-full text-icon hover:bg-pill hover:text-text aria-disabled:opacity-40 aria-disabled:hover:bg-transparent aria-disabled:hover:text-icon";
   return (
     <div role="group" aria-label={label} className="flex h-8 w-[120px] shrink-0 items-center justify-between rounded-full bg-popover px-1">
       <button

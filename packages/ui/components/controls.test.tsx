@@ -8,5 +8,7 @@ describe("Stepper", () => {
     expect(html).toContain('aria-label="Decrease" aria-disabled="true"');
     expect(html).toContain('aria-label="Increase" aria-disabled="false"');
     expect(html).not.toContain("disabled=\"\"");
+    // ...and doesn't light up on hover, as a disabled button didn't.
+    expect(html).toContain("aria-disabled:hover:bg-transparent aria-disabled:hover:text-icon");
   });
 });

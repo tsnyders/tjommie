@@ -36,9 +36,12 @@ describe("MarkdownText (markdown safety)", () => {
   });
 
   it("never leaves a link without text when its image has no alt text", () => {
-    const html = renderToStaticMarkup(<MarkdownText text="[![](https://example.com/badge.svg)](https://github.com/x) [![](badge.png)](https://github.com/y)" />);
+    const html = renderToStaticMarkup(
+      <MarkdownText text="[![](https://example.com/badge.svg)](https://github.com/x) [![](badge.png)](https://github.com/y) [![](data:image/png;base64,AAAA)](https://github.com/z)" />,
+    );
+    // The last image's address is dropped as unsafe, so its link reads as its own address.
     expect(html).toBe(
-      '<div class="markdown"><p><a href="https://github.com/x" target="_blank" rel="noreferrer">https://example.com/badge.svg</a> <a href="https://github.com/y" target="_blank" rel="noreferrer">badge.png</a></p></div>',
+      '<div class="markdown"><p><a href="https://github.com/x" target="_blank" rel="noreferrer">https://example.com/badge.svg</a> <a href="https://github.com/y" target="_blank" rel="noreferrer">badge.png</a> <a href="https://github.com/z" target="_blank" rel="noreferrer">https://github.com/z</a></p></div>',
     );
   });
 });

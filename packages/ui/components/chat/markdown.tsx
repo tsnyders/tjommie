@@ -6,25 +6,26 @@ import remarkGfm from "remark-gfm";
 
 // The desktop app opens web links in the default browser and blocks every other target.
 const web = (url: unknown): url is string => typeof url === "string" && /^https?:/i.test(url);
-const InLink = createContext(false);
+const LinkTarget = createContext<string | null>(null); // the address of the link around this content, if any
 
 // A link that can open. Anything else (a target dropped as unsafe, an email address) shows as plain text.
 function WebLink({ href, children }: { href?: string; children?: ReactNode }) {
   if (!web(href)) return <>{children}</>;
   return (
-    <InLink value={true}>
+    <LinkTarget value={href}>
       <a href={href} target="_blank" rel="noreferrer">
         {children}
       </a>
-    </InLink>
+    </LinkTarget>
   );
 }
 
 // Images never load. A web image becomes a link to it; any other image shows its alt text. Inside another link it
-// shows its alt text, or its address when it has none, so that link never ends up with nothing to read or click.
+// shows its alt text, or its address, or else (an address dropped as unsafe) the link's own address, so that link
+// never ends up with nothing to read or click.
 function MarkdownImage({ src, alt }: ComponentProps<"img">) {
-  const inLink = useContext(InLink);
-  if (inLink) return <>{alt || src}</>;
+  const link = useContext(LinkTarget);
+  if (link !== null) return <>{alt || src || link}</>;
   return web(src) ? <WebLink href={src}>{alt || src}</WebLink> : <>{alt}</>;
 }
 
