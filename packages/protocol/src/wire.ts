@@ -75,6 +75,9 @@ export const events = {
   "approval.added": Approval,
   "approval.resolved": Approval,
   "setup.changed": z.array(ProviderSetup),
+  // A provider's sign-in ended, sent after the fresh setup.changed. Also when it changed nothing: the window was
+  // closed, the time ran out or the login failed.
+  "setup.signInEnded": z.object({ provider: Provider }),
   notify: z.discriminatedUnion("kind", [
     Notification.extend({ kind: z.literal("approval"), approvalId: z.string().optional() }),
     Notification.extend({ kind: z.literal("limit") }),

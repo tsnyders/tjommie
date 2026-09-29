@@ -123,6 +123,17 @@ describe("app state", () => {
     expect(connected(state, { bots: [], settings: { chainLimit: 5 }, routines: [] }).latestRuns).toEqual({});
   });
 
+  it("counts each provider's ended sign-ins, so a card that's signing in can tell its sign-in ended", () => {
+    const ended = (provider: "claude" | "codex"): ClientEvent => ({ type: "event", event: "setup.signInEnded", data: { provider } });
+    expect(initialState.signInsEnded).toEqual({ claude: 0, codex: 0 });
+    let state = applyEvent(initialState, ended("codex"));
+    state = applyEvent(state, ended("codex"));
+    state = applyEvent(state, ended("claude"));
+    expect(state.signInsEnded).toEqual({ claude: 1, codex: 2 });
+    // A new connection keeps the counts, so a card's count from before it never looks like a new end.
+    expect(connected(state, { bots: [], settings: { chainLimit: 5 }, routines: [] }).signInsEnded).toEqual({ claude: 1, codex: 2 });
+  });
+
   it("keeps a failed history load until a new connection clears it", async () => {
     update(() => initialState);
     const fetchPage = vi.fn(async () => {
