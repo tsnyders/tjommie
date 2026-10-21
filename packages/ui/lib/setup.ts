@@ -30,6 +30,10 @@ export function cardView(setup: ProviderSetup | undefined, local: { signingIn: b
   return { kind: "signed_out" };
 }
 
+// Whether two reports of a provider say the same about its sign-in. A card that's signing in stays so until the
+// report changes: setup.changed also arrives for other reasons (Check again, the other provider, the sandbox).
+export const sameSignIn = (a: ProviderSetup | undefined, b: ProviderSetup | undefined): boolean => a?.signedIn === b?.signedIn && a?.account === b?.account;
+
 // Both providers' entries when the setup check itself fails, so each card shows the reason and Check again
 // instead of "Checking" forever.
 export function failedSetup(reason: string): ProviderSetup[] {

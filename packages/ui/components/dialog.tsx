@@ -1,10 +1,34 @@
 "use client";
 
-import type { ReactNode, RefObject } from "react";
+import { useEffect, type ReactNode, type RefObject } from "react";
 import { X } from "lucide-react";
 import { Dialog as BaseDialog } from "@base-ui/react/dialog";
+import { desktop } from "@/lib/desktop";
 import { cn } from "@/lib/utils";
 import { Pill } from "./pill";
+
+// Windows draws its caption buttons above the page, out of the scrim's reach, so the desktop app dims them while any
+// dialog is open. Open dialogs are counted, and the buttons brighten only once the count stays at zero past the
+// current update: a dialog that opens as another closes keeps them dim.
+let openDialogs = 0;
+let dimmed = false;
+
+function paintCaptionButtons(): void {
+  const dim = openDialogs > 0;
+  if (dim === dimmed) return;
+  dimmed = dim;
+  desktop()?.setDialogScrim(dim);
+}
+
+// Counts a dialog as open; the returned function counts it closed.
+export function dialogOpened(): () => void {
+  openDialogs += 1;
+  paintCaptionButtons();
+  return () => {
+    openDialogs -= 1;
+    queueMicrotask(paintCaptionButtons);
+  };
+}
 
 type DialogProps = {
   open: boolean;
@@ -20,6 +44,7 @@ type DialogProps = {
 
 // Dialogs (WF7, WF11): the card fill with a divider stroke, radius 16, padding 20, over a 60% black scrim.
 export function Dialog({ open, onOpenChange, title, width = 320, actions, closable = false, initialFocus, className, children }: DialogProps) {
+  useEffect(() => (open ? dialogOpened() : undefined), [open]);
   return (
     <BaseDialog.Root open={open} onOpenChange={(next) => onOpenChange(next)}>
       <BaseDialog.Portal>
@@ -48,7 +73,8 @@ export function Dialog({ open, onOpenChange, title, width = 320, actions, closab
   );
 }
 
-// A yes-or-no question (the Full auto warning, Delete bot), with the buttons right-aligned on one line.
+// A yes-or-no question (the Full auto warning, Delete bot), with the buttons right-aligned on one line. The body is
+// the dialog's description, so it's read out when the dialog opens.
 export function ConfirmDialog({ open, onOpenChange, title, body, confirm, danger = false, onConfirm }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -60,7 +86,7 @@ export function ConfirmDialog({ open, onOpenChange, title, body, confirm, danger
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange} title={title}>
-      <p className="mt-2 text-[13px] leading-[18px] text-body">{body}</p>
+      <BaseDialog.Description className="mt-2 text-[13px] leading-[18px] text-body">{body}</BaseDialog.Description>
       <div className="mt-5 flex justify-end gap-2">
         <Pill onClick={() => onOpenChange(false)}>Cancel</Pill>
         <Pill primary={!danger} className={danger ? "text-danger" : undefined} onClick={onConfirm}>

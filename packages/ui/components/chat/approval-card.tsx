@@ -17,10 +17,13 @@ export function ApprovalCard({ summary, data, bot }: { summary: string; data: Ap
   const [problem, setProblem] = useState<string | null>(null);
   if (data.status !== "pending") return <AnsweredApproval summary={summary} data={data} />;
   const routine = data.kind === "routine";
+  // What Always allow would save. A tool request can come without one (Codex asks to change files before it says
+  // which), and then the card offers only Allow once and Deny.
+  const rule = data.kind === "routine" ? null : data.rule || null;
   async function answer(decision: ApprovalDecision): Promise<void> {
     setBusy(true);
     setProblem(null);
-    decided.set(data.approvalId, decision === "always" && !("rule" in data && data.rule) ? "once" : decision);
+    decided.set(data.approvalId, decision);
     try {
       await daemon().call("approvals.respond", { approvalId: data.approvalId, decision });
     } catch (error) {
@@ -54,21 +57,28 @@ export function ApprovalCard({ summary, data, bot }: { summary: string; data: Ap
             <Pill primary disabled={busy} onClick={() => void answer("once")}>
               Allow once
             </Pill>
-            <Pill disabled={busy} onClick={() => void answer("always")}>
-              Always allow
-            </Pill>
+            {rule && (
+              <Pill disabled={busy} onClick={() => void answer("always")}>
+                Always allow
+              </Pill>
+            )}
             <Pill disabled={busy} onClick={() => void answer("deny")}>
               Deny
             </Pill>
           </>
         )}
       </div>
-      {data.kind !== "routine" && data.rule && bot && (
+      {!routine && !rule && <p className="mt-2 text-[12px] leading-[18px] text-secondary">Always allow isn&apos;t available for this request yet.</p>}
+      {rule && bot && (
         <p className="mt-2 text-[12px] leading-[18px] text-placeholder">
-          Always allow saves: {approvalRule(data.rule)}, for {bot.name} only
+          Always allow saves: {approvalRule(rule)}, for {bot.name} only
         </p>
       )}
-      {problem && <p className="mt-2 text-[12px] leading-[18px] text-danger">{problem}</p>}
+      {problem && (
+        <p role="alert" className="mt-2 text-[12px] leading-[18px] text-danger">
+          {problem}
+        </p>
+      )}
     </div>
   );
 }
@@ -88,11 +98,14 @@ function AnsweredApproval({ summary, data }: { summary: string; data: ApprovalDa
           : decision === "once"
             ? "Allowed once"
             : "Allowed";
+  // A routine card's summary is the daemon's proposal ("Add a routine: Morning digest, ..."); once answered, the
+  // label says what happened to it.
+  const subject = data.kind === "routine" ? summary.replace(/^Add a routine: /, "") : summary;
   return (
     <div className="inline-flex max-w-full items-center gap-2 rounded-[10px] border border-divider bg-canvas px-3 py-2 text-[13px] leading-[18px] text-secondary">
       {allowed ? <Check className="size-3.5 shrink-0 text-working" aria-hidden /> : <X className="size-3.5 shrink-0" aria-hidden />}
       <span className="min-w-0 truncate">
-        {label}: {summary}
+        {label}: {subject}
       </span>
     </div>
   );

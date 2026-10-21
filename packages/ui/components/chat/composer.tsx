@@ -2,23 +2,36 @@
 
 import { useState, type DragEvent, type KeyboardEvent } from "react";
 import { ArrowUp, Paperclip, Plus, Square, X } from "lucide-react";
-import type { Bot } from "@tjommie/protocol";
+import { ApprovalData, type Bot, type Message } from "@tjommie/protocol";
 import { addFiles, fileName, MAX_FILES } from "@/lib/attachments";
 import { daemon } from "@/lib/connection";
 import { desktop } from "@/lib/desktop";
 import { errorText } from "@/lib/labels";
 import { cn } from "@/lib/utils";
 
+// Whether the bot has a turn to stop: it's working, or waiting on a tool card in its chat, which holds its turn.
+// A bot waiting only on a routine it proposed isn't running anything.
+export function canStop(bot: Pick<Bot, "state">, messages: Message[]): boolean {
+  if (bot.state === "working") return true;
+  return (
+    bot.state === "waiting" &&
+    messages.some((message) => {
+      const card = message.kind === "approval" ? ApprovalData.safeParse(message.data).data : undefined;
+      return card?.status === "pending" && card.kind !== "routine";
+    })
+  );
+}
+
 // The message box. Its round button sends (a working bot gets the message right away, as steering), or stops
-// a working bot while the field is empty. Files go with a message: chat.send needs text, so Send stays off
+// a running bot while the field is empty. Files go with a message: chat.send needs text, so Send stays off
 // until there is some. Sending is done all day, so nothing here animates.
-export function Composer({ bot }: { bot: Bot }) {
+export function Composer({ bot, messages }: { bot: Bot; messages: Message[] }) {
   const [text, setText] = useState("");
   const [files, setFiles] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const hasText = text.trim().length > 0;
-  const stop = !hasText && (bot.state === "working" || bot.state === "waiting");
+  const stop = !hasText && canStop(bot, messages);
 
   function attach(paths: string[]): void {
     const next = addFiles(files, paths);

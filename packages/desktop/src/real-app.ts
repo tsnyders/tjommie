@@ -57,12 +57,10 @@ export async function launchRealApp(executablePath?: string): Promise<RealApp> {
   } catch (error) {
     await client?.close().catch(() => {});
     await electronApp?.close().catch(() => {});
-    try {
-      await cleanOwnedProcesses(ownership);
-    } finally {
-      await removeFolders(root, userData);
-    }
-    throw error;
+    const failures: unknown[] = [error];
+    await cleanOwnedProcesses(ownership).catch((cleanup: unknown) => failures.push(cleanup));
+    await removeFolders(root, userData).catch((cleanup: unknown) => failures.push(cleanup));
+    throw allOf(failures, "The app didn't start, and cleaning up after it failed too.");
   }
 }
 
@@ -70,15 +68,18 @@ export async function launchRealApp(executablePath?: string): Promise<RealApp> {
 export async function closeRealApp(app: RealApp | undefined, quit: boolean): Promise<void> {
   if (!app) return;
   const ownership = ownershipFor(app);
-  try {
-    await app.client.close().catch(() => {});
-    if (!quit) await app.electronApp.close().catch(() => {});
-    await cleanOwnedProcesses(ownership);
-  } finally {
-    await removeFolders(app.root, app.userData);
-    ownerships.delete(app);
-  }
+  const failures: unknown[] = [];
+  await app.client.close().catch(() => {});
+  if (!quit) await app.electronApp.close().catch(() => {});
+  await cleanOwnedProcesses(ownership).catch((error: unknown) => failures.push(error));
+  await removeFolders(app.root, app.userData).catch((error: unknown) => failures.push(error));
+  ownerships.delete(app);
+  if (failures.length) throw allOf(failures, "The test's processes and folders were not all cleaned up.");
 }
+
+// One failure as it is, or every failure in order, the first one first. A process that didn't exit usually still
+// holds its folder, so the folder's error alone would hide the cause.
+const allOf = (failures: unknown[], message: string): unknown => (failures.length === 1 ? failures[0] : new AggregateError(failures, message));
 
 // Quit as the tray action does. A quit must stop both the Electron main process and its daemon.
 export async function quitApp(app: RealApp): Promise<void> {

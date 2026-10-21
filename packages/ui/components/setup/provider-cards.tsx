@@ -5,7 +5,7 @@ import { CircleCheck, Loader, Sparkles, Terminal } from "lucide-react";
 import type { Provider, ProviderSetup } from "@tjommie/protocol";
 import { request } from "@/lib/connection";
 import { errorText } from "@/lib/labels";
-import { cardView, planLabel, PROVIDER_NAME, type CardView } from "@/lib/setup";
+import { cardView, planLabel, PROVIDER_NAME, sameSignIn, type CardView } from "@/lib/setup";
 import { useApp } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { Pill } from "../pill";
@@ -18,12 +18,18 @@ type Handlers = { onSignIn: () => void; onCancel: () => void; onPrepare: () => v
 // offers the one thing that fixes it.
 export function ProviderCards() {
   const setup = useApp((state) => state.setup);
-  const [signing, setSigning] = useState<{ provider: Provider; since: ProviderSetup | undefined } | null>(null);
+  const signInsEnded = useApp((state) => state.signInsEnded);
+  // since: the provider's report when Sign in was clicked. ended: how many of its sign-ins had ended by then.
+  const [signing, setSigning] = useState<{ provider: Provider; since: ProviderSetup | undefined; ended: number } | null>(null);
   const [pending, setPending] = useState<Provider[]>([]); // setup.signIn calls still waiting for the daemon
   const [preparing, setPreparing] = useState(false);
   const [checking, setChecking] = useState(false);
   const [problem, setProblem] = useState<{ provider: Provider; text: string } | null>(null);
   const setupFor = (provider: Provider): ProviderSetup | undefined => setup?.find((entry) => entry.provider === provider);
+  // Signing in lasts until the daemon reports the provider signed in (or signed in as another account), or says the
+  // sign-in ended: a closed window, the time running out or a failed login change nothing else. Once it's over it
+  // stays over, even if a later report reads like the one before it (the account signed out elsewhere).
+  if (signing && (signInsEnded[signing.provider] !== signing.ended || !sameSignIn(setupFor(signing.provider), signing.since))) setSigning(null);
 
   async function run(provider: Provider, action: () => Promise<unknown>): Promise<boolean> {
     setProblem((current) => (current?.provider === provider ? null : current));
@@ -40,10 +46,11 @@ export function ProviderCards() {
   // different account" stay disabled, so a second click can't open a second sign-in.
   async function signIn(provider: Provider): Promise<void> {
     const since = setupFor(provider);
+    const ended = signInsEnded[provider];
     setPending((list) => [...list, provider]);
     const ok = await run(provider, () => request("setup.signIn", { provider }));
     setPending((list) => list.filter((entry) => entry !== provider));
-    if (ok) setSigning({ provider, since });
+    if (ok) setSigning({ provider, since, ended });
   }
 
   async function prepare(): Promise<void> {
@@ -63,9 +70,7 @@ export function ProviderCards() {
     <div className="grid grid-cols-[repeat(auto-fit,minmax(300px,1fr))] gap-5">
       {PROVIDERS.map((provider) => {
         const entry = setupFor(provider);
-        // Signing in lasts until the daemon reports this provider again: it sends setup.changed when sign-in ends.
-        const signingIn = signing?.provider === provider && entry === signing.since;
-        const view = cardView(entry, { signingIn, preparing: provider === "codex" && preparing });
+        const view = cardView(entry, { signingIn: signing?.provider === provider, preparing: provider === "codex" && preparing });
         const { body, actions } = content(view, provider === "claude", checking, pending.includes(provider), {
           onSignIn: () => void signIn(provider),
           onCancel: () => setSigning(null),

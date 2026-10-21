@@ -963,6 +963,25 @@ it("logs a rejected background setup refresh from the sign-in callback", async (
   await client.call("setup.signIn", { provider: "claude" });
   await waitFor(() => log.mock.calls.length);
   expect(log).toHaveBeenCalledWith("Failed to refresh provider setup.", failure);
+  // The sign-in still ended, so a card waiting on it stops waiting.
+  await waitFor(() => client.events.some((event) => event.event === "setup.signInEnded" && event.data.provider === "claude"));
+});
+
+it("says a sign-in ended once, after the fresh setup, even when it changed nothing", async () => {
+  const { client } = await harness();
+  let done: ((ok: boolean) => void) | undefined;
+  vi.mocked(signIn).mockImplementation(async (_db, _provider, onDone) => {
+    done = onDone;
+    return { url: "https://auth.openai.com/sign-in" };
+  });
+  await client.call("setup.signIn", { provider: "codex" });
+  const from = client.events.length;
+
+  done?.(false); // the login failed: the fresh setup reads as it did before
+  await waitFor(() => client.events.slice(from).some((event) => event.event === "setup.signInEnded"));
+  const setupEvents = client.events.slice(from).filter((event) => event.event === "setup.changed" || event.event === "setup.signInEnded");
+  expect(setupEvents.map((event) => event.event)).toEqual(["setup.changed", "setup.signInEnded"]);
+  expect(setupEvents[1]).toEqual({ type: "event", event: "setup.signInEnded", data: { provider: "codex" } });
 });
 
 it("checks setup once and broadcasts the fresh result when sign-in ends", async () => {

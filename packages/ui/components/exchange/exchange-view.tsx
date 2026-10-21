@@ -4,13 +4,14 @@ import Link from "next/link";
 import { useEffect, useState, type ReactNode } from "react";
 import { ArrowRight, ArrowUp, X } from "lucide-react";
 import type { Bot, Exchange, Message } from "@tjommie/protocol";
-import { exchangePage, loadConversation, request } from "@/lib/connection";
+import { closeConversation, exchangePage, loadConversation, request, retryConversation } from "@/lib/connection";
 import { exchangeCaption, exchangeMeta } from "@/lib/exchange";
 import { DELETED_BOT, errorText } from "@/lib/labels";
 import { useApp } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { BotAvatar, MissingAvatar } from "../bot-avatar";
 import { MessageView, shownMessages } from "../chat/message-view";
+import { FailedLoad } from "../failed-load";
 import { IconButton } from "../icon-button";
 
 const NO_MESSAGES: Message[] = [];
@@ -20,10 +21,10 @@ function Avatar({ bot, size }: { bot: Bot | undefined; size: number }) {
 }
 
 // The exchange view (WF6): who asked whom, the whole exchange, and a box that replies in the Team room with both
-// bots mentioned. It opens in the right panel, in place of the bot panel or the Team room's members. rowStatus is
-// the exchange's status where it was opened from (a chat's handoff row), which the daemon updates when the
-// exchange is answered or fails.
-export function ExchangeView({ exchangeId, rowStatus, onClose, bar }: { exchangeId: string; rowStatus?: string; onClose: () => void; bar: ReactNode }) {
+// bots mentioned. It opens in the right panel, in place of the bot panel or the Team room's members. refreshKey
+// changes when the exchange is answered or fails, in the place it was opened from: a chat's handoff row status, or
+// the Team room's newest post or notice for the exchange.
+export function ExchangeView({ exchangeId, refreshKey, onClose, bar }: { exchangeId: string; refreshKey?: string; onClose: () => void; bar: ReactNode }) {
   const bots = useApp((state) => state.bots);
   const conversation = useApp((state) => state.conversations[exchangeId]);
   const ready = useApp((state) => state.connection.status === "ready");
@@ -35,9 +36,11 @@ export function ExchangeView({ exchangeId, rowStatus, onClose, bar }: { exchange
   useEffect(() => {
     if (ready && !conversation) void loadConversation(exchangeId, exchangePage(exchangeId));
   }, [ready, conversation, exchangeId]);
+  // Closing the view (or opening another exchange in its place) forgets this one.
+  useEffect(() => () => closeConversation(exchangeId), [exchangeId]);
 
   // The header's status lives on the exchange, which has no event of its own. It's fetched again whenever the
-  // exchange's messages move on, and when rowStatus changes: the exchange is answered or fails at the end of the
+  // exchange's messages move on, and when refreshKey changes: the exchange is answered or fails at the end of the
   // asked bot's turn, after its last message.
   useEffect(() => {
     let live = true;
@@ -52,7 +55,7 @@ export function ExchangeView({ exchangeId, rowStatus, onClose, bar }: { exchange
     return () => {
       live = false;
     };
-  }, [exchangeId, progress, rowStatus]);
+  }, [exchangeId, progress, refreshKey]);
 
   const from = exchange ? bots.find((bot) => bot.id === exchange.fromBotId) : undefined;
   const to = exchange ? bots.find((bot) => bot.id === exchange.toBotId) : undefined;
@@ -78,17 +81,21 @@ export function ExchangeView({ exchangeId, rowStatus, onClose, bar }: { exchange
           <X aria-hidden />
         </IconButton>
       </header>
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-3 pt-4">
-        <ol className="flex flex-col gap-3">
-          {shown.map((message, index) => (
-            <li key={message.id} className="flex max-w-[400px] flex-col items-start gap-3">
-              {message.author !== "system" && message.author !== shown[index - 1]?.author && <AuthorRow id={message.author} bots={bots} />}
-              <MessageView message={message} bot={undefined} bots={bots} conversationId={exchangeId} />
-            </li>
-          ))}
-        </ol>
-        {caption && <p className="mt-3 text-[12px] leading-[18px] text-secondary">{caption}</p>}
-      </div>
+      {conversation?.status === "failed" ? (
+        <FailedLoad text="Couldn't load this exchange." onRetry={() => void retryConversation(exchangeId, exchangePage(exchangeId))} />
+      ) : (
+        <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-3 pt-4">
+          <ol className="flex flex-col gap-3">
+            {shown.map((message, index) => (
+              <li key={message.id} className="flex max-w-[400px] flex-col items-start gap-3">
+                {message.author !== "system" && message.author !== shown[index - 1]?.author && <AuthorRow id={message.author} bots={bots} />}
+                <MessageView message={message} bot={undefined} bots={bots} conversationId={exchangeId} />
+              </li>
+            ))}
+          </ol>
+          {caption && <p className="mt-3 text-[12px] leading-[18px] text-secondary">{caption}</p>}
+        </div>
+      )}
       <ExchangeComposer bots={[from, to].filter((bot): bot is Bot => bot !== undefined)} />
     </aside>
   );
@@ -104,13 +111,15 @@ function AuthorRow({ id, bots }: { id: string; bots: Bot[] }) {
   );
 }
 
-// Replies in the Team room with both bots already @mentioned (spec 6.2). There are no attachments here.
+// Replies in the Team room with both bots already @mentioned (spec 6.2), so both answer there. There are no
+// attachments here.
 function ExchangeComposer({ bots }: { bots: Bot[] }) {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [posted, setPosted] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const canSend = bots.length > 0 && text.trim() !== ""; // with both bots gone there's no one to mention
+  const asked = bots.length === 2 ? "Ask both bots in the Team room" : bots.length === 1 ? `Ask ${bots[0].name} in the Team room` : "Reply in Team room";
   async function send(): Promise<void> {
     if (busy || !canSend) return;
     setBusy(true);
@@ -155,7 +164,7 @@ function ExchangeComposer({ bots }: { bots: Bot[] }) {
             setPosted(false);
           }}
           aria-label="Reply in Team room"
-          placeholder="Reply in Team room"
+          placeholder={asked}
           className="min-w-0 flex-1 truncate bg-transparent text-[14px] text-text outline-none placeholder:text-placeholder"
         />
         <button

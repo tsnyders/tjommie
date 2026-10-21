@@ -2,11 +2,12 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { useState } from "react";
 import { CircleAlert, Clock, Ellipsis, Hourglass, Loader, MessageCircle, Pause, Play, Plug, Plus, Settings } from "lucide-react";
 import { Menu } from "@base-ui/react/menu";
 import { ExchangePostData, type Bot, type Message, type Routine } from "@tjommie/protocol";
 import { request } from "@/lib/connection";
-import { botName, DELETED_BOT, SHORT_STATE, stateLabel } from "@/lib/labels";
+import { botName, DELETED_BOT, errorText, SHORT_STATE, stateLabel } from "@/lib/labels";
 import { nextRoutineLine, roomLine, talkingWith, taskLine } from "@/lib/overview";
 import { cn } from "@/lib/utils";
 import { BotAvatar, MissingAvatar, TeamMark } from "../bot-avatar";
@@ -17,12 +18,14 @@ const CARD = "relative flex h-[368px] flex-col rounded-[14px] border bg-card p-3
 const FOOTER = "mt-auto flex h-[45px] items-center border-t border-card-stroke pt-4";
 const CARD_PILL = "flex h-7 items-center rounded-full px-3 text-[14px] font-medium";
 const SLIDE = "transition-transform duration-150 ease-[cubic-bezier(0.23,1,0.32,1)]";
-// The card's title is a link stretched over the whole card; the menu sits above it.
+// The card's title is a link stretched over the whole card; the menu sits above it. The footer's pill only shows
+// where a click on the card goes, so screen readers skip it and hear the link.
 const STRETCHED = "after:absolute after:inset-0 after:rounded-[14px]";
 const chatOf = (id: string): string => `/chat/?bot=${encodeURIComponent(id)}`;
 
 // A bot's card (WF2 Phase 1).
 export function BotCard({ bot, bots, messages, routines }: { bot: Bot; bots: Bot[]; messages: Message[]; routines: Routine[] }) {
+  const [problem, setProblem] = useState<string | null>(null); // why the menu's last action failed
   const waiting = bot.state === "waiting";
   const dim = bot.state === "idle" || bot.state === "needs_setup" ? "opacity-35" : bot.state === "paused" || bot.state === "limited" ? "opacity-50" : undefined;
   const partners = talkingWith(bot.id, messages)
@@ -46,10 +49,17 @@ export function BotCard({ bot, bots, messages, routines }: { bot: Bot; bots: Bot
             the row moves. */}
         <span className={cn("relative flex shrink-0 group-hover:-translate-x-9 has-[:focus-visible]:-translate-x-9 has-[[data-popup-open]]:-translate-x-9", SLIDE)}>
           <StateChip bot={bot} />
-          <CardMenu bot={bot} />
+          <CardMenu bot={bot} onProblem={setProblem} />
         </span>
       </div>
-      <p className="mt-2.5 truncate text-[13px] leading-[18px] text-body">{taskLine(bot, messages)}</p>
+      {/* A failed Pause or Resume says why in place of the task line, as the chat header's menu does under the header. */}
+      {problem ? (
+        <p role="alert" title={problem} className="mt-2.5 truncate text-[13px] leading-[18px] text-danger">
+          {problem}
+        </p>
+      ) : (
+        <p className="mt-2.5 truncate text-[13px] leading-[18px] text-body">{taskLine(bot, messages)}</p>
+      )}
       <p className="mt-1.5 flex items-center gap-1.5 text-[12px] leading-[18px] text-secondary">
         <Clock className="size-3.5 shrink-0" aria-hidden />
         <span className="truncate">{nextRoutineLine(bot, routines)}</span>
@@ -67,7 +77,11 @@ export function BotCard({ bot, bots, messages, routines }: { bot: Bot; bots: Bot
         ) : (
           <span className="text-[12px] text-caption">No bot chats today</span>
         )}
-        {waiting && <span className={cn(CARD_PILL, "ml-auto bg-user-bubble text-user-text")}>Review</span>}
+        {waiting && (
+          <span aria-hidden className={cn(CARD_PILL, "ml-auto bg-user-bubble text-user-text")}>
+            Review
+          </span>
+        )}
       </div>
     </article>
   );
@@ -106,8 +120,12 @@ function StateChip({ bot }: { bot: Bot }) {
   );
 }
 
-function CardMenu({ bot }: { bot: Bot }) {
+function CardMenu({ bot, onProblem }: { bot: Bot; onProblem: (problem: string | null) => void }) {
   const router = useRouter();
+  function pause(): void {
+    onProblem(null);
+    void request("bots.pause", { id: bot.id, paused: !bot.paused }).catch((error: unknown) => onProblem(errorText(error)));
+  }
   return (
     <Menu.Root>
       <Menu.Trigger
@@ -127,7 +145,7 @@ function CardMenu({ bot }: { bot: Bot }) {
               <MessageCircle aria-hidden />
               Open chat
             </Menu.Item>
-            <Menu.Item className={MENU_ITEM} onClick={() => void request("bots.pause", { id: bot.id, paused: !bot.paused }).catch(() => {})}>
+            <Menu.Item className={MENU_ITEM} onClick={pause}>
               {bot.paused ? <Play aria-hidden /> : <Pause aria-hidden />}
               {bot.paused ? "Resume bot" : "Pause bot"}
             </Menu.Item>
@@ -178,7 +196,9 @@ export function TeamRoomCard({ messages, bots }: { messages: Message[]; bots: Bo
       </div>
       <p className="mt-2.5 truncate text-[13px] leading-[18px] text-body">{roomLine(messages, bots)}</p>
       <div className={cn(FOOTER, "justify-end")}>
-        <span className={cn(CARD_PILL, "bg-pill text-text")}>Open room</span>
+        <span aria-hidden className={cn(CARD_PILL, "bg-pill text-text")}>
+          Open room
+        </span>
       </div>
     </article>
   );

@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { RotateCcw } from "lucide-react";
 import type { Bot, Message } from "@tjommie/protocol";
 import { botHistory, loadConversation, loadOlder, retryConversation } from "@/lib/connection";
 import { handoffStatus } from "@/lib/exchange";
@@ -10,13 +9,13 @@ import { AUTONOMY_HINT } from "@/lib/labels";
 import { useApp } from "@/lib/store";
 import { BotAvatar } from "../bot-avatar";
 import { ExchangeView } from "../exchange/exchange-view";
+import { FailedLoad } from "../failed-load";
 import { PanelBar } from "../panel-bar";
-import { Pill } from "../pill";
 import { BotPanel } from "./bot-panel";
 import { ChatHeader } from "./chat-header";
 import { Composer } from "./composer";
 import { MessageList } from "./message-list";
-import { MessageView } from "./message-view";
+import { MessageView, shownMessages } from "./message-view";
 import { SetupBanner } from "./setup-banner";
 
 const PANEL_KEY = "tjommie.panel";
@@ -75,21 +74,21 @@ export function ChatScreen({ botId }: { botId: string }) {
         <ChatHeader bot={bot} panelOpen={panel || exchangeId !== null} onTogglePanel={togglePanel} panelButton={panelButton} />
         {bot.state === "needs_setup" && <SetupBanner bot={bot} />}
         {conversation?.status === "failed" ? (
-          <FailedChat onRetry={() => void retryConversation(botId, botHistory(botId))} />
+          <FailedLoad text="Couldn't load this chat." onRetry={() => void retryConversation(botId, botHistory(botId))} />
         ) : !loaded ? (
           <div className="flex-1" />
-        ) : messages.length === 0 ? (
+        ) : shownMessages(messages).length === 0 ? (
           <EmptyChat bot={bot} />
         ) : (
           <MessageList messages={messages} hasMore={loaded.hasMore} onOlder={older} render={render} />
         )}
-        <Composer bot={bot} />
+        <Composer bot={bot} messages={messages} />
       </section>
       {exchangeId ? (
         <ExchangeView
           key={exchangeId}
           exchangeId={exchangeId}
-          rowStatus={handoffStatus(messages, exchangeId)}
+          refreshKey={handoffStatus(messages, exchangeId)}
           onClose={() => closeExchange(exchangeId)}
           bar={<PanelBar settingsHref={settings} settingsLabel="Bot settings" hideLabel="Hide the panel" onHide={() => closeExchange(exchangeId)} />}
         />
@@ -107,19 +106,6 @@ function EmptyChat({ bot }: { bot: Bot }) {
       <p className="max-w-[360px] text-[14px] leading-[21px] text-body">
         Say hi to {bot.name}. {AUTONOMY_HINT[bot.autonomy]}
       </p>
-    </div>
-  );
-}
-
-// The history didn't load. A new connection also loads it again.
-function FailedChat({ onRetry }: { onRetry: () => void }) {
-  return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-3 px-8 text-center">
-      <p className="text-[14px] leading-[21px] text-body">Couldn&apos;t load this chat.</p>
-      <Pill onClick={onRetry}>
-        <RotateCcw className="size-3.5" aria-hidden />
-        Retry
-      </Pill>
     </div>
   );
 }

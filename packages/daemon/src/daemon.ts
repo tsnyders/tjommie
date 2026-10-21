@@ -171,14 +171,18 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
     return setup;
   };
 
-  const refreshSetupInBackground = (): void => {
-    void refreshSetup(true).catch((error: unknown) => console.error("Failed to refresh provider setup.", error));
+  // A sign-in ended. The fresh setup goes out first, so one that worked already reads as signed in; then
+  // setup.signInEnded, because one that failed or was abandoned changes nothing a client could notice.
+  const signInEnded = (provider: ProviderSetup["provider"]): void => {
+    void refreshSetup(true)
+      .catch((error: unknown) => console.error("Failed to refresh provider setup.", error))
+      .finally(() => broadcast("setup.signInEnded", { provider }));
   };
 
   const deletionRequests = new Set<string>();
   const handlers: Handlers = {
     "setup.status": () => refreshSetup(),
-    "setup.signIn": ({ provider }) => signIn(db, provider, refreshSetupInBackground),
+    "setup.signIn": ({ provider }) => signIn(db, provider, () => signInEnded(provider)),
     "setup.prepareCodexSandbox": async () => {
       try {
         await prepareCodexSandbox(db);

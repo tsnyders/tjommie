@@ -1,5 +1,5 @@
 import type { ClientEvent } from "@tjommie/client";
-import type { Bot, Message, ProviderSetup, Routine, Settings } from "@tjommie/protocol";
+import type { Bot, Message, Provider, ProviderSetup, Routine, RoutineRun, Settings } from "@tjommie/protocol";
 
 export type MessageEvent = Extract<ClientEvent, { event: "message.added" | "message.updated" | "message.delta" }>;
 
@@ -22,12 +22,23 @@ export type AppState = {
   connection: Connection;
   bots: Bot[];
   setup: ProviderSetup[] | null;
+  signInsEnded: Record<Provider, number>; // setup.signInEnded events seen, per provider; a new connection keeps them
   settings: Settings | null;
   routines: Routine[];
+  latestRuns: Record<string, RoutineRun>; // each routine's newest routine.run event, by routine id
   conversations: Record<string, Conversation>;
 };
 
-export const initialState: AppState = { connection: { status: "connecting" }, bots: [], setup: null, settings: null, routines: [], conversations: {} };
+export const initialState: AppState = {
+  connection: { status: "connecting" },
+  bots: [],
+  setup: null,
+  signInsEnded: { claude: 0, codex: 0 },
+  settings: null,
+  routines: [],
+  latestRuns: {},
+  conversations: {},
+};
 
 type Page = { messages: Message[]; hasMore: boolean };
 
@@ -67,12 +78,18 @@ export function applyEvent(state: AppState, event: ClientEvent): AppState {
       };
     case "setup.changed":
       return { ...state, setup: event.data };
+    case "setup.signInEnded": {
+      const { provider } = event.data;
+      return { ...state, signInsEnded: { ...state.signInsEnded, [provider]: state.signInsEnded[provider] + 1 } };
+    }
     case "settings.changed":
       return { ...state, settings: event.data };
     case "routine.updated":
       return { ...state, routines: upsert(state.routines, event.data) };
     case "routine.deleted":
       return { ...state, routines: state.routines.filter((routine) => routine.id !== event.data.id) };
+    case "routine.run":
+      return { ...state, latestRuns: { ...state.latestRuns, [event.data.routineId]: event.data } };
     case "message.added":
     case "message.updated":
     case "message.delta": {
@@ -123,6 +140,7 @@ export function connected(state: AppState, snapshot: { bots: Bot[]; settings: Se
     bots: [...snapshot.bots].sort(byCreated),
     settings: snapshot.settings,
     routines: [...snapshot.routines].sort(byCreated),
+    latestRuns: {},
     conversations: {},
   };
 }

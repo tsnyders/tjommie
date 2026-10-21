@@ -21,5 +21,6 @@ contextBridge.exposeInMainWorld("tjommie", {
   pickFolder: () => ipcRenderer.invoke("folder:pick"),
   openNotes: (homeFolder) => ipcRenderer.invoke("notes:open", homeFolder),
   setTheme: (theme) => ipcRenderer.send("theme:set", theme),
+  setDialogScrim: (open) => ipcRenderer.send("dialog:scrim", open),
   info: () => ipcRenderer.invoke("app:info"),
 });

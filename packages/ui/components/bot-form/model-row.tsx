@@ -66,7 +66,9 @@ export function ModelRow({ provider, model, onChange }: { provider: Provider; mo
             />
             <div className="mt-1 flex flex-col gap-1">
               {problem ? (
-                <p className="px-3 py-2 text-[13px] leading-[18px] text-danger">{problem}</p>
+                <p role="alert" className="px-3 py-2 text-[13px] leading-[18px] text-danger">
+                  {problem}
+                </p>
               ) : !models ? (
                 <p className="px-3 py-2 text-[13px] leading-[18px] text-secondary">Loading the models</p>
               ) : (
