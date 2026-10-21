@@ -1,9 +1,23 @@
+import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { EventEmitter } from "node:events";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { PassThrough } from "node:stream";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { cliEnv, killTree, killTreeAndWait, openUrl, resolveCli, runCli, spawnCli } from "./cli.ts";
+
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return { ...actual, spawn: vi.fn(actual.spawn) };
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.mocked(spawn).mockClear();
+  vi.useRealTimers();
+});
 
 const dir = () => mkdtempSync(join(tmpdir(), "tjommie cli ñ-"));
 
@@ -94,6 +108,121 @@ describe("openUrl", () => {
 describe("killTreeAndWait", () => {
   it("rejects a missing process identity", async () => {
     await expect(killTreeAndWait(undefined)).rejects.toThrow("process ID");
+  });
+
+  describe.skipIf(process.platform !== "win32")("nonzero taskkill reports", () => {
+    const success = (pid: number, parent: number) => `SUCCESS: The process with PID ${pid} (child process of PID ${parent}) has been terminated.\r\n`;
+    const failure = (pid: number, parent: number) => `ERROR: The process with PID ${pid} (child process of PID ${parent}) could not be terminated.\r\nReason: The operation attempted is not supported.\r\r\n`;
+    const stdout = success(200, 100) + success(100, process.pid);
+    const stderr = failure(400, 300) + failure(300, 200);
+    const gone = () => { throw Object.assign(new Error("process gone"), { code: "ESRCH" }); };
+    const taskkill = (out = stdout, err = stderr, code: number | null = 128) => {
+      const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough() });
+      vi.mocked(spawn).mockReturnValueOnce(child as unknown as ReturnType<typeof spawn>);
+      const stopped = killTreeAndWait(100);
+      child.stdout.end(out);
+      child.stderr.end(err);
+      child.emit("close", code);
+      return stopped;
+    };
+
+    it.each([128, 255])("verifies every reported PID after unsupported sandbox descendants (exit %s)", async (code) => {
+      const probe = vi.spyOn(process, "kill").mockImplementation(gone);
+      await expect(taskkill(stdout, stderr, code)).resolves.toBeUndefined();
+      expect(new Set(probe.mock.calls.map(([pid]) => pid))).toEqual(new Set([100, 200, 300, 400]));
+      expect(probe.mock.calls.every(([, signal]) => signal === 0)).toBe(true);
+      expect(spawn).toHaveBeenCalledTimes(1);
+    });
+
+    it("waits for the reported descendants to disappear", async () => {
+      vi.useFakeTimers();
+      let childAlive = true;
+      vi.spyOn(process, "kill").mockImplementation((pid) => pid === 400 && childAlive ? true : gone());
+      let settled = false;
+      const stopped = taskkill().then(() => { settled = true; }, (error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(200);
+      expect(settled).toBe(false);
+      childAlive = false;
+      await vi.advanceTimersByTimeAsync(200);
+      expect(await stopped).toBeUndefined();
+    });
+
+    it.each(["running", "EPERM", "unknown"])("rejects when a reported PID remains %s even though the root is gone", async (state) => {
+      vi.useFakeTimers();
+      vi.spyOn(process, "kill").mockImplementation((pid) => {
+        if (pid !== 400) return gone();
+        if (state === "running") return true; // also protects against a reused PID
+        throw Object.assign(new Error("probe failed"), state === "EPERM" ? { code: "EPERM" } : {});
+      });
+      const rejected = expect(taskkill()).rejects.toMatchObject({ cause: { pid: 100, code: 128, stdout, stderr } });
+      await vi.runAllTimersAsync();
+      await rejected;
+    });
+
+    it.each([
+      ["omitted root", success(200, 100), stderr],
+      ["unowned root", success(999, 900), ""],
+      ["wrong root parent", success(200, 100) + success(100, process.pid + 1), stderr],
+      ["unknown line", stdout, `${stderr}Unknown termination error\n`],
+      ["missing error reason", stdout, "ERROR: The process with PID 400 (child process of PID 300) could not be terminated.\n"],
+      ["disconnected child", stdout + success(500, 600), stderr],
+      ["cyclic ancestry", stdout + success(500, 600) + success(600, 500), stderr],
+      ["contradictory parent", stdout + success(200, 900), stderr],
+      ["already absent root without a tree", "", 'ERROR: The process "100" not found.\n'],
+      ["failed root without enumeration proof", "", failure(100, process.pid)],
+      ["truncated stdout", `${stdout}${"\n".repeat(70_000)}`, stderr],
+      ["truncated stderr", stdout, `${stderr}${"\n".repeat(70_000)}`],
+    ])("rejects a report with %s", async (_label, out, err) => {
+      const probe = vi.spyOn(process, "kill").mockImplementation(gone);
+      await expect(taskkill(out, err)).rejects.toThrow("Could not stop");
+      expect(probe).not.toHaveBeenCalled();
+    });
+
+    it("does not recover when taskkill itself was interrupted", async () => {
+      const probe = vi.spyOn(process, "kill").mockImplementation(gone);
+      await expect(taskkill(stdout, stderr, null)).rejects.toThrow("Could not stop");
+      expect(probe).not.toHaveBeenCalled();
+    });
+
+    it("retains a bounded diagnostic prefix and explicit truncation flags", async () => {
+      await expect(taskkill(stdout + "\n".repeat(70_000), stderr)).rejects.toMatchObject({ cause: {
+        pid: 100, code: 128, stdout: (stdout + "\n".repeat(70_000)).slice(0, 65_536),
+        stderr, stdoutTruncated: true, stderrTruncated: false,
+      } });
+    });
+
+    it("waits for the owned root to finish exiting before probing descendants", async () => {
+      vi.useFakeTimers();
+      let rootAlive = true;
+      const probe = vi.spyOn(process, "kill").mockImplementation((pid) => pid === 100 && rootAlive ? true : gone());
+      let settled = false;
+      const stopped = taskkill().then(() => { settled = true; }, (error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(200);
+      expect(settled).toBe(false);
+      expect(probe.mock.calls.every(([pid, signal]) => pid === 100 && signal === 0)).toBe(true);
+      rootAlive = false;
+      await vi.advanceTimersByTimeAsync(100);
+      expect(await stopped).toBeUndefined();
+      expect(new Set(probe.mock.calls.map(([pid]) => pid))).toEqual(new Set([100, 200, 300, 400]));
+    });
+
+    it.each(["running", "EPERM"])("never probes descendants while the owned root remains %s", async (state) => {
+      vi.useFakeTimers();
+      const probe = vi.spyOn(process, "kill").mockImplementation(() => {
+        if (state === "running") return true;
+        throw Object.assign(new Error("probe denied"), { code: "EPERM" });
+      });
+      const rejected = expect(taskkill()).rejects.toThrow("Could not stop");
+      await vi.runAllTimersAsync();
+      await rejected;
+      expect(probe.mock.calls.every(([pid, signal]) => pid === 100 && signal === 0)).toBe(true);
+    });
+
+    it("keeps clean exit-zero behavior unchanged", async () => {
+      const probe = vi.spyOn(process, "kill").mockReturnValue(true);
+      await expect(taskkill("", "", 0)).resolves.toBeUndefined();
+      expect(probe).not.toHaveBeenCalled();
+    });
   });
 
   it.skipIf(process.platform !== "win32")("terminates an owned parent and descendant with an empty PATH", async () => {

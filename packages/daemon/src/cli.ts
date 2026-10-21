@@ -126,15 +126,91 @@ export async function killTreeAndWait(pid: number | undefined): Promise<void> {
     }
     return;
   }
-  await new Promise<void>((resolve, reject) => {
+  const result = await new Promise<{ code: number | null; stdout: string; stderr: string; stdoutTruncated: boolean; stderrTruncated: boolean }>((resolve, reject) => {
     const executable = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe");
-    const child = spawn(executable, ["/pid", String(pid), "/T", "/F"], { env: cliEnv({}), stdio: "ignore", windowsHide: true });
-    child.once("error", reject);
-    child.once("close", (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`Could not stop the CLI process tree (taskkill exit ${code}). Try Stop again.`));
+    const child = spawn(executable, ["/pid", String(pid), "/T", "/F"], { env: cliEnv({}), stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    let stdout = "";
+    let stderr = "";
+    let stdoutTruncated = false;
+    let stderrTruncated = false;
+    const limit = 65_536;
+    child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
+      stdoutTruncated ||= stdout.length + chunk.length > limit;
+      stdout = (stdout + chunk).slice(0, limit);
     });
+    child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
+      stderrTruncated ||= stderr.length + chunk.length > limit;
+      stderr = (stderr + chunk).slice(0, limit);
+    });
+    child.once("error", reject);
+    child.once("close", (code) => resolve({ code, stdout, stderr, stdoutTruncated, stderrTruncated }));
   });
+  if (result.code === 0) return;
+  // Sandboxed descendants can refuse taskkill yet disappear when their owner is terminated.
+  // A nonzero exit is recoverable only with a complete reported tree and proof every PID is gone.
+  const targets = result.code !== null && result.code > 0 && !result.stdoutTruncated && !result.stderrTruncated
+    ? taskkillTargets(pid, result.stdout, result.stderr) : null;
+  if (targets && await taskkillTargetsGone(pid, targets)) return;
+  throw new Error(`Could not stop the CLI process tree (taskkill exit ${result.code}). Try Stop again.`, { cause: { pid, ...result } });
+}
+
+function taskkillTargets(root: number, stdout: string, stderr: string): number[] | null {
+  const parents = new Map<number, number>();
+  const lines = (text: string) => text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const add = (match: RegExpMatchArray | null): number | null => {
+    if (!match) return null;
+    const pid = Number(match[1]);
+    const parent = Number(match[2]);
+    if (![pid, parent].every((value) => Number.isSafeInteger(value) && value > 0 && value <= 0xffff_ffff) || parents.has(pid)) return null;
+    parents.set(pid, parent);
+    return pid;
+  };
+  let rootTerminated = false;
+  // Unrecognized/localized output keeps the original failure; it cannot prove a complete tree.
+  for (const line of lines(stdout)) {
+    const pid = add(line.match(/^SUCCESS: The process with PID (\d+) \(child process of PID (\d+)\) has been terminated\.$/));
+    if (pid === null) return null;
+    if (pid === root) rootTerminated = true;
+  }
+  const errors = lines(stderr);
+  for (let index = 0; index < errors.length; index += 2) {
+    if (add(errors[index]!.match(/^ERROR: The process with PID (\d+) \(child process of PID (\d+)\) could not be terminated\.$/)) === null
+      || !/^Reason: .+$/.test(errors[index + 1] ?? "")) return null;
+  }
+  // An absent/failed root alone gives no evidence that taskkill enumerated its descendants.
+  if (!rootTerminated || parents.get(root) !== process.pid || parents.has(process.pid)) return null;
+  for (const pid of parents.keys()) {
+    const seen = new Set<number>();
+    let ancestor = pid;
+    while (ancestor !== root) {
+      const parent = parents.get(ancestor);
+      if (parent === undefined || seen.has(ancestor)) return null;
+      seen.add(ancestor);
+      ancestor = parent;
+    }
+  }
+  return [...parents.keys()];
+}
+
+function processGone(pid: number): boolean {
+  try { process.kill(pid, 0); } catch (error) {
+    return error instanceof Error && "code" in error && error.code === "ESRCH";
+  }
+  return false;
+}
+
+async function taskkillTargetsGone(root: number, targets: number[]): Promise<boolean> {
+  const deadline = Date.now() + 2_000;
+  while (!processGone(root)) {
+    if (Date.now() >= deadline) return false;
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+  }
+  for (;;) {
+    const gone = targets.map(processGone);
+    if (gone.every(Boolean)) return true;
+    if (Date.now() >= deadline) return false;
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+  }
 }
 
 // Opens a sign-in URL in the default browser. No shell: URLs contain & which cmd.exe would split on.

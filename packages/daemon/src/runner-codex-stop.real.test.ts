@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import type { Approval } from "@tjommie/protocol";
 import { expect, it, vi } from "vitest";
 import { createBot, getStoredBot } from "./bots.ts";
+import { browserServer } from "./browser.ts";
 import { cliEnv } from "./cli.ts";
 import { openDb } from "./db.ts";
 import { JsonRpcLines } from "./providers/codex-rpc.ts";
@@ -45,6 +46,17 @@ it.each([false, true])("runs queued Codex work after Stop (wait for actual comma
   ensureAccounts(db, realAccountsDir());
   const order: Record<string, unknown>[] = [];
   const startedAt = Date.now();
+  const processKill = process.kill;
+  const probes = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+    try {
+      const result = processKill(pid, signal);
+      if (signal === 0) order.push({ action: "process-probe", pid, state: "running" });
+      return result;
+    } catch (error) {
+      if (signal === 0) order.push({ action: "process-probe", pid, state: error instanceof Error && "code" in error ? error.code : "unknown" });
+      throw error;
+    }
+  });
   const handleLine = JsonRpcLines.prototype.handleLine;
   const trace = vi.spyOn(JsonRpcLines.prototype, "handleLine").mockImplementation(function (this: JsonRpcLines, line: string) {
     let message: Record<string, unknown> = {};
@@ -67,6 +79,7 @@ it.each([false, true])("runs queued Codex work after Stop (wait for actual comma
     db,
     isSignedIn: () => true,
     codexSandboxReady: () => sandboxReady,
+    hooks: { mcpServers: (bot) => [browserServer(bot, { ...process.env, TJOMMIE_BROWSER_HEADLESS: "1" })] },
     broadcast: (event, data) => {
       if (event === "approval.added") approvals.push(data as Approval);
     },
@@ -83,9 +96,7 @@ it.each([false, true])("runs queued Codex work after Stop (wait for actual comma
   const timer = (word: string, ms: number) => `node -e "setTimeout(() => console.log('${word}'), ${ms})"`;
   // Ask mode is read-only. Find the actual command by its unique marker without writing sandbox files.
   const commandMarker = `TJOMMIE-STOP-${randomUUID()}`;
-  const stopCommand = waitForCommand
-    ? `node -e "console.log('${commandMarker}:'+process.pid);setTimeout(() => console.log('done'),60000)"`
-    : timer("done", 60000);
+  const stopCommand = `node -e "console.log('${commandMarker}:'+process.pid);setTimeout(() => console.log('done'),60000)"`;
   const allowed = new Set([timer("first", 8000), stopCommand]);
   let answered = 0;
   const approveTimers = () => {
@@ -133,7 +144,17 @@ it.each([false, true])("runs queued Codex work after Stop (wait for actual comma
     const stoppedPid = stoppedSession.pid();
     expect(stoppedPid).toBeDefined();
     order.push({ action: "stop" });
-    await runner.stop(bot.id);
+    try {
+      await runner.stop(bot.id);
+      order.push({ action: "stop-returned" });
+    } catch (error) {
+      let rootState = "running";
+      try { process.kill(stoppedPid!, 0); } catch (checkError) {
+        rootState = checkError instanceof Error && "code" in checkError ? String(checkError.code) : "unknown";
+      }
+      order.push({ action: "stop-failed", pid: stoppedPid, rootState, commandPid: await timerPid(commandMarker), taskkill: error instanceof Error ? error.cause : null });
+      throw error;
+    }
     await waitFor(() => state() === "idle", 20_000);
     await stoppedSession.waitForExit?.();
     expect(() => process.kill(stoppedPid!, 0)).toThrow();
@@ -162,6 +183,7 @@ it.each([false, true])("runs queued Codex work after Stop (wait for actual comma
     runner.shutdown();
     await Promise.all(sessions.map((session) => session.waitForExit?.()));
     trace.mockRestore();
+    probes.mockRestore();
     db.close();
   }
 });
