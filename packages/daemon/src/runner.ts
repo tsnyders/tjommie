@@ -608,7 +608,7 @@ export class Runner {
     live.steering = true;
     try {
       const next = () => nextSteerable(this.#db, botId, this.#dest(botId, live));
-      for (let item = next(); item && live.busy && live.sent; item = next()) {
+      for (let item = next(); item && live.busy && live.sent && !live.stopRequested; item = next()) {
         const session = live.session;
         if (!session) break;
         setStatus(this.#db, item.id, "done"); // claim it first, so a turn that ends meanwhile can't pick it up too
@@ -668,7 +668,7 @@ export class Runner {
       case "turn_done":
         return this.#finishTurn(botId, event.ok, event.error);
       case "exit":
-        return this.#onExit(botId, live, event.error);
+        return this.#onExit(botId, live, event.error, event.completedTurn);
     }
   }
 
@@ -899,7 +899,7 @@ export class Runner {
     this.pump(botId);
   }
 
-  #onExit(botId: string, live: Live, error: string | null): void {
+  #onExit(botId: string, live: Live, error: string | null, completedTurn?: { ok: boolean; error: string | null }): void {
     const resumeFailed = !live.fresh && !live.sawSession;
     live.session = null;
     this.#safely(() => this.#hooks.sessionClosed?.(botId));
@@ -924,7 +924,7 @@ export class Runner {
       return;
     }
     live.limitHit = false; // an exit is terminal even if a limit event arrived first
-    this.#finishTurn(botId, false, error ?? "The CLI stopped unexpectedly.");
+    this.#finishTurn(botId, completedTurn?.ok ?? false, completedTurn ? completedTurn.error : error ?? (live.stopRequested ? null : "The CLI stopped unexpectedly."));
   }
 
   #closeSession(botId: string, live: Live): void {

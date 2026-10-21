@@ -1,5 +1,5 @@
 import type { Autonomy } from "@tjommie/protocol";
-import type { CliCommand } from "../cli.ts";
+import { killTreeAndWait, type CliCommand } from "../cli.ts";
 import { RpcRemoteError, startCodexServer, type CodexServer, type JsonRpcLines } from "./codex-rpc.ts";
 import { isCodexMcpToolCall, mapCodexElicitation, mapCodexNotification, mapCodexRequest } from "./codex-parse.ts";
 import type { ApprovalAnswer, ProviderEvent, ProviderSession, StartOptions } from "./types.ts";
@@ -11,8 +11,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function turnId(params: unknown): string | null {
-  if (!isRecord(params) || !isRecord(params.turn) || typeof params.turn.id !== "string") return null;
-  return params.turn.id;
+  if (!isRecord(params)) return null;
+  if (typeof params.turnId === "string") return params.turnId;
+  return isRecord(params.turn) && typeof params.turn.id === "string" ? params.turn.id : null;
 }
 
 function isTurnAlreadyEnded(error: unknown): boolean {
@@ -80,10 +81,15 @@ export class CodexSession implements ProviderSession {
   #approvals = new Map<string, Pending>();
   #threadId = "";
   #turnId: string | null = null;
+  #completedTurns = new Set<string>();
   #model = "";
   #closed = false;
   #starting: Promise<void> | null = null;
   #sending: Promise<void> | null = null;
+  #interrupting: Promise<boolean> | null = null;
+  #stopping = false;
+  #stoppedTurnId: string | null = null;
+  #stopCompletion: { ok: boolean; error: string | null } | null = null;
   #exited: Promise<void> = Promise.resolve();
 
   constructor(cmd: CliCommand, options: StartOptions) {
@@ -122,18 +128,45 @@ export class CodexSession implements ProviderSession {
     server.child.on("exit", (code) => {
       if (this.#server !== server) return; // closed on purpose
       this.#server = null;
+      if (this.#stopping) return; // interrupt() publishes exit after the whole tree has stopped
       this.#emit({ type: "exit", error: code === 0 || code === null ? null : `Codex exited with code ${code}` });
     });
     server.rpc.onNotification = (method, params) => {
-      if (method === "turn/started") this.#turnId = turnId(params);
-      if (method === "turn/completed") this.#turnId = null;
+      const id = turnId(params);
+      // An approved command can emit item/started and item/completed AFTER its interrupted
+      // turn/completed. Do not let that old work look like a new background turn to the runner.
+      // Usage notifications may still arrive late and must remain billable.
+      if (id && this.#completedTurns.has(id) && (method.startsWith("item/") || method.startsWith("turn/"))) return;
+      if (method === "turn/started" && id) this.#turnId = id;
+      if (method === "turn/completed") {
+        const completedId = id ?? this.#turnId;
+        if (completedId) this.#completedTurns.add(completedId);
+        if (this.#turnId !== null && this.#turnId !== completedId) return;
+        this.#turnId = null;
+        if (this.#stopping) {
+          this.#stoppedTurnId = completedId;
+          const completion = mapCodexNotification(method, params, this.#model).find((event) => event.type === "turn_done");
+          if (completion) this.#stopCompletion = { ok: completion.ok, error: completion.error };
+          return; // the interrupted command can still start; wait for process-tree termination
+        }
+      }
       for (const event of mapCodexNotification(method, params, this.#model)) this.#emit(event);
     };
     server.rpc.onRequest = (id, method, params) => {
-      if (method === "mcpServer/elicitation/request") return this.#onElicitation(server.rpc, id, params);
+      const requestTurn = turnId(params);
+      const completed = requestTurn !== null && this.#completedTurns.has(requestTurn);
+      if (method === "mcpServer/elicitation/request") {
+        if (completed) server.rpc.respond(id, { action: "decline" });
+        else this.#onElicitation(server.rpc, id, params);
+        return;
+      }
       const approval = mapCodexRequest(id, method, params);
       if (!approval) {
         server.rpc.respondError(id, -32601, "Not supported by Tjommie");
+        return;
+      }
+      if (completed) {
+        server.rpc.respond(id, { decision: "decline" });
         return;
       }
       this.#approvals.set(approval.id, { rpcId: id, answers: "decision" });
@@ -162,7 +195,11 @@ export class CodexSession implements ProviderSession {
 
   async send(text: string): Promise<void> {
     const pending = this.#rpc().request<{ turn: { id: string } }>("turn/start", { threadId: this.#threadId, input: [{ type: "text", text }] })
-      .then((response) => { this.#turnId = response.turn.id; });
+      .then((response) => {
+        // Notifications can finish this turn (and start another) before its start response.
+        const id = response.turn.id;
+        if (!this.#completedTurns.has(id) && (this.#turnId === null || this.#turnId === id)) this.#turnId = id;
+      });
     this.#sending = pending;
     try {
       await pending;
@@ -183,16 +220,63 @@ export class CodexSession implements ProviderSession {
   }
 
   async interrupt(): Promise<boolean> {
-    await this.#sending;
-    if (!this.#turnId || !this.#server) return false;
+    if (this.#interrupting) return this.#interrupting;
+    const pending = this.#interrupt();
+    this.#interrupting = pending;
     try {
-      await this.#rpc().request("turn/interrupt", { threadId: this.#threadId, turnId: this.#turnId });
+      return await pending;
+    } finally {
+      if (this.#interrupting === pending) this.#interrupting = null;
+    }
+  }
+
+  async #interrupt(): Promise<boolean> {
+    const ownedServer = this.#server;
+    this.#stopping = true;
+    try {
+      await this.#sending;
+      const server = this.#server;
+      const id = this.#turnId ?? this.#stoppedTurnId;
+      if (!server) {
+        if (!ownedServer || this.#closed) return false;
+        await this.#exited;
+        throw new Error("Codex exited before its process tree could be stopped.");
+      }
+      if (!id && !this.#stopCompletion) return false;
+      this.#stoppedTurnId = id;
+      if (id) {
+        try {
+          await server.rpc.request("turn/interrupt", { threadId: this.#threadId, turnId: id });
+        } catch (error) {
+          if (!isTurnAlreadyEnded(error) && !this.#completedTurns.has(id) && this.#server === server) throw error;
+        }
+      }
+      // Codex can launch an approved command after acknowledging interruption. Retire this
+      // owned process tree; the runner resumes the saved thread for its next queued item.
+      if (this.#server !== server) throw new Error("Codex exited before its process tree could be stopped.");
+      await killTreeAndWait(server.child.pid);
+      await this.#exited;
+      this.#finishStop();
       return true;
     } catch (error) {
-      if (isTurnAlreadyEnded(error)) return true;
-      console.error("Codex turn interrupt failed", error);
+      // An exit can reject send/interrupt, or precede a failed taskkill. Its callback was
+      // held above, so publish the failure instead of leaving the runner busy forever.
+      if (ownedServer && this.#server !== ownedServer && !this.#closed) {
+        this.#closed = true;
+        this.#emit({ type: "exit", error: error instanceof Error ? error.message : String(error) });
+      }
       throw error;
+    } finally {
+      this.#stopping = false;
     }
+  }
+
+  #finishStop(): void {
+    this.#closed = true;
+    this.#stoppedTurnId = null;
+    const completedTurn = this.#stopCompletion?.ok ? this.#stopCompletion : null;
+    this.#stopCompletion = null;
+    this.#emit({ type: "exit", error: null, ...(completedTurn ? { completedTurn } : {}) });
   }
 
   answer(approvalId: string, answer: ApprovalAnswer): void {

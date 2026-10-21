@@ -387,6 +387,27 @@ describe("Runner session costs", () => {
 });
 
 describe("Runner turn settlement", () => {
+  it.each([false, true])("queues chat until stopped provider termination (turn completed normally: %s)", async (completed) => {
+    const h = harness();
+    const bot = newBot(h);
+    const first = h.runner.submit(bot.id, "timer", []);
+    await waitFor(() => h.sessions[0]?.sent.length);
+    const stopping = Promise.withResolvers<void>();
+    h.sessions[0].interruptPromise = stopping.promise;
+    const stopped = h.runner.stop(bot.id);
+    const followup = h.runner.submit(bot.id, "next", []);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(h.sessions[0].steered).toEqual([]);
+    expect(itemForMessage(h.db, followup.id).status).toBe("queued");
+    h.sessions[0].emit({ type: "exit", error: null, ...(completed ? { completedTurn: { ok: true, error: null } } : {}) });
+    stopping.resolve();
+    await stopped;
+    await waitFor(() => h.sessions[1]?.sent.length);
+    expect(itemForMessage(h.db, first.id).status).toBe(completed ? "done" : "interrupted");
+    expect(itemForMessage(h.db, followup.id).status).toBe("running");
+    expect(h.sessions[1].sent.at(-1)).toContain("next");
+  });
+
   it("settles a Stop mid-tool before broadcasting the final activity row", async () => {
     const h = harness();
     const bot = newBot(h);

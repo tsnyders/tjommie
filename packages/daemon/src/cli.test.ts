@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { cliEnv, openUrl, resolveCli, runCli, spawnCli } from "./cli.ts";
+import { cliEnv, killTree, killTreeAndWait, openUrl, resolveCli, runCli, spawnCli } from "./cli.ts";
 
 const dir = () => mkdtempSync(join(tmpdir(), "tjommie cli ñ-"));
 
@@ -88,5 +88,38 @@ describe("runCli", () => {
 describe("openUrl", () => {
   it("refuses anything but https", () => {
     expect(() => openUrl("file:///C:/Windows/System32/calc.exe")).toThrow(/https/);
+  });
+});
+
+describe("killTreeAndWait", () => {
+  it("rejects a missing process identity", async () => {
+    await expect(killTreeAndWait(undefined)).rejects.toThrow("process ID");
+  });
+
+  it.skipIf(process.platform !== "win32")("terminates an owned parent and descendant with an empty PATH", async () => {
+    const script = "const { spawn } = require('node:child_process'); const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', windowsHide: true }); console.log(child.pid); setInterval(() => {}, 1000);";
+    const parent = spawnCli({ file: process.execPath, args: [] }, ["-e", script], { cwd: dir(), env: cliEnv({}) });
+    const exited = new Promise<void>((resolve) => parent.once("exit", () => resolve()));
+    try {
+      const descendant = await new Promise<number>((resolve, reject) => {
+        parent.once("error", reject);
+        parent.stdout.once("data", (chunk: Buffer) => resolve(Number(chunk.toString().trim())));
+      });
+      expect(Number.isSafeInteger(descendant) && descendant > 0).toBe(true);
+      const originalPath = process.env.PATH;
+      try {
+        process.env.PATH = "";
+        await killTreeAndWait(parent.pid);
+      } finally {
+        if (originalPath === undefined) delete process.env.PATH;
+        else process.env.PATH = originalPath;
+      }
+      await exited;
+      expect(() => process.kill(parent.pid!, 0)).toThrow();
+      expect(() => process.kill(descendant, 0)).toThrow();
+    } finally {
+      if (parent.exitCode === null && parent.signalCode === null) killTree(parent.pid);
+      await exited;
+    }
   });
 });

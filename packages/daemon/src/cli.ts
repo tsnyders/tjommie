@@ -116,6 +116,27 @@ export function killTree(pid: number | undefined): void {
   }
 }
 
+// Stop must wait for taskkill /T to finish, not just for the parent CLI's exit event.
+// The caller supplies only a PID from its own live ChildProcess.
+export async function killTreeAndWait(pid: number | undefined): Promise<void> {
+  if (pid === undefined) throw new Error("Cannot stop a CLI without its process ID");
+  if (process.platform !== "win32") {
+    try { process.kill(pid, "SIGKILL"); } catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) throw error;
+    }
+    return;
+  }
+  await new Promise<void>((resolve, reject) => {
+    const executable = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe");
+    const child = spawn(executable, ["/pid", String(pid), "/T", "/F"], { env: cliEnv({}), stdio: "ignore", windowsHide: true });
+    child.once("error", reject);
+    child.once("close", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`Could not stop the CLI process tree (taskkill exit ${code}). Try Stop again.`));
+    });
+  });
+}
+
 // Opens a sign-in URL in the default browser. No shell: URLs contain & which cmd.exe would split on.
 export function openUrl(url: string): void {
   if (!url.startsWith("https://")) throw new Error(`Refusing to open a non-https URL: ${url}`);

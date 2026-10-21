@@ -13,7 +13,7 @@ export type ProviderEvent =
   | { type: "usage"; model: string; input: number; cachedInput: number; output: number; reasoning: number; costUsd: number | null; totalCostUsd?: number | null }
   | { type: "limit"; state: "ok" | "near" | "reached"; usedPercent: number | null; resetsAt: string | null }
   | { type: "turn_done"; ok: boolean; error: string | null }
-  | { type: "exit"; error: string | null };
+  | { type: "exit"; error: string | null; completedTurn?: { ok: boolean; error: string | null } };
 
 // An MCP server attached to one CLI session: Tjommie's own over HTTP, or a program the CLI starts (the browser).
 // autoAllow: its tools run without asking the person.
