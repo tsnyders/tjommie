@@ -11,10 +11,13 @@ Working branch: `phase1-completion-20261021`, based on `implement-phase-1-multi-
 - [x] DevOps & Cloud: require an artifact for explicit packaged verification and reject empty test suites.
 - [x] Coordinator: run typecheck, lint, fast tests, no-any checks, and applicable real tests on the combined branch.
 - [x] Independent reviewers: report findings without editing files or writing reports to disk.
-- [ ] Coordinator: build installer and run mandatory packaged smoke verification.
-- [ ] Coordinator and owner: run the installed-app demo; record each actual result and any human-interaction blocker.
+- [x] Coordinator: build installer and run mandatory packaged smoke verification (final artifact at `56f08c6`).
+- [x] Deep Investigation: fix the Codex post-Stop queue stall found by installed acceptance; obtain independent review, rebuild and repeat installed verification.
+- [x] Coordinator and owner: run the installed-app demo; record each actual result and any human-interaction blocker.
 - [x] Quick Tasks: reconcile superseded security instructions and specification drift against source.
 
 Review follow-ups also completed: isolate failing routines, correlate sign-in attempts and preserve simultaneous provider sign-ins, pin ACL helper modules in the child environment, reject stale or modified package payloads, and tolerate unstaged source deletions in the no-any check.
 
 Agents own separate file lanes. Only the coordinator commits changes. Real tests must use disposable roots, Tjommie-owned provider accounts and verified process ownership. Do not print credentials, alter personal CLI configuration, or stop unrelated services. Record skipped tests and incomplete acceptance items explicitly.
+
+Final verification: 848 fast tests / 68 files; TypeScript and no-any (199 files), lint and build passed. Both live Stop cases and guarded Windows recovery passed. Mandatory packaged smoke and all nine final installed checks passed. Owner confirmed browser persistence and visual acceptance; the app was left closed. Evidence and remaining follow-ups: `docs/superpowers/demos/tjommie-phase1-demo.md`.

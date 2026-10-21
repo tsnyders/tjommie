@@ -1,0 +1,16 @@
+{
+  "startedAt": "2026-10-21T22:06:59.027Z",
+  "sourceCommit": "3f970a3",
+  "executable": "C:\\Users\\tyrel\\AppData\\Local\\Programs\\Tjommie\\Tjommie.exe",
+  "checks": {
+    "installed providers ready": "Pass",
+    "installed cross-provider exchange": "Pass",
+    "installed Codex steering": "Pass",
+    "installed Codex Stop": "Pass",
+    "installed persistent approval rule": "Pass",
+    "installed browser tools and own profile": "Pass",
+    "installed routine proposal and approval": "Pass",
+    "installed scheduled routine with window closed": "Fail"
+  },
+  "finishedAt": "2026-10-21T22:12:16.838Z"
+}
