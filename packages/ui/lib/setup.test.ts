@@ -1,6 +1,6 @@
 import type { ProviderSetup } from "@tjommie/protocol";
 import { describe, expect, it } from "vitest";
-import { cardView, failedSetup, planLabel, sameSignIn } from "./setup";
+import { cardView, failedSetup, liveSignIns, planLabel, sameSignIn } from "./setup";
 
 type Claude = Extract<ProviderSetup, { provider: "claude" }>;
 type Codex = Extract<ProviderSetup, { provider: "codex" }>;
@@ -43,5 +43,26 @@ describe("cardView", () => {
     const entries = failedSetup("The check failed");
     expect(entries.map((entry) => entry.provider)).toEqual(["claude", "codex"]);
     for (const entry of entries) expect(cardView(entry, quiet)).toEqual({ kind: "problem", reason: "The check failed" });
+  });
+});
+
+describe("liveSignIns", () => {
+  const [claudeOut, codexOut] = failedSetup("x");
+  const both = { claude: { since: claudeOut, attempt: "c1" }, codex: { since: codexOut, attempt: "x1" } };
+  const setup = [claudeOut!, codexOut!];
+
+  it("keeps both providers' sign-ins, and the same object, while neither ended", () => {
+    expect(liveSignIns(both, [], setup)).toBe(both);
+    expect(liveSignIns(both, ["other"], setup)).toBe(both);
+  });
+
+  it("ends only the provider whose attempt ended", () => {
+    expect(liveSignIns(both, ["x1"], setup)).toEqual({ claude: both.claude });
+    expect(liveSignIns(both, ["c1"], setup)).toEqual({ codex: both.codex });
+  });
+
+  it("ends only the provider whose report changed", () => {
+    const signedIn = setup.map((entry) => (entry.provider === "claude" ? { ...entry, signedIn: true, account: "a@b.c" } : entry));
+    expect(liveSignIns(both, [], signedIn)).toEqual({ codex: both.codex });
   });
 });

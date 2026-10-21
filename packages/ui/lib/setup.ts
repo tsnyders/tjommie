@@ -34,6 +34,18 @@ export function cardView(setup: ProviderSetup | undefined, local: { signingIn: b
 // report changes: setup.changed also arrives for other reasons (Check again, the other provider, the sandbox).
 export const sameSignIn = (a: ProviderSetup | undefined, b: ProviderSetup | undefined): boolean => a?.signedIn === b?.signedIn && a?.account === b?.account;
 
+// Each provider's sign-in in progress: the report when Sign in was clicked, and the daemon's id for that attempt.
+export type SignIns = Partial<Record<Provider, { since: ProviderSetup | undefined; attempt: string }>>;
+
+// Drops the sign-ins that are over: their attempt ended, or the provider's report changed. Returns the same
+// object when none is, so it can be compared by identity during render.
+export function liveSignIns(signIns: SignIns, ended: string[], setup: ProviderSetup[] | null): SignIns {
+  const live = Object.entries(signIns).filter(
+    ([provider, entry]) => !ended.includes(entry.attempt) && sameSignIn(setup?.find((item) => item.provider === provider), entry.since),
+  );
+  return live.length === Object.keys(signIns).length ? signIns : Object.fromEntries(live);
+}
+
 // Both providers' entries when the setup check itself fails, so each card shows the reason and Check again
 // instead of "Checking" forever.
 export function failedSetup(reason: string): ProviderSetup[] {

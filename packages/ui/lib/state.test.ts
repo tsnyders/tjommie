@@ -123,15 +123,18 @@ describe("app state", () => {
     expect(connected(state, { bots: [], settings: { chainLimit: 5 }, routines: [] }).latestRuns).toEqual({});
   });
 
-  it("counts each provider's ended sign-ins, so a card that's signing in can tell its sign-in ended", () => {
-    const ended = (provider: "claude" | "codex"): ClientEvent => ({ type: "event", event: "setup.signInEnded", data: { provider } });
-    expect(initialState.signInsEnded).toEqual({ claude: 0, codex: 0 });
-    let state = applyEvent(initialState, ended("codex"));
-    state = applyEvent(state, ended("codex"));
-    state = applyEvent(state, ended("claude"));
-    expect(state.signInsEnded).toEqual({ claude: 1, codex: 2 });
-    // A new connection keeps the counts, so a card's count from before it never looks like a new end.
-    expect(connected(state, { bots: [], settings: { chainLimit: 5 }, routines: [] }).signInsEnded).toEqual({ claude: 1, codex: 2 });
+  it("records ended sign-in attempts, so an old attempt ending never reads as the new one ending", () => {
+    const ended = (provider: "claude" | "codex", attempt: string): ClientEvent => ({ type: "event", event: "setup.signInEnded", data: { provider, attempt } });
+    expect(initialState.signInsEnded).toEqual([]);
+    let state = applyEvent(initialState, ended("codex", "a"));
+    expect(state.signInsEnded.includes("b")).toBe(false); // a card signing in as "b" keeps waiting
+    state = applyEvent(state, ended("codex", "b"));
+    expect(state.signInsEnded).toEqual(["a", "b"]);
+    // A new connection keeps them, so an attempt that ended before it still reads as ended.
+    expect(connected(state, { bots: [], settings: { chainLimit: 5 }, routines: [] }).signInsEnded).toEqual(["a", "b"]);
+    for (let i = 0; i < 30; i++) state = applyEvent(state, ended("claude", `n${i}`));
+    expect(state.signInsEnded).toHaveLength(20);
+    expect(state.signInsEnded.at(-1)).toBe("n29");
   });
 
   it("keeps a failed history load until a new connection clears it", async () => {

@@ -33,7 +33,7 @@ const MessagePage = z.object({ messages: z.array(Message), hasMore: z.boolean() 
 // Every request the daemon answers: params are validated on arrival, results are what handlers return.
 export const methods = {
   "setup.status": { params: Empty, result: z.array(ProviderSetup) },
-  "setup.signIn": { params: z.object({ provider: Provider }), result: z.object({ url: z.string().nullable() }) },
+  "setup.signIn": { params: z.object({ provider: Provider }), result: z.object({ url: z.string().nullable(), attempt: z.string() }) },
   "setup.prepareCodexSandbox": { params: Empty, result: ProviderSetup.options[1] },
   "models.list": { params: z.object({ provider: Provider }), result: z.array(ModelInfo) },
   "bots.list": { params: Empty, result: z.array(Bot) },
@@ -77,7 +77,7 @@ export const events = {
   "setup.changed": z.array(ProviderSetup),
   // A provider's sign-in ended, sent after the fresh setup.changed. Also when it changed nothing: the window was
   // closed, the time ran out or the login failed.
-  "setup.signInEnded": z.object({ provider: Provider }),
+  "setup.signInEnded": z.object({ provider: Provider, attempt: z.string() }),
   notify: z.discriminatedUnion("kind", [
     Notification.extend({ kind: z.literal("approval"), approvalId: z.string().optional() }),
     Notification.extend({ kind: z.literal("limit") }),

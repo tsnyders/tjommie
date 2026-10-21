@@ -6,8 +6,10 @@ import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import builder from "electron-builder";
 import { rolldown } from "rolldown";
+import { buildInputHash, writePackagedProvenance } from "./packaged-provenance.ts";
 
 const repo = resolve(import.meta.dirname, "..", "..", "..");
+const inputsSha256 = buildInputHash(repo);
 const desktop = join(repo, "packages", "desktop");
 const out = join(repo, "dist-desktop");
 const app = join(out, "app"); // what goes into app.asar: the main process and the preload
@@ -69,3 +71,6 @@ await builder.build({
     publish: null,
   },
 });
+
+// A successful build is verifiable only for these exact inputs and all installer/payload bytes.
+writePackagedProvenance(repo, inputsSha256);

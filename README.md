@@ -26,6 +26,7 @@ npm run dev        # UI at http://localhost:3000
 npm run desktop    # the desktop app, on that UI and the development daemon (keep both running)
 npm test           # fast tests
 npm run test:real  # tests that drive the real Claude and Codex CLIs (needs the sign-in above)
+npm run check:no-any # rejects explicit any types in first-party TypeScript
 npm run typecheck
 npm run lint
 npm run build      # static export to packages/ui/out
@@ -41,7 +42,13 @@ npm run build      # static export to packages/ui/out
 
 ## Install
 
-`npm run package` builds the Windows installer, `dist-desktop\installer\Tjommie Setup 0.1.0.exe`. It installs Tjommie for the current Windows user, without admin rights, and starts it. The installer isn't signed yet, so Windows SmartScreen asks once: choose "More info", then "Run anyway". Uninstalling keeps your bots and their data in `%LOCALAPPDATA%\Tjommie`. `npm run test:real` also runs a smoke test on the unpacked build when there is one.
+`npm run package` builds the Windows installer, `dist-desktop\installer\Tjommie Setup 0.1.0.exe`. It installs Tjommie for the current Windows user, without admin rights, and starts it. The installer isn't signed yet, so Windows SmartScreen asks once: choose "More info", then "Run anyway". Uninstalling keeps your bots and their data in `%LOCALAPPDATA%\Tjommie`.
+
+After packaging, run `npm run test:packaged`. This mandatory gate requires the unpacked executable and fails if the smoke suite is missing, skipped, empty, or failing. The build stamps `dist-desktop/provenance.json`; the gate checks source-input hashes and every installer/payload file before and after the smoke test, rejecting stale or changed builds. It verifies packaged startup, required browser-tool files, and shutdown. `npm run test:real` covers the source application and providers separately. Installation and the full installed-app demo in Phase 1E Task 16 remain separate acceptance checks.
+
+After installing, set `TJOMMIE_TEST_EXECUTABLE` to the installed `Tjommie.exe` absolute path to run the existing desktop lifecycle and screen suites against that executable. They retain disposable data roots and Electron profiles and use the Tjommie-owned provider accounts. Unset it before returning to source-app tests. The mandatory packaged smoke always supplies its own unpacked executable path.
+
+TypeScript must never use explicit `any` types. `npm run typecheck` enforces this with the syntax-based `check:no-any` gate before checking types. Test commands fail when no test files are found.
 
 ## Autonomy
 

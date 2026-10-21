@@ -957,8 +957,8 @@ it("logs a rejected background setup refresh from the sign-in callback", async (
   const log = vi.spyOn(console, "error").mockImplementation(() => {});
   vi.mocked(checkSetup).mockRejectedValueOnce(failure);
   vi.mocked(signIn).mockImplementation(async (_db, _provider, onDone) => {
-    onDone(true);
-    return { url: null };
+    onDone(true, "a1");
+    return { url: null, attempt: "a1" };
   });
   await client.call("setup.signIn", { provider: "claude" });
   await waitFor(() => log.mock.calls.length);
@@ -969,27 +969,44 @@ it("logs a rejected background setup refresh from the sign-in callback", async (
 
 it("says a sign-in ended once, after the fresh setup, even when it changed nothing", async () => {
   const { client } = await harness();
-  let done: ((ok: boolean) => void) | undefined;
+  let done: ((ok: boolean, attempt: string) => void) | undefined;
   vi.mocked(signIn).mockImplementation(async (_db, _provider, onDone) => {
     done = onDone;
-    return { url: "https://auth.openai.com/sign-in" };
+    return { url: "https://auth.openai.com/sign-in", attempt: "a2" };
   });
   await client.call("setup.signIn", { provider: "codex" });
   const from = client.events.length;
 
-  done?.(false); // the login failed: the fresh setup reads as it did before
+  done?.(false, "a2"); // the login failed: the fresh setup reads as it did before
   await waitFor(() => client.events.slice(from).some((event) => event.event === "setup.signInEnded"));
   const setupEvents = client.events.slice(from).filter((event) => event.event === "setup.changed" || event.event === "setup.signInEnded");
   expect(setupEvents.map((event) => event.event)).toEqual(["setup.changed", "setup.signInEnded"]);
-  expect(setupEvents[1]).toEqual({ type: "event", event: "setup.signInEnded", data: { provider: "codex" } });
+  expect(setupEvents[1]).toEqual({ type: "event", event: "setup.signInEnded", data: { provider: "codex", attempt: "a2" } });
+});
+
+it("names the sign-in that ended, so a late end of an old attempt can't end a newer one", async () => {
+  const { client } = await harness();
+  const done: ((ok: boolean, attempt: string) => void)[] = [];
+  vi.mocked(signIn).mockImplementation(async (_db, _provider, onDone) => {
+    done.push(onDone);
+    return { url: null, attempt: `attempt-${done.length}` };
+  });
+  const first = await client.call("setup.signIn", { provider: "claude" });
+  const second = await client.call("setup.signIn", { provider: "claude" });
+  expect([first.attempt, second.attempt]).toEqual(["attempt-1", "attempt-2"]);
+  const from = client.events.length;
+  done[0]?.(false, first.attempt); // the old sign-in ends while the new one is open
+  await waitFor(() => client.events.slice(from).some((event) => event.event === "setup.signInEnded"));
+  const ended = client.events.slice(from).filter((event) => event.event === "setup.signInEnded");
+  expect(ended.map((event) => event.data)).toEqual([{ provider: "claude", attempt: "attempt-1" }]);
 });
 
 it("checks setup once and broadcasts the fresh result when sign-in ends", async () => {
   const { client } = await harness();
-  let done: ((ok: boolean) => void) | undefined;
+  let done: ((ok: boolean, attempt: string) => void) | undefined;
   vi.mocked(signIn).mockImplementation(async (_db, _provider, onDone) => {
     done = onDone;
-    return { url: null };
+    return { url: null, attempt: "a3" };
   });
   await client.call("setup.signIn", { provider: "claude" });
   const checksBefore = vi.mocked(checkSetup).mock.calls.length;
@@ -997,7 +1014,7 @@ it("checks setup once and broadcasts the fresh result when sign-in ends", async 
   const fresh = setup(true).map((entry) => entry.provider === "claude" ? { ...entry, account: "new@example.com" } : entry);
   vi.mocked(checkSetup).mockResolvedValue(fresh);
 
-  done?.(false);
+  done?.(false, "a3");
   await waitFor(() => client.events.filter((event) => event.event === "setup.changed").length === eventsBefore + 1);
   expect(checkSetup).toHaveBeenCalledTimes(checksBefore + 1);
   expect(client.events.filter((event) => event.event === "setup.changed").at(-1)?.data).toEqual(fresh);

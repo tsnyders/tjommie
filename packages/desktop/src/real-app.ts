@@ -21,8 +21,10 @@ const ownerships = new WeakMap<RealApp, Ownership>();
 // Run the production app from source or a packaged executable. Only the daemon receives the path to the user's
 // signed-in account folders; the data root, Electron profile and port are disposable for each launch.
 export async function launchRealApp(executablePath?: string): Promise<RealApp> {
+  // The same lifecycle and screen suites can verify the installed app after NSIS installation.
+  const selectedExecutable = executablePath ?? process.env.TJOMMIE_TEST_EXECUTABLE;
   const ownership: Ownership = {
-    executablePath: resolve(executablePath ?? (createRequire(import.meta.url)("electron") as string)),
+    executablePath: resolve(selectedExecutable ?? (createRequire(import.meta.url)("electron") as string)),
     startedAt: Date.now(),
     ownedPids: new Map(),
   };
@@ -34,7 +36,7 @@ export async function launchRealApp(executablePath?: string): Promise<RealApp> {
   try {
     electronApp = await _electron.launch({
       executablePath: ownership.executablePath,
-      args: executablePath ? [] : [desktopDir],
+      args: selectedExecutable ? [] : [desktopDir],
       env: {
         ...inherited,
         TJOMMIE_DESKTOP: "production",

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
@@ -264,18 +265,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 // Starts the provider's own sign-in for its Tjommie account and calls onDone once it finishes or times out.
 // Claude: `claude auth login` in a console window. Codex: OpenAI's sign-in URL from the app-server, opened
 // in the browser. Tjommie never sees a password or token; each CLI stores its login in the account folder.
-type SignInAttempt = { provider: Provider; url: string | null | undefined };
+type SignInAttempt = { id: string; provider: Provider; url: string | null | undefined };
 const signInProgress = new Map<string, SignInAttempt>();
 
-export async function signIn(db: Db, provider: Provider, onDone: (ok: boolean) => void): Promise<{ url: string | null }> {
+export async function signIn(db: Db, provider: Provider, onDone: (ok: boolean, attempt: string) => void): Promise<{ url: string | null; attempt: string }> {
   const account = accountFor(db, provider);
   const running = signInProgress.get(account.folder);
   if (running) {
     if (running.provider !== provider || running.url === undefined) throw new RpcError("busy", `${provider === "claude" ? "Claude" : "Codex"} sign-in is already running.`);
     if (provider === "codex" && running.url !== null) openUrl(running.url);
-    return { url: running.url };
+    return { url: running.url, attempt: running.id };
   }
-  const attempt: SignInAttempt = { provider, url: undefined };
+  const attempt: SignInAttempt = { id: randomUUID(), provider, url: undefined };
   signInProgress.set(account.folder, attempt);
   let finished = false;
   let cleanup = (): void => {};
@@ -286,7 +287,7 @@ export async function signIn(db: Db, provider: Provider, onDone: (ok: boolean) =
       cleanup();
     } finally {
       signInProgress.delete(account.folder);
-      onDone(ok);
+      onDone(ok, attempt.id);
     }
   };
   try {
@@ -321,7 +322,7 @@ export async function signIn(db: Db, provider: Provider, onDone: (ok: boolean) =
         }
       };
       pollTimer = setTimeout(() => void poll(), 3000);
-      return { url: null };
+      return { url: null, attempt: attempt.id };
     }
 
     const server = await startCodexServer(cmd, env, account.folder);
@@ -336,7 +337,7 @@ export async function signIn(db: Db, provider: Provider, onDone: (ok: boolean) =
     const login = await server.rpc.request<{ authUrl: string }>("account/login/start", { type: "chatgpt" });
     attempt.url = login.authUrl;
     openUrl(login.authUrl);
-    return { url: login.authUrl };
+    return { url: login.authUrl, attempt: attempt.id };
   } catch (error) {
     finish(false);
     throw error;

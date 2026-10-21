@@ -1,5 +1,7 @@
 # Tjommie Phase 1B: Bots Working Together Implementation Plan
 
+> **Historical plan, superseded for implementation.** This plan records the original implementation sequence and spike assumptions; it is not current implementation guidance. For current behavior, use the [design spec](../specs/2026-09-25-tjommie-design.md), [README](../../../README.md), and source under `packages/protocol`, `packages/daemon`, and `packages/desktop`. In particular, do not copy the old TypeScript snippets here: their interfaces and security settings are obsolete, and some contain `any` annotations. Never use `any` as a TypeScript type.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Bots can ask each other for help (Claude to Codex and back), talk in the Team room when @mentioned, share files, run on routines, and browse the web in their own Chrome profile, all on top of the Phase 1A daemon.

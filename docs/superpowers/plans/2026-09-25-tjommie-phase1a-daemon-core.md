@@ -1,5 +1,7 @@
 # Tjommie Phase 1A: Daemon Core Implementation Plan
 
+> **Historical plan, superseded for implementation.** This plan records the original implementation sequence and spike assumptions; it is not current implementation guidance. For current behavior, use the [design spec](../specs/2026-09-25-tjommie-design.md), [README](../../../README.md), and source under `packages/protocol`, `packages/daemon`, and `packages/desktop`. In particular, do not copy the old TypeScript snippets here: their interfaces and security settings are obsolete, and some contain `any` annotations. Never use `any` as a TypeScript type.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** A headless Tjommie daemon you can drive over its local WebSocket API. It creates Claude and Codex bots, streams their replies, lets you steer and stop them, and turns their permission requests into approval cards, with everything stored in SQLite.

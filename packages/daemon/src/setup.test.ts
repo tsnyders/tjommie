@@ -434,7 +434,7 @@ describe("sign-in", () => {
     current = "new@example.com";
     await vi.advanceTimersByTimeAsync(3000);
     expect(done).toHaveBeenCalledOnce();
-    expect(done).toHaveBeenCalledWith(true);
+    expect(done).toHaveBeenCalledWith(true, expect.any(String));
   });
 
   it("ends a first Claude sign-in at the first signed-in poll", async () => {
@@ -446,7 +446,7 @@ describe("sign-in", () => {
     current = "first@example.com";
     await vi.advanceTimersByTimeAsync(3000);
     expect(done).toHaveBeenCalledOnce();
-    expect(done).toHaveBeenCalledWith(true);
+    expect(done).toHaveBeenCalledWith(true, expect.any(String));
   });
 
   it("ends when the Claude console exits and ignores later polls", async () => {
@@ -459,7 +459,7 @@ describe("sign-in", () => {
     child.emit("close", 0);
     await vi.advanceTimersByTimeAsync(6000);
     expect(done).toHaveBeenCalledOnce();
-    expect(done).toHaveBeenCalledWith(false);
+    expect(done).toHaveBeenCalledWith(false, expect.any(String));
     expect(cliMocks.runCli).toHaveBeenCalledTimes(1);
   });
 
@@ -470,7 +470,7 @@ describe("sign-in", () => {
     await signIn(db, "claude", done);
     await vi.advanceTimersByTimeAsync(10 * 60_000);
     expect(done).toHaveBeenCalledOnce();
-    expect(done).toHaveBeenCalledWith(false);
+    expect(done).toHaveBeenCalledWith(false, expect.any(String));
   });
 
   it("reuses a running Claude console and starts fresh after it closes", async () => {
@@ -484,14 +484,16 @@ describe("sign-in", () => {
     });
     const firstDone = vi.fn();
     const repeatDone = vi.fn();
-    await signIn(db, "claude", firstDone);
-    await expect(signIn(db, "claude", repeatDone)).resolves.toEqual({ url: null });
+    const first = await signIn(db, "claude", firstDone);
+    await expect(signIn(db, "claude", repeatDone)).resolves.toEqual({ url: null, attempt: first.attempt });
     expect(children).toHaveLength(1);
     expect(cliMocks.runCli).toHaveBeenCalledTimes(1);
     children[0]?.emit("close", 0);
-    expect(firstDone).toHaveBeenCalledExactlyOnceWith(false);
+    expect(firstDone).toHaveBeenCalledExactlyOnceWith(false, first.attempt);
     expect(repeatDone).not.toHaveBeenCalled();
-    await expect(signIn(db, "claude", vi.fn())).resolves.toEqual({ url: null });
+    const second = await signIn(db, "claude", vi.fn());
+    expect(second).toEqual({ url: null, attempt: expect.any(String) });
+    expect(second.attempt).not.toBe(first.attempt); // a new sign-in is a new attempt
     expect(children).toHaveLength(2);
     children[1]?.emit("close", 0);
   });
@@ -520,17 +522,17 @@ describe("sign-in", () => {
       close: vi.fn(),
     }));
     const done = vi.fn();
-    await signIn(db, "codex", done);
+    const first = await signIn(db, "codex", done);
     const repeatDone = vi.fn();
-    await expect(signIn(db, "codex", repeatDone)).resolves.toEqual({ url: "https://example.com/login" });
+    await expect(signIn(db, "codex", repeatDone)).resolves.toEqual({ url: "https://example.com/login", attempt: first.attempt });
     expect(codexMocks.startCodexServer).toHaveBeenCalledOnce();
     expect(cliMocks.openUrl).toHaveBeenCalledTimes(2);
     expect(cliMocks.openUrl).toHaveBeenNthCalledWith(1, "https://example.com/login");
     expect(cliMocks.openUrl).toHaveBeenNthCalledWith(2, "https://example.com/login");
     notifications[0]?.("account/login/completed", { success: true });
-    expect(done).toHaveBeenCalledExactlyOnceWith(true);
+    expect(done).toHaveBeenCalledExactlyOnceWith(true, first.attempt);
     expect(repeatDone).not.toHaveBeenCalled();
-    await expect(signIn(db, "codex", vi.fn())).resolves.toEqual({ url: "https://example.com/login" });
+    await expect(signIn(db, "codex", vi.fn())).resolves.toEqual({ url: "https://example.com/login", attempt: expect.not.stringMatching(first.attempt) });
     expect(codexMocks.startCodexServer).toHaveBeenCalledTimes(2);
     expect(cliMocks.openUrl).toHaveBeenCalledTimes(3);
     notifications[1]?.("account/login/completed", { success: true });
@@ -563,7 +565,7 @@ describe("sign-in", () => {
     cliMocks.openConsole.mockImplementationOnce(() => { throw new Error("Console unavailable"); });
     const done = vi.fn();
     await expect(signIn(db, "claude", done)).rejects.toThrow("Console unavailable");
-    expect(done).toHaveBeenCalledExactlyOnceWith(false);
-    await expect(signIn(db, "claude", vi.fn())).resolves.toEqual({ url: null });
+    expect(done).toHaveBeenCalledExactlyOnceWith(false, expect.any(String));
+    await expect(signIn(db, "claude", vi.fn())).resolves.toEqual({ url: null, attempt: expect.any(String) });
   });
 });

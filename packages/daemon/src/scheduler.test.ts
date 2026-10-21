@@ -4,8 +4,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createBot, setPaused } from "./bots.ts";
 import { history } from "./chat.ts";
 import { openDb, type Db } from "./db.ts";
-import { enqueue, getWorkItem, setStatus, type NewWork } from "./queue.ts";
+import { enqueue, getWorkItem, nextQueued, recoverAfterRestart, setStatus, type WorkItem } from "./queue.ts";
 import { addRun, createRoutine, deleteRoutine, getRoutine, getRun, hasOpenRun, listRuns, updateRoutine } from "./routines.ts";
+import { Runner } from "./runner.ts";
 import { GRACE_MS, Scheduler, TICK_MS, duration, routinePrompt } from "./scheduler.ts";
 import { RpcError } from "./server.ts";
 import { tempRoot } from "./testing.ts";
@@ -14,7 +15,7 @@ const at = (iso: string) => Date.parse(iso);
 let root: string;
 let db: Db;
 let botId: string;
-let delivered: NewWork[];
+let delivered: WorkItem[];
 let stopped: [string, string][];
 let events: { event: string; data: unknown }[];
 let schedulers: Scheduler[];
@@ -37,7 +38,7 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-const scheduler = (deliver: (work: NewWork) => void = (work) => { delivered.push(work); }) => {
+const scheduler = (deliver: (work: WorkItem) => void = (work) => { delivered.push(work); }) => {
   const s = new Scheduler({
     db,
     broadcast: (event, data) => { events.push({ event, data }); },
@@ -53,6 +54,189 @@ const digest = (extra: { timeLimitMinutes?: number; enabled?: boolean; days?: nu
   createRoutine(db, { botId, name: "Digest", prompt: "Summarize my inbox", days: [0, 1, 2, 3, 4, 5, 6], times: ["08:00", "17:00"], timeZone: "UTC", ...extra }, at("2026-09-20T00:00:00Z"));
 
 describe("Scheduler", () => {
+  it.each(["routine_runs", "routines", "messages", "chains", "work_items"])("rolls back the entire firing when persisting %s fails", (table) => {
+    const routine = digest();
+    const s = scheduler();
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    db.exec(`CREATE TRIGGER fail_schedule BEFORE ${table === "routines" ? "UPDATE" : "INSERT"} ON ${table}
+      BEGIN SELECT RAISE(ABORT, 'simulated persistence failure'); END`);
+    expect(() => s.tick(at("2026-09-20T08:00:10Z"))).not.toThrow();
+    expect(log).toHaveBeenCalledWith(`Routine scheduler failed for ${routine.id}.`, expect.objectContaining({ message: "simulated persistence failure" }));
+    expect(getRoutine(db, routine.id)).toEqual(routine);
+    for (const name of ["routine_runs", "messages", "chains", "work_items"]) {
+      expect(db.prepare(`SELECT * FROM ${name}`).all()).toEqual([]);
+    }
+    expect(events).toEqual([]);
+    expect(delivered).toEqual([]);
+    db.exec("DROP TRIGGER fail_schedule");
+    s.tick(at("2026-09-20T08:00:30Z"));
+    expect(listRuns(db, routine.id)).toHaveLength(1);
+    expect(delivered).toHaveLength(1);
+  });
+
+  it("keeps firing later due routines while one routine repeatedly fails to persist", () => {
+    const failing = digest();
+    const later = digest({ times: ["08:01", "17:01"] });
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const s = scheduler();
+    db.exec(`CREATE TRIGGER fail_one_routine BEFORE INSERT ON work_items
+      WHEN (SELECT routine_id FROM routine_runs WHERE id = NEW.routine_run_id) = '${failing.id}'
+      BEGIN SELECT RAISE(ABORT, 'one routine unavailable'); END`);
+    s.tick(at("2026-09-20T08:01:10Z"));
+    expect(getRoutine(db, failing.id)).toEqual(failing);
+    expect(listRuns(db, failing.id)).toEqual([]);
+    expect(listRuns(db, later.id)).toMatchObject([{ status: "queued" }]);
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0].routineRunId).toBe(listRuns(db, later.id)[0].id);
+    expect(db.prepare("SELECT * FROM chains").all()).toHaveLength(1);
+    expect(history(db, botId, undefined, 10)).toHaveLength(1);
+    s.tick(at("2026-09-20T08:01:30Z"));
+    expect(log).toHaveBeenCalledTimes(2);
+    expect(getRoutine(db, failing.id)).toEqual(failing);
+    expect(listRuns(db, failing.id)).toEqual([]);
+    expect(delivered).toHaveLength(1);
+    db.exec("DROP TRIGGER fail_one_routine");
+    s.tick(at("2026-09-20T08:01:45Z"));
+    expect(listRuns(db, failing.id)).toMatchObject([{ status: "queued" }]);
+    expect(delivered).toHaveLength(2);
+  });
+
+  it("commits the schedule, label and work before broadcasting or waking the runner", () => {
+    const routine = digest();
+    const reader = openDb(join(root, "t.db"));
+    const observe = () => {
+      expect(getRoutine(reader, routine.id).nextRunAt).toBe("2026-09-20T17:00:00.000Z");
+      const [run] = listRuns(reader, routine.id);
+      const item = nextQueued(reader, botId)!;
+      expect(item.routineRunId).toBe(run.id);
+      expect(history(reader, botId, undefined, 10)).toMatchObject([{ id: item.messageId, data: { runId: run.id } }]);
+      expect(reader.prepare("SELECT id FROM chains").all()).toEqual([{ id: item.chainId }]);
+    };
+    try {
+      const s = new Scheduler({ db, broadcast: observe, deliver: (item) => { observe(); expect(getWorkItem(reader, item.id)).toEqual(item); }, stopItem: () => {} });
+      schedulers.push(s);
+      s.tick(at("2026-09-20T08:00:10Z"));
+      expect(db.prepare("SELECT * FROM work_items").all()).toHaveLength(1);
+    } finally {
+      reader.close();
+    }
+  });
+
+  it("retains committed work across a restart before the runner is woken, without firing twice", () => {
+    const routine = digest();
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    // Simulate termination after COMMIT, at the first external effect and before deliver.
+    const s = new Scheduler({ db, broadcast: () => { throw new Error("process stopped"); }, deliver: () => { throw new Error("must not wake"); }, stopItem: () => {} });
+    schedulers.push(s);
+    expect(() => s.tick(at("2026-09-20T08:00:10Z"))).not.toThrow();
+    expect(log).toHaveBeenCalledWith(`Routine scheduler failed for ${routine.id}.`, expect.objectContaining({ message: "process stopped" }));
+    const item = nextQueued(db, botId)!;
+    db.close();
+    db = openDb(join(root, "t.db"));
+    expect(recoverAfterRestart(db)).toEqual([]);
+    const restarted = scheduler();
+    restarted.recover();
+    restarted.tick(at("2026-09-20T08:00:30Z"));
+    expect(nextQueued(db, botId)).toEqual(item);
+    expect(listRuns(db, routine.id)).toMatchObject([{ id: item.routineRunId, status: "queued" }]);
+    expect(delivered).toEqual([]);
+    expect(events).toEqual([]);
+  });
+
+  it.each(["queued", "running"] as const)("settles a pre-existing orphan %s run on startup and releases future scheduling", (status) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(at("2026-09-20T07:59:00Z"));
+    const routine = digest();
+    const orphan = addRun(db, routine.id, "2026-09-19T17:00:00.000Z", status);
+    const s = scheduler();
+    s.start();
+    expect(getRun(db, orphan.id)).toMatchObject({ status: "failed", endedAt: expect.any(String), note: expect.stringContaining("restarted") });
+    expect(hasOpenRun(db, routine.id)).toBe(false);
+    expect(history(db, botId, undefined, 10)).toMatchObject([{ data: { runId: orphan.id, status: "failed" } }]);
+    expect(events.filter(({ event }) => event === "notify")).toHaveLength(1);
+    events.length = 0;
+    s.recover();
+    expect(events).toEqual([]);
+    s.tick(at("2026-09-20T08:00:10Z"));
+    expect(delivered).toHaveLength(1);
+    expect(listRuns(db, routine.id).map((run) => run.status)).toEqual(["queued", "failed"]);
+  });
+
+  it.each(["done", "failed", "interrupted"] as const)("settles an open run left behind after its work became %s", (status) => {
+    const routine = digest();
+    const s = scheduler();
+    s.tick(at("2026-09-20T08:00:10Z"));
+    const item = delivered[0];
+    setStatus(db, item.id, status);
+    s.recover();
+    expect(getRun(db, item.routineRunId!)?.status).toBe("failed");
+    expect(history(db, botId, undefined, 10)).toHaveLength(1);
+    expect(history(db, botId, undefined, 10)[0].data?.status).toBe("failed");
+    expect(hasOpenRun(db, routine.id)).toBe(false);
+  });
+
+  it.each(["queued", "running"] as const)("preserves open routine runs with %s work during reconciliation", (status) => {
+    const routine = digest();
+    const s = scheduler();
+    s.tick(at("2026-09-20T08:00:10Z"));
+    const item = delivered[0];
+    s.runStarted(item); // running + queued is also valid during a usage-limit retry.
+    setStatus(db, item.id, status);
+    const before = listRuns(db, routine.id);
+    events.length = 0;
+    s.recover();
+    expect(listRuns(db, routine.id)).toEqual(before);
+    expect(getWorkItem(db, item.id).status).toBe(status);
+    expect(events).toEqual([]);
+  });
+
+  it("hands persisted work to the real runner once and integrates interrupted-run recovery", () => {
+    const routine = digest();
+    const createSession = vi.fn(() => { throw new Error("must not start a CLI"); });
+    const s = scheduler((item) => { runner.deliver(item); delivered.push(item); });
+    // A signed-out synthetic bot holds the queue without touching accounts or launching a CLI.
+    const runner = new Runner({ db, broadcast: () => {}, isSignedIn: () => false, createSession,
+      hooks: { turnEnded: (item, result) => s.runEnded(item, result) } });
+    try {
+      s.tick(at("2026-09-20T08:00:10Z"));
+      expect(db.prepare("SELECT * FROM work_items").all()).toHaveLength(1);
+      const item = delivered[0];
+      s.runStarted(item);
+      setStatus(db, item.id, "running");
+      runner.recover();
+      s.recover();
+      expect(getWorkItem(db, item.id).status).toBe("interrupted");
+      expect(listRuns(db, routine.id)).toMatchObject([{ status: "failed", note: "Tjommie restarted while this was running." }]);
+      expect(history(db, botId, undefined, 10).filter((message) => message.kind === "routine")).toMatchObject([{ data: { status: "failed" } }]);
+      expect(createSession).not.toHaveBeenCalled();
+    } finally {
+      runner.shutdown();
+    }
+  });
+
+  it("rolls back a manual retry when queue persistence fails", () => {
+    const routine = digest();
+    setPaused(db, botId, true);
+    const s = scheduler();
+    s.tick(at("2026-09-20T08:00:10Z"));
+    setPaused(db, botId, false);
+    const [label] = history(db, botId, undefined, 10);
+    const before = listRuns(db, routine.id);
+    events.length = 0;
+    db.exec("CREATE TRIGGER fail_retry BEFORE INSERT ON work_items BEGIN SELECT RAISE(ABORT, 'queue unavailable'); END");
+    expect(() => s.retry(label)).toThrow("queue unavailable");
+    expect(listRuns(db, routine.id)).toEqual(before);
+    expect(history(db, botId, undefined, 10)).toEqual([label]);
+    expect(db.prepare("SELECT * FROM chains").all()).toEqual([]);
+    expect(db.prepare("SELECT * FROM work_items").all()).toEqual([]);
+    expect(events).toEqual([]);
+    expect(delivered).toEqual([]);
+    db.exec("DROP TRIGGER fail_retry");
+    const retried = s.retry(label);
+    expect(delivered).toHaveLength(1);
+    expect(getWorkItem(db, delivered[0].id).messageId).toBe(retried.id);
+  });
+
   it.each([
     { reason: "missed", status: "missed", note: "The PC was off or asleep, or Tjommie wasn't running." },
     { reason: "paused", status: "skipped", note: "Night Shift was paused." },
@@ -78,7 +262,7 @@ describe("Scheduler", () => {
     const routine = digest();
     const s = scheduler();
     s.tick(at("2026-09-20T08:00:10Z"));
-    const item = enqueue(db, delivered[0]);
+    const item = getWorkItem(db, delivered[0].id);
     s.runStarted(item);
     setStatus(db, item.id, "failed");
     s.runEnded(item, { outcome: "failed", error: "CLI exited" });
@@ -115,7 +299,7 @@ describe("Scheduler", () => {
     const [run] = listRuns(db, routine.id);
     expect(label).toMatchObject({ kind: "routine", data: { runId: run.id, status: "queued" } });
     expect(delivered[0].messageId).toBe(label.id);
-    const item = enqueue(db, delivered[0]);
+    const item = getWorkItem(db, delivered[0].id);
     s.runStarted(item);
     s.runEnded(item, { outcome, error: outcome === "failed" ? "CLI exited" : null });
     const status = outcome === "interrupted" ? "stopped" : outcome;
@@ -130,7 +314,8 @@ describe("Scheduler", () => {
     scheduler().tick(at("2026-09-20T08:00:10Z"));
     const [run] = listRuns(db, routine.id);
     expect(run).toMatchObject({ status: "queued", dueAt: "2026-09-20T08:00:00.000Z" });
-    expect(delivered).toEqual([{ botId, source: "routine", text: expect.stringContaining("Summarize my inbox"), messageId: expect.any(String), chainId: expect.any(String), routineRunId: run.id }]);
+    expect(delivered).toMatchObject([{ botId, source: "routine", text: expect.stringContaining("Summarize my inbox"), messageId: expect.any(String), chainId: expect.any(String), routineRunId: run.id, status: "queued" }]);
+    expect(getWorkItem(db, delivered[0].id)).toEqual(delivered[0]);
     expect(getRoutine(db, routine.id).nextRunAt).toBe("2026-09-20T17:00:00.000Z");
     expect(db.prepare("SELECT id, requests_made FROM chains").all()).toEqual([{ id: delivered[0].chainId, requests_made: 0 }]);
     expect(history(db, botId, undefined, 10)).toMatchObject([{ kind: "routine", data: { runId: run.id, status: "queued" } }]);
@@ -210,7 +395,7 @@ describe("Scheduler", () => {
     digest({ timeLimitMinutes: 180 });
     const s = scheduler();
     s.tick();
-    const item = enqueue(db, delivered[0]);
+    const item = getWorkItem(db, delivered[0].id);
     s.runStarted(item);
     const runId = item.routineRunId!;
     expect(getRun(db, runId)?.status).toBe("running");
@@ -225,7 +410,7 @@ describe("Scheduler", () => {
     digest();
     const s = scheduler();
     s.tick(at("2026-09-20T08:00:10Z"));
-    const item = enqueue(db, delivered[0]);
+    const item = getWorkItem(db, delivered[0].id);
     s.runStarted(item);
     s.runEnded(item, { outcome: "failed", error: "Codex exited with code 1" });
     expect(getRun(db, item.routineRunId!)).toMatchObject({ status: "failed", note: "Codex exited with code 1" });
@@ -247,7 +432,7 @@ describe("Scheduler", () => {
     });
     schedulers.push(s);
     s.tick();
-    const item = enqueue(db, delivered[0]);
+    const item = getWorkItem(db, delivered[0].id);
     s.runStarted(item);
     await vi.advanceTimersByTimeAsync(60_000);
     s.runEnded(item, { outcome: "done", error: null });
@@ -318,7 +503,7 @@ describe("Scheduler", () => {
     const tick = vi.spyOn(s, "tick");
     s.start();
     expect(tick).toHaveBeenCalledTimes(1);
-    const item = enqueue(db, delivered[0]);
+    const item = getWorkItem(db, delivered[0].id);
     s.runStarted(item);
     vi.advanceTimersByTime(29_999);
     expect(tick).toHaveBeenCalledTimes(1);
@@ -371,7 +556,7 @@ describe("Scheduler", () => {
     const routine = digest();
     const error = new Error("Provider queue failed \u2014 retry \ud83d\udea8");
     const log = vi.spyOn(console, "error").mockImplementation(() => {});
-    const deliver = vi.fn<(work: NewWork) => void>().mockImplementationOnce(() => { throw error; }).mockImplementation((work) => { delivered.push(work); });
+    const deliver = vi.fn<(work: WorkItem) => void>().mockImplementationOnce(() => { throw error; }).mockImplementation((work) => { delivered.push(work); });
     const s = scheduler(deliver);
     expect(() => s.tick(at("2026-09-20T08:00:10Z"))).not.toThrow();
     const [failed] = listRuns(db, routine.id);
@@ -397,7 +582,7 @@ describe("Scheduler", () => {
     const routine = digest({ timeLimitMinutes: 2 });
     const s = scheduler();
     s.tick();
-    const item = enqueue(db, delivered[0]);
+    const item = getWorkItem(db, delivered[0].id);
     s.runStarted(item);
     const started = getRun(db, item.routineRunId!);
     vi.advanceTimersByTime(60_000);
@@ -426,7 +611,7 @@ describe("Scheduler", () => {
     digest({ timeLimitMinutes: 1 });
     const s = scheduler();
     s.tick();
-    const item = enqueue(db, delivered[0]);
+    const item = getWorkItem(db, delivered[0].id);
     s.runStarted(item);
     vi.advanceTimersByTime(59_000);
     s.runRequeued(item);
@@ -446,7 +631,7 @@ describe("Scheduler", () => {
     const routine = digest({ timeLimitMinutes: 1 });
     const s = scheduler();
     s.tick(at("2026-09-20T08:00:00Z"));
-    const item = enqueue(db, delivered[0]);
+    const item = getWorkItem(db, delivered[0].id);
     deleteRoutine(db, routine.id);
     events.length = 0;
     expect(() => s.runStarted(item)).not.toThrow();
@@ -464,7 +649,7 @@ describe("Scheduler", () => {
     const routine = digest({ timeLimitMinutes: 1 });
     const s = scheduler();
     s.tick();
-    const item = enqueue(db, delivered[0]);
+    const item = getWorkItem(db, delivered[0].id);
     setStatus(db, item.id, "running");
     s.runStarted(item);
     deleteRoutine(db, routine.id);
@@ -490,7 +675,7 @@ describe("Scheduler", () => {
     const routine = digest({ timeLimitMinutes: 1 });
     const s = scheduler();
     s.tick(at("2026-09-20T08:00:00Z"));
-    const item = enqueue(db, delivered[0]);
+    const item = getWorkItem(db, delivered[0].id);
     s.runStarted(item);
     s.runEnded(item, { outcome, error: null });
     const ended = getRun(db, item.routineRunId!);
@@ -508,7 +693,7 @@ describe("Scheduler", () => {
     digest();
     const s = scheduler();
     s.tick(at("2026-09-20T08:00:00Z"));
-    const item = enqueue(db, delivered[0]);
+    const item = getWorkItem(db, delivered[0].id);
     s.runStarted(item);
     expect(vi.getTimerCount()).toBe(0);
     vi.advanceTimersByTime(24 * 60 * 60_000);

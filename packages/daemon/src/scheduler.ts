@@ -1,8 +1,8 @@
 import { messageData, type Message, type Routine, type RoutineLabelData, type RoutineRun } from "@tjommie/protocol";
 import { getStoredBot } from "./bots.ts";
 import { addMessage, getMessage, updateMessage } from "./chat.ts";
-import type { Db } from "./db.ts";
-import { newChain, type NewWork, type WorkItem } from "./queue.ts";
+import { transaction, type Db } from "./db.ts";
+import { enqueue, getWorkItem, newChain, setStatus, type WorkItem } from "./queue.ts";
 import { addRun, getRoutine, getRun, hasOpenRun, nextRunAfter, setNextRun, setRunStatus } from "./routines.ts";
 import { RpcError, type Broadcast } from "./server.ts";
 
@@ -24,13 +24,13 @@ export function routinePrompt(routine: Routine): string {
 export class Scheduler {
   #db: Db;
   #broadcast: Broadcast;
-  #deliver: (work: NewWork) => void;
+  #deliver: (work: WorkItem) => void;
   #stopItem: (itemId: string, notice: string) => void | Promise<void>;
   #timer: NodeJS.Timeout | null = null;
   #limits = new Map<string, NodeJS.Timeout>(); // run id -> its time limit
   #timedOut = new Set<string>();
 
-  constructor(deps: { db: Db; broadcast: Broadcast; deliver: (work: NewWork) => void; stopItem: (itemId: string, notice: string) => void | Promise<void> }) {
+  constructor(deps: { db: Db; broadcast: Broadcast; deliver: (work: WorkItem) => void; stopItem: (itemId: string, notice: string) => void | Promise<void> }) {
     this.#db = deps.db;
     this.#broadcast = deps.broadcast;
     this.#deliver = deps.deliver;
@@ -41,6 +41,7 @@ export class Scheduler {
   // restart recovery, which reports them through runEnded (Task 8).
   start(): void {
     if (this.#timer) return;
+    this.recover();
     this.#tickSafely();
     this.#timer = setInterval(() => this.#tickSafely(), TICK_MS);
     this.#timer.unref();
@@ -53,11 +54,38 @@ export class Scheduler {
     this.#limits.clear();
   }
 
+  // Runner recovery settles interrupted work first. Preserve live queue entries (including usage
+  // retries), but release runs left open by older non-atomic scheduling or interrupted hooks.
+  recover(): void {
+    const events: (() => void)[] = [];
+    const broadcast: Broadcast = (event, data) => { events.push(() => this.#broadcast(event, data)); };
+    transaction(this.#db, () => {
+      const rows = this.#db.prepare(`SELECT id FROM routine_runs r WHERE status IN ('queued', 'running')
+        AND NOT EXISTS (SELECT 1 FROM work_items w WHERE w.routine_run_id = r.id AND w.status IN ('queued', 'running'))`).all() as { id: string }[];
+      for (const { id } of rows) {
+        const run = setRunStatus(this.#db, id, "failed", "Tjommie restarted before this routine run could finish.");
+        if (!run) continue;
+        const routine = getRoutine(this.#db, run.routineId);
+        this.#label(routine, run, broadcast);
+        broadcast("routine.run", run);
+        events.push(() => this.#notifyFailure(routine, run, run.note!));
+      }
+    });
+    for (const send of events) send();
+  }
+
   tick(nowMs = Date.now()): void {
     const due = this.#db
       .prepare("SELECT id FROM routines WHERE enabled = 1 AND next_run_at IS NOT NULL AND next_run_at <= ? ORDER BY next_run_at")
       .all(new Date(nowMs).toISOString()) as { id: string }[];
-    for (const { id } of due) this.#fire(getRoutine(this.#db, id), nowMs);
+    for (const { id } of due) {
+      try {
+        this.#fire(getRoutine(this.#db, id), nowMs);
+      } catch (error) {
+        // The failed transaction leaves this routine due for retry. Keep processing the others.
+        console.error(`Routine scheduler failed for ${id}.`, error);
+      }
+    }
   }
 
   #tickSafely(): void {
@@ -153,23 +181,27 @@ export class Scheduler {
   }
 
   #fire(routine: Routine, nowMs: number): void {
-    const dueAt = routine.nextRunAt!;
-    const bot = getStoredBot(this.#db, routine.botId);
-    let run: RoutineRun;
-    if (nowMs - Date.parse(dueAt) > GRACE_MS) run = addRun(this.#db, routine.id, dueAt, "missed", "The PC was off or asleep, or Tjommie wasn't running.");
-    else if (bot.paused) run = addRun(this.#db, routine.id, dueAt, "skipped", `${bot.name} was paused.`);
-    else if (hasOpenRun(this.#db, routine.id)) run = addRun(this.#db, routine.id, dueAt, "skipped", "The previous run was still going.");
-    else run = addRun(this.#db, routine.id, dueAt, "queued");
-    // Skip older missed times, preserve times within grace, and advance past this due time to avoid duplicates.
-    const next = nextRunAfter(routine, Math.max(nowMs - GRACE_MS, Date.parse(dueAt)));
-    setNextRun(this.#db, routine.id, next === null ? null : new Date(next).toISOString());
-    this.#broadcast("routine.updated", getRoutine(this.#db, routine.id));
-    this.#broadcast("routine.run", run);
-    if (run.status !== "queued") {
-      this.#label(routine, run);
-      return;
-    }
-    this.#queue(routine, run);
+    const events: (() => void)[] = [];
+    const broadcast: Broadcast = (event, data) => { events.push(() => this.#broadcast(event, data)); };
+    let item: WorkItem | undefined;
+    transaction(this.#db, () => {
+      const dueAt = routine.nextRunAt!;
+      const bot = getStoredBot(this.#db, routine.botId);
+      let run: RoutineRun;
+      if (nowMs - Date.parse(dueAt) > GRACE_MS) run = addRun(this.#db, routine.id, dueAt, "missed", "The PC was off or asleep, or Tjommie wasn't running.");
+      else if (bot.paused) run = addRun(this.#db, routine.id, dueAt, "skipped", `${bot.name} was paused.`);
+      else if (hasOpenRun(this.#db, routine.id)) run = addRun(this.#db, routine.id, dueAt, "skipped", "The previous run was still going.");
+      else run = addRun(this.#db, routine.id, dueAt, "queued");
+      // Skip older missed times, preserve times within grace, and advance past this due time to avoid duplicates.
+      const next = nextRunAfter(routine, Math.max(nowMs - GRACE_MS, Date.parse(dueAt)));
+      setNextRun(this.#db, routine.id, next === null ? null : new Date(next).toISOString());
+      broadcast("routine.updated", getRoutine(this.#db, routine.id));
+      broadcast("routine.run", run);
+      const label = this.#label(routine, run, broadcast);
+      if (run.status === "queued") item = this.#queue(routine, run, label);
+    });
+    for (const send of events) send();
+    if (item) this.#wake(item);
   }
 
   // A manual retry is a new run with its own label and chain, leaving the old result intact.
@@ -180,29 +212,50 @@ export class Scheduler {
     if (!routine.enabled) throw new RpcError("bad_state", "Enable this routine before retrying it");
     if (getStoredBot(this.#db, routine.botId).paused) throw new RpcError("bad_state", "Unpause this bot before retrying its routine");
     if (hasOpenRun(this.#db, routine.id)) throw new RpcError("busy", "This routine already has a queued or running run");
-    const run = addRun(this.#db, routine.id, new Date().toISOString(), "queued");
+    let queued: { run: RoutineRun; label: Message; item: WorkItem } | undefined;
+    transaction(this.#db, () => {
+      const run = addRun(this.#db, routine.id, new Date().toISOString(), "queued");
+      const label = this.#label(routine, run, () => {});
+      queued = { run, label, item: this.#queue(routine, run, label) };
+    });
+    const { run, label, item } = queued!;
     this.#broadcast("routine.run", run);
-    return this.#queue(routine, run);
+    this.#broadcast("message.added", label);
+    this.#wake(item);
+    return getMessage(this.#db, label.id);
   }
 
-  #queue(routine: Routine, run: RoutineRun): Message {
-    const label = this.#label(routine, run);
+  // Persist only: callers include this in the run/schedule transaction and wake after commit.
+  #queue(routine: Routine, run: RoutineRun, label: Message): WorkItem {
+    return enqueue(this.#db, { botId: routine.botId, source: "routine", text: routinePrompt(routine), messageId: label.id, chainId: newChain(this.#db), routineRunId: run.id });
+  }
+
+  #wake(item: WorkItem): void {
     try {
-      this.#deliver({ botId: routine.botId, source: "routine", text: routinePrompt(routine), messageId: label.id, chainId: newChain(this.#db), routineRunId: run.id });
+      this.#deliver(item);
     } catch (error) {
       console.error("Routine delivery failed.", error);
+      // A callback that already started the turn owns its outcome. Never fail live work here.
+      if (getWorkItem(this.#db, item.id).status !== "queued") return;
+      const run = getRun(this.#db, item.routineRunId!);
+      if (!run) return;
+      const routine = getRoutine(this.#db, run.routineId);
       this.#clearLimit(run.id);
       this.#timedOut.delete(run.id);
       // The next run was computed from this tick before delivery, so failure cannot retry or burst it.
       const note = "Could not queue the routine run.";
-      const failed = setRunStatus(this.#db, run.id, "failed", note);
+      const result: { failed: RoutineRun | null } = { failed: null };
+      transaction(this.#db, () => {
+        setStatus(this.#db, item.id, "failed");
+        result.failed = setRunStatus(this.#db, run.id, "failed", note);
+      });
+      const { failed } = result;
       if (failed) {
         this.#broadcast("routine.run", failed);
         this.#label(routine, failed);
         this.#notifyFailure(routine, failed, note);
       }
     }
-    return getMessage(this.#db, label.id);
   }
 
   #notifyFailure(routine: Routine, run: RoutineRun, note: string): void {
@@ -210,12 +263,12 @@ export class Scheduler {
   }
 
   // The "Routine: <name>" row in the bot's chat, above the run or saying why it didn't run.
-  #label(routine: Routine, run: RoutineRun): Message {
+  #label(routine: Routine, run: RoutineRun, broadcast: Broadcast = this.#broadcast): Message {
     const data = { routineId: routine.id, runId: run.id, status: run.status, note: run.note } satisfies RoutineLabelData;
     const existing = this.#db.prepare("SELECT id FROM messages WHERE conversation_id = ? AND kind = 'routine' AND json_extract(data, '$.runId') = ? LIMIT 1").get(routine.botId, run.id) as { id: string } | undefined;
     if (existing) {
       const message = updateMessage(this.#db, existing.id, { data });
-      this.#broadcast("message.updated", message);
+      broadcast("message.updated", message);
       return message;
     }
     const message = addMessage(this.#db, {
@@ -226,7 +279,7 @@ export class Scheduler {
       data,
       status: "done",
     });
-    this.#broadcast("message.added", message);
+    broadcast("message.added", message);
     return message;
   }
 }

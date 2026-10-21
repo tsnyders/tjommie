@@ -11,11 +11,13 @@ Bot names in this document ("Researcher", "Writer") and in the wireframes ("Pnet
 
 The Phase 1 spikes ran against Claude Code 2.1.280 and Codex CLI 0.155.1 while the first implementation plan was being written. They changed these points. The sections below already include the changes.
 
+**Current implementation notes (2026-10-21):** Where this original design differs from the shipped source, the current protocol and implementation under `packages/protocol`, `packages/daemon`, and `packages/desktop`, together with the root README, describe behavior. In particular, the Phase 1 Codex workspace-write sandbox is elevated on Windows with network access disabled; the installed desktop passes its daemon token through stdin, while development mode uses a token file. Phase 1 records Codex token usage but does not calculate Codex cost; pricing is deferred to Phase 2.
+
 1. **Bots never use the person's own CLI setup (a decision made after spike findings).** Running bots on the PC's existing logins loaded the person's hooks, plugins, skills, MCP servers and Codex memories. For Claude that meant 66 s before the session was ready and ~28k extra prompt tokens; for Codex it meant 237k input tokens for a one-line task, plus writes into personal memories. So from Phase 1 on, each provider runs from a Tjommie-owned config folder (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`) that the person signs in to once on first run. Phase 2 adds more accounts on top of this.
 2. **Claude approvals go over stdin/stdout, not through our MCP server.** `--permission-prompt-tool stdio` makes Claude send `can_use_tool` control requests on stdout, and we answer on stdin. The `approve` MCP tool is gone. Claude's "default" permission mode is now called `manual`.
 3. **Claude reports usage percentages.** `rate_limit_event` includes the five-hour and seven-day utilization, so Claude shows live percentages like Codex. Its `total_cost_usd` is cumulative per CLI process, so each turn's cost is the difference from the previous one.
 4. **Bots don't get the person's MCP servers.** Because their CLI folder is Tjommie's own, bots only get the MCP servers Tjommie attaches. The per-bot Tools picker (Later) becomes the way to add Gmail, GitHub and similar tools.
-5. **Codex bots at "Own folder" use Codex's elevated Windows sandbox (revised 2026-09-27).** The first spike used `windows.sandbox = "unelevated"`, which needs no admin and enforces writes. Later measurements (Codex 0.155.1) showed it doesn't limit reads or local connections: a bot's shell could read any file of the person's and reach `127.0.0.1` without asking, so it could have read the daemon token and acted as the person. The elevated mode runs sandboxed commands as a separate Windows user (`CodexSandboxOffline`, group `CodexSandboxUsers`) after a one-time admin setup. It still reads most of the person's profile and still reaches `127.0.0.1`, but because it's a separate user, Tjommie can deny that group its sign-in folders, logs and database (section 5.4). Bots do web work through the browser tool or Codex's built-in web search.
+5. **Codex bots at "Own folder" use Codex's elevated Windows sandbox (revised 2026-09-27).** The first spike used `windows.sandbox = "unelevated"`, which needs no admin and enforces writes. Later measurements (Codex 0.155.1) showed it doesn't limit reads or local connections: a bot's shell could read any file of the person's and reach `127.0.0.1` without asking. The current implementation configures workspace-write with `network_access: false`, uses `windows.sandbox = "elevated"` for "Own folder", and checks ACL protection for Tjommie's sensitive data. Elevated sandbox setup requires a one-time admin prompt. This does not block all profile reads or local connections; the README describes the remaining limits. See section 5.4 and `packages/daemon/src/providers/codex.ts` / `packages/daemon/src/windows-acl.ts` for current details.
 6. **Codex sign-in doesn't need a terminal.** The app-server's `account/login/start` returns OpenAI's own sign-in URL, which the app opens in the browser. Claude's sign-in opens its own `claude auth login` in a console window.
 7. **Stop and steering work on both CLIs.** Claude reads a message written mid-turn at its next step, and stops on an `interrupt` control message. Codex uses `turn/steer` and `turn/interrupt`.
 8. **Playwright MCP starts each bot's browser (spike 5).** Both CLIs drove Playwright MCP on a per-bot profile folder, and the profile kept its data. In Phase 1 the daemon doesn't run Chrome itself. "Show window" opens the bot's profile in Chrome. Phase 4's live view revisits this.
@@ -135,12 +137,12 @@ shared-files\            files one bot shares with another, held until delivery 
 
 ### 3.3 WebSocket API
 
-- The client sends `hello` with its protocol version and the token. The daemon answers `{ type: "welcome", protocol }` with its own protocol version. On a mismatch, the UI shows "Update Tjommie on this device" instead of failing in strange ways. (Pattern from Paseo's `packages/protocol/src/messages.ts`.)
+- The client sends `hello` with its protocol version and the token. The daemon closes the connection with code `4003` on a version mismatch; a successful connection receives `{ type: "welcome", protocol }`. The welcome carries only the protocol version; there is no capability negotiation. The client rejects an unexpected welcome version. See `packages/protocol/src/wire.ts`, `packages/daemon/src/server.ts`, and `packages/client/src/client.ts`.
 - **Requests** (client to daemon) carry an id and get exactly one response. Groups:
   - Phase 1: `bots.*`, `chat.*` (send, stop, history), `approvals.respond`, `room.*`, `exchanges.get`, `routines.*`, `setup.status`, `settings.*`
   - Phase 2: `accounts.*`, `usage.query`, `terminal.*`
   - Phase 3: `devices.*`, `pairing.create`
-- **Events** (daemon to client): `message.added`, `message.delta` (streaming text), `message.updated`, `bot.updated`, `approval.added`, `approval.resolved`, `routine.run`, `usage.updated`, `setup.changed`.
+- **Events** (daemon to client): `message.added`, `message.updated`, `message.delta`, `bot.updated`, `bot.deleted`, `approval.added`, `approval.resolved`, `setup.changed`, `setup.signInEnded`, `notify`, `routine.updated`, `routine.deleted`, `routine.run`, and `settings.changed`. Phase 1 does not emit `usage.updated`; usage is recorded per turn in the database. The protocol event schemas are authoritative in `packages/protocol/src/wire.ts`.
 - Every message is a zod schema in `packages/protocol`, validated at both ends.
 
 ## 4. Bots, chats and sessions
@@ -174,7 +176,7 @@ Each bot does one turn at a time. The queue is stored in the database, so nothin
 
 | Source | If the bot is busy | The answer goes to |
 |---|---|---|
-| You, in the bot's chat | Steered into the current turn. If the CLI can't steer, it goes first in line and is labelled "Queued" | The bot's chat |
+| You, in the bot's chat | Steered into the current turn only when the message belongs to the same conversation the active turn writes to. If the CLI can't steer, it goes first in line and is labelled "Queued" | The bot's chat |
 | You, in the Team room | First in line. Not steered, so the answer lands in the room | The Team room |
 | A reply to the bot's own request | Steered into the current turn (same fallback) | The bot's own work |
 | A request from another bot | Waits in line | Back to the asking bot; shown in the Team room |
@@ -375,10 +377,10 @@ Neither CLI knows the other exists. Each only sees plain text through the daemon
 
 ### 8.3 Usage and cost
 
-- **Recording starts in Phase 1.** The daemon saves one record per turn: bot, account, model, tokens (input, cached, output, reasoning) and cost. The screens ship in Phase 2.
+- **Recording starts in Phase 1.** The daemon saves one record per turn: bot, account, model, tokens (input, cached, output, reasoning), and any cost the provider reports. The screens ship in Phase 2.
 - **Cost.**
   - **Claude** reports its own cost per turn (`total_cost_usd`).
-  - **Codex** costs are tokens multiplied by LiteLLM's public per-model price list (the list `ccusage` uses), refreshed daily with a bundled copy as fallback.
+  - **Codex** reports token usage but no cost in Phase 1 (`costUsd` is null). Calculating Codex cost from a per-model price list, including refresh and bundled fallback behavior, is deferred to Phase 2.
 - **Screens.**
   - **Usage page** (Settings → Usage): today, this week and this month; tokens and cost by bot, account and model; a daily bar chart; each account's limit status.
   - **Each bot's right panel:** "Today: 1.2M tokens · $3.40".

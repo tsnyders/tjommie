@@ -27,6 +27,13 @@ const powershell = join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "po
 const icacls = join(systemRoot, "System32", "icacls.exe");
 const failureReason = "Tjommie couldn't check Codex's sandbox. If Codex was updated, run its sandbox setup again.";
 
+// A daemon launched from PowerShell 7 can inherit incompatible Core modules. This pass needs only
+// Windows PowerShell's built-in modules; keep the override local to each child and preserve other env.
+function powershellEnvironment(): NodeJS.ProcessEnv {
+  const inherited = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toUpperCase() !== "PSMODULEPATH"));
+  return { ...inherited, PSModulePath: join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "Modules") };
+}
+
 export type AclCommand = { file: string; args: string[] };
 function buildAceCommand(path: string, sid: string, folder: boolean, ace: "deny" | "allow"): AclCommand {
   if (!/^S-1-\d+(?:-\d+)+$/.test(sid)) throw new Error("Invalid Codex sandbox group SID");
@@ -137,7 +144,7 @@ function commandFailure(code: number | null, stderr: string): Error {
 export const windowsAclDriver: AclDriver = {
   runSync: (targets) => {
     const result = spawnSync(powershell, ["-NoProfile", "-NonInteractive", "-Command", passScript], {
-      input: passInput(targets), encoding: "utf8", windowsHide: true, timeout: 60_000, maxBuffer: 1024 * 1024,
+      input: passInput(targets), encoding: "utf8", windowsHide: true, timeout: 60_000, maxBuffer: 1024 * 1024, env: powershellEnvironment(),
     });
     if (result.error) {
       if ("code" in result.error && result.error.code === "ETIMEDOUT") throw new Error("PowerShell ACL pass timed out.");
@@ -147,7 +154,7 @@ export const windowsAclDriver: AclDriver = {
     return parsePass(result.stdout);
   },
   run: (targets) => new Promise((resolvePass, rejectPass) => {
-    const child = spawn(powershell, ["-NoProfile", "-NonInteractive", "-Command", passScript], { windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(powershell, ["-NoProfile", "-NonInteractive", "-Command", passScript], { windowsHide: true, stdio: ["pipe", "pipe", "pipe"], env: powershellEnvironment() });
     let stdout = "";
     let stderr = "";
     const timer = setTimeout(() => {
