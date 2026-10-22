@@ -12,10 +12,10 @@ Worktree: `tjommie-phase1-completion`, branch `phase1-completion-20261021`, star
 - [x] Represent secondary Codex quota windows without dropping a blocking limit or using an incorrect reset time.
 - [x] Recover startup routine-failure notices so they reach the desktop after startup without repeated notifications on reconnect.
 - [x] Triage current dependency advisories and apply scoped compatible remediation with evidence.
-- [ ] Verify normal persistent-root Codex Own folder behavior without changing personal CLI configuration or account credentials.
+- [x] Verify normal persistent-root Codex Own folder behavior without changing personal CLI configuration or account credentials.
 - [x] Eliminate terminal windows during normal app launch and bot use (additional owner request). Trace nested CLI launches as well as the daemon; verify owned window/process behavior, not just spawn options.
 - [x] Obtain independent read-only review, fix findings, and run combined validation.
-- [ ] Rebuild and verify the package, exercise the embedded browser in the exact app artifact, and record results and remaining limits.
+- [x] Rebuild and verify the package, exercise the embedded browser in the exact app artifact, and record results and remaining limits.
 
 ## Ownership and integration
 
@@ -30,3 +30,5 @@ Use disposable test profiles and local synthetic pages for automated login/cooki
 Run TypeScript, the syntax-based no-any gate, lint, relevant regression tests and production build. Package verification must validate current input/payload provenance and actually execute its required smoke test. Source tests alone do not establish installed acceptance.
 
 This request supersedes the old Phase 1 external "Show window" browser interaction. It brings shared interactive browser presentation forward from the later computer-view roadmap; it does not add the credentials vault, phone access or general desktop control.
+
+Automated acceptance completed against implementation commit `6311819`. See [the final report](../demos/tjommie-phase1-embedded-browser.md). The owner chose to perform the new embedded browser usual-site login check later; it remains manual acceptance, separate from the passing synthetic tests.

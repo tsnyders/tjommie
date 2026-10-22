@@ -1,5 +1,7 @@
 # Phase 1 installed-app acceptance
 
+> Historical acceptance for the `56f08c6` installer. The browser interaction and terminal behavior were subsequently changed. Current follow-up evidence is in [embedded browser and quiet startup](tjommie-phase1-embedded-browser.md); the owner confirmation below applies to the earlier browser implementation.
+
 Dates: 2026-10-21 to 2026-10-22 (Africa/Johannesburg). App version: 0.1.0. CLI versions checked during this work: Claude Code 2.1.304 and Codex 0.160.0.
 
 Status: the installed demo checks passed. The owner confirmed the requested manual browser-persistence and visual checks. Tjommie was left closed after verification.

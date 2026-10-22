@@ -1,0 +1,10 @@
+{
+  "startedAt": "2026-10-22T06:21:59.592Z",
+  "checks": {
+    "orphan recovery persists failed history before clients reconnect": "Pass",
+    "installed desktop handles and acknowledges startup notice": "Pass"
+  },
+  "error": null,
+  "notificationMode": "Foreground suppression; Windows toast rendering is not asserted",
+  "finishedAt": "2026-10-22T06:22:25.213Z"
+}
