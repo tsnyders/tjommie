@@ -1,0 +1,10 @@
+{
+  "startedAt": "2026-10-21T22:02:17.210Z",
+  "sourceCommit": "3f970a3",
+  "executable": "C:\\Users\\tyrel\\AppData\\Local\\Programs\\Tjommie\\Tjommie.exe",
+  "checks": {
+    "installed providers ready": "Pass",
+    "installed cross-provider exchange": "Fail"
+  },
+  "finishedAt": "2026-10-21T22:06:38.161Z"
+}

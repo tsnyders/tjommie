@@ -11,14 +11,16 @@ Bot names in this document ("Researcher", "Writer") and in the wireframes ("Pnet
 
 The Phase 1 spikes ran against Claude Code 2.1.280 and Codex CLI 0.155.1 while the first implementation plan was being written. They changed these points. The sections below already include the changes.
 
+**Current implementation notes (2026-10-21):** Where this original design differs from the shipped source, the current protocol and implementation under `packages/protocol`, `packages/daemon`, and `packages/desktop`, together with the root README, describe behavior. In particular, the Phase 1 Codex workspace-write sandbox is elevated on Windows with network access disabled; the installed desktop passes its daemon token through stdin, while development mode uses a token file. Phase 1 records Codex token usage but does not calculate Codex cost; pricing is deferred to Phase 2.
+
 1. **Bots never use the person's own CLI setup (a decision made after spike findings).** Running bots on the PC's existing logins loaded the person's hooks, plugins, skills, MCP servers and Codex memories. For Claude that meant 66 s before the session was ready and ~28k extra prompt tokens; for Codex it meant 237k input tokens for a one-line task, plus writes into personal memories. So from Phase 1 on, each provider runs from a Tjommie-owned config folder (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`) that the person signs in to once on first run. Phase 2 adds more accounts on top of this.
 2. **Claude approvals go over stdin/stdout, not through our MCP server.** `--permission-prompt-tool stdio` makes Claude send `can_use_tool` control requests on stdout, and we answer on stdin. The `approve` MCP tool is gone. Claude's "default" permission mode is now called `manual`.
 3. **Claude reports usage percentages.** `rate_limit_event` includes the five-hour and seven-day utilization, so Claude shows live percentages like Codex. Its `total_cost_usd` is cumulative per CLI process, so each turn's cost is the difference from the previous one.
 4. **Bots don't get the person's MCP servers.** Because their CLI folder is Tjommie's own, bots only get the MCP servers Tjommie attaches. The per-bot Tools picker (Later) becomes the way to add Gmail, GitHub and similar tools.
-5. **Codex's Windows sandbox needs no admin.** A per-thread setting, `windows.sandbox = "unelevated"`, enforces writes (inside the bot's folders allowed, outside asks). Shell commands can't reach the network from inside the Windows sandbox (TLS fails), so network commands ask for approval. Bots do web work through the browser tool or Codex's built-in web search.
+5. **Codex bots at "Own folder" use Codex's elevated Windows sandbox (revised 2026-09-27).** The first spike used `windows.sandbox = "unelevated"`, which needs no admin and enforces writes. Later measurements (Codex 0.155.1) showed it doesn't limit reads or local connections: a bot's shell could read any file of the person's and reach `127.0.0.1` without asking. The current implementation configures workspace-write with `network_access: false`, uses `windows.sandbox = "elevated"` for "Own folder", and checks ACL protection for Tjommie's sensitive data. Elevated sandbox setup requires a one-time admin prompt. This does not block all profile reads or local connections; the README describes the remaining limits. See section 5.4 and `packages/daemon/src/providers/codex.ts` / `packages/daemon/src/windows-acl.ts` for current details.
 6. **Codex sign-in doesn't need a terminal.** The app-server's `account/login/start` returns OpenAI's own sign-in URL, which the app opens in the browser. Claude's sign-in opens its own `claude auth login` in a console window.
 7. **Stop and steering work on both CLIs.** Claude reads a message written mid-turn at its next step, and stops on an `interrupt` control message. Codex uses `turn/steer` and `turn/interrupt`.
-8. **Playwright MCP starts each bot's browser (spike 5).** Both CLIs drove Playwright MCP on a per-bot profile folder, and the profile kept its data. In Phase 1 the daemon doesn't run Chrome itself. "Show window" opens the bot's profile in Chrome. Phase 4's live view revisits this.
+8. **Browser spike and subsequent change.** Both CLIs drove Playwright MCP on a per-bot profile folder, and the profile kept its data. The original external "Show window" design is superseded by the owner's 2026-10-22 requirement: daemon-owned browsing presented interactively inside the application's side panel (section 5.7).
 9. **Codex's built-in extras are off for bots.** Codex 0.155.1 turns several of its own features on by default: ChatGPT apps, browser use (which drives the person's own Chrome), computer use, plugins and memories. With them on, a browsing request went to the person's real Chrome instead of the bot's own browser. Every bot thread turns them off, so bots only use Tjommie's tools.
 
 ## 1. Summary
@@ -50,9 +52,9 @@ Tjommie is a free, open-source desktop and phone app. People create AI bots that
 | Conversations | One ongoing chat per bot |
 | Messaging a busy bot | Your message steers its current work; bot requests and routine runs wait in line |
 | Bot to bot | Asynchronous `message_bot` through the app; Team room with @mentions; chain limit 5 |
-| Computer | Browser per bot in Phase 1; live panel, Take over and Logins vault in Phase 4 |
+| Computer | Browser per bot with interactive side panel and manual control in Phase 1; vault and expanded computer view in Phase 4 |
 | Platforms | Windows first, macOS later. Android first, iOS later (needs a Mac) |
-| UI stack | One web UI: Next.js static export + shadcn/ui + Tailwind. Electron on desktop, Capacitor on the phone |
+| UI stack | One web UI: Next.js static export + Base UI + Tailwind. Phase 1 built its own components on Base UI's unstyled primitives (menus, dialogs, popovers, radios, switches) instead of shadcn/ui. Electron on desktop, Capacitor on the phone |
 | Phone scope | Full parity with the desktop |
 | Remote reach | Anywhere, through an end-to-end encrypted relay (public one + self-host); direct on the same Wi-Fi |
 | Usage and cost | Token, limit and cost tracking like T3 Code, plus spending caps on API keys |
@@ -85,7 +87,7 @@ Tjommie is a free, open-source desktop and phone app. People create AI bots that
 Host PC (Windows)
 ┌──────────────────────────────────────────────────────────────┐
 │ Desktop app: Electron (window, tray, notifications)          │
-│   └─ UI: Next.js static export + shadcn/ui + Tailwind        │
+│   └─ UI: Next.js static export + Base UI + Tailwind          │
 │             │ WebSocket on 127.0.0.1 + token                 │
 │ Daemon: Node 24 + TypeScript, its own process                │
 │   ├─ Store: SQLite (node:sqlite)                             │
@@ -104,7 +106,9 @@ Phase 3: daemon ⇄ relay (Cloudflare Worker) ⇄ phone (Capacitor) or another P
 - **Desktop app.** A thin Electron shell: starts the daemon, shows the UI, owns the tray and notifications. The Windows installer is built with electron-builder.
 - **UI.** A Next.js static export and a pure client of the daemon API, so the same bundle runs in Electron, in Capacitor and on other PCs. A static export can't have dynamic path segments, so pages take IDs as query parameters (`/chat?bot=...`). The build uses the system font (Segoe UI); the wireframes used Inter. Colors come from `docs/design/brief.md` section 3. Motion follows section 6 of `2026-09-24-grokbot-clone-design.md`.
 - **Storage.** SQLite through Node's built-in `node:sqlite`, so there's no native build step.
-- **Local security.** The daemon listens on 127.0.0.1 only and requires a random token kept in a file only the Windows user can read. It checks the Host and Origin headers so web pages can't reach it.
+- **Local security.** The daemon listens on 127.0.0.1 only and requires a random token on every connection. It checks the Host and Origin headers so web pages can't reach it.
+  - **The token never touches the disk in the installed app** (decision 2026-09-27). The desktop app generates it, starts the daemon with `--token-stdin`, and writes it as the first line of the daemon's stdin. Only the desktop app and the daemon ever hold it. The reason: on Windows every process of the same user can read that user's files, and a Codex bot at "Own folder" can read files outside its folders (section 5.4), so a token file would let a tricked bot talk to the daemon as the person.
+  - **Development keeps a token file.** `npm start -w @tjommie/daemon` (the `--dev` flag, or `TJOMMIE_DEV=1`) writes `daemon-token` so the terminal chat can connect. The installed app deletes a leftover file when it starts.
 
 ### 3.1 Repo (npm workspaces)
 
@@ -120,24 +124,25 @@ packages/relay      Cloudflare Worker (Phase 3)
 ### 3.2 On disk: `%LOCALAPPDATA%\Tjommie\`
 
 ```
-tjommie.db
-daemon-token
+data\tjommie.db          the database, in its own folder so Codex's sandbox group can be denied it (section 5.4)
+daemon-token             development only (section 3); the installed app never writes it
 bots\<bot-id>\           the bot's home folder (its working folder unless a project is attached)
     notes.md             the bot's memory
     inbox\               files you attach
     chrome-profile\      the bot's own Chrome profile
 accounts\<account-id>\   CLAUDE_CONFIG_DIR or CODEX_HOME for that account (claude-main, codex-main from Phase 1)
 logs\
+shared-files\            files one bot shares with another, held until delivery (denied to Codex's sandbox group)
 ```
 
 ### 3.3 WebSocket API
 
-- The client sends `hello` with its protocol version. The daemon answers with its version and capabilities. On a mismatch, the UI shows "Update Tjommie on this device" instead of failing in strange ways. (Pattern from Paseo's `packages/protocol/src/messages.ts`.)
+- The client sends `hello` with its protocol version and the token. The daemon closes the connection with code `4003` on a version mismatch; a successful connection receives `{ type: "welcome", protocol }`. The welcome carries only the protocol version; there is no capability negotiation. The client rejects an unexpected welcome version. See `packages/protocol/src/wire.ts`, `packages/daemon/src/server.ts`, and `packages/client/src/client.ts`.
 - **Requests** (client to daemon) carry an id and get exactly one response. Groups:
   - Phase 1: `bots.*`, `chat.*` (send, stop, history), `approvals.respond`, `room.*`, `exchanges.get`, `routines.*`, `setup.status`, `settings.*`
   - Phase 2: `accounts.*`, `usage.query`, `terminal.*`
   - Phase 3: `devices.*`, `pairing.create`
-- **Events** (daemon to client): `message.added`, `message.delta` (streaming text), `message.updated`, `bot.state`, `approval.added`, `approval.resolved`, `routine.run`, `usage.updated`, `setup.changed`.
+- **Events** (daemon to client): `message.added`, `message.updated`, `message.delta`, `bot.updated`, `bot.deleted`, `approval.added`, `approval.resolved`, `setup.changed`, `setup.signInEnded`, `notify`, `routine.updated`, `routine.deleted`, `routine.run`, and `settings.changed`. Phase 1 does not emit `usage.updated`; usage is recorded per turn in the database. The protocol event schemas are authoritative in `packages/protocol/src/wire.ts`.
 - Every message is a zod schema in `packages/protocol`, validated at both ends.
 
 ## 4. Bots, chats and sessions
@@ -171,7 +176,7 @@ Each bot does one turn at a time. The queue is stored in the database, so nothin
 
 | Source | If the bot is busy | The answer goes to |
 |---|---|---|
-| You, in the bot's chat | Steered into the current turn. If the CLI can't steer, it goes first in line and is labelled "Queued" | The bot's chat |
+| You, in the bot's chat | Steered into the current turn only when the message belongs to the same conversation the active turn writes to. If the CLI can't steer, it goes first in line and is labelled "Queued" | The bot's chat |
 | You, in the Team room | First in line. Not steered, so the answer lands in the room | The Team room |
 | A reply to the bot's own request | Steered into the current turn (same fallback) | The bot's own work |
 | A request from another bot | Waits in line | Back to the asking bot; shown in the Team room |
@@ -193,7 +198,7 @@ Each bot does one turn at a time. The queue is stored in the database, so nothin
 | Idle | Nothing to do |
 | Paused | You paused it |
 | Limited | Its account hit a usage limit. Shows the reset time |
-| Needs setup | Its CLI is missing or signed out |
+| Needs setup | Its CLI is missing or signed out, or (a Codex bot at "Own folder") Codex's sandbox isn't set up or Tjommie couldn't check its protection. The bot carries a plain `setupReason` saying which |
 
 ## 5. Running the CLIs
 
@@ -255,7 +260,7 @@ We run `codex app-server`: JSON-RPC over stdio, the interface OpenAI built for i
 - **Approvals.** The server sends `item/commandExecution/requestApproval` and `item/fileChange/requestApproval` and waits for our answer.
 - **Usage and limits.** `thread/tokenUsage/updated` gives input, cached, output and reasoning tokens. `account/rateLimits/updated` gives `usedPercent` and `resetsAt`. A turn fails with `UsageLimitExceeded` at the limit. Codex reports no cost; see section 8.3.
 - **Environment.** `CODEX_HOME` points at the bot's Tjommie account folder. Remove `OPENAI_API_KEY` and `CODEX_API_KEY` from the inherited environment.
-- **Windows.** npm installs `codex` as a `.ps1`/`.cmd` shim, so we run its JavaScript entry (`node_modules\@openai\codex\bin\codex.js`) with our own Node. Each thread's config sets `windows.sandbox = "unelevated"` (no admin needed). Inside that sandbox shell commands can't reach the network, so they ask for approval.
+- **Windows.** npm installs `codex` as a `.ps1`/`.cmd` shim, so we run its JavaScript entry (`node_modules\@openai\codex\bin\codex.js`) with our own Node. Each "Own folder" thread sets `windows.sandbox = "elevated"`; "Always ask" uses elevated when it's ready and unelevated otherwise. The elevated sandbox needs a one-time setup with a Windows admin prompt (section 5.8). The daemon asks the app-server for `windowsSandbox/readiness` and runs the setup with `windowsSandbox/setupStart`.
 
 ### 5.4 Autonomy
 
@@ -264,10 +269,16 @@ Each level maps onto the CLI's own permission system. We don't build a sandbox.
 | Level | Claude | Codex |
 |---|---|---|
 | Always ask | `manual` mode: every change becomes a card | approval `untrusted`, `read-only` sandbox |
-| Own folder (default) | `acceptEdits`: edits inside its folders go through; shell commands and anything outside become a card | approval `on-request`, `workspace-write` sandbox on its folders, network on |
+| Own folder (default) | `acceptEdits`: edits inside its folders go through; shell commands and anything outside become a card | approval `on-request`, `workspace-write` sandbox on its folders, network off, elevated Windows sandbox |
 | Full auto | `bypassPermissions` | approval `never`, full access |
 
 Claude has no operating-system sandbox on Windows, so under "Own folder" Claude bots ask about every shell command. Choosing Full auto shows a warning first.
+
+**What "Own folder" protects, and what it doesn't (decision 2026-09-27).**
+- **Changes:** a bot changes only its own folders and its project folder without asking.
+- **Tjommie's own data:** Claude bots have deny rules in their account settings (edit `.claude\`, read the accounts folder, the daemon token and the database). For Codex bots, Tjommie denies the `CodexSandboxUsers` group read and write on `accounts\claude-main`, `accounts\codex-main` (with an allow on Codex's own `.sandbox`; Codex keeps `.sandbox-bin` under its own protected permissions, which Tjommie checks), `logs\`, `data\` (the database), `shared-files\`, a development `daemon-token`, and every Claude bot's folder. The daemon applies and checks these rules at startup, after sign-in, after the sandbox setup, when it creates one of these folders, when a bot switches provider, and on a setup check (at most once a minute). If it can't, Codex "Own folder" isn't ready. Re-checking every time, rather than trusting a Codex version, is what protects against Codex updates changing its sandbox.
+- **Not protected, and said plainly in the app:** a Codex bot can read the rest of the person's user profile (Codex's sandbox limits writes, not reads). It can also read the folders of the person's other Codex bots (their notes and attached files), whether or not they're running, because every Codex bot's commands run as the same sandbox user; a deny there would lock the active bot out of its own folder. Browser cookies stay unreadable because they're encrypted for the person's own Windows user. A tricked bot can reach programs listening on this PC, but not Tjommie itself: the daemon's WebSocket needs the token, which never touches the disk in the installed app (section 3), and each bot's MCP token only acts as that bot.
+- **No fallback:** if the elevated sandbox isn't set up, a Codex bot at "Own folder" shows "Needs setup" instead of running with less protection.
 
 ### 5.5 Approval cards
 
@@ -290,13 +301,16 @@ Bots get only the MCP servers Tjommie attaches (this one and the browser), becau
 
 ### 5.7 Browser
 
-- **Playwright MCP.** Each bot with the browser on gets Playwright MCP (`@playwright/mcp`, bundled with Tjommie rather than fetched with npx) pointed at `bots\<id>\chrome-profile`. It runs headed: a real Chrome window (Edge if Chrome isn't installed), separate from the user's own Chrome. Sites you sign in to by hand in that window stay signed in.
-- **Who starts Chrome.** Playwright MCP does, when the bot first uses its browser (spike 5). In Phase 1 the daemon doesn't run Chrome with a debugging port. Phase 4's live view and Take over revisit this.
-- **Right panel.** In Phase 1 it shows a "Show browser window" button in place of the live screen. The button opens the bot's profile in Chrome, so you can sign in to sites by hand.
+- **Shared owned browser.** The daemon owns one persistent headless browser context per enabled bot, using the installed Chrome or Edge engine and the existing `bots\<id>\chrome-profile` directory. Bundled Playwright MCP tools use that same context. Automation and manual browsing therefore share pages and signed-in sites without opening a separate browser window.
+- **Side panel.** Open browser displays the selected bot's browser inside the application. It supports navigation, tabs, page input and browser dialogs. Take control gives the person exclusive interactive control; Resume bot releases it back to automation. Hiding the panel stops frame polling without closing or locking the bot's browser.
+- **Boundary.** Frames and input travel through authenticated application RPC. The browser uses Playwright's process pipe rather than a public debugging port. Web pages execute in the browser engine, not in the application's renderer origin. Browser frames and manual input are not chat messages or recorded application events.
+- **Roadmap change.** This shared interactive browser presentation is brought forward into Phase 1 by the owner's 2026-10-22 request. The credentials vault, general desktop control, phone connectivity and expanded computer view remain later work. Automated persistence checks use synthetic sites; real-site credentials and provider restrictions require separate owner acceptance.
 
 ### 5.8 Setup check
 
 At startup, and when the setup screen asks, the daemon runs `claude --version` and `claude auth status` (JSON) with the Claude account folder, and `codex --version` plus the app-server's `account/read` with the Codex account folder. Bots whose CLI is missing or signed out show "Needs setup". First-run setup offers "Sign in to Claude" and "Sign in to Codex" (section 8.1).
+
+For Codex it also reports whether the elevated Windows sandbox is ready (`windowsSandbox/readiness`: ready, not configured, update required; or unavailable when it isn't Windows, the CLI is missing or the query failed). If it isn't, Codex bots at "Own folder" show "Needs setup", and setup offers "Set up Codex's sandbox". That runs Codex's own one-time setup (`windowsSandbox/setupStart`); Windows asks for admin once. It creates Codex's sandbox users and firewall rules. The app never answers the admin prompt itself and never retries a declined setup on its own.
 
 ## 6. Bots talking to each other
 
@@ -364,10 +378,10 @@ Neither CLI knows the other exists. Each only sees plain text through the daemon
 
 ### 8.3 Usage and cost
 
-- **Recording starts in Phase 1.** The daemon saves one record per turn: bot, account, model, tokens (input, cached, output, reasoning) and cost. The screens ship in Phase 2.
+- **Recording starts in Phase 1.** The daemon saves one record per turn: bot, account, model, tokens (input, cached, output, reasoning), and any cost the provider reports. The screens ship in Phase 2.
 - **Cost.**
   - **Claude** reports its own cost per turn (`total_cost_usd`).
-  - **Codex** costs are tokens multiplied by LiteLLM's public per-model price list (the list `ccusage` uses), refreshed daily with a bundled copy as fallback.
+  - **Codex** reports token usage but no cost in Phase 1 (`costUsd` is null). Calculating Codex cost from a per-model price list, including refresh and bundled fallback behavior, is deferred to Phase 2.
 - **Screens.**
   - **Usage page** (Settings → Usage): today, this week and this month; tokens and cost by bot, account and model; a daily bar chart; each account's limit status.
   - **Each bot's right panel:** "Today: 1.2M tokens · $3.40".
@@ -454,7 +468,7 @@ Each phase ends with a demo you approve before the next one starts. The spec cov
 | 4 | Full WF1 right panel (live screen, Take over, Pause, Stop, Chrome profile, Logins), expanded computer view, WF4 Logins, Chrome profiles |
 
 In Phase 1:
-- **WF1 right panel** shows the bot summary (provider, model, autonomy, folder), a Browser row with "Show window", Routines and Recent activity.
+- **WF1 right panel** shows the bot summary (provider, model, autonomy, folder), a Browser row with "Open browser", Routines and Recent activity. Opening the browser replaces that panel with the shared interactive browser; Take control and Resume bot govern input. Closing it releases manual control without closing the browser context.
 - **WF2 cards** show the avatar placeholder instead of a live thumbnail.
 - **Hidden until later:** the store icon, the share icon, the mic and voice buttons, and the "This PC / Virtual machine" switch.
 

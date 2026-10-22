@@ -1,0 +1,14 @@
+{
+  "startedAt": "2026-10-22T06:20:46.571Z",
+  "inputsSha256": "e4305abb6540bfa2de41481982db731e2af7e06a0238e7c7da8aaee7cfea20eb",
+  "checks": {
+    "normal-root in-folder execution without approval": "Pass",
+    "persistent bot and successful execution after app restart": "Pass",
+    "temporary bot cleanup": "Pass",
+    "no new visible console during startup, two turns and restart (50ms sampling)": "Pass"
+  },
+  "fixtureBotId": "be69351b-7576-47c6-a5cf-3c6d9eac803b",
+  "error": null,
+  "consoleWindows": [],
+  "finishedAt": "2026-10-22T06:21:27.807Z"
+}

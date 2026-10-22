@@ -1,0 +1,34 @@
+{
+  "startedAt": "2026-10-22T06:22:48.050Z",
+  "sourceCommit": "63118195d5f6815b00ff842c670bd87d8b9994bc",
+  "inputsSha256": "e4305abb6540bfa2de41481982db731e2af7e06a0238e7c7da8aaee7cfea20eb",
+  "executable": "C:\\Users\\tyrel\\AppData\\Local\\Programs\\Tjommie\\Tjommie.exe",
+  "executableSha256": "b46ea59d264ac6efa9aad4e9e34d8c5129c4a145b09c0a1e85ee0a41f853237e",
+  "checks": {
+    "installed providers ready": "Pass",
+    "installed cross-provider exchange": "Pass",
+    "installed Codex steering": "Pass",
+    "installed Codex Stop": "Pass",
+    "installed running command Stop": "Pass",
+    "installed persistent approval rule": "Pass",
+    "installed browser tools and own profile": "Pass",
+    "installed routine proposal and approval": "Pass",
+    "installed scheduled routine with window closed": "Pass"
+  },
+  "evidence": {
+    "steering": {
+      "separateTurnStarted": false,
+      "steeredAt": "2026-10-22T06:23:18.940Z",
+      "originalEndedAt": "2026-10-22T06:23:35.579Z"
+    },
+    "installed Codex Stop": {
+      "elapsedMs": 594,
+      "outcome": "interrupted"
+    },
+    "installed running command Stop": {
+      "elapsedMs": 602,
+      "outcome": "interrupted"
+    }
+  },
+  "finishedAt": "2026-10-22T06:26:30.311Z"
+}
