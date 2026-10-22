@@ -1,315 +1,285 @@
 import type { BrowserFrame, BrowserInput, BrowserState, MethodName, ParamsIn, Result } from "@tjommie/protocol";
 import { errorText } from "./labels";
+export { addressToUrl, keyRoute, mouseButton, wheelPixels } from "./browser-geometry";
 
 export type BrowserCall = <M extends MethodName>(method: M, params: ParamsIn<M>) => Promise<Result<M>>;
-export type BrowserView = { state: BrowserState | null; frame: BrowserFrame | null; error: string | null };
-
-// A bot's close that hasn't finished handing the browser back. A reopened panel waits for it, so the old close can't
-// take back control the new one just asked for.
+export type BrowserView = { state: BrowserState | null; frame: BrowserFrame | null; error: string | null; busy?: boolean };
 const closes = new Map<string, Promise<void>>();
-const POLL_MS = 200;
+const ACTIVE_POLL_MS = 33;
+const IDLE_POLL_MS = 250;
 const RETRY_MS = 1000;
-type Task = { move?: boolean; release?: boolean; run: () => Promise<void> };
+type Task = { kind?: "move" | "wheel" | "resize"; key?: string; input?: BrowserInput; release?: boolean; cancel?: () => void; run: () => Promise<void> };
 type Button = "left" | "middle" | "right";
+type InputTarget = { generation: string; pageId: string; viewportRevision?: number };
+type HeldPointer = InputTarget & { x: number; y: number };
 
-// One bot's browser as the panel sees it. Every daemon call (open, frame pulls, controls and input) goes through one
-// queue, so nothing overlaps and input reaches the page in the order it happened. Closing it never closes the browser.
+// Input and commands stay ordered. One independent, bounded frame request can never hold up a key
+// release or dialog answer. Local epochs and server revisions fence responses across either lane.
 export class BrowserSession {
-  view: BrowserView = { state: null, frame: null, error: null };
+  view: BrowserView = { state: null, frame: null, error: null, busy: false };
   #tasks: Task[] = [];
   #running = false;
   #timer: ReturnType<typeof setTimeout> | undefined;
-  #framing = false; // a frame pull is queued or running
+  #framePending: Promise<void> | null = null;
+  #cursor: { streamId: string; sequence: number } | undefined;
+  #epoch = 0;
+  #fences = 0;
+  #activeUntil = 0;
   #visible = true;
+  #suspended = false;
+  #suspending: Promise<void> | null = null;
   #closing = false;
   #done: Promise<void> | null = null;
-  #human = false; // the browser last said the user is in control
-  #changing = 0; // navigations, history moves and resizes queued or in flight: the page is about to look different
-  #asking = 0; // Take control calls queued or in flight
-  #keys = new Set<string>(); // keys the user has pressed, as far as the queue knows
-  #buttons = new Map<Button, { x: number; y: number }>();
-  #heldKeys = new Set<string>(); // what the page has actually been sent and not yet released
-  #heldButtons = new Map<Button, { x: number; y: number }>();
+  #human = false;
+  #askedHuman = false;
+  #keys = new Map<string, InputTarget>();
+  #buttons = new Map<Button, HeldPointer>();
+  #heldKeys = new Map<string, InputTarget>();
+  #heldButtons = new Map<Button, HeldPointer>();
 
-  constructor(
-    private readonly botId: string,
-    private readonly call: BrowserCall,
-    private readonly onChange: (view: BrowserView) => void,
-  ) {}
+  constructor(private readonly botId: string, private readonly call: BrowserCall, private readonly onChange: (view: BrowserView) => void) {}
 
   open(): void {
     const earlier = closes.get(this.botId);
-    this.#push({
-      run: async () => {
-        await earlier;
-        this.#apply(await this.call("browser.open", { botId: this.botId }));
-        this.#poll(0);
-      },
-    });
+    this.#push({ run: async () => {
+      await earlier;
+      this.#apply(await this.call("browser.open", { botId: this.botId }));
+      this.#poll(0);
+    } });
   }
 
-  // Frames are only pulled while the panel can be seen.
+  // Document visibility only pauses pictures. Pane switches use suspend(), which also hands back control.
   setVisible(visible: boolean): void {
     this.#visible = visible;
-    if (visible) this.#poll(0);
-    else this.#stopTimer();
+    if (visible) { this.#suspended = false; this.#poll(0); }
+    else { this.#epoch++; this.#stopTimer(); }
   }
 
-  // Stops, after the queue drains: queued releases still go out, queued presses don't. Then, from the browser's own
-  // word on where things stand (a take-control still in flight is not in the local view): a page dialog the user left
-  // open is dismissed, held keys and buttons are released, and the bot gets the browser back. The browser stays open.
+  suspend(): Promise<void> {
+    if (this.#closing) return this.#done ?? Promise.resolve();
+    this.#visible = false;
+    this.#suspended = true;
+    this.#epoch++;
+    this.#stopTimer();
+    this.#discardPresses();
+    if (this.#suspending) return this.#suspending;
+    let finish = (): void => {};
+    const pending = new Promise<void>((resolve) => (finish = resolve));
+    this.#suspending = pending;
+    this.#set({});
+    this.#push({ release: true, run: async () => {
+      try { await this.#handBack(); }
+      catch (error) { this.#set({ error: errorText(error) }); }
+      finally {
+        this.#suspending = null;
+        this.#epoch++;
+        this.#set({});
+        finish();
+        this.#poll(0);
+      }
+    } });
+    return pending;
+  }
+
+  // Terminal unmount cleanup. A new session waits for this one, so a late handback cannot steal
+  // a new takeover. Suspending instead retains this session, its frame and the UI's address draft.
   close(): Promise<void> {
     if (this.#done) return this.#done;
     this.#stopTimer();
-    this.#tasks = this.#tasks.filter((task) => task.release);
+    this.#epoch++;
+    this.#discardPresses();
     let finish = (): void => {};
     const done = new Promise<void>((resolve) => (finish = resolve)).finally(() => {
       if (closes.get(this.botId) === done) closes.delete(this.botId);
     });
     this.#done = done;
     closes.set(this.botId, done);
-    this.#push({
-      release: true,
-      run: async () => {
-        try {
-          await this.#handBack();
-        } catch {
-          // best effort: nothing here may surface
-        } finally {
-          finish();
-        }
-      },
-    });
     this.#closing = true;
+    this.#push({ release: true, run: async () => {
+      try { await this.#handBack(); }
+      catch { /* best effort at terminal unmount */ }
+      finally { finish(); }
+    } });
     return done;
+  }
+
+  #discardPresses(): void {
+    for (const task of this.#tasks) if (!task.release) task.cancel?.();
+    this.#tasks = this.#tasks.filter((task) => task.release);
+    this.#keys.clear();
+    this.#buttons.clear();
   }
 
   async #handBack(): Promise<void> {
     let state: BrowserState | null = null;
-    try {
-      state = (await this.call("browser.frame", { botId: this.botId })).state;
-    } catch {
-      try {
-        state = await this.call("browser.open", { botId: this.botId }); // no picture to take, so it can't fail the same way
-      } catch {
-        // the browser can't be asked
-      }
-    }
-    // With no word from the browser, a Take control that was asked for (or seen) counts as having worked.
-    const human = state ? state.control === "human" : this.#human || this.#asking > 0;
+    // Read ownership/dialog state without waiting for an outstanding image or opening a second frame lane.
+    try { state = await this.call("browser.open", { botId: this.botId }); }
+    catch { /* use last known ownership */ }
+    if (state) this.#apply(state);
+    const human = state ? state.control === "human" : this.#human || this.#askedHuman;
     if (!human) return;
     const pageId = state?.activePageId;
     if (state && pageId) {
       const { generation } = state;
-      if (state.dialog) await this.call("browser.dialog", { botId: this.botId, generation, pageId, accept: false }).catch(() => {});
-      for (const [button, at] of [...this.#heldButtons]) await this.#send(generation, pageId, { kind: "mouse", action: "up", x: at.x, y: at.y, button }).catch(() => {});
-      for (const key of [...this.#heldKeys]) await this.#send(generation, pageId, { kind: "key", action: "up", key }).catch(() => {});
+      if (state.dialog) await this.call("browser.dialog", { botId: this.botId, generation, pageId: state.dialog.pageId, accept: false }).catch(() => {});
+      for (const [button, at] of [...this.#heldButtons]) await this.#send(at.generation, at.pageId, { kind: "mouse", action: "up", x: at.x, y: at.y, button }).catch(() => {});
+      for (const [key, target] of [...this.#heldKeys]) await this.#send(target.generation, target.pageId, { kind: "key", action: "up", key }).catch(() => {});
     }
-    await this.call("browser.control", { botId: this.botId, control: "bot" }).catch(() => {});
+    this.#apply(await this.call("browser.control", { botId: this.botId, control: "bot" }));
+    this.#heldKeys.clear(); this.#heldButtons.clear();
   }
 
   releaseAll(): void {
-    const state = this.view.state;
-    const page = state?.activePageId;
-    if (!state || !page) return;
     for (const [button, at] of this.#buttons) this.input({ kind: "mouse", action: "up", x: at.x, y: at.y, button });
-    for (const key of [...this.#keys]) this.input({ kind: "key", action: "up", key });
+    for (const key of [...this.#keys.keys()]) this.input({ kind: "key", action: "up", key });
   }
 
-  // The generation and page are fixed when the user acts, so a page that changed meanwhile rejects the input.
   input(input: BrowserInput): void {
     const state = this.view.state;
-    const page = state?.activePageId;
-    if (!state || !page || state.control !== "human") return;
+    const pageId = state?.activePageId;
+    if (!state || !pageId || state.control !== "human" || this.#closing) return;
     const release = (input.kind === "key" || input.kind === "mouse") && input.action === "up";
-    if (!this.view.frame && !release) return; // nothing of this page has been shown yet
+    if (!release && (!this.view.frame || this.view.busy || this.#suspended)) return;
+    let target: InputTarget = { generation: state.generation, pageId, viewportRevision: state.viewportRevision };
     if (input.kind === "key") {
-      if (input.action === "up" && !this.#keys.has(input.key)) return; // a key the page never saw go down (a paste shortcut)
-      if (input.action === "down") this.#keys.add(input.key);
-      else this.#keys.delete(input.key);
+      if (input.action === "up" && !this.#keys.has(input.key)) return;
+      if (input.action === "down") this.#keys.set(input.key, target);
+      else { target = this.#keys.get(input.key)!; this.#keys.delete(input.key); }
     }
-    if (input.kind === "mouse") {
-      if (input.button && input.action === "down") this.#buttons.set(input.button, { x: input.x, y: input.y });
-      if (input.button && input.action === "up") this.#buttons.delete(input.button);
+    if (input.kind === "mouse" && input.button) {
+      if (input.action === "down") this.#buttons.set(input.button, { ...target, x: input.x, y: input.y });
+      if (input.action === "up") { target = this.#buttons.get(input.button) ?? target; this.#buttons.delete(input.button); }
     }
-    const task: Task = { move: input.kind === "mouse" && input.action === "move", release, run: () => this.#send(state.generation, page, input) };
-    const last = this.#tasks[this.#tasks.length - 1];
-    if (task.move && last?.move) this.#tasks[this.#tasks.length - 1] = task; // only the newest pointer position matters
-    else this.#push(task);
+    const task: Task = {
+      kind: input.kind === "wheel" ? "wheel" : input.kind === "mouse" && input.action === "move" ? "move" : undefined,
+      key: `${target.generation}:${target.pageId}:${target.viewportRevision ?? ""}`, input, release,
+      run: async () => { await this.#send(target.generation, target.pageId, task.input!, target.viewportRevision); this.#wake(); },
+    };
+    const last = this.#tasks.at(-1);
+    if (task.kind === "move" && last?.kind === "move" && last.key === task.key) this.#tasks[this.#tasks.length - 1] = task;
+    else if (input.kind === "wheel" && last?.kind === "wheel" && last.key === task.key && last.input?.kind === "wheel"
+      && last.input.x === input.x && last.input.y === input.y && Math.abs(last.input.deltaX + input.deltaX) <= 10_000 && Math.abs(last.input.deltaY + input.deltaY) <= 10_000) {
+      last.input = { ...input, deltaX: last.input.deltaX + input.deltaX, deltaY: last.input.deltaY + input.deltaY };
+    } else this.#push(task);
+    this.#wake();
   }
 
   setControl(control: BrowserState["control"]): void {
-    if (control === "human") this.#asking += 1;
-    this.#act(async () => {
-      try {
-        this.#apply(await this.call("browser.control", { botId: this.botId, control }));
-      } finally {
-        if (control === "human") this.#asking -= 1;
-      }
-    });
+    if (this.#suspended || this.#closing) return;
+    if (control === "human") this.#askedHuman = true;
+    this.#command(async () => this.#apply(await this.call("browser.control", { botId: this.botId, control })));
   }
-
-  navigate(url: string): void {
-    this.#reshape((generation, pageId) => this.call("browser.navigate", { botId: this.botId, generation, pageId, url }));
-  }
-
-  history(action: "back" | "forward" | "reload"): void {
-    this.#reshape((generation, pageId) => this.call("browser.history", { botId: this.botId, generation, pageId, action }));
-  }
-
-  resize(width: number, height: number): void {
-    this.#reshape((generation, pageId) => this.call("browser.resize", { botId: this.botId, generation, pageId, width, height }));
-  }
-
-  dialog(accept: boolean, promptText?: string): void {
-    this.#onPage((generation, pageId) => this.call("browser.dialog", { botId: this.botId, generation, pageId, accept, promptText }));
-  }
-
+  navigate(url: string): void { this.#onPage((generation, pageId) => this.call("browser.navigate", { botId: this.botId, generation, pageId, url }), true); }
+  history(action: "back" | "forward" | "reload"): void { this.#onPage((generation, pageId) => this.call("browser.history", { botId: this.botId, generation, pageId, action }), true); }
+  resize(width: number, height: number): void { this.#onPage((generation, pageId) => this.call("browser.resize", { botId: this.botId, generation, pageId, width, height }), true, "resize"); }
+  dialog(accept: boolean, promptText?: string): void { this.#onPage((generation, pageId) => this.call("browser.dialog", { botId: this.botId, generation, pageId, accept, promptText })); }
   tab(action: "new" | "select" | "close", pageId?: string): void {
     const generation = this.view.state?.generation;
-    if (generation) this.#act(async () => this.#apply(await this.call("browser.tab", { botId: this.botId, generation, action, pageId })));
+    if (generation) this.#command(async () => this.#apply(await this.call("browser.tab", { botId: this.botId, generation, action, pageId })), true);
   }
 
-  // What the user sees stops being what the page looks like the moment this is queued, so the picture goes now, and no
-  // input is taken (or frame accepted) until the action is done and a new frame arrives.
-  #reshape(run: (generation: string, pageId: string) => Promise<BrowserState>): void {
+  #onPage(run: (generation: string, pageId: string) => Promise<BrowserState>, reshape = false, kind?: "resize"): void {
     const state = this.view.state;
-    if (!state?.activePageId || this.#closing) return;
-    this.#changing += 1;
-    this.#set({ frame: null });
-    const pageId = state.activePageId;
-    this.#act(async () => {
-      try {
-        this.#apply(await run(state.generation, pageId));
-      } finally {
-        this.#changing -= 1;
-      }
-    });
+    if (state?.activePageId) {
+      const pageId = state.activePageId;
+      this.#command(async () => this.#apply(await run(state.generation, pageId)), reshape, kind, `${state.generation}:${pageId}`);
+    }
   }
 
-  #onPage(run: (generation: string, pageId: string) => Promise<BrowserState>): void {
-    const state = this.view.state;
-    if (state?.activePageId) this.#act(async () => this.#apply(await run(state.generation, state.activePageId!)));
+  #command(run: () => Promise<void>, reshape = false, kind?: "resize", key?: string): void {
+    if (this.#closing || this.#suspended) return;
+    this.#epoch++; this.#fences++;
+    if (reshape) this.#cursor = undefined;
+    this.#set(reshape ? { frame: null } : {});
+    const finish = (): void => { this.#fences--; this.#epoch++; this.#set({}); this.#wake(); };
+    const task: Task = { kind, key, cancel: finish, run: async () => { try { await run(); } finally { finish(); } } };
+    const last = this.#tasks.at(-1);
+    if (kind === "resize" && last?.kind === "resize" && last.key === key) { last.cancel?.(); this.#tasks[this.#tasks.length - 1] = task; }
+    else this.#push(task);
   }
 
-  async #send(generation: string, pageId: string, input: BrowserInput): Promise<void> {
-    await this.call("browser.input", { botId: this.botId, generation, pageId, input });
-    if (input.kind === "key") {
-      if (input.action === "down") this.#heldKeys.add(input.key);
-      else this.#heldKeys.delete(input.key);
-    } else if (input.kind === "mouse" && input.button) {
-      if (input.action === "down") this.#heldButtons.set(input.button, { x: input.x, y: input.y });
+  async #send(generation: string, pageId: string, input: BrowserInput, viewportRevision?: number): Promise<void> {
+    await this.call("browser.input", { botId: this.botId, generation, pageId, input, viewportRevision });
+    if (input.kind === "key") { if (input.action === "down") this.#heldKeys.set(input.key, { generation, pageId }); else this.#heldKeys.delete(input.key); }
+    else if (input.kind === "mouse" && input.button) {
+      if (input.action === "down") this.#heldButtons.set(input.button, { generation, pageId, x: input.x, y: input.y });
       else if (input.action === "up") this.#heldButtons.delete(input.button);
     }
   }
 
-  // A failed action is shown; the queue and the polling go on.
-  #act(run: () => Promise<void>): void {
-    this.#push({ run });
-  }
-
   #push(task: Task): void {
-    if (this.#closing && !task.release) return;
+    if (this.#closing && !task.release) { task.cancel?.(); return; }
     this.#tasks.push(task);
     void this.#pump();
   }
-
   async #pump(): Promise<void> {
     if (this.#running) return;
     this.#running = true;
     try {
       for (let task = this.#tasks.shift(); task; task = this.#tasks.shift()) {
-        try {
-          await task.run();
-        } catch (error) {
-          this.#set({ error: errorText(error) });
-        }
+        try { await task.run(); } catch (error) { this.#set({ error: errorText(error) }); }
       }
-    } finally {
-      this.#running = false;
-    }
+    } finally { this.#running = false; }
   }
 
+  #wake(): void { this.#activeUntil = Date.now() + 1000; this.#stopTimer(); this.#poll(0); }
   #poll(delay: number): void {
-    if (this.#closing || !this.#visible || this.#framing || this.#timer !== undefined || !this.view.state) return;
+    if (this.#closing || this.#suspended || this.#suspending || !this.#visible || this.#framePending || this.#timer !== undefined || !this.view.state) return;
     this.#timer = setTimeout(() => {
       this.#timer = undefined;
-      if (this.#closing || !this.#visible) return;
-      this.#framing = true;
-      this.#push({
-        run: async () => {
-          let retry = POLL_MS;
-          try {
-            const { state, frame } = await this.call("browser.frame", { botId: this.botId });
-            this.#set({ state, frame: this.#changing > 0 ? undefined : (frame ?? undefined), error: null });
-          } catch (error) {
-            retry = RETRY_MS;
-            this.#set({ error: errorText(error) });
-          } finally {
-            this.#framing = false;
-            this.#poll(retry);
-          }
-        },
+      const epoch = this.#epoch;
+      let retry = false;
+      const pending = this.#pull(epoch).catch((error: unknown) => {
+        retry = true;
+        if (epoch === this.#epoch) this.#set({ error: errorText(error) });
+      }).finally(() => {
+        this.#framePending = null;
+        this.#poll(retry ? RETRY_MS : Date.now() < this.#activeUntil || this.view.busy ? ACTIVE_POLL_MS : IDLE_POLL_MS);
       });
+      this.#framePending = pending;
     }, delay);
   }
-
-  #stopTimer(): void {
-    clearTimeout(this.#timer);
-    this.#timer = undefined;
+  async #pull(epoch: number): Promise<void> {
+    const result = await this.call("browser.frame", { botId: this.botId, after: this.#cursor });
+    if (this.#closing || !this.#visible || epoch !== this.#epoch || this.#fences > 0 || !this.#fresh(result.state)) return;
+    let frame = result.unchanged ? this.view.frame : result.frame;
+    if (frame && ((frame.pageId && frame.pageId !== result.state.activePageId)
+      || (frame.viewportRevision !== undefined && frame.viewportRevision !== result.state.viewportRevision))) frame = null;
+    if (frame?.streamId) this.#cursor = { streamId: frame.streamId, sequence: frame.sequence };
+    else if (!frame) this.#cursor = undefined;
+    const before = this.view.frame;
+    if (frame && before && frame.data === before.data && frame.width === before.width && frame.height === before.height
+      && frame.viewportWidth === before.viewportWidth && frame.viewportHeight === before.viewportHeight
+      && frame.pageId === before.pageId && frame.viewportRevision === before.viewportRevision && frame.streamId === before.streamId) frame = before;
+    this.#set({ state: result.state, frame, error: null });
   }
-
-  #apply(state: BrowserState): void {
-    this.#set({ state, error: null });
-  }
-
-  #set(patch: Partial<BrowserView>): void {
-    if (patch.state) this.#human = patch.state.control === "human";
-    if (this.#closing) return;
-    // A frame belongs to one page of one generation: when either changes, the old picture goes until a new one arrives.
+  #stopTimer(): void { clearTimeout(this.#timer); this.#timer = undefined; }
+  #fresh(state: BrowserState): boolean {
     const before = this.view.state;
-    const moved = patch.state && (patch.state.generation !== before?.generation || patch.state.activePageId !== before.activePageId);
-    const frame = patch.frame !== undefined ? patch.frame : moved ? null : this.view.frame;
-    this.view = { ...this.view, ...patch, frame };
-    this.onChange(this.view);
+    return before?.generation !== state.generation || before.revision === undefined || state.revision === undefined || state.revision >= before.revision;
+  }
+  #apply(state: BrowserState): void { if (this.#fresh(state)) this.#set({ state, error: null }); }
+  #set(patch: Partial<BrowserView>): void {
+    if (patch.state) { this.#human = patch.state.control === "human"; if (!this.#human) this.#askedHuman = false; }
+    if (this.#closing) return;
+    const before = this.view;
+    const state = patch.state && JSON.stringify(patch.state) !== JSON.stringify(before.state) ? patch.state : before.state;
+    const moved = state && (state.generation !== before.state?.generation || state.activePageId !== before.state.activePageId || state.viewportRevision !== before.state.viewportRevision);
+    if (moved) this.#cursor = undefined;
+    const frame = patch.frame !== undefined ? patch.frame : moved ? null : before.frame;
+    const next = { ...before, ...patch, state, frame, busy: this.#fences > 0 || !!this.#suspending || !!state?.busy };
+    if (next.state === before.state && next.frame === before.frame && next.error === before.error && next.busy === before.busy) return;
+    this.view = next;
+    this.onChange(next);
   }
 }
 
-// Where a pointer is on the page: its place on the shown frame, scaled to the frame's own pixels.
+// Legacy callers use the whole rectangle; new object-contain layouts use browser-geometry.framePoint.
 export function pagePoint(box: { left: number; top: number; width: number; height: number }, frame: { width: number; height: number }, clientX: number, clientY: number): { x: number; y: number } {
-  const at = (offset: number, size: number, of: number): number => (size > 0 ? Math.min(Math.max(of - 1, 0), Math.max(0, Math.round((offset / size) * of))) : 0);
+  const at = (offset: number, size: number, of: number): number => size > 0 ? Math.min(Math.max(of - 1, 0), Math.max(0, Math.round(offset / size * of))) : 0;
   return { x: at(clientX - box.left, box.width, frame.width), y: at(clientY - box.top, box.height, frame.height) };
 }
-
-export function mouseButton(button: number): Button | null {
-  return button === 0 ? "left" : button === 1 ? "middle" : button === 2 ? "right" : null;
-}
-
-// Wheel deltas in pixels: lines and pages become pixels, and the daemon's limit holds.
-export function wheelPixels(delta: number, mode: number): number {
-  const pixels = mode === 1 ? delta * 16 : mode === 2 ? delta * 400 : delta;
-  return Math.max(-10_000, Math.min(10_000, Math.round(pixels)));
-}
-
-// What the address bar means: a full address as typed, a host with https (http for this computer), anything else a search.
-export function addressToUrl(text: string): string {
-  const value = text.trim();
-  if (/^(https?|about|file):/i.test(value)) return value;
-  if (/^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?([/?#]|$)/i.test(value)) return `http://${value}`;
-  if (!/\s/.test(value) && /^[^\s/]+\.[^\s/]{2,}([/?#:]|$)/.test(value)) return `https://${value}`;
-  return `https://duckduckgo.com/?q=${encodeURIComponent(value)}`;
-}
-
-// The size to ask the page for: the shown width, at the viewport's 4:3, within what the daemon accepts.
 export function viewportSize(width: number): { width: number; height: number } {
   const w = Math.min(2560, Math.max(240, Math.round(width)));
-  return { width: w, height: Math.min(1600, Math.max(180, Math.round((w * 3) / 4))) };
-}
-
-// What a key in the viewport does: "leave" is Shift+Tab, which returns focus to the panel's controls instead of the page;
-// "paste" waits for the paste event, which carries the text; everything else goes to the page.
-export function keyRoute(event: { key: string; shiftKey: boolean; ctrlKey: boolean; metaKey: boolean }): "leave" | "paste" | "send" {
-  if (event.key === "Tab" && event.shiftKey) return "leave";
-  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "v") return "paste";
-  return "send";
+  return { width: w, height: Math.min(1600, Math.max(180, Math.round(w * 3 / 4))) };
 }

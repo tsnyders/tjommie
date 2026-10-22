@@ -1,4 +1,4 @@
-import type { BrowserState } from "@tjommie/protocol";
+import type { BrowserFrame, BrowserState } from "@tjommie/protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { addressToUrl, BrowserSession, keyRoute, mouseButton, pagePoint, viewportSize, wheelPixels, type BrowserCall, type BrowserView } from "./browser-session";
 
@@ -50,15 +50,15 @@ describe("BrowserSession", () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
-  it("opens, then pulls frames one at a time about every 200 ms", async () => {
+  it("opens, then pulls frames one at a time every 250 ms when idle without redrawing identical images", async () => {
     const t = fake();
     t.session.open();
     await flush();
     expect(methods(t.log)).toEqual(["browser.open", "browser.frame"]);
     await vi.advanceTimersByTimeAsync(650);
-    expect(methods(t.log).filter((m) => m === "browser.frame").length).toBe(4);
+    expect(methods(t.log).filter((m) => m === "browser.frame").length).toBe(3);
     expect(t.overlapped()).toBe(false);
-    expect(t.session.view.frame?.sequence).toBe(4);
+    expect(t.session.view.frame?.sequence).toBe(1);
   });
 
   it("stops pulling while hidden and resumes when visible", async () => {
@@ -135,7 +135,7 @@ describe("BrowserSession", () => {
     t.log.length = 0;
     t.session.releaseAll();
     await flush();
-    const sent = t.log.map((e) => e.params.input as { kind: string; action: string });
+    const sent = t.log.filter((e) => e.method === "browser.input").map((e) => e.params.input as { kind: string; action: string });
     expect(sent).toEqual([expect.objectContaining({ kind: "mouse", action: "up" }), expect.objectContaining({ kind: "key", action: "up" })]);
 
     t.session.input({ kind: "key", action: "down", key: "b" });
@@ -143,7 +143,7 @@ describe("BrowserSession", () => {
     t.log.length = 0;
     t.session.close();
     await vi.advanceTimersByTimeAsync(1000);
-    expect(t.log.map((e) => e.method)).toEqual(["browser.frame", "browser.input", "browser.control"]);
+    expect(t.log.map((e) => e.method)).toEqual(["browser.open", "browser.input", "browser.control"]);
   });
 
   it("releases a key whose press was still in flight when the panel closed", async () => {
@@ -226,7 +226,7 @@ describe("BrowserSession", () => {
     expect(t.log.filter((e) => e.method === "browser.control").map((e) => e.params.control)).toEqual(["human", "bot"]);
   });
 
-  it("asks the browser to open when a fresh frame fails, and hands back what it says is human", async () => {
+  it("reads fresh ownership without a picture and hands back what it says is human", async () => {
     const t = fake(state({ control: "human" }));
     t.session.open();
     await flush();
@@ -234,7 +234,7 @@ describe("BrowserSession", () => {
     t.failOn("browser.frame");
     t.session.close();
     await vi.advanceTimersByTimeAsync(500);
-    expect(methods(t.log)).toEqual(["browser.frame", "browser.open", "browser.control"]);
+    expect(methods(t.log)).toEqual(["browser.open", "browser.control"]);
   });
 
   it("makes a quick reopen wait for the old panel's hand-back", async () => {
@@ -249,12 +249,12 @@ describe("BrowserSession", () => {
     const next = t.again();
     next.open();
     await vi.advanceTimersByTimeAsync(100);
-    expect(methods(t.log)).toEqual(["browser.input"]);
+    expect(methods(t.log).filter((m) => m !== "browser.frame")).toEqual(["browser.input"]);
     open();
     await vi.advanceTimersByTimeAsync(500);
     const order = methods(t.log);
     expect(order.indexOf("browser.control")).toBeGreaterThan(-1);
-    expect(order.indexOf("browser.open")).toBeGreaterThan(order.indexOf("browser.control"));
+    expect(order.lastIndexOf("browser.open")).toBeGreaterThan(order.indexOf("browser.control"));
     expect(t.log.find((e) => e.method === "browser.control")?.params.control).toBe("bot");
   });
 
@@ -296,7 +296,7 @@ describe("BrowserSession", () => {
     t.log.length = 0;
     t.session.close();
     await vi.advanceTimersByTimeAsync(500);
-    expect(methods(t.log)).toEqual(["browser.frame", "browser.dialog", "browser.control"]);
+    expect(methods(t.log)).toEqual(["browser.open", "browser.dialog", "browser.control"]);
     expect(t.log[1].params).toMatchObject({ accept: false, generation: "g1", pageId: "p1" });
   });
 
@@ -326,13 +326,13 @@ describe("BrowserSession", () => {
     await flush();
     expect(t.session.view.frame).not.toBeNull();
     t.session.tab("new");
-    t.set(state({ activePageId: "p2" }));
-    await flush();
     expect(t.session.view.frame).toBeNull();
     t.log.length = 0;
     t.session.input({ kind: "text", text: "x" });
+    t.set(state({ activePageId: "p2" }));
     await flush();
     expect(methods(t.log)).not.toContain("browser.input");
+    expect(t.session.view.state?.activePageId).toBe("p2");
   });
 
   it("switches control and applies the returned state", async () => {
@@ -359,6 +359,169 @@ describe("BrowserSession", () => {
     const calls = t.log.filter((e) => e.method !== "browser.frame");
     expect(calls.map((e) => e.method)).toEqual(["browser.navigate", "browser.history", "browser.tab", "browser.resize", "browser.dialog"]);
     expect(calls[0].params).toMatchObject({ generation: "g1", pageId: "p1", url: "https://a.test/" });
+  });
+
+  it("keeps one frame request in flight while ordered input and a modal answer proceed independently", async () => {
+    const delayed = Promise.withResolvers<{ state: BrowserState; frame: BrowserFrame | null }>();
+    let reads = 0;
+    const inputs: string[] = [];
+    const current = state();
+    const call: BrowserCall = async (method, params) => {
+      if (method === "browser.frame") { reads++; return (reads === 1 ? { state: current, frame: frame(1) } : await delayed.promise) as never; }
+      if (method === "browser.input") inputs.push((params as { input: { action: string } }).input.action);
+      if (method === "browser.dialog") inputs.push("dialog");
+      return current as never;
+    };
+    const session = new BrowserSession("independent", call, () => {});
+    session.open(); await flush();
+    await vi.advanceTimersByTimeAsync(250);
+    session.input({ kind: "key", action: "down", key: "x" });
+    session.input({ kind: "key", action: "up", key: "x" });
+    session.dialog(false);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(inputs).toEqual(["down", "up", "dialog"]);
+    expect(reads).toBe(2);
+    delayed.resolve({ state: current, frame: frame(2) });
+    await flush(); await session.close();
+  });
+
+  it.each(["control", "tab", "navigate", "resize"] as const)("fences an old in-flight frame across %s and rejects lower server revisions", async (action) => {
+    const delayed = Promise.withResolvers<{ state: BrowserState; frame: BrowserFrame | null }>();
+    const initial = state({ revision: 1, viewportRevision: 0 });
+    let current = initial;
+    let reads = 0;
+    const call: BrowserCall = async (method) => {
+      if (method === "browser.frame") {
+        reads++;
+        if (reads === 2) return await delayed.promise as never;
+        return { state: current, frame: { ...frame(reads), data: `fresh${reads}`, pageId: current.activePageId!, viewportRevision: current.viewportRevision } } as never;
+      }
+      if (method !== "browser.open") current = state({ revision: 2, viewportRevision: action === "resize" || action === "navigate" ? 1 : 0, activePageId: action === "tab" ? "p2" : "p1", control: action === "control" ? "bot" : "human" });
+      return current as never;
+    };
+    const session = new BrowserSession(`fence-${action}`, call, () => {});
+    session.open(); await flush(); await vi.advanceTimersByTimeAsync(250);
+    if (action === "control") session.setControl("bot");
+    else if (action === "tab") session.tab("new");
+    else if (action === "navigate") session.navigate("https://example.com/new");
+    else session.resize(700, 500);
+    await flush();
+    delayed.resolve({ state: initial, frame: { ...frame(99), data: "obsolete" } });
+    await flush();
+    expect(session.view.state?.revision).toBe(2);
+    expect(session.view.frame?.data).not.toBe("obsolete");
+    await vi.advanceTimersByTimeAsync(40);
+    const accepted = session.view;
+    current = initial;
+    await vi.advanceTimersByTimeAsync(40);
+    expect(session.view).toBe(accepted);
+    await session.close();
+  });
+
+  it("coalesces adjacent wheels and resizes but preserves clicks, keys and release barriers", async () => {
+    const t = fake(); t.session.open(); await flush(); t.log.length = 0;
+    const unlock = await t.hold();
+    t.session.input({ kind: "key", action: "down", key: "x" });
+    const wheel = (deltaY: number) => t.session.input({ kind: "wheel", x: 10, y: 20, deltaX: 0, deltaY });
+    wheel(5); wheel(7);
+    t.session.input({ kind: "mouse", action: "down", x: 10, y: 20, button: "left" });
+    wheel(9);
+    t.session.input({ kind: "mouse", action: "up", x: 10, y: 20, button: "left" });
+    t.session.resize(500, 400); t.session.resize(600, 400); t.session.resize(700, 400);
+    t.session.history("back");
+    t.session.resize(800, 400);
+    unlock(); await flush();
+    const input = t.log.filter((entry) => entry.method === "browser.input").map((entry) => entry.params.input);
+    expect(input).toMatchObject([{ kind: "key", action: "down" }, { kind: "wheel", deltaY: 12 }, { kind: "mouse", action: "down" }, { kind: "wheel", deltaY: 9 }, { kind: "mouse", action: "up" }]);
+    expect(t.log.filter((entry) => entry.method === "browser.resize").map((entry) => entry.params.width)).toEqual([700, 800]);
+    await t.session.close();
+  });
+
+  it("suspends through pending takeover and resumes behind handback without losing session state", async () => {
+    const t = fake(state({ control: "bot" })); t.session.open(); await flush();
+    const unlock = await t.hold();
+    t.session.setControl("human"); await flush();
+    const suspended = t.session.suspend();
+    t.session.setVisible(true);
+    t.session.setControl("human");
+    expect(t.session.view.busy).toBe(true);
+    unlock(); await suspended; await flush();
+    expect(t.log.filter((entry) => entry.method === "browser.control").map((entry) => entry.params.control)).toEqual(["human", "bot", "human"]);
+    expect(t.session.view.state?.control).toBe("human");
+    expect(t.session.view.busy).toBe(false);
+    expect(t.log.filter((entry) => entry.method === "browser.open")).toHaveLength(2); // initial open and handback's state-only read
+    await t.session.close();
+  });
+
+  it("a second hide drops a takeover queued during a still-pending handback", async () => {
+    const t = fake(); t.session.open(); await flush();
+    const unlock = await t.hold();
+    t.session.input({ kind: "key", action: "down", key: "Shift" }); await flush();
+    const first = t.session.suspend();
+    t.session.setVisible(true); t.session.setControl("human");
+    const second = t.session.suspend();
+    expect(second).toBe(first);
+    unlock(); await first; await flush();
+    expect(t.log.filter((entry) => entry.method === "browser.control").map((entry) => entry.params.control)).toEqual(["bot"]);
+    expect(t.session.view.state?.control).toBe("bot");
+    const reads = t.log.length;
+    await vi.advanceTimersByTimeAsync(2000); expect(t.log).toHaveLength(reads);
+    await t.session.close();
+  });
+
+  it("retains the last image and avoids view notifications for an unchanged cursor response", async () => {
+    const first = { ...frame(1), streamId: "s1", pageId: "p1", viewportRevision: 1 };
+    let polls = 0;
+    const cursors: unknown[] = [];
+    const current = state({ revision: 1, viewportRevision: 1 });
+    const views: BrowserView[] = [];
+    const call: BrowserCall = async (method, params) => {
+      if (method === "browser.frame") {
+        cursors.push((params as { after?: unknown }).after);
+        return { state: current, frame: ++polls === 1 ? first : null, unchanged: polls > 1 } as never;
+      }
+      return current as never;
+    };
+    const session = new BrowserSession("cursor", call, (view) => views.push(view));
+    session.open(); await flush();
+    const picture = session.view.frame, seen = views.length;
+    await vi.advanceTimersByTimeAsync(750);
+    expect(session.view.frame).toBe(picture); expect(views).toHaveLength(seen);
+    expect(cursors.at(-1)).toEqual({ streamId: "s1", sequence: 1 });
+    await session.close();
+  });
+
+  it("hands back promptly through an unresolved image request and discards its eventual response", async () => {
+    const delayed = Promise.withResolvers<{ state: BrowserState; frame: BrowserFrame | null }>();
+    const before = state(); let current = before, reads = 0;
+    const releases: string[] = [];
+    const call: BrowserCall = async (method, params) => {
+      if (method === "browser.frame") return (++reads === 1 ? { state: current, frame: frame(1) } : await delayed.promise) as never;
+      if (method === "browser.input") releases.push((params as { input: { action: string } }).input.action);
+      if (method === "browser.control") current = state({ control: "bot" });
+      return current as never;
+    };
+    const session = new BrowserSession("slow-frame", call, () => {});
+    session.open(); await flush();
+    session.input({ kind: "key", action: "down", key: "Shift" }); await flush();
+    await session.suspend(); // intentionally before resolving the frame promise
+    expect(current.control).toBe("bot"); expect(releases).toEqual(["down", "up"]);
+    expect(reads).toBe(2);
+    delayed.resolve({ state: before, frame: frame(2) }); await flush();
+    expect(session.view.state?.control).toBe("bot");
+    await session.close();
+  });
+
+  it("sends drag and key releases to their original tab after a tab selection", async () => {
+    const t = fake(); t.session.open(); await flush();
+    t.session.input({ kind: "key", action: "down", key: "Shift" });
+    t.session.input({ kind: "mouse", action: "down", button: "left", x: 10, y: 20 }); await flush();
+    t.set(state({ activePageId: "p2" })); t.session.tab("select", "p2"); await flush();
+    t.session.releaseAll(); await flush();
+    const releases = t.log.filter((entry) => entry.method === "browser.input" && (entry.params.input as { action?: string }).action === "up");
+    expect(releases).toHaveLength(2);
+    expect(releases.every((entry) => entry.params.pageId === "p1")).toBe(true);
+    await t.session.close();
   });
 });
 

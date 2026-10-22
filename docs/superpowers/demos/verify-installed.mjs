@@ -24,7 +24,8 @@ for (const [path, expected] of provenance.artifacts) {
   if (path.startsWith(unpackedPrefix)) assert.equal(hash(join(dirname(executable), path.slice(unpackedPrefix.length))), expected, `Installed payload differs: ${path}`);
 }
 const sourceCommit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim();
-const results = { startedAt: new Date().toISOString(), sourceCommit, inputsSha256: provenance.inputsSha256, executable, executableSha256, checks: {}, evidence: {}, finishedAt: null };
+const sourceWorktreeDirty = execFileSync("git", ["status", "--porcelain"], { cwd: repo, encoding: "utf8", windowsHide: true }).trim().length > 0;
+const results = { startedAt: new Date().toISOString(), sourceCommit, sourceWorktreeDirty, inputsSha256: provenance.inputsSha256, executable, executableSha256, checks: {}, evidence: {}, finishedAt: null };
 let app;
 let observedDb;
 let current;
@@ -186,7 +187,15 @@ try {
     await send(researcher, "Use your browser tools to open https://example.com and reply with the page title only.");
     await said(researcher, "Example Domain");
     await idle(researcher);
-    assert(existsSync(join(researcher.homeFolder, "chrome-profile", "Default")));
+    const profile = join(app.root, "data", "native-browser", createHash("sha256").update(researcher.id).digest("hex"));
+    assert(existsSync(profile), "The bot's isolated native profile must exist.");
+    const native = await electronApp.evaluate(({ BrowserWindow, webContents }) => ({
+      windows: BrowserWindow.getAllWindows().length,
+      pages: webContents.getAllWebContents().filter((contents) => contents.getURL().startsWith("https://example.com")).map((contents) => ({ title: contents.getTitle(), node: contents.getLastWebPreferences().nodeIntegration })),
+    }));
+    assert.equal(native.windows, 1);
+    assert(native.pages.some((entry) => entry.title === "Example Domain" && entry.node === false), "Browser tools must use the native guest, with Node disabled.");
+    results.evidence.nativeBrowser = { isolatedProfile: true, sameDesktopGuest: true, windows: native.windows };
   });
   await check("installed routine proposal and approval", async () => {
     await send(researcher, "Use add_routine to propose a routine named Installed proposal, weekdays at 08:48, prompt Reply PROPOSED. Then reply INSTALLED-PROPOSAL-OK.");

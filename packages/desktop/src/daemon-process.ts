@@ -10,6 +10,7 @@ export type DaemonLaunch = {
 };
 export type RunningDaemon = {
   connection: DaemonConnection;
+  desktopHostToken: string;
   pid: number | undefined;
   exited: Promise<{ code: number | null }>;
   stop: () => Promise<void>;
@@ -46,6 +47,7 @@ export function startDaemonProcess(
   timeoutMs = 60_000,
 ): Promise<RunningDaemon> {
   const token = newToken();
+  const desktopHostToken = newToken();
   const child = spawn(launch.execPath, [...launch.args, "--token-stdin"], {
     env: daemonEnv(launch.env, launch.testAccountsDir),
     stdio: "pipe",
@@ -63,7 +65,7 @@ export function startDaemonProcess(
     stderr = (stderr + chunk).slice(-4_000);
   });
   child.stdin.on("error", () => {}); // An early daemon exit is reported through exited below.
-  child.stdin.write(`${token}\n`);
+  child.stdin.write(`${JSON.stringify({ token, desktopHostToken })}\n`);
 
   const killTree = (): void => {
     if (child.exitCode !== null || child.signalCode !== null || child.pid === undefined) return;
@@ -109,7 +111,7 @@ export function startDaemonProcess(
       if (port === null) return;
       settled = true;
       clearTimeout(timer);
-      resolve({ connection: { port, token }, pid: child.pid, exited, stop });
+      resolve({ connection: { port, token }, desktopHostToken, pid: child.pid, exited, stop });
     });
     void exited.then(({ code }) => fail(new Error(lastLine(stderr) || `Tjommie's background service stopped (exit code ${code}).`)));
   });

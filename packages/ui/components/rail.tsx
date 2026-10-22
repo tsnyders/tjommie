@@ -29,12 +29,12 @@ export function Rail() {
       </RailLink>
       <div className="mt-1.5 mb-[1px] h-px w-8 shrink-0 bg-divider" />
       {/* The 4 px padding holds a focused bot's ring (2 px, 2 px out) inside the scrolling list; scroll-padding keeps it there when Tab scrolls. */}
-      <div className="flex min-h-0 w-full flex-1 flex-col items-center overflow-y-auto py-1 scroll-py-1">
+      <div className="flex min-h-0 w-full flex-1 flex-col items-center gap-1.5 overflow-y-auto py-1 scroll-py-1">
         {bots.map((bot) => (
           <BotLink key={bot.id} bot={bot} selected={bot.id === openBot} />
         ))}
       </div>
-      <div className="mt-1 flex shrink-0 flex-col items-center">
+      <div className="mt-1 flex shrink-0 flex-col items-center gap-1">
         <RailLink href="/agents/" label="Agents" selected={pathname.startsWith("/agents")} compact>
           <LayoutGrid className="size-5 text-icon" aria-hidden />
         </RailLink>
@@ -52,7 +52,8 @@ export function Rail() {
   );
 }
 
-// The selected item sits on a 52 px square. The bottom items are 44 px apart, so their squares overlap a little.
+// The selected item sits on a 52 px square (44 px for the bottom items). Squares have a gap between them, so a selected
+// and a hovered one never touch.
 function RailLink({ href, label, selected, compact = false, children }: { href: string; label: string; selected: boolean; compact?: boolean; children: ReactNode }) {
   return (
     <Link
@@ -60,7 +61,7 @@ function RailLink({ href, label, selected, compact = false, children }: { href: 
       aria-label={label}
       title={label}
       aria-current={selected ? "page" : undefined}
-      className={cn("flex size-[52px] shrink-0 items-center justify-center rounded-[12px] hover:bg-pill", compact && "-my-1", selected && "bg-selected hover:bg-selected")}
+      className={cn("flex shrink-0 items-center justify-center rounded-[12px] hover:bg-pill", compact ? "size-11" : "size-[52px]", selected && "bg-selected hover:bg-selected")}
     >
       {children}
     </Link>

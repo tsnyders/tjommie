@@ -4,11 +4,15 @@ import { homedir, userInfo } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { connect, type Client } from "@tjommie/client";
-import type { EventData } from "@tjommie/protocol";
+import { NativeBrowserMount, NativeBrowserUiCommand, type EventData } from "@tjommie/protocol";
 import { navigationFor, uiFile } from "./app-protocol.ts";
 import { notesFile } from "./bot-files.ts";
 import { startDaemonProcess, type DaemonConnection, type RunningDaemon } from "./daemon-process.ts";
 import { notificationDelivery } from "./notification-delivery.ts";
+import { beginGoogleConsent } from "./google-consent.ts";
+import { NativeBrowserEngine } from "./native-browser.ts";
+import { nativeBrowserAutomation, cancelNativeBrowserAutomation } from "./native-browser-automation.ts";
+import { startNativeBrowserHost } from "./native-browser-host.ts";
 
 const here = import.meta.dirname;
 const packaged = app.isPackaged;
@@ -40,6 +44,10 @@ let daemon: RunningDaemon | null = null;
 let current: Promise<DaemonConnection> | null = null;
 let starting = false;
 let notifier: Client | null = null;
+let nativeEngine: NativeBrowserEngine | null = null;
+let nativeHost: ReturnType<typeof startNativeBrowserHost> | null = null;
+let nativeClient: Promise<Client> | null = null;
+const disabledNativeBots = new Set<string>();
 let restarts: number[] = [];
 let pageTheme: keyof typeof THEMES = "dark";
 let scrim = false; // a dialog is open in the page, its scrim over everything but the caption buttons
@@ -76,7 +84,14 @@ if (!app.requestSingleInstanceLock()) {
     event.preventDefault(); // stop the daemon first, so its bots close cleanly
     const running = daemon;
     daemon = null;
-    void running.stop().finally(() => app.quit());
+    void (async () => {
+      try { await nativeEngine?.closeAll(); }
+      finally {
+        await nativeHost?.close(); nativeHost = null;
+        await (await nativeClient?.catch(() => null))?.close(); nativeClient = null;
+        await running.stop();
+      }
+    })().finally(() => app.quit());
   });
   app.on("window-all-closed", () => {}); // the window only hides; Tjommie keeps running in the tray
   // No top-level await here: Electron emits "ready" only after this module finishes evaluating.
@@ -160,7 +175,59 @@ async function launchDaemon(): Promise<DaemonConnection> {
   );
   daemon = running;
   void running.exited.then(({ code }) => onDaemonExit(running, code));
+  await nativeHost?.close();
+  const previousNativeClient = nativeClient;
+  nativeClient = null;
+  await (await previousNativeClient?.catch(() => null))?.close();
+  const attachedClient = await connectNativeClient(running).catch(() => { log("The native browser client will retry its background connection."); return null; });
+  if (attachedClient && nativeEngine) {
+    await attachedClient.call("bots.list", {}).then((bots) => nativeEngine?.pruneProfiles(bots.map((bot) => bot.id)))
+      .catch(() => { log("Some deleted native browser profile data could not be cleaned up yet."); });
+  }
+  nativeHost = startNativeBrowserHost({
+    port: running.connection.port, token: running.desktopHostToken,
+    execute: async (identity, command) => {
+      if (!nativeEngine) throw new Error("The native browser is not ready.");
+      if (command.kind === "close") { await nativeEngine.closeBot(identity.id); return {}; }
+      if (command.kind === "delete_profile") { await nativeEngine.deleteProfile(identity.id); return {}; }
+      if (command.kind === "cancel_tools") { await cancelNativeBrowserAutomation(identity.id); return {}; }
+      const bot = await resolveNativeBot(identity.id);
+      const result = await nativeEngine.execute(bot, command);
+      if (disabledNativeBots.has(bot.id)) { await nativeEngine.closeBot(bot.id); throw new Error("This bot's browser is off."); }
+      return result;
+    },
+  });
   return running.connection;
+}
+
+function connectNativeClient(running: RunningDaemon): Promise<Client> {
+  if (nativeClient) return nativeClient;
+  const opening = connect(running.connection.port, running.connection.token, { recordEvents: false });
+  nativeClient = opening;
+  const retry = (): void => {
+    if (nativeClient !== opening) return;
+    nativeClient = null;
+    if (!quitting && daemon === running) setTimeout(() => {
+      if (!quitting && daemon === running && !nativeClient) void connectNativeClient(running).catch(() => {});
+    }, 1000);
+  };
+  void opening.then((client) => {
+    const changedBots = new Set<string>();
+    client.subscribe((event) => {
+      if (event.event === "bot.deleted" || event.event === "bot.updated") changedBots.add(event.data.id);
+      if (event.event === "bot.deleted") { disabledNativeBots.add(event.data.id); void nativeEngine?.closeBot(event.data.id).catch(() => {}); }
+      if (event.event === "bot.updated") {
+        if (event.data.browser) disabledNativeBots.delete(event.data.id);
+        else { disabledNativeBots.add(event.data.id); void nativeEngine?.closeBot(event.data.id).catch(() => {}); }
+      }
+    });
+    void client.call("bots.list", {}).then((bots) => {
+      if (nativeClient !== opening) return;
+      for (const bot of bots) if (bot.browser && !changedBots.has(bot.id)) disabledNativeBots.delete(bot.id);
+    }).catch(() => {});
+    void client.disconnected.then(retry);
+  }, retry);
+  return opening;
 }
 
 // The daemon stopped on its own. Start a new one with a new token, at most three times a minute.
@@ -231,7 +298,53 @@ async function listenForNotifications(connection: DaemonConnection): Promise<voi
   }
 }
 
+async function resolveNativeBot(id: unknown) {
+  if (typeof id !== "string" || !id || id.length > 256) throw new Error("Invalid browser bot.");
+  if (!nativeClient && daemon) void connectNativeClient(daemon).catch(() => {});
+  if (!nativeClient) throw new Error("The native browser needs the desktop background service.");
+  const client = await nativeClient;
+  const bot = (await client.call("bots.list", {})).find((value) => value.id === id);
+  if (!bot?.browser || disabledNativeBots.has(id)) throw new Error("This bot's browser is off or the bot no longer exists.");
+  return bot;
+}
+
 function registerIpc(): void {
+  ipcMain.handle("native-browser:command", async (event, botId: unknown, command: unknown) => {
+    if (event.sender !== win?.webContents || event.senderFrame !== win.webContents.mainFrame) throw new Error("Untrusted browser host.");
+    const value = NativeBrowserUiCommand.parse(command);
+    const bot = await resolveNativeBot(botId);
+    if (!nativeEngine) throw new Error("The native browser is not ready.");
+    const result = await nativeEngine.execute(bot, value);
+    if (disabledNativeBots.has(bot.id)) { await nativeEngine.closeBot(bot.id); throw new Error("This bot's browser is off."); }
+    return result;
+  });
+  ipcMain.handle("native-browser:mount", async (event, botId: unknown, mount: unknown) => {
+    if (event.sender !== win?.webContents || event.senderFrame !== win.webContents.mainFrame) throw new Error("Untrusted browser host.");
+    const value = NativeBrowserMount.parse(mount);
+    if (!value.visible && typeof botId === "string" && botId.length > 0 && botId.length <= 256 && nativeEngine) {
+      // Concealment must not depend on a live daemon or wait behind page navigation.
+      nativeEngine.hideBot(botId);
+      try { return nativeEngine.state(botId); } catch { /* A first mount has not opened a guest yet. */ }
+    }
+    const bot = await resolveNativeBot(botId);
+    if (!nativeEngine) throw new Error("The native browser is not ready.");
+    const result = await nativeEngine.mount(bot, value);
+    if (disabledNativeBots.has(bot.id)) { await nativeEngine.closeBot(bot.id); throw new Error("This bot's browser is off."); }
+    return result;
+  });
+  ipcMain.handle("google:connect", async (_event, services: unknown): Promise<{ attempt: string }> => {
+    if (!current) throw new Error("Tjommie is still starting.");
+    const connection = await current;
+    const client = await connect(connection.port, connection.token, { recordEvents: false });
+    try {
+      return await beginGoogleConsent({
+        services,
+        begin: (requested) => client.call("google.begin", { services: requested }),
+        cancel: (attempt) => client.call("google.cancel", { attempt }),
+        open: (url) => shell.openExternal(url),
+      });
+    } finally { await client.close().catch(() => {}); }
+  });
   ipcMain.handle("daemon:connection", async (): Promise<ConnectionResult> => {
     try {
       if (!current) throw new Error("Tjommie is still starting.");
@@ -263,8 +376,10 @@ function registerIpc(): void {
     win?.setBackgroundColor(THEMES[pageTheme].color);
   });
   ipcMain.on("dialog:scrim", (_event, open: unknown) => {
+    if (_event.sender !== win?.webContents) return;
     if (typeof open !== "boolean") return;
     scrim = open;
+    nativeEngine?.setOccluded(open || !win?.isVisible());
     paintTitleBar();
   });
   ipcMain.handle("app:info", () => ({ username: userInfo().username }));
@@ -294,11 +409,20 @@ function createWindow(): void {
     webPreferences: { preload: join(here, "preload.cjs"), contextIsolation: true, sandbox: true, nodeIntegration: false },
   });
   win = window;
+  nativeEngine = new NativeBrowserEngine({
+    window, profileRoot: join(dataRoot, "data", "native-browser"), automation: nativeBrowserAutomation,
+    onState: (state) => { if (!window.isDestroyed()) window.webContents.send("native-browser:state", state); },
+    onFocusReturn: (botId) => { if (!window.isDestroyed()) window.webContents.send("native-browser:focus-return", botId); },
+    onNotice: (notice) => { log(`Native browser notice for ${notice.botId}: ${notice.message}`); },
+  });
+  window.on("hide", () => nativeEngine?.setOccluded(true));
+  window.on("show", () => nativeEngine?.setOccluded(scrim));
   window.once("ready-to-show", () => window.show());
   // A reload starts the page with no dialog open, so a scrim left over from before it goes.
   window.webContents.on("did-navigate", () => {
     if (!scrim) return;
     scrim = false;
+    nativeEngine?.setOccluded(!window.isVisible());
     paintTitleBar();
   });
   window.on("close", (event) => {

@@ -10,10 +10,13 @@ import { browsers } from "./browser-manager.ts";
 import { BrowserMcp } from "./browser-mcp.ts";
 import { history, updateMessage } from "./chat.ts";
 import { connect, type Client } from "@tjommie/client";
-import { startDaemon, type Daemon } from "./daemon.ts";
+import { startDaemon, type Daemon, type DaemonAuth } from "./daemon.ts";
+import { startNativeBrowserHost } from "../../desktop/src/native-browser-host.ts";
 import { newId, openDb, type Db } from "./db.ts";
 import * as dbModule from "./db.ts";
 import { dataPaths } from "./paths.ts";
+import { GoogleAuth } from "./google-auth.ts";
+import type { GoogleVault, GoogleVaultRecord } from "./google-vault.ts";
 import type { ProviderEvent, ProviderSession, StartOptions } from "./providers/types.ts";
 import { enqueue, getWorkItem, newChain, setStatus } from "./queue.ts";
 import { addRun, createRoutine, getRun, listRuns } from "./routines.ts";
@@ -107,9 +110,9 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
-async function harness(root = tempRoot(), auth: { mode: "development" } | { mode: "production"; token: string } = { mode: "development" }) {
+async function harness(root = tempRoot(), auth: DaemonAuth = { mode: "development" }, googleAuth?: GoogleAuth) {
   const sessions: { botId: string; options: StartOptions; session: Session }[] = [];
-  const daemon = await startDaemon({ root, port: 0, auth, createSession: (bot, options) => {
+  const daemon = await startDaemon({ root, port: 0, auth, googleAuth, createSession: (bot, options) => {
     const session = new Session();
     sessions.push({ botId: bot.id, options, session });
     return session;
@@ -127,6 +130,37 @@ function appServer(options: StartOptions) {
   if (!server || !("url" in server)) throw new Error("Missing Tjommie MCP server");
   return server;
 }
+
+it("routes production browser RPC and scoped MCP tools to the private desktop host", async () => {
+  const desktopHostToken = "h".repeat(43);
+  const { daemon, client, sessions } = await harness(tempRoot(), { mode: "production", token: "t".repeat(43), desktopHostToken });
+  const seen: string[] = [];
+  const host = startNativeBrowserHost({ port: daemon.port, token: desktopHostToken, execute: async (bot, command) => {
+    seen.push(command.kind);
+    if (command.kind === "close" || command.kind === "delete_profile" || command.kind === "cancel_tools") return {};
+    if (command.kind === "tool") return { content: [{ type: "text", text: "Synthetic native snapshot" }] };
+    return { botId: bot.id, generation: "native-g", control: "bot", revision: 1, activePageId: "native-p", tabs: [{ id: "native-p", title: "Native", url: "https://example.test/" }], dialog: null };
+  } });
+  const opening = vi.spyOn(browsers, "open");
+  try {
+    const bot = await client.call("bots.create", input("Native bridge", { browser: true }));
+    expect(await client.call("browser.open", { botId: bot.id })).toMatchObject({ generation: "native-g" });
+    expect(await client.call("browser.frame", { botId: bot.id })).toMatchObject({ frame: null });
+    await client.call("bots.showBrowser", { id: bot.id });
+    expect(opening).not.toHaveBeenCalled();
+    await client.call("chat.send", { botId: bot.id, text: "Synthetic native tool turn" });
+    await waitFor(() => sessions[0]?.session.sent.length);
+    const descriptor = sessions[0].options.mcpServers?.find((entry) => entry.name === "browser");
+    if (!descriptor || !("url" in descriptor)) throw new Error("Native browser MCP descriptor missing.");
+    const response = await fetch(descriptor.url, { method: "POST", headers: descriptor.headers, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "browser_snapshot", arguments: {} } }) });
+    expect(await response.json()).toMatchObject({ result: { content: [{ type: "text", text: "Synthetic native snapshot" }] } });
+    expect(seen).toContain("tool");
+    sessions[0].session.finish("Done");
+    await client.call("bots.update", { id: bot.id, patch: { browser: false } });
+    expect(seen).toContain("close");
+    expect((await fetch(`http://127.0.0.1:${daemon.port}/browser-host`, { headers: { Authorization: `Bearer ${daemon.token}` } })).status).toBe(401);
+  } finally { await host.close(); }
+});
 
 async function tool(options: StartOptions, name: string, args: Record<string, unknown>) {
   const server = appServer(options);
@@ -1143,4 +1177,37 @@ it("reads the start of a bot's notes.md for Bot settings", async () => {
   rmSync(join(bot.homeFolder, "notes.md"));
   expect(await client.call("bots.notes", { id: bot.id })).toEqual({ text: "" });
   await expect(client.call("bots.notes", { id: "missing" })).rejects.toThrow(/not_found/);
+});
+
+
+it("keeps Google credentials private and gates read-only MCP access per existing bot", async () => {
+  let saved: GoogleVaultRecord | null = {
+    version: 1, client: { clientId: "fixture.apps.googleusercontent.com", clientSecret: "synthetic-client-secret" },
+    connection: { refreshToken: "synthetic-refresh-token", subject: "fixture-account", email: "fixture@example.test", scopes: ["openid", "email", "https://www.googleapis.com/auth/gmail.readonly"], services: ["gmail"] },
+    grantedBotIds: [],
+  };
+  const vault: GoogleVault = { load: async () => structuredClone(saved), save: async (next) => { saved = structuredClone(next); }, clear: async () => { saved = null; } };
+  const transport = vi.fn(async (req: { url: string }) => req.url.endsWith("/token")
+    ? { status: 200, body: { access_token: "synthetic-access-token", token_type: "Bearer", expires_in: 3600 } }
+    : { status: 200, body: { messages: [{ id: "abc123" }] } });
+  const googleAuth = await GoogleAuth.open({ vault, transport });
+  const { client, sessions } = await harness(tempRoot(), { mode: "development" }, googleAuth);
+  const status = await client.call("google.status", {});
+  expect(status).toMatchObject({ connected: true, grantedBotIds: [] });
+  expect(JSON.stringify(status)).not.toContain("synthetic-");
+  await expect(client.call("google.grant", { botId: "missing", enabled: true })).rejects.toThrow();
+  const bot = await client.call("bots.create", input("Google fixture"));
+  await client.call("chat.send", { botId: bot.id, text: "Synthetic message", files: [] });
+  await waitFor(() => sessions.length === 1);
+  const descriptor = appServer(sessions[0].options);
+  const denied = await fetch(descriptor.url, { method: "POST", headers: { ...descriptor.headers, "Content-Type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "google_gmail_search", arguments: { query: "in:inbox" } } }) });
+  expect(await denied.json()).toMatchObject({ result: { isError: true } });
+  expect(transport).not.toHaveBeenCalled();
+  await client.call("google.grant", { botId: bot.id, enabled: true });
+  const allowed = await tool(sessions[0].options, "google_gmail_search", { query: "in:inbox" });
+  expect(JSON.stringify(allowed)).toContain("abc123");
+  expect(JSON.stringify(allowed)).not.toContain("synthetic-access-token");
+  await client.call("bots.delete", { id: bot.id });
+  expect((await client.call("google.status", {})).grantedBotIds).toEqual([]);
+  expect(saved?.grantedBotIds).toEqual([]);
 });
