@@ -137,7 +137,7 @@ function BotSettings({ bot, bots }: { bot: Bot; bots: Bot[] }) {
         open={deleting}
         onOpenChange={setDeleting}
         title={`Delete ${bot.name}?`}
-        body="Its chat, routines and home folder (notes, inbox and Chrome profile) are deleted. Attached project folders aren't touched."
+        body="Its chat, routines and home folder (notes, inbox and browser profile) are deleted. Attached project folders aren't touched."
         confirm={
           <>
             <Trash2 className="size-4" aria-hidden />

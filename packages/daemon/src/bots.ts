@@ -181,7 +181,7 @@ export function botPrompt(bot: StoredBot): string {
     "Files the person attaches are copied into the inbox folder inside your home folder.",
     "Tjommie's tools: list_bots shows the bots you may ask for help; message_bot sends one a request, and its answer arrives later as a new message, so don't wait for it; share_file shows the person a file; add_routine proposes work on a schedule.",
     ...(bot.browser
-      ? ["You have your own browser through the browser tools. Sites the person signed in to there stay signed in. If the browser says it's already in use, ask the person to close your browser window."]
+      ? ["Your browser tools share a browser with the person through the browser panel in Tjommie. Sites they sign in to there stay signed in. When they take over, ask them to choose Resume bot when finished. The panel has no native file picker; after they resume, use browser_file_upload to supply files or paths: [] to cancel a pending file chooser. Never open a separate browser window or use their personal browser profile."]
       : []),
     "Reply in plain, friendly language, and keep replies short unless the person asks for detail.",
     "",

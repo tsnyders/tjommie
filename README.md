@@ -1,6 +1,6 @@
 # Tjommie
 
-Tjommie is a free, open-source desktop and phone app for AI bots that chat with you, work on your PC, talk to each other and run routines. The bots run on your own computer through the official Claude Code and Codex CLIs, signed in with your own accounts.
+Tjommie is a free, open-source desktop app for AI bots that chat with you, work on your PC, talk to each other and run routines. The bots run on your own computer through the official Claude Code and Codex CLIs, signed in with your own accounts. Phone access is planned for a later phase.
 
 **Status:** early development. The design is in [`docs/superpowers/specs/2026-09-25-tjommie-design.md`](docs/superpowers/specs/2026-09-25-tjommie-design.md).
 
@@ -49,6 +49,16 @@ After packaging, run `npm run test:packaged`. This mandatory gate requires the u
 After installing, set `TJOMMIE_TEST_EXECUTABLE` to the installed `Tjommie.exe` absolute path to run the existing desktop lifecycle and screen suites against that executable. They retain disposable data roots and Electron profiles and use the Tjommie-owned provider accounts. Unset it before returning to source-app tests. The mandatory packaged smoke always supplies its own unpacked executable path.
 
 TypeScript must never use explicit `any` types. `npm run typecheck` enforces this with the syntax-based `check:no-any` gate before checking types. Test commands fail when no test files are found.
+
+## Bot browser
+
+Enable Browser for a bot, then choose Open browser in its chat to browse inside the right panel. Each bot has its own persistent profile. The browser engine runs headlessly; it does not open a separate Chrome or Edge window. The feature still requires Chrome or Edge to be installed.
+
+Take control before typing, clicking or signing in manually. Resume bot gives its browser tools control again. Both use the same pages and signed-in sites. Closing the panel releases manual control and stops its live view without closing the browser. Browser pages run outside Tjommie's renderer, and their frames and manual input are not stored as chat messages.
+
+The panel does not provide native file pickers, passkey prompts or operating-system authentication dialogs. For uploads, attach a file in chat and ask the bot to upload it. If a page's file chooser was already opened manually, choose Resume bot and ask the bot to upload the attachment or cancel the chooser; its browser file-upload tool supports cancellation with an empty file list. Local synthetic-site checks establish cookie persistence, not compatibility with every third-party sign-in service.
+
+Startup routine failures are retained until the desktop handles and acknowledges them. Reconnecting retries an unacknowledged notice. A desktop crash between showing a notification and acknowledging it can cause one replay after restart.
 
 ## Autonomy
 

@@ -12,6 +12,7 @@ import { ExchangeView } from "../exchange/exchange-view";
 import { FailedLoad } from "../failed-load";
 import { PanelBar } from "../panel-bar";
 import { BotPanel } from "./bot-panel";
+import { BrowserPanel } from "./browser-panel";
 import { ChatHeader } from "./chat-header";
 import { Composer } from "./composer";
 import { MessageList } from "./message-list";
@@ -32,6 +33,8 @@ export function ChatScreen({ botId }: { botId: string }) {
   // This screen renders only in the window, never in the static build, so localStorage is there.
   const [panel, setPanel] = useState(() => localStorage.getItem(PANEL_KEY) !== "closed");
   const [exchangeId, setExchangeId] = useState<string | null>(null);
+  // The bot whose browser fills the panel. Closing the panel never closes the browser.
+  const [browserBot, setBrowserBot] = useState<string | null>(null);
   const section = useRef<HTMLElement>(null);
   const panelButton = useRef<HTMLButtonElement>(null);
 
@@ -56,9 +59,15 @@ export function ChatScreen({ botId }: { botId: string }) {
     localStorage.setItem(PANEL_KEY, open ? "open" : "closed");
     setPanel(open);
   };
+  const browserOpen = browserBot === botId;
   const togglePanel = (): void => {
     if (exchangeId) setExchangeId(null);
     else showPanel(!panel);
+  };
+  const openBrowser = (): void => {
+    setExchangeId(null);
+    showPanel(true);
+    setBrowserBot(botId);
   };
   // The view's own x and >> go with it, so focus goes back to the row that opened the exchange, or to the panel
   // button if that row is gone. It doesn't scroll there: the chat may have moved on meanwhile.
@@ -71,7 +80,7 @@ export function ChatScreen({ botId }: { botId: string }) {
   return (
     <div className="flex min-h-0 flex-1">
       <section ref={section} aria-label={`Chat with ${bot.name}`} className="flex min-w-0 flex-1 flex-col">
-        <ChatHeader bot={bot} panelOpen={panel || exchangeId !== null} onTogglePanel={togglePanel} panelButton={panelButton} />
+        <ChatHeader bot={bot} panelOpen={panel || exchangeId !== null} onTogglePanel={togglePanel} panelButton={panelButton} onOpenBrowser={openBrowser} />
         {bot.state === "needs_setup" && <SetupBanner bot={bot} />}
         {conversation?.status === "failed" ? (
           <FailedLoad text="Couldn't load this chat." onRetry={() => void retryConversation(botId, botHistory(botId))} />
@@ -93,7 +102,12 @@ export function ChatScreen({ botId }: { botId: string }) {
           bar={<PanelBar settingsHref={settings} settingsLabel="Bot settings" hideLabel="Hide the panel" onHide={() => closeExchange(exchangeId)} />}
         />
       ) : (
-        panel && <BotPanel bot={bot} messages={messages} onHide={() => showPanel(false)} />
+        panel &&
+        (browserOpen && bot.browser ? (
+          <BrowserPanel bot={bot} onClose={() => setBrowserBot(null)} />
+        ) : (
+          <BotPanel bot={bot} messages={messages} onHide={() => showPanel(false)} onOpenBrowser={openBrowser} />
+        ))
       )}
     </div>
   );

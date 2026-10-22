@@ -3,7 +3,10 @@ import { join } from "node:path";
 import { SETUP_CODEX_SANDBOX_REASON, TEAM_ROOM_ID, type ProviderSetup } from "@tjommie/protocol";
 import { getApproval } from "./approvals.ts";
 import { createBot, deleteBot, getStoredBot, listStoredBots, setPaused, sweepDeletedBotFolders, updateBot, validateBotPatch } from "./bots.ts";
-import { browserServer, showBrowser } from "./browser.ts";
+import { browsers, sharedBrowserServer, showBrowser } from "./browser.ts";
+import { browserHandlers } from "./browser-handlers.ts";
+import { BrowserMcp } from "./browser-mcp.ts";
+import { runCleanup } from "./cleanup.ts";
 import { historyPage } from "./chat.ts";
 import { openDb } from "./db.ts";
 import { McpTokens, mcpHandler } from "./mcp.ts";
@@ -105,6 +108,7 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
   const send: Broadcast = (event, data) => broadcast(event, data);
   let mcpUrl = ""; // Set before queued work can start a CLI session.
   const tokens = new McpTokens();
+  const browserMcp = new BrowserMcp({ tokens, getBot: (id) => getStoredBot(db, id) });
   const switchingBots = new Set<string>();
   const runner: Runner = new Runner({
     db,
@@ -121,12 +125,16 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
     createSession: options.createSession,
     hooks: {
       retryRoutine: (message) => scheduler.retry(message),
-      mcpServers: (bot) => [
-        { name: "tjommie", url: mcpUrl, headers: { Authorization: `Bearer ${tokens.issue(bot.id)}` }, autoAllow: true },
-        ...(bot.browser ? [browserServer(bot)] : []),
-      ],
+      mcpServers: (bot) => {
+        const sessionToken = tokens.issue(bot.id);
+        return [
+          { name: "tjommie", url: mcpUrl, headers: { Authorization: `Bearer ${sessionToken}` }, autoAllow: true },
+          ...(bot.browser ? [sharedBrowserServer(bot, `${mcpUrl}/browser`, sessionToken)] : []),
+        ];
+      },
       sessionClosed: (botId) => {
         tokens.revoke(botId);
+        void browserMcp.close(botId).catch(() => {});
         team.sessionClosed(botId);
       },
       turnStarted: (item) => {
@@ -181,6 +189,10 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
 
   const deletionRequests = new Set<string>();
   const handlers: Handlers = {
+    ...browserHandlers((id) => {
+      if (deletionRequests.has(id)) throw new RpcError("busy", "This bot is being deleted.");
+      return getStoredBot(db, id);
+    }),
     "setup.status": () => refreshSetup(),
     "setup.signIn": ({ provider }) => signIn(db, provider, (_ok, attempt) => signInEnded(provider, attempt)),
     "setup.prepareCodexSandbox": async () => {
@@ -235,7 +247,11 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
       }
       if (!providerChanged) runner.botChanged(id, false);
       const bot = runner.toBot(changed);
-      broadcast("bot.updated", bot);
+      try {
+        if (before.browser && !changed.browser) {
+          await runCleanup([() => browserMcp.close(id), () => browsers.close(id)], "The browser was disabled, but some browser resources could not close.");
+        }
+      } finally { broadcast("bot.updated", bot); }
       return bot;
     },
     "bots.delete": async ({ id }) => {
@@ -327,6 +343,11 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
       getRoutine(db, routineId);
       return listRuns(db, routineId);
     },
+    "notifications.pending": () => scheduler.pendingFailures(),
+    "notifications.ack": ({ runId }) => {
+      scheduler.acknowledgeFailure(runId);
+      return {};
+    },
     "settings.get": () => getSettings(db),
     "settings.set": (patch) => {
       const settings = setSettings(db, patch);
@@ -344,17 +365,21 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
   broadcast = server.broadcast;
   runner.start();
   scheduler.start();
-  server.activate({ token, handlers, routes: { "/mcp": mcpHandler({ tokens, tools: team.tools() }) } });
+  server.activate({ token, handlers, routes: { "/mcp": mcpHandler({ tokens, tools: team.tools() }), "/mcp/browser": browserMcp.handle } });
   return {
     port: server.port,
     token,
     runner,
     scheduler,
     close: async () => {
-      scheduler.stop();
-      runner.shutdown();
-      await server.close();
-      db.close();
+      await runCleanup([
+        () => scheduler.stop(),
+        () => runner.shutdown(),
+        () => browserMcp.closeAll(),
+        () => browsers.closeAll(),
+        () => server.close(),
+        () => db.close(),
+      ], "Tjommie stopped with cleanup errors.");
     },
   };
 }

@@ -54,6 +54,53 @@ const digest = (extra: { timeLimitMinutes?: number; enabled?: boolean; days?: nu
   createRoutine(db, { botId, name: "Digest", prompt: "Summarize my inbox", days: [0, 1, 2, 3, 4, 5, 6], times: ["08:00", "17:00"], timeZone: "UTC", ...extra }, at("2026-09-20T00:00:00Z"));
 
 describe("Scheduler", () => {
+  it("retains startup failures across database reopen until explicitly acknowledged", () => {
+    const routine = digest();
+    const orphan = addRun(db, routine.id, "2026-09-19T17:00:00.000Z", "queued");
+    scheduler().recover();
+    db.close();
+    db = openDb(join(root, "t.db"));
+    const restarted = scheduler();
+    restarted.recover();
+    const expected = [{ kind: "routine_failed", botId, routineId: routine.id, runId: orphan.id,
+      title: "Night Shift's routine failed", body: "Digest: Tjommie restarted before this routine run could finish." }];
+    expect(restarted.pendingFailures()).toEqual(expected);
+    expect(restarted.pendingFailures()).toEqual(expected); // fetching is not delivery
+    expect(history(db, botId, undefined, 10)).toHaveLength(1);
+    restarted.acknowledgeFailure(orphan.id);
+    restarted.acknowledgeFailure(orphan.id); // an acknowledgement can be retried
+    db.close();
+    db = openDb(join(root, "t.db"));
+    const again = scheduler();
+    again.recover();
+    expect(again.pendingFailures()).toEqual([]);
+    expect(getRun(db, orphan.id)?.status).toBe("failed");
+    expect(history(db, botId, undefined, 10)).toHaveLength(1);
+  });
+
+  it("rolls back recovery status and history if its durable notification cannot be stored", () => {
+    const routine = digest();
+    const orphan = addRun(db, routine.id, "2026-09-19T17:00:00.000Z", "running");
+    const s = scheduler();
+    db.exec("CREATE TRIGGER reject_notice BEFORE INSERT ON routine_failure_notifications BEGIN SELECT RAISE(ABORT, 'notice unavailable'); END");
+    expect(() => s.recover()).toThrow("notice unavailable");
+    expect(getRun(db, orphan.id)?.status).toBe("running");
+    expect(history(db, botId, undefined, 10)).toEqual([]);
+    expect(events).toEqual([]);
+    db.exec("DROP TRIGGER reject_notice");
+    s.recover();
+    expect(s.pendingFailures()).toHaveLength(1);
+  });
+
+  it("removes pending routine notices when their routine is deleted", () => {
+    const routine = digest();
+    addRun(db, routine.id, "2026-09-19T17:00:00.000Z", "queued");
+    const s = scheduler();
+    s.recover();
+    deleteRoutine(db, routine.id);
+    expect(s.pendingFailures()).toEqual([]);
+  });
+
   it.each(["routine_runs", "routines", "messages", "chains", "work_items"])("rolls back the entire firing when persisting %s fails", (table) => {
     const routine = digest();
     const s = scheduler();

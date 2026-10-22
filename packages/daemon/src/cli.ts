@@ -1,27 +1,49 @@
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { existsSync } from "node:fs";
-import { delimiter, join } from "node:path";
+import { existsSync, realpathSync } from "node:fs";
+import { createRequire } from "node:module";
+import { delimiter, dirname, join } from "node:path";
 
 export type CliName = "claude" | "codex";
-export type CliCommand = { file: string; args: string[] };
+export type CliCommand = { file: string; args: string[]; codexPackage?: { root: string; pathDir?: string } };
 
 const NPM_ENTRY: Record<CliName, string[]> = {
   claude: ["@anthropic-ai", "claude-code", "cli.js"],
   codex: ["@openai", "codex", "bin", "codex.js"],
 };
 
-// Finds a CLI on PATH. A native executable wins. An npm-installed CLI runs its JS entry with our own
-// Node, because Windows can't spawn npm's .cmd/.ps1 shims without a shell.
-export function resolveCli(name: CliName, env: NodeJS.ProcessEnv = process.env): CliCommand | null {
+// Prefer native executables: Codex's npm wrapper starts its binary without windowsHide, opening a
+// terminal even when we hide the wrapper. Unknown layouts keep their normal JS entry fallback.
+export function resolveCli(name: CliName, env: NodeJS.ProcessEnv = process.env, runtime: Pick<NodeJS.Process, "platform" | "arch"> = process): CliCommand | null {
   const path = Object.entries(env).find(([key]) => key.toUpperCase() === "PATH")?.[1] ?? "";
   const dirs = path.split(delimiter).filter(Boolean);
-  const exe = process.platform === "win32" ? `${name}.exe` : name;
+  const exe = runtime.platform === "win32" ? `${name}.exe` : name;
   for (const dir of dirs) if (existsSync(join(dir, exe))) return { file: join(dir, exe), args: [] };
   for (const dir of dirs) {
     const entry = join(dir, "node_modules", ...NPM_ENTRY[name]);
-    if (existsSync(entry)) return { file: process.execPath, args: [entry] };
+    if (existsSync(entry)) return (name === "codex" ? npmCodex(entry, runtime) : null) ?? { file: process.execPath, args: [entry] };
   }
   return null;
+}
+
+function npmCodex(entry: string, runtime: Pick<NodeJS.Process, "platform" | "arch">): CliCommand | null {
+  if (runtime.platform !== "win32" || !["x64", "arm64"].includes(runtime.arch)) return null;
+  const triple = runtime.arch === "x64" ? "x86_64-pc-windows-msvc" : "aarch64-pc-windows-msvc";
+  try {
+    const canonicalEntry = realpathSync(entry);
+    const root = dirname(dirname(canonicalEntry));
+    let vendor = join(root, "vendor");
+    try {
+      const platformPackage = createRequire(canonicalEntry).resolve(`@openai/codex-win32-${runtime.arch}/package.json`);
+      vendor = join(dirname(platformPackage), "vendor");
+    } catch { /* Older npm releases bundle vendor directly in the main package. */ }
+    const target = join(vendor, triple);
+    const file = [join(target, "bin", "codex.exe"), join(target, "codex", "codex.exe")].find(existsSync);
+    if (!file) return null;
+    const pathDir = join(target, "path");
+    return { file, args: [], codexPackage: { root, ...(existsSync(pathDir) ? { pathDir } : {}) } };
+  } catch {
+    return null;
+  }
 }
 
 const STRIPPED_ENV = [
@@ -34,6 +56,11 @@ const STRIPPED_ENV = [
   "OPENAI_API_KEY",
   "CODEX_API_KEY",
   "CODEX_HOME",
+  "CODEX_MANAGED_PACKAGE_ROOT",
+  "CODEX_MANAGED_BY_NPM",
+  "CODEX_MANAGED_BY_PNPM",
+  "CODEX_MANAGED_BY_BUN",
+  "CODEX_MANAGED_BY_VITE_PLUS",
   "ANTHROPIC_BASE_URL",
   "ANTHROPIC_CUSTOM_HEADERS",
   "CLAUDE_CODE_USE_BEDROCK",
@@ -58,7 +85,7 @@ export function cliEnv(extra: Record<string, string>, base: NodeJS.ProcessEnv = 
 
 export function spawnCli(cmd: CliCommand, args: string[], opts: { cwd: string; env: Record<string, string> }): ChildProcessWithoutNullStreams {
   // This is a new pipe for the CLI protocol. It never shares the daemon's token input pipe.
-  return spawn(cmd.file, [...cmd.args, ...args], { cwd: opts.cwd, env: nodeEnv(opts.env), stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+  return spawn(cmd.file, [...cmd.args, ...args], { cwd: opts.cwd, env: nodeEnv(cmd, opts.env), stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
 }
 
 function safeChildEnv(env: NodeJS.ProcessEnv): Record<string, string> {
@@ -71,8 +98,17 @@ function safeChildEnv(env: NodeJS.ProcessEnv): Record<string, string> {
   return cliEnv(accountFolders, env);
 }
 
-const nodeEnv = (env: Record<string, string>): Record<string, string> => {
+const nodeEnv = (cmd: CliCommand, env: Record<string, string>): Record<string, string> => {
   const safe = safeChildEnv(env);
+  if (cmd.codexPackage) {
+    safe.CODEX_MANAGED_PACKAGE_ROOT = cmd.codexPackage.root;
+    safe.CODEX_MANAGED_BY_NPM = "1";
+    if (cmd.codexPackage.pathDir) {
+      const path = Object.entries(safe).find(([key]) => key.toUpperCase() === "PATH")?.[1] ?? "";
+      for (const key of Object.keys(safe)) if (key.toUpperCase() === "PATH") delete safe[key];
+      safe.PATH = [cmd.codexPackage.pathDir, path].filter(Boolean).join(delimiter);
+    }
+  }
   return process.versions.electron ? { ...safe, ELECTRON_RUN_AS_NODE: "1" } : safe;
 };
 
@@ -84,7 +120,7 @@ export function runCli(
   timeoutMs = 20_000,
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
-    const child = spawn(cmd.file, [...cmd.args, ...args], { env: nodeEnv(env), stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    const child = spawn(cmd.file, [...cmd.args, ...args], { env: nodeEnv(cmd, env), stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (chunk) => (stdout += chunk));

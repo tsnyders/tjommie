@@ -16,7 +16,7 @@ import { MENU_ITEM, MENU_POPUP } from "../menu";
 // Windows draws its caption buttons over the window's top-right 138 x 44 px. With the bot panel hidden they sit
 // over this header, so its buttons move 154 px in. The chip stays centered, with room for the buttons both sides.
 // panelButton reaches the panel button, so the chat can give it focus.
-export function ChatHeader({ bot, panelOpen, onTogglePanel, panelButton }: { bot: Bot; panelOpen: boolean; onTogglePanel: () => void; panelButton?: Ref<HTMLButtonElement> }) {
+export function ChatHeader({ bot, panelOpen, onTogglePanel, panelButton, onOpenBrowser }: { bot: Bot; panelOpen: boolean; onTogglePanel: () => void; panelButton?: Ref<HTMLButtonElement>; onOpenBrowser: () => void }) {
   const [problem, setProblem] = useState<string | null>(null);
   return (
     <header className="drag relative flex h-14 shrink-0 items-center justify-center px-4">
@@ -29,7 +29,7 @@ export function ChatHeader({ bot, panelOpen, onTogglePanel, panelButton }: { bot
         <IconButton ref={panelButton} label="Bot panel" active={panelOpen} onClick={onTogglePanel}>
           <PanelRight aria-hidden />
         </IconButton>
-        <MoreMenu bot={bot} onProblem={setProblem} />
+        <MoreMenu bot={bot} onProblem={setProblem} onOpenBrowser={onOpenBrowser} />
       </div>
       {problem && (
         <p role="alert" className="absolute left-1/2 top-full z-10 -translate-x-1/2 rounded-full bg-popover px-3 py-1.5 text-[12px] leading-[18px] text-danger">
@@ -61,7 +61,7 @@ export function HeaderState({ bot }: { bot: Bot }) {
   );
 }
 
-function MoreMenu({ bot, onProblem }: { bot: Bot; onProblem: (problem: string | null) => void }) {
+function MoreMenu({ bot, onProblem, onOpenBrowser }: { bot: Bot; onProblem: (problem: string | null) => void; onOpenBrowser: () => void }) {
   const router = useRouter();
   async function run(action: () => Promise<unknown>): Promise<void> {
     onProblem(null);
@@ -84,9 +84,9 @@ function MoreMenu({ bot, onProblem }: { bot: Bot; onProblem: (problem: string | 
               {bot.paused ? "Resume bot" : "Pause bot"}
             </Menu.Item>
             {bot.browser && (
-              <Menu.Item className={MENU_ITEM} onClick={() => void run(() => daemon().call("bots.showBrowser", { id: bot.id }))}>
+              <Menu.Item className={MENU_ITEM} onClick={onOpenBrowser}>
                 <Globe aria-hidden />
-                Show browser window
+                Open browser
               </Menu.Item>
             )}
             <Menu.Item className={MENU_ITEM} onClick={() => void run(async () => desktop()?.openFolder(bot.homeFolder))}>

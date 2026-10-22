@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { browserMethods } from "./browser.ts";
 import {
   Approval,
   ApprovalDecision,
@@ -29,9 +30,13 @@ const Empty = z.object({});
 const Id = z.object({ id: z.string() });
 const Page = { before: z.string().optional(), limit: z.number().int().min(1).max(200).default(50) };
 const MessagePage = z.object({ messages: z.array(Message), hasMore: z.boolean() });
+const PendingRoutineNotification = z.object({
+  kind: z.literal("routine_failed"), botId: z.string(), routineId: z.string(), runId: z.string(), title: z.string(), body: z.string(),
+});
 
 // Every request the daemon answers: params are validated on arrival, results are what handlers return.
 export const methods = {
+  ...browserMethods,
   "setup.status": { params: Empty, result: z.array(ProviderSetup) },
   "setup.signIn": { params: z.object({ provider: Provider }), result: z.object({ url: z.string().nullable(), attempt: z.string() }) },
   "setup.prepareCodexSandbox": { params: Empty, result: ProviderSetup.options[1] },
@@ -59,6 +64,8 @@ export const methods = {
   "routines.update": { params: z.object({ id: z.string(), patch: RoutinePatch }), result: Routine },
   "routines.delete": { params: Id, result: Empty },
   "routines.runs": { params: z.object({ routineId: z.string() }), result: z.array(RoutineRun) },
+  "notifications.pending": { params: Empty, result: z.array(PendingRoutineNotification) },
+  "notifications.ack": { params: z.object({ runId: z.string().min(1) }), result: Empty },
   "settings.get": { params: Empty, result: Settings },
   "settings.set": { params: Settings.partial(), result: Settings },
 } as const;

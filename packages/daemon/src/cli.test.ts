@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cliEnv, killTree, killTreeAndWait, openUrl, resolveCli, runCli, spawnCli } from "./cli.ts";
@@ -22,6 +22,52 @@ afterEach(() => {
 const dir = () => mkdtempSync(join(tmpdir(), "tjommie cli ñ-"));
 
 describe("resolveCli", () => {
+  const codexInstall = (arch: "x64" | "arm64", layout: "nested" | "hoisted" | "legacy") => {
+    const bin = dir();
+    const root = join(bin, "node_modules", "@openai", "codex");
+    const entry = join(root, "bin", "codex.js");
+    const triple = arch === "x64" ? "x86_64-pc-windows-msvc" : "aarch64-pc-windows-msvc";
+    const vendor = layout === "legacy" ? join(root, "vendor") : join(layout === "nested" ? root : bin, "node_modules", "@openai", `codex-win32-${arch}`, "vendor");
+    const native = join(vendor, triple, layout === "legacy" ? "codex" : "bin", "codex.exe");
+    mkdirSync(join(entry, ".."), { recursive: true });
+    mkdirSync(join(native, ".."), { recursive: true });
+    writeFileSync(entry, "");
+    writeFileSync(native, "");
+    if (layout !== "legacy") writeFileSync(join(vendor, "..", "package.json"), "{}");
+    return { bin, root, entry, native, vendor, triple };
+  };
+
+  it.each(["x64", "arm64"] as const)("runs the npm native Windows %s binary without its console-opening wrapper", (arch) => {
+    const install = codexInstall(arch, "nested");
+    expect(resolveCli("codex", { Path: install.bin }, { platform: "win32", arch })).toEqual({
+      file: install.native, args: [], codexPackage: { root: install.root },
+    });
+  });
+
+  it("resolves a hoisted optional platform package relative to the npm entry", () => {
+    const install = codexInstall("x64", "hoisted");
+    expect(resolveCli("codex", { PATH: install.bin }, { platform: "win32", arch: "x64" })?.file).toBe(install.native);
+  });
+
+  it("supports the legacy vendor executable and its bundled helper directory", () => {
+    const install = codexInstall("x64", "legacy");
+    const pathDir = join(install.vendor, install.triple, "path");
+    mkdirSync(pathDir);
+    expect(resolveCli("codex", { PATH: install.bin }, { platform: "win32", arch: "x64" })).toEqual({
+      file: install.native, args: [], codexPackage: { root: install.root, pathDir },
+    });
+  });
+
+  it.each([{ platform: "win32", arch: "ia32" }, { platform: "linux", arch: "x64" }] as const)("keeps the wrapper for unsupported native resolution on $platform/$arch", (runtime) => {
+    const install = codexInstall("x64", "nested");
+    expect(resolveCli("codex", { PATH: install.bin }, runtime)).toEqual({ file: process.execPath, args: [install.entry] });
+  });
+
+  it("does not run a bundled executable for the wrong architecture", () => {
+    const install = codexInstall("arm64", "nested");
+    expect(resolveCli("codex", { PATH: install.bin }, { platform: "win32", arch: "x64" })).toEqual({ file: process.execPath, args: [install.entry] });
+  });
+
   it("prefers a native executable on PATH", () => {
     const bin = dir();
     const exe = join(bin, process.platform === "win32" ? "codex.exe" : "codex");
@@ -63,6 +109,22 @@ describe("cliEnv", () => {
 });
 
 describe("runCli", () => {
+  it.each(["status", "session"])("preserves the native npm environment for %s launches without inherited managed markers or duplicate PATH keys", async (mode) => {
+    const cmd = { file: "C:\\native\\codex.exe", args: [], codexPackage: { root: "C:\\npm\\codex", pathDir: "C:\\npm\\vendor\\path" } };
+    const env = { Path: "C:\\tools", CODEX_HOME: "C:\\owned-account", CODEX_MANAGED_PACKAGE_ROOT: "unrelated-install", codex_managed_by_bun: "1", CODEX_MANAGED_BY_PNPM: "1", OPENAI_API_KEY: "secret" };
+    const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough() });
+    vi.mocked(spawn).mockReturnValueOnce(child as unknown as ReturnType<typeof spawn>);
+    const result = mode === "status" ? runCli(cmd, ["login", "status"], env) : spawnCli(cmd, ["app-server"], { cwd: dir(), env });
+    expect(spawn).toHaveBeenLastCalledWith(cmd.file, mode === "status" ? ["login", "status"] : ["app-server"], expect.objectContaining({ windowsHide: true, env: {
+      PATH: `C:\\npm\\vendor\\path${delimiter}C:\\tools`, CODEX_HOME: "C:\\owned-account",
+      CODEX_MANAGED_PACKAGE_ROOT: "C:\\npm\\codex", CODEX_MANAGED_BY_NPM: "1",
+    } }));
+    if (mode === "status") {
+      child.emit("close", 0);
+      await result;
+    }
+  });
+
   it("runs short commands and session commands as Node when hosted by Electron", async () => {
     Object.defineProperty(process.versions, "electron", { value: "44.4.5", configurable: true });
     try {

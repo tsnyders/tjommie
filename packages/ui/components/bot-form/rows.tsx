@@ -96,7 +96,7 @@ export function AutonomyRow({ autonomy, provider, botName, onChange }: { autonom
 export function BrowserRow({ browser, onChange }: { browser: boolean; onChange: (browser: boolean) => void }) {
   return (
     <section className="flex h-14 items-center gap-3 rounded-[12px] bg-card px-4">
-      <RowHeader icon={Globe} title="Browser" value="Its own Chrome profile" />
+      <RowHeader icon={Globe} title="Browser" value="Built into Tjommie" />
       <Switch label="Browser" checked={browser} onChange={onChange} />
     </section>
   );

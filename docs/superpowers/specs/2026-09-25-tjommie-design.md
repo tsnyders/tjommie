@@ -20,7 +20,7 @@ The Phase 1 spikes ran against Claude Code 2.1.280 and Codex CLI 0.155.1 while t
 5. **Codex bots at "Own folder" use Codex's elevated Windows sandbox (revised 2026-09-27).** The first spike used `windows.sandbox = "unelevated"`, which needs no admin and enforces writes. Later measurements (Codex 0.155.1) showed it doesn't limit reads or local connections: a bot's shell could read any file of the person's and reach `127.0.0.1` without asking. The current implementation configures workspace-write with `network_access: false`, uses `windows.sandbox = "elevated"` for "Own folder", and checks ACL protection for Tjommie's sensitive data. Elevated sandbox setup requires a one-time admin prompt. This does not block all profile reads or local connections; the README describes the remaining limits. See section 5.4 and `packages/daemon/src/providers/codex.ts` / `packages/daemon/src/windows-acl.ts` for current details.
 6. **Codex sign-in doesn't need a terminal.** The app-server's `account/login/start` returns OpenAI's own sign-in URL, which the app opens in the browser. Claude's sign-in opens its own `claude auth login` in a console window.
 7. **Stop and steering work on both CLIs.** Claude reads a message written mid-turn at its next step, and stops on an `interrupt` control message. Codex uses `turn/steer` and `turn/interrupt`.
-8. **Playwright MCP starts each bot's browser (spike 5).** Both CLIs drove Playwright MCP on a per-bot profile folder, and the profile kept its data. In Phase 1 the daemon doesn't run Chrome itself. "Show window" opens the bot's profile in Chrome. Phase 4's live view revisits this.
+8. **Browser spike and subsequent change.** Both CLIs drove Playwright MCP on a per-bot profile folder, and the profile kept its data. The original external "Show window" design is superseded by the owner's 2026-10-22 requirement: daemon-owned browsing presented interactively inside the application's side panel (section 5.7).
 9. **Codex's built-in extras are off for bots.** Codex 0.155.1 turns several of its own features on by default: ChatGPT apps, browser use (which drives the person's own Chrome), computer use, plugins and memories. With them on, a browsing request went to the person's real Chrome instead of the bot's own browser. Every bot thread turns them off, so bots only use Tjommie's tools.
 
 ## 1. Summary
@@ -52,7 +52,7 @@ Tjommie is a free, open-source desktop and phone app. People create AI bots that
 | Conversations | One ongoing chat per bot |
 | Messaging a busy bot | Your message steers its current work; bot requests and routine runs wait in line |
 | Bot to bot | Asynchronous `message_bot` through the app; Team room with @mentions; chain limit 5 |
-| Computer | Browser per bot in Phase 1; live panel, Take over and Logins vault in Phase 4 |
+| Computer | Browser per bot with interactive side panel and manual control in Phase 1; vault and expanded computer view in Phase 4 |
 | Platforms | Windows first, macOS later. Android first, iOS later (needs a Mac) |
 | UI stack | One web UI: Next.js static export + Base UI + Tailwind. Phase 1 built its own components on Base UI's unstyled primitives (menus, dialogs, popovers, radios, switches) instead of shadcn/ui. Electron on desktop, Capacitor on the phone |
 | Phone scope | Full parity with the desktop |
@@ -301,9 +301,10 @@ Bots get only the MCP servers Tjommie attaches (this one and the browser), becau
 
 ### 5.7 Browser
 
-- **Playwright MCP.** Each bot with the browser on gets Playwright MCP (`@playwright/mcp`, bundled with Tjommie rather than fetched with npx) pointed at `bots\<id>\chrome-profile`. It runs headed: a real Chrome window (Edge if Chrome isn't installed), separate from the user's own Chrome. Sites you sign in to by hand in that window stay signed in.
-- **Who starts Chrome.** Playwright MCP does, when the bot first uses its browser (spike 5). In Phase 1 the daemon doesn't run Chrome with a debugging port. Phase 4's live view and Take over revisit this.
-- **Right panel.** In Phase 1 it shows a "Show browser window" button in place of the live screen. The button opens the bot's profile in Chrome, so you can sign in to sites by hand.
+- **Shared owned browser.** The daemon owns one persistent headless browser context per enabled bot, using the installed Chrome or Edge engine and the existing `bots\<id>\chrome-profile` directory. Bundled Playwright MCP tools use that same context. Automation and manual browsing therefore share pages and signed-in sites without opening a separate browser window.
+- **Side panel.** Open browser displays the selected bot's browser inside the application. It supports navigation, tabs, page input and browser dialogs. Take control gives the person exclusive interactive control; Resume bot releases it back to automation. Hiding the panel stops frame polling without closing or locking the bot's browser.
+- **Boundary.** Frames and input travel through authenticated application RPC. The browser uses Playwright's process pipe rather than a public debugging port. Web pages execute in the browser engine, not in the application's renderer origin. Browser frames and manual input are not chat messages or recorded application events.
+- **Roadmap change.** This shared interactive browser presentation is brought forward into Phase 1 by the owner's 2026-10-22 request. The credentials vault, general desktop control, phone connectivity and expanded computer view remain later work. Automated persistence checks use synthetic sites; real-site credentials and provider restrictions require separate owner acceptance.
 
 ### 5.8 Setup check
 
@@ -467,7 +468,7 @@ Each phase ends with a demo you approve before the next one starts. The spec cov
 | 4 | Full WF1 right panel (live screen, Take over, Pause, Stop, Chrome profile, Logins), expanded computer view, WF4 Logins, Chrome profiles |
 
 In Phase 1:
-- **WF1 right panel** shows the bot summary (provider, model, autonomy, folder), a Browser row with "Show window", Routines and Recent activity.
+- **WF1 right panel** shows the bot summary (provider, model, autonomy, folder), a Browser row with "Open browser", Routines and Recent activity. Opening the browser replaces that panel with the shared interactive browser; Take control and Resume bot govern input. Closing it releases manual control without closing the browser context.
 - **WF2 cards** show the avatar placeholder instead of a live thumbnail.
 - **Hidden until later:** the store icon, the share icon, the mic and voice buttons, and the "This PC / Virtual machine" switch.
 

@@ -6,10 +6,13 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { createBot, getStoredBot, setLimitedUntil } from "./bots.ts";
 import { showBrowser } from "./browser.ts";
+import { browsers } from "./browser-manager.ts";
+import { BrowserMcp } from "./browser-mcp.ts";
 import { history, updateMessage } from "./chat.ts";
 import { connect, type Client } from "@tjommie/client";
 import { startDaemon, type Daemon } from "./daemon.ts";
 import { newId, openDb, type Db } from "./db.ts";
+import * as dbModule from "./db.ts";
 import { dataPaths } from "./paths.ts";
 import type { ProviderEvent, ProviderSession, StartOptions } from "./providers/types.ts";
 import { enqueue, getWorkItem, newChain, setStatus } from "./queue.ts";
@@ -163,12 +166,16 @@ it.each(["folder", "ask"] as const)("attaches session MCP servers and revokes th
   await client.call("chat.send", { botId: bot.id, text: "Begin" });
   const first = sessions[0];
   expect(first.options.mcpServers?.map((entry) => [entry.name, entry.autoAllow])).toEqual([["tjommie", true], ["browser", autonomy !== "ask"]]);
+  const browser = first.options.mcpServers.find((entry) => entry.name === "browser");
+  expect(browser).toMatchObject({ url: `${appServer(first.options).url}/browser`, headers: appServer(first.options).headers });
+  expect(browser).not.toHaveProperty("command");
   await tool(first.options, "list_bots", {});
   first.session.finish("Done");
   await client.call("bots.update", { id: bot.id, patch: { browser: false } });
   expect(first.session.closed).toBe(true);
   const server = appServer(first.options);
   expect((await fetch(server.url, { method: "POST", headers: server.headers, body: "{}" })).status).toBe(401);
+  expect((await fetch(`${server.url}/browser`, { method: "POST", headers: server.headers, body: "{}" })).status).toBe(401);
   await client.call("chat.send", { botId: bot.id, text: "Again" });
   expect(sessions[1].options.mcpServers?.map((entry) => entry.name)).toEqual(["tjommie"]);
   expect(appServer(sessions[1].options).headers).not.toEqual(server.headers);
@@ -445,6 +452,61 @@ it("reports queued routine work dropped by routine deletion through both end hoo
   expect(teamEnded).toHaveBeenCalledOnce();
   sessions[0].session.finish("Done");
   expect(sessions[0].session.sent).toHaveLength(1);
+});
+
+it.each(["orphan", "running-work"] as const)("retains %s startup failure notifications through reconnect and restart until ack", async (source) => {
+  const root = tempRoot();
+  const paths = dataPaths(root);
+  const seed = openDb(paths.db);
+  ensureAccounts(seed, paths.accounts);
+  const bot = createBot(seed, paths.bots, input("Recovery"));
+  const routine = createRoutine(seed, { botId: bot.id, name: "Check", prompt: "Check", days: [1], times: ["08:00"], enabled: false });
+  const run = addRun(seed, routine.id, new Date().toISOString(), "running");
+  if (source === "running-work") {
+    const work = enqueue(seed, { botId: bot.id, source: "routine", text: "Check", routineRunId: run.id, chainId: newChain(seed) });
+    setStatus(seed, work.id, "running");
+  }
+  seed.close();
+  const first = await harness(root);
+  expect(first.client.events.filter((event) => event.event === "notify")).toEqual([]); // emitted before connection
+  const notices = await first.client.call("notifications.pending", {});
+  expect(notices).toEqual([expect.objectContaining({ kind: "routine_failed", botId: bot.id, routineId: routine.id, runId: run.id })]);
+  expect(notices[0].body).toContain("restarted");
+  expect(await first.client.call("notifications.pending", {})).toEqual(notices);
+  const reconnected = await connect(first.daemon.port, first.daemon.token);
+  clients.push(reconnected);
+  expect(await reconnected.call("notifications.pending", {})).toEqual(notices);
+  expect(history(first.db, bot.id, undefined, 20).filter((message) => message.kind === "routine")).toHaveLength(1);
+  await first.daemon.close();
+  daemons.splice(daemons.indexOf(first.daemon), 1);
+  const second = await harness(root);
+  expect(await second.client.call("notifications.pending", {})).toEqual(notices);
+  expect(await second.client.call("notifications.ack", { runId: run.id })).toEqual({});
+  expect(await second.client.call("notifications.ack", { runId: run.id })).toEqual({});
+  expect(await second.client.call("notifications.ack", { runId: "unknown" })).toEqual({});
+  expect(await second.client.call("notifications.pending", {})).toEqual([]);
+  await second.daemon.close();
+  daemons.splice(daemons.indexOf(second.daemon), 1);
+  const third = await harness(root);
+  expect(await third.client.call("notifications.pending", {})).toEqual([]);
+  expect(getRun(third.db, run.id)?.status).toBe("failed");
+  expect(history(third.db, bot.id, undefined, 20).filter((message) => message.kind === "routine")).toHaveLength(1);
+});
+
+it("keeps live routine failures pending until the notification consumer acknowledges them", async () => {
+  const { daemon, client, sessions, db } = await harness();
+  const bot = await client.call("bots.create", input("Live failure"));
+  const routine = await client.call("routines.create", { botId: bot.id, name: "Check", prompt: "Check", days: [0, 1, 2, 3, 4, 5, 6], times: ["03:00"] });
+  if (!routine.nextRunAt) throw new Error("Missing next run");
+  daemon.scheduler.tick(Date.parse(routine.nextRunAt));
+  await waitFor(() => sessions[0]?.session.sent.length);
+  sessions[0].session.emit({ type: "turn_done", ok: false, error: "Provider failed" });
+  const notices = await client.call("notifications.pending", {});
+  expect(notices).toHaveLength(1);
+  expect(client.events.filter((event) => event.event === "notify").map((event) => event.data)).toContainEqual(notices[0]);
+  expect(listRuns(db, routine.id)).toMatchObject([{ status: "failed" }]);
+  await client.call("notifications.ack", { runId: notices[0].runId });
+  expect(await client.call("notifications.pending", {})).toEqual([]);
 });
 
 it("recovers an interrupted routine and sweeps stale shares before starting queued work", async () => {
@@ -1028,6 +1090,48 @@ it("awaits browser launch errors and rejects showing a disabled browser", async 
   vi.mocked(showBrowser).mockRejectedValueOnce(new Error("Browser could not start"));
   await expect(client.call("bots.showBrowser", { id: on.id })).rejects.toThrow(/Browser could not start/);
   await expect(client.call("bots.showBrowser", { id: on.id })).resolves.toEqual({});
+});
+
+it("still closes the browser and publishes the disabled setting if MCP teardown fails", async () => {
+  const { client } = await harness();
+  const bot = await client.call("bots.create", input("Disable browser", { browser: true }));
+  vi.spyOn(BrowserMcp.prototype, "close").mockRejectedValueOnce(new Error("MCP close failed"));
+  const closeBrowser = vi.spyOn(browsers, "close").mockResolvedValueOnce(undefined);
+  await expect(client.call("bots.update", { id: bot.id, patch: { browser: false } })).rejects.toThrow(/browser was disabled/);
+  expect(closeBrowser).toHaveBeenCalledWith(bot.id);
+  expect((await client.call("bots.list", {})).find((entry) => entry.id === bot.id)?.browser).toBe(false);
+  expect(client.events.some((event) => event.event === "bot.updated" && event.data.id === bot.id && !event.data.browser)).toBe(true);
+});
+
+it("closes the server and database after browser cleanup failures and reports all errors", async () => {
+  const originalOpen = dbModule.openDb;
+  const opened: Db[] = [];
+  vi.spyOn(dbModule, "openDb").mockImplementation((...args) => {
+    const db = originalOpen(...args);
+    opened.push(db);
+    return db;
+  });
+  const h = await harness();
+  await h.client.close();
+  clients.splice(clients.indexOf(h.client), 1);
+  const dbClose = vi.spyOn(opened[0], "close");
+  const stop = vi.spyOn(h.daemon.scheduler, "stop");
+  const shutdown = vi.spyOn(h.daemon.runner, "shutdown");
+  const mcpError = new Error("MCP cleanup failed");
+  const browserError = new Error("Browser cleanup failed");
+  const mcpClose = vi.spyOn(BrowserMcp.prototype, "closeAll").mockRejectedValueOnce(mcpError);
+  const browserClose = vi.spyOn(browsers, "closeAll").mockRejectedValueOnce(browserError);
+  try {
+    await expect(h.daemon.close()).rejects.toMatchObject({ name: "AggregateError", errors: [mcpError, browserError] });
+  } finally { daemons.splice(daemons.indexOf(h.daemon), 1); }
+  expect(stop).toHaveBeenCalledOnce();
+  expect(shutdown).toHaveBeenCalledOnce();
+  expect(mcpClose).toHaveBeenCalledOnce();
+  expect(browserClose).toHaveBeenCalledOnce();
+  expect(dbClose).toHaveBeenCalledOnce();
+  expect(() => opened[0].prepare("SELECT 1")).toThrow();
+  const rebound = await serverModule.startServer({ port: h.daemon.port, token: "", handlers: {}, allowedOrigins: [] });
+  await rebound.close();
 });
 
 it("reads the start of a bot's notes.md for Bot settings", async () => {

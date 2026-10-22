@@ -1,5 +1,7 @@
 # Grokbot wireframes: spec
 
+**Browser interaction update (owner request, 2026-10-22):** The Phase 1 external "Show window" action below is superseded by an interactive browser inside the right panel. The panel uses the existing app tokens and provides tabs, address/navigation controls, Take control / Resume bot, and the live page. Closing it returns control to the bot without closing its persistent browser. The vault and general desktop controls remain later work. See `docs/superpowers/plans/2026-10-22-phase1-gaps-and-embedded-browser.md` and `docs/screenshots/phase1-embedded-browser.png`; older exported wireframes remain historical references.
+
 Decisions from the user (2026-09-25):
 - Navigation: icon rail of bots (like `docs/reference/ref-3-pnet-apply-dark.png`), Team room pinned at the TOP of the rail.
 - Computer panel: thumbnail + details in the right panel (live screen, Take over / Pause / Stop, target, Chrome profile, Routines, Logins summary). Click the screen to expand.

@@ -10,6 +10,26 @@ import { dataPaths, readOrCreateToken } from "./paths.ts";
 const root = () => mkdtempSync(join(tmpdir(), "tjommie test ñ-"));
 
 describe("openDb", () => {
+  it("upgrades version 3 without replaying historical failures", () => {
+    const file = join(root(), "v3.db");
+    const old = new DatabaseSync(file);
+    for (const migration of migrations.slice(0, 3)) old.exec(migration);
+    old.exec(`INSERT INTO bots (id, name, color, shape, instructions, provider, model, autonomy, home_folder, created_at)
+      VALUES ('bot', 'Writer', 'blue', 'circle', '', 'claude', 'haiku', 'folder', 'x', 'then');
+      INSERT INTO routines (id, bot_id, name, prompt, days, times, time_zone, created_at)
+      VALUES ('routine', 'bot', 'Check', 'Check', '[1]', '["08:00"]', 'UTC', 'then');
+      INSERT INTO routine_runs (id, routine_id, due_at, ended_at, status, note)
+      VALUES ('run', 'routine', 'then', 'then', 'failed', 'Historical failure');
+      PRAGMA user_version = 3;`);
+    old.close();
+    const db = openDb(file);
+    expect(db.prepare("PRAGMA user_version").get()).toEqual({ user_version: migrations.length });
+    expect(db.prepare("SELECT status, note FROM routine_runs WHERE id = 'run'").get()).toEqual({ status: "failed", note: "Historical failure" });
+    expect(db.prepare("SELECT * FROM routine_failure_notifications").all()).toEqual([]);
+    expect(() => db.prepare("INSERT INTO routine_failure_notifications VALUES ('missing', 'Failure', 'Restarted')").run()).toThrow(/FOREIGN KEY/);
+    db.close();
+  });
+
   it("creates the schema once and keeps data when reopened", () => {
     const file = join(root(), "t.db");
     const db = openDb(file);
@@ -17,7 +37,7 @@ describe("openDb", () => {
     db.close();
     const again = openDb(file);
     expect(again.prepare("SELECT label FROM accounts WHERE id = 'a'").get()).toEqual({ label: "Claude" });
-    expect(again.prepare("PRAGMA user_version").get()).toEqual({ user_version: 3 });
+    expect(again.prepare("PRAGMA user_version").get()).toEqual({ user_version: migrations.length });
   });
 
   it("has the Team room conversation and the routine tables after migration 2", () => {
@@ -51,7 +71,7 @@ describe("openDb", () => {
       cli_session_id: "saved",
       total_cost_usd: null,
     });
-    expect(db.prepare("PRAGMA user_version").get()).toEqual({ user_version: 3 });
+    expect(db.prepare("PRAGMA user_version").get()).toEqual({ user_version: migrations.length });
     db.close();
   });
 });

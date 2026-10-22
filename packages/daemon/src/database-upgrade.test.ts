@@ -74,7 +74,7 @@ it("upgrades and recovers a version 1 chat before resuming its queued work", asy
   });
 
   try {
-    expect(db.prepare("PRAGMA user_version").get()).toEqual({ user_version: 3 });
+    expect(db.prepare("PRAGMA user_version").get()).toEqual({ user_version: migrations.length });
     expect(db.prepare("SELECT id, kind, bot_id FROM conversations ORDER BY id").all()).toEqual([
       { id: "legacy-bot", kind: "bot", bot_id: "legacy-bot" },
       { id: "team", kind: "room", bot_id: null },
@@ -131,7 +131,7 @@ it("creates the pending routine approval index on an existing version 3 database
   const file = join(tempRoot(), "existing.db");
   const existing = new DatabaseSync(file);
   try {
-    for (const migration of migrations) existing.exec(migration);
+    for (const migration of migrations.slice(0, 3)) existing.exec(migration);
     existing.exec("PRAGMA user_version = 3;");
   } finally {
     existing.close();
@@ -144,7 +144,7 @@ it("creates the pending routine approval index on an existing version 3 database
     expect(plan).toEqual(expect.arrayContaining([
       expect.objectContaining({ detail: expect.stringContaining("USING INDEX approvals_pending_routine_by_bot") }),
     ]));
-    expect(db.prepare("PRAGMA user_version").get()).toEqual({ user_version: 3 });
+    expect(db.prepare("PRAGMA user_version").get()).toEqual({ user_version: migrations.length });
   } finally {
     db.close();
   }

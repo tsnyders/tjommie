@@ -4,9 +4,11 @@ import { homedir, userInfo } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { connect, type Client } from "@tjommie/client";
+import type { EventData } from "@tjommie/protocol";
 import { navigationFor, uiFile } from "./app-protocol.ts";
 import { notesFile } from "./bot-files.ts";
 import { startDaemonProcess, type DaemonConnection, type RunningDaemon } from "./daemon-process.ts";
+import { notificationDelivery } from "./notification-delivery.ts";
 
 const here = import.meta.dirname;
 const packaged = app.isPackaged;
@@ -42,6 +44,7 @@ let restarts: number[] = [];
 let pageTheme: keyof typeof THEMES = "dark";
 let scrim = false; // a dialog is open in the page, its scrim over everything but the caption buttons
 const notifications = new Set<Notification>(); // kept alive until closed, so their click handlers fire
+const deliverNotification = notificationDelivery();
 
 function log(text: string): void {
   try {
@@ -185,19 +188,44 @@ async function listenForNotifications(connection: DaemonConnection): Promise<voi
   try {
     const client = await connect(connection.port, connection.token, { recordEvents: false });
     notifier = client;
-    client.subscribe((event) => {
-      if (event.event !== "notify" || !Notification.isSupported()) return;
-      if (win?.isVisible() && win.isFocused()) return; // the person is already looking at Tjommie
-      const note = new Notification({ title: event.data.title, body: event.data.body, icon: appIcon });
+    const showNotice = async (notice: EventData<"notify">): Promise<boolean> => {
+      if (!Notification.isSupported()) return false;
+      if (win?.isVisible() && win.isFocused()) return true; // already visible in the app's persisted history
+      const note = new Notification({ title: notice.title, body: notice.body, icon: appIcon });
       notifications.add(note);
       note.on("close", () => notifications.delete(note));
       note.on("click", () => {
         notifications.delete(note);
         showWindow();
-        win?.webContents.send("navigate", `/chat/?bot=${encodeURIComponent(event.data.botId)}`);
+        win?.webContents.send("navigate", `/chat/?bot=${encodeURIComponent(notice.botId)}`);
       });
-      note.show();
+      // show() merely requests delivery. Only the OS-backed show event permits acknowledgement.
+      return new Promise<boolean>((resolve) => {
+        const finish = (shown: boolean): void => {
+          clearTimeout(timer);
+          note.removeListener("show", shownByOs);
+          note.removeListener("failed", failedToShow);
+          if (!shown) notifications.delete(note);
+          resolve(shown);
+        };
+        const shownByOs = (): void => finish(true);
+        const failedToShow = (): void => finish(false);
+        const timer = setTimeout(failedToShow, 10_000);
+        timer.unref();
+        note.once("show", shownByOs);
+        note.once("failed", failedToShow);
+        try { note.show(); } catch { failedToShow(); }
+      });
+    };
+    const deliver = (notice: EventData<"notify">) =>
+      deliverNotification(notice, showNotice, (runId) => client.call("notifications.ack", { runId }));
+    client.subscribe((event) => {
+      if (event.event !== "notify") return;
+      void deliver(event.data).catch((error: unknown) => log(`Could not acknowledge a routine notification: ${String(error)}`));
     });
+    // Subscribe before fetching: a failure arriving during the fetch is coalesced by its run id.
+    const pending = await client.call("notifications.pending", {});
+    for (const notice of pending) await deliver(notice);
   } catch (error) {
     log(`Notifications are off until the next restart: ${String(error)}`);
   }

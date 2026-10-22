@@ -20,7 +20,7 @@ const ownerships = new WeakMap<RealApp, Ownership>();
 
 // Run the production app from source or a packaged executable. Only the daemon receives the path to the user's
 // signed-in account folders; the data root, Electron profile and port are disposable for each launch.
-export async function launchRealApp(executablePath?: string): Promise<RealApp> {
+export async function launchRealApp(executablePath?: string, options: { isolatedAccounts?: boolean } = {}): Promise<RealApp> {
   // The same lifecycle and screen suites can verify the installed app after NSIS installation.
   const selectedExecutable = executablePath ?? process.env.TJOMMIE_TEST_EXECUTABLE;
   const ownership: Ownership = {
@@ -42,7 +42,7 @@ export async function launchRealApp(executablePath?: string): Promise<RealApp> {
         TJOMMIE_DESKTOP: "production",
         TJOMMIE_HOME: root,
         TJOMMIE_PORT: "0",
-        TJOMMIE_ACCOUNTS_DIR: realAccountsDir(),
+        TJOMMIE_ACCOUNTS_DIR: options.isolatedAccounts ? join(root, "accounts") : realAccountsDir(),
         TJOMMIE_USER_DATA: userData,
         TJOMMIE_BROWSER_HEADLESS: "1",
       },
@@ -105,7 +105,7 @@ export async function terminateOwnedProcess(app: RealApp, pid: number): Promise<
   const identity = ownership.ownedPids.get(pid);
   if (!identity || !stillOwnsProcess(pid, identity)) throw new Error("The process no longer belongs to this test.");
   try {
-    execFileSync("taskkill", ["/PID", String(pid), "/T", "/F"]);
+    execFileSync("taskkill", ["/PID", String(pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
   } catch {
     // The process can exit after the identity check and before taskkill runs.
   }
@@ -147,7 +147,7 @@ export async function send(page: Page, name: string, text: string): Promise<void
 export const botReply = (page: Page, text: string) => page.locator('[data-author="bot"]', { hasText: text });
 
 export function listeningPid(port: number): number {
-  const output = execFileSync("powershell.exe", ["-NoProfile", "-Command", `(Get-NetTCPConnection -LocalPort ${port} -State Listen).OwningProcess`], { encoding: "utf8" });
+  const output = execFileSync("powershell.exe", ["-NoProfile", "-Command", `(Get-NetTCPConnection -LocalPort ${port} -State Listen).OwningProcess`], { encoding: "utf8", windowsHide: true });
   const pid = Number(output.trim().split(/\s+/)[0]);
   if (!Number.isInteger(pid) || pid <= 0) throw new Error("The test couldn't identify its daemon process.");
   return pid;
@@ -183,7 +183,7 @@ function ownershipFor(app: RealApp): Ownership {
 function processIdentity(pid: number): OwnedProcess | undefined {
   try {
     const command = `$p = Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if ($p) { [pscustomobject]@{ Image = $p.ProcessName; Path = $p.Path; Started = $p.StartTime.ToUniversalTime().ToString('o') } | ConvertTo-Json -Compress }`;
-    const output = execFileSync("powershell.exe", ["-NoProfile", "-Command", command], { encoding: "utf8" }).trim();
+    const output = execFileSync("powershell.exe", ["-NoProfile", "-Command", command], { encoding: "utf8", windowsHide: true }).trim();
     if (!output) return undefined;
     const value: unknown = JSON.parse(output);
     if (typeof value !== "object" || value === null || !("Image" in value) || !("Path" in value) || !("Started" in value)) return undefined;
@@ -227,7 +227,7 @@ async function cleanOwnedProcesses(ownership: Ownership): Promise<void> {
       continue;
     }
     try {
-      execFileSync("taskkill", ["/PID", String(pid), "/T", "/F"]);
+      execFileSync("taskkill", ["/PID", String(pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
     } catch {
       // The process may have exited between the identity check and taskkill.
     }

@@ -69,7 +69,7 @@ export function startDaemonProcess(
     if (child.exitCode !== null || child.signalCode !== null || child.pid === undefined) return;
     if (process.platform === "win32") {
       try {
-        execFileSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore" });
+        execFileSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
       } catch {
         // The process may have exited before taskkill runs.
       }

@@ -110,6 +110,26 @@ describe("mapCodexNotification", () => {
     ]);
   });
 
+  it.each([
+    { primary: { usedPercent: 25, resetsAt: 100 }, secondary: { usedPercent: 100, resetsAt: 200 }, state: "reached", used: 100, reset: 200 },
+    { primary: { usedPercent: 96, resetsAt: 100 }, secondary: { usedPercent: 20, resetsAt: 200 }, state: "near", used: 96, reset: 100 },
+    { primary: { usedPercent: 100, resetsAt: 300 }, secondary: { usedPercent: 100, resetsAt: 200 }, state: "reached", used: 100, reset: 300 },
+    { primary: null, secondary: { usedPercent: 94, resetsAt: 200 }, state: "near", used: 94, reset: 200 },
+    { primary: { usedPercent: 25, resetsAt: 100 }, secondary: { usedPercent: 95, resetsAt: 200 }, state: "near", used: 95, reset: 200 },
+  ])("reports the restrictive quota window ($state, $used%) with its own reset", ({ primary, secondary, state, used, reset }) => {
+    expect(mapCodexNotification("account/rateLimits/updated", { rateLimits: { primary, secondary } }, MODEL))
+      .toEqual([{ type: "limit", state, usedPercent: used, resetsAt: new Date(reset * 1000).toISOString() }]);
+  });
+
+  it("keeps account snapshots independent and handles invalid quota values", () => {
+    expect(mapCodexNotification("account/rateLimits/updated", { rateLimits: { secondary: { usedPercent: 100, resetsAt: 200 } } }, MODEL))
+      .toEqual([{ type: "limit", state: "reached", usedPercent: 100, resetsAt: new Date(200_000).toISOString() }]);
+    expect(mapCodexNotification("account/rateLimits/updated", { rateLimits: { primary: { usedPercent: 10, resetsAt: 100 } } }, MODEL))
+      .toEqual([{ type: "limit", state: "ok", usedPercent: 10, resetsAt: new Date(100_000).toISOString() }]);
+    expect(mapCodexNotification("account/rateLimits/updated", { rateLimits: { primary: { usedPercent: NaN, resetsAt: Infinity }, secondary: { usedPercent: "100", resetsAt: 1e30 } } }, MODEL))
+      .toEqual([{ type: "limit", state: "ok", usedPercent: null, resetsAt: null }]);
+  });
+
   it("ends turns, and reports either usage-limit spelling as a reached limit first", () => {
     expect(mapCodexNotification(TURN_COMPLETED.method, TURN_COMPLETED.params, MODEL)).toEqual([{ type: "turn_done", ok: true, error: null }]);
     for (const limited of [TURN_LIMITED, TURN_LIMITED_SPEC]) {

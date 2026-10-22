@@ -1,4 +1,4 @@
-import { messageData, type Message, type Routine, type RoutineLabelData, type RoutineRun } from "@tjommie/protocol";
+import { messageData, type Message, type Result, type Routine, type RoutineLabelData, type RoutineRun } from "@tjommie/protocol";
 import { getStoredBot } from "./bots.ts";
 import { addMessage, getMessage, updateMessage } from "./chat.ts";
 import { transaction, type Db } from "./db.ts";
@@ -68,10 +68,23 @@ export class Scheduler {
         const routine = getRoutine(this.#db, run.routineId);
         this.#label(routine, run, broadcast);
         broadcast("routine.run", run);
-        events.push(() => this.#notifyFailure(routine, run, run.note!));
+        const notice = this.#storeFailure(routine, run, run.note!);
+        broadcast("notify", notice);
       }
     });
     for (const send of events) send();
+  }
+
+  // Only an explicit consumer acknowledgement removes a notice; startup broadcasts have no listeners.
+  pendingFailures(): Result<"notifications.pending"> {
+    const rows = this.#db.prepare(`SELECT n.run_id AS runId, r.routine_id AS routineId, t.bot_id AS botId, n.title, n.body
+      FROM routine_failure_notifications n JOIN routine_runs r ON r.id = n.run_id
+      JOIN routines t ON t.id = r.routine_id ORDER BY n.rowid`).all() as Omit<Result<"notifications.pending">[number], "kind">[];
+    return rows.map((row) => ({ kind: "routine_failed", ...row }));
+  }
+
+  acknowledgeFailure(runId: string): void {
+    this.#db.prepare("DELETE FROM routine_failure_notifications WHERE run_id = ?").run(runId);
   }
 
   tick(nowMs = Date.now()): void {
@@ -168,11 +181,17 @@ export class Scheduler {
     if (run.status !== "queued" && run.status !== "running") return;
     const status = timedOut || result.outcome === "interrupted" ? "stopped" : result.outcome;
     const note = timedOut ? "Stopped at the time limit." : status === "stopped" ? "Stopped by you." : status === "failed" ? (result.error ?? "Something went wrong.") : null;
-    const ended = setRunStatus(this.#db, id, status, note);
-    if (!ended) return; // the routine was deleted meanwhile
-    this.#label(getRoutine(this.#db, run.routineId), ended);
-    this.#broadcast("routine.run", ended);
-    if (status === "failed") this.#notifyFailure(getRoutine(this.#db, run.routineId), ended, note ?? "Something went wrong.");
+    const events: (() => void)[] = [];
+    const broadcast: Broadcast = (event, data) => { events.push(() => this.#broadcast(event, data)); };
+    transaction(this.#db, () => {
+      const ended = setRunStatus(this.#db, id, status, note);
+      if (!ended) return;
+      const routine = getRoutine(this.#db, run.routineId);
+      this.#label(routine, ended, broadcast);
+      broadcast("routine.run", ended);
+      if (status === "failed") broadcast("notify", this.#storeFailure(routine, ended, note ?? "Something went wrong."));
+    });
+    for (const send of events) send();
   }
 
   #clearLimit(id: string): void {
@@ -244,22 +263,26 @@ export class Scheduler {
       this.#timedOut.delete(run.id);
       // The next run was computed from this tick before delivery, so failure cannot retry or burst it.
       const note = "Could not queue the routine run.";
-      const result: { failed: RoutineRun | null } = { failed: null };
+      const events: (() => void)[] = [];
+      const broadcast: Broadcast = (event, data) => { events.push(() => this.#broadcast(event, data)); };
       transaction(this.#db, () => {
         setStatus(this.#db, item.id, "failed");
-        result.failed = setRunStatus(this.#db, run.id, "failed", note);
+        const failed = setRunStatus(this.#db, run.id, "failed", note);
+        if (failed) {
+          broadcast("routine.run", failed);
+          this.#label(routine, failed, broadcast);
+          broadcast("notify", this.#storeFailure(routine, failed, note));
+        }
       });
-      const { failed } = result;
-      if (failed) {
-        this.#broadcast("routine.run", failed);
-        this.#label(routine, failed);
-        this.#notifyFailure(routine, failed, note);
-      }
+      for (const send of events) send();
     }
   }
 
-  #notifyFailure(routine: Routine, run: RoutineRun, note: string): void {
-    this.#broadcast("notify", { kind: "routine_failed", botId: routine.botId, routineId: routine.id, runId: run.id, title: `${getStoredBot(this.#db, routine.botId).name}'s routine failed`, body: `${routine.name}: ${note}` });
+  #storeFailure(routine: Routine, run: RoutineRun, note: string): Result<"notifications.pending">[number] {
+    const notice = { kind: "routine_failed", botId: routine.botId, routineId: routine.id, runId: run.id,
+      title: `${getStoredBot(this.#db, routine.botId).name}'s routine failed`, body: `${routine.name}: ${note}` } as const;
+    this.#db.prepare("INSERT INTO routine_failure_notifications (run_id, title, body) VALUES (?, ?, ?)").run(run.id, notice.title, notice.body);
+    return notice;
   }
 
   // The "Routine: <name>" row in the bot's chat, above the run or saying why it didn't run.

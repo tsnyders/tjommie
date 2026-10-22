@@ -74,6 +74,16 @@ describe("protocol", () => {
 });
 
 describe("protocol for bots working together", () => {
+  it("types durable routine notifications and their explicit acknowledgement", () => {
+    const notification = { kind: "routine_failed", botId: "b", routineId: "r", runId: "run", title: "Failed", body: "Restarted" };
+    expect(methods["notifications.pending"].params.parse({})).toEqual({});
+    expect(methods["notifications.pending"].result.parse([notification])).toEqual([notification]);
+    expect(methods["notifications.pending"].result.safeParse([{ ...notification, runId: undefined }]).success).toBe(false);
+    expect(methods["notifications.ack"].params.parse({ runId: "run" })).toEqual({ runId: "run" });
+    expect(methods["notifications.ack"].params.safeParse({ runId: "" }).success).toBe(false);
+    expect(methods["notifications.ack"].result.parse({})).toEqual({});
+  });
+
   it("names the Team room", () => {
     expect(TEAM_ROOM_ID).toBe("team");
   });

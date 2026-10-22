@@ -2,7 +2,11 @@ import type { ProviderEvent } from "./types.ts";
 import { activityLabel, plainActivityText } from "./activity-labels.ts";
 
 const TOOL_ITEMS = new Set(["commandExecution", "fileChange", "mcpToolCall", "webSearch"]);
-const toIso = (seconds: unknown): string | null => (typeof seconds === "number" ? new Date(seconds * 1000).toISOString() : null);
+const toIso = (seconds: unknown): string | null => {
+  if (typeof seconds !== "number" || !Number.isFinite(seconds)) return null;
+  const date = new Date(seconds * 1000);
+  return Number.isFinite(date.getTime()) ? date.toISOString() : null;
+};
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -87,14 +91,28 @@ export function mapCodexNotification(method: string, params: unknown, model: str
     case "account/rateLimits/updated": {
       if (!isRecord(params.rateLimits)) return [];
       const limits = params.rateLimits;
-      const primary = isRecord(limits.primary) ? limits.primary : null;
-      const used: number | null = primary && typeof primary.usedPercent === "number" ? primary.usedPercent : null;
+      // Keep the single-window provider contract: percentages and resets always describe the same
+      // window. If both are exhausted, work cannot resume until the later reset.
+      const windows = [limits.primary, limits.secondary].filter(isRecord).map((window) => ({
+        used: typeof window.usedPercent === "number" && Number.isFinite(window.usedPercent) ? window.usedPercent : null,
+        reset: toIso(window.resetsAt),
+      }));
+      windows.sort((a, b) => {
+        if (a.used !== null && a.used >= 100 && b.used !== null && b.used >= 100) {
+          // An unknown reset for an exhausted window must not borrow another window's timestamp.
+          if (a.reset === null || b.reset === null) return a.reset === b.reset ? 0 : a.reset === null ? -1 : 1;
+          return Date.parse(b.reset) - Date.parse(a.reset);
+        }
+        return (b.used ?? -1) - (a.used ?? -1);
+      });
+      const selected = windows[0];
+      const used = selected?.used ?? null;
       return [
         {
           type: "limit",
-          state: limits.rateLimitReachedType ? "reached" : used !== null && used >= 90 ? "near" : "ok",
+          state: limits.rateLimitReachedType || (used !== null && used >= 100) ? "reached" : used !== null && used >= 90 ? "near" : "ok",
           usedPercent: used,
-          resetsAt: toIso(primary?.resetsAt),
+          resetsAt: selected?.reset ?? null,
         },
       ];
     }

@@ -1,13 +1,12 @@
 "use client";
 
 import { useMemo, useState, type ReactNode } from "react";
-import { Check, Folder, Loader, Shield, Sparkles, X, type LucideIcon } from "lucide-react";
+import { Check, Folder, Globe, Loader, Shield, Sparkles, X, type LucideIcon } from "lucide-react";
 import type { Bot, Message, Routine } from "@tjommie/protocol";
 import { recentActivity } from "@/lib/activity";
-import { request } from "@/lib/connection";
 import { desktop } from "@/lib/desktop";
 import { clock } from "@/lib/format";
-import { AUTONOMY_LINE, errorText, modelLabel, stateLabel } from "@/lib/labels";
+import { AUTONOMY_LINE, modelLabel, stateLabel } from "@/lib/labels";
 import { draftFrom, EMPTY_ROUTINE, localZone } from "@/lib/routine-form";
 import { removeRoutine, saveRoutine } from "@/lib/routines";
 import { useApp } from "@/lib/store";
@@ -17,7 +16,7 @@ import { RoutineEditor } from "../routines/routine-editor";
 import { RoutineRows } from "../routines/routine-rows";
 
 // The right panel beside a bot's chat (WF1 Phase 1). 16 px between cards, 24 px above a section label.
-export function BotPanel({ bot, messages, onHide }: { bot: Bot; messages: Message[]; onHide: () => void }) {
+export function BotPanel({ bot, messages, onHide, onOpenBrowser }: { bot: Bot; messages: Message[]; onHide: () => void; onOpenBrowser: () => void }) {
   const allRoutines = useApp((state) => state.routines);
   const routines = useMemo(() => allRoutines.filter((routine) => routine.botId === bot.id), [allRoutines, bot.id]);
   const steps = useMemo(() => recentActivity(messages), [messages]);
@@ -26,7 +25,7 @@ export function BotPanel({ bot, messages, onHide }: { bot: Bot; messages: Messag
       <PanelBar settingsHref={`/bots/settings/?bot=${encodeURIComponent(bot.id)}`} settingsLabel="Bot settings" hideLabel="Hide the bot panel" onHide={onHide} />
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 pb-4">
         <Summary bot={bot} />
-        {bot.browser && <BrowserCard bot={bot} />}
+        {bot.browser && <BrowserCard onOpen={onOpenBrowser} />}
         <PanelRoutines bot={bot} routines={routines} />
         <SectionLabel>Recent activity</SectionLabel>
         {steps.length === 0 ? (
@@ -136,50 +135,19 @@ function Summary({ bot }: { bot: Bot }) {
   );
 }
 
-function BrowserCard({ bot }: { bot: Bot }) {
-  const [showing, setShowing] = useState(false);
-  const [problem, setProblem] = useState<string | null>(null);
-  async function show(): Promise<void> {
-    setShowing(true);
-    setProblem(null);
-    try {
-      await request("bots.showBrowser", { id: bot.id });
-    } catch (error) {
-      setProblem(errorText(error));
-    } finally {
-      setShowing(false);
-    }
-  }
+function BrowserCard({ onOpen }: { onOpen: () => void }) {
   return (
     <section className="mt-4 flex items-center gap-3 rounded-[12px] bg-card p-3">
-      <ChromeLogo />
+      <Globe className="size-5 shrink-0 text-icon" aria-hidden />
       <div className="min-w-0 flex-1">
         <div className="flex items-center justify-between gap-3">
           <h3 className="text-[13px] font-semibold leading-[18px] text-title">Browser</h3>
-          <button type="button" disabled={showing} onClick={() => void show()} className="shrink-0 text-[13px] leading-[18px] text-accent hover:underline disabled:opacity-50">
-            Show window
+          <button type="button" aria-label="Open browser" onClick={onOpen} className="shrink-0 text-[13px] leading-[18px] text-accent hover:underline">
+            Open
           </button>
         </div>
-        <p className="mt-0.5 text-[12px] leading-[18px] text-secondary">Its own Chrome window, separate from yours. Sites you sign in to there stay signed in.</p>
-        {problem && (
-          <p role="alert" className="text-[12px] leading-[18px] text-danger">
-            {problem}
-          </p>
-        )}
+        <p className="mt-0.5 text-[12px] leading-[18px] text-secondary">Built into Tjommie, with its own sign-ins. Watch the bot use it, or take over.</p>
       </div>
     </section>
-  );
-}
-
-// The Chrome logo in its brand colors: an approved exception to the token palette.
-function ChromeLogo() {
-  return (
-    <svg viewBox="0 0 48 48" width={20} height={20} aria-hidden="true" className="shrink-0">
-      <path d="M24 24 6.68 14A20 20 0 0 1 41.32 14Z" fill="#E33B2E" />
-      <path d="M24 24 41.32 14A20 20 0 0 1 24 44Z" fill="#FBC116" />
-      <path d="M24 24 24 44A20 20 0 0 1 6.68 14Z" fill="#229342" />
-      <circle cx="24" cy="24" r="9.5" fill="#FFFFFF" />
-      <circle cx="24" cy="24" r="7.5" fill="#1A73E8" />
-    </svg>
   );
 }

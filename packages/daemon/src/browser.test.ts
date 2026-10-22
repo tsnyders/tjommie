@@ -1,98 +1,224 @@
-import type { ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
+import type { BrowserContext, Page } from "playwright-core";
 import { describe, expect, it, vi } from "vitest";
-
-const childProcessMocks = vi.hoisted(() => ({ spawn: vi.fn() }));
-const cliMocks = vi.hoisted(() => ({ killTree: vi.fn() }));
-vi.mock("./cli.ts", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("./cli.ts")>()),
-  killTree: cliMocks.killTree,
-}));
-
-vi.mock("node:child_process", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("node:child_process")>()),
-  spawn: childProcessMocks.spawn,
-}));
-
 import type { StoredBot } from "./bots.ts";
-import { browserServer, closeBrowser, findBrowser, showBrowser } from "./browser.ts";
+import { BrowserManager, browserProfile, findBrowser, navigationUrl } from "./browser-manager.ts";
+import { browserServer, sharedBrowserServer } from "./browser.ts";
 
-const env = { ProgramFiles: "C:\\Program Files", "ProgramFiles(x86)": "C:\\Program Files (x86)", LOCALAPPDATA: "C:\\Users\\Thabo Mokoena\\AppData\\Local" };
-const bot = { id: "b1", homeFolder: "C:\\Users\\Thabo Mokoena\\AppData\\Local\\Tjommie\\bots\\b1", autonomy: "folder" } as StoredBot;
+const env = { ProgramFiles: "C:\\Apps", "ProgramFiles(x86)": "C:\\Apps32", LOCALAPPDATA: "C:\\User" };
+const bot = { id: "b1", homeFolder: "C:\\Bot", autonomy: "folder", browser: true } as StoredBot;
 
-describe("browser", () => {
-  it("closes only the owned browser and waits for it to exit before deletion", async () => {
-    cliMocks.killTree.mockClear();
-    const owned = Object.assign(new EventEmitter(), { pid: 4123, unref: vi.fn() }) as unknown as ChildProcess;
-    const other = Object.assign(new EventEmitter(), { pid: 5678, unref: vi.fn() }) as unknown as ChildProcess;
-    childProcessMocks.spawn.mockReturnValueOnce(owned).mockReturnValueOnce(other);
-    const shown = showBrowser(bot, { ...env, TJOMMIE_DAEMON_TOKEN: "test-only-token" });
-    owned.emit("spawn");
-    await shown;
-    const spawnOptions: unknown = childProcessMocks.spawn.mock.calls[0]?.[2];
-    expect(spawnOptions).toMatchObject({ stdio: "ignore" });
-    expect(spawnOptions).not.toHaveProperty("env.TJOMMIE_DAEMON_TOKEN");
-    const otherShown = showBrowser({ ...bot, id: "other" });
-    other.emit("spawn");
-    await otherShown;
-    let closed = false;
-    const closing = closeBrowser(bot.id).then(() => { closed = true; });
-    await Promise.resolve();
-    expect(cliMocks.killTree.mock.calls).toEqual([[4123]]);
-    expect(closed).toBe(false);
-    owned.emit("close", 0);
-    await closing;
-    cliMocks.killTree.mockClear();
-    await closeBrowser(bot.id);
-    expect(cliMocks.killTree).not.toHaveBeenCalled();
-    other.emit("close", 0);
+function fakeContext() {
+  const pageEvents = new EventEmitter();
+  const keyboard = { down: vi.fn(async () => {}), up: vi.fn(async () => {}), insertText: vi.fn(async () => {}) };
+  const mouse = { move: vi.fn(async () => {}), down: vi.fn(async () => {}), up: vi.fn(async () => {}), wheel: vi.fn(async () => {}) };
+  const page = Object.assign(pageEvents, {
+    url: () => "about:blank", title: async () => "Blank", keyboard, mouse,
+    viewportSize: () => ({ width: 1000, height: 720 }), goto: vi.fn(async () => null), goBack: vi.fn(async () => null), goForward: vi.fn(async () => null), reload: vi.fn(async () => null), bringToFront: vi.fn(async () => {}),
+    setViewportSize: vi.fn(async () => {}), close: vi.fn(async () => { pageEvents.emit("close"); }),
+  }) as unknown as Page;
+  const events = new EventEmitter();
+  const close = vi.fn(async () => { events.emit("close"); });
+  const cdp = () => Object.assign(new EventEmitter(), { send: vi.fn(async (method: string): Promise<unknown> => method === "Browser.getWindowForTarget" ? { windowId: 7 } : undefined), detach: vi.fn(async () => {}) });
+  const observers: ReturnType<typeof cdp>[] = [];
+  const context = Object.assign(events, { pages: () => [page], setDefaultTimeout: vi.fn(), setDefaultNavigationTimeout: vi.fn(), newCDPSession: vi.fn(async () => { const observer = cdp(); observers.push(observer); return observer; }), close }) as unknown as BrowserContext;
+  return { context, page, keyboard, mouse, close, observers };
+}
+
+describe("owned embedded browser", () => {
+  it("finds Chrome first, checks all Edge roots, and reports no installed browser", () => {
+    const chrome = join(env.LOCALAPPDATA, "Google", "Chrome", "Application", "chrome.exe");
+    const edge = join(env.ProgramFiles, "Microsoft", "Edge", "Application", "msedge.exe");
+    expect(findBrowser((path) => path === chrome || path === edge, env)).toEqual({ channel: "chrome", path: chrome });
+    for (const root of Object.values(env)) {
+      const path = join(root, "Microsoft", "Edge", "Application", "msedge.exe");
+      expect(findBrowser((candidate) => candidate === path, env)).toEqual({ channel: "msedge", path });
+    }
+    expect(() => findBrowser(() => false, env)).toThrow(/Install Google Chrome or Microsoft Edge/);
   });
 
-  it("uses Chrome when it's installed, otherwise Edge", () => {
-    expect(findBrowser((path) => path === "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe", env)).toEqual({
-      channel: "chrome",
-      path: "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+  it("uses an authenticated HTTP MCP descriptor and cannot start a headed legacy browser", () => {
+    expect(sharedBrowserServer(bot, "http://127.0.0.1:123/mcp/browser", "test-token")).toEqual({
+      name: "browser", url: "http://127.0.0.1:123/mcp/browser", headers: { Authorization: "Bearer test-token" }, autoAllow: true,
     });
-    expect(findBrowser(() => false, env)).toEqual({ channel: "msedge", path: "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe" });
+    expect(sharedBrowserServer({ ...bot, autonomy: "ask" }, "url", "token").autoAllow).toBe(false);
+    expect(() => browserServer(bot, {})).toThrow(/daemon's shared browser/);
+    expect(browserProfile(bot)).toBe(join(bot.homeFolder, "chrome-profile"));
   });
 
-  it("runs the bundled Playwright MCP on the bot's own profile, asking first only in Always ask", () => {
-    const server = browserServer(bot, {});
-    expect(server).toMatchObject({ name: "browser", command: process.execPath, autoAllow: true });
-    if (!("command" in server)) throw new Error("expected a program");
-    expect(existsSync(server.args[0])).toBe(true);
-    expect(server.args.slice(1, 5)).toEqual(["--user-data-dir", join(bot.homeFolder, "chrome-profile"), "--output-dir", join(bot.homeFolder, "browser-files")]);
-    expect(server.args).not.toContain("--headless");
-    expect(browserServer(bot, { TJOMMIE_BROWSER_HEADLESS: "1" })).toMatchObject({ args: expect.arrayContaining(["--headless"]) });
-    expect(browserServer({ ...bot, autonomy: "ask" }, {}).autoAllow).toBe(false);
+  it.each(["file:///C:/Windows/win.ini", "javascript:alert(1)", "chrome://settings", "data:text/html,hello", "app://tjommie", "about:settings", "https://user:password@example.com"])("rejects unsafe user navigation %s", (url) => {
+    expect(() => navigationUrl(url)).toThrow();
   });
 
-  it("uses the injected environment when the browser server discovers Chrome", () => {
-    const root = mkdtempSync(join(tmpdir(), "tjommie-browser-"));
-    const chrome = join(root, "Google", "Chrome", "Application", "chrome.exe");
-    try {
-      mkdirSync(dirname(chrome), { recursive: true });
-      writeFileSync(chrome, "");
-      const server = browserServer(bot, { ProgramFiles: root, "ProgramFiles(x86)": join(root, "x86"), LOCALAPPDATA: join(root, "local") });
-      if (!("command" in server)) throw new Error("expected a program");
-      expect(server.args.slice(-2)).toEqual(["--browser", "chrome"]);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
+  it("keeps one context per bot and separates different bots", async () => {
+    const a = fakeContext();
+    const b = fakeContext();
+    const launch = vi.fn().mockResolvedValueOnce(a.context).mockResolvedValueOnce(b.context);
+    const manager = new BrowserManager(launch);
+    const [one, same] = await Promise.all([manager.open(bot), manager.open(bot)]);
+    expect(one.generation).toBe(same.generation);
+    expect(await manager.context(bot)).toBe(a.context);
+    await manager.open({ ...bot, id: "b2" });
+    expect(launch).toHaveBeenCalledTimes(2);
+    await manager.close(bot.id);
+    expect(a.close).toHaveBeenCalledOnce();
+    expect(b.close).not.toHaveBeenCalled();
+    await manager.closeAll();
+    expect(b.close).toHaveBeenCalledOnce();
+  });
+
+  it("gates automation while a human controls the browser and rejects stale input", async () => {
+    const fake = fakeContext();
+    const manager = new BrowserManager(async () => fake.context);
+    const state = await manager.open(bot);
+    expect(state.control).toBe("bot");
+    await manager.control(bot, "human");
+    await expect(manager.automation(bot, async () => "work")).rejects.toThrow(/person is using/);
+    await expect(manager.input(bot, "old", state.activePageId!, { kind: "text", text: "secret" })).rejects.toThrow(/restarted/);
+    expect(fake.keyboard.insertText).not.toHaveBeenCalled();
+    await manager.input(bot, state.generation, state.activePageId!, { kind: "text", text: "typed" });
+    expect(fake.keyboard.insertText).toHaveBeenCalledWith("typed");
+    await expect(manager.input(bot, state.generation, state.activePageId!, { kind: "mouse", action: "down", x: 1001, y: 2 })).rejects.toThrow(/outside/);
+    await manager.control(bot, "bot");
+    expect(await manager.automation(bot, async () => "work")).toBe("work");
+    await expect(manager.input(bot, state.generation, state.activePageId!, { kind: "text", text: "secret" })).rejects.toThrow(/Take over/);
+    await manager.closeAll();
+  });
+
+  it("waits for the owned browser to exit before close resolves", async () => {
+    const fake = fakeContext();
+    const exited = Promise.withResolvers<void>();
+    fake.close.mockImplementation(() => exited.promise);
+    const manager = new BrowserManager(async () => fake.context);
+    await manager.open(bot);
+    let complete = false;
+    const closing = manager.close(bot.id).then(() => { complete = true; });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(complete).toBe(false);
+    await expect(manager.open(bot)).rejects.toThrow(/closing/);
+    exited.resolve();
+    await closing;
+    expect(complete).toBe(true);
+  });
+
+  it("starts in bot control for either opener and for a frame that recreates a browser", async () => {
+    for (const first of ["open", "automation"] as const) {
+      const manager = new BrowserManager(async () => fakeContext().context);
+      if (first === "open") await manager.open(bot);
+      else await manager.automation(bot, async () => {});
+      expect((await manager.open(bot)).control).toBe("bot");
+      await manager.control(bot, "human");
+      const before = await manager.state(bot);
+      await manager.close(bot.id);
+      const reopened = await manager.frame(bot);
+      expect(reopened.state.control).toBe("bot");
+      expect(reopened.state.generation).not.toBe(before.generation);
+      await expect(manager.automation(bot, async () => "ready")).resolves.toBe("ready");
+      await manager.closeAll();
     }
   });
 
-  it("reports a browser spawn failure to its caller", async () => {
-    childProcessMocks.spawn.mockReset();
-    const child = Object.assign(new EventEmitter(), { unref: vi.fn() }) as unknown as ChildProcess;
-    childProcessMocks.spawn.mockReturnValue(child);
+  it.each(["navigate", "back", "forward", "reload"] as const)("discards old frames during and after %s", async (action) => {
+    const fake = fakeContext();
+    const manager = new BrowserManager(async () => fake.context);
+    const state = await manager.control(bot, "human");
+    const frame = (data: string) => ({ data, sessionId: 1, metadata: { deviceWidth: 1000, deviceHeight: 720 } });
+    await manager.frame(bot);
+    const oldStream = fake.observers.at(-1)!;
+    oldStream.emit("Page.screencastFrame", frame("old-page"));
+    expect((await manager.frame(bot)).frame?.data).toBe("old-page");
+    const committed = Promise.withResolvers<null>();
+    const method = action === "navigate" ? "goto" : action === "back" ? "goBack" : action === "forward" ? "goForward" : "reload";
+    vi.mocked(fake.page[method]).mockImplementation(() => committed.promise);
+    const navigation = action === "navigate"
+      ? manager.navigate(bot, state.generation, state.activePageId!, "https://example.com/new")
+      : manager.history(bot, state.generation, state.activePageId!, action);
+    await vi.waitFor(() => expect(fake.page[method]).toHaveBeenCalledOnce());
+    expect((await manager.frame(bot)).frame).toBeNull();
+    committed.resolve(null);
+    await navigation;
+    expect((await manager.frame(bot)).frame).toBeNull();
+    oldStream.emit("Page.screencastFrame", frame("late-old-page"));
+    expect((await manager.frame(bot)).frame).toBeNull();
+    fake.observers.at(-1)!.emit("Page.screencastFrame", frame("new-page"));
+    expect((await manager.frame(bot)).frame?.data).toBe("new-page");
+    await manager.closeAll();
+  });
 
-    const shown = showBrowser(bot);
-    child.emit("error", new Error("spawn failed"));
+  it("hides a physical capture that disagrees with the page's input viewport", async () => {
+    const fake = fakeContext();
+    const manager = new BrowserManager(async () => fake.context);
+    await manager.frame(bot);
+    const stream = fake.observers.at(-1)!;
+    stream.emit("Page.screencastFrame", { data: "valid", sessionId: 1, metadata: { deviceWidth: 1000, deviceHeight: 720 } });
+    expect((await manager.frame(bot)).frame?.data).toBe("valid");
+    stream.emit("Page.screencastFrame", { data: "wrong-surface", sessionId: 2, metadata: { deviceWidth: 984, deviceHeight: 625 } });
+    expect((await manager.frame(bot)).frame).toBeNull();
+    stream.emit("Page.screencastFrame", { data: "repaired", sessionId: 3, metadata: { deviceWidth: 1000, deviceHeight: 720 } });
+    expect((await manager.frame(bot)).frame?.data).toBe("repaired");
+    await manager.closeAll();
+  });
 
-    await expect(shown).rejects.toThrow("spawn failed");
-    expect(child.unref).not.toHaveBeenCalled();
+  it.each(["'Browser.setContentsSize' wasn't found", "Method not found", "Not supported"])("keeps the Playwright viewport when content sizing reports %s", async (reason) => {
+    const fake = fakeContext();
+    const manager = new BrowserManager(async () => fake.context);
+    const state = await manager.control(bot, "human");
+    const observer = fake.observers[0];
+    observer.send.mockImplementation(async (method) => {
+      if (method === "Browser.setContentsSize") throw new Error(`cdpSession.send: Protocol error (Browser.setContentsSize): ${reason}`);
+      return method === "Browser.getWindowForTarget" ? { windowId: 7 } : undefined;
+    });
+    await expect(manager.resize(bot, state.generation, state.activePageId!, 528, 396)).resolves.toMatchObject({ control: "human" });
+    expect(fake.page.setViewportSize).toHaveBeenCalledWith({ width: 528, height: 396 });
+    expect(observer.send).toHaveBeenCalledWith("Browser.setContentsSize", { windowId: 7, width: 528, height: 396 });
+    await fake.page.close();
+    expect(observer.detach).toHaveBeenCalledOnce(); // the reused observer is detached at its page-lifetime boundary
+    await manager.closeAll();
+  });
+
+  it.each(["Browser.setContentsSize", "Browser.getWindowForTarget"])("does not mask other %s failures", async (method) => {
+    const fake = fakeContext();
+    const manager = new BrowserManager(async () => fake.context);
+    const state = await manager.control(bot, "human");
+    const observer = fake.observers[0];
+    const failure = new Error(`Protocol error (${method}): Invalid window id`);
+    observer.send.mockImplementation(async (called) => {
+      if (called === method) throw failure;
+      return called === "Browser.getWindowForTarget" ? { windowId: 7 } : undefined;
+    });
+    await expect(manager.resize(bot, state.generation, state.activePageId!, 528, 396)).rejects.toBe(failure);
+    await fake.page.close();
+    expect(observer.detach).toHaveBeenCalledOnce();
+    await manager.closeAll();
+  });
+
+  it("does not block deletion when a pending browser launch fails", async () => {
+    const launching = Promise.withResolvers<BrowserContext>();
+    const manager = new BrowserManager(() => launching.promise);
+    const opened = expect(manager.open(bot)).rejects.toThrow("launch failed");
+    const closing = manager.close(bot.id);
+    launching.reject(new Error("launch failed"));
+    await opened;
+    await expect(closing).resolves.toBeUndefined();
+  });
+
+  it("waits for every browser close even if another one fails", async () => {
+    const a = fakeContext();
+    const b = fakeContext();
+    const secondClosed = Promise.withResolvers<void>();
+    a.close.mockRejectedValue(new Error("close failed"));
+    b.close.mockImplementation(() => secondClosed.promise);
+    const manager = new BrowserManager(async (value) => value.id === bot.id ? a.context : b.context);
+    await manager.open(bot);
+    await manager.open({ ...bot, id: "two" });
+    let settled = false;
+    const all = manager.closeAll().finally(() => { settled = true; });
+    const rejected = expect(all).rejects.toMatchObject({ name: "AggregateError" });
+    await vi.waitFor(() => expect(b.close).toHaveBeenCalledOnce());
+    expect(settled).toBe(false);
+    secondClosed.resolve();
+    await rejected;
   });
 });
