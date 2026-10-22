@@ -6,17 +6,17 @@ import type { Bot, Message } from "@tjommie/protocol";
 import { botHistory, loadConversation, loadOlder, retryConversation } from "@/lib/connection";
 import { handoffStatus } from "@/lib/exchange";
 import { AUTONOMY_HINT } from "@/lib/labels";
+import { choosePane, coversChat, isOverlay, panelFor, setExpanded, type PanelView } from "@/lib/panel-layout";
 import { useApp } from "@/lib/store";
 import { BotAvatar } from "../bot-avatar";
 import { ExchangeView } from "../exchange/exchange-view";
 import { FailedLoad } from "../failed-load";
 import { PanelBar } from "../panel-bar";
-import { BotPanel } from "./bot-panel";
-import { BrowserPanel } from "./browser-panel";
 import { ChatHeader } from "./chat-header";
 import { Composer } from "./composer";
 import { MessageList } from "./message-list";
 import { MessageView, shownMessages } from "./message-view";
+import { RightPanel } from "./right-panel";
 import { SetupBanner } from "./setup-banner";
 
 const PANEL_KEY = "tjommie.panel";
@@ -33,8 +33,12 @@ export function ChatScreen({ botId }: { botId: string }) {
   // This screen renders only in the window, never in the static build, so localStorage is there.
   const [panel, setPanel] = useState(() => localStorage.getItem(PANEL_KEY) !== "closed");
   const [exchangeId, setExchangeId] = useState<string | null>(null);
-  // The bot whose browser fills the panel. Closing the panel never closes the browser.
-  const [browserBot, setBrowserBot] = useState<string | null>(null);
+  // Which pane the right panel shows, and whether the browser fills the content area, for one bot (another bot starts at Details).
+  const [shownPane, setShownPane] = useState<PanelView>({ bot: botId, pane: "details", expanded: false });
+  const pane = panelFor(shownPane, botId);
+  // The content area's width: a narrow one gives the panel the chat's place, over it.
+  const root = useRef<HTMLDivElement>(null);
+  const [room, setRoom] = useState(0);
   const section = useRef<HTMLElement>(null);
   const panelButton = useRef<HTMLButtonElement>(null);
 
@@ -42,6 +46,13 @@ export function ChatScreen({ botId }: { botId: string }) {
   useEffect(() => {
     if (ready && bot && !conversation) void loadConversation(botId, botHistory(botId));
   }, [ready, bot, conversation, botId]);
+  useEffect(() => {
+    const element = root.current;
+    if (!element) return;
+    const observer = new ResizeObserver(([entry]) => setRoom(Math.round(entry.contentRect.width)));
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
   // An unknown or deleted bot has no chat.
   useEffect(() => {
     if (!bot) router.replace("/");
@@ -58,16 +69,31 @@ export function ChatScreen({ botId }: { botId: string }) {
   const showPanel = (open: boolean): void => {
     localStorage.setItem(PANEL_KEY, open ? "open" : "closed");
     setPanel(open);
+    if (!open) setShownPane((view) => setExpanded(view, botId, false));
   };
-  const browserOpen = browserBot === botId;
+  const overlay = isOverlay(room);
+  const panelShown = panel && !exchangeId;
+  // An overlay or an expanded browser covers the chat, so the chat can't be reached by keyboard or screen reader meanwhile.
+  const covered = coversChat(panelShown, overlay, pane, bot.browser);
+  const focusPanel = (): void => {
+    if (overlay) requestAnimationFrame(() => root.current?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"], [aria-label="Hide panel"]')?.focus());
+  };
   const togglePanel = (): void => {
     if (exchangeId) setExchangeId(null);
-    else showPanel(!panel);
+    else {
+      showPanel(!panel);
+      if (!panel) focusPanel();
+    }
   };
   const openBrowser = (): void => {
     setExchangeId(null);
     showPanel(true);
-    setBrowserBot(botId);
+    setShownPane((view) => ({ ...choosePane(view, botId, "browser"), expanded: false }));
+    focusPanel();
+  };
+  const hidePanel = (): void => {
+    showPanel(false);
+    if (overlay) requestAnimationFrame(() => panelButton.current?.focus({ preventScroll: true }));
   };
   // The view's own x and >> go with it, so focus goes back to the row that opened the exchange, or to the panel
   // button if that row is gone. It doesn't scroll there: the chat may have moved on meanwhile.
@@ -78,8 +104,8 @@ export function ChatScreen({ botId }: { botId: string }) {
   };
   const settings = `/bots/settings/?bot=${encodeURIComponent(bot.id)}`;
   return (
-    <div className="flex min-h-0 flex-1">
-      <section ref={section} aria-label={`Chat with ${bot.name}`} className="flex min-w-0 flex-1 flex-col">
+    <div ref={root} className="relative flex min-h-0 flex-1">
+      <section ref={section} aria-label={`Chat with ${bot.name}`} inert={covered || undefined} className="flex min-w-0 flex-1 flex-col">
         <ChatHeader bot={bot} panelOpen={panel || exchangeId !== null} onTogglePanel={togglePanel} panelButton={panelButton} onOpenBrowser={openBrowser} />
         {bot.state === "needs_setup" && <SetupBanner bot={bot} />}
         {conversation?.status === "failed" ? (
@@ -102,12 +128,20 @@ export function ChatScreen({ botId }: { botId: string }) {
           bar={<PanelBar settingsHref={settings} settingsLabel="Bot settings" hideLabel="Hide the panel" onHide={() => closeExchange(exchangeId)} />}
         />
       ) : (
-        panel &&
-        (browserOpen && bot.browser ? (
-          <BrowserPanel bot={bot} onClose={() => setBrowserBot(null)} />
-        ) : (
-          <BotPanel bot={bot} messages={messages} onHide={() => showPanel(false)} onOpenBrowser={openBrowser} />
-        ))
+        panel && (
+          <RightPanel
+            key={bot.id}
+            bot={bot}
+            messages={messages}
+            pane={pane.pane}
+            onPane={(next) => setShownPane((view) => choosePane(view, botId, next))}
+            expanded={pane.expanded}
+            onExpandedChange={(expanded) => setShownPane((view) => setExpanded(view, botId, expanded))}
+            room={room}
+            overlay={overlay}
+            onHide={hidePanel}
+          />
+        )
       )}
     </div>
   );

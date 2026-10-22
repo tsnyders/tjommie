@@ -3,18 +3,22 @@ import { join } from "node:path";
 import type { BrowserContext, Page } from "playwright-core";
 import { describe, expect, it, vi } from "vitest";
 import type { StoredBot } from "./bots.ts";
-import { BrowserManager, browserProfile, findBrowser, navigationUrl } from "./browser-manager.ts";
+import { BrowserManager, browserProfile, findBrowser, jpegDimensions, navigationUrl } from "./browser-manager.ts";
 import { browserServer, sharedBrowserServer } from "./browser.ts";
 
 const env = { ProgramFiles: "C:\\Apps", "ProgramFiles(x86)": "C:\\Apps32", LOCALAPPDATA: "C:\\User" };
 const bot = { id: "b1", homeFolder: "C:\\Bot", autonomy: "folder", browser: true } as StoredBot;
 
+// A bounded SOF header is enough to exercise metadata parsing; real decoding is covered by the real fixture.
+const jpeg = (label: string, width = 1000, height = 720): string => Buffer.concat([Buffer.from([255, 216, 255, 192, 0, 11, 8, height >> 8, height & 255, width >> 8, width & 255, 1, 1, 17, 0]), Buffer.from(label)]).toString("base64");
+
 function fakeContext() {
   const pageEvents = new EventEmitter();
+  const mainFrame = {};
   const keyboard = { down: vi.fn(async () => {}), up: vi.fn(async () => {}), insertText: vi.fn(async () => {}) };
   const mouse = { move: vi.fn(async () => {}), down: vi.fn(async () => {}), up: vi.fn(async () => {}), wheel: vi.fn(async () => {}) };
   const page = Object.assign(pageEvents, {
-    url: () => "about:blank", title: async () => "Blank", keyboard, mouse,
+    url: () => "about:blank", title: async () => "Blank", mainFrame: () => mainFrame, keyboard, mouse,
     viewportSize: () => ({ width: 1000, height: 720 }), goto: vi.fn(async () => null), goBack: vi.fn(async () => null), goForward: vi.fn(async () => null), reload: vi.fn(async () => null), bringToFront: vi.fn(async () => {}),
     setViewportSize: vi.fn(async () => {}), close: vi.fn(async () => { pageEvents.emit("close"); }),
   }) as unknown as Page;
@@ -23,10 +27,112 @@ function fakeContext() {
   const cdp = () => Object.assign(new EventEmitter(), { send: vi.fn(async (method: string): Promise<unknown> => method === "Browser.getWindowForTarget" ? { windowId: 7 } : undefined), detach: vi.fn(async () => {}) });
   const observers: ReturnType<typeof cdp>[] = [];
   const context = Object.assign(events, { pages: () => [page], setDefaultTimeout: vi.fn(), setDefaultNavigationTimeout: vi.fn(), newCDPSession: vi.fn(async () => { const observer = cdp(); observers.push(observer); return observer; }), close }) as unknown as BrowserContext;
-  return { context, page, keyboard, mouse, close, observers };
+  return { context, page, pageEvents, keyboard, mouse, close, observers };
 }
 
 describe("owned embedded browser", () => {
+  it("reads JPEG pixel dimensions and rejects malformed or truncated headers", () => {
+    expect(jpegDimensions(jpeg("", 1280, 800))).toEqual({ width: 1280, height: 800 });
+    for (const data of ["not-an-image", "", Buffer.from([255, 216, 255, 192, 0, 30, 8]).toString("base64")]) expect(jpegDimensions(data)).toBeNull();
+  });
+
+  it("reports downsampled pixels separately and omits unchanged image bytes by stream cursor", async () => {
+    const fake = fakeContext();
+    vi.spyOn(fake.page, "viewportSize").mockReturnValue({ width: 2560, height: 1600 });
+    const manager = new BrowserManager(async () => fake.context);
+    await manager.frame(bot);
+    const stream = fake.observers.at(-1)!;
+    stream.emit("Page.screencastFrame", { data: jpeg("large", 1280, 800), sessionId: 1, metadata: { deviceWidth: 2560, deviceHeight: 1600 } });
+    const first = await manager.frame(bot);
+    expect(first.frame).toMatchObject({ width: 1280, height: 800, viewportWidth: 2560, viewportHeight: 1600, pageId: first.state.activePageId, viewportRevision: first.state.viewportRevision });
+    const cursor = { streamId: first.frame!.streamId!, sequence: first.frame!.sequence };
+    expect(await manager.frame(bot, cursor)).toMatchObject({ frame: null, unchanged: true });
+    expect((await manager.frame(bot, { ...cursor, streamId: "retired" })).frame).not.toBeNull();
+    fake.observers[0].emit("Page.frameNavigated", { frame: { loaderId: "new-document" } });
+    expect((await manager.frame(bot, cursor)).frame).toBeNull();
+    stream.emit("Page.screencastFrame", { data: jpeg("late"), sessionId: 2, metadata: { deviceWidth: 2560, deviceHeight: 1600 } });
+    expect((await manager.frame(bot)).frame).toBeNull();
+    await manager.closeAll();
+  });
+
+  it("fences pointer coordinates from an obsolete layout without rejecting text, keys or releases", async () => {
+    const fake = fakeContext();
+    const manager = new BrowserManager(async () => fake.context);
+    const state = await manager.control(bot, "human");
+    await manager.input(bot, state.generation, state.activePageId!, { kind: "key", action: "down", key: "Shift" }, state.viewportRevision);
+    await manager.resize(bot, state.generation, state.activePageId!, 900, 650);
+    await expect(manager.input(bot, state.generation, state.activePageId!, { kind: "mouse", action: "down", x: 10, y: 20 }, state.viewportRevision)).rejects.toThrow(/view changed/);
+    await expect(manager.input(bot, state.generation, state.activePageId!, { kind: "wheel", x: 10, y: 20, deltaX: 0, deltaY: 10 }, state.viewportRevision)).rejects.toThrow(/view changed/);
+    await manager.input(bot, state.generation, state.activePageId!, { kind: "text", text: "still typing" }, state.viewportRevision);
+    await manager.input(bot, state.generation, state.activePageId!, { kind: "key", action: "down", key: "a" }, state.viewportRevision);
+    await manager.input(bot, state.generation, state.activePageId!, { kind: "key", action: "up", key: "Shift" }, state.viewportRevision);
+    await manager.input(bot, state.generation, state.activePageId!, { kind: "mouse", action: "up", button: "left", x: 2000, y: 1000 }, state.viewportRevision);
+    expect(fake.keyboard.insertText).toHaveBeenCalledWith("still typing");
+    expect(fake.mouse.move).toHaveBeenLastCalledWith(999, 719);
+    expect(fake.keyboard.up).toHaveBeenCalledWith("Shift");
+    await manager.closeAll();
+  });
+
+  it("updates same-document URL state without replacing the stream or layout epoch", async () => {
+    const fake = fakeContext();
+    const manager = new BrowserManager(async () => fake.context);
+    await manager.frame(bot);
+    const stream = fake.observers.at(-1)!;
+    stream.emit("Page.screencastFrame", { data: jpeg("SPA"), sessionId: 1, metadata: { deviceWidth: 1000, deviceHeight: 720 } });
+    const before = await manager.frame(bot);
+    for (let step = 0; step < 16; step++) {
+      fake.pageEvents.emit("framenavigated", fake.page.mainFrame());
+      const view = await manager.frame(bot);
+      expect(view.frame?.streamId).toBe(before.frame?.streamId);
+      expect(view.state.viewportRevision).toBe(before.state.viewportRevision);
+    }
+    expect(fake.observers).toHaveLength(2); // one page observer and one unchanged stream
+    expect((await manager.state(bot)).revision).toBeGreaterThan(before.state.revision!);
+    await manager.closeAll();
+  });
+
+  it("queues real key and pointer releases under an open modal without holding the dialog RPC", async () => {
+    const fake = fakeContext();
+    const manager = new BrowserManager(async () => fake.context);
+    const state = await manager.control(bot, "human");
+    await manager.input(bot, state.generation, state.activePageId!, { kind: "key", action: "down", key: "Shift" });
+    await manager.input(bot, state.generation, state.activePageId!, { kind: "mouse", action: "down", button: "left", x: 10, y: 20 });
+    fake.keyboard.up.mockClear(); fake.mouse.up.mockClear();
+    const blocked = Promise.withResolvers<void>();
+    const dismiss = vi.fn(async () => { blocked.resolve(); });
+    fake.keyboard.up.mockImplementation(() => blocked.promise);
+    fake.pageEvents.emit("dialog", { type: () => "confirm", message: () => "Continue?", defaultValue: () => "", dismiss });
+    await manager.input(bot, state.generation, state.activePageId!, { kind: "key", action: "up", key: "Shift" });
+    await manager.input(bot, state.generation, state.activePageId!, { kind: "mouse", action: "up", button: "left", x: 10, y: 20 });
+    expect(fake.keyboard.up).toHaveBeenCalledWith("Shift");
+    expect(fake.mouse.up).not.toHaveBeenCalled(); // remains ordered behind the pending key release
+    await manager.dialog(bot, state.generation, state.activePageId!, false);
+    expect(dismiss).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(fake.mouse.up).toHaveBeenCalledWith({ button: "left" }));
+    await manager.closeAll();
+  });
+
+  it("reports takeover busy while automation drains and allows dialogs to be answered", async () => {
+    const fake = fakeContext();
+    const manager = new BrowserManager(async () => fake.context);
+    await manager.open(bot);
+    const running = Promise.withResolvers<void>();
+    const entered = Promise.withResolvers<void>();
+    const automation = manager.automation(bot, async () => { entered.resolve(); await running.promise; });
+    await entered.promise;
+    const takeover = await manager.control(bot, "human");
+    expect(takeover.busy).toBe(true);
+    expect((await manager.frame(bot)).state.busy).toBe(true);
+    const dismiss = vi.fn(async () => {});
+    fake.pageEvents.emit("dialog", { type: () => "confirm", message: () => "Continue?", defaultValue: () => "", dismiss });
+    await manager.dialog(bot, takeover.generation, takeover.activePageId!, false);
+    expect(dismiss).toHaveBeenCalledOnce();
+    running.resolve(); await automation;
+    await vi.waitFor(async () => expect((await manager.state(bot)).busy).toBe(false));
+    expect((await manager.state(bot)).revision).toBeGreaterThan(takeover.revision!);
+    await manager.closeAll();
+  });
+
   it("finds Chrome first, checks all Edge roots, and reports no installed browser", () => {
     const chrome = join(env.LOCALAPPDATA, "Google", "Chrome", "Application", "chrome.exe");
     const edge = join(env.ProgramFiles, "Microsoft", "Edge", "Application", "msedge.exe");
@@ -124,11 +230,11 @@ describe("owned embedded browser", () => {
     const fake = fakeContext();
     const manager = new BrowserManager(async () => fake.context);
     const state = await manager.control(bot, "human");
-    const frame = (data: string) => ({ data, sessionId: 1, metadata: { deviceWidth: 1000, deviceHeight: 720 } });
+    const frame = (data: string) => ({ data: jpeg(data), sessionId: 1, metadata: { deviceWidth: 1000, deviceHeight: 720 } });
     await manager.frame(bot);
     const oldStream = fake.observers.at(-1)!;
     oldStream.emit("Page.screencastFrame", frame("old-page"));
-    expect((await manager.frame(bot)).frame?.data).toBe("old-page");
+    expect((await manager.frame(bot)).frame?.data).toBe(jpeg("old-page"));
     const committed = Promise.withResolvers<null>();
     const method = action === "navigate" ? "goto" : action === "back" ? "goBack" : action === "forward" ? "goForward" : "reload";
     vi.mocked(fake.page[method]).mockImplementation(() => committed.promise);
@@ -143,7 +249,7 @@ describe("owned embedded browser", () => {
     oldStream.emit("Page.screencastFrame", frame("late-old-page"));
     expect((await manager.frame(bot)).frame).toBeNull();
     fake.observers.at(-1)!.emit("Page.screencastFrame", frame("new-page"));
-    expect((await manager.frame(bot)).frame?.data).toBe("new-page");
+    expect((await manager.frame(bot)).frame?.data).toBe(jpeg("new-page"));
     await manager.closeAll();
   });
 
@@ -152,12 +258,12 @@ describe("owned embedded browser", () => {
     const manager = new BrowserManager(async () => fake.context);
     await manager.frame(bot);
     const stream = fake.observers.at(-1)!;
-    stream.emit("Page.screencastFrame", { data: "valid", sessionId: 1, metadata: { deviceWidth: 1000, deviceHeight: 720 } });
-    expect((await manager.frame(bot)).frame?.data).toBe("valid");
+    stream.emit("Page.screencastFrame", { data: jpeg("valid"), sessionId: 1, metadata: { deviceWidth: 1000, deviceHeight: 720 } });
+    expect((await manager.frame(bot)).frame?.data).toBe(jpeg("valid"));
     stream.emit("Page.screencastFrame", { data: "wrong-surface", sessionId: 2, metadata: { deviceWidth: 984, deviceHeight: 625 } });
     expect((await manager.frame(bot)).frame).toBeNull();
-    stream.emit("Page.screencastFrame", { data: "repaired", sessionId: 3, metadata: { deviceWidth: 1000, deviceHeight: 720 } });
-    expect((await manager.frame(bot)).frame?.data).toBe("repaired");
+    stream.emit("Page.screencastFrame", { data: jpeg("repaired"), sessionId: 3, metadata: { deviceWidth: 1000, deviceHeight: 720 } });
+    expect((await manager.frame(bot)).frame?.data).toBe(jpeg("repaired"));
     await manager.closeAll();
   });
 

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
 import { connect, type Client } from "@tjommie/client";
-import type { BrowserState } from "@tjommie/protocol";
+import type { BrowserFrame, BrowserInput, BrowserState } from "@tjommie/protocol";
 import type { StoredBot } from "./bots.ts";
 import { browserHandlers } from "./browser-handlers.ts";
 import { BrowserManager, browserProfile } from "./browser-manager.ts";
@@ -145,6 +145,25 @@ it("shares real panel input, MCP tabs/cookies, persistent sign-in, and isolated 
     await assertPanelSize(current);
     for (const action of ["down", "up"] as const) await app.call("browser.input", { ...target(), input: { kind: "mouse", action, x: 492, y: 32 } });
     expect(await current.locator("#frame-marker").getAttribute("data-clicked")).toBe("yes");
+    // Expanded pages exceed the screencast cap. Decode the actual JPEG and click a right-edge marker
+    // in CSS coordinates to prove the two sizes are explicit rather than relabelled.
+    await current.locator("#frame-marker").evaluate((element) => { element.setAttribute("style", `${element.getAttribute("style")};left:2480px`); element.removeAttribute("data-clicked"); });
+    state = await app.call("browser.resize", { ...target(), width: 2560, height: 1600 });
+    const expanded = await eventually(() => app.call("browser.frame", { botId: bot.id }), (value) => value.frame !== null);
+    expect(expanded.frame).toMatchObject({ width: 1280, height: 800, viewportWidth: 2560, viewportHeight: 1600, viewportRevision: state.viewportRevision });
+    const expandedPixels = await current.evaluate<{ width: number; height: number; marker: number[] }>(`(async () => {
+      const image = new Image(); image.src = ${JSON.stringify(`data:image/jpeg;base64,${expanded.frame!.data}`)}; await image.decode();
+      const canvas = document.createElement('canvas'); canvas.width=image.width; canvas.height=image.height;
+      const ctx = canvas.getContext('2d'); ctx.drawImage(image,0,0);
+      return {width:image.naturalWidth,height:image.naturalHeight,marker:Array.from(ctx.getImageData(1246,16,1,1).data)};
+    })()`);
+    expect(expandedPixels).toMatchObject({ width: 1280, height: 800 });
+    expect(expandedPixels.marker[0]).toBeGreaterThan(200); expect(expandedPixels.marker[1]).toBeLessThan(30);
+    for (const action of ["down", "up"] as const) await app.call("browser.input", { ...target(), viewportRevision: state.viewportRevision, input: { kind: "mouse", action, x: 2492, y: 32 } });
+    expect(await current.locator("#frame-marker").getAttribute("data-clicked")).toBe("yes");
+    await current.locator("#frame-marker").evaluate((element) => { element.setAttribute("style", `${element.getAttribute("style")};left:480px`); });
+    state = await app.call("browser.resize", { ...target(), width: 528, height: 396 });
+    await assertPanelSize(current);
     const mcpToken = tokens.issue(bot.id);
     const rpc = async (name: string, args: Record<string, unknown>): Promise<unknown> => {
       const response = await fetch(`http://127.0.0.1:${server!.port}/mcp/browser`, { method: "POST", headers: { Authorization: `Bearer ${mcpToken}`, "Content-Type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } }) });
@@ -225,6 +244,182 @@ it("shares real panel input, MCP tabs/cookies, persistent sign-in, and isolated 
     await mcp.closeAll();
     await manager.closeAll();
     await client?.close();
+    await server?.close();
+    await new Promise<void>((resolve) => fixture.close(() => resolve()));
+    rmSync(root, { recursive: true, force: true, maxRetries: 3 });
+  }
+});
+
+it("measures ordered input to DOM and decoded browser-frame presentation in a disposable fixture", async () => {
+  const root = mkdtempSync(join(tmpdir(), "tjommie browser latency-"));
+  const bot = { id: "latency-fixture", homeFolder: join(root, "bot"), browser: true, autonomy: "folder" } as StoredBot;
+  const manager = new BrowserManager();
+  let client: Client | undefined;
+  let server: Server | undefined;
+  let closeView: (() => Promise<void>) | undefined;
+  let closeSession: (() => Promise<void>) | undefined;
+  type View = { state: BrowserState | null; frame: BrowserFrame | null; error: string | null };
+  type Session = { open(): void; input(input: BrowserInput): void; dialog(accept: boolean): void; suspend(): Promise<void>; close(): Promise<void>; view: View };
+  const runtime: unknown = await import(new URL("../../ui/lib/browser-session.ts", import.meta.url).href);
+  const SessionClass = (runtime as { BrowserSession: new (botId: string, call: Client["call"], changed: (view: View) => void) => Session }).BrowserSession;
+  try {
+    server = await startServer({ port: 0, token: "latency-token", allowedOrigins: [], handlers: browserHandlers(() => bot, manager) });
+    client = await connect(server.port, "latency-token");
+    const state = await manager.control(bot, "human");
+    const context = await manager.context(bot);
+    const page = context.pages()[0];
+    const starts = new Map<number, number>();
+    const dom = new Map<number, number>();
+    const shown = new Map<number, number>();
+    await page.exposeBinding("domMark", (_source, value: number) => { if (starts.has(value)) dom.set(value, performance.now() - starts.get(value)!); });
+    await page.setContent(`<style>html,body{margin:0;width:100%;height:100%;background:rgb(16,0,0)}</style><script>
+      let step=0; addEventListener('keydown',e=>{if(e.key==='x'){step++;document.body.style.background='rgb('+(16+step*8)+',0,0)';window.domMark(step);}});
+    </script>`);
+    const renderer = context.browser();
+    if (!renderer) throw new Error("Missing owned browser");
+    const displayContext = await renderer.newContext({ viewport: { width: 1000, height: 720 } });
+    closeView = () => displayContext.close();
+    const display = await displayContext.newPage();
+    await display.setContent("<canvas width='1000' height='720'></canvas>");
+    let latest: BrowserFrame | null = null;
+    let painting = false;
+    let lastData = "";
+    let paintError: unknown;
+    const paint = async (): Promise<void> => {
+      if (painting) return;
+      painting = true;
+      try {
+        while (latest) {
+          const frame = latest; latest = null;
+          const step = await display.evaluate<number>(`(async()=>{
+            const image=new Image();image.src=${JSON.stringify(`data:image/jpeg;base64,${frame.data}`)};await image.decode();
+            const canvas=document.querySelector('canvas');const ctx=canvas.getContext('2d');ctx.drawImage(image,0,0,1000,720);
+            await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+            return Math.round((ctx.getImageData(500,360,1,1).data[0]-16)/8);
+          })()`);
+          if (starts.has(step) && !shown.has(step)) shown.set(step, performance.now() - starts.get(step)!);
+        }
+      } catch (error) { paintError = error; }
+      finally { painting = false; }
+    };
+    const session = new SessionClass(bot.id, client.call, (view) => {
+      if (view.frame && view.frame.data !== lastData) { lastData = view.frame.data; latest = view.frame; void paint(); }
+    });
+    closeSession = () => session.close();
+    session.open();
+    await eventually(async () => session.view, (view) => view.frame !== null);
+    for (let step = 1; step <= 16; step++) {
+      await new Promise((resolve) => setTimeout(resolve, 37 + step * 7 % 71));
+      starts.set(step, performance.now());
+      session.input({ kind: "key", action: "down", key: "x" });
+      session.input({ kind: "key", action: "up", key: "x" });
+      await eventually(async () => { if (paintError) throw paintError; return shown.has(step); }, Boolean);
+    }
+    const distribution = (values: number[]) => {
+      const sorted = values.sort((a, b) => a - b);
+      return { samples: sorted.length, p50: Math.round(sorted[Math.ceil(sorted.length * .5) - 1]), p95: Math.round(sorted[Math.ceil(sorted.length * .95) - 1]), max: Math.round(sorted.at(-1)!) };
+    };
+    process.stdout.write(`Browser latency milliseconds ${JSON.stringify({ dom: distribution([...dom.values()]), displayedJpeg: distribution([...shown.values()]) })}\n`);
+    expect(dom.size).toBe(16);
+    expect(shown.size).toBe(16);
+    expect(state.control).toBe("human");
+    const previous = session.view.frame?.data;
+    await page.evaluate(`(()=>{const b=document.createElement('button');b.textContent='Confirm';b.style='position:fixed;left:20px;top:20px;width:120px;height:50px';b.onclick=()=>{document.body.dataset.confirmed=String(confirm('Latency fixture confirm'));};document.body.append(b);})()`);
+    await eventually(async () => session.view.frame?.data, (value) => !!value && value !== previous);
+    for (const action of ["down", "up"] as const) session.input({ kind: "mouse", action, button: "left", x: 50, y: 40 });
+    await eventually(async () => session.view.state?.dialog, (dialog) => dialog?.message === "Latency fixture confirm");
+    session.dialog(false);
+    await eventually(async () => session.view.state?.dialog, (dialog) => dialog === null);
+    expect(await page.locator("body").getAttribute("data-confirmed")).toBe("false");
+    await session.suspend();
+    expect((await manager.state(bot)).control).toBe("bot");
+  } finally {
+    await closeSession?.();
+    await closeView?.();
+    await client?.close();
+    await manager.closeAll();
+    await server?.close();
+    rmSync(root, { recursive: true, force: true, maxRetries: 3 });
+  }
+});
+
+it("keeps SPA typing uninterrupted and delivers held key and pointer releases across a real modal", async () => {
+  const root = mkdtempSync(join(tmpdir(), "tjommie browser SPA-"));
+  const bot = { id: "spa-fixture", homeFolder: join(root, "bot"), browser: true, autonomy: "folder" } as StoredBot;
+  const manager = new BrowserManager();
+  const fixture = createServer((_req, res) => res.writeHead(200, { "Content-Type": "text/html" }).end(`<!doctype html><title>SPA input fixture</title>
+    <style>input,button{position:fixed;left:20px;width:260px;height:50px}input{top:20px}button{top:100px}</style>
+    <input id="spa" autofocus oninput="history.replaceState(null,'','?q='+encodeURIComponent(this.value))">
+    <button id="modal" onmousedown="confirm('Held input confirm')">Open modal while held</button>
+    <script>addEventListener('keydown',e=>document.body.dataset.lastShift=String(e.shiftKey));
+    addEventListener('mousemove',e=>document.body.dataset.buttons=String(e.buttons));
+    addEventListener('mouseup',()=>document.body.dataset.released='yes');</script>`));
+  let server: Server | undefined, client: Client | undefined;
+  let closeSession: (() => Promise<void>) | undefined;
+  type View = { state: BrowserState | null; frame: BrowserFrame | null; error: string | null; busy?: boolean };
+  type Session = { open(): void; input(input: BrowserInput): void; dialog(accept: boolean): void; close(): Promise<void>; view: View };
+  const runtime: unknown = await import(new URL("../../ui/lib/browser-session.ts", import.meta.url).href);
+  const SessionClass = (runtime as { BrowserSession: new (botId: string, call: Client["call"], changed: (view: View) => void) => Session }).BrowserSession;
+  try {
+    await new Promise<void>((resolve) => fixture.listen(0, "127.0.0.1", resolve));
+    const address = fixture.address();
+    if (!address || typeof address === "string") throw new Error("Missing SPA fixture address");
+    const url = `http://127.0.0.1:${address.port}/`;
+    server = await startServer({ port: 0, token: "spa-token", allowedOrigins: [], handlers: browserHandlers(() => bot, manager) });
+    client = await connect(server.port, "spa-token");
+    const initial = await client.call("browser.control", { botId: bot.id, control: "human" });
+    await client.call("browser.navigate", { botId: bot.id, generation: initial.generation, pageId: initial.activePageId!, url });
+    const page = (await manager.context(bot)).pages()[0];
+    const streams = new Set<string>();
+    const errors: string[] = [];
+    let watching = false, blanks = 0;
+    const session = new SessionClass(bot.id, client.call, (view) => {
+      if (!watching) return;
+      if (!view.frame) blanks++;
+      if (view.frame?.streamId) streams.add(view.frame.streamId);
+      if (view.error) errors.push(view.error);
+    });
+    closeSession = () => session.close();
+    session.open();
+    await eventually(async () => session.view, (view) => !!view.frame && !view.busy);
+    const layout = session.view.state!.viewportRevision;
+    streams.add(session.view.frame!.streamId!); watching = true;
+    const text = "abcdefghijklmnop";
+    for (const key of text) {
+      session.input({ kind: "key", action: "down", key });
+      session.input({ kind: "key", action: "up", key });
+      await new Promise((resolve) => setTimeout(resolve, 12));
+    }
+    await eventually(() => page.locator("#spa").inputValue(), (value) => value === text);
+    await eventually(async () => session.view.state?.tabs[0].url, (value) => value === `${url}?q=${text}`);
+    expect(session.view.state?.viewportRevision).toBe(layout);
+    expect(blanks).toBe(0); expect(streams.size).toBe(1); expect(errors).toEqual([]);
+    // pushState and hash changes are also same-document navigation and retain the stream.
+    await page.evaluate("history.pushState(null,'','?route=next');location.hash='section'");
+    await eventually(async () => session.view.state?.tabs[0].url, (value) => value === `${url}?route=next#section`);
+    expect(blanks).toBe(0); expect(streams.size).toBe(1);
+    watching = false;
+
+    session.input({ kind: "key", action: "down", key: "Shift" });
+    session.input({ kind: "mouse", action: "down", button: "left", x: 50, y: 120 });
+    await eventually(async () => session.view.state?.dialog, (dialog) => dialog?.message === "Held input confirm");
+    session.input({ kind: "key", action: "up", key: "Shift" });
+    session.input({ kind: "mouse", action: "up", button: "left", x: 50, y: 120 });
+    session.dialog(false);
+    await eventually(async () => session.view.state?.dialog, (dialog) => dialog === null);
+    session.input({ kind: "mouse", action: "move", x: 300, y: 200 });
+    await eventually(() => page.locator("body").getAttribute("data-buttons"), (value) => value === "0");
+    expect(await page.locator("body").getAttribute("data-released")).toBe("yes");
+    for (const action of ["down", "up"] as const) session.input({ kind: "mouse", action, button: "left", x: 200, y: 40 });
+    session.input({ kind: "key", action: "down", key: "a" });
+    session.input({ kind: "key", action: "up", key: "a" });
+    await eventually(() => page.locator("body").getAttribute("data-last-shift"), (value) => value === "false");
+    expect((await page.locator("#spa").inputValue()).length).toBe(17);
+    expect(session.view.error).toBeNull();
+  } finally {
+    await closeSession?.();
+    await client?.close();
+    await manager.closeAll();
     await server?.close();
     await new Promise<void>((resolve) => fixture.close(() => resolve()));
     rmSync(root, { recursive: true, force: true, maxRetries: 3 });

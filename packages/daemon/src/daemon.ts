@@ -6,9 +6,15 @@ import { createBot, deleteBot, getStoredBot, listStoredBots, setPaused, sweepDel
 import { browsers, sharedBrowserServer, showBrowser } from "./browser.ts";
 import { browserHandlers } from "./browser-handlers.ts";
 import { BrowserMcp } from "./browser-mcp.ts";
+import { NativeBrowserBroker } from "./native-browser-broker.ts";
+import { NativeBrowserMcp } from "./native-browser-mcp.ts";
+import { nativeBrowserHandlers } from "./native-browser-handlers.ts";
+import type { NativeBrowserCommand } from "../../protocol/src/native-browser.ts";
 import { runCleanup } from "./cleanup.ts";
 import { historyPage } from "./chat.ts";
 import { openDb } from "./db.ts";
+import type { GoogleAuth } from "./google-auth.ts";
+import { googleTools } from "./google-tools.ts";
 import { McpTokens, mcpHandler } from "./mcp.ts";
 import { DEFAULT_PORT, dataPaths, migrateLegacyDb, readOrCreateToken } from "./paths.ts";
 import { getWorkItem, type WorkItem } from "./queue.ts";
@@ -42,14 +48,18 @@ async function waitForBotClose(closed: Promise<void>): Promise<void> {
 
 export type Daemon = { port: number; token: string; runner: Runner; scheduler: Scheduler; close: () => Promise<void> };
 
-export type DaemonAuth = { mode: "development" } | { mode: "production"; token: string };
-type DaemonOptions = { auth: DaemonAuth; root?: string; port?: number; accountsDir?: string; createSession?: SessionFactory };
+export type DaemonAuth = { mode: "development" } | { mode: "production"; token: string; desktopHostToken?: string };
+type DaemonOptions = { auth: DaemonAuth; root?: string; port?: number; accountsDir?: string; createSession?: SessionFactory; googleAuth?: GoogleAuth };
 
 export class PlainStartupError extends Error {}
 
 export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
   if (options.auth.mode === "production" && !/^[A-Za-z0-9_-]{43,}$/.test(options.auth.token)) {
     throw new PlainStartupError("Daemon token must be at least 43 base64url characters.");
+  }
+  if (options.auth.mode === "production" && options.auth.desktopHostToken !== undefined &&
+    (!/^[A-Za-z0-9_-]{43,}$/.test(options.auth.desktopHostToken) || options.auth.desktopHostToken === options.auth.token)) {
+    throw new PlainStartupError("The native browser host requires an independent private capability.");
   }
   // The listening port is the lock. A duplicate launch must not even open the database.
   const server = await startServer({ port: options.port ?? DEFAULT_PORT, token: "", handlers: {}, allowedOrigins: allowedOrigins(options.auth.mode), deferRequests: true });
@@ -106,9 +116,25 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
   let setup: ProviderSetup[] = [];
   let broadcast: Broadcast = () => {};
   const send: Broadcast = (event, data) => broadcast(event, data);
+  // The separate API feature is on hold. Only isolated dependency-injected tests enable its wiring.
+  let googleOpening: Promise<GoogleAuth> | undefined = options.googleAuth ? Promise.resolve(options.googleAuth) : undefined;
+  const google = (): Promise<GoogleAuth> => googleOpening ?? Promise.reject(new RpcError("bad_state", "The separate Google API connection is not enabled in this version. Use the native browser."));
   let mcpUrl = ""; // Set before queued work can start a CLI session.
   const tokens = new McpTokens();
-  const browserMcp = new BrowserMcp({ tokens, getBot: (id) => getStoredBot(db, id) });
+  const nativeBroker = options.auth.mode === "production" && options.auth.desktopHostToken
+    ? new NativeBrowserBroker<NativeBrowserCommand>(options.auth.desktopHostToken) : null;
+  const nativeRequest = async (id: string, command: NativeBrowserCommand, authorized?: () => boolean): Promise<unknown> => {
+    const bot = getStoredBot(db, id);
+    if (command.kind !== "close" && command.kind !== "cancel_tools" && command.kind !== "delete_profile" && !bot.browser) throw new RpcError("bad_state", "This bot's browser is off.");
+    if (!nativeBroker) throw new RpcError("bad_state", "The native browser needs the Tjommie desktop app.");
+    return nativeBroker.request(bot, command, authorized);
+  };
+  const browserMcp = nativeBroker
+    ? new NativeBrowserMcp({ tokens, getBot: (id: string) => getStoredBot(db, id), request: nativeRequest, cancelTools: (id: string) => {
+      nativeBroker.cancelTools(id);
+      void nativeRequest(id, { kind: "cancel_tools" }).catch(() => {});
+    } })
+    : new BrowserMcp({ tokens, getBot: (id) => getStoredBot(db, id) });
   const switchingBots = new Set<string>();
   const runner: Runner = new Runner({
     db,
@@ -193,6 +219,18 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
       if (deletionRequests.has(id)) throw new RpcError("busy", "This bot is being deleted.");
       return getStoredBot(db, id);
     }),
+    ...(nativeBroker ? nativeBrowserHandlers(nativeRequest) : {}),
+    "google.status": async () => (await google()).status(),
+    "google.configure": async (config) => (await google()).configure(config),
+    "google.begin": async ({ services }) => (await google()).begin(services),
+    "google.cancel": async ({ attempt }) => (await google()).cancel(attempt),
+    "google.disconnect": async () => (await google()).disconnect(),
+    "google.grant": async ({ botId, enabled }) => {
+      const auth = await google();
+      if (deletionRequests.has(botId)) throw new RpcError("busy", "This bot is being deleted.");
+      getStoredBot(db, botId);
+      return auth.setGrant(botId, enabled);
+    },
     "setup.status": () => refreshSetup(),
     "setup.signIn": ({ provider }) => signIn(db, provider, (_ok, attempt) => signInEnded(provider, attempt)),
     "setup.prepareCodexSandbox": async () => {
@@ -249,7 +287,7 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
       const bot = runner.toBot(changed);
       try {
         if (before.browser && !changed.browser) {
-          await runCleanup([() => browserMcp.close(id), () => browsers.close(id)], "The browser was disabled, but some browser resources could not close.");
+          await runCleanup([() => browserMcp.close(id), () => nativeBroker ? nativeRequest(id, { kind: "close" }).then(() => { nativeBroker.closeBot(id); }) : browsers.close(id)], "The browser was disabled, but some browser resources could not close.");
         }
       } finally { broadcast("bot.updated", bot); }
       return bot;
@@ -262,6 +300,14 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
         let handle: ReturnType<Team["botDeleting"]>;
         try {
           await waitForBotClose(runner.closeForDeletion(id));
+          if (nativeBroker) {
+            await nativeRequest(id, { kind: "delete_profile" });
+            nativeBroker.closeBot(id);
+          }
+          if (googleOpening) {
+            const auth = await google();
+            if (auth.status().grantedBotIds.includes(id)) await auth.unregisterBot(id);
+          }
           handle = team.botDeleting(id);
           deleteBot(db, id);
         } catch (error) {
@@ -289,6 +335,7 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
     "bots.showBrowser": async ({ id }) => {
       const bot = getStoredBot(db, id);
       if (!bot.browser) throw new RpcError("bad_params", "This bot's browser is off");
+      if (nativeBroker) { await nativeRequest(id, { kind: "open" }); return {}; }
       await showBrowser(bot);
       return {};
     },
@@ -365,7 +412,11 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
   broadcast = server.broadcast;
   runner.start();
   scheduler.start();
-  server.activate({ token, handlers, routes: { "/mcp": mcpHandler({ tokens, tools: team.tools() }), "/mcp/browser": browserMcp.handle } });
+  server.activate({ token, handlers, routes: { "/mcp": mcpHandler({ tokens, tools: [...team.tools(), ...(options.googleAuth ? googleTools({ request: async (botId, service, path) => {
+    if (deletionRequests.has(botId)) throw new RpcError("busy", "This bot is being deleted.");
+    getStoredBot(db, botId);
+    return (await google()).request(botId, service, path);
+  } }) : [])] }), "/mcp/browser": browserMcp.handle, ...(nativeBroker ? { "/browser-host": nativeBroker.handle } : {}) } });
   return {
     port: server.port,
     token,
@@ -375,7 +426,9 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
       await runCleanup([
         () => scheduler.stop(),
         () => runner.shutdown(),
+        async () => { if (googleOpening) await (await googleOpening).close(); },
         () => browserMcp.closeAll(),
+        () => nativeBroker?.close(),
         () => browsers.closeAll(),
         () => server.close(),
         () => db.close(),

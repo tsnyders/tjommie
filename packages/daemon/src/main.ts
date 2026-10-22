@@ -31,9 +31,17 @@ try {
   const unknown = args.find((arg) => arg !== "--dev" && arg !== "--token-stdin");
   if (unknown !== undefined) throw new PlainStartupError(`Unknown argument: ${unknown}`);
   if (development === production) throw new PlainStartupError(development ? "Choose either --dev or --token-stdin." : noModeMessage);
+  const credentials = development ? null : await tokenFromStdin();
+  let productionAuth: { mode: "production"; token: string; desktopHostToken?: string } = { mode: "production", token: credentials ?? "" };
+  if (credentials?.startsWith("{")) {
+    let value: unknown;
+    try { value = JSON.parse(credentials); } catch { throw new PlainStartupError("Invalid desktop startup credentials."); }
+    if (typeof value !== "object" || value === null || !("token" in value) || typeof value.token !== "string" || !("desktopHostToken" in value) || typeof value.desktopHostToken !== "string" || !/^[A-Za-z0-9_-]{43,}$/.test(value.desktopHostToken)) throw new PlainStartupError("Invalid desktop startup credentials.");
+    productionAuth = { mode: "production", token: value.token, desktopHostToken: value.desktopHostToken };
+  }
   const auth = development
     ? { mode: "development" as const }
-    : { mode: "production" as const, token: await tokenFromStdin() };
+    : productionAuth;
   // Test hook: the desktop app's real-CLI tests pair a disposable data root with the signed-in account folders.
   const accountsDir = process.env.TJOMMIE_ACCOUNTS_DIR || undefined;
   if (accountsDir !== undefined) console.error("Using account folders from TJOMMIE_ACCOUNTS_DIR.");

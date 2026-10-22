@@ -8,7 +8,7 @@ Tjommie is a free, open-source desktop app for AI bots that chat with you, work 
 
 You need Windows and Node 24 or newer.
 
-Install the Claude Code and Codex CLIs and put them on PATH. Tjommie stores its data in `%LOCALAPPDATA%\Tjommie`; set `TJOMMIE_HOME` to use another folder and `TJOMMIE_PORT` to change the default port, 47100. The browser feature needs Chrome or Edge. From the repo root, `npm run chat -w @tjommie/daemon -- <name>` creates the named bot if it does not exist.
+Install the Claude Code and Codex CLIs and put them on PATH. Tjommie stores its data in `%LOCALAPPDATA%\Tjommie`; set `TJOMMIE_HOME` to use another folder and `TJOMMIE_PORT` to change the default port, 47100. The installed browser uses Electron's bundled Chromium; standalone development browser fixtures use Chrome or Edge. From the repo root, `npm run chat -w @tjommie/daemon -- <name>` creates the named bot if it does not exist.
 
 `npm start -w @tjommie/daemon` starts development mode. It saves a `daemon-token` file in the Tjommie data folder so the terminal chat can connect. Development mode also allows the UI at `http://localhost:3000`. Running `src/main.ts --dev` directly or setting `$env:TJOMMIE_DEV = '1'` does the same thing. The desktop origin `app://tjommie` is always allowed.
 
@@ -52,11 +52,17 @@ TypeScript must never use explicit `any` types. `npm run typecheck` enforces thi
 
 ## Bot browser
 
-Enable Browser for a bot, then choose Open browser in its chat to browse inside the right panel. Each bot has its own persistent profile. The browser engine runs headlessly; it does not open a separate Chrome or Edge window. The feature still requires Chrome or Edge to be installed.
+Enable Browser for a bot, then choose Open browser in its chat to browse inside the right panel. The desktop app owns a live native browser view with a separate persistent profile for each bot. The person and the bot use the same tabs. Browser tools need the desktop app running, including when its window is hidden in the tray.
 
-Take control before typing, clicking or signing in manually. Resume bot gives its browser tools control again. Both use the same pages and signed-in sites. Closing the panel releases manual control and stops its live view without closing the browser. Browser pages run outside Tjommie's renderer, and their frames and manual input are not stored as chat messages.
+Use the Details / Browser tabs to return to bot settings, routines and activity without losing the browser page or address draft. Drag the panel divider to change its width; the focused divider also accepts arrow keys. Expand browser fills the application content area, and Restore browser returns to the previous width.
 
-The panel does not provide native file pickers, passkey prompts or operating-system authentication dialogs. For uploads, attach a file in chat and ask the bot to upload it. If a page's file chooser was already opened manually, choose Resume bot and ask the bot to upload the attachment or cancel the chooser; its browser file-upload tool supports cancellation with an empty file list. Local synthetic-site checks establish cookie persistence, not compatibility with every third-party sign-in service.
+Take control before typing or clicking. Resume bot gives its browser tools control again. Returning to Details or hiding the panel releases manual control without closing the browser session. Website pages run in isolated native guest contents without the application's preload or Node access. Human browsing no longer uses JPEG polling, and manual input is not stored as chat messages.
+
+Closing or disabling a bot's browser keeps its sign-ins. Deleting the bot clears its browser storage and cookies before deleting the bot. Windows may temporarily lock cleared profile files; startup retries removing those orphaned files. Camera, microphone, screen capture and device access are denied.
+
+Old headless Chrome profiles are retained for rollback and are not imported into the native browser. Local synthetic-site checks establish cookie persistence, not compatibility with every third-party sign-in service. Google rejected sign-in in the previous automated panel during owner testing. Native rendering does not establish that Google accepts sign-in; owner-controlled real-site acceptance remains required. Media codecs, protected playback, passkeys and operating-system authentication also require site-specific validation.
+
+The separate Google API connection is on hold while native website browsing is validated. OAuth API consent does not sign the browser into Google websites. No Google API connection is offered in the bot panel in this version.
 
 Startup routine failures are retained until the desktop handles and acknowledges them. Reconnecting retries an unacknowledged notice. A desktop crash between showing a notification and acknowledging it can cause one replay after restart.
 

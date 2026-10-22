@@ -53,10 +53,14 @@ describe("daemon process", () => {
     const daemon = await startDaemonProcess(options, (text) => { output += text; });
     running.push(daemon);
     const { port, token } = daemon.connection;
+    expect(daemon.desktopHostToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(daemon.desktopHostToken).not.toBe(token);
+    expect(daemon.connection).not.toHaveProperty("desktopHostToken");
     const client = await connect(port, token);
     expect(await client.call("bots.list", {})).toEqual([]);
     expect(output).toContain(`listening on http://127.0.0.1:${port}`);
     expect(output).not.toContain(token);
+    expect(output).not.toContain(daemon.desktopHostToken);
     await daemon.stop();
     expect((await daemon.exited).code).toBe(0);
     await client.disconnected;

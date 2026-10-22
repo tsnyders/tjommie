@@ -11,19 +11,16 @@ import { draftFrom, EMPTY_ROUTINE, localZone } from "@/lib/routine-form";
 import { removeRoutine, saveRoutine } from "@/lib/routines";
 import { useApp } from "@/lib/store";
 import { BotAvatar } from "../bot-avatar";
-import { PanelBar } from "../panel-bar";
 import { RoutineEditor } from "../routines/routine-editor";
 import { RoutineRows } from "../routines/routine-rows";
 
-// The right panel beside a bot's chat (WF1 Phase 1). 16 px between cards, 24 px above a section label.
-export function BotPanel({ bot, messages, onHide, onOpenBrowser }: { bot: Bot; messages: Message[]; onHide: () => void; onOpenBrowser: () => void }) {
+// The Details pane of the right panel beside a bot's chat (WF1 Phase 1). 16 px between cards, 24 px above a section label.
+export function BotPanel({ bot, messages, onOpenBrowser }: { bot: Bot; messages: Message[]; onOpenBrowser: () => void }) {
   const allRoutines = useApp((state) => state.routines);
   const routines = useMemo(() => allRoutines.filter((routine) => routine.botId === bot.id), [allRoutines, bot.id]);
   const steps = useMemo(() => recentActivity(messages), [messages]);
   return (
-    <aside aria-label={`About ${bot.name}`} className="flex w-[460px] shrink-0 flex-col border-l border-divider bg-canvas">
-      <PanelBar settingsHref={`/bots/settings/?bot=${encodeURIComponent(bot.id)}`} settingsLabel="Bot settings" hideLabel="Hide the bot panel" onHide={onHide} />
-      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 pb-4">
+    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 pb-4">
         <Summary bot={bot} />
         {bot.browser && <BrowserCard onOpen={onOpenBrowser} />}
         <PanelRoutines bot={bot} routines={routines} />
@@ -47,8 +44,7 @@ export function BotPanel({ bot, messages, onHide, onOpenBrowser }: { bot: Bot; m
             ))}
           </ul>
         )}
-      </div>
-    </aside>
+    </div>
   );
 }
 

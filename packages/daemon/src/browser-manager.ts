@@ -55,15 +55,38 @@ export function navigationUrl(value: string): string {
   return url.href;
 }
 
-type Tab = { id: string; page: Page; title: string; pressed: Set<string>; observer: Promise<CDPSession | null>; navigating: boolean };
-type Stream = { pageId: string; cdp: CDPSession; frame: BrowserFrame | null; timer?: NodeJS.Timeout; sequence: number };
+type Tab = { id: string; page: Page; title: string; pressed: Set<string>; observer: Promise<CDPSession | null>; navigating: boolean; viewportRevision: number; documentId?: string; documentRevision: number };
+type Stream = { id: string; pageId: string; viewportRevision: number; documentRevision: number; cdp: CDPSession; frame: BrowserFrame | null; timer?: NodeJS.Timeout; sequence: number };
 type Session = {
   bot: StoredBot; context: BrowserContext; generation: string; control: BrowserState["control"];
   tabs: Tab[]; activePageId: string | null; dialog: { pageId: string; value: Dialog } | null;
   dialogListeners: Set<() => void>;
+  revision: number; automationActive: boolean; controlPending: number;
   stream: Stream | null; streamPending: Promise<Stream> | null; tail: Promise<void>; closing: boolean;
 };
 const Screencast = z.object({ data: z.string(), sessionId: z.number(), metadata: z.object({ deviceWidth: z.number(), deviceHeight: z.number() }) });
+const DocumentNavigation = z.object({ frame: z.object({ loaderId: z.string(), parentId: z.string().optional() }) });
+
+export function jpegDimensions(data: string): { width: number; height: number } | null {
+  const bytes = Buffer.from(data, "base64");
+  if (bytes.length < 4 || bytes.readUInt16BE(0) !== 0xffd8) return null;
+  let offset = 2;
+  while (offset + 3 < bytes.length) {
+    if (bytes[offset++] !== 0xff) return null;
+    while (bytes[offset] === 0xff) offset++;
+    const marker = bytes[offset++];
+    if (marker === 0xda || marker === 0xd9 || offset + 2 > bytes.length) return null;
+    if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd8)) continue;
+    const length = bytes.readUInt16BE(offset);
+    if (length < 2 || offset + length > bytes.length) return null;
+    if ([0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf].includes(marker) && length >= 7) {
+      const height = bytes.readUInt16BE(offset + 3), width = bytes.readUInt16BE(offset + 5);
+      return width > 0 && height > 0 ? { width, height } : null;
+    }
+    offset += length;
+  }
+  return null;
+}
 
 export class BrowserManager {
   #sessions = new Map<string, Promise<Session>>();
@@ -87,7 +110,7 @@ export class BrowserManager {
     const context = await this.#launch(bot);
     context.setDefaultTimeout(10_000);
     context.setDefaultNavigationTimeout(20_000);
-    const session: Session = { bot, context, generation: randomUUID(), control: "bot", tabs: [], activePageId: null, dialog: null, dialogListeners: new Set(), stream: null, streamPending: null, tail: Promise.resolve(), closing: false };
+    const session: Session = { bot, context, generation: randomUUID(), control: "bot", tabs: [], activePageId: null, dialog: null, dialogListeners: new Set(), revision: 0, automationActive: false, controlPending: 0, stream: null, streamPending: null, tail: Promise.resolve(), closing: false };
     context.on("page", (page) => this.#addPage(session, page));
     context.on("close", () => { void this.#stopStream(session); void this.#sessions.get(bot.id)?.then((current) => { if (current === session) this.#sessions.delete(bot.id); }).catch(() => {}); });
     for (const page of context.pages()) this.#addPage(session, page);
@@ -101,21 +124,35 @@ export class BrowserManager {
 
   #addPage(session: Session, page: Page): void {
     if (session.tabs.some((tab) => tab.page === page)) return;
-    const tab: Tab = { id: randomUUID(), page, title: "", pressed: new Set(), observer: Promise.resolve(null), navigating: false };
+    const tab: Tab = { id: randomUUID(), page, title: "", pressed: new Set(), observer: Promise.resolve(null), navigating: false, viewportRevision: 0, documentRevision: 0 };
     // Dialogs can be answered by either the person or MCP; the close event keeps both views consistent.
     tab.observer = session.context.newCDPSession(page).then(async (cdp) => {
-      cdp.on("Page.javascriptDialogClosed", () => { if (session.dialog?.pageId === tab.id) session.dialog = null; });
+      cdp.on("Page.javascriptDialogClosed", () => { if (session.dialog?.pageId === tab.id) { session.dialog = null; session.revision++; } });
+      // CDP separates document replacement from history/hash routing. Only a new top-level
+      // loader invalidates cached document pixels; it does not change the input layout epoch.
+      cdp.on("Page.frameNavigated", (value: unknown) => {
+        const parsed = DocumentNavigation.safeParse(value);
+        if (!parsed.success || parsed.data.frame.parentId || parsed.data.frame.loaderId === tab.documentId) return;
+        tab.documentId = parsed.data.frame.loaderId;
+        tab.documentRevision++; session.revision++;
+      });
       await cdp.send("Page.enable");
       return cdp;
     }).catch(() => null);
     session.tabs.push(tab);
     session.activePageId = tab.id;
-    const refresh = (): void => { void page.title().then((title) => { tab.title = title; }).catch(() => {}); };
+    session.revision++;
+    const refresh = (): void => { void page.title().then((title) => { if (tab.title !== title) { tab.title = title; session.revision++; } }).catch(() => {}); };
     page.on("domcontentloaded", refresh);
-    page.on("framenavigated", refresh);
+    page.on("framenavigated", (frame) => {
+      if (frame !== page.mainFrame()) return;
+      session.revision++; // URL/title state changes, including history.replaceState during typing
+      refresh();
+    });
     page.on("dialog", (value) => {
       session.dialog = { pageId: tab.id, value };
       session.activePageId = tab.id;
+      session.revision++;
       for (const notify of session.dialogListeners) notify();
     });
     page.on("close", () => {
@@ -123,6 +160,7 @@ export class BrowserManager {
       session.tabs = session.tabs.filter((entry) => entry !== tab);
       if (session.activePageId === tab.id) session.activePageId = session.tabs.at(-1)?.id ?? null;
       if (session.dialog?.pageId === tab.id) session.dialog = null;
+      session.revision++;
       if (session.stream?.pageId === tab.id) void this.#stopStream(session);
     });
     // Downloads remain inside the bot home and never launch a desktop application.
@@ -136,7 +174,10 @@ export class BrowserManager {
 
   #state(session: Session): BrowserState {
     const dialog = session.dialog;
+    const active = session.tabs.find((tab) => tab.id === session.activePageId);
     return { botId: session.bot.id, generation: session.generation, control: session.control, activePageId: session.activePageId,
+      revision: session.revision, viewportRevision: active?.viewportRevision ?? 0,
+      busy: !!active?.navigating || (session.control === "human" && (session.automationActive || session.controlPending > 0)),
       tabs: session.tabs.map((tab) => ({ id: tab.id, url: tab.page.url(), title: tab.title })),
       dialog: dialog ? { pageId: dialog.pageId, type: dialog.value.type(), message: dialog.value.message(), defaultValue: dialog.value.defaultValue() } : null };
   }
@@ -177,6 +218,7 @@ export class BrowserManager {
     const session = await this.#session(bot);
     // Takeover blocks newly queued bot calls immediately; input waits for an already-running call to finish.
     session.control = control;
+    session.controlPending++; session.revision++;
     // Return the control state immediately so a dialog raised by the pending operation can be answered.
     // Releases and all subsequent input still serialize after that operation.
     void this.#queue(session, async () => {
@@ -185,7 +227,7 @@ export class BrowserManager {
         tab.pressed.clear();
         for (const button of ["left", "middle", "right"] as const) await tab.page.mouse.up({ button }).catch(() => {});
       }
-    }).catch(() => {});
+    }).catch(() => {}).finally(() => { session.controlPending--; session.revision++; });
     return this.#state(session);
   }
 
@@ -193,7 +235,9 @@ export class BrowserManager {
     const session = await this.#session(bot);
     return this.#queue(session, async () => {
       if (session.control === "human") throw new RpcError("busy", "The person is using this browser. Ask them to choose Resume bot in the browser panel when they are finished.");
-      return run();
+      session.automationActive = true; session.revision++;
+      try { return await run(); }
+      finally { session.automationActive = false; session.revision++; }
     });
   }
 
@@ -204,19 +248,25 @@ export class BrowserManager {
   async selectAutomationIndex(bot: StoredBot, index: number): Promise<void> {
     const session = await this.#session(bot);
     const tab = session.tabs[index];
-    if (tab) session.activePageId = tab.id;
+    if (tab && session.activePageId !== tab.id) { session.activePageId = tab.id; session.revision++; }
   }
 
-  async #human<T>(bot: StoredBot, generation: string, pageId: string | undefined, action: (session: Session, tab: Tab | undefined) => Promise<T>, onDialog?: (session: Session) => T): Promise<T> {
+  async #human<T>(bot: StoredBot, generation: string, pageId: string | undefined, action: (session: Session, tab: Tab | undefined) => Promise<T>, onDialog?: (session: Session) => T, queueUnderDialog = false): Promise<T> {
     const session = await this.#session(bot);
     if (session.control !== "human") throw new RpcError("busy", "Choose Take over before interacting with the browser.");
     this.#check(session, generation, pageId);
-    if (session.dialog && onDialog) return onDialog(session); // input behind a modal must not block the UI's frame pulls
+    if (session.dialog && onDialog && !queueUnderDialog) return onDialog(session);
     const operation = this.#queue(session, async () => {
       if (session.control !== "human") throw new RpcError("busy", "Choose Take over before interacting with the browser.");
       return action(session, this.#check(session, generation, pageId));
     });
     if (!onDialog) return operation;
+    if (session.dialog) {
+      // A release is accepted for ordered delivery, even if CDP cannot finish it until the modal
+      // closes. The queue retains ownership; returning now leaves the dialog-answer RPC usable.
+      void operation.catch(() => {});
+      return onDialog(session);
+    }
     let listener: () => void = () => {};
     const dialog = new Promise<T>((resolve) => {
       listener = () => resolve(onDialog(session));
@@ -248,13 +298,14 @@ export class BrowserManager {
 
   async #reshapePage(session: Session, tab: Tab, change: () => Promise<unknown>): Promise<void> {
     tab.navigating = true;
+    tab.viewportRevision++; session.revision++;
     const invalidate = async (): Promise<void> => {
       // A frame pull may already be starting a stream. Drain it before discarding its old document.
       await session.streamPending?.catch(() => {});
       if (session.stream?.pageId === tab.id) await this.#stopStream(session);
     };
     try { await invalidate(); await change(); }
-    finally { await invalidate(); tab.navigating = false; }
+    finally { await invalidate(); tab.navigating = false; session.revision++; }
   }
   async tab(bot: StoredBot, generation: string, action: "new" | "select" | "close", pageId?: string): Promise<BrowserState> {
     return this.#human(bot, generation, pageId, async (session, tab) => {
@@ -262,7 +313,7 @@ export class BrowserManager {
       else {
         if (!tab) throw new RpcError("bad_params", "Choose a browser tab.");
         if (action === "close") await tab.page.close();
-        else { session.activePageId = tab.id; await tab.page.bringToFront(); }
+        else { session.activePageId = tab.id; session.revision++; await tab.page.bringToFront(); }
       }
       if (!session.tabs.length) await session.context.newPage();
       return this.#state(session);
@@ -289,21 +340,23 @@ export class BrowserManager {
       return this.#state(session);
     }, (session) => this.#state(session));
   }
-  async input(bot: StoredBot, generation: string, pageId: string, input: BrowserInput): Promise<void> {
+  async input(bot: StoredBot, generation: string, pageId: string, input: BrowserInput, viewportRevision?: number): Promise<void> {
+    const release = (input.kind === "key" || input.kind === "mouse") && input.action === "up";
     await this.#human(bot, generation, pageId, async (session, tab) => {
-      if (session.activePageId !== pageId) throw new RpcError("bad_state", "The active browser tab changed. Wait for its current view before interacting.");
+      const pointer = input.kind === "mouse" || input.kind === "wheel";
+      if (!release && (session.activePageId !== pageId || (pointer && viewportRevision !== undefined && viewportRevision !== tab!.viewportRevision))) throw new RpcError("bad_state", "The browser view changed. Wait for its current view before interacting.");
       const page = tab!.page;
       if (input.kind === "mouse" || input.kind === "wheel") {
         const size = page.viewportSize();
-        if (!size || input.x >= size.width || input.y >= size.height) throw new RpcError("bad_params", "The pointer is outside the browser view.");
-        await page.mouse.move(input.x, input.y);
+        if (!size || (!release && (input.x >= size.width || input.y >= size.height))) throw new RpcError("bad_params", "The pointer is outside the browser view.");
+        await page.mouse.move(Math.min(input.x, size.width - 1), Math.min(input.y, size.height - 1));
         if (input.kind === "wheel") await page.mouse.wheel(input.deltaX, input.deltaY);
         else if (input.action === "down") await page.mouse.down({ button: input.button });
         else if (input.action === "up") await page.mouse.up({ button: input.button });
       } else if (input.kind === "text") await page.keyboard.insertText(input.text);
       else if (input.action === "down") { await page.keyboard.down(input.key); tab!.pressed.add(input.key); }
       else { await page.keyboard.up(input.key); tab!.pressed.delete(input.key); }
-    }, () => undefined);
+    }, () => undefined, release);
   }
   async dialog(bot: StoredBot, generation: string, pageId: string, accept: boolean, promptText?: string): Promise<BrowserState> {
     const session = await this.#session(bot);
@@ -313,11 +366,11 @@ export class BrowserManager {
     if (!dialog || dialog.pageId !== pageId) throw new RpcError("bad_state", "This dialog has already closed.");
     // Do not queue behind the operation waiting for this very dialog.
     if (accept) await dialog.value.accept(promptText); else await dialog.value.dismiss();
-    if (session.dialog === dialog) session.dialog = null;
+    if (session.dialog === dialog) { session.dialog = null; session.revision++; }
     return this.#state(session);
   }
 
-  async frame(bot: StoredBot): Promise<{ state: BrowserState; frame: BrowserFrame | null }> {
+  async frame(bot: StoredBot, after?: { streamId: string; sequence: number }): Promise<{ state: BrowserState; frame: BrowserFrame | null; unchanged?: boolean }> {
     const session = await this.#session(bot);
     const tab = session.tabs.find((entry) => entry.id === session.activePageId);
     if (!tab || tab.navigating) return { state: this.#state(session), frame: null };
@@ -325,16 +378,18 @@ export class BrowserManager {
     clearTimeout(stream.timer);
     stream.timer = setTimeout(() => { if (session.stream === stream) void this.#stopStream(session); }, 3000);
     stream.timer.unref();
-    return { state: this.#state(session), frame: session.stream === stream && !tab.navigating && session.activePageId === stream.pageId ? stream.frame : null };
+    const frame = session.stream === stream && !tab.navigating && tab.viewportRevision === stream.viewportRevision && tab.documentRevision === stream.documentRevision && session.activePageId === stream.pageId ? stream.frame : null;
+    if (frame && after?.streamId === stream.id && after.sequence === frame.sequence) return { state: this.#state(session), frame: null, unchanged: true };
+    return { state: this.#state(session), frame };
   }
 
   async #stream(session: Session, tab: Tab): Promise<Stream> {
-    if (session.stream?.pageId === tab.id) return session.stream;
+    if (session.stream?.pageId === tab.id && session.stream.viewportRevision === tab.viewportRevision && session.stream.documentRevision === tab.documentRevision) return session.stream;
     if (session.streamPending) { await session.streamPending; return this.#stream(session, tab); }
     const pending = (async () => {
       await this.#stopStream(session);
       const cdp = await session.context.newCDPSession(tab.page);
-      const stream: Stream = { pageId: tab.id, cdp, frame: null, sequence: 0 };
+      const stream: Stream = { id: randomUUID(), pageId: tab.id, viewportRevision: tab.viewportRevision, documentRevision: tab.documentRevision, cdp, frame: null, sequence: 0 };
       session.stream = stream;
       cdp.on("Page.screencastFrame", (value: unknown) => {
         const parsed = Screencast.safeParse(value);
@@ -343,11 +398,13 @@ export class BrowserManager {
         void cdp.send("Page.screencastFrameAck", { sessionId }).catch(() => {});
         if (session.stream !== stream) return;
         const viewport = tab.page.viewportSize();
-        if (tab.navigating || (viewport && (metadata.deviceWidth !== viewport.width || metadata.deviceHeight !== viewport.height))) {
+        if (tab.navigating || tab.viewportRevision !== stream.viewportRevision || tab.documentRevision !== stream.documentRevision || (viewport && (metadata.deviceWidth !== viewport.width || metadata.deviceHeight !== viewport.height))) {
           stream.frame = null; // never show a capture whose physical surface disagrees with input coordinates
           return;
         }
-        stream.frame = { data, mime: "image/jpeg", width: metadata.deviceWidth, height: metadata.deviceHeight, sequence: ++stream.sequence };
+        const pixels = jpegDimensions(data);
+        if (!pixels) { stream.frame = null; return; }
+        stream.frame = { data, mime: "image/jpeg", ...pixels, viewportWidth: metadata.deviceWidth, viewportHeight: metadata.deviceHeight, pageId: tab.id, viewportRevision: tab.viewportRevision, streamId: stream.id, sequence: ++stream.sequence };
       });
       try { await cdp.send("Page.startScreencast", { format: "jpeg", quality: 75, maxWidth: 1280, maxHeight: 1000, everyNthFrame: 1 }); }
       catch (error) { await this.#stopStream(session); throw error; }
