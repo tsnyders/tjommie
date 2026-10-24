@@ -3,11 +3,13 @@ import {
   ActivityData,
   ApprovalData,
   ErrorData,
+  ExchangeHandoffData,
   ExchangePostData,
   FileData,
   HandoffData,
   Message,
   NoticeData,
+  RoomHandoffData,
   RoutineLabelData,
   RoutineRun,
   UserMessageData,
@@ -28,8 +30,13 @@ const message = (kind: Message["kind"], data: Message["data"]): Message => ({
 describe("message payload contract", () => {
   it("validates exchange handoffs and room answer links", () => {
     const exchange = { exchangeId: "exchange", fromBotId: "writer", toBotId: "reader", messages: 2, status: "replied" };
+    const room = { roomMessageId: "room-reply", roomId: "research" };
     expect(HandoffData.parse(exchange)).toEqual(exchange);
-    expect(HandoffData.parse({ roomMessageId: "room-reply" })).toEqual({ roomMessageId: "room-reply" });
+    expect(RoomHandoffData.parse({ roomMessageId: "room-reply" })).toEqual({ roomMessageId: "room-reply" });
+    expect(RoomHandoffData.parse(room)).toEqual(room);
+    expect(HandoffData.parse(room)).toEqual(room);
+    expect(ExchangeHandoffData.safeParse(room).success).toBe(false);
+    expect(RoomHandoffData.safeParse(exchange).success).toBe(false);
     expect(() => HandoffData.parse({ ...exchange, status: "done" })).toThrow();
     expect(() => HandoffData.parse({ ...exchange, messages: "2" })).toThrow();
     expect(() => HandoffData.parse({ roomMessageId: 1 })).toThrow();
