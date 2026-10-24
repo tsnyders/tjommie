@@ -77,6 +77,7 @@ export function MessageList({ messages, hasMore, onOlder, render }: Props) {
 
   return (
     <div
+      data-testid="message-scroll"
       ref={scroller}
       onScroll={(event) => {
         const element = event.currentTarget;
@@ -85,7 +86,7 @@ export function MessageList({ messages, hasMore, onOlder, render }: Props) {
       className="relative flex min-h-0 flex-1 flex-col overflow-y-auto [overflow-anchor:none]"
     >
       <div ref={sentinel} aria-hidden className="h-px shrink-0" />
-      <ol className="mt-auto flex flex-col gap-3 px-6 pb-6 pt-2">
+      <ol className="mt-auto flex flex-col gap-3 px-6 pb-6 pt-2 max-sm:px-4">
         {items.map((item) =>
           item.type === "stamp" ? (
             <li key={item.key}>

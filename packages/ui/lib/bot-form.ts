@@ -8,6 +8,7 @@ export type BotForm = {
   instructions: string;
   provider: Provider;
   model: string;
+  accountId: string | null; // null: the provider's default account
   autonomy: Autonomy;
   projectFolder: string | null;
   browser: boolean;
@@ -24,6 +25,7 @@ export const NEW_BOT: BotForm = {
   instructions: "",
   provider: "claude",
   model: "sonnet",
+  accountId: null,
   autonomy: "folder",
   projectFolder: null,
   browser: false,
@@ -37,6 +39,7 @@ export const formFromBot = (bot: Bot): BotForm => ({
   instructions: bot.instructions,
   provider: bot.provider,
   model: bot.model,
+  accountId: bot.accountId ?? null,
   autonomy: bot.autonomy,
   projectFolder: bot.projectFolder,
   browser: bot.browser,
@@ -57,7 +60,7 @@ export const createInput = (form: BotForm): ParamsIn<"bots.create"> => ({ ...for
 const sameSet = (a: string[], b: string[]): boolean => a.length === b.length && a.every((id) => b.includes(id));
 
 // Only what the person changed, so a save never puts back a value that changed elsewhere since the form opened.
-// Provider and model travel together: the daemon needs a model whenever the provider changes.
+// Provider and model travel together: the daemon needs a model whenever the provider changes. The account travels on its own.
 export function patchFor(bot: Bot, form: BotForm): BotPatch {
   const patch: BotPatch = {};
   const name = form.name.trim();
@@ -69,6 +72,7 @@ export function patchFor(bot: Bot, form: BotForm): BotPatch {
     patch.provider = form.provider;
     patch.model = form.model;
   }
+  if (form.accountId !== (bot.accountId ?? null)) patch.accountId = form.accountId;
   if (form.autonomy !== bot.autonomy) patch.autonomy = form.autonomy;
   if (form.projectFolder !== bot.projectFolder) patch.projectFolder = form.projectFolder;
   if (form.browser !== bot.browser) patch.browser = form.browser;

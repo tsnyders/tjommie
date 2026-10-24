@@ -1,0 +1,706 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tjommie Phase 2.5 phone screens: design contact sheet</title>
+<!-- Self-contained design reference for Phase 2.5 (spec 9.1). No external assets, no scripts: the toolbar uses CSS :has().
+     Tokens are copied from packages/ui/app/globals.css; copy comes from the shipped components. Behavior: phase2-5-phone.md. -->
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+ul{list-style:none}
+body{font-family:"Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;background:#161616;color:#d8d8d8;font-size:14px;line-height:21px;-webkit-font-smoothing:antialiased}
+code{font-family:"Cascadia Mono",Consolas,monospace;font-size:12px}
+
+/* Contact sheet chrome (not part of the design) */
+.sheet-head{position:sticky;top:0;z-index:100;background:#161616;border-bottom:1px solid #2a2a2a;padding:16px 32px;display:flex;flex-wrap:wrap;gap:12px 32px;align-items:center}
+.sheet-head h1{font-size:17px;font-weight:600;color:#fafafa}
+.sheet-head p{font-size:12px;line-height:18px;color:#9a9a9a;max-width:720px}
+.controls{display:flex;flex-wrap:wrap;gap:20px}
+.controls fieldset{border:0;display:flex;gap:4px;align-items:center;font-size:12px;color:#9a9a9a}
+.controls legend{float:left;margin-right:6px}
+.controls label{display:inline-flex;align-items:center;gap:4px;padding:4px 10px;border-radius:999px;background:#242424;color:#d8d8d8;cursor:pointer}
+.controls input{accent-color:#459fff}
+.controls label:has(input:checked){background:#3a3a3a;color:#fff}
+.controls label:has(input:focus-visible){outline:2px solid #459fff;outline-offset:2px}
+.legend{width:100%;display:flex;flex-wrap:wrap;gap:6px 20px;font-size:12px;line-height:18px;color:#9a9a9a}
+.legend i{display:inline-block;width:22px;height:10px;vertical-align:middle;margin-right:6px;border-radius:2px}
+.grid{display:flex;flex-wrap:wrap;gap:48px 36px;padding:28px 32px 80px;align-items:flex-start}
+.frame{display:flex;flex-direction:column;gap:10px}
+.frame figcaption{width:390px;font-size:12px;line-height:18px;color:#a8a8a8}
+.frame figcaption b{display:block;font-size:13px;color:#f0f0f0;font-weight:600}
+.frame figcaption code{color:#cfcfcf}
+.future figcaption b::after{content:"Phase 3 · design only · not available";margin-left:8px;padding:1px 8px;border-radius:999px;background:#3a2a10;color:#f1b25b;font-size:11px;font-weight:600}
+.future .phone{outline:2px dashed #8a6420;outline-offset:6px}
+.future .phone::before{content:"DESIGN ONLY · PHASE 3";position:absolute;z-index:90;bottom:10px;left:50%;transform:translateX(-50%);padding:2px 10px;border-radius:999px;background:#3a2a10;color:#f1b25b;font-size:11px;font-weight:600;letter-spacing:.04em;pointer-events:none}
+.webclient figcaption b::after{content:"web or phone client · Phase 3 transport";margin-left:8px;padding:1px 8px;border-radius:999px;background:#10233a;color:#7fb8ff;font-size:11px;font-weight:600}
+
+/* The screen: tokens from globals.css (.dark), light below */
+.phone{
+  --canvas:#070707;--rail:#111111;--rail-edge:#080808;--card:#111111;--card-stroke:#1c1c1c;--drawer:#0b0b0b;--divider:#252525;--bubble:#262626;--pill:#262626;--chip:#181818;--composer:#2f2f2f;--composer-stroke:#2f2f2f;--selected:#303030;--nav-selected:#1f1f1f;--popover:#1a1a1a;--highlight:#262626;--input-stroke:#2a2a2a;--disabled:#3a3a3a;--code:#1a1a1a;--user-bubble:#f5f5f5;--user-text:#070707;--text:#f5f5f5;--title:#fcfcfc;--body:#bdbdbd;--secondary:#989898;--caption:#909090;--label:#9c9c9c;--placeholder:#6e6e6e;--icon:#acacac;--accent:#459fff;--working:#3fa37a;--danger:#ea4144;--waiting-fill:#101722;--waiting-stroke:#1e3a5f;--mention:#1d6fe0;--file-tile:#3a2020;--user-avatar:#777777;
+  position:relative;width:390px;height:844px;background:var(--canvas);color:var(--text);border:1px solid #333;border-radius:12px;overflow:hidden;display:flex;flex-direction:column;isolation:isolate;font-size:14px;line-height:21px}
+body:has(#t-light:checked) .phone{
+  --canvas:#fcfcfc;--rail:#f5f5f5;--rail-edge:#ebebeb;--card:#f5f5f5;--card-stroke:#ebebeb;--drawer:#f7f7f7;--divider:#e4e4e4;--bubble:#efefef;--pill:#efefef;--chip:#f0f0f0;--composer:#ffffff;--composer-stroke:#e4e4e4;--selected:#e1e1e1;--nav-selected:#ebebeb;--popover:#efefef;--highlight:#e1e1e1;--input-stroke:#d6d6d6;--disabled:#f0f0f0;--code:#e4e4e4;--user-bubble:#0a0a0a;--user-text:#ffffff;--text:#0a0a0a;--title:#0a0a0a;--body:#404040;--secondary:#6b6b6b;--caption:#6b6b6b;--label:#6b6b6b;--placeholder:#767676;--icon:#5c5c5c;--accent:#2563eb;--working:#17804f;--danger:#dc2626;--waiting-fill:#eef4ff;--waiting-stroke:#c7dbff;--mention:#459fff;--file-tile:#fdecec;--user-avatar:#777777;border-color:#bbb}
+body:has(#s-360:checked) .phone{width:360px;height:640px}
+body:has(#s-360:checked) .frame figcaption{width:360px}
+
+/* Windows caption buttons: the narrow Electron window only (138 x 44 at the top right) */
+.cap{position:absolute;top:0;right:0;width:138px;height:44px;display:flex;z-index:80;pointer-events:none;background:repeating-linear-gradient(135deg,transparent 0 6px,rgb(127 127 127/.10) 6px 7px)}
+.cap span{flex:1;display:flex;align-items:center;justify-content:center;color:var(--icon)}
+.cap svg{width:12px;height:12px;stroke-width:1.5}
+body:has(#c-off:checked) .cap{display:none}
+.dimcap .cap{opacity:.35}
+.web .cap{display:none}
+
+/* Primitives (each mirrors a Tailwind class set in packages/ui) */
+.i{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;flex-shrink:0}
+.i.s14{width:14px;height:14px}.i.s12{width:12px;height:12px}.i.s20{width:20px;height:20px}.i.s18{width:18px;height:18px}
+.av{flex-shrink:0;display:block}
+.row{display:flex;align-items:center;gap:8px;min-width:0}
+.col{display:flex;flex-direction:column;min-width:0}
+.grow{flex:1;min-width:0}
+.trunc{min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.t-title{color:var(--title)}.t-body{color:var(--body)}.t-sec{color:var(--secondary)}.t-cap{color:var(--caption)}.t-label{color:var(--label)}.t-ph{color:var(--placeholder)}.t-acc{color:var(--accent)}.t-work{color:var(--working)}.t-dan{color:var(--danger)}.t-icon{color:var(--icon)}
+.t-text{color:var(--text)}.f14{font-size:14px;line-height:21px}
+.f12{font-size:12px;line-height:18px}.f13{font-size:13px;line-height:18px}.f15{font-size:15px;line-height:20px}.f17{font-size:17px;line-height:22px}.f20{font-size:20px;line-height:26px}.f11{font-size:11px;line-height:16px}
+.w5{font-weight:500}.w6{font-weight:600}
+.mt2{margin-top:2px}.mt4{margin-top:4px}.mt8{margin-top:8px}.mt12{margin-top:12px}.mt16{margin-top:16px}.mt24{margin-top:24px}
+.label{font-size:13px;line-height:18px;font-weight:600;color:var(--label)}
+
+.hdr{height:56px;flex-shrink:0;display:flex;align-items:center;gap:4px;padding:0 146px 0 8px}
+.hdr.pad{padding-left:16px}
+.web .hdr,.web .bar{padding-right:16px}
+.bar{height:44px;flex-shrink:0;display:flex;align-items:center;gap:8px;padding:0 146px 0 12px}
+.ib{width:32px;height:32px;border-radius:10px;display:inline-flex;align-items:center;justify-content:center;color:var(--icon);flex-shrink:0}
+.ib.lg{width:40px;height:40px}
+.ib.on{background:var(--selected);color:var(--text)}
+.ib.fill{background:var(--pill);border-radius:999px}
+.back{height:40px;display:inline-flex;align-items:center;gap:2px;padding:0 8px 0 4px;border-radius:10px;color:var(--text);font-size:14px;flex-shrink:0}
+.title2{display:flex;align-items:center;gap:8px;min-width:0;flex:1}
+.title2 b{font-size:15px;line-height:20px;font-weight:600;color:var(--title)}
+.state{display:flex;align-items:center;gap:6px;font-size:12px;line-height:16px}
+.dot{width:6px;height:6px;border-radius:50%;background:currentColor;flex-shrink:0}
+.focus{outline:2px solid var(--accent);outline-offset:2px}
+.focus-in{border-color:var(--accent)!important;box-shadow:inset 0 0 0 1px var(--accent)}
+
+.body{flex:1;min-height:0;overflow-y:auto;padding:0 16px 16px}
+.card{background:var(--card);border-radius:12px;padding:16px}
+.card.p12{padding:12px}
+.chipst{height:22px;border-radius:11px;padding:0 8px;display:inline-flex;align-items:center;gap:4px;font-size:12px;flex-shrink:0;white-space:nowrap}
+.cs-work{background:var(--pill);color:var(--text)}.cs-wait{background:var(--waiting-fill);color:var(--accent)}.cs-mute{background:var(--popover);color:var(--secondary)}
+.pill{height:32px;padding:0 14px;border-radius:999px;background:var(--pill);color:var(--text);font:inherit;font-size:14px;font-weight:500;display:inline-flex;align-items:center;gap:6px;white-space:nowrap;border:0;flex-shrink:0}
+.pill.pri{background:var(--user-bubble);color:var(--user-text)}
+.pill.bar36{height:36px;padding:0 16px}
+.pill.dis{opacity:.5}
+.link{color:var(--accent);font-size:13px;line-height:18px;white-space:nowrap}
+.seg{display:inline-flex;background:var(--popover);border-radius:999px;padding:2px;gap:2px;flex-shrink:0}
+.seg span{height:28px;padding:0 12px;border-radius:999px;display:flex;align-items:center;font-size:13px;color:var(--secondary);white-space:nowrap}
+.seg span.on{background:var(--selected);color:var(--text);font-weight:600}
+.seg.full{display:flex}.seg.full span{flex:1;justify-content:center}
+.seg.inpop{background:var(--card)}
+.tabs2{display:inline-flex;background:var(--pill);border-radius:999px;padding:2px;gap:2px;height:32px;align-items:center}
+.tabs2 span{height:28px;padding:0 12px;border-radius:999px;display:flex;align-items:center;font-size:13px;color:var(--secondary)}
+.tabs2 span.on{background:var(--selected);color:var(--text)}
+
+.tabbar{height:56px;flex-shrink:0;display:flex;border-top:1px solid var(--divider);background:var(--rail)}
+.tab{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;font-size:12px;line-height:16px;color:var(--secondary);position:relative}
+.tab .ico{width:48px;height:28px;border-radius:12px;display:flex;align-items:center;justify-content:center;color:var(--icon);position:relative}
+.tab.on{color:var(--text)}.tab.on .ico{background:var(--selected);color:var(--text)}
+.badge{position:absolute;top:1px;right:9px;width:10px;height:10px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 2px var(--rail)}
+.tab.on .badge{box-shadow:0 0 0 2px var(--selected)}
+
+.meter{display:flex;flex-direction:column;gap:4px}
+.meter .top{display:flex;justify-content:space-between;align-items:baseline;gap:12px;font-size:12px;line-height:18px}
+.meter .top span:last-child{color:var(--body);text-align:right}
+.track{height:6px;border-radius:999px;background:var(--pill);overflow:hidden}
+.fill{height:100%;border-radius:999px;background:var(--body)}
+.fill.near{background:var(--accent)}
+.switch{width:36px;height:20px;border-radius:999px;background:var(--selected);position:relative;flex-shrink:0}
+.switch::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:var(--secondary)}
+.switch.on{background:var(--text)}.switch.on::after{left:18px;background:var(--canvas)}
+.fld-label{font-size:13px;line-height:18px;color:var(--secondary);margin-bottom:6px;display:block}
+.field{height:40px;border-radius:10px;border:1px solid var(--input-stroke);background:var(--card);padding:0 16px;display:flex;align-items:center;gap:8px;font-size:14px;color:var(--text);position:relative}
+.field.area{height:auto;min-height:96px;align-items:flex-start;padding:10px 16px;line-height:21px}
+.help{font-size:12px;line-height:18px;color:var(--secondary);margin-top:6px}
+
+.stack{display:flex;flex-direction:column;gap:12px;padding-top:4px}
+.stamp{text-align:center;font-size:12px;color:var(--caption)}
+.bubble{background:var(--bubble);border-radius:18px;padding:12px 16px;color:var(--text);max-width:100%;overflow-wrap:anywhere}
+.ububble{background:var(--user-bubble);color:var(--user-text);border-radius:18px;padding:12px 16px;align-self:flex-end;max-width:85%;overflow-wrap:anywhere}
+.wait{border:1px solid var(--waiting-stroke);background:var(--waiting-fill);border-radius:14px;padding:16px}
+.wrap{display:flex;flex-wrap:wrap;gap:8px}
+.activity{display:flex;align-items:center;gap:8px;padding:0 12px;height:32px;border-radius:10px;border:1px solid var(--divider);font-size:13px;color:var(--body)}
+.composer{flex-shrink:0;margin:0 16px 16px;min-height:44px;border-radius:22px;background:var(--composer);border:1px solid var(--composer-stroke);display:flex;align-items:center;gap:8px;padding:6px}
+.round{width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.r-dis{background:var(--disabled);color:var(--placeholder)}.r-on{background:var(--user-bubble);color:var(--user-text)}
+.mchip{height:28px;border-radius:999px;background:var(--pill);padding:0 10px;display:inline-flex;align-items:center;font-size:13px;color:var(--text);flex-shrink:0;white-space:nowrap}
+.popover{background:var(--popover);border:1px solid var(--divider);border-radius:16px;padding:8px}
+.prow{height:36px;border-radius:8px;padding:0 12px;display:flex;align-items:center;gap:8px;font-size:14px;color:var(--body)}
+.prow.on{background:var(--highlight);color:var(--text)}
+.prow .st{margin-left:auto;font-size:12px;color:var(--secondary);white-space:nowrap}
+.formrow{height:56px;border-radius:12px;background:var(--card);padding:0 16px;display:flex;align-items:center;gap:12px;font-size:14px}
+.formrow .v{margin-left:auto;font-size:13px;color:var(--secondary);min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.footer{height:64px;flex-shrink:0;border-top:1px solid var(--card-stroke);display:flex;align-items:center;justify-content:flex-end;gap:8px;padding:0 16px}
+.navrow{height:52px;border-radius:12px;display:flex;align-items:center;gap:12px;padding:0 12px;font-size:14px;color:var(--text)}
+.navrow+.navrow{margin-top:4px}
+.navrow .i{color:var(--secondary)}
+.brow{display:flex;gap:12px;align-items:flex-start;background:var(--card);border:1px solid var(--card-stroke);border-radius:14px;padding:12px}
+.brow.waiting{border-color:var(--waiting-stroke)}
+.brow+.brow{margin-top:8px}
+.native{flex:1;min-height:240px;border:1px dashed var(--input-stroke);border-radius:12px;background:var(--card);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;text-align:center;padding:16px}
+.dlg{position:absolute;inset:0;z-index:40;background:var(--card);display:flex;flex-direction:column}
+.dlg .bar{border-bottom:0}
+.dlg .content{flex:1;min-height:0;overflow-y:auto;padding:4px 20px 20px}
+.dlg .actions{flex-shrink:0;display:flex;justify-content:flex-end;gap:8px;padding:12px 20px 20px;border-top:1px solid var(--divider)}
+.tile{background:var(--card);border-radius:12px;padding:16px;min-width:0}
+.tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}
+.bars{display:flex;align-items:flex-end;height:96px}
+.bars div{flex:1;padding:0 1px;height:100%;display:flex;align-items:flex-end}
+.bars div span{display:block;width:100%;border-radius:3px 3px 0 0;background:var(--selected)}
+.qr{width:200px;height:200px;border:1px dashed var(--input-stroke);border-radius:12px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;margin:0 auto;color:var(--secondary);text-align:center;font-size:12px;line-height:18px;padding:16px}
+.mention{color:var(--mention);font-weight:600}
+.post{display:flex;gap:12px}
+.post .col{flex:1}
+.ftile{width:36px;height:36px;border-radius:8px;background:var(--file-tile);display:flex;align-items:center;justify-content:center;color:var(--danger);flex-shrink:0}
+.swatches{display:flex;flex-wrap:wrap;gap:10px;justify-content:center}
+.swatches span{width:28px;height:28px;border-radius:50%}
+.swatches span.on{box-shadow:0 0 0 3px var(--card),0 0 0 5px var(--text)}
+.shapes{display:flex;flex-wrap:wrap;gap:8px;justify-content:center}
+.shapes span{width:32px;height:32px;border-radius:10px;background:var(--popover);display:flex;align-items:center;justify-content:center}
+.shapes span.on{background:var(--selected);box-shadow:inset 0 0 0 1px var(--accent)}
+.devrow{display:flex;align-items:center;gap:12px;padding:12px 0}
+.devrow+.devrow{border-top:1px solid var(--card-stroke)}
+</style>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <!-- lucide icons, paths from node_modules/lucide-react 1.48.0 -->
+  <symbol id="i-chevron-left" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></symbol>
+  <symbol id="i-chevron-right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+  <symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+  <symbol id="i-panel-right" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M15 3v18"/></symbol>
+  <symbol id="i-ellipsis" viewBox="0 0 24 24"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/></symbol>
+  <symbol id="i-layout-grid" viewBox="0 0 24 24"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/></symbol>
+  <symbol id="i-users" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><path d="M16 3.128a4 4 0 0 1 0 7.744"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><circle cx="9" cy="7" r="4"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5v14"/></symbol>
+  <symbol id="i-minus" viewBox="0 0 24 24"><path d="M5 12h14"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+  <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></symbol>
+  <symbol id="i-hourglass" viewBox="0 0 24 24"><path d="M5 22h14"/><path d="M5 2h14"/><path d="M17 22v-4.172a2 2 0 0 0-.586-1.414L12 12l-4.414 4.414A2 2 0 0 0 7 17.828V22"/><path d="M7 2v4.172a2 2 0 0 0 .586 1.414L12 12l4.414-4.414A2 2 0 0 0 17 6.172V2"/></symbol>
+  <symbol id="i-key-round" viewBox="0 0 24 24"><path d="M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4z"/><circle cx="16.5" cy="7.5" r=".5" fill="currentColor"/></symbol>
+  <symbol id="i-chart-column" viewBox="0 0 24 24"><path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/></symbol>
+  <symbol id="i-gauge" viewBox="0 0 24 24"><path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/></symbol>
+  <symbol id="i-sparkles" viewBox="0 0 24 24"><path d="M11.017 2.814a1 1 0 0 1 1.966 0l1.051 5.558a2 2 0 0 0 1.594 1.594l5.558 1.051a1 1 0 0 1 0 1.966l-5.558 1.051a2 2 0 0 0-1.594 1.594l-1.051 5.558a1 1 0 0 1-1.966 0l-1.051-5.558a2 2 0 0 0-1.594-1.594l-5.558-1.051a1 1 0 0 1 0-1.966l5.558-1.051a2 2 0 0 0 1.594-1.594z"/><path d="M20 2v4"/><path d="M22 4h-4"/><circle cx="4" cy="20" r="2"/></symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></symbol>
+  <symbol id="i-loader" viewBox="0 0 24 24"><path d="M12 2v4"/><path d="m16.2 7.8 2.9-2.9"/><path d="M18 12h4"/><path d="m16.2 16.2 2.9 2.9"/><path d="M12 18v4"/><path d="m4.9 19.1 2.9-2.9"/><path d="M2 12h4"/><path d="m4.9 4.9 2.9 2.9"/></symbol>
+  <symbol id="i-circle-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m16 9-5.5 5.5L8 12"/></symbol>
+  <symbol id="i-circle-alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/></symbol>
+  <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/></symbol>
+  <symbol id="i-paperclip" viewBox="0 0 24 24"><path d="m16 6-8.414 8.586a2 2 0 0 0 2.829 2.829l8.414-8.586a4 4 0 1 0-5.657-5.657l-8.379 8.551a6 6 0 1 0 8.485 8.485l8.379-8.551"/></symbol>
+  <symbol id="i-arrow-up" viewBox="0 0 24 24"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></symbol>
+  <symbol id="i-arrow-left" viewBox="0 0 24 24"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></symbol>
+  <symbol id="i-arrow-right" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></symbol>
+  <symbol id="i-rotate-cw" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></symbol>
+  <symbol id="i-square" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 24 24"><rect width="12" height="12" x="6" y="6" rx="2" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-qr-code" viewBox="0 0 24 24"><rect width="5" height="5" x="3" y="3" rx="1"/><rect width="5" height="5" x="16" y="3" rx="1"/><rect width="5" height="5" x="3" y="16" rx="1"/><path d="M21 16h-3a2 2 0 0 0-2 2v3"/><path d="M21 21v.01"/><path d="M12 7v3a2 2 0 0 1-2 2H7"/><path d="M3 12h.01"/><path d="M12 3h.01"/><path d="M12 16v.01"/><path d="M16 12h1"/><path d="M21 12v.01"/><path d="M12 21v-1"/></symbol>
+  <symbol id="i-smartphone" viewBox="0 0 24 24"><rect width="14" height="20" x="5" y="2" rx="2" ry="2"/><path d="M12 18h.01"/></symbol>
+  <symbol id="i-monitor" viewBox="0 0 24 24"><rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/></symbol>
+  <symbol id="i-list-checks" viewBox="0 0 24 24"><path d="M13 5h8"/><path d="M13 12h8"/><path d="M13 19h8"/><path d="m3 17 2 2 4-4"/><path d="m3 7 2 2 4-4"/></symbol>
+  <symbol id="i-bot" viewBox="0 0 24 24"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></symbol>
+  <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M10 5H3"/><path d="M12 19H3"/><path d="M14 3v4"/><path d="M16 17v4"/><path d="M21 12h-9"/><path d="M21 19h-5"/><path d="M21 5h-7"/><path d="M8 10v4"/><path d="M8 12H3"/></symbol>
+  <symbol id="i-file-text" viewBox="0 0 24 24"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></symbol>
+  <!-- Bot avatars: packages/ui/components/bot-avatar.tsx shapes and colors (40 x 40) -->
+  <symbol id="av-purple-circle" viewBox="0 0 40 40"><path d="M20 2 C29.94 2 38 10.06 38 20 C38 29.94 29.94 38 20 38 C10.06 38 2 29.94 2 20 C2 10.06 10.06 2 20 2 Z" fill="#8C5BF3"/><path d="M17 14 L16 20 M24.5 14 L23.5 20" stroke="#fff" stroke-width="3" stroke-linecap="round" fill="none"/></symbol>
+  <symbol id="av-orange-cloud" viewBox="0 0 40 40"><path d="M11 34 C5 34 2 29.5 3.5 25 C2 19 7.5 15 12.5 16.5 C14 10 21 7 26 11 C32 9.5 37 14 35.5 20 C39 23.5 37 32 30.5 34 Z" fill="#EC712E"/><path d="M17.5 19 L16.7 25 M24.5 19 L23.7 25" stroke="#fff" stroke-width="3" stroke-linecap="round" fill="none"/></symbol>
+  <symbol id="av-green-square" viewBox="0 0 40 40"><path d="M11 4 H29 C32.9 4 36 7.1 36 11 V29 C36 32.9 32.9 36 29 36 H11 C7.1 36 4 32.9 4 29 V11 C4 7.1 7.1 4 11 4 Z" fill="#5BC57A"/><path d="M17 14 L16 20 M24.5 14 L23.5 20" stroke="#fff" stroke-width="3" stroke-linecap="round" fill="none"/></symbol>
+  <symbol id="av-pink-cloud" viewBox="0 0 40 40"><path d="M11 34 C5 34 2 29.5 3.5 25 C2 19 7.5 15 12.5 16.5 C14 10 21 7 26 11 C32 9.5 37 14 35.5 20 C39 23.5 37 32 30.5 34 Z" fill="#EC4698"/><path d="M17.5 19 L16.7 25 M24.5 19 L23.7 25" stroke="#fff" stroke-width="3" stroke-linecap="round" fill="none"/></symbol>
+  <symbol id="av-amber-hexagon" viewBox="0 0 40 40"><path d="M17 3.2 C18.9 2.1 21.1 2.1 23 3.2 L33.5 9.3 C35.4 10.4 36.5 12.4 36.5 14.6 V25.4 C36.5 27.6 35.4 29.6 33.5 30.7 L23 36.8 C21.1 37.9 18.9 37.9 17 36.8 L6.5 30.7 C4.6 29.6 3.5 27.6 3.5 25.4 V14.6 C3.5 12.4 4.6 10.4 6.5 9.3 Z" fill="#F19C3F"/><path d="M17 15 L16 21 M24.5 15 L23.5 21" stroke="#fff" stroke-width="3" stroke-linecap="round" fill="none"/></symbol>
+  <symbol id="av-teal-droplet" viewBox="0 0 40 40"><path d="M20 3 C20 3 33 16 33 25 C33 32.2 27.2 37 20 37 C12.8 37 7 32.2 7 25 C7 16 20 3 20 3 Z" fill="#57B8A7"/><path d="M17.5 21 L16.8 27 M24 21 L23.3 27" stroke="#fff" stroke-width="3" stroke-linecap="round" fill="none"/></symbol>
+  <symbol id="av-blue-circle" viewBox="0 0 40 40"><path d="M20 2 C29.94 2 38 10.06 38 20 C38 29.94 29.94 38 20 38 C10.06 38 2 29.94 2 20 C2 10.06 10.06 2 20 2 Z" fill="#3B82F6"/><path d="M17 14 L16 20 M24.5 14 L23.5 20" stroke="#fff" stroke-width="3" stroke-linecap="round" fill="none"/></symbol>
+</svg>
+
+<header class="sheet-head">
+  <div>
+    <h1>Tjommie Phase 2.5 phone screens</h1>
+    <p>A design contact sheet for spec 9.1, standing in for OpenPencil, which isn't available in this session. It uses the app's own tokens and copy. Frames show the narrow desktop (Electron) window unless marked otherwise. Behavior, focus and the handoff are in <code>phase2-5-phone.md</code>. Sample bots and numbers are examples.</p>
+  </div>
+  <form class="controls" aria-label="Contact sheet options">
+    <fieldset><legend>Size</legend>
+      <label><input type="radio" name="size" id="s-390" checked> 390 × 844</label>
+      <label><input type="radio" name="size" id="s-360"> 360 × 640</label>
+    </fieldset>
+    <fieldset><legend>Theme</legend>
+      <label><input type="radio" name="theme" id="t-dark" checked> Dark</label>
+      <label><input type="radio" name="theme" id="t-light"> Light</label>
+    </fieldset>
+    <fieldset><legend>Caption buttons</legend>
+      <label><input type="radio" name="cap" id="c-on" checked> Shown (desktop window)</label>
+      <label><input type="radio" name="cap" id="c-off"> Hidden</label>
+    </fieldset>
+  </form>
+  <div class="legend">
+    <span><i style="background:repeating-linear-gradient(135deg,transparent 0 3px,#555 3px 4px)"></i>Windows caption buttons (top-right 138 × 44, Electron only). Headers keep 146 px clear.</span>
+    <span><i style="outline:2px solid #459fff;outline-offset:-2px"></i>Where focus lands when the screen, sheet or dialog opens</span>
+    <span><i style="outline:2px dashed #8a6420;outline-offset:-2px"></i>Phase 3, design only, not available</span>
+  </div>
+</header>
+
+<main class="grid">
+
+<!-- F1 Agents (phone home) -->
+<figure class="frame" id="f1">
+  <figcaption><b>F1 · Agents (phone home)</b><code>/agents/</code> · M-01, M-03. On phones <code>/</code> opens this instead of the first chat. Cards become rows; the ⋯ menu is always visible; the Team room and New bot cards are hidden (the tab bar and + replace them). Focus: the first row link.</figcaption>
+  <div class="phone">
+    <div class="cap"><span><svg class="i"><use href="#i-minus"/></svg></span><span><svg class="i"><use href="#i-square"/></svg></span><span><svg class="i"><use href="#i-x"/></svg></span></div>
+    <div class="hdr pad">
+      <h2 class="f20 w6 t-title grow">Agents</h2>
+      <span class="ib fill" title="Search bots"><svg class="i"><use href="#i-search"/></svg></span>
+      <span class="ib fill" title="New bot"><svg class="i"><use href="#i-plus"/></svg></span>
+    </div>
+    <div class="body">
+      <p class="f13 t-sec">6 bots, 2 working, 1 waiting for you</p>
+      <div class="mt12"><div class="seg"><span class="on">All</span><span>Working</span><span>Waiting</span><span>Paused</span></div></div>
+      <ul class="mt16">
+        <li class="brow focus"><svg class="av" width="28" height="28"><use href="#av-orange-cloud"/></svg><div class="grow"><div class="row"><b class="trunc f15 w6 t-title grow">Pnet apply</b><span class="chipst cs-work"><svg class="i s12"><use href="#i-loader"/></svg>Working</span></div><p class="trunc f13 t-body mt4">Applying: Full Stack Developer at Sabenza IT</p></div><span class="ib" title="More for Pnet apply"><svg class="i"><use href="#i-ellipsis"/></svg></span></li>
+        <li class="brow waiting"><svg class="av" width="28" height="28"><use href="#av-pink-cloud"/></svg><div class="grow"><div class="row"><b class="trunc f15 w6 t-title grow">Inbox Triage</b><span class="chipst cs-wait"><span class="dot"></span>Waiting for you</span></div><p class="trunc f13 t-body mt4">2 replies need your approval</p></div><span class="ib"><svg class="i"><use href="#i-ellipsis"/></svg></span></li>
+        <li class="brow"><svg class="av" width="28" height="28"><use href="#av-green-square"/></svg><div class="grow"><div class="row"><b class="trunc f15 w6 t-title grow">CV Writer</b><span class="chipst cs-work"><svg class="i s12"><use href="#i-loader"/></svg>Working</span></div><p class="trunc f13 t-body mt4">Tailoring CV for listing PN-48213</p></div><span class="ib"><svg class="i"><use href="#i-ellipsis"/></svg></span></li>
+        <li class="brow"><svg class="av" width="28" height="28"><use href="#av-teal-droplet"/></svg><div class="grow"><div class="row"><b class="trunc f15 w6 t-title grow">Careers24 scout</b><span class="chipst cs-mute"><svg class="i s12"><use href="#i-hourglass"/></svg>Limited until 3:45 PM</span></div><p class="trunc f13 t-body mt4">Last run found 4 roles</p></div><span class="ib"><svg class="i"><use href="#i-ellipsis"/></svg></span></li>
+        <li class="brow"><svg class="av" width="28" height="28"><use href="#av-purple-circle"/></svg><div class="grow"><div class="row"><b class="trunc f15 w6 t-title grow">Chief of Staff</b><span class="chipst cs-mute">Idle</span></div><p class="trunc f13 t-body mt4">Morning briefing sent at 7:00 AM</p></div><span class="ib"><svg class="i"><use href="#i-ellipsis"/></svg></span></li>
+        <li class="brow"><svg class="av" width="28" height="28"><use href="#av-amber-hexagon"/></svg><div class="grow"><div class="row"><b class="trunc f15 w6 t-title grow">Night Shift</b><span class="chipst cs-mute">Paused</span></div><p class="trunc f13 t-body mt4">Paused by you yesterday</p></div><span class="ib"><svg class="i"><use href="#i-ellipsis"/></svg></span></li>
+      </ul>
+    </div>
+    <nav class="tabbar" aria-label="Tjommie">
+      <span class="tab on"><span class="ico"><svg class="i s20"><use href="#i-layout-grid"/></svg><span class="badge"></span></span>Agents</span>
+      <span class="tab"><span class="ico"><svg class="i s20"><use href="#i-users"/></svg></span>Team room</span>
+      <span class="tab"><span class="ico"><svg class="i s20"><use href="#i-settings"/></svg></span>Settings</span>
+    </nav>
+  </div>
+</figure>
+
+<!-- F2 Chat + approval -->
+<figure class="frame" id="f2">
+  <figcaption><b>F2 · Chat with an approval</b><code>/chat/?bot=</code> · M-04. No tab bar; Back goes to Agents. With the caption buttons there's no room to centre the header chip, so the bot's name and state sit left in two lines. That title is the button that opens Details (F3), replacing the panel icon on phones; More stays. The panel starts closed on phones. The approval buttons wrap. Focus: the composer.</figcaption>
+  <div class="phone">
+    <div class="cap"><span><svg class="i"><use href="#i-minus"/></svg></span><span><svg class="i"><use href="#i-square"/></svg></span><span><svg class="i"><use href="#i-x"/></svg></span></div>
+    <div class="hdr">
+      <span class="ib lg" title="Back to Agents"><svg class="i s20"><use href="#i-chevron-left"/></svg></span>
+      <div class="title2" role="button" title="Pnet apply, Working. Show details" style="border-radius:10px;padding:2px 4px"><svg class="av" width="24" height="24"><use href="#av-orange-cloud"/></svg><div class="col"><b class="trunc">Pnet apply</b><span class="state t-work"><span class="dot"></span>Working</span></div></div>
+      <span class="ib" title="More"><svg class="i"><use href="#i-ellipsis"/></svg></span>
+    </div>
+    <div class="body">
+      <div class="stack">
+        <p class="stamp">Today 9:14 AM</p>
+        <div class="row f13 t-work"><svg class="i s14"><use href="#i-clock"/></svg>Routine: Job search</div>
+        <div class="bubble">Morning window started. 6 new listings match Full Stack or React in Johannesburg and remote.</div>
+        <div class="activity"><svg class="i s14 t-icon"><use href="#i-list-checks"/></svg><span class="trunc grow">3 steps: Opened pnet.co.za/jobs</span><svg class="i s14 t-icon"><use href="#i-chevron-down"/></svg></div>
+        <div class="ububble">Skip senior roles for the rest of today.</div>
+        <div class="wait" role="group" aria-label="Waiting for you">
+          <p class="row f12 w6 t-acc"><svg class="i s14"><use href="#i-circle-alert"/></svg>Waiting for you</p>
+          <p class="mt8">Pnet apply wants to save a file</p>
+          <p class="trunc f12 t-sec mt4">Write · inbox/CV-Sabenza-Angular.pdf</p>
+          <div class="wrap mt8"><span class="pill pri">Allow once</span><span class="pill">Always allow</span><span class="pill">Deny</span></div>
+          <p class="f12 t-ph mt8">Always allow saves: Write in its own folder, for Pnet apply only</p>
+        </div>
+      </div>
+    </div>
+    <div class="composer focus-in">
+      <span class="round r-dis" title="Attach files"><svg class="i"><use href="#i-plus"/></svg></span>
+      <span class="grow trunc t-ph">Message Pnet apply</span>
+      <span class="round r-on" title="Stop"><svg class="i s14"><use href="#i-stop"/></svg></span>
+    </div>
+  </div>
+</figure>
+
+<!-- F3 Details sheet -->
+<figure class="frame" id="f3">
+  <figcaption><b>F3 · Details sheet</b>The title button in F2 · M-05. A full-screen <code>&lt;aside&gt;</code>, not a dialog, so the native browser can live in it. The chat behind is inert; Escape or Close returns focus to the title button. No resize handle; the gear moves to the More menu. Focus: the selected tab.</figcaption>
+  <div class="phone">
+    <div class="cap"><span><svg class="i"><use href="#i-minus"/></svg></span><span><svg class="i"><use href="#i-square"/></svg></span><span><svg class="i"><use href="#i-x"/></svg></span></div>
+    <div class="bar">
+      <span class="ib" title="Close details"><svg class="i"><use href="#i-x"/></svg></span>
+      <div class="tabs2" role="tablist"><span class="on focus">Details</span><span>Browser</span></div>
+    </div>
+    <div class="body">
+      <section class="card row" style="align-items:flex-start;gap:12px;margin-top:12px">
+        <svg class="av" width="40" height="40"><use href="#av-orange-cloud"/></svg>
+        <div class="grow">
+          <div class="row"><h3 class="f17 w6 t-title trunc grow" style="line-height:26px">Pnet apply</h3><span class="chipst cs-work"><svg class="i s12"><use href="#i-loader"/></svg>Working</span></div>
+          <div class="col f13 t-body" style="gap:6px;margin-top:4px">
+            <span class="row" style="gap:6px;align-items:flex-start"><svg class="i s14 t-sec mt2"><use href="#i-sparkles"/></svg><span>Claude (Main) · Sonnet</span></span>
+            <span class="row" style="gap:6px;align-items:flex-start"><svg class="i s14 t-sec mt2"><use href="#i-chart-column"/></svg><span>Today: 1.2M tokens · API value $3.40</span></span>
+            <span class="row" style="gap:6px;align-items:flex-start"><svg class="i s14 t-sec mt2"><use href="#i-gauge"/></svg><span>62% of 5-hour limit, resets 3:45 PM</span></span>
+            <span class="row" style="gap:6px;align-items:flex-start"><svg class="i s14 t-sec mt2"><use href="#i-shield"/></svg><span>Own folder: works freely in its folder, asks before anything else</span></span>
+            <span class="row" style="gap:6px"><svg class="i s14 t-sec"><use href="#i-folder"/></svg><span class="grow">Home folder</span><span class="t-acc">Open</span></span>
+          </div>
+        </div>
+      </section>
+      <section class="card p12 row mt16" style="gap:12px">
+        <svg class="i s20 t-icon"><use href="#i-globe"/></svg>
+        <div class="grow"><div class="row"><h3 class="f13 w6 t-title grow">Browser</h3><span class="link">Open</span></div><p class="f12 t-sec mt2">Built into Tjommie, with its own sign-ins. Watch the bot use it, or take over.</p></div>
+      </section>
+      <div class="row mt24" style="justify-content:space-between"><h3 class="label">Routines</h3><span class="link">Add</span></div>
+      <div class="row mt8 f13"><svg class="i s14 t-work"><use href="#i-clock"/></svg><span class="grow trunc">Job search (3h)</span><span class="f12 t-sec">Weekdays at 9:00 AM</span></div>
+      <h3 class="label mt24">Recent activity</h3>
+      <ul class="col f13" style="gap:14px;margin-top:12px">
+        <li class="row"><svg class="i s14 t-icon"><use href="#i-loader"/></svg><span class="grow trunc t-body">Filling the application form</span><span class="f12 t-cap">now</span></li>
+        <li class="row"><svg class="i s14 t-work"><use href="#i-check"/></svg><span class="grow trunc t-body">Opened pnet.co.za/jobs</span><span class="f12 t-cap">9:14 AM</span></li>
+        <li class="row"><svg class="i s14 t-work"><use href="#i-check"/></svg><span class="grow trunc t-body">Read notes.md</span><span class="f12 t-cap">9:14 AM</span></li>
+      </ul>
+    </div>
+  </div>
+</figure>
+
+<!-- F4 Browser in the narrow desktop window -->
+<figure class="frame" id="f4">
+  <figcaption><b>F4 · Browser in the narrow desktop window</b>The Browser tab · M-06. The existing native pane: the desktop app draws the page in the slot, and the toolbar wraps onto rows. Expand is hidden (the sheet is already full). The page hides while any app menu or dialog is open. Focus: Take control.</figcaption>
+  <div class="phone">
+    <div class="cap"><span><svg class="i"><use href="#i-minus"/></svg></span><span><svg class="i"><use href="#i-square"/></svg></span><span><svg class="i"><use href="#i-x"/></svg></span></div>
+    <div class="bar">
+      <span class="ib" title="Close details"><svg class="i"><use href="#i-x"/></svg></span>
+      <div class="tabs2"><span>Details</span><span class="on">Browser</span></div>
+    </div>
+    <div class="body" style="display:flex;flex-direction:column;gap:8px">
+      <div class="row" style="gap:4px;overflow:hidden">
+        <span class="row" style="height:32px;max-width:160px;border-radius:10px;background:var(--selected);padding:0 4px 0 10px;gap:4px;flex-shrink:0"><span class="trunc f13">Full Stack Developer | Pnet</span><svg class="i s14 t-icon"><use href="#i-x"/></svg></span>
+        <span class="row" style="height:32px;max-width:160px;border-radius:10px;background:var(--card);padding:0 10px;flex-shrink:0"><span class="trunc f13 t-sec">careers24.com</span></span>
+        <span class="ib"><svg class="i"><use href="#i-plus"/></svg></span>
+      </div>
+      <div class="row" style="gap:4px">
+        <span class="ib"><svg class="i"><use href="#i-arrow-left"/></svg></span><span class="ib"><svg class="i"><use href="#i-arrow-right"/></svg></span><span class="ib"><svg class="i"><use href="#i-rotate-cw"/></svg></span>
+        <span class="grow trunc f13" style="height:32px;border-radius:10px;background:var(--card);padding:0 12px;display:flex;align-items:center">pnet.co.za/jobs/full-stack-developer</span>
+      </div>
+      <div class="row" style="flex-wrap:wrap;gap:8px">
+        <p class="f12 t-sec grow" style="min-width:180px">Pnet apply is using this browser. You can watch.</p>
+        <span class="pill focus" style="height:32px;border-radius:10px;font-size:13px;font-weight:400">Take control</span>
+      </div>
+      <div class="native">
+        <svg class="i s20 t-icon"><use href="#i-globe"/></svg>
+        <p class="f13">The native page view</p>
+        <p class="f12 t-sec">The desktop app draws Pnet apply's page here (WebContentsView). It follows this slot every frame and hides under app menus and dialogs. At least 240 px tall.</p>
+      </div>
+    </div>
+  </div>
+</figure>
+
+<!-- F5 Browser on a web/phone client -->
+<figure class="frame webclient" id="f5">
+  <figcaption><b>F5 · Browser where there's no desktop app</b>The Details sheet on a client without <code>window.tjommie.nativeBrowser</code> · M-07. An honest "runs on your PC" card: no Browser tab, no Open, no stream or screenshot. Waiting cards say "Take over on your PC". In 2.5 this is only checked by a component test; real phone transport is Phase 3.</figcaption>
+  <div class="phone web">
+    <div class="cap"></div>
+    <div class="bar">
+      <span class="ib focus" title="Close details"><svg class="i"><use href="#i-x"/></svg></span>
+    </div>
+    <div class="body">
+      <section class="card row" style="align-items:flex-start;gap:12px;margin-top:12px">
+        <svg class="av" width="40" height="40"><use href="#av-orange-cloud"/></svg>
+        <div class="grow">
+          <div class="row"><h3 class="f17 w6 t-title trunc grow" style="line-height:26px">Pnet apply</h3><span class="chipst cs-wait"><span class="dot"></span>Waiting for you</span></div>
+          <div class="col f13 t-body" style="gap:6px;margin-top:4px">
+            <span class="row" style="gap:6px"><svg class="i s14 t-sec"><use href="#i-sparkles"/></svg><span>Claude (Main) · Sonnet</span></span>
+            <span class="row" style="gap:6px"><svg class="i s14 t-sec"><use href="#i-chart-column"/></svg><span>Today: 1.2M tokens · API value $3.40</span></span>
+          </div>
+        </div>
+      </section>
+      <section class="card p12 row mt16" style="gap:12px;align-items:flex-start">
+        <svg class="i s20 t-icon mt2"><use href="#i-monitor"/></svg>
+        <div class="grow"><h3 class="f13 w6 t-title">Browser</h3><p class="f12 t-sec mt2">Runs on your PC. Open Tjommie on that PC to watch Pnet apply or take over.</p></div>
+      </section>
+      <div class="wait mt16">
+        <p class="row f12 w6 t-acc"><svg class="i s14"><use href="#i-circle-alert"/></svg>Waiting for you</p>
+        <p class="mt8">Pnet sent a one-time PIN to your phone.</p>
+        <p class="f12 t-sec mt8">Take over on your PC</p>
+      </div>
+    </div>
+  </div>
+</figure>
+
+<!-- F6 Team room -->
+<figure class="frame" id="f6">
+  <figcaption><b>F6 · Team room with mentions</b><code>/room/</code> · M-09. The tab bar stays. The members button opens the members list as a full-screen sheet. The mention popover sits 16 px from the left and 8 px above the composer, at most <code>calc(100vw − 32px)</code> wide. Focus: the composer.</figcaption>
+  <div class="phone">
+    <div class="cap"><span><svg class="i"><use href="#i-minus"/></svg></span><span><svg class="i"><use href="#i-square"/></svg></span><span><svg class="i"><use href="#i-x"/></svg></span></div>
+    <div class="hdr pad">
+      <div class="title2"><svg class="i s20 t-icon"><use href="#i-users"/></svg><div class="col"><b class="trunc">Team room</b><span class="state t-sec">6 bots</span></div></div>
+      <span class="ib" title="Members"><svg class="i"><use href="#i-panel-right"/></svg></span>
+    </div>
+    <div class="body" style="position:relative">
+      <div class="stack" style="gap:16px">
+        <div class="post"><svg class="av" width="28" height="28"><use href="#av-orange-cloud"/></svg><div class="col"><p class="f13"><b class="w6">Pnet apply</b> <span class="t-sec">to CV Writer</span> <span class="f12 t-cap">9:31 AM</span></p><div class="bubble mt4">Can you tailor the CV for Sabenza IT? They ask for Angular.</div><span class="f12 t-acc mt4 row" style="gap:2px">Open exchange<svg class="i s12"><use href="#i-chevron-right"/></svg></span></div></div>
+        <div class="post"><svg class="av" width="28" height="28"><use href="#av-green-square"/></svg><div class="col"><p class="f13"><b class="w6">CV Writer</b> <span class="t-sec">to Pnet apply</span> <span class="f12 t-cap">9:33 AM</span></p><div class="bubble mt4">Done. CV-Sabenza-Angular.pdf is attached.</div><span class="f12 t-acc mt4 row" style="gap:2px">Open exchange<svg class="i s12"><use href="#i-chevron-right"/></svg></span></div></div>
+        <div class="ububble"><span class="mention">@CV Writer</span> keep it to two pages.</div>
+      </div>
+    </div>
+    <div style="position:relative">
+      <div class="popover" style="position:absolute;left:16px;right:16px;bottom:8px;max-width:280px">
+        <div class="prow on"><svg class="av" width="18" height="18"><use href="#av-green-square"/></svg>CV Writer<span class="st t-work">Working</span></div>
+        <div class="prow"><svg class="av" width="18" height="18"><use href="#av-purple-circle"/></svg>Chief of Staff<span class="st">Idle</span></div>
+        <div class="prow"><svg class="av" width="18" height="18"><use href="#av-teal-droplet"/></svg>Careers24 scout<span class="st">Limited</span></div>
+      </div>
+    </div>
+    <div class="composer focus-in"><span class="grow">@C<span style="display:inline-block;width:2px;height:16px;background:var(--text);vertical-align:-3px;margin-left:1px"></span></span><span class="round r-on"><svg class="i"><use href="#i-arrow-up"/></svg></span></div>
+    <nav class="tabbar" aria-label="Tjommie">
+      <span class="tab"><span class="ico"><svg class="i s20"><use href="#i-layout-grid"/></svg><span class="badge"></span></span>Agents</span>
+      <span class="tab on"><span class="ico"><svg class="i s20"><use href="#i-users"/></svg></span>Team room</span>
+      <span class="tab"><span class="ico"><svg class="i s20"><use href="#i-settings"/></svg></span>Settings</span>
+    </nav>
+  </div>
+</figure>
+
+<!-- F7 Exchange sheet -->
+<figure class="frame" id="f7">
+  <figcaption><b>F7 · Exchange view</b>A handoff row in chat, or Open exchange in the room · M-08. Same full-screen sheet as F3. Closing returns focus to the row that opened it. The composer replies in the Team room with both bots pre-mentioned; the placeholder truncates. Focus: Close.</figcaption>
+  <div class="phone">
+    <div class="cap"><span><svg class="i"><use href="#i-minus"/></svg></span><span><svg class="i"><use href="#i-square"/></svg></span><span><svg class="i"><use href="#i-x"/></svg></span></div>
+    <div class="bar"><span class="ib focus" title="Close exchange"><svg class="i"><use href="#i-x"/></svg></span></div>
+    <div class="body">
+      <div class="row" style="gap:6px"><svg class="av" width="24" height="24"><use href="#av-orange-cloud"/></svg><svg class="i s14 t-sec"><use href="#i-arrow-right"/></svg><svg class="av" width="24" height="24"><use href="#av-green-square"/></svg></div>
+      <h2 class="f15 w6 t-title mt8">Pnet apply asked CV Writer</h2>
+      <p class="f12 t-cap">Today 9:31 AM · Replied after 2 minutes</p>
+      <div class="stack mt16">
+        <p class="row f12 w6 t-sec" style="gap:6px"><svg class="av" width="18" height="18"><use href="#av-orange-cloud"/></svg>Pnet apply</p>
+        <div class="bubble">Can you tailor the CV for Sabenza IT? They ask for Angular.</div>
+        <p class="row f12 w6 t-sec" style="gap:6px"><svg class="av" width="18" height="18"><use href="#av-green-square"/></svg>CV Writer</p>
+        <div class="activity"><svg class="i s14 t-icon"><use href="#i-list-checks"/></svg><span class="trunc grow">2 steps: Saved CV-Sabenza-Angular.pdf</span><svg class="i s14 t-icon"><use href="#i-chevron-down"/></svg></div>
+        <div class="bubble">Done. Two pages, Angular and Azure moved up.</div>
+        <div class="card p12 row" style="gap:12px;max-width:264px"><span class="ftile"><svg class="i s18"><use href="#i-file-text"/></svg></span><div class="grow"><p class="trunc f14 w5">CV-Sabenza-Angular.pdf</p><p class="f12 t-sec">184 KB</p></div></div>
+      </div>
+    </div>
+    <div class="composer"><span class="mchip">@Pnet apply</span><span class="mchip">@CV Writer</span><span class="grow trunc t-ph">Reply in Team room</span><span class="round r-dis"><svg class="i"><use href="#i-arrow-up"/></svg></span></div>
+  </div>
+</figure>
+
+<!-- F8 New bot + account picker -->
+<figure class="frame" id="f8">
+  <figcaption><b>F8 · New bot with the account picker open</b><code>/bots/new/</code> · M-10. One column, no 532 px minimum width; swatches and shapes wrap. The Account and model picker is full width (max 320, inside the viewport). The footer wraps if it must. Focus on open: Name; in the picker: the selected account.</figcaption>
+  <div class="phone">
+    <div class="cap"><span><svg class="i"><use href="#i-minus"/></svg></span><span><svg class="i"><use href="#i-square"/></svg></span><span><svg class="i"><use href="#i-x"/></svg></span></div>
+    <div class="hdr">
+      <span class="ib lg" title="Back"><svg class="i s20"><use href="#i-chevron-left"/></svg></span>
+      <div class="title2"><svg class="av" width="24" height="24"><use href="#av-blue-circle"/></svg><b>New bot</b></div>
+    </div>
+    <div class="body">
+      <div style="width:156px;height:156px;border-radius:14px;background:var(--card);margin:4px auto 0;display:flex;align-items:center;justify-content:center"><svg class="av" width="96" height="96"><use href="#av-blue-circle"/></svg></div>
+      <div class="swatches mt16"><span style="background:#8D6541"></span><span style="background:#EA4144"></span><span style="background:#EC712E"></span><span style="background:#F19C3F"></span><span style="background:#5BC57A"></span><span style="background:#57B8A7"></span><span class="on" style="background:#3B82F6"></span><span style="background:#8C5BF3"></span><span style="background:#EC4698"></span><span style="background:#777777"></span></div>
+      <label class="fld-label mt24">Name</label>
+      <div class="field">Job hunter</div>
+      <div style="position:relative;margin-top:16px">
+        <div class="formrow"><svg class="i s18 t-icon"><use href="#i-sparkles"/></svg><span>Account and model</span><span class="v">Claude (Main) · Sonnet</span><svg class="i t-icon"><use href="#i-chevron-right"/></svg></div>
+        <div class="popover" style="position:absolute;left:0;right:0;top:62px;max-width:320px;margin-left:auto;z-index:5">
+          <div class="seg full inpop"><span class="on">Claude</span><span>Codex</span></div>
+          <h4 class="f12 w6 t-label" style="padding:12px 12px 4px">Account</h4>
+          <div class="prow on focus" style="outline-offset:-2px">Claude (Main)<span class="st">Default</span><svg class="i t-text"><use href="#i-check"/></svg></div>
+          <div class="prow">Claude (Work)<span class="st">Limited until 3:45 PM</span></div>
+          <div class="prow">Claude API<span class="st">API key</span></div>
+          <h4 class="f12 w6 t-label" style="padding:12px 12px 4px">Model</h4>
+          <div class="prow on">Sonnet (latest)<svg class="i" style="margin-left:auto"><use href="#i-check"/></svg></div>
+          <div class="prow">Opus (latest)</div>
+          <div class="prow">Haiku (latest)</div>
+          <p class="f11 t-cap" style="padding:8px 12px 4px">Latest versions are picked automatically.</p>
+        </div>
+      </div>
+      <div class="formrow mt8"><svg class="i s18 t-icon"><use href="#i-folder"/></svg><span>Folder</span><span class="v">Its own folder</span></div>
+      <div class="formrow mt8"><svg class="i s18 t-icon"><use href="#i-shield"/></svg><span>Autonomy</span><span class="v">Own folder</span></div>
+      <div class="formrow mt8"><svg class="i s18 t-icon"><use href="#i-globe"/></svg><span>Browser</span><span class="v">Its own browser</span></div>
+    </div>
+    <div class="footer"><span class="pill bar36">Cancel</span><span class="pill pri bar36">Create bot</span></div>
+  </div>
+</figure>
+
+<!-- F9 Accounts -->
+<figure class="frame" id="f9">
+  <figcaption><b>F9 · Accounts, with a sign-in waiting in the browser</b><code>/settings/?section=accounts</code> · M-11. Sign-in opens the provider's page in the system browser; the card just waits. No terminal or console window ever appears. Codex (Main) shows the limited state with an unknown reset: Retry queued work runs one queued turn only when tapped (with its caption), and Check again is Codex's free quota check, which only looks. Cards stack full width; status actions wrap under the text. Focus: Back to Settings (or the button a link points to).</figcaption>
+  <div class="phone">
+    <div class="cap"><span><svg class="i"><use href="#i-minus"/></svg></span><span><svg class="i"><use href="#i-square"/></svg></span><span><svg class="i"><use href="#i-x"/></svg></span></div>
+    <div class="hdr"><span class="back focus"><svg class="i s20"><use href="#i-chevron-left"/></svg>Settings</span></div>
+    <div class="body">
+      <h2 class="f20 w6 t-title">Accounts</h2>
+      <p class="f13 t-sec mt8">Bots run Claude Code and Codex on these accounts. Subscriptions sign in on the provider's own page; Tjommie never sees your password. API keys stay in Windows Credential Manager.</p>
+      <div class="row mt24"><h3 class="f15 w6 t-title">Claude Code</h3><span class="f12 t-sec">Version 2.1.280</span><span class="grow"></span><span class="pill"><svg class="i"><use href="#i-plus"/></svg>Add</span></div>
+      <div class="col mt12" style="gap:16px">
+        <section class="card col" style="gap:12px">
+          <div class="row"><h4 class="f15 w6 t-title trunc">Claude (Main)</h4><span class="chipst cs-work">Default</span><span class="grow"></span><span class="ib"><svg class="i"><use href="#i-ellipsis"/></svg></span></div>
+          <p class="f12 t-sec" style="margin-top:-8px">Subscription · Max plan · you@example.com</p>
+          <p class="row f13 t-body"><svg class="i s14 t-work"><use href="#i-circle-check"/></svg>Signed in</p>
+          <div class="meter"><div class="top"><span class="t-sec">5-hour limit</span><span>62% · resets 3:45 PM</span></div><div class="track"><div class="fill" style="width:62%"></div></div></div>
+          <div class="meter"><div class="top"><span class="t-sec">Weekly limit</span><span>84% · resets Mon 9:00 AM</span></div><div class="track"><div class="fill near" style="width:84%"></div></div></div>
+          <p class="f12 t-sec">Today 340K tokens · $1.20 API value · This month 12.4M tokens · $48.10 API value</p>
+          <div class="row f12 t-sec" style="gap:6px"><span class="row" style="gap:0"><svg class="av" width="18" height="18"><use href="#av-orange-cloud"/></svg><svg class="av" width="18" height="18" style="margin-left:-4px"><use href="#av-green-square"/></svg><svg class="av" width="18" height="18" style="margin-left:-4px"><use href="#av-purple-circle"/></svg></span>3 bots</div>
+        </section>
+        <section class="card col" style="gap:12px">
+          <div class="row"><h4 class="f15 w6 t-title trunc">Claude (Work)</h4><span class="grow"></span><span class="ib"><svg class="i"><use href="#i-ellipsis"/></svg></span></div>
+          <p class="f12 t-sec" style="margin-top:-8px">Subscription</p>
+          <div class="row" style="flex-wrap:wrap;gap:8px 12px"><p class="row f13 t-body grow" style="min-width:180px"><svg class="i s14 t-icon"><use href="#i-loader"/></svg>Finish signing in in your browser</p><span class="row" style="gap:8px"><span class="link">Open the page again</span><span class="pill">Cancel</span></span></div>
+        </section>
+        <section class="card col" style="gap:12px">
+          <div class="row"><h4 class="f15 w6 t-title trunc">Claude API</h4><span class="grow"></span><span class="ib"><svg class="i"><use href="#i-ellipsis"/></svg></span></div>
+          <p class="f12 t-sec" style="margin-top:-8px">API key</p>
+          <p class="row f13 t-body"><svg class="i s14 t-work"><use href="#i-circle-check"/></svg>Key saved</p>
+          <div class="row" style="align-items:flex-end;gap:12px"><div class="meter grow"><div class="top"><span class="t-sec">Spending</span><span>Spent $12.40 of $20.00 cap in total</span></div><div class="track"><div class="fill" style="width:62%"></div></div></div><span class="link">Edit cap</span></div>
+          <p class="f12 t-sec">Today 41K tokens · $0.80 spent · This month 610K tokens · $12.40 spent</p>
+          <div class="row" style="align-items:flex-start;gap:16px"><div class="grow"><p class="f13">Fallback for Claude</p><p class="f12 t-sec">When a Claude subscription account hits its limit, bots carry on with this key until it resets.</p></div><span class="switch on"></span></div>
+        </section>
+      </div>
+      <div class="row mt24"><h3 class="f15 w6 t-title">Codex</h3><span class="f12 t-sec">Version 0.155.1</span><span class="grow"></span><span class="pill"><svg class="i"><use href="#i-plus"/></svg>Add</span></div>
+      <section class="card col mt12" style="gap:12px">
+        <div class="row"><h4 class="f15 w6 t-title trunc">Codex (Main)</h4><span class="chipst cs-work">Default</span><span class="grow"></span><span class="ib"><svg class="i"><use href="#i-ellipsis"/></svg></span></div>
+        <p class="f12 t-sec" style="margin-top:-8px">Subscription · Plus plan · you@example.com</p>
+        <div class="row" style="flex-wrap:wrap;gap:8px 12px"><p class="row f13 t-body grow" style="min-width:180px"><svg class="i s14 t-icon"><use href="#i-hourglass"/></svg>Limited. Reset time unknown.</p><span class="row" style="gap:8px"><span class="pill pri">Retry queued work</span><span class="pill">Check again</span></span></div>
+        <p class="f12 t-sec" style="margin-top:-4px">Retries one queued turn; it may use subscription allowance or API credit.</p>
+        <div class="meter"><div class="top"><span class="t-sec">5-hour limit</span><span>100%</span></div><div class="track"><div class="fill near" style="width:100%"></div></div></div>
+      </section>
+    </div>
+    <nav class="tabbar" aria-label="Tjommie">
+      <span class="tab"><span class="ico"><svg class="i s20"><use href="#i-layout-grid"/></svg><span class="badge"></span></span>Agents</span>
+      <span class="tab"><span class="ico"><svg class="i s20"><use href="#i-users"/></svg></span>Team room</span>
+      <span class="tab on"><span class="ico"><svg class="i s20"><use href="#i-settings"/></svg></span>Settings</span>
+    </nav>
+  </div>
+</figure>
+
+<!-- F10 Add API key (full-screen dialog) -->
+<figure class="frame dimcap" id="f10">
+  <figcaption><b>F10 · Add an API key (full-screen dialog)</b>Add → API key in F9 · M-11. Dialogs 420 px or wider go full screen on phones. Close sits at the left (clear of the dimmed caption buttons) and the title is the first line. The key is masked with a Show key toggle, cleared on close, and never shown again. Focus: Name, or the key field as here.</figcaption>
+  <div class="phone">
+    <div class="cap"><span><svg class="i"><use href="#i-minus"/></svg></span><span><svg class="i"><use href="#i-square"/></svg></span><span><svg class="i"><use href="#i-x"/></svg></span></div>
+    <div class="dlg" role="dialog" aria-label="Add Claude API key">
+      <div class="bar"><span class="ib" title="Close"><svg class="i"><use href="#i-x"/></svg></span></div>
+      <div class="content">
+        <h2 class="f17 w6 t-title">Add Claude API key</h2>
+        <label class="fld-label mt16">Name</label>
+        <div class="field">Claude API</div>
+        <label class="fld-label mt16">API key</label>
+        <div class="field focus-in" style="padding-right:44px"><span style="letter-spacing:2px">••••••••••••••••••••••</span><span class="ib" title="Show key" style="position:absolute;right:4px;top:3px"><svg class="i"><use href="#i-eye"/></svg></span></div>
+        <p class="help">Stored in Windows Credential Manager and given only to the Claude Code process.</p>
+        <label class="fld-label mt16">Spending cap</label>
+        <div class="field"><span class="t-sec">$</span>20.00</div>
+        <p class="help">Bots stop using the key once its total spend reaches this. It's an estimate from the prices Tjommie knows, not an invoice. Your provider bill may be higher.</p>
+        <div class="row mt16" style="align-items:flex-start;gap:16px"><div class="grow"><p>Fallback for Claude</p><p class="f12 t-sec">When a Claude subscription account hits its limit, bots carry on with this key until it resets.</p></div><span class="switch"></span></div>
+      </div>
+      <div class="actions"><span class="pill">Cancel</span><span class="pill pri">Add key</span></div>
+    </div>
+  </div>
+</figure>
+
+<!-- F11 Add subscription (full-screen dialog) -->
+<figure class="frame dimcap" id="f11">
+  <figcaption><b>F11 · Add a subscription (browser sign-in)</b>Add → Subscription in F9 · M-11. "Add and sign in" creates the account and asks the daemon to open the provider's page in the system browser, never a bot's browser. The dialog closes and the card shows "Finish signing in in your browser" (F9). Focus: Name.</figcaption>
+  <div class="phone">
+    <div class="cap"><span><svg class="i"><use href="#i-minus"/></svg></span><span><svg class="i"><use href="#i-square"/></svg></span><span><svg class="i"><use href="#i-x"/></svg></span></div>
+    <div class="dlg" role="dialog" aria-label="Add Claude subscription">
+      <div class="bar"><span class="ib" title="Close"><svg class="i"><use href="#i-x"/></svg></span></div>
+      <div class="content">
+        <h2 class="f17 w6 t-title">Add Claude subscription</h2>
+        <label class="fld-label mt16">Name</label>
+        <div class="field focus-in"><span class="t-ph">Claude (Personal)</span></div>
+        <p class="f12 t-sec mt12">Signing in opens the provider's own page in your browser. Tjommie never sees your password.</p>
+      </div>
+      <div class="actions"><span class="pill">Cancel</span><span class="pill pri dis">Add and sign in</span></div>
+    </div>
+  </div>
+</figure>
+
+<!-- F12 Usage -->
+<figure class="frame" id="f12">
+  <figcaption><b>F12 · Usage</b><code>/settings/?section=usage</code> · M-11. Tiles two to a row (one column under 312 px). Spent and API value are never added together; an unknown cost is never $0. The breakdown becomes list rows. Focus: Back to Settings.</figcaption>
+  <div class="phone">
+    <div class="cap"><span><svg class="i"><use href="#i-minus"/></svg></span><span><svg class="i"><use href="#i-square"/></svg></span><span><svg class="i"><use href="#i-x"/></svg></span></div>
+    <div class="hdr"><span class="back focus"><svg class="i s20"><use href="#i-chevron-left"/></svg>Settings</span></div>
+    <div class="body">
+      <h2 class="f20 w6 t-title">Usage</h2>
+      <div class="mt16"><div class="seg"><span>Today</span><span class="on">This week</span><span>This month</span></div></div>
+      <div class="tiles mt16">
+        <div class="tile"><p class="f12 t-sec">Tokens</p><p class="f20 w6 t-title">12.4M</p></div>
+        <div class="tile"><p class="f12 t-sec">Spent (API keys)</p><p class="f20 w6 t-title">$12.40</p><p class="f12 t-sec">Includes estimates</p></div>
+        <div class="tile"><p class="f12 t-sec">API value (subscriptions)</p><p class="f20 w6 t-title">$48.10</p></div>
+      </div>
+      <div class="card mt16">
+        <div class="bars" role="img" aria-label="Tokens per day, highest 3.1M on Wed 21 Oct"><div><span style="height:38%"></span></div><div><span style="height:61%"></span></div><div><span style="height:100%"></span></div><div><span style="height:72%"></span></div><div><span style="height:12%"></span></div><div><span style="height:1%"></span></div><div><span style="height:1%"></span></div></div>
+        <div class="row f11 t-sec mt4" style="justify-content:space-between"><span>Mon 19</span><span>Thu 22</span><span>Sun 25</span></div>
+        <p class="f11 t-sec mt4">Days in Africa/Johannesburg</p>
+      </div>
+      <div class="row mt24" style="justify-content:space-between;flex-wrap:wrap;gap:8px"><h3 class="label">Breakdown</h3><div class="seg"><span class="on">By bot</span><span>By account</span><span>By model</span></div></div>
+      <ul class="col mt12" style="gap:8px">
+        <li class="card" style="padding:12px 16px"><div class="row" style="justify-content:space-between;align-items:baseline"><span class="trunc">Pnet apply</span><span class="f13 t-body">5.1M tokens</span></div><p class="f12 t-sec mt2">API value $21.30</p></li>
+        <li class="card" style="padding:12px 16px"><div class="row" style="justify-content:space-between;align-items:baseline"><span class="trunc">CV Writer</span><span class="f13 t-body">3.2M tokens</span></div><p class="f12 t-sec mt2">Spent $4.20</p><p class="f12 t-sec">API value $12.10</p></li>
+        <li class="card" style="padding:12px 16px"><div class="row" style="justify-content:space-between;align-items:baseline"><span class="trunc">Careers24 scout</span><span class="f13 t-body">1.4M tokens</span></div><p class="f12 t-sec mt2">Spent at least $2.10 · 3 turns have no price</p></li>
+        <li class="card" style="padding:12px 16px"><div class="row" style="justify-content:space-between;align-items:baseline"><span class="trunc t-sec">Deleted bot</span><span class="f13 t-body">220K tokens</span></div><p class="f12 t-sec mt2">API value $0.90</p></li>
+      </ul>
+      <h3 class="label mt24">Limits</h3>
+      <section class="card col mt12" style="gap:10px"><h4 class="f14 w6 t-title">Claude (Main)</h4><div class="meter"><div class="top"><span class="t-sec">5-hour limit</span><span>62% · resets 3:45 PM</span></div><div class="track"><div class="fill" style="width:62%"></div></div></div></section>
+    </div>
+    <nav class="tabbar" aria-label="Tjommie">
+      <span class="tab"><span class="ico"><svg class="i s20"><use href="#i-layout-grid"/></svg><span class="badge"></span></span>Agents</span>
+      <span class="tab"><span class="ico"><svg class="i s20"><use href="#i-users"/></svg></span>Team room</span>
+      <span class="tab on"><span class="ico"><svg class="i s20"><use href="#i-settings"/></svg></span>Settings</span>
+    </nav>
+  </div>
+</figure>
+
+<!-- F13 Settings list -->
+<figure class="frame" id="f13">
+  <figcaption><b>F13 · Settings list</b><code>/settings/</code> on phones · M-11. With no <code>section</code> the nav fills the screen; each row opens <code>?section=…</code>, which has Back to Settings. Desktop still treats no section as General. Phase 3's Devices isn't listed until it exists. Focus: General.</figcaption>
+  <div class="phone">
+    <div class="cap"><span><svg class="i"><use href="#i-minus"/></svg></span><span><svg class="i"><use href="#i-square"/></svg></span><span><svg class="i"><use href="#i-x"/></svg></span></div>
+    <div class="hdr pad"><h2 class="f20 w6 t-title">Settings</h2></div>
+    <div class="body">
+      <nav aria-label="Settings" class="mt4">
+        <div class="navrow focus" style="background:var(--card)"><svg class="i"><use href="#i-sliders"/></svg><span class="grow">General</span><svg class="i t-icon"><use href="#i-chevron-right"/></svg></div>
+        <div class="navrow" style="background:var(--card)"><svg class="i"><use href="#i-bot"/></svg><span class="grow">Bots</span><svg class="i t-icon"><use href="#i-chevron-right"/></svg></div>
+        <div class="navrow" style="background:var(--card)"><svg class="i"><use href="#i-key-round"/></svg><span class="grow">Accounts</span><svg class="i t-icon"><use href="#i-chevron-right"/></svg></div>
+        <div class="navrow" style="background:var(--card)"><svg class="i"><use href="#i-chart-column"/></svg><span class="grow">Usage</span><svg class="i t-icon"><use href="#i-chevron-right"/></svg></div>
+      </nav>
+    </div>
+    <nav class="tabbar" aria-label="Tjommie">
+      <span class="tab"><span class="ico"><svg class="i s20"><use href="#i-layout-grid"/></svg><span class="badge"></span></span>Agents</span>
+      <span class="tab"><span class="ico"><svg class="i s20"><use href="#i-users"/></svg></span>Team room</span>
+      <span class="tab on"><span class="ico"><svg class="i s20"><use href="#i-settings"/></svg></span>Settings</span>
+    </nav>
+  </div>
+</figure>
+
+<!-- F14 Pair a device: Phase 3 design only -->
+<figure class="frame future" id="f14">
+  <figcaption><b>F14 · Pair a device</b>Settings → Devices → Pair a device (spec 9.2). Not available: no pairing, relay or encryption code exists, and 2.5 doesn't build this screen. The QR area is an empty placeholder, not a code.</figcaption>
+  <div class="phone">
+    <div class="cap"><span><svg class="i"><use href="#i-minus"/></svg></span><span><svg class="i"><use href="#i-square"/></svg></span><span><svg class="i"><use href="#i-x"/></svg></span></div>
+    <div class="hdr"><span class="back"><svg class="i s20"><use href="#i-chevron-left"/></svg>Devices</span></div>
+    <div class="body">
+      <h2 class="f20 w6 t-title">Pair a device</h2>
+      <p class="f13 t-sec mt8">Scan with the Tjommie app on your phone, or paste the code on another PC under Connect to another computer.</p>
+      <div class="qr mt24"><svg class="i s20"><use href="#i-qr-code"/></svg>QR code appears here</div>
+      <label class="fld-label mt24">Pairing code</label>
+      <div class="row"><div class="field grow"><span class="t-ph trunc">Shown with the QR code</span></div><span class="pill dis">Copy</span></div>
+      <p class="help">Works once and expires in 10 minutes.</p>
+      <p class="f12 t-sec mt16">On the same Wi-Fi, Windows Firewall asks once. If you say no, the relay still works.</p>
+    </div>
+  </div>
+</figure>
+
+<!-- F15 Devices: Phase 3 design only -->
+<figure class="frame future" id="f15">
+  <figcaption><b>F15 · Devices</b>Settings → Devices (spec 9.2). Not available in 2.5 and not in the Settings list. The phone row is a sample of the planned layout, not a paired device.</figcaption>
+  <div class="phone">
+    <div class="cap"><span><svg class="i"><use href="#i-minus"/></svg></span><span><svg class="i"><use href="#i-square"/></svg></span><span><svg class="i"><use href="#i-x"/></svg></span></div>
+    <div class="hdr"><span class="back"><svg class="i s20"><use href="#i-chevron-left"/></svg>Settings</span></div>
+    <div class="body">
+      <div class="row"><h2 class="f20 w6 t-title grow">Devices</h2><span class="pill pri">Pair a device</span></div>
+      <p class="f13 t-sec mt8">Every paired device has full control. Revoking cuts one device off at once and leaves the others alone.</p>
+      <section class="card mt16" style="padding:4px 16px">
+        <div class="devrow"><svg class="i s20 t-icon"><use href="#i-monitor"/></svg><div class="grow"><p>This PC</p><p class="f12 t-sec">The host. Its own window always works.</p></div></div>
+        <div class="devrow"><svg class="i s20 t-icon"><use href="#i-smartphone"/></svg><div class="grow"><p class="trunc">Phone (sample)</p><p class="f12 t-sec">Paired on a date · last seen a time ago</p></div><span class="link">Rename</span><span class="link t-dan">Revoke</span></div>
+      </section>
+    </div>
+  </div>
+</figure>
+
+</main>
+</body>
+</html>

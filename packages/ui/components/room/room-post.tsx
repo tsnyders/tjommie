@@ -24,7 +24,7 @@ export function RoomPost({ message, bots, onOpenExchange }: { message: Message; 
           {post && <span className="text-secondary">to {to?.name ?? DELETED_BOT}</span>}
           <span className="text-[12px] text-caption">{clock(message.createdAt)}</span>
         </p>
-        <div className="max-w-[560px]">
+        <div className="min-w-0 max-w-[560px]">
           <BotBubble message={message} />
         </div>
         {post?.files?.map((file) => <FileCard key={file.path} file={file} />)}

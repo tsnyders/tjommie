@@ -149,7 +149,7 @@ function content(view: CardView, claude: boolean, busy: boolean, requesting: boo
       return { body: <p className={helper}>{view.reason}</p>, actions: checkAgain };
     case "signed_out":
       return {
-        body: <p className={helper}>{claude ? "Opens Claude's sign-in in a new window." : "Opens OpenAI's sign-in page in your browser."}</p>,
+        body: <p className={helper}>{claude ? "Opens Claude's sign-in page in your browser." : "Opens OpenAI's sign-in page in your browser."}</p>,
         actions: (
           <Pill primary disabled={requesting} onClick={on.onSignIn}>
             {claude ? "Sign in to Claude" : "Sign in to Codex"}
@@ -160,7 +160,7 @@ function content(view: CardView, claude: boolean, busy: boolean, requesting: boo
       return {
         body: (
           <>
-            <Line icon={spinner}>{claude ? "Finish signing in in the window that opened" : "Finish signing in in your browser"}</Line>
+            <Line icon={spinner}>Finish signing in in your browser</Line>
             <p className="ml-6 text-[12px] leading-[18px] text-secondary">Tjommie notices as soon as you&apos;re done.</p>
           </>
         ),

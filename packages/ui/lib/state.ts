@@ -1,5 +1,5 @@
 import type { ClientEvent } from "@tjommie/client";
-import type { Bot, Message, ProviderSetup, Routine, RoutineRun, Settings } from "@tjommie/protocol";
+import type { AccountInfo, Bot, Message, ProviderSetup, Routine, RoutineRun, Settings } from "@tjommie/protocol";
 
 export type MessageEvent = Extract<ClientEvent, { event: "message.added" | "message.updated" | "message.delta" }>;
 
@@ -22,6 +22,7 @@ export type AppState = {
   connection: Connection;
   bots: Bot[];
   setup: ProviderSetup[] | null;
+  accounts: AccountInfo[] | null; // null until the first list arrives
   signInsEnded: string[]; // attempt ids of the latest setup.signInEnded events; a new connection keeps them
   settings: Settings | null;
   routines: Routine[];
@@ -33,6 +34,7 @@ export const initialState: AppState = {
   connection: { status: "connecting" },
   bots: [],
   setup: null,
+  accounts: null,
   signInsEnded: [],
   settings: null,
   routines: [],
@@ -78,6 +80,8 @@ export function applyEvent(state: AppState, event: ClientEvent): AppState {
       };
     case "setup.changed":
       return { ...state, setup: event.data };
+    case "accounts.changed":
+      return { ...state, accounts: event.data };
     case "setup.signInEnded":
       return { ...state, signInsEnded: [...state.signInsEnded, event.data.attempt].slice(-20) };
     case "settings.changed":
@@ -131,13 +135,14 @@ export function forgetConversation(state: AppState, conversationId: string): App
 }
 
 // A new connection: everything is fetched again, and open chats reload their history.
-export function connected(state: AppState, snapshot: { bots: Bot[]; settings: Settings; routines: Routine[] }): AppState {
+export function connected(state: AppState, snapshot: { bots: Bot[]; settings: Settings; routines: Routine[]; accounts?: AccountInfo[] | null }): AppState {
   return {
     ...state,
     connection: { status: "ready" },
     bots: [...snapshot.bots].sort(byCreated),
     settings: snapshot.settings,
     routines: [...snapshot.routines].sort(byCreated),
+    accounts: snapshot.accounts ?? null,
     latestRuns: {},
     conversations: {},
   };

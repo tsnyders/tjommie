@@ -1,0 +1,5 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": { "lib": ["es2024", "dom"], "types": ["node"] },
+  "include": ["src", "scripts", "wasm/*.d.ts"]
+}

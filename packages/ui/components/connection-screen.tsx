@@ -1,8 +1,11 @@
 "use client";
 
 import { Loader } from "lucide-react";
-import { restartDaemon } from "@/lib/connection";
+import { useSyncExternalStore } from "react";
+import { connectPhone, forgetPhone, restartDaemon } from "@/lib/connection";
+import { isAndroidApp, mobileHosts, pairMobile, scanMobilePairing } from "@/lib/mobile";
 import type { Connection } from "@/lib/state";
+import { MobileConnect, type MobileConnectApi } from "./mobile-connect";
 import { Pill } from "./pill";
 
 type Blocking = Exclude<Connection, { status: "ready" } | { status: "reconnecting" }>;
@@ -19,8 +22,13 @@ const COPY: Record<Exclude<Blocking["status"], "failed">, { title: string; body:
   },
 };
 
-// Shown in place of the pages until the daemon connection is ready.
+const PHONE: MobileConnectApi = { hosts: mobileHosts, pair: pairMobile, connect: connectPhone, forget: forgetPhone, scan: scanMobilePairing };
+
+// Shown in place of the pages until the daemon connection is ready. In the Android app that is the phone's own start (connect to a saved PC, or pair
+// with one) instead of the desktop's "open the desktop app"; a version mismatch keeps its own words everywhere.
 export function ConnectionScreen({ connection }: { connection: Blocking }) {
+  const android = useSyncExternalStore(() => () => {}, isAndroidApp, () => false);
+  if (android && connection.status !== "update") return <MobileConnect status={connection.status} reason={connection.status === "failed" ? connection.reason : undefined} api={PHONE} />;
   return (
     <div className="flex flex-1 flex-col">
       <div className="drag h-11 shrink-0" />

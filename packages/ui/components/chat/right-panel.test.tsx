@@ -1,6 +1,6 @@
 import type { Bot } from "@tjommie/protocol";
 import { renderToStaticMarkup } from "react-dom/server";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RightPanel } from "./right-panel";
 
 const bot: Bot = {
@@ -19,9 +19,51 @@ const bot: Bot = {
 const store = new Map<string, string>();
 vi.stubGlobal("localStorage", { getItem: (key: string) => store.get(key) ?? null, setItem: (key: string, value: string) => void store.set(key, value) });
 afterEach(() => store.clear());
+// The desktop app's bridge, with the native browser: the Browser pane is there at any width.
+beforeEach(() => vi.stubGlobal("window", { tjommie: { nativeBrowser: {} } }));
 
 const render = (patch: Partial<Parameters<typeof RightPanel>[0]> = {}) =>
   renderToStaticMarkup(<RightPanel bot={bot} messages={[]} pane="details" onPane={() => {}} expanded={false} onExpandedChange={() => {}} room={1400} overlay={false} onHide={() => {}} {...patch} />);
+
+describe("RightPanel on a phone", () => {
+  it("is a full-screen sheet with Close, the Details/Browser switch, and no separator or gear", () => {
+    const out = render({ phone: true });
+    expect(out).toContain("absolute inset-0");
+    expect(out).toContain('aria-label="Close details"');
+    expect(out).toContain('aria-label="Bot panel views"');
+    expect(out).not.toContain('role="separator"');
+    expect(out).not.toContain('aria-label="Bot settings"');
+    expect(out).not.toContain('aria-label="Hide panel"');
+    expect(out).not.toContain("border-l");
+    expect(out).not.toContain("width:460px");
+  });
+
+  it("keeps the caption buttons' room in the desktop window, and never offers Expand (the sheet is the whole screen)", () => {
+    expect(render({ phone: true })).toContain("pr-[146px]");
+    const browser = render({ phone: true, pane: "browser", expanded: true });
+    expect(browser).not.toContain("Expand browser");
+    expect(browser).not.toContain("Restore browser");
+  });
+
+  it("is a sheet, not a dialog, so the native browser inside it is not hidden by it", () => {
+    expect(render({ phone: true })).not.toContain('role="dialog"');
+  });
+});
+
+describe("RightPanel without the desktop app's bridge", () => {
+  it("has no Browser tab or pane, and the card says the browser runs on the PC", () => {
+    vi.stubGlobal("window", {});
+    for (const phone of [true, false]) {
+      const out = render({ phone, pane: "browser" });
+      expect(out).not.toContain("Bot panel views");
+      expect(out).not.toContain('id="pane-browser"');
+      expect(out).not.toContain('aria-label="Open browser"');
+      expect(out).toContain("Runs on your PC. Open Tjommie on that PC to watch Scout or take over.");
+      expect(out).toContain('id="pane-details"');
+    }
+    expect(render({ phone: true })).toContain("pr-4"); // no caption buttons to clear
+  });
+});
 
 describe("RightPanel", () => {
   it("always offers Details and Browser, Hide panel and a resize separator", () => {

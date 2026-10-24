@@ -6,7 +6,7 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   output: "export",
   trailingSlash: true,
-  transpilePackages: ["@tjommie/protocol", "@tjommie/client"],
+  transpilePackages: ["@tjommie/protocol", "@tjommie/client", "@tjommie/mobile", "@tjommie/transport"],
   devIndicators: false,
 };
 

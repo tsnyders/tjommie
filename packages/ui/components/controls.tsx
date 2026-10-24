@@ -56,7 +56,7 @@ export function Segmented<T extends string>({ label, value, options, onChange, f
           key={option.value}
           value={option.value}
           className={cn(
-            "flex h-6 cursor-default items-center whitespace-nowrap rounded-full px-3 text-[13px] text-secondary hover:text-body data-[checked]:bg-selected data-[checked]:font-semibold data-[checked]:text-text",
+            "mobile-motion-choice flex h-6 cursor-default items-center whitespace-nowrap rounded-full px-3 text-[13px] text-secondary hover:text-body data-[checked]:bg-selected data-[checked]:font-semibold data-[checked]:text-text",
             full && "flex-1 justify-center",
           )}
         >

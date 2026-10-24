@@ -398,7 +398,7 @@ function createWindow(): void {
   const window = new BrowserWindow({
     width: 1440,
     height: 900,
-    minWidth: 960,
+    minWidth: 360,
     minHeight: 600,
     show: false,
     title: "Tjommie",

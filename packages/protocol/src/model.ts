@@ -29,6 +29,9 @@ export const Bot = z.object({
   instructions: z.string(),
   provider: Provider,
   model: z.string(),
+  accountId: z.string().nullable().optional(), // Older v1 snapshots and fixtures omit the pin.
+  effectiveAccountId: z.string().nullable().optional(),
+  usingFallback: z.boolean().optional(),
   autonomy: Autonomy,
   homeFolder: z.string(),
   projectFolder: z.string().nullable(),
@@ -49,6 +52,7 @@ const botFields = {
   instructions: z.string().max(20_000),
   provider: Provider,
   model: z.string().min(1).max(100),
+  accountId: z.string().min(1).max(256).nullable().optional(),
   autonomy: Autonomy,
   projectFolder: z.string().nullable(),
   browser: z.boolean(),

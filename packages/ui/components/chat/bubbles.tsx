@@ -8,7 +8,7 @@ export function BotBubble({ message }: { message: Message }) {
   const streaming = message.status === "streaming";
   if (!streaming && !message.body.trim()) return null;
   return (
-    <div data-author="bot" className="w-fit max-w-[600px] rounded-[18px] bg-bubble px-4 py-[14px] text-[14px] leading-[21px] text-text">
+    <div data-author="bot" className="w-fit max-w-[600px] rounded-[18px] max-sm:max-w-full bg-bubble px-4 py-[14px] text-[14px] leading-[21px] text-text">
       {streaming ? (
         <p className="whitespace-pre-wrap [overflow-wrap:anywhere]">
           {message.body}
@@ -24,7 +24,7 @@ export function BotBubble({ message }: { message: Message }) {
 // The person's own text stays exactly as typed.
 export function UserBubble({ message, files }: { message: Message; files: string[] }) {
   return (
-    <div className="flex max-w-[600px] flex-col items-end gap-1 self-end">
+    <div className="flex max-w-[600px] flex-col items-end gap-1 self-end max-sm:max-w-[85%]">
       {files.length > 0 && (
         <div className="flex flex-wrap justify-end gap-1.5">
           {files.map((name) => (

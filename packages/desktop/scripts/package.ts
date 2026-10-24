@@ -7,8 +7,10 @@ import { dirname, join, resolve } from "node:path";
 import builder from "electron-builder";
 import { rolldown } from "rolldown";
 import { buildInputHash, writePackagedProvenance } from "./packaged-provenance.ts";
+import { prepareUiAssets } from "../../../scripts/prepare-ui.ts";
 
 const repo = resolve(import.meta.dirname, "..", "..", "..");
+prepareUiAssets(repo);
 const inputsSha256 = buildInputHash(repo);
 const desktop = join(repo, "packages", "desktop");
 const out = join(repo, "dist-desktop");
@@ -52,6 +54,7 @@ writeFileSync(
 // ws's optional native helpers stay out; ws uses its own JavaScript without them.
 await bundle(join(repo, "packages", "daemon", "src", "main.ts"), join(resources, "daemon"), ["@playwright/mcp", "bufferutil", "utf-8-validate"]);
 copyPlaywrightMcp(join(resources, "daemon"));
+cpSync(join(repo, "packages", "transport", "wasm", "tjommie_noise_bg.wasm"), join(resources, "daemon", "tjommie_noise_bg.wasm"));
 cpSync(join(repo, "packages", "ui", "out"), join(resources, "ui"), { recursive: true });
 cpSync(join(desktop, "assets"), join(resources, "assets"), { recursive: true });
 

@@ -12,7 +12,7 @@ describe("the packaged app", () => {
     let quit = false;
     try {
       if (!existsSync(exe)) throw new Error("Packaged executable missing. Run npm run package before npm run test:packaged.");
-      app = await launchRealApp(exe); // it waits for "Set up Tjommie", served from resources\ui
+      app = await launchRealApp(exe, { isolatedAccounts: true }); // startup smoke never uses the owner's provider profiles
       expect(await app.client.call("bots.list", {})).toEqual([]);
       // Playwright MCP starts only when a bot with the browser works, so check the files it runs from.
       expect(existsSync(join(dirname(exe), "resources", "daemon", "node_modules", "@playwright", "mcp", "cli.js"))).toBe(true);

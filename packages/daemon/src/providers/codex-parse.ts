@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { ProviderEvent } from "./types.ts";
 import { activityLabel, plainActivityText } from "./activity-labels.ts";
 
@@ -79,6 +80,7 @@ export function mapCodexNotification(method: string, params: unknown, model: str
       return [
         {
           type: "usage",
+          eventId: createHash("sha256").update(JSON.stringify([params.threadId, params.turnId, params.tokenUsage])).digest("hex"),
           model,
           input: last.inputTokens - last.cachedInputTokens,
           cachedInput: last.cachedInputTokens,
@@ -91,6 +93,13 @@ export function mapCodexNotification(method: string, params: unknown, model: str
     case "account/rateLimits/updated": {
       if (!isRecord(params.rateLimits)) return [];
       const limits = params.rateLimits;
+      const detailed: NonNullable<Extract<ProviderEvent, { type: "limit" }>["windows"]> = (["primary", "secondary"] as const).flatMap((windowKey) => {
+        const value = limits[windowKey]; if (!isRecord(value)) return [];
+        const usedPercent = typeof value.usedPercent === "number" && Number.isFinite(value.usedPercent) ? Math.max(0, Math.min(100, value.usedPercent)) : null;
+        return [{ windowKey, durationMinutes: typeof value.windowDurationMins === "number" && Number.isFinite(value.windowDurationMins) && value.windowDurationMins > 0 ? value.windowDurationMins : null,
+          usedPercent, resetsAt: toIso(value.resetsAt), state: usedPercent !== null && usedPercent >= 100 ? "reached" as const : usedPercent !== null && usedPercent >= 90 ? "near" as const : "ok" as const }];
+      });
+      if (limits.rateLimitReachedType && !detailed.some((window) => window.state === "reached")) detailed.push({ windowKey: "provider", durationMinutes: null, usedPercent: null, resetsAt: null, state: "reached" });
       // Keep the single-window provider contract: percentages and resets always describe the same
       // window. If both are exhausted, work cannot resume until the later reset.
       const windows = [limits.primary, limits.secondary].filter(isRecord).map((window) => ({
@@ -110,6 +119,8 @@ export function mapCodexNotification(method: string, params: unknown, model: str
       return [
         {
           type: "limit",
+          limitId: typeof limits.limitId === "string" && limits.limitId.length <= 100 && limits.limitId.length > 0 ? limits.limitId : "codex",
+          windows: detailed,
           state: limits.rateLimitReachedType || (used !== null && used >= 100) ? "reached" : used !== null && used >= 90 ? "near" : "ok",
           usedPercent: used,
           resetsAt: selected?.reset ?? null,

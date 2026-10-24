@@ -11,6 +11,28 @@ export const FILTERS = [
   { value: "paused", label: "Paused" },
 ] as const satisfies readonly { value: OverviewFilter; label: string }[];
 
+// The phone's filter chips, with how many bots each would show. A state no bot is in has no chip (unless it's the one picked, so it can be left),
+// and when no chip would narrow the list there are none at all.
+export function phoneFilters(bots: Pick<Bot, "state">[], current: OverviewFilter): { value: OverviewFilter; label: string; count: number }[] {
+  const chips = FILTERS.map((filter) => ({ ...filter, count: filter.value === "all" ? bots.length : bots.filter((bot) => bot.state === filter.value).length }));
+  const narrowing = chips.filter((chip) => chip.value !== "all" && chip.count > 0 && chip.count < bots.length);
+  if (narrowing.length === 0 && current === "all") return [];
+  return chips.filter((chip) => chip.value === "all" || chip.count > 0 || chip.value === current);
+}
+
+// Folio's one-sentence lede under the Agents title: "Two bots are working; Nova is waiting for you."
+export function overviewLede(bots: Pick<Bot, "name" | "state">[]): string {
+  if (bots.length === 0) return "No bots yet.";
+  const working = bots.filter((bot) => bot.state === "working");
+  const waiting = bots.filter((bot) => bot.state === "waiting");
+  const parts: string[] = [];
+  if (working.length) parts.push(working.length === 1 ? `${working[0].name} is working` : `${working.length} bots are working`);
+  if (waiting.length) parts.push(waiting.length === 1 ? `${waiting[0].name} is waiting for you` : `${waiting.length} bots are waiting for you`);
+  if (parts.length === 0) return "All quiet.";
+  const sentence = parts.join("; ");
+  return `${sentence[0].toUpperCase()}${sentence.slice(1)}.`;
+}
+
 // "6 bots, 2 working, 1 waiting for you".
 export function overviewSummary(bots: Pick<Bot, "state">[]): string {
   const count = (state: BotState): number => bots.filter((bot) => bot.state === state).length;

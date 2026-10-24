@@ -57,3 +57,22 @@ describe("the bot form", () => {
     expect(autonomyHelp("full", "codex")).toMatch(/^Full auto: never asks\./);
   });
 });
+
+describe("the account", () => {
+  const saved = { id: "b1", provider: "claude", model: "sonnet", accountId: "a1", name: "Scout", color: "blue", shape: "circle", instructions: "", autonomy: "folder", projectFolder: null, browser: true, canMessage: [] } as unknown as Bot;
+
+  it("starts a new bot on the provider's default account, and sends the pin when creating", () => {
+    expect(NEW_BOT.accountId).toBeNull();
+    expect(createInput({ ...NEW_BOT, name: " Scout ", accountId: "a2" }).accountId).toBe("a2");
+  });
+
+  it("reads a bot's pin, and sends it only when it changed, apart from the provider and model", () => {
+    const form = formFromBot(saved);
+    expect(form.accountId).toBe("a1");
+    expect(patchFor(saved, form)).toEqual({});
+    expect(patchFor(saved, { ...form, accountId: "a2" })).toEqual({ accountId: "a2" });
+    expect(patchFor(saved, { ...form, accountId: null })).toEqual({ accountId: null });
+    expect(patchFor(saved, { ...form, provider: "codex", model: "gpt", accountId: "c1" })).toEqual({ provider: "codex", model: "gpt", accountId: "c1" });
+    expect(patchFor({ ...saved, accountId: undefined } as Bot, formFromBot({ ...saved, accountId: undefined } as Bot))).toEqual({});
+  });
+});

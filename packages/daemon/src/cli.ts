@@ -83,9 +83,13 @@ export function cliEnv(extra: Record<string, string>, base: NodeJS.ProcessEnv = 
   return env;
 }
 
-export function spawnCli(cmd: CliCommand, args: string[], opts: { cwd: string; env: Record<string, string> }): ChildProcessWithoutNullStreams {
+export function spawnCli(cmd: CliCommand, args: string[], opts: { cwd: string; env: Record<string, string>; claudeApiKey?: string }): ChildProcessWithoutNullStreams {
   // This is a new pipe for the CLI protocol. It never shares the daemon's token input pipe.
-  return spawn(cmd.file, [...cmd.args, ...args], { cwd: opts.cwd, env: nodeEnv(cmd, opts.env), stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+  const env = nodeEnv(cmd, opts.env);
+  // Only this explicit private capability restores a key after inherited-environment scrubbing.
+  // Claude removes it again for Bash, hooks and stdio MCP subprocesses.
+  if (opts.claudeApiKey !== undefined) { env.ANTHROPIC_API_KEY = opts.claudeApiKey; env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB = "1"; env.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST = "1"; }
+  return spawn(cmd.file, [...cmd.args, ...args], { cwd: opts.cwd, env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
 }
 
 function safeChildEnv(env: NodeJS.ProcessEnv): Record<string, string> {

@@ -1,0 +1,14 @@
+{
+  "name": "@tjommie/transport",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./wasm": "./wasm/tjommie_noise_bg.wasm"
+  },
+  "scripts": {
+    "build": "node scripts/build.ts",
+    "typecheck": "tsc -p tsconfig.json"
+  }
+}

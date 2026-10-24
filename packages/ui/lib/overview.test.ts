@@ -1,6 +1,6 @@
 import type { Bot, Message, Routine } from "@tjommie/protocol";
 import { describe, expect, it } from "vitest";
-import { matches, nextRoutineLine, overviewSummary, roomLine, talkingWith, taskLine } from "./overview";
+import { matches, nextRoutineLine, overviewLede, overviewSummary, phoneFilters, roomLine, talkingWith, taskLine } from "./overview";
 
 const now = new Date(2026, 8, 27, 14, 0);
 const bot = (state: Bot["state"], extra: Partial<Bot> = {}) => ({ id: "b1", name: "Pnet apply", state, limitedUntil: null, setupReason: null, paused: state === "paused", ...extra });
@@ -89,5 +89,33 @@ describe("the Agents overview", () => {
     const post = message("p1", "text", { conversationId: "team", author: "b2", body: "Done.", createdAt: new Date(2026, 8, 27, 13, 56).toISOString(), data: { exchangeId: "x1", toBotId: "b1" } });
     expect(roomLine([post], bots, now)).toBe("CV Writer and Pnet apply talked 4 minutes ago");
     expect(roomLine([], bots, now)).toBe("No bot chats yet");
+  });
+});
+
+describe("the phone's filter chips", () => {
+  const of = (...states: Bot["state"][]): Pick<Bot, "state">[] => states.map((state) => ({ state }));
+  const shown = (bots: Pick<Bot, "state">[], current: Parameters<typeof phoneFilters>[1] = "all"): string[] =>
+    phoneFilters(bots, current).map((chip) => `${chip.label} ${chip.count}`);
+
+  it("offers only the states some bot is in, with counts", () => {
+    expect(shown(of("working", "waiting", "idle"))).toEqual(["All 3", "Working 1", "Waiting 1"]);
+  });
+
+  it("shows nothing when no chip would narrow the list", () => {
+    expect(shown(of("working", "working"))).toEqual([]);
+    expect(shown(of("idle"))).toEqual([]);
+    expect(shown([])).toEqual([]);
+  });
+
+  it("keeps the picked chip, so a filter that now matches nobody can be left", () => {
+    expect(shown(of("idle", "idle"), "paused")).toEqual(["All 2", "Paused 0"]);
+  });
+});
+
+describe("Folio's lede", () => {
+  it("names a lone bot and counts several", () => {
+    expect(overviewLede([{ name: "Nova", state: "waiting" }, { name: "Ada", state: "working" }, { name: "Bo", state: "working" }])).toBe("2 bots are working; Nova is waiting for you.");
+    expect(overviewLede([{ name: "Ada", state: "idle" }])).toBe("All quiet.");
+    expect(overviewLede([])).toBe("No bots yet.");
   });
 });

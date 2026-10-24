@@ -11,13 +11,13 @@ import { Segmented, Switch } from "../controls";
 import { ConfirmDialog } from "../dialog";
 
 // A settings row (WF3): 56 px on the card fill, radius 12, an icon, the title, and the value at the right.
-export const ROW_BUTTON = "flex h-14 w-full items-center gap-3 rounded-[12px] px-4 text-left";
+export const ROW_BUTTON = "flex h-14 w-full items-center gap-3 rounded-[12px] px-4 text-left max-sm:h-auto max-sm:min-h-14 max-sm:py-3";
 
 export function RowHeader({ icon: Icon, title, value, chevron }: { icon: LucideIcon; title: string; value?: ReactNode; chevron?: "right" | "down" }) {
   return (
     <>
       <Icon className="size-[18px] shrink-0 text-icon" aria-hidden />
-      <span className="flex-1 whitespace-nowrap text-[14px] text-text">{title}</span>
+      <span className="min-w-0 flex-1 whitespace-nowrap text-[14px] text-text max-sm:whitespace-normal">{title}</span>
       {value !== undefined && <span className="flex min-w-0 max-w-[60%] items-center gap-1.5 overflow-hidden whitespace-nowrap text-[13px] text-secondary">{value}</span>}
       {chevron === "right" && <ChevronRight className="size-4 shrink-0 text-icon" aria-hidden />}
       {chevron === "down" && <ChevronDown className="size-4 shrink-0 text-icon" aria-hidden />}
@@ -32,7 +32,7 @@ export function Row({ icon, title, value, open, onToggle, children }: { icon: Lu
       <button type="button" aria-expanded={open} onClick={onToggle} className={ROW_BUTTON}>
         <RowHeader icon={icon} title={title} value={value} chevron={open ? "down" : "right"} />
       </button>
-      {open && <div className="-mt-2 px-4 pb-1.5 pl-[46px]">{children}</div>}
+      {open && <div className="-mt-2 min-w-0 px-4 pb-1.5 pl-[46px] max-sm:overflow-x-auto max-sm:pl-4">{children}</div>}
     </section>
   );
 }

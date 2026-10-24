@@ -14,6 +14,8 @@ import { BotAvatar, MissingAvatar, TeamMark } from "../bot-avatar";
 import { MENU_ITEM, MENU_POPUP } from "../menu";
 
 const CARD = "relative flex h-[368px] flex-col rounded-[14px] border bg-card p-3 pb-4";
+// On a phone a bot is a row, not a card: no thumbnail, routine line or footer, and the menu always there.
+const ROW = "max-sm:h-auto max-sm:pb-3";
 // The footer (WF2): a divider, then a 28 px row 16 px under it.
 const FOOTER = "mt-auto flex h-[45px] items-center border-t border-card-stroke pt-4";
 const CARD_PILL = "flex h-7 items-center rounded-full px-3 text-[14px] font-medium";
@@ -32,22 +34,25 @@ export function BotCard({ bot, bots, messages, routines }: { bot: Bot; bots: Bot
     .map((id) => bots.find((each) => each.id === id))
     .filter((each): each is Bot => each !== undefined);
   return (
-    <article className={cn(CARD, "group", waiting ? "border-waiting-stroke" : "border-card-stroke hover:border-input-stroke")}>
-      <div className={cn("flex h-[181px] shrink-0 flex-col items-center justify-center gap-2 rounded-[10px] bg-popover leading-[18px]", waiting && "ring-2 ring-inset ring-accent")}>
+    <article data-slot="bot-row" data-state={bot.state} className={cn(CARD, ROW, "group", waiting ? "border-waiting-stroke" : "border-card-stroke hover:border-input-stroke")}>
+      <div className={cn("flex h-[181px] shrink-0 flex-col items-center justify-center gap-2 rounded-[10px] bg-popover leading-[18px] max-sm:hidden", waiting && "ring-2 ring-inset ring-accent")}>
         <BotAvatar color={bot.color} shape={bot.shape} size={56} className={dim} />
         <PlaceholderState bot={bot} />
       </div>
-      <div className="mt-4 flex items-center gap-2.5">
-        <BotAvatar color={bot.color} shape={bot.shape} size={28} className="shrink-0" />
-        <h2 className="min-w-0 flex-1 truncate text-[15px] font-semibold leading-[20px] text-title">
+      <div data-slot="row-head" className="mt-4 flex items-center gap-2.5 max-sm:mt-0">
+        <span data-slot="row-avatar" className="flex shrink-0 rounded-full">
+          <BotAvatar color={bot.color} shape={bot.shape} size={28} className="shrink-0" />
+        </span>
+        <h2 data-slot="row-name" className="min-w-0 flex-1 truncate text-[15px] font-semibold leading-[20px] text-title">
           <Link href={chatOf(bot.id)} className={STRETCHED}>
             {bot.name}
           </Link>
         </h2>
         {/* The chip sits flush right (WF2). The hidden menu button waits over the chip's right end, inside the card; when
             it shows, the chip slides left to make room and the button stays put. Transforms only, so nothing else in
-            the row moves. */}
-        <span className={cn("relative flex shrink-0 group-hover:-translate-x-9 has-[:focus-visible]:-translate-x-9 has-[[data-popup-open]]:-translate-x-9", SLIDE)}>
+            the row moves. On a phone the menu is always there, so the row reserves its room instead (no transforms), and
+            the name truncates against the real space. */}
+        <span data-slot="row-chip" className={cn("relative flex shrink-0 group-hover:-translate-x-9 has-[:focus-visible]:-translate-x-9 has-[[data-popup-open]]:-translate-x-9 max-sm:translate-x-0! max-sm:pr-11", SLIDE)}>
           <StateChip bot={bot} />
           <CardMenu bot={bot} onProblem={setProblem} />
         </span>
@@ -58,13 +63,13 @@ export function BotCard({ bot, bots, messages, routines }: { bot: Bot; bots: Bot
           {problem}
         </p>
       ) : (
-        <p className="mt-2.5 truncate text-[13px] leading-[18px] text-body">{taskLine(bot, messages)}</p>
+        <p data-slot="row-task" className="mt-2.5 truncate text-[13px] leading-[18px] text-body">{taskLine(bot, messages)}</p>
       )}
-      <p className="mt-1.5 flex items-center gap-1.5 text-[12px] leading-[18px] text-secondary">
+      <p className="mt-1.5 flex items-center gap-1.5 text-[12px] leading-[18px] text-secondary max-sm:hidden">
         <Clock className="size-3.5 shrink-0" aria-hidden />
         <span className="truncate">{nextRoutineLine(bot, routines)}</span>
       </p>
-      <div className={cn(FOOTER, "gap-2")}>
+      <div className={cn(FOOTER, "gap-2 max-sm:hidden")}>
         {partners.length > 0 ? (
           <>
             <span className="text-[12px] text-caption">Talking with</span>
@@ -84,6 +89,26 @@ export function BotCard({ bot, bots, messages, routines }: { bot: Bot; bots: Bot
         )}
       </div>
     </article>
+  );
+}
+
+// Aurora's "Needs you" card at the top of the phone's Agents list: the first bot waiting for the person, what it asks, and Review, which opens its
+// chat. Only Aurora shows it (globals.css); in the list below, the same bot keeps its row.
+export function NeedsYouCard({ bot, messages }: { bot: Bot; messages: Message[] }) {
+  return (
+    <Link href={chatOf(bot.id)} data-slot="needs-you" className="style-aurora">
+      <span data-slot="row-avatar" className="flex shrink-0 rounded-full">
+        <BotAvatar color={bot.color} shape={bot.shape} size={36} />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block text-[12px] leading-[16px] text-accent">Needs you</span>
+        <span className="block truncate text-[15px] font-semibold leading-[20px] text-title">{bot.name}</span>
+        <span className="block truncate text-[13px] leading-[18px] text-body">{taskLine(bot, messages)}</span>
+      </span>
+      <span aria-hidden className={cn(CARD_PILL, "shrink-0 bg-user-bubble text-user-text")}>
+        Review
+      </span>
+    </Link>
   );
 }
 
@@ -131,7 +156,8 @@ function CardMenu({ bot, onProblem }: { bot: Bot; onProblem: (problem: string | 
       <Menu.Trigger
         aria-label={`Menu for ${bot.name}`}
         className={cn(
-          "absolute right-0 top-1/2 z-10 flex size-7 -translate-y-1/2 items-center justify-center rounded-full bg-pill text-icon opacity-0 hover:text-text",
+          // On a phone it fills the 44 px the row reserves (pr-11) as a quiet ghost button, filled only while its menu is open.
+          "absolute right-0 top-1/2 z-10 flex size-7 -translate-y-1/2 items-center justify-center rounded-full bg-pill text-icon opacity-0 hover:text-text max-sm:size-11 max-sm:translate-x-0! max-sm:bg-transparent max-sm:opacity-100 max-sm:data-[popup-open]:bg-selected",
           "focus-visible:translate-x-9 focus-visible:opacity-100 group-hover:translate-x-9 group-hover:opacity-100 data-[popup-open]:translate-x-9 data-[popup-open]:opacity-100",
           SLIDE,
         )}
@@ -164,7 +190,7 @@ function CardMenu({ bot, onProblem }: { bot: Bot; onProblem: (problem: string | 
 export function TeamRoomCard({ messages, bots }: { messages: Message[]; bots: Bot[] }) {
   const posts = messages.filter((message) => message.kind === "text" && ExchangePostData.safeParse(message.data).success).slice(-2);
   return (
-    <article className={cn(CARD, "border-card-stroke hover:border-input-stroke")}>
+    <article className={cn(CARD, "border-card-stroke hover:border-input-stroke max-sm:hidden")}>
       <div className="flex h-[181px] shrink-0 flex-col justify-center gap-3 overflow-hidden rounded-[10px] bg-popover p-3">
         {posts.length === 0 ? (
           <p className="text-center text-[12px] text-placeholder">No bot chats yet</p>
@@ -206,7 +232,7 @@ export function TeamRoomCard({ messages, bots }: { messages: Message[]; bots: Bo
 
 export function NewBotCard() {
   return (
-    <Link href="/bots/new/" className="flex h-[368px] flex-col items-center justify-center gap-3 rounded-[14px] border border-dashed border-selected text-center hover:bg-card">
+    <Link href="/bots/new/" className="flex h-[368px] flex-col items-center justify-center gap-3 rounded-[14px] border border-dashed border-selected text-center hover:bg-card max-sm:hidden">
       <span className="flex size-12 items-center justify-center rounded-full bg-popover text-icon">
         <Plus className="size-6" aria-hidden />
       </span>

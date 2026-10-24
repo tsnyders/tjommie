@@ -140,3 +140,70 @@ describe("Codex data ACLs", () => {
     expect(log.mock.calls.some((call) => String(call[0]).includes("unexpected path type"))).toBe(true);
   });
 });
+
+
+it("protects every additional account while a new unconfigured account does not block a ready sandbox", () => {
+  const { paths, codexHome } = fixture();
+  const accounts = [
+    { id: "codex-main", provider: "codex" as const, folder: codexHome },
+    { id: "second-codex", provider: "codex" as const, folder: join(paths.accounts, "second-codex") },
+    { id: "second-claude", provider: "claude" as const, folder: join(paths.accounts, "second-claude") },
+  ];
+  mkdirSync(accounts[1].folder); mkdirSync(accounts[2].folder);
+  const acl = driver(); expect(protectCodexData(paths, [], acl, "win32", accounts)).toMatchObject({ ready: true });
+  const targets = acl.runSync.mock.calls[0][0];
+  for (const account of accounts) expect(targets).toContainEqual(expect.objectContaining({ path: account.folder, mode: "deny" }));
+  expect(targets).toContainEqual(expect.objectContaining({ path: join(codexHome, ".sandbox-bin"), mode: "verifyBin" }));
+  expect(targets.some((target) => target.path === join(accounts[1].folder, ".sandbox"))).toBe(false);
+});
+
+it("rejects an account metadata path outside the account-id folder", () => {
+  const { paths } = fixture(); const acl = driver();
+  expect(protectCodexData(paths, [], acl, "win32", [{ id: "other", provider: "codex", folder: paths.root }])).toMatchObject({ ready: false, status: "check_failed" });
+  expect(acl.runSync.mock.calls[0][0].some((target) => target.path === paths.root)).toBe(false);
+});
+
+it("protects an explicitly configured external account root in startup and refresh passes", async () => {
+  const { paths, claude } = fixture();
+  const originalAccounts = paths.accounts;
+  paths.accounts = join(tempRoot(), "external-accounts");
+  const claudeHome = join(paths.accounts, "claude-main"), codexHome = join(paths.accounts, "codex-main");
+  mkdirSync(claudeHome, { recursive: true });
+  mkdirSync(join(codexHome, ".sandbox"), { recursive: true }); mkdirSync(join(codexHome, ".sandbox-bin"));
+  const accounts = [{ id: "claude-main", provider: "claude" as const, folder: claudeHome },
+    { id: "codex-main", provider: "codex" as const, folder: codexHome }];
+  const acl = driver();
+  expect(protectCodexData(paths, [claude], acl, "win32")).toMatchObject({ ready: true });
+  expect(await protectCodexDataAsync(paths, [claude], acl, "win32", accounts)).toMatchObject({ ready: true });
+  const targets = acl.run.mock.calls[0][0];
+  expect(acl.runSync.mock.calls[0][0]).toEqual(targets);
+  for (const path of [claudeHome, codexHome, paths.data, paths.logs, paths.sharedFiles, claude.homeFolder]) {
+    expect(targets).toContainEqual(expect.objectContaining({ path, mode: "deny" }));
+  }
+  expect(targets).toContainEqual(expect.objectContaining({ path: join(codexHome, ".sandbox"), mode: "allow" }));
+  expect(targets).toContainEqual(expect.objectContaining({ path: join(codexHome, ".sandbox-bin"), mode: "verifyBin" }));
+  expect(targets.some(({ path }) => path.startsWith(originalAccounts) || path === paths.accounts)).toBe(false);
+});
+
+it("keeps exact account identity and non-account data containment with an external account root", () => {
+  const { paths } = fixture(); const acl = driver();
+  paths.accounts = tempRoot();
+  const wrong = join(paths.accounts, "wrong-id"); mkdirSync(wrong);
+  paths.logs = join(paths.accounts, "logs"); mkdirSync(paths.logs);
+  expect(protectCodexData(paths, [], acl, "win32", [{ id: "expected-id", provider: "claude", folder: wrong }])).toMatchObject({ ready: false, status: "check_failed" });
+  const targets = acl.runSync.mock.calls[0][0];
+  expect(targets.some(({ path }) => path === wrong || path === paths.logs)).toBe(false);
+});
+
+it.skipIf(process.platform !== "win32").each(["root", "account", "sandbox", "sandbox-bin"] as const)("rejects an external account %s junction before applying ACLs through it", (kind) => {
+  const paths = dataPaths(tempRoot()); paths.accounts = join(tempRoot(), "accounts");
+  const outside = tempRoot(), home = join(paths.accounts, "codex-main");
+  const unsafe = kind === "root" ? paths.accounts : kind === "account" ? home : join(home, `.${kind}`);
+  if (kind !== "root") mkdirSync(paths.accounts);
+  if (kind === "sandbox" || kind === "sandbox-bin") mkdirSync(home);
+  if (kind === "sandbox-bin") mkdirSync(join(home, ".sandbox"));
+  symlinkSync(outside, unsafe, "junction");
+  const acl = driver();
+  expect(protectCodexData(paths, [], acl, "win32", [{ id: "codex-main", provider: "codex", folder: home }])).toMatchObject({ ready: false, status: "check_failed" });
+  expect(acl.runSync.mock.calls[0][0].some(({ path }) => path === unsafe || path.startsWith(`${unsafe}\\`) || path.startsWith(outside))).toBe(false);
+});

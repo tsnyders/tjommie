@@ -23,7 +23,7 @@ export function Rail() {
       .then((info) => setInitial(info.username.slice(0, 1).toUpperCase()));
   }, []);
   return (
-    <nav aria-label="Tjommie" className="flex w-[88px] shrink-0 flex-col items-center border-r border-rail-edge bg-rail pt-2.5 pb-4">
+    <nav aria-label="Tjommie" className="flex w-[88px] shrink-0 flex-col items-center border-r border-rail-edge bg-rail pt-2.5 pb-4 max-sm:hidden">
       <RailLink href="/room/" label="Team room" selected={pathname.startsWith("/room")}>
         <TeamMark size={40} dimmed={bots.length === 0} />
       </RailLink>

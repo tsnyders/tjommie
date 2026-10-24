@@ -53,6 +53,13 @@
   --mention: #459fff;
   --file-tile: #fdecec;
   --user-avatar: #777777;
+  /* The phone's floating nav (Hush light). Only the phone layout draws it. */
+  --tabbar: #ffffff;
+  --tabbar-stroke: #e7e7e7;
+  --tabbar-selected: #efefef;
+  --tabbar-fg: #6b6b6b;
+  --tabbar-selected-fg: #0a0a0a;
+  --tabbar-shadow: 0 12px 32px rgb(0 0 0 / 0.1);
 }
 
 .dark {
@@ -94,6 +101,12 @@
   --mention: #1d6fe0;
   --file-tile: #3a2020;
   --user-avatar: #777777;
+  --tabbar: #141414;
+  --tabbar-stroke: #262626;
+  --tabbar-selected: #2a2a2a;
+  --tabbar-fg: #8e8e8e;
+  --tabbar-selected-fg: #f4f4f4;
+  --tabbar-shadow: 0 12px 32px rgb(0 0 0 / 0.55);
 }
 
 @theme inline {
@@ -135,7 +148,13 @@
   --color-mention: var(--mention);
   --color-file-tile: var(--file-tile);
   --color-user-avatar: var(--user-avatar);
+  --color-tabbar: var(--tabbar);
+  --color-tabbar-stroke: var(--tabbar-stroke);
+  --color-tabbar-selected: var(--tabbar-selected);
+  --color-tabbar-fg: var(--tabbar-fg);
+  --color-tabbar-selected-fg: var(--tabbar-selected-fg);
   --shadow-composer: 0 2px 6px rgb(0 0 0 / 0.08);
+  --shadow-tabbar: var(--tabbar-shadow);
 }
 
 @layer base {
@@ -260,5 +279,646 @@
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+  }
+}
+
+/* The Android app is edge to edge: the system bars and the camera cutout are over the page, so the shell keeps clear of them. The native inset when the web view
+   gives one, the value Capacitor sets on older web views otherwise, and nothing elsewhere (the desktop window and the web have no .android-app). */
+.android-app {
+  box-sizing: border-box;
+  padding-top: max(env(safe-area-inset-top, 0px), var(--safe-area-inset-top, 0px));
+  padding-right: max(env(safe-area-inset-right, 0px), var(--safe-area-inset-right, 0px));
+  padding-bottom: max(env(safe-area-inset-bottom, 0px), var(--safe-area-inset-bottom, 0px));
+  padding-left: max(env(safe-area-inset-left, 0px), var(--safe-area-inset-left, 0px));
+}
+
+/* Quiet phone motion. Keeping these rules under the phone breakpoint leaves desktop
+   transitions alone. No layout, scrolling, typing or streamed-message animation. */
+@media (width < 640px) {
+  :root {
+    --phone-motion-fast: 120ms;
+    --phone-motion-popup: 160ms;
+    --phone-motion-sheet: 200ms;
+    --phone-motion-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+  .mobile-motion-choice {
+    transition: background-color var(--phone-motion-fast) ease-out,
+      color var(--phone-motion-fast) ease-out;
+  }
+  .mobile-motion-popup {
+    transform-origin: var(--transform-origin, center);
+    transition: opacity var(--phone-motion-popup) var(--phone-motion-ease),
+      scale var(--phone-motion-popup) var(--phone-motion-ease);
+  }
+  .mobile-motion-popup[data-starting-style],
+  .mobile-motion-popup[data-ending-style] {
+    opacity: 0;
+    scale: 0.98;
+  }
+  .mobile-motion-popup[data-ending-style] {
+    transition-duration: var(--phone-motion-fast);
+  }
+  .mobile-motion-dialog {
+    transition-duration: var(--phone-motion-sheet);
+    transition-timing-function: var(--phone-motion-ease);
+  }
+  .mobile-motion-dialog[data-starting-style],
+  .mobile-motion-dialog[data-ending-style] {
+    scale: 0.98;
+  }
+  .mobile-motion-dialog[data-ending-style] {
+    transition-duration: var(--phone-motion-fast);
+  }
+  .mobile-motion-sheet {
+    transform-origin: center;
+    animation: phone-sheet-in var(--phone-motion-sheet) var(--phone-motion-ease);
+  }
+  @keyframes phone-sheet-in {
+    from { opacity: 0; transform: scale(0.99); }
+    to { opacity: 1; transform: scale(1); }
+  }
+}
+@media (width < 640px) and (prefers-reduced-motion: reduce) {
+  .mobile-motion-choice,
+  .mobile-motion-popup,
+  .mobile-motion-dialog { transition: none !important; }
+  .mobile-motion-sheet { animation: none !important; }
+}
+
+/* ---------------------------------------------------------------------------------------------------------------
+   The phone's three styles: Hush (the default), Folio and Aurora, picked in Settings > General and kept per device
+   on html[data-mobile-style]. Values are docs/design/mobile-refinement/prototype.css ("1 HUSH", "2 FOLIO", "3 AURORA").
+   Everything below is inside the phone breakpoint, so the desktop (640 px and wider) is untouched. The styles restyle
+   the production markup through the existing tokens and a few data-slot hooks; no component forks per style.
+   --------------------------------------------------------------------------------------------------------------- */
+
+/* Folio's serif: Newsreader (SIL Open Font License, public/fonts/Newsreader-OFL.txt), bundled, never fetched from the
+   network. A face only downloads once something on screen uses it, so Hush, Aurora and the desktop never load it. */
+@font-face {
+  font-family: "Newsreader";
+  src: url("/fonts/newsreader-latin-wght-normal.woff2") format("woff2");
+  font-weight: 200 800;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Newsreader";
+  src: url("/fonts/newsreader-latin-wght-italic.woff2") format("woff2");
+  font-weight: 200 800;
+  font-style: italic;
+  font-display: swap;
+}
+
+/* The pieces only one style draws (Folio's date line and lede, Aurora's "Needs you" card) are hidden everywhere else. */
+.style-folio,
+.style-aurora {
+  display: none;
+}
+.style-swatch {
+  width: 28px;
+  height: 18px;
+  border-radius: 999px;
+  border: 1px solid var(--divider);
+}
+.style-swatch[data-swatch="hush"] { background: linear-gradient(90deg, #070707 50%, #fcfcfc 50%); }
+.style-swatch[data-swatch="folio"] { background: linear-gradient(90deg, #1d1b17 50%, #f3efe6 50%); }
+.style-swatch[data-swatch="aurora"] { background: radial-gradient(circle at 30% 40%, #8fbcff, transparent 60%), radial-gradient(circle at 75% 60%, #66dba0, transparent 60%), #05060a; }
+
+@media (width < 640px) {
+  /* ---- Shared ---------------------------------------------------------------------------------------------- */
+  :root {
+    --font-display: var(--font-sans);
+    --nav-clear: 100px; /* the floating nav, its gap above the screen's bottom, and some air */
+    --ind-dur: 300ms;
+    --ind-ease: cubic-bezier(0.77, 0, 0.175, 1);
+    --view-dur: 180ms;
+    --rise: 6px;
+    --stagger: 26ms;
+    --phone-motion-ease: cubic-bezier(0.23, 1, 0.32, 1);
+  }
+
+  /* The floating nav: no tray behind it. It clears the gesture bar in the Android app and steps aside for the keyboard. */
+  .phone-nav {
+    bottom: max(20px, calc(max(env(safe-area-inset-bottom, 0px), var(--safe-area-inset-bottom, 0px)) + 10px));
+    transition: opacity 120ms ease-out, translate 120ms ease-out;
+  }
+  .phone-nav[data-hidden] {
+    opacity: 0;
+    translate: 0 12px;
+    pointer-events: none;
+  }
+  .phone-nav [data-slot="nav-capsule"] {
+    transition: transform var(--ind-dur) var(--ind-ease);
+  }
+  [data-nav] [data-nav-clear] {
+    padding-bottom: var(--nav-clear);
+  }
+  [data-nav] [data-nav-composer] {
+    padding-bottom: calc(var(--nav-clear) - 8px);
+  }
+
+  /* Pages come in (never go out), opacity only in every style: a page may hold the native Browser, whose ancestors must never transform or
+     filter. The Agents rows rise on first mount only: a row's state changing doesn't replay it. */
+  main > :first-child {
+    animation: phone-view-in var(--view-dur) var(--phone-motion-ease) both;
+  }
+  [data-slot="bot-row"] {
+    animation: phone-rise calc(var(--view-dur) + 120ms) var(--phone-motion-ease) both;
+  }
+  [data-slot="bot-row"]:nth-child(2) { animation-delay: var(--stagger); }
+  [data-slot="bot-row"]:nth-child(3) { animation-delay: calc(var(--stagger) * 2); }
+  [data-slot="bot-row"]:nth-child(4) { animation-delay: calc(var(--stagger) * 3); }
+  [data-slot="bot-row"]:nth-child(5) { animation-delay: calc(var(--stagger) * 4); }
+  [data-slot="bot-row"]:nth-child(n + 6) { animation-delay: calc(var(--stagger) * 5); }
+  @keyframes phone-view-in { from { opacity: 0; } }
+  @keyframes phone-rise { from { opacity: 0; transform: translateY(var(--rise)); } }
+  @keyframes phone-breathe { 50% { opacity: 0.35; transform: scale(0.8); } }
+
+  /* ---- 1 Hush: today's tokens, quieter. Hairline rows instead of cards, a tonal New bot, a breathing working dot. */
+  [data-slot="bot-list"] {
+    gap: 0;
+  }
+  [data-slot="bot-row"] {
+    border-width: 0 0 1px;
+    border-color: var(--divider);
+    border-radius: 0;
+    background: transparent;
+    padding: 14px 0;
+  }
+  [data-slot="bot-row"][data-state="waiting"] {
+    border-color: var(--divider);
+  }
+  [data-slot="row-chip"] > span:first-child {
+    background: transparent;
+    padding-inline: 0 4px;
+  }
+  [data-slot="bot-row"][data-state="working"] [data-slot="row-chip"] > span:first-child {
+    color: var(--working);
+  }
+  [data-slot="bot-row"][data-state="working"] [data-slot="row-chip"] svg {
+    width: 7px;
+    height: 7px;
+    border-radius: 999px;
+    background: currentColor;
+    animation: phone-breathe 1.6s ease-in-out infinite;
+  }
+  [data-slot="bot-row"][data-state="working"] [data-slot="row-chip"] svg > * {
+    display: none;
+  }
+  [data-slot="new-bot"] {
+    background: var(--pill);
+    color: var(--text);
+  }
+
+  /* ---- 2 Folio: warm paper and ink, a serif for names and replies, rules instead of boxes, text-tab filters. -- */
+  html[data-mobile-style="folio"] {
+    --canvas: #f3efe6;
+    --rail: #ece7dc;
+    --rail-edge: #ddd6c7;
+    --card: #ece7dc;
+    --card-stroke: #ddd6c7;
+    --drawer: #ece7dc;
+    --divider: #ddd6c7;
+    --bubble: transparent;
+    --pill: #e5dfd2;
+    --chip: #ece7dc;
+    --composer: #faf8f3;
+    --composer-stroke: #d6cebd;
+    --selected: #e5dfd2;
+    --nav-selected: #e5dfd2;
+    --popover: #faf8f3;
+    --highlight: #e5dfd2;
+    --input-stroke: #c6bdab;
+    --disabled: #e5dfd2;
+    --code: #e5dfd2;
+    --user-bubble: #1d1b17;
+    --user-text: #f3efe6;
+    --text: #1d1b17;
+    --title: #1d1b17;
+    --body: #3e3a33;
+    --secondary: #6f695d;
+    --caption: #6f695d;
+    --label: #6f695d;
+    --placeholder: #7a7366;
+    --icon: #4c4840;
+    --accent: #b4412a;
+    --working: #2f6b45;
+    --waiting-fill: #f6e5de;
+    --waiting-stroke: #e2b3a5;
+    --you-bubble: #e4ddcd;
+    --you-text: #1d1b17;
+    --tabbar: #1d1b17;
+    --tabbar-stroke: #1d1b17;
+    --tabbar-selected: #f3efe6;
+    --tabbar-fg: #b9b1a1;
+    --tabbar-selected-fg: #1d1b17;
+    --tabbar-shadow: 0 14px 34px rgb(29 27 23 / 0.28);
+    --font-display: "Newsreader", "Noto Serif", Georgia, serif;
+    --ind-dur: 380ms;
+    --ind-ease: cubic-bezier(0.65, 0, 0.35, 1);
+    --view-dur: 240ms;
+    --rise: 12px;
+    --stagger: 48ms;
+    --phone-motion-fast: 240ms;
+    --phone-motion-popup: 220ms;
+    --phone-motion-sheet: 420ms;
+    --phone-motion-ease: cubic-bezier(0.32, 0.72, 0, 1);
+  }
+  html.dark[data-mobile-style="folio"] {
+    --canvas: #12110e;
+    --rail: #191814;
+    --rail-edge: #2c2a23;
+    --card: #191814;
+    --card-stroke: #2c2a23;
+    --drawer: #191814;
+    --divider: #2c2a23;
+    --pill: #26241e;
+    --chip: #191814;
+    --composer: #201e19;
+    --composer-stroke: #353128;
+    --selected: #26241e;
+    --nav-selected: #26241e;
+    --popover: #211f1a;
+    --highlight: #2c2a23;
+    --input-stroke: #3f3b32;
+    --disabled: #2c2a23;
+    --code: #201e19;
+    --user-bubble: #eee8db;
+    --user-text: #12110e;
+    --text: #eee8db;
+    --title: #eee8db;
+    --body: #cfc8b9;
+    --secondary: #979080;
+    --caption: #979080;
+    --label: #979080;
+    --placeholder: #857e70;
+    --icon: #bdb6a6;
+    --accent: #e5765c;
+    --working: #7db68f;
+    --waiting-fill: #2a1813;
+    --waiting-stroke: #5e2d21;
+    --you-bubble: #2a2722;
+    --you-text: #eee8db;
+    --tabbar: #23211b;
+    --tabbar-stroke: #353128;
+    --tabbar-selected: #eee8db;
+    --tabbar-fg: #979080;
+    --tabbar-selected-fg: #12110e;
+    --tabbar-shadow: 0 14px 34px rgb(0 0 0 / 0.5);
+  }
+  html[data-mobile-style="folio"] :is(main h1, main h2, [data-slot="row-name"], [data-slot="title-name"]) {
+    font-family: var(--font-display);
+    font-weight: 500;
+    letter-spacing: -0.005em;
+  }
+  html[data-mobile-style="folio"] [data-slot="title"] {
+    font-size: 40px;
+    line-height: 44px;
+    letter-spacing: -0.02em;
+  }
+  html[data-mobile-style="folio"] .style-folio {
+    display: block;
+  }
+  html[data-mobile-style="folio"] [data-slot="date"] {
+    margin-bottom: 2px;
+    font-size: 13px;
+    line-height: 18px;
+    color: var(--secondary);
+  }
+  html[data-mobile-style="folio"] [data-slot="summary"] {
+    display: none;
+  }
+  html[data-mobile-style="folio"] [data-slot="lede"] {
+    display: -webkit-box; /* keeps its two-line clamp over .style-folio's block */
+    margin-top: 8px;
+    font-family: var(--font-display);
+    font-size: 17px;
+    line-height: 24px;
+    color: var(--body);
+  }
+  html[data-mobile-style="folio"] [data-slot="filters"] {
+    gap: 20px;
+    border-bottom: 1px solid var(--divider);
+  }
+  html[data-mobile-style="folio"] [data-slot="filter"] {
+    height: 44px;
+    border-width: 0 0 2px;
+    border-color: transparent;
+    border-radius: 0;
+    background: transparent;
+    padding-inline: 0;
+    margin-bottom: -1px;
+    transition: border-color var(--ind-dur) var(--ind-ease), color var(--ind-dur) var(--ind-ease);
+  }
+  html[data-mobile-style="folio"] [data-slot="filter"][aria-pressed="true"] {
+    border-color: var(--text);
+    background: transparent;
+  }
+  html[data-mobile-style="folio"] [data-slot="bot-row"] {
+    padding: 16px 0;
+  }
+  html[data-mobile-style="folio"] [data-slot="row-name"] {
+    font-size: 18px;
+    line-height: 24px;
+  }
+  html[data-mobile-style="folio"] [data-slot="row-task"] {
+    font-size: 14px;
+    line-height: 20px;
+  }
+  html[data-mobile-style="folio"] [data-slot="bot-row"][data-state="waiting"] [data-slot="row-chip"] > span:first-child {
+    background: transparent;
+    font-style: italic;
+    text-decoration: underline wavy var(--accent) 1px;
+    text-underline-offset: 4px;
+  }
+  html[data-mobile-style="folio"] [data-slot="title-chip"] {
+    background: transparent;
+  }
+  html[data-mobile-style="folio"] [data-slot="title-name"] {
+    font-size: 18px;
+  }
+  /* Bot replies are plain serif text, no bubble; the person's own messages sit on paper. */
+  html[data-mobile-style="folio"] [data-author="bot"] {
+    padding-inline: 0;
+    font-family: var(--font-display);
+    font-size: 16.5px;
+    line-height: 25px;
+  }
+  html[data-mobile-style="folio"] [data-author="bot"] :is(code, pre) {
+    font-size: 13px;
+  }
+  html[data-mobile-style="folio"] [data-author="you"] {
+    background: var(--you-bubble);
+    color: var(--you-text);
+    border-radius: 18px 18px 4px 18px;
+  }
+  /* A shared file keeps a surface of its own: Folio clears the bubble fill it would otherwise borrow. */
+  html[data-mobile-style="folio"] [data-slot="file-card"] {
+    background: var(--card);
+  }
+  html[data-mobile-style="folio"] [data-nav-composer] [data-slot="composer"],
+  html[data-mobile-style="folio"] [data-slot="new-bot"] {
+    border-radius: 14px;
+  }
+  html[data-mobile-style="folio"] [data-slot="new-bot"] {
+    background: var(--user-bubble);
+    color: var(--user-text);
+  }
+
+  /* ---- 3 Aurora: dark glass over slow drifting light. Glass only on the main surfaces (rows, nav, composer, menus,
+     the Needs-you card); forms and dialogs keep solid surfaces so dense text stays legible. ------------------- */
+  html[data-mobile-style="aurora"] {
+    --canvas: #eef1f7;
+    --rail: #e8ecf3;
+    --rail-edge: rgb(20 30 60 / 0.08);
+    --card: rgb(255 255 255 / 0.55);
+    --card-stroke: rgb(255 255 255 / 0.8);
+    --drawer: #e8ecf3;
+    --divider: rgb(20 30 60 / 0.08);
+    --bubble: rgb(255 255 255 / 0.72);
+    --pill: rgb(255 255 255 / 0.7);
+    --chip: rgb(255 255 255 / 0.5);
+    --composer: rgb(255 255 255 / 0.62);
+    --composer-stroke: rgb(255 255 255 / 0.9);
+    --selected: rgb(255 255 255 / 0.9);
+    --nav-selected: rgb(255 255 255 / 0.8);
+    --popover: #f4f6fa;
+    --highlight: rgb(20 30 60 / 0.06);
+    --input-stroke: rgb(20 30 60 / 0.16);
+    --disabled: rgb(20 30 60 / 0.06);
+    --code: rgb(20 30 60 / 0.06);
+    --user-bubble: #0b1020;
+    --user-text: #ffffff;
+    --text: #0b1020;
+    --title: #0b1020;
+    --body: #2b3247;
+    --secondary: #586078;
+    --caption: #586078;
+    --label: #586078;
+    --placeholder: #626a80;
+    --icon: #3b4359;
+    --accent: #2459d6;
+    --working: #0f8a52;
+    --waiting-fill: rgb(36 89 214 / 0.08);
+    --waiting-stroke: rgb(36 89 214 / 0.25);
+    --glass: rgb(255 255 255 / 0.5);
+    --glass-line: rgb(255 255 255 / 0.8);
+    --glass-hi: rgb(255 255 255 / 0.9);
+    --glass-blur: blur(22px) saturate(170%);
+    --glass-solid: #ffffff;
+    --menu-glass: rgb(255 255 255 / 0.72);
+    --blob-o: 0.5;
+    --tabbar: rgb(255 255 255 / 0.55);
+    --tabbar-stroke: rgb(255 255 255 / 0.85);
+    --tabbar-selected: rgb(255 255 255 / 0.95);
+    --tabbar-fg: #586078;
+    --tabbar-selected-fg: #0b1020;
+    --tabbar-shadow: 0 12px 36px rgb(30 40 80 / 0.16);
+    --ind-dur: 560ms;
+    --ind-ease: cubic-bezier(0.34, 1.4, 0.64, 1);
+    --view-dur: 320ms;
+    --rise: 0px;
+    --stagger: 40ms;
+    --phone-motion-popup: 260ms;
+    --phone-motion-sheet: 420ms;
+    --phone-motion-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  html.dark[data-mobile-style="aurora"] {
+    --canvas: #05060a;
+    --rail: #0b0d14;
+    --rail-edge: rgb(255 255 255 / 0.1);
+    --card: rgb(255 255 255 / 0.055);
+    --card-stroke: rgb(255 255 255 / 0.1);
+    --drawer: #0b0d14;
+    --divider: rgb(255 255 255 / 0.1);
+    --bubble: rgb(255 255 255 / 0.08);
+    --pill: rgb(255 255 255 / 0.1);
+    --chip: rgb(255 255 255 / 0.07);
+    --composer: rgb(255 255 255 / 0.08);
+    --composer-stroke: rgb(255 255 255 / 0.13);
+    --selected: rgb(255 255 255 / 0.13);
+    --nav-selected: rgb(255 255 255 / 0.1);
+    --popover: #171925;
+    --highlight: rgb(255 255 255 / 0.1);
+    --input-stroke: rgb(255 255 255 / 0.18);
+    --disabled: rgb(255 255 255 / 0.12);
+    --code: rgb(255 255 255 / 0.08);
+    --user-bubble: #f5f7fc;
+    --user-text: #05060a;
+    --text: #f5f7fc;
+    --title: #f5f7fc;
+    --body: rgb(236 240 250 / 0.84);
+    /* 0.8, not lighter: small supporting text must stay at 4.5:1 even over the brightest part of the drifting light. */
+    --secondary: rgb(222 230 246 / 0.8);
+    --caption: rgb(222 230 246 / 0.8);
+    --label: rgb(222 230 246 / 0.8);
+    --placeholder: rgb(222 230 246 / 0.55);
+    --icon: rgb(236 240 250 / 0.78);
+    --accent: #8fbcff;
+    --working: #66dba0;
+    --waiting-fill: rgb(143 188 255 / 0.14);
+    --waiting-stroke: rgb(143 188 255 / 0.35);
+    --glass: rgb(255 255 255 / 0.07);
+    --glass-line: rgb(255 255 255 / 0.13);
+    --glass-hi: rgb(255 255 255 / 0.16);
+    --glass-solid: #12141c;
+    --menu-glass: rgb(28 30 42 / 0.72);
+    --blob-o: 0.38;
+    --tabbar: rgb(22 24 34 / 0.5);
+    --tabbar-stroke: rgb(255 255 255 / 0.13);
+    --tabbar-selected: rgb(255 255 255 / 0.14);
+    --tabbar-fg: rgb(222 230 246 / 0.8);
+    --tabbar-selected-fg: #f5f7fc;
+    --tabbar-shadow: 0 14px 40px rgb(0 0 0 / 0.5);
+  }
+  /* The drifting light: three blobs behind everything, in the working and waiting colours; transforms only. */
+  html[data-mobile-style="aurora"] body::before,
+  html[data-mobile-style="aurora"] body::after {
+    content: "";
+    position: fixed;
+    z-index: -1;
+    width: 85vw;
+    aspect-ratio: 1;
+    border-radius: 50%;
+    opacity: var(--blob-o);
+    filter: blur(30px);
+    pointer-events: none;
+    will-change: transform;
+  }
+  html[data-mobile-style="aurora"] body::before {
+    left: -30vw;
+    top: -10vh;
+    background: radial-gradient(closest-side, var(--accent), transparent);
+    animation: aurora-drift-a 26s ease-in-out infinite;
+  }
+  html[data-mobile-style="aurora"] body::after {
+    right: -34vw;
+    bottom: 8vh;
+    background: radial-gradient(closest-side, var(--working), transparent);
+    animation: aurora-drift-b 31s ease-in-out infinite;
+  }
+  @keyframes aurora-drift-a { 50% { transform: translate(18vw, 14vh) scale(1.08); } }
+  @keyframes aurora-drift-b { 50% { transform: translate(-16vw, -12vh) scale(0.94); } }
+  /* The screens let the light through: their own canvas fills go clear. */
+  html[data-mobile-style="aurora"] body,
+  html[data-mobile-style="aurora"] nav[aria-label="Settings"] {
+    background-color: transparent;
+  }
+  html[data-mobile-style="aurora"] {
+    background: var(--canvas);
+  }
+  html[data-mobile-style="aurora"] :is([data-slot="bot-row"], [data-slot="needs-you"], [data-slot="filter"], .phone-nav nav, [data-slot="composer"], [role="menu"], #mention-list) {
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
+  }
+  html[data-mobile-style="aurora"] :is([data-slot="bot-row"], [data-slot="needs-you"]) {
+    margin-bottom: 8px;
+    border: 1px solid var(--glass-line);
+    border-radius: 22px;
+    background: var(--glass);
+    box-shadow: inset 0 1px 0 var(--glass-hi);
+    padding: 14px 14px 14px;
+  }
+  html[data-mobile-style="aurora"] [data-slot="bot-row"][data-state="waiting"] {
+    border-color: var(--waiting-stroke);
+  }
+  html[data-mobile-style="aurora"] [data-slot="row-chip"] > span:first-child {
+    background: var(--glass);
+    padding-inline: 8px;
+  }
+  html[data-mobile-style="aurora"] [data-slot="filter"] {
+    border-color: var(--glass-line);
+    background: var(--glass);
+  }
+  html[data-mobile-style="aurora"] [data-slot="filter"][aria-pressed="true"] {
+    background: var(--selected);
+    box-shadow: inset 0 1px 0 var(--glass-hi);
+  }
+  html[data-mobile-style="aurora"] [data-slot="needs-you"] {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-bottom: 14px;
+    padding: 16px;
+    border-radius: 26px;
+    animation: aurora-in var(--view-dur) var(--phone-motion-ease) both;
+  }
+  html[data-mobile-style="aurora"] [data-slot="title"] {
+    font-size: 34px;
+    line-height: 40px;
+    letter-spacing: -0.025em;
+    font-weight: 700;
+  }
+  html[data-mobile-style="aurora"] [role="menu"] {
+    background: var(--menu-glass);
+    border-color: var(--glass-line);
+    border-radius: 20px;
+  }
+  html[data-mobile-style="aurora"] [data-slot="composer"] {
+    box-shadow: inset 0 1px 0 var(--glass-hi), 0 6px 20px rgb(0 0 0 / 0.25);
+  }
+  html[data-mobile-style="aurora"] .phone-nav [data-slot="nav-capsule"] {
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.25);
+  }
+  /* Halos on row and Needs-you avatars only (never on messages): a breathing ring for working and for waiting. */
+  html[data-mobile-style="aurora"] :is([data-slot="bot-row"][data-state="working"], [data-slot="bot-row"][data-state="waiting"], [data-slot="needs-you"]) [data-slot="row-avatar"] {
+    box-shadow: 0 0 0 2px var(--canvas), 0 0 0 3.5px var(--halo, var(--working));
+    animation: aurora-halo 2.4s ease-in-out infinite;
+  }
+  html[data-mobile-style="aurora"] :is([data-slot="bot-row"][data-state="waiting"], [data-slot="needs-you"]) [data-slot="row-avatar"] {
+    --halo: var(--accent);
+  }
+  html[data-mobile-style="aurora"] [data-slot="bot-row"] {
+    animation-name: aurora-in;
+  }
+  @keyframes aurora-in { from { opacity: 0; filter: blur(10px); transform: scale(0.97); } }
+  @keyframes aurora-halo { 50% { box-shadow: 0 0 0 2px var(--canvas), 0 0 0 5px color-mix(in srgb, var(--halo, var(--working)) 45%, transparent); } }
+
+  /* Reduce effects (Settings), or a system asking for less transparency: solid surfaces, no blur, no drifting light. */
+  html[data-mobile-style="aurora"][data-reduce-effects] {
+    --glass: var(--glass-solid);
+    --menu-glass: var(--popover);
+    --tabbar: var(--glass-solid);
+    --card: var(--glass-solid);
+    --composer: var(--glass-solid);
+    --bubble: color-mix(in srgb, var(--glass-solid) 80%, var(--text) 8%);
+    --glass-blur: none;
+  }
+  html[data-mobile-style="aurora"][data-reduce-effects] body::before,
+  html[data-mobile-style="aurora"][data-reduce-effects] body::after {
+    display: none;
+  }
+}
+
+@media (width < 640px) and (prefers-reduced-transparency: reduce) {
+  html[data-mobile-style="aurora"] {
+    --glass: var(--glass-solid);
+    --menu-glass: var(--popover);
+    --tabbar: var(--glass-solid);
+    --card: var(--glass-solid);
+    --composer: var(--glass-solid);
+    --glass-blur: none;
+  }
+  html[data-mobile-style="aurora"] body::before,
+  html[data-mobile-style="aurora"] body::after {
+    display: none;
+  }
+}
+
+/* Reduced motion: opacity fades only; the live loops (working dot, halos, drifting light) rest. */
+@media (width < 640px) and (prefers-reduced-motion: reduce) {
+  [data-slot="bot-row"],
+  [data-slot="needs-you"],
+  main > :first-child {
+    animation-name: phone-view-in !important;
+  }
+  [data-slot="row-avatar"],
+  [data-slot="row-chip"] svg,
+  html[data-mobile-style="aurora"] body::before,
+  html[data-mobile-style="aurora"] body::after {
+    animation: none !important;
+  }
+  .phone-nav [data-slot="nav-capsule"] {
+    transition: none;
   }
 }

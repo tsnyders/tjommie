@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { browserMethods } from "./browser.ts";
 import { googleEvents, googleMethods } from "./google.ts";
+import { accountEvents, accountMethods } from "./accounts.ts";
+import { remoteEvents, remoteMethods } from "./remote.ts";
 import {
   Approval,
   ApprovalDecision,
@@ -37,6 +39,8 @@ const PendingRoutineNotification = z.object({
 
 // Every request the daemon answers: params are validated on arrival, results are what handlers return.
 export const methods = {
+  ...remoteMethods,
+  ...accountMethods,
   ...browserMethods,
   ...googleMethods,
   "setup.status": { params: Empty, result: z.array(ProviderSetup) },
@@ -76,6 +80,8 @@ const Notification = z.object({ botId: z.string(), title: z.string(), body: z.st
 
 // Everything the daemon pushes to connected clients.
 export const events = {
+  ...remoteEvents,
+  ...accountEvents,
   ...googleEvents,
   "message.added": Message,
   "message.updated": Message,

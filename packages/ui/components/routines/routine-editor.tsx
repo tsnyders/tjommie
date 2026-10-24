@@ -9,6 +9,7 @@ import { timesLabel } from "@/lib/format";
 import { errorText } from "@/lib/labels";
 import { addTime, routineProblem, runLine, stopAfterOptions, toggleDay, WEEK, zoneLine, type RunLine } from "@/lib/routine-form";
 import { useApp } from "@/lib/store";
+import { ifAlive, useAlive } from "@/lib/use-draft";
 import { cn } from "@/lib/utils";
 import { FIELD, Label, Segmented, Switch } from "../controls";
 import { Dialog } from "../dialog";
@@ -63,15 +64,23 @@ export function RoutineEditor({ title, initial, timeZone, runsFor, onClose, onSa
     };
   }, [runsFor, latestRun]);
 
+  // A Save or Delete that finishes after this editor was closed (and maybe another opened in its place) closes nothing: the close is this editor's own.
+  const alive = useAlive();
+  const close = useRef(onClose);
+  useEffect(() => {
+    close.current = onClose;
+  });
   async function act(action: () => Promise<void>): Promise<void> {
     setBusy(true);
     setProblem(null);
     try {
       await action();
-      onClose();
+      ifAlive(alive, () => close.current());
     } catch (error) {
-      setProblem(errorText(error));
-      setBusy(false);
+      ifAlive(alive, () => {
+        setProblem(errorText(error));
+        setBusy(false);
+      });
     }
   }
 

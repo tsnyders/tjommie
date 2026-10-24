@@ -389,3 +389,29 @@ describe("ClaudeSession lifecycle", () => {
     }
   });
 });
+
+
+describe("Claude API accounts", () => {
+  it("passes only the positive remaining local allowance as a provider estimate threshold", () => {
+    expect(claudeArgs({ ...base, maxBudgetUsd: 0.25 }, files)).toContain("--max-budget-usd");
+    expect(claudeArgs({ ...base, maxBudgetUsd: 0.25 }, files)).toContain("0.25");
+    for (const value of [0, -1, NaN, Infinity]) expect(() => claudeArgs({ ...base, maxBudgetUsd: value }, files)).toThrow("remaining");
+  });
+  it("keeps API authentication out of argv/files and redacts provider errors while deduplicating results", async () => {
+    const { child, stdout, stderr } = fakeChild(); cliMocks.spawnCli.mockReturnValueOnce(child);
+    const session = new ClaudeSession({ file: "claude", args: [] }, { ...base, authentication: { kind: "api_key", key: "synthetic-private-key" }, maxBudgetUsd: 1 });
+    const events: ProviderEvent[] = []; session.onEvent((event) => events.push(event));
+    try {
+      await session.start();
+      const call = cliMocks.spawnCli.mock.calls.at(-1)!;
+      expect(JSON.stringify(call[1])).not.toContain("synthetic-private-key");
+      expect(call[2]).toMatchObject({ claudeApiKey: "synthetic-private-key" });
+      const result = { type: "result", uuid: "result-one", subtype: "success", total_cost_usd: 0.1 };
+      stdout.write(`${JSON.stringify(result)}\n`); stdout.write(`${JSON.stringify(result)}\n`);
+      expect(events.filter((event) => event.type === "usage")).toHaveLength(1);
+      stderr.write("Rejected synthetic-private-key"); child.emit("exit", 1, null);
+      expect(JSON.stringify(events)).not.toContain("synthetic-private-key");
+      expect(events.at(-1)).toMatchObject({ type: "exit", error: "Rejected [redacted]" });
+    } finally { child.emit("exit", 0, null); session.close(); }
+  });
+});

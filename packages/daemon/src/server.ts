@@ -26,7 +26,7 @@ export class RpcError extends Error {
 export type Handlers = { [M in MethodName]?: (params: ParamsOut<M>) => Result<M> | Promise<Result<M>> };
 export type Broadcast = <E extends EventName>(event: E, data: EventData<E>) => void;
 type ServerConfig = { token: string; handlers: Handlers; routes?: Record<string, Route> };
-export type Server = { port: number; broadcast: Broadcast; activate: (config: ServerConfig) => void; close: () => Promise<void> };
+export type Server = { port: number; broadcast: Broadcast; activate: (config: ServerConfig) => void; dispatch: (method: string, params: unknown) => Promise<unknown>; close: () => Promise<void> };
 // An extra HTTP endpoint, such as the app's MCP server at /mcp.
 export type Route = (req: IncomingMessage, res: ServerResponse) => void | Promise<void>;
 
@@ -162,6 +162,10 @@ export async function startServer(opts: {
   return {
     port,
     broadcast,
+    dispatch: async (method, params) => {
+      if (!ready) throw new RpcError("bad_state", "Tjommie is starting.");
+      return call(method, params);
+    },
     activate: (next) => {
       config = next;
       ready = true;

@@ -1,5 +1,5 @@
 import type { ClientEvent } from "@tjommie/client";
-import type { Bot, Message, Routine, RoutineRun } from "@tjommie/protocol";
+import type { AccountInfo, Bot, Message, Routine, RoutineRun } from "@tjommie/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { loadConversation } from "./connection";
 import { addOlder, applyEvent, connected, finishLoading, initialState, startLoading, type AppState } from "./state";
@@ -59,6 +59,17 @@ const delta = (id: string, text: string): ClientEvent => ({ type: "event", event
 const ready = (messages: Message[]): AppState => finishLoading(startLoading(initialState, "b1"), "b1", { messages, hasMore: false });
 
 describe("app state", () => {
+  it("holds the accounts: unknown until listed, replaced whole by each change, and listed again on a new connection", () => {
+    const list = [{ id: "a1", label: "Claude (Personal)" }] as AccountInfo[];
+    expect(initialState.accounts).toBeNull();
+    let state = connected(initialState, { bots: [], settings: { chainLimit: 5 }, routines: [], accounts: list });
+    expect(state.accounts).toBe(list);
+    const next = [{ id: "a2", label: "Work" }] as AccountInfo[];
+    state = applyEvent(state, { type: "event", event: "accounts.changed", data: next });
+    expect(state.accounts).toBe(next);
+    expect(connected(state, { bots: [], settings: { chainLimit: 5 }, routines: [] }).accounts).toBeNull(); // an older daemon has none
+  });
+
   it("keeps bots in creation order and forgets a deleted bot's chat and routines", () => {
     let state = connected(initialState, { bots: [bot("b2", "2026-09-27T10:00:00.000Z"), bot("b1", "2026-09-27T09:00:00.000Z")], settings: { chainLimit: 5 }, routines: [routine("r1", "b1")] });
     expect(state.bots.map((b) => b.id)).toEqual(["b1", "b2"]);

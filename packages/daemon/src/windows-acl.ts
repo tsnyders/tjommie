@@ -4,6 +4,7 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { SETUP_CODEX_SANDBOX_REASON, type Provider } from "@tjommie/protocol";
 import type { Paths } from "./paths.ts";
 
+export type ProtectedAccount = { id: string; provider: Provider; folder: string };
 export type BotHome = { id: string; homeFolder: string; provider: Provider };
 export type AclTarget = { path: string; folder: boolean; mode: "deny" | "allow" | "removeDeny" | "verifyBin" | "checkDeny" | "checkAllow" | "checkNoDeny"; codexDependent?: boolean };
 export type AclPassResult = { sid: string | null; groupMissing: boolean; failures: string[]; applied: number };
@@ -180,9 +181,9 @@ function targetIfPresent(root: string, path: string, folder: boolean): AclTarget
     const base = resolve(root);
     const target = resolve(path);
     const rel = relative(base, target);
-    if (!rel || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) throw new Error("protected path is outside the data root");
+    if (!rel || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) throw new Error("protected path is outside its protection root");
     let ancestor = base;
-    if (lstatSync(ancestor).isSymbolicLink()) throw new Error("data root is a reparse point");
+    if (lstatSync(ancestor).isSymbolicLink()) throw new Error("protection root is a reparse point");
     for (const part of rel.split(sep).slice(0, -1)) {
       ancestor = join(ancestor, part);
       if (lstatSync(ancestor).isSymbolicLink()) throw new Error("protected path has a reparse-point parent");
@@ -197,11 +198,11 @@ function targetIfPresent(root: string, path: string, folder: boolean): AclTarget
 }
 
 type AclPlan = { targets: AclTarget[]; failures: string[]; expected: string[]; skipped: string[]; setupMissing: boolean };
-function planTargets(paths: Paths, botHomes: BotHome[]): AclPlan {
+function planTargets(paths: Paths, botHomes: BotHome[], accounts?: ProtectedAccount[]): AclPlan {
   const plan: AclPlan = { targets: [], failures: [], expected: [], skipped: [], setupMissing: false };
-  const add = (path: string, folder: boolean, mode: AclTarget["mode"], required: boolean, codexDependent = false, missingMessage?: string): boolean => {
+  const add = (path: string, folder: boolean, mode: AclTarget["mode"], required: boolean, codexDependent = false, missingMessage?: string, anchor = paths.root): boolean => {
     try {
-      const target = targetIfPresent(paths.root, path, folder);
+      const target = targetIfPresent(anchor, path, folder);
       if (!target) {
         if (required) plan.expected.push(`${path}: required folder is missing`);
         else if (missingMessage) plan.skipped.push(`${path}: ${missingMessage}`);
@@ -214,7 +215,17 @@ function planTargets(paths: Paths, botHomes: BotHome[]): AclPlan {
       return false;
     }
   };
-  add(join(paths.accounts, "claude-main"), true, "deny", true);
+  // The owner may explicitly place account profiles outside the application data root.
+  // Account identity still fixes the exact child path; every target must pass the same
+  // containment and reparse-point checks beneath that configured account root.
+  const addAccount = (path: string, mode: AclTarget["mode"], required: boolean, codexDependent = false): boolean =>
+    add(path, true, mode, required, codexDependent, undefined, paths.accounts);
+  const owned = accounts ?? [{ id: "claude-main", provider: "claude" as const, folder: join(paths.accounts, "claude-main") }, { id: "codex-main", provider: "codex" as const, folder: join(paths.accounts, "codex-main") }];
+  const valid = owned.filter((account) => {
+    if (resolve(account.folder).toLowerCase() === resolve(paths.accounts, account.id).toLowerCase() && !account.id.includes("/") && !account.id.includes("\\") && account.id !== "." && account.id !== "..") return true;
+    plan.failures.push(`${account.id}: account folder does not match its id`); return false;
+  });
+  for (const account of valid.filter((account) => account.provider === "claude")) addAccount(account.folder, "deny", true);
   for (const folder of [paths.logs, paths.data, paths.sharedFiles]) add(folder, true, "deny", true);
   add(paths.token, false, "deny", false);
   try {
@@ -235,18 +246,23 @@ function planTargets(paths: Paths, botHomes: BotHome[]): AclPlan {
       add(join(bot.homeFolder, "inbox"), true, "checkNoDeny", false);
     }
   }
-  const home = join(paths.accounts, "codex-main");
+  for (const account of valid.filter((account) => account.provider === "codex")) {
+  const home = account.folder;
   const sandbox = join(home, ".sandbox");
   const sandboxBin = join(home, ".sandbox-bin");
-  const homePresent = add(home, true, "verifyBin", false);
+  const homePresent = addAccount(home, "verifyBin", false);
   if (homePresent) plan.targets.pop();
-  const sandboxPresent = homePresent && add(sandbox, true, "verifyBin", false);
+  const sandboxPresent = homePresent && addAccount(sandbox, "verifyBin", false);
   if (sandboxPresent) plan.targets.pop();
-  if (!homePresent || !sandboxPresent || !add(sandboxBin, true, "verifyBin", false)) {
-    plan.setupMissing = true;
+  if (!homePresent || !sandboxPresent || !addAccount(sandboxBin, "verifyBin", false)) {
+    // A newly added, unconfigured account must be protected without blocking a different,
+    // configured account. Its own runtime readiness gate prevents Own folder execution.
+    if (homePresent) addAccount(home, "deny", true);
+    if (accounts === undefined) plan.setupMissing = true;
   } else {
-    add(home, true, "deny", true, true);
-    add(sandbox, true, "allow", true, true);
+    addAccount(home, "deny", true, true);
+    addAccount(sandbox, "allow", true, true);
+  }
   }
   return plan;
 }
@@ -267,14 +283,14 @@ function failedPass(error: unknown): Protection {
   return { status: "check_failed", ready: false, reason: failureReason };
 }
 
-export function protectCodexData(paths: Paths, botHomes: BotHome[] = [], driver: AclDriver = windowsAclDriver, platform: NodeJS.Platform = process.platform): Protection {
+export function protectCodexData(paths: Paths, botHomes: BotHome[] = [], driver: AclDriver = windowsAclDriver, platform: NodeJS.Platform = process.platform, accounts?: ProtectedAccount[]): Protection {
   if (platform !== "win32") { console.info("Codex data ACLs: Windows only; no changes made."); return { status: "ready", ready: true, reason: null }; }
-  const plan = planTargets(paths, botHomes);
+  const plan = planTargets(paths, botHomes, accounts);
   try { return finish(plan, driver.runSync(plan.targets)); } catch (error) { return failedPass(error); }
 }
 
-export async function protectCodexDataAsync(paths: Paths, botHomes: BotHome[] = [], driver: AclDriver = windowsAclDriver, platform: NodeJS.Platform = process.platform): Promise<Protection> {
+export async function protectCodexDataAsync(paths: Paths, botHomes: BotHome[] = [], driver: AclDriver = windowsAclDriver, platform: NodeJS.Platform = process.platform, accounts?: ProtectedAccount[]): Promise<Protection> {
   if (platform !== "win32") { console.info("Codex data ACLs: Windows only; no changes made."); return { status: "ready", ready: true, reason: null }; }
-  const plan = planTargets(paths, botHomes);
+  const plan = planTargets(paths, botHomes, accounts);
   try { return finish(plan, await driver.run(plan.targets)); } catch (error) { return failedPass(error); }
 }

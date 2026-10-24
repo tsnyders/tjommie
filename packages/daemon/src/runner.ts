@@ -13,6 +13,10 @@ import type { McpServer, ProviderEvent, ProviderSession, StartOptions } from "./
 import { enqueue, getWorkItem, lastItemForMessage, newChain, nextQueued, nextSteerable, recoverAfterRestart, setStatus, type NewWork, type WorkItem } from "./queue.ts";
 import { RpcError, type Broadcast } from "./server.ts";
 import { accountEnv, accountFor } from "./setup.ts";
+import { AccountRuntime, type AccountRunContext } from "./account-runtime.ts";
+import { getAccount } from "./accounts-store.ts";
+import { priceUsage } from "./account-pricing.ts";
+import { recordUsage } from "./usage.ts";
 
 export type SessionFactory = (bot: StoredBot, options: StartOptions) => ProviderSession;
 
@@ -50,6 +54,8 @@ function retryData(item: WorkItem): ErrorData | null {
 // What the runner knows about a bot that has (or recently had) a CLI session.
 type Live = {
   session: ProviderSession | null;
+  context: AccountRunContext | null;
+  retiring: Promise<void> | null;
   fresh: boolean; // started without resuming
   sawSession: boolean; // the CLI reported its session id since it started
   busy: boolean; // a turn is running
@@ -117,6 +123,8 @@ export function copyIntoInbox(homeFolder: string, file: string): string {
 
 export class Runner {
   #db: Db;
+  #accounts?: AccountRuntime;
+  #identities = new WeakMap<ProviderSession, AccountRunContext>();
   #broadcast: Broadcast;
   #isSignedIn: (provider: Bot["provider"]) => boolean;
   #setupIssue: (bot: StoredBot) => string | null;
@@ -128,9 +136,13 @@ export class Runner {
   #deleting = new Map<string, Deleting>();
   #recovered = false;
   #ready = true;
+  #shutdown: Promise<void> | null = null;
+  #eventsClosed = false;
+  #launches = new Set<Promise<void>>();
 
-  constructor(deps: { db: Db; broadcast: Broadcast; isSignedIn: (provider: Bot["provider"]) => boolean; setupIssue?: (bot: StoredBot) => string | null; isHeld?: (botId: string) => boolean; codexSandboxReady?: () => boolean; createSession?: SessionFactory; hooks?: RunnerHooks }) {
+  constructor(deps: { accounts?: AccountRuntime; db: Db; broadcast: Broadcast; isSignedIn: (provider: Bot["provider"]) => boolean; setupIssue?: (bot: StoredBot) => string | null; isHeld?: (botId: string) => boolean; codexSandboxReady?: () => boolean; createSession?: SessionFactory; hooks?: RunnerHooks }) {
     this.#db = deps.db;
+    this.#accounts = deps.accounts;
     this.#broadcast = deps.broadcast;
     this.#isSignedIn = deps.isSignedIn;
     this.#setupIssue = deps.setupIssue ?? (() => null);
@@ -174,8 +186,9 @@ export class Runner {
 
   toBot(bot: StoredBot): Bot {
     const live = this.#live.get(bot.id);
-    const signedIn = this.#isSignedIn(bot.provider);
-    const setupReason = signedIn ? this.#setupIssue(bot) : `${SETUP_SIGN_IN_PREFIX} ${bot.provider === "codex" ? "Codex" : "Claude"}`;
+    const selected = this.#accounts?.inspect(bot);
+    const signedIn = selected ? selected.ready || "limitedUntil" in selected : this.#isSignedIn(bot.provider);
+    const setupReason = selected ? selected.ready ? this.#setupIssue(bot) : selected.reason : signedIn ? this.#setupIssue(bot) : `${SETUP_SIGN_IN_PREFIX} ${bot.provider === "codex" ? "Codex" : "Claude"}`;
     const state = botStateOf(
       {
         signedIn,
@@ -187,7 +200,10 @@ export class Runner {
       },
       nowIso(),
     );
-    return { ...bot, state, setupReason };
+    const context = live?.busy ? live.context : selected?.ready ? selected.context : null;
+    return { ...bot, state: selected && !selected.ready && "limitedUntil" in selected && !bot.paused ? "limited" : state, setupReason,
+      ...(selected ? { effectiveAccountId: context?.effectiveAccountId ?? bot.accountId, usingFallback: context?.usingFallback ?? false,
+        limitedUntil: !selected.ready && "limitedUntil" in selected ? selected.limitedUntil ?? null : null } : {}) };
   }
 
   processId(botId: string): number | undefined {
@@ -261,7 +277,10 @@ export class Runner {
 
   async stop(botId: string): Promise<void> {
     const live = this.#live.get(botId);
-    if (!live?.busy) return;
+    if (!live?.busy) {
+      if (this.#accounts && live?.session) { this.#closeSession(botId, live); await live.retiring; }
+      return;
+    }
     const session = live.session;
     const item = live.item;
     live.stopRequested = true;
@@ -389,7 +408,7 @@ export class Runner {
   pump(botId: string): void {
     if (!this.#ready || this.#deleting.has(botId)) return;
     const live = this.#liveFor(botId);
-    if (live.busy) return;
+    if (live.busy || live.retiring) return;
     let bot: StoredBot;
     try {
       bot = getStoredBot(this.#db, botId);
@@ -398,7 +417,9 @@ export class Runner {
       return;
     }
     // A routine proposal changes the displayed state, but does not block work.
-    if (!this.#isSignedIn(bot.provider) || this.#setupIssue(bot) || bot.paused || (bot.limitedUntil !== null && bot.limitedUntil > nowIso()) || live.approvals.size > 0 || live.busy) {
+    const selection = this.#accounts?.inspect(bot);
+    if (selection && !selection.ready && selection.limitedUntil) this.#armLimitTimer(botId, selection.limitedUntil);
+    if ((selection ? !selection.ready : !this.#isSignedIn(bot.provider)) || this.#setupIssue(bot) || bot.paused || (!selection && bot.limitedUntil !== null && bot.limitedUntil > nowIso()) || live.approvals.size > 0 || live.busy) {
       this.#armIdle(botId, live);
       this.#emitBot(botId);
       return;
@@ -408,6 +429,10 @@ export class Runner {
       this.#armIdle(botId, live);
       return;
     }
+    if (selection?.ready && live.context && (live.context.effectiveAccountId !== selection.context.effectiveAccountId || live.context.accountRevision !== selection.context.accountRevision)) {
+      this.#closeSession(botId, live); return;
+    }
+    if (selection?.ready && !live.context) live.context = selection.context;
     live.busy = true; // set before any await, so a second pump can't start another turn
     live.sent = false;
     live.item = item;
@@ -434,31 +459,49 @@ export class Runner {
   setupChanged(): void {
     for (const bot of listStoredBots(this.#db)) {
       if (this.#isHeld(bot.id)) continue;
-      if (!this.#setupIssue(bot)) continue;
+      const liveContext = this.#live.get(bot.id)?.context;
+      let changed = false;
+      if (this.#accounts && liveContext) { try { this.#accounts.assertCurrent(liveContext); } catch { changed = true; } }
+      if (!this.#setupIssue(bot) && !changed) continue;
       const live = this.#live.get(bot.id);
-      if (!live?.session) continue;
+      if (!live?.session || live.limitHit) continue;
       if (live.busy) {
         live.reload = true;
         const item = live.item;
-        if (item) void this.stopItem(item.id, "Codex's sandbox is no longer ready. Set it up again to continue.")
+        if (item) void this.stopItem(item.id, this.#accounts ? "This account or its setup changed. Check Accounts before continuing." : "Codex's sandbox is no longer ready. Set it up again to continue.")
           .catch((error: unknown) => console.error("Could not stop a bot after setup changed.", error));
       } else this.#closeSession(bot.id, live);
     }
     this.pumpAll();
   }
 
-  shutdown(): void {
+  shutdown(): Promise<void> {
+    if (this.#shutdown) return this.#shutdown;
     this.#ready = false;
-    const live = [...this.#live];
+    const live = [...this.#live], pending: Promise<void>[] = [...this.#launches];
     this.#live.clear();
     for (const deleting of this.#deleting.values()) {
       if (deleting.live.busy && !deleting.processExited) killTree(deleting.pid);
+      pending.push(deleting.closed);
     }
     this.#deleting.clear();
     for (const [botId, state] of live) {
-      if (state.busy) killTree(state.session?.pid());
+      const session = state.session;
+      if (state.busy) killTree(session?.pid());
       this.#releaseSession(botId, state);
+      pending.push(state.retiring ?? Promise.resolve(session?.waitForExit?.()));
     }
+    // Preserve synchronous emergency shutdown initiation. Production teardown awaits this
+    // bounded barrier before closing SQLite, while late usage remains billable until it settles.
+    if (!this.#accounts) { this.#eventsClosed = true; return this.#shutdown = Promise.resolve(); }
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error("Timed out waiting for owned account processes to close.")), 30_000); timer.unref();
+    });
+    this.#shutdown = Promise.race([Promise.all(pending).then(() => {}), timeout]).finally(() => {
+      clearTimeout(timer); this.#eventsClosed = true;
+    });
+    return this.#shutdown;
   }
 
   #liveFor(botId: string): Live {
@@ -466,6 +509,8 @@ export class Runner {
     if (!live) {
       live = {
         session: null,
+        context: null,
+        retiring: null,
         fresh: false,
         sawSession: false,
         busy: false,
@@ -496,10 +541,12 @@ export class Runner {
   }
 
   #launchTurn(bot: StoredBot, item: WorkItem, live: Live): void {
-    this.#startTurn(bot, item).catch((error: unknown) => {
+    const launch = this.#startTurn(bot, item).catch((error: unknown) => {
       if (this.#live.get(bot.id) !== live || live.item?.id !== item.id) return;
+      if (!live.session && !live.retiring) { const context = live.context; live.context = null; if (context) this.#accounts?.release(context); }
       this.#finishTurn(bot.id, false, error instanceof Error ? error.message : String(error));
-    });
+    }).finally(() => this.#launches.delete(launch));
+    this.#launches.add(launch);
   }
 
   async #startTurn(bot: StoredBot, item: WorkItem): Promise<void> {
@@ -512,11 +559,27 @@ export class Runner {
     let text = item.text;
     let session = live.session;
     if (!session) {
-      const account = accountFor(this.#db, bot.provider);
-      const saved = this.#db.prepare("SELECT provider, account_id, cli_session_id, total_cost_usd FROM sessions WHERE bot_id = ?").get(bot.id) as
+      if (live.retiring) await live.retiring;
+      if (this.#live.get(bot.id) !== live || !live.busy || live.item?.id !== item.id) return;
+      if (this.#accounts && !live.context) {
+        const selected = this.#accounts.inspect(bot);
+        if (!selected.ready) throw new Error(selected.reason);
+        live.context = selected.context;
+      }
+      const account = live.context ? getAccount(this.#db, live.context.effectiveAccountId) : accountFor(this.#db, bot.provider);
+      const prepared = live.context && this.#accounts ? await this.#accounts.prepare(live.context) : null;
+      if (this.#live.get(bot.id) !== live || !live.busy || live.item?.id !== item.id || live.stopRequested) {
+        if (live.context) this.#accounts?.release(live.context);
+        if (this.#live.get(bot.id) === live && live.busy) this.#finishTurn(bot.id, false, null);
+        return;
+      }
+      if (live.context) this.#accounts?.assertCurrent(live.context);
+      const latest = this.#db.prepare("SELECT provider, account_id FROM sessions WHERE bot_id = ? ORDER BY updated_at DESC, rowid DESC LIMIT 1").get(bot.id) as { provider: string; account_id: string } | undefined;
+      const saved = (!latest || latest.account_id === account.id && latest.provider === bot.provider) ? this.#db.prepare("SELECT provider, account_id, cli_session_id, total_cost_usd FROM sessions WHERE bot_id = ? AND provider = ? AND account_id = ?").get(bot.id, bot.provider, account.id) as
         | { provider: string; account_id: string; cli_session_id: string; total_cost_usd: number | null }
-        | undefined;
-      const resumeId = saved && saved.provider === bot.provider && saved.account_id === account.id ? saved.cli_session_id : null;
+        | undefined
+      : undefined;
+      const resumeId = saved && saved.provider === bot.provider && saved.account_id === account.id && !(live.context?.kind === "api_key" && bot.provider === "claude" && saved.total_cost_usd === null) ? saved.cli_session_id : null;
       let created: ProviderSession;
       try {
         created = this.#createSession(bot, {
@@ -525,18 +588,26 @@ export class Runner {
           model: bot.model,
           instructions: botPrompt(bot),
           autonomy: bot.autonomy,
-          codexSandboxReady: this.#codexSandboxReady(),
+          codexSandboxReady: prepared?.codexSandboxReady ?? this.#codexSandboxReady(),
           allowRules: allowRules(this.#db, bot.id),
           resumeId,
           resumeCostUsd: resumeId === null ? null : saved?.total_cost_usd ?? null,
-          env: accountEnv(account),
+          env: prepared?.env ?? accountEnv(account),
+          ...(prepared?.authentication ? { authentication: prepared.authentication } : {}),
+          ...(prepared?.maxBudgetUsd === undefined ? {} : { maxBudgetUsd: prepared.maxBudgetUsd }),
           mcpServers: this.#mcpServers(bot),
         });
       } catch (error) {
         // The MCP hook can issue a token even when no ProviderSession was constructed.
         this.#safely(() => this.#hooks.sessionClosed?.(bot.id));
+        if (live.context) this.#accounts?.release(live.context);
+        live.context = null;
         throw error;
       }
+      const identity: AccountRunContext = live.context ?? Object.freeze({ runId: newId(), botId: bot.id, provider: bot.provider,
+        pinnedAccountId: account.id, effectiveAccountId: account.id, kind: getAccount(this.#db, account.id).kind,
+        accountRevision: 0, usingFallback: false, model: bot.model });
+      this.#identities.set(created, identity);
       live.session = created;
       live.fresh = resumeId === null;
       live.sawSession = false;
@@ -555,7 +626,7 @@ export class Runner {
           return;
         }
         if (resumeId === null) throw error;
-        this.#db.prepare("DELETE FROM sessions WHERE bot_id = ?").run(bot.id); // couldn't resume: start fresh with a recap
+        this.#db.prepare("DELETE FROM sessions WHERE bot_id = ? AND provider = ? AND account_id = ?").run(bot.id, bot.provider, account.id); // couldn't resume: start fresh with a recap
         this.#safely(() => this.#hooks.turnRequeued?.(item));
         this.#safely(() => this.#hooks.turnStarted?.(item)); // this retry starts directly, without pump
         return this.#startTurn(bot, item);
@@ -608,7 +679,7 @@ export class Runner {
     live.steering = true;
     try {
       const next = () => nextSteerable(this.#db, botId, this.#dest(botId, live));
-      for (let item = next(); item && live.busy && live.sent && !live.stopRequested; item = next()) {
+      for (let item = next(); item && live.busy && live.sent && !live.stopRequested && !live.reload; item = next()) {
         const session = live.session;
         if (!session) break;
         setStatus(this.#db, item.id, "done"); // claim it first, so a turn that ends meanwhile can't pick it up too
@@ -637,6 +708,9 @@ export class Runner {
   }
 
   #onEvent(botId: string, session: ProviderSession, event: ProviderEvent): void {
+    if (this.#eventsClosed) return;
+    const identity = this.#identities.get(session);
+    if (identity && event.type === "usage") { this.#recordUsage(botId, event, identity); return; }
     const live = this.#live.get(botId);
     if (!live || live.session !== session) return; // a session we closed or replaced
     if (!live.busy && TURN_EVENTS.has(event.type)) {
@@ -649,7 +723,7 @@ export class Runner {
     switch (event.type) {
       case "session":
         live.sawSession = true;
-        this.#saveSession(botId, event.cliSessionId);
+        this.#saveSession(botId, event.cliSessionId, identity);
         return;
       case "text":
         return this.#appendText(botId, live, event.delta);
@@ -672,18 +746,20 @@ export class Runner {
     }
   }
 
-  #saveSession(botId: string, cliSessionId: string): void {
+  #saveSession(botId: string, cliSessionId: string, identity?: AccountRunContext): void {
     const bot = getStoredBot(this.#db, botId);
+    const provider = identity?.provider ?? bot.provider;
+    const accountId = identity?.effectiveAccountId ?? accountFor(this.#db, provider).id;
     this.#db
       .prepare(
         `INSERT INTO sessions (bot_id, provider, account_id, cli_session_id, updated_at) VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT(bot_id) DO UPDATE SET
+         ON CONFLICT(bot_id, provider, account_id) DO UPDATE SET
            total_cost_usd = CASE WHEN sessions.provider = excluded.provider AND sessions.account_id = excluded.account_id
              AND sessions.cli_session_id = excluded.cli_session_id THEN sessions.total_cost_usd ELSE NULL END,
            provider = excluded.provider, account_id = excluded.account_id,
            cli_session_id = excluded.cli_session_id, updated_at = excluded.updated_at`,
       )
-      .run(botId, bot.provider, accountFor(this.#db, bot.provider).id, cliSessionId, nowIso());
+      .run(botId, provider, accountId, cliSessionId, nowIso());
   }
 
   #appendText(botId: string, live: Live, delta: string): void {
@@ -804,38 +880,31 @@ export class Runner {
     live.approvals.clear();
   }
 
-  #recordUsage(botId: string, event: Extract<ProviderEvent, { type: "usage" }>): void {
-    const bot = getStoredBot(this.#db, botId);
-    const accountId = accountFor(this.#db, bot.provider).id;
+  #recordUsage(botId: string, event: Extract<ProviderEvent, { type: "usage" }>, identity?: AccountRunContext): void {
+    const provider = identity?.provider ?? getStoredBot(this.#db, botId).provider;
+    const accountId = identity?.effectiveAccountId ?? accountFor(this.#db, provider).id;
+    const estimated = event.costUsd === null ? priceUsage(provider, event.model, { input: event.input, cachedInput: event.cachedInput, output: event.output, reasoning: event.reasoning }) : null;
+    let inserted = false;
     transaction(this.#db, () => {
-      this.#db
-        .prepare(
-          `INSERT INTO usage (id, bot_id, account_id, provider, model, input, cached_input, output, reasoning, cost_usd, cost_source, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        )
-        .run(
-          newId(),
-          botId,
-          accountId,
-          bot.provider,
-          event.model,
-          event.input,
-          event.cachedInput,
-          event.output,
-          event.reasoning,
-          event.costUsd,
-          event.costUsd === null ? null : "reported",
-          nowIso(),
-        );
-      if (event.totalCostUsd !== undefined) {
-        this.#db
-          .prepare("UPDATE sessions SET total_cost_usd = ? WHERE bot_id = ? AND provider = ? AND account_id = ?")
-          .run(event.totalCostUsd, botId, bot.provider, accountId);
-      }
+      inserted = recordUsage(this.#db, { ...event, botId, accountId, provider,
+        ...(event.eventId && identity ? { id: `${identity.runId}:${event.eventId}` } : {}),
+        costUsd: event.costUsd ?? estimated?.costUsd ?? null,
+        costSource: event.costUsd !== null ? "reported" : estimated ? "estimated" : "unknown",
+        pricingRevision: estimated?.pricingRevision ?? null });
+      if (inserted && event.totalCostUsd !== undefined) this.#db.prepare("UPDATE sessions SET total_cost_usd = ? WHERE bot_id = ? AND provider = ? AND account_id = ?")
+        .run(event.totalCostUsd, botId, provider, accountId);
     });
+    if (inserted) { this.#accounts?.usageChanged(accountId); this.#broadcast("usage.changed", { accountId, botId }); }
   }
 
   #onLimit(botId: string, live: Live, event: Extract<ProviderEvent, { type: "limit" }>): void {
+    if (this.#accounts && live.context) {
+      // Mark the turn before notifying subscribers; their setupChanged callback can run synchronously.
+      if (event.state === "reached") { live.limitHit = true; live.reload = true; }
+      this.#accounts.observeLimit(live.context, event);
+      if (event.resetsAt && event.state === "reached") this.#armLimitTimer(botId, event.resetsAt);
+      this.#emitBot(botId); return;
+    }
     if (event.resetsAt) live.lastResetsAt = event.resetsAt;
     if (event.state !== "reached" || live.limitHit) return; // "ok" and "near" feed the Usage page in Phase 2
     live.limitHit = true;
@@ -882,15 +951,17 @@ export class Runner {
     }
     this.#expireApprovals(live); // the turn that asked is over
     const result: TurnResult = { outcome, text: live.lastText?.body ?? null, textMessageId: live.lastText?.id ?? null, error };
+    const retriedLimit = live.context ? this.#accounts?.completeTurn(live.context, ok && !live.stopRequested && !live.limitHit) : false;
     live.busy = false;
     live.sent = false;
     live.item = null;
+    const stopped = live.stopRequested;
     live.stopRequested = false;
     live.stopNotice = null;
     live.stopPending = null;
     live.limitHit = false;
     live.lastText = null;
-    if (live.reload) {
+    if (live.reload || retriedLimit || live.context?.kind === "api_key" || stopped && this.#accounts) {
       live.reload = false;
       this.#closeSession(botId, live);
     }
@@ -901,7 +972,11 @@ export class Runner {
 
   #onExit(botId: string, live: Live, error: string | null, completedTurn?: { ok: boolean; error: string | null }): void {
     const resumeFailed = !live.fresh && !live.sawSession;
+    const context = live.context;
+    if (context) this.#accounts?.completeTurn(context, completedTurn?.ok === true && !live.stopRequested && !live.limitHit);
     live.session = null;
+    live.context = null;
+    if (context) this.#accounts?.release(context);
     this.#safely(() => this.#hooks.sessionClosed?.(botId));
     if (live.idleTimer) {
       clearTimeout(live.idleTimer);
@@ -914,7 +989,8 @@ export class Runner {
       this.#flushText(live, "interrupted");
       if (live.activity) this.#closeActivity(live, "failed");
       live.lastText = null;
-      this.#db.prepare("DELETE FROM sessions WHERE bot_id = ?").run(botId);
+      if (context) this.#db.prepare("DELETE FROM sessions WHERE bot_id = ? AND provider = ? AND account_id = ?").run(botId, context.provider, context.effectiveAccountId);
+      else this.#db.prepare("DELETE FROM sessions WHERE bot_id = ? AND provider = ?").run(botId, getStoredBot(this.#db, botId).provider);
       setStatus(this.#db, item.id, "queued");
       live.busy = false;
       live.sent = false;
@@ -923,19 +999,30 @@ export class Runner {
       this.pump(botId);
       return;
     }
-    live.limitHit = false; // an exit is terminal even if a limit event arrived first
+    if (!this.#accounts) live.limitHit = false; // Legacy exits are terminal; account-limited work waits/retries.
     this.#finishTurn(botId, completedTurn?.ok ?? false, completedTurn ? completedTurn.error : error ?? (live.stopRequested ? null : "The CLI stopped unexpectedly."));
   }
 
   #closeSession(botId: string, live: Live): void {
-    const session = live.session;
-    live.session = null; // its exit event is ignored from now on
-    if (!session) return;
-    try {
-      session.close();
-    } finally {
+    if (live.retiring) return;
+    const session = live.session, context = live.context;
+    live.session = null; // late usage is still attributed by immutable session identity
+    if (!session) { live.context = null; if (context) this.#accounts?.release(context); return; }
+    if (context && this.#accounts) {
+      // Do not release the account lease or pump queued work until the owned process exits.
+      let settle: (() => void) | undefined;
+      live.retiring = new Promise<void>((resolve) => { settle = resolve; });
+      try { session.close(); }
+      catch { /* waitForExit remains authoritative; no release on an unconfirmed close */ }
+      void Promise.resolve(session.waitForExit?.()).then(() => {
+        if (live.context === context) live.context = null;
+        live.retiring = null; this.#accounts?.release(context); settle?.();
+        if (this.#live.get(botId) === live) this.pump(botId);
+      }).catch(() => { /* Keep the lease held and work queued if termination cannot be confirmed. */ });
       this.#safely(() => this.#hooks.sessionClosed?.(botId));
+      return;
     }
+    try { session.close(); } finally { this.#safely(() => this.#hooks.sessionClosed?.(botId)); }
   }
 
   #releaseSession(botId: string, live: Live): void {
