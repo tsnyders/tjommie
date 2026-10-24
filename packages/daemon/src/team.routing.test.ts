@@ -7,7 +7,7 @@ import { history } from "./chat.ts";
 import { openDb, type Db } from "./db.ts";
 import type { ProviderEvent, ProviderSession } from "./providers/types.ts";
 import { getWorkItem, type WorkItem } from "./queue.ts";
-import { createRoom } from "./rooms.ts";
+import { createRoom, deleteRoom } from "./rooms.ts";
 import { Runner } from "./runner.ts";
 import { ensureAccounts } from "./setup.ts";
 import { Team, getExchange } from "./team.ts";
@@ -104,6 +104,20 @@ const sent = async (bot: StoredBot, count = 1): Promise<RoutingSession> => {
 };
 
 describe("Team reply routing with Runner", () => {
+  it("does not queue a retry for a deleted custom room", async () => {
+    const room = createRoom(db, { name: "Planning", botIds: [alice.id] });
+    const post = team.postToRoom(room.id, "@Alice prepare a report");
+    const turn = delivered[0];
+    const session = await sent(alice);
+    session.emit({ type: "turn_done", ok: false, error: "Temporary failure" });
+    expect(getWorkItem(db, turn.id).status).toBe("failed");
+    deleteRoom(db, room.id);
+    const before = db.prepare("SELECT COUNT(*) AS n FROM work_items WHERE message_id = ?").get(post.id);
+    expect(() => runner.retry(post.id, alice.id)).toThrow(expect.objectContaining({ code: "not_found" }));
+    expect(db.prepare("SELECT COUNT(*) AS n FROM work_items WHERE message_id = ?").get(post.id)).toEqual(before);
+    expect(runner.currentWork(alice.id)).toBeNull();
+  });
+
   it("writes a custom room reply there and links to it from the bot chat", async () => {
     const room = createRoom(db, { name: "Planning", botIds: [alice.id] });
     team.postToRoom(room.id, "@Alice prepare a report");

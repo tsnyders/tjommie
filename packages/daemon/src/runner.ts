@@ -270,6 +270,7 @@ export class Runner {
       if (!this.#hooks.retryRoutine) throw new RpcError("bad_state", "Routine retry is unavailable");
       return this.#hooks.retryRoutine(getMessage(this.#db, messageId));
     }
+    getMessage(this.#db, messageId);
     this.#setChatMessageStatus(previous, "queued");
     this.deliver({ botId: previous.botId, source: previous.source, text: previous.text, messageId, conversationId: previous.conversationId, exchangeId: previous.exchangeId, chainId: newChain(this.#db) });
     return getMessage(this.#db, messageId);
