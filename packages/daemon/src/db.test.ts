@@ -10,6 +10,19 @@ import { dataPaths, readOrCreateToken } from "./paths.ts";
 const root = () => mkdtempSync(join(tmpdir(), "tjommie test ñ-"));
 
 describe("openDb", () => {
+  it("upgrades a version 6 database with Everyone and empty room memberships", () => {
+    const file = join(root(), "v6.db");
+    const old = new DatabaseSync(file);
+    for (const migration of migrations.slice(0, 6)) old.exec(migration);
+    old.exec("PRAGMA user_version = 6");
+    old.close();
+    const db = openDb(file);
+    expect(db.prepare("PRAGMA user_version").get()).toEqual({ user_version: 7 });
+    expect(db.prepare("SELECT name, created_at FROM conversations WHERE id = 'team'").get()).toEqual({ name: "Everyone", created_at: null });
+    expect(db.prepare("SELECT * FROM room_members").all()).toEqual([]);
+    db.close();
+  });
+
   it("migrates version 4 accounts, pins, sessions and historical usage without moving identities", () => {
     const file = join(root(), "v4.db");
     const old = new DatabaseSync(file);

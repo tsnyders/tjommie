@@ -1,6 +1,6 @@
 import { existsSync, lstatSync, readFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { SETUP_CODEX_SANDBOX_REASON, TEAM_ROOM_ID, type ProviderSetup } from "@tjommie/protocol";
+import { SETUP_CODEX_SANDBOX_REASON, type ProviderSetup } from "@tjommie/protocol";
 import { AccountRuntime, type AccountRuntimeOptions } from "./account-runtime.ts";
 import { accountHandlers } from "./account-handlers.ts";
 import { bindLegacyBots, getAccount, getDefaultAccount, listAccounts } from "./accounts-store.ts";
@@ -21,6 +21,7 @@ import { googleTools } from "./google-tools.ts";
 import { McpTokens, mcpHandler } from "./mcp.ts";
 import { DEFAULT_PORT, dataPaths, migrateLegacyDb, readOrCreateToken } from "./paths.ts";
 import { getWorkItem, type WorkItem } from "./queue.ts";
+import { createRoom, deleteRoom, getRoom, listRooms, updateRoom } from "./rooms.ts";
 import { createRoutine, deleteRoutine, getRoutine, listRoutines, listRuns, updateRoutine } from "./routines.ts";
 import { Runner, type SessionFactory, type TurnResult } from "./runner.ts";
 import { Scheduler } from "./scheduler.ts";
@@ -434,8 +435,24 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
       runner.pump(approval.botId);
       return approval;
     },
-    "room.history": ({ before, limit }) => historyPage(db, TEAM_ROOM_ID, before, limit),
-    "room.post": ({ text }) => team.postToRoom(text),
+    "room.history": ({ roomId, before, limit }) => { getRoom(db, roomId); return historyPage(db, roomId, before, limit); },
+    "room.post": ({ roomId, text }) => team.postToRoom(roomId, text),
+    "rooms.list": () => listRooms(db),
+    "rooms.create": (input) => {
+      const room = createRoom(db, input);
+      broadcast("room.updated", room);
+      return room;
+    },
+    "rooms.update": ({ id, patch }) => {
+      const room = updateRoom(db, id, patch);
+      broadcast("room.updated", room);
+      return room;
+    },
+    "rooms.delete": ({ id }) => {
+      deleteRoom(db, id);
+      broadcast("room.deleted", { id });
+      return {};
+    },
     "exchanges.get": ({ id }) => ({ exchange: getExchange(db, id), ...historyPage(db, id, undefined, 200) }),
     "routines.list": ({ botId }) => {
       if (botId !== undefined) getStoredBot(db, botId);

@@ -7,6 +7,7 @@ import { history } from "./chat.ts";
 import { openDb, type Db } from "./db.ts";
 import type { ProviderEvent, ProviderSession } from "./providers/types.ts";
 import { getWorkItem, type WorkItem } from "./queue.ts";
+import { createRoom } from "./rooms.ts";
 import { Runner } from "./runner.ts";
 import { ensureAccounts } from "./setup.ts";
 import { Team, getExchange } from "./team.ts";
@@ -103,6 +104,18 @@ const sent = async (bot: StoredBot, count = 1): Promise<RoutingSession> => {
 };
 
 describe("Team reply routing with Runner", () => {
+  it("writes a custom room reply there and links to it from the bot chat", async () => {
+    const room = createRoom(db, { name: "Planning", botIds: [alice.id] });
+    team.postToRoom(room.id, "@Alice prepare a report");
+    const session = await sent(alice);
+    session.finish("Report ready");
+    const answer = history(db, room.id, undefined, 10).at(-1)!;
+    expect(answer).toMatchObject({ author: alice.id, body: "Report ready" });
+    expect(history(db, alice.id, undefined, 10)).toContainEqual(expect.objectContaining({
+      kind: "handoff", body: "Answered in Planning", data: { roomId: room.id, roomMessageId: answer.id },
+    }));
+  });
+
   it("routes nested replies into the asking exchange and sends its later answer as a follow-up", async () => {
     runner.submit(alice.id, "Prepare a report", []);
     const aliceSession = await sent(alice);
@@ -186,7 +199,7 @@ describe("Team reply routing with Runner", () => {
   });
 
   it("routes help requested from the Team room back there and records the later room answer in the bot's chat", async () => {
-    team.postToRoom("@Alice prepare a report");
+    team.postToRoom(TEAM_ROOM_ID, "@Alice prepare a report");
     const roomTurn = delivered[0];
     const aliceSession = await sent(alice);
     const request = ask(alice, bob, "Write the report");
@@ -199,7 +212,7 @@ describe("Team reply routing with Runner", () => {
     aliceSession.finish("Here is Bob's report");
     const answer = history(db, TEAM_ROOM_ID, undefined, 20).at(-1)!;
     expect(answer).toMatchObject({ author: alice.id, body: "Here is Bob's report" });
-    const handoffs = history(db, alice.id, undefined, 20).filter((message) => message.body === "Answered in the Team room");
+    const handoffs = history(db, alice.id, undefined, 20).filter((message) => message.body === "Answered in Everyone");
     expect(handoffs).toHaveLength(2);
     expect(handoffs.at(-1)?.data).toMatchObject({ roomMessageId: answer.id });
   });

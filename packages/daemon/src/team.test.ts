@@ -7,6 +7,7 @@ import { createBot, deleteBot, updateBot, type StoredBot } from "./bots.ts";
 import { addMessage, history } from "./chat.ts";
 import { openDb, type Db } from "./db.ts";
 import { enqueue, newChain, setStatus, type WorkItem } from "./queue.ts";
+import { createRoom } from "./rooms.ts";
 import { listRoutines } from "./routines.ts";
 import { setSettings } from "./settings.ts";
 import { Team, fileInside, getExchange } from "./team.ts";
@@ -182,10 +183,58 @@ describe("Team tools", () => {
 });
 
 describe("Team room", () => {
-  it("asks each bot a post mentions, with the recent room messages, on one chain", () => {
-    team.postToRoom("Morning all.");
+  it("mentions only custom room members", () => {
+    const outsider = createBot(db, join(root, "bots"), { name: "Outsider", color: "gray", shape: "pill", instructions: "", provider: "claude", model: "haiku" });
+    const room = createRoom(db, { name: "Planning", botIds: [writer.id, researcher.id] });
+    team.postToRoom(room.id, "@everyone plan together");
+    expect(delivered.map((item) => item.botId).sort()).toEqual([writer.id, researcher.id].sort());
+    expect(delivered.map((item) => item.conversationId)).toEqual([room.id, room.id]);
+    expect(delivered[0].text).toContain('Team room "Planning"');
+    delivered.length = 0;
+    team.postToRoom(room.id, `@${outsider.name} please help`);
     expect(delivered).toEqual([]);
-    const post = team.postToRoom("@Writer and @researcher, what's new?");
+  });
+
+  it("keeps custom room replies there and records their room id in the handoff", () => {
+    const room = createRoom(db, { name: "Planning", botIds: [writer.id] });
+    team.postToRoom(room.id, "@Writer hi");
+    const reply = addMessage(db, { conversationId: room.id, author: writer.id, kind: "text", body: "Hello!", status: "done" });
+    team.turnEnded(delivered[0], done("Hello!", reply.id));
+    expect(history(db, room.id, undefined, 5).at(-1)).toMatchObject({ id: reply.id, body: "Hello!" });
+    expect(history(db, writer.id, undefined, 1)[0]).toMatchObject({ kind: "handoff", body: "Answered in Planning", data: { roomId: room.id, roomMessageId: reply.id } });
+  });
+
+  it("mirrors exchanges only into Everyone and rooms containing both bots", () => {
+    const shared = createRoom(db, { name: "Shared", botIds: [researcher.id, writer.id] });
+    const solo = createRoom(db, { name: "Solo", botIds: [researcher.id] });
+    chatTurn(researcher.id);
+    call(researcher.id, "message_bot", { bot: "Writer", message: "Write a report" });
+    team.turnEnded(delivered[0], done("The report"));
+    for (const roomId of [TEAM_ROOM_ID, shared.id]) {
+      expect(history(db, roomId, undefined, 5).map((message) => message.body)).toEqual(["Write a report", "The report"]);
+    }
+    expect(history(db, solo.id, undefined, 5)).toEqual([]);
+  });
+
+  it("mirrors failure notices into the same rooms as exchanges", () => {
+    const shared = createRoom(db, { name: "Shared", botIds: [researcher.id, writer.id] });
+    const solo = createRoom(db, { name: "Solo", botIds: [researcher.id] });
+    chatTurn(researcher.id);
+    call(researcher.id, "message_bot", { bot: "Writer", message: "Write a report" });
+    team.turnEnded(delivered[0], { outcome: "failed", text: null, textMessageId: null, error: "CLI exited" });
+    for (const roomId of [TEAM_ROOM_ID, shared.id]) {
+      expect(history(db, roomId, undefined, 5)).toMatchObject([
+        { body: "Write a report" },
+        { kind: "notice", body: expect.stringContaining("CLI exited") },
+      ]);
+    }
+    expect(history(db, solo.id, undefined, 5)).toEqual([]);
+  });
+
+  it("asks each bot a post mentions, with the recent room messages, on one chain", () => {
+    team.postToRoom(TEAM_ROOM_ID, "Morning all.");
+    expect(delivered).toEqual([]);
+    const post = team.postToRoom(TEAM_ROOM_ID, "@Writer and @researcher, what's new?");
     expect(delivered.map((item) => item.botId).sort()).toEqual([writer.id, researcher.id].sort());
     expect(delivered[0]).toMatchObject({ source: "room", conversationId: TEAM_ROOM_ID });
     expect(delivered.map((item) => item.messageId)).toEqual([post.id, post.id]);
@@ -195,9 +244,9 @@ describe("Team room", () => {
   });
 
   it("notes a room answer in the bot's own chat", () => {
-    team.postToRoom("@Writer hi");
+    team.postToRoom(TEAM_ROOM_ID, "@Writer hi");
     team.turnEnded(delivered[0], done("Hello!", "m1"));
-    expect(history(db, writer.id, undefined, 1)[0]).toMatchObject({ kind: "handoff", body: "Answered in the Team room", data: { roomMessageId: "m1" } });
+    expect(history(db, writer.id, undefined, 1)[0]).toMatchObject({ kind: "handoff", body: "Answered in Everyone", data: { roomId: TEAM_ROOM_ID, roomMessageId: "m1" } });
   });
 });
 

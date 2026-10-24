@@ -218,6 +218,13 @@ export const migrations: readonly string[] = [
     id TEXT PRIMARY KEY, secret_hash TEXT NOT NULL, expires_at TEXT NOT NULL,
     created_at TEXT NOT NULL, used_at TEXT
   );`,
+  `ALTER TABLE conversations ADD COLUMN name TEXT;
+  ALTER TABLE conversations ADD COLUMN created_at TEXT;
+  UPDATE conversations SET name = 'Everyone' WHERE id = 'team';
+  CREATE TABLE room_members (
+    room_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    bot_id TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
+    PRIMARY KEY (room_id, bot_id));`,
 ];
 
 export function transaction(db: Db, work: () => void): void {
