@@ -11,9 +11,8 @@ const device = vi.hoisted(() => ({
   saved: new Map<string, string>(),
   network: [] as ((event: { type: string }) => void)[],
   statuses: [] as string[], // the connection status after every state change
-  keepAlive: { start: vi.fn(async () => {}), stop: vi.fn(async () => {}), status: vi.fn(async () => ({ running: false })), batteryUnrestricted: vi.fn(async () => ({ value: true })), openBatterySettings: vi.fn(async () => {}) },
 }));
-vi.mock("@capacitor/core", () => ({ Capacitor: { isNativePlatform: () => true, getPlatform: () => "android" }, registerPlugin: () => device.keepAlive }));
+vi.mock("@capacitor/core", () => ({ Capacitor: { isNativePlatform: () => true, getPlatform: () => "android" } }));
 vi.mock("../../mobile/src/plugins.ts", () => ({
   secureStore: {
     seal: async ({ name, valueBase64 }: { name: string; valueBase64: string }) => { device.vault.set(name, valueBase64); },
@@ -21,6 +20,7 @@ vi.mock("../../mobile/src/plugins.ts", () => ({
     delete: async ({ name }: { name: string }) => { device.vault.delete(name); },
   },
   scanner: { scan: async () => ({ text: null }) },
+  push: { available: async () => false },
   appearance: { setCanvas: async () => {}, getInsets: async () => ({ imeBottom: 0, keyboardVisible: false }) },
   socket: {
     addListener: async (event: string, listener: (event: { type: string }) => void) => {
@@ -55,7 +55,6 @@ beforeEach(() => {
   vi.resetModules(); // a fresh connection module and store for each test
   vi.useFakeTimers();
   device.vault.clear(); device.saved.clear(); device.network.length = 0; device.statuses.length = 0;
-  device.keepAlive.start.mockClear(); device.keepAlive.stop.mockClear();
   page = Object.assign(new EventTarget(), { visibilityState: "visible" });
   vi.stubGlobal("document", page);
   vi.stubGlobal("localStorage", { getItem: (key: string) => device.saved.get(key) ?? null, setItem: (key: string, value: string) => device.saved.set(key, value) });
@@ -74,7 +73,6 @@ async function boot(options: { relay?: string | null } = {}) {
 }
 
 it("locked 30 min then visible: the dead link is replaced at once, without a failed screen, and the open chat catches up", async () => {
-  device.saved.set("tjommie.mobile.keepAlive.v1", "false"); // nothing ran while the phone slept
   const { pc, connection, getState, start } = await boot();
   pc.messages.b1 = Array.from({ length: 60 }, (_, at) => message(`m${String(at + 1).padStart(2, "0")}`));
   await start();
@@ -103,7 +101,6 @@ it("locked 30 min then visible: the dead link is replaced at once, without a fai
 });
 
 it("keeps the link through a quick trip away, checking it with a ping instead of reconnecting", async () => {
-  device.saved.set("tjommie.mobile.keepAlive.v1", "false");
   const { pc, getState, start } = await boot();
   await start();
   show(false);
@@ -148,13 +145,11 @@ it("can't reach the PC: a saved PC that stops answering shows unreachable over t
 it("revoked: the PC's authenticated refusal is terminal: removed, and nothing reopens", async () => {
   const { pc, getState, start } = await boot({ relay });
   await start();
-  expect(device.keepAlive.start).toHaveBeenCalledWith({ hostName: "Synthetic PC" });
 
   pc.refuse = "revoked";
   pc.wires[0].drop();
   await settle();
   expect(getState().connection).toEqual({ status: "removed" });
-  expect(device.keepAlive.stop).toHaveBeenCalled();
   const opens = pc.opens.length;
   await vi.advanceTimersByTimeAsync(60_000);
   show(false);
@@ -203,10 +198,8 @@ it("says why a first connect failed, and tries again on return without taking th
 });
 
 it("stops retrying while hidden without keep-alive, and tries again the moment the app is back", async () => {
-  device.saved.set("tjommie.mobile.keepAlive.v1", "false");
   const { pc, getState, start } = await boot();
   await start();
-  expect(device.keepAlive.start).not.toHaveBeenCalled();
 
   const lanKey = endpointKey({ kind: "lan", ...lan });
   pc.legs.set(lanKey, "refused");

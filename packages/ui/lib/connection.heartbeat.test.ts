@@ -9,9 +9,8 @@ const device = vi.hoisted(() => ({
   vault: new Map<string, string>(),
   saved: new Map<string, string>(),
   network: [] as ((event: { type: string }) => void)[],
-  keepAlive: { start: vi.fn(async () => {}), stop: vi.fn(async () => {}), status: vi.fn(async () => ({ running: false })), batteryUnrestricted: vi.fn(async () => ({ value: true })), openBatterySettings: vi.fn(async () => {}) },
 }));
-vi.mock("@capacitor/core", () => ({ Capacitor: { isNativePlatform: () => true, getPlatform: () => "android" }, registerPlugin: () => device.keepAlive }));
+vi.mock("@capacitor/core", () => ({ Capacitor: { isNativePlatform: () => true, getPlatform: () => "android" } }));
 vi.mock("../../mobile/src/plugins.ts", () => ({
   secureStore: {
     seal: async ({ name, valueBase64 }: { name: string; valueBase64: string }) => { device.vault.set(name, valueBase64); },
@@ -19,6 +18,7 @@ vi.mock("../../mobile/src/plugins.ts", () => ({
     delete: async ({ name }: { name: string }) => { device.vault.delete(name); },
   },
   scanner: { scan: async () => ({ text: null }) },
+  push: { available: async () => false },
   appearance: { setCanvas: async () => {}, getInsets: async () => ({ imeBottom: 0, keyboardVisible: false }) },
   socket: {
     addListener: async (event: string, listener: (event: { type: string }) => void) => {
@@ -45,7 +45,6 @@ beforeEach(() => {
   vi.resetModules(); // a fresh connection module and store for each test
   vi.useFakeTimers();
   device.vault.clear(); device.saved.clear(); device.network.length = 0;
-  device.keepAlive.start.mockClear(); device.keepAlive.stop.mockClear();
   page = Object.assign(new EventTarget(), { visibilityState: "visible" });
   vi.stubGlobal("document", page);
   vi.stubGlobal("localStorage", { getItem: (key: string) => device.saved.get(key) ?? null, setItem: (key: string, value: string) => device.saved.set(key, value) });
@@ -151,33 +150,15 @@ it("doesn't let a LAN endpoint that connects but stalls its handshake hold the r
   expect(pc.wires[0].closed).toBe(true);
 });
 
-it("still pings in the background when the phone was put away before Always connected finished starting", async () => {
-  let started = (): void => {};
-  device.keepAlive.start.mockImplementationOnce(() => new Promise<void>((resolve) => { started = resolve; }));
+it("stops heartbeat while hidden and reconnects on return without a foreground service", async () => {
   const { pc, connection } = await boot();
   connection.startConnection();
   await settle();
-  expect(device.keepAlive.start).toHaveBeenCalledWith({ hostName: "Synthetic PC" }); // asked, not answered yet
   show(false);
-  started();
-  await vi.advanceTimersByTimeAsync(60_000);
-  expect(pc.calls.filter((method) => method === "remote.ping")).toHaveLength(1);
-  await vi.advanceTimersByTimeAsync(60_000);
-  expect(pc.calls.filter((method) => method === "remote.ping")).toHaveLength(2);
-  expect(pc.opens).toHaveLength(1);
-});
-
-it("keeps the link alive in the background while Always connected runs: a ping every 60 s while hidden", async () => {
-  const { pc, connection } = await boot();
-  connection.startConnection();
-  await settle();
-  expect(device.keepAlive.start).toHaveBeenCalledWith({ hostName: "Synthetic PC" });
-  show(false);
-  await vi.advanceTimersByTimeAsync(59_999);
+  await vi.advanceTimersByTimeAsync(120_000);
   expect(pc.calls.filter((method) => method === "remote.ping")).toHaveLength(0);
-  await vi.advanceTimersByTimeAsync(1);
-  expect(pc.calls.filter((method) => method === "remote.ping")).toHaveLength(1);
-  await vi.advanceTimersByTimeAsync(60_000);
-  expect(pc.calls.filter((method) => method === "remote.ping")).toHaveLength(2);
   expect(pc.opens).toHaveLength(1);
+  show(true);
+  await settle();
+  expect(pc.opens).toHaveLength(2);
 });

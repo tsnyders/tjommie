@@ -5,7 +5,7 @@ import { RemoteRefusedError } from "../../client/src/remote-peer.ts";
 import { desktop, type DesktopConnection } from "./desktop";
 import { keepAliveRunning, syncKeepAlive } from "./keep-alive";
 import { errorText } from "./labels";
-import { registerPushIfAllowed } from "./push";
+import { registerPushIfAllowed, unregisterPush } from "./push";
 import { onNetworkChange } from "./relay-wire";
 import { HostOfflineError, forgetRemoteHost, isAndroidApp, openRemoteClient, remoteHosts } from "./remote-hosts";
 import { failedSetup } from "./setup";
@@ -121,7 +121,9 @@ export function connectLocal(): void {
 // The PC's keys go first: if deleting them fails, nothing has moved (the removed screen stays and says why). Only then does the window leave
 // that PC, for the next saved one on a phone and this PC's own Tjommie on the desktop.
 export async function forgetRemote(id: string): Promise<void> {
+  if (isAndroidApp() && isRemote(latest) && latest.remoteHostId === id && client) await client.call("device.registerPush", { token: null }).catch(() => {});
   await forgetRemoteHost(id);
+  if (isAndroidApp() && remoteHosts().length === 0) await unregisterPush().catch(() => {});
   if (!isRemote(latest) || latest.remoteHostId !== id) return;
   leave();
   if (isAndroidApp()) connectRemote();

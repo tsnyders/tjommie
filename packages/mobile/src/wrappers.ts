@@ -1,6 +1,8 @@
 // The three native plugins as TypeScript sees them. These are the generic building blocks only: no pairing, no host list and no connection logic here,
 // which belong to the layer above once the transport is settled. Everything crosses the bridge as strings; binary is base64.
 
+import type { PushNotificationsPlugin } from "@capacitor/push-notifications";
+
 export type SecureStorePlugin = {
   // Seals bytes (base64) under a name with an AES-256-GCM key that lives in the Android Keystore and never leaves it. Replaces what was there.
   seal(options: { name: string; valueBase64: string }): Promise<void>;
@@ -13,6 +15,7 @@ export type SecureStorePlugin = {
 export type SocketClosedReason = "local" | "remote" | "error" | "protocol";
 export type SocketFrameEvent = { connectionId: string; dataBase64: string };
 export type SocketClosedEvent = { connectionId: string; reason: SocketClosedReason; message?: string };
+export type SocketNetworkEvent = { type: "wifi" | "cellular" | "none" | "other" };
 
 export type SocketPlugin = {
   // Opens a TCP connection. The host is an address or name; a wildcard, multicast or empty one is refused. `timeoutMs` bounds the connect (default 1000, 200 to 10000).
@@ -22,7 +25,24 @@ export type SocketPlugin = {
   close(options: { connectionId: string }): Promise<void>; // idempotent
   addListener(event: "frame", listener: (event: SocketFrameEvent) => void): Promise<{ remove: () => Promise<void> }>;
   addListener(event: "closed", listener: (event: SocketClosedEvent) => void): Promise<{ remove: () => Promise<void> }>;
+  addListener(event: "network", listener: (event: SocketNetworkEvent) => void): Promise<{ remove: () => Promise<void> }>;
 };
+
+export type PushRoutingPlugin = { available(): Promise<{ value: boolean }> };
+
+export function createPush(routing: PushRoutingPlugin, official: PushNotificationsPlugin) {
+  return {
+    available: async () => (await routing.available()).value,
+    checkPermissions: () => official.checkPermissions(),
+    requestPermissions: () => official.requestPermissions(),
+    register: async () => {
+      if (!(await routing.available()).value) throw new Error("Push isn't in this build.");
+      return official.register();
+    },
+    unregister: () => official.unregister(),
+    addListener: official.addListener.bind(official),
+  };
+}
 
 export type PairingScannerPlugin = {
   // Opens Google's code scanner for a QR code. The text of what it read, or null when the person backed out. Rejects with code "unavailable" when the

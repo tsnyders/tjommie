@@ -12,6 +12,22 @@ describe("plugin registration", () => {
   });
 });
 
+describe("push availability", () => {
+  it("reports unavailable from the native build flag without registering for Firebase", async () => {
+    const { createPush } = await import("./wrappers.ts");
+    const register = vi.fn(async () => {});
+    const push = createPush({ available: async () => ({ value: false }) }, {
+      register,
+      checkPermissions: async () => ({ receive: "granted" as const }),
+      requestPermissions: async () => ({ receive: "granted" as const }),
+      addListener: vi.fn(async () => ({ remove: async () => {} })),
+    } as unknown as Parameters<typeof createPush>[1]);
+    expect(await push.available()).toBe(false);
+    await expect(push.register()).rejects.toThrow("Push isn't in this build.");
+    expect(register).not.toHaveBeenCalled();
+  });
+});
+
 describe("base64 for the bridge", () => {
   it("round-trips any bytes, including ones over a chunk and non-text ones", () => {
     const bytes = Uint8Array.from({ length: 70_000 }, (_, at) => at % 256);

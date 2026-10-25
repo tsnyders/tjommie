@@ -86,6 +86,7 @@ export function RemovedScreen({ android }: { android: boolean }) {
           This PC removed this device
         </h1>
         <p className="max-w-[440px] text-[13px] leading-[18px] text-secondary">To use it again, pair again with a new code from that PC.</p>
+        {android && <p className="max-w-[440px] text-[13px] leading-[18px] text-secondary">To stop its notifications, remove this phone on that PC.</p>}
         {problem && (
           <p role="alert" className="max-w-[440px] text-[13px] leading-[18px] text-danger">
             {problem}
