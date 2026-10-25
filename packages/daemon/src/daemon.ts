@@ -31,6 +31,9 @@ import { checkSetup, ensureAccounts, listModels, prepareCodexSandbox, signIn } f
 import { Team, getExchange } from "./team.ts";
 import { protectCodexData, protectCodexDataAsync, type BotHome } from "./windows-acl.ts";
 import { RemoteHost } from "./remote-host.ts";
+import { RelayClient } from "./relay-client.ts";
+import { loadRelayIdentity } from "./relay-identity.ts";
+import { startPush } from "./push.ts";
 import { listDevices, renameDevice } from "./devices-store.ts";
 import type { CredentialTransport } from "./account-credentials.ts";
 
@@ -271,14 +274,74 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
     const id = requested ?? getDefaultAccount(db, provider).id;
     if (changingAccounts.has(id)) throw new RpcError("busy", "This account is changing. Try again shortly.");
   }
-  const remote = new RemoteHost({ db, root: paths.root, dispatch: server.dispatch, ...options.remote, onChanged: () => send("devices.changed", {}) });
+  let relay: RelayClient | null = null;
+  let relayOpening: Promise<RelayClient> | null = null;
+  let pushNotify: ReturnType<typeof startPush> | null = null;
+  let pairingPending = 0, pairingCodePending = 0, invite: { id: string; expires: number } | null = null, closing = false;
+  let inviteTimer: ReturnType<typeof setTimeout> | undefined;
+  let relaySetup: "off" | "connecting" | "error" = "off";
+  const remote = new RemoteHost({ db, root: paths.root, dispatch: server.dispatch, ...options.remote,
+    relayUrl: () => pairingCodePending && relay?.state() !== "online" ? null : getSettings(db).relayUrl,
+    onChanged: () => { void syncRelay().catch(() => {}); try { send("devices.changed", {}); } catch { /* Device state is already saved. */ } } });
+  const relayNeeded = (): boolean => !closing && getSettings(db).relayUrl !== null &&
+    (remote.hasDevices() || pairingPending > 0 || invite !== null && invite.expires > Date.now());
+  const relayStatus = () => ({ ...remote.status(), relay: { url: getSettings(db).relayUrl,
+    state: relay?.state() === "off" ? relaySetup : relay?.state() ?? relaySetup, push: relay?.pushEnabled() ?? false } });
+  const openRelay = (): Promise<RelayClient> => relayOpening ??= loadRelayIdentity({ root: paths.root, credentials: options.remote?.credentials }).then((identity) => {
+    const hostId = remote.status().hostId;
+    if (!hostId) throw new RpcError("bad_state", "The phone connection is unavailable.");
+    relay = new RelayClient({ url: () => getSettings(db).relayUrl, hostId, identity,
+      onChannel: (wire) => remote.acceptWire(wire), onState: () => send("devices.changed", {}) });
+    pushNotify = startPush({ host: remote, relay });
+    return relay;
+  }).catch((error: unknown) => { relayOpening = null; throw error; });
+  async function syncRelay(waitOnline = false): Promise<void> {
+    if (!relayNeeded()) {
+      relay?.stop();
+      if (relaySetup !== "off") { relaySetup = "off"; try { send("devices.changed", {}); } catch { /* Status can be read again. */ } }
+      return;
+    }
+    if (relaySetup !== "connecting") { relaySetup = "connecting"; try { send("devices.changed", {}); } catch { /* Status can be read again. */ } }
+    try {
+      await remote.ensureListening();
+      if (!relayNeeded()) { relaySetup = "off"; return; }
+      const client = await openRelay();
+      if (!relayNeeded()) { client.stop(); relaySetup = "off"; return; }
+      client.start();
+      if (waitOnline) await client.waitUntilOnline();
+    } catch (error) {
+      relaySetup = "error";
+      try { send("devices.changed", {}); } catch { /* The relay error remains readable in status. */ }
+      throw error;
+    }
+  }
+  const clearInvite = (id?: string): void => {
+    if (id && invite?.id !== id) return;
+    invite = null; clearTimeout(inviteTimer); inviteTimer = undefined;
+    void syncRelay().catch(() => {});
+  };
   const handlers: Handlers = {
-    "remote.status": () => remote.status(),
+    "remote.status": relayStatus,
+    "remote.ping": () => ({}),
+    "device.registerPush": () => { throw new RpcError("bad_state", "Push registration is available only to paired devices."); },
     "devices.list": () => listDevices(db),
     "devices.rename": ({ id, name }) => { const device = renameDevice(db, id, name); send("devices.changed", {}); return device; },
     "devices.revoke": ({ id }) => remote.revoke(id),
-    "pairing.create": () => remote.createPairing(),
-    "pairing.cancel": ({ id }) => { remote.cancelPairing(id); return {}; },
+    "pairing.create": async () => {
+      pairingPending++;
+      try {
+        await remote.ensureListening();
+        await syncRelay(true).catch(() => {});
+        pairingCodePending++;
+        const result = await remote.createPairing().finally(() => { pairingCodePending--; });
+        clearTimeout(inviteTimer);
+        invite = { id: result.id, expires: Date.parse(result.expires) };
+        inviteTimer = setTimeout(() => clearInvite(result.id), Math.max(0, invite.expires - Date.now()));
+        inviteTimer.unref();
+        return result;
+      } finally { pairingPending--; void syncRelay().catch(() => {}); }
+    },
+    "pairing.cancel": ({ id }) => { remote.cancelPairing(id); clearInvite(id); return {}; },
     ...accountsApi,
     ...browserHandlers((id) => {
       if (deletionRequests.has(id)) throw new RpcError("busy", "This bot is being deleted.");
@@ -486,9 +549,13 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
       return {};
     },
     "settings.get": () => getSettings(db),
-    "settings.set": (patch) => {
+    "settings.set": async (patch) => {
       const settings = setSettings(db, patch);
       broadcast("settings.changed", settings);
+      if (Object.hasOwn(patch, "relayUrl")) {
+        relay?.stop();
+        await syncRelay().catch(() => {});
+      }
       return settings;
     },
   };
@@ -499,7 +566,10 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
   setup = useAccountRuntime ? [] : await checkSetup(db);
   logVersionDrift(setup);
   mcpUrl = `http://127.0.0.1:${server.port}/mcp`;
-  broadcast = (event, data) => { server.broadcast(event, data); remote.broadcast(event, data); };
+  broadcast = (event, data) => {
+    server.broadcast(event, data); remote.broadcast(event, data);
+    if (event === "notify") { try { pushNotify?.(data as Parameters<NonNullable<typeof pushNotify>>[0]); } catch { /* Notifications do not fail the originating work. */ } }
+  };
   accountsReady = true;
   runner.start();
   scheduler.start();
@@ -509,7 +579,10 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
     return (await google()).request(botId, service, path);
   } }) : [])] }), "/mcp/browser": browserMcp.handle, ...(nativeBroker ? { "/browser-host": nativeBroker.handle } : {}) } });
   if (useAccountRuntime) void accounts.checkAll().catch(() => console.error("Some accounts could not be checked. Retry from Accounts."));
-  if (remote.hasDevices()) void remote.start().catch(() => console.error("The phone connection could not start. Retry from Devices."));
+  if (remote.hasDevices()) {
+    void remote.ensureListening().catch(() => console.error("The phone connection could not start. Retry from Devices."));
+    void syncRelay().catch(() => {});
+  }
   return {
     port: server.port,
     token,
@@ -517,6 +590,7 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
     scheduler,
     close: async () => {
       await runCleanup([
+        () => { closing = true; clearTimeout(inviteTimer); relay?.stop(); },
         () => remote.close(),
         () => scheduler.stop(),
         () => runner.shutdown(),

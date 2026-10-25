@@ -1,7 +1,8 @@
 import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { createConnection } from "node:net";
 import { fileURLToPath } from "node:url";
-import type { BotInput, BotPatch, ProviderSetup } from "@tjommie/protocol";
+import { parsePairingCode, RELAY, type BotInput, type BotPatch, type ProviderSetup } from "@tjommie/protocol";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { createBot, getStoredBot, setLimitedUntil } from "./bots.ts";
@@ -9,10 +10,14 @@ import { showBrowser } from "./browser.ts";
 import { browsers } from "./browser-manager.ts";
 import { BrowserMcp } from "./browser-mcp.ts";
 import { history, updateMessage } from "./chat.ts";
-import { connect, type Client } from "@tjommie/client";
+import { connect, connectTransport, type Client } from "@tjommie/client";
+import { FrameDecoder, lengthPrefixed } from "../../client/src/encrypted-channel.ts";
+import { authenticateRemote, type FrameTransport } from "../../client/src/remote-peer.ts";
+import { generateKeypair } from "../../transport/src/index.ts";
 import { startDaemon, type Daemon, type DaemonAuth } from "./daemon.ts";
 import { startNativeBrowserHost } from "../../desktop/src/native-browser-host.ts";
 import { newId, openDb, type Db } from "./db.ts";
+import { addDevice, setPushToken } from "./devices-store.ts";
 import * as dbModule from "./db.ts";
 import { dataPaths } from "./paths.ts";
 import { GoogleAuth } from "./google-auth.ts";
@@ -26,6 +31,10 @@ import { checkSetup, ensureAccounts, prepareCodexSandbox, signIn } from "./setup
 import { protectCodexData, protectCodexDataAsync } from "./windows-acl.ts";
 import { Team } from "./team.ts";
 import { tempRoot, waitFor } from "./testing.ts";
+import type { CredentialTransport } from "./account-credentials.ts";
+import { RemoteHost } from "./remote-host.ts";
+import { RelayClient } from "./relay-client.ts";
+import { setSettings } from "./settings.ts";
 
 const removal = vi.hoisted(() => ({
   failPath: "",
@@ -110,9 +119,10 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
-async function harness(root = tempRoot(), auth: DaemonAuth = { mode: "development" }, googleAuth?: GoogleAuth) {
+async function harness(root = tempRoot(), auth: DaemonAuth = { mode: "development" }, googleAuth?: GoogleAuth,
+  remote?: { credentials?: CredentialTransport; port?: number; bind?: string; addresses?: () => string[] }) {
   const sessions: { botId: string; options: StartOptions; session: Session }[] = [];
-  const daemon = await startDaemon({ root, port: 0, auth, googleAuth, createSession: (bot, options) => {
+  const daemon = await startDaemon({ root, port: 0, auth, googleAuth, remote, createSession: (bot, options) => {
     const session = new Session();
     sessions.push({ botId: bot.id, options, session });
     return session;
@@ -123,6 +133,31 @@ async function harness(root = tempRoot(), auth: DaemonAuth = { mode: "developmen
   const db = openDb(dataPaths(root).db);
   databases.push(db);
   return { daemon, client, db, sessions, root };
+}
+
+async function lanWire(port: number): Promise<FrameTransport> {
+  const socket = createConnection({ host: "127.0.0.1", port });
+  await new Promise<void>((resolve, reject) => { socket.once("connect", resolve); socket.once("error", reject); });
+  const frames = new Set<(frame: Uint8Array) => void>(), closed = new Set<() => void>();
+  const decoder = new FrameDecoder();
+  socket.on("data", (chunk) => { try { for (const frame of decoder.feed(chunk)) for (const listener of frames) listener(frame); } catch { socket.destroy(); } });
+  socket.on("close", () => { for (const listener of closed) listener(); });
+  socket.on("error", () => socket.destroy());
+  return { send: (frame) => { socket.write(lengthPrefixed(frame)); }, close: () => { socket.destroy(); },
+    onFrame: (listener) => { frames.add(listener); return () => { frames.delete(listener); }; },
+    onClose: (listener) => { closed.add(listener); return () => { closed.delete(listener); } } };
+}
+
+class SilentRelaySocket extends EventTarget {
+  static OPEN = 1;
+  static created = 0;
+  static closed = 0;
+  readyState = 0;
+  bufferedAmount = 0;
+  binaryType = "blob";
+  constructor() { super(); SilentRelaySocket.created++; }
+  send(_value: string | Uint8Array): void {}
+  close(): void { if (this.readyState === 3) return; SilentRelaySocket.closed++; this.readyState = 3; this.dispatchEvent(Object.assign(new Event("close"), { code: 1000 })); }
 }
 
 function appServer(options: StartOptions) {
@@ -192,6 +227,168 @@ it("wires settings, routine CRUD and the Team room through the WebSocket methods
   await expect(client.call("routines.list", { botId: "missing" })).rejects.toThrow(/not_found/);
   expect(client.events.some((event) => event.event === "settings.changed")).toBe(true);
   expect(client.events.some((event) => event.event === "routine.deleted")).toBe(true);
+});
+
+it("starts the relay for an invite after LAN listening, restarts on settings, and sends content-free pushes", async () => {
+  const values = new Map<string, string>();
+  let relayWrites = 0, listeningResolved = false, createdBeforeListening = false;
+  const credentials: CredentialTransport = async ({ operation, target, key }) => {
+    if (operation === "write" && key) { values.set(target, key); if (target.endsWith("/relay-login")) relayWrites++; }
+    return operation === "read" ? values.get(target) ?? null : null;
+  };
+  const { client, db, sessions } = await harness(tempRoot(), { mode: "development" }, undefined,
+    { credentials, port: 0, bind: "127.0.0.1", addresses: () => ["127.0.0.1"] });
+  const ensureListening = RemoteHost.prototype.ensureListening;
+  vi.spyOn(RemoteHost.prototype, "ensureListening").mockImplementation(async function (this: RemoteHost) {
+    await ensureListening.call(this); listeningResolved = true;
+  });
+  const sockets: RelaySocket[] = [];
+  class RelaySocket extends EventTarget {
+    static OPEN = 1;
+    readonly url: string;
+    readyState = 0;
+    bufferedAmount = 0;
+    binaryType = "blob";
+    sent: string[] = [];
+    constructor(url: string) {
+      super(); if (!listeningResolved) createdBeforeListening = true; this.url = url; sockets.push(this);
+      queueMicrotask(() => { this.readyState = 1; this.dispatchEvent(new Event("open"));
+        this.receive({ t: "challenge", nonce: Buffer.alloc(32, 5).toString("base64url") }); });
+    }
+    receive(value: object): void { this.dispatchEvent(Object.assign(new Event("message"), { data: JSON.stringify(value) })); }
+    send(value: string | Uint8Array): void {
+      if (typeof value !== "string") return;
+      this.sent.push(value);
+      const message = JSON.parse(value) as { t?: string; id?: number; tokens?: string[] };
+      if (message.t === "login") queueMicrotask(() => this.receive({ t: "ready", push: true }));
+      if (message.t === "push") queueMicrotask(() => this.receive({ t: "pushed", id: message.id, results: message.tokens?.map(() => ({ ok: true, unregistered: false })) }));
+    }
+    close(): void { if (this.readyState === 3) return; this.readyState = 3; this.dispatchEvent(Object.assign(new Event("close"), { code: 1000 })); }
+  }
+  vi.stubGlobal("WebSocket", RelaySocket);
+  try {
+    expect(await client.call("remote.ping", {})).toEqual({});
+    await expect(client.call("device.registerPush", { token: "synthetic-token" })).rejects.toMatchObject({ code: "bad_state" });
+    await client.call("settings.set", { relayUrl: "https://relay.example/old-base" });
+    expect(sockets).toHaveLength(0);
+    expect((await client.call("remote.status", {})).relay).toEqual({ url: "https://relay.example/old-base", state: "off", push: false });
+    const invite = await client.call("pairing.create", {});
+    expect(createdBeforeListening).toBe(false);
+    expect(parsePairingCode(invite.code).relay).toBe("https://relay.example/old-base");
+    expect(sockets).toHaveLength(1);
+    expect(sockets[0].url).toContain("/control");
+    const status = await client.call("remote.status", {});
+    expect(status.listening).toBe(true);
+    expect(status.relay).toEqual({ url: "https://relay.example/old-base", state: "online", push: true });
+    expect([...values.keys()].filter((target) => target.endsWith("/relay-login"))).toHaveLength(1);
+    await client.call("settings.set", { relayUrl: "https://new-relay.example" });
+    await waitFor(() => sockets.length === 2);
+    expect(sockets[0].readyState).toBe(3);
+    expect(sockets[1].url).toContain("new-relay.example");
+    expect(relayWrites).toBe(1);
+    expect((await client.call("remote.status", {})).port).toBe(status.port);
+    const device = addDevice(db, { name: "Synthetic phone", publicKey: Buffer.alloc(32, 9).toString("base64url") });
+    setPushToken(db, device.id, "synthetic-device-token");
+    const bot = await client.call("bots.create", input("Relay bot"));
+    await client.call("chat.send", { botId: bot.id, text: "Start" });
+    await waitFor(() => sessions[0]?.session.sent.length);
+    sessions[0].session.emit({ type: "approval", id: "relay-approval", tool: "Write", summary: "Private summary", detail: "Private body", rule: null });
+    await waitFor(() => sockets[1].sent.some((value) => value.includes('"t":"push"')));
+    const push = sockets[1].sent.find((value) => value.includes('"t":"push"'))!;
+    expect(push).toContain('"kind":"approval"');
+    expect(push).toContain('"botId":"' + bot.id + '"');
+    expect(push).not.toContain("Private summary");
+    expect(push).not.toContain("Private body");
+    await client.call("pairing.cancel", { id: invite.id });
+    expect((await client.call("remote.status", {})).relay.state).toBe("online");
+    await client.call("devices.revoke", { id: device.id });
+    expect((await client.call("remote.status", {})).relay.state).toBe("off");
+    expect(client.events.some((event) => event.event === "devices.changed")).toBe(true);
+  } finally { vi.unstubAllGlobals(); }
+});
+
+it("announces the configured relay in ready when a device resumes over LAN during relay login", async () => {
+  const values = new Map<string, string>();
+  const credentials: CredentialTransport = async ({ operation, target, key }) => {
+    if (operation === "write" && key) values.set(target, key);
+    return operation === "read" ? values.get(target) ?? null : null;
+  };
+  const { client } = await harness(tempRoot(), { mode: "development" }, undefined,
+    { credentials, port: 0, bind: "127.0.0.1", addresses: () => ["127.0.0.1"] });
+  const code = parsePairingCode((await client.call("pairing.create", {})).code);
+  const deviceKey = generateKeypair();
+  const paired = await authenticateRemote({ wire: await lanWire(code.lan[0].port), privateKey: deviceKey.privateKey,
+    hostPublicKey: Buffer.from(code.hostKey, "base64url"), psk: Buffer.from(code.secret, "base64url"),
+    name: "Synthetic device", preface: { v: 1, mode: "pair", hostId: code.hostId, pairingId: code.pairingId } });
+  const phone = await connectTransport(paired.transport);
+  clients.push(phone);
+  await phone.close();
+  SilentRelaySocket.created = SilentRelaySocket.closed = 0;
+  vi.stubGlobal("WebSocket", SilentRelaySocket);
+  try {
+    await client.call("settings.set", { relayUrl: "https://relay.example" });
+    expect(SilentRelaySocket.created).toBe(1);
+    expect((await client.call("remote.status", {})).relay.state).toBe("connecting");
+    const resumed = await authenticateRemote({ wire: await lanWire(code.lan[0].port), privateKey: deviceKey.privateKey,
+      hostPublicKey: Buffer.from(code.hostKey, "base64url"), name: "Synthetic device",
+      preface: { v: 1, mode: "resume", hostId: code.hostId } });
+    expect(resumed.deviceId).toBe(paired.deviceId);
+    expect(resumed.relay).toBe("https://relay.example");
+    const resumedPhone = await connectTransport(resumed.transport);
+    clients.push(resumedPhone);
+    expect(await resumedPhone.call("remote.ping", {})).toEqual({});
+  } finally { vi.unstubAllGlobals(); }
+});
+
+it("returns a LAN-only pairing code when the relay socket never answers", async () => {
+  const credentials: CredentialTransport = async () => null;
+  const { client } = await harness(tempRoot(), { mode: "development" }, undefined,
+    { credentials, port: 0, bind: "127.0.0.1", addresses: () => ["127.0.0.1"] });
+  await client.call("settings.set", { relayUrl: "https://relay.example" });
+  SilentRelaySocket.created = SilentRelaySocket.closed = 0;
+  vi.stubGlobal("WebSocket", SilentRelaySocket);
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    const pairing = client.call("pairing.create", {});
+    await vi.waitFor(() => expect(SilentRelaySocket.created).toBe(1));
+    await vi.advanceTimersByTimeAsync(RELAY.acceptTimeoutMs);
+    const invite = await pairing;
+    expect(parsePairingCode(invite.code).relay).toBeNull();
+    expect((await client.call("remote.status", {})).relay.state).toBe("error");
+  } finally { vi.useRealTimers(); vi.unstubAllGlobals(); }
+});
+
+it("keeps the relay running while another pairing request still waits", async () => {
+  const credentials: CredentialTransport = async () => null;
+  const { client } = await harness(tempRoot(), { mode: "development" }, undefined,
+    { credentials, port: 0, bind: "127.0.0.1", addresses: () => ["127.0.0.1"] });
+  await client.call("settings.set", { relayUrl: "https://relay.example" });
+  SilentRelaySocket.created = SilentRelaySocket.closed = 0;
+  vi.stubGlobal("WebSocket", SilentRelaySocket);
+  const waiting: Array<() => void> = [];
+  vi.spyOn(RelayClient.prototype, "waitUntilOnline").mockImplementation(() => new Promise<void>((resolve) => { waiting.push(resolve); }));
+  try {
+    const first = client.call("pairing.create", {});
+    const second = client.call("pairing.create", {});
+    await vi.waitFor(() => expect(waiting).toHaveLength(2));
+    waiting[0]();
+    await first;
+    expect(SilentRelaySocket.closed).toBe(0);
+    waiting[1]();
+    await second;
+  } finally { vi.unstubAllGlobals(); }
+});
+
+it("reports a startup LAN listen failure in relay status", async () => {
+  const root = tempRoot();
+  const db = openDb(dataPaths(root).db);
+  addDevice(db, { name: "Synthetic phone", publicKey: Buffer.alloc(32, 4).toString("base64url") });
+  setSettings(db, { relayUrl: "https://relay.example" });
+  db.close();
+  vi.spyOn(RemoteHost.prototype, "ensureListening").mockRejectedValue(new Error("Synthetic bind failure"));
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  const { client } = await harness(root, { mode: "development" }, undefined, { credentials: async () => null });
+  await vi.waitFor(async () => expect((await client.call("remote.status", {})).relay.state).toBe("error"));
 });
 
 it("creates a room, posts into it, and broadcasts room and message events", async () => {
