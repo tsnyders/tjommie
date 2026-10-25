@@ -1,23 +1,38 @@
 import { ClientConnectionError, connect, type Client, type ClientEvent } from "@tjommie/client";
-import type { Message, MethodName, ParamsIn, Result } from "@tjommie/protocol";
+import type { Message, MethodName, ParamsIn, PushData, Result } from "@tjommie/protocol";
+import { RemoteRefusedError } from "../../client/src/remote-peer.ts";
 import { desktop, type DesktopConnection } from "./desktop";
+import { keepAliveRunning, syncKeepAlive } from "./keep-alive";
 import { errorText } from "./labels";
+import { registerPushIfAllowed } from "./push";
+import { onNetworkChange } from "./relay-wire";
+import { HostOfflineError, forgetRemoteHost, isAndroidApp, openRemoteClient, remoteHosts } from "./remote-hosts";
 import { failedSetup } from "./setup";
-import { forgetMobileHost, isAndroidApp, mobileHosts, openMobileClient } from "./mobile";
-import { addOlder, applyEvent, connected, finishLoading, forgetConversation, startLoading } from "./state";
+import { LINK, addOlder, applyEvent, catchUp, connected, finishLoading, forgetConversation, initialState, startLoading, type MessageEvent } from "./state";
 import { getState, update } from "./store";
 
 const PAGE = 50;
 const STARTING_TRIES = 3; // failed tries before "Starting Tjommie" says why it can't connect
 const CALLS = 16; // calls in flight at once; the PC's host for phones closes a connection with 32
-let client: Client | null = null;
-type ConnectionTarget = DesktopConnection | { mobileHostId: string };
+type RemoteTarget = { remoteHostId: string };
+type ConnectionTarget = DesktopConnection | RemoteTarget;
+let client: Client | null = null; // the ready connection, for calls
+let link: Client | null = null; // the same connection without the call limit, for a remote PC's pings
 let latest: ConnectionTarget | null = null;
 let retry: ReturnType<typeof setTimeout> | undefined;
+let heartbeat: ReturnType<typeof setTimeout> | undefined;
 let failures = 0; // the latest connection's failed tries in a row
+let lastPong = 0; // when the remote PC last answered a ping
 let started = false;
+const fetchers = new Map<string, (before?: string) => Promise<Page>>(); // each loaded conversation's pages, to catch up after a reconnect
+const arriving = new Map<string, MessageEvent[]>(); // message events for conversations whose newest page is being fetched again
 
 type Page = { messages: Message[]; hasMore: boolean };
+
+const isRemote = (target: ConnectionTarget | null): target is RemoteTarget => target !== null && "remoteHostId" in target;
+const visible = (): boolean => typeof document === "undefined" || document.visibilityState !== "hidden";
+// A hidden app without keep-alive is frozen soon after, so its link stops pinging and retrying until it is back in front.
+const awake = (): boolean => visible() || keepAliveRunning();
 
 // The live daemon client. Screens call it only while the connection is ready.
 export function daemon(): Client {
@@ -34,15 +49,26 @@ export function request<M extends MethodName>(method: M, params: ParamsIn<M>): P
 export function startConnection(): void {
   if (started) return;
   started = true;
-  if (isAndroidApp()) { connectPhone(); return; }
+  if (typeof document !== "undefined") document.addEventListener("visibilitychange", onVisibility);
+  if (isAndroidApp()) {
+    onNetworkChange(reconnectNow);
+    connectRemote();
+    return;
+  }
   const api = desktop();
   if (!api) {
     update((state) => ({ ...state, connection: { status: "outside" } }));
     return;
   }
-  api.onConnection((next) => open(next));
-  api.onDaemonFailed(failed);
-  void api.connection().then((result) => {
+  // The desktop's own daemon, unless the window is on another PC: then it waits for "This PC" (connectLocal).
+  api.onConnection((next) => { if (!isRemote(latest)) open(next); });
+  api.onDaemonFailed((reason) => { if (!isRemote(latest)) failed(reason); });
+  openLocal();
+}
+
+function openLocal(): void {
+  void desktop()?.connection().then((result) => {
+    if (isRemote(latest)) return;
     if (result.ok) open({ port: result.port, token: result.token });
     else failed(result.error);
   });
@@ -55,9 +81,12 @@ function failed(reason: string): void {
   update((state) => ({ ...state, connection: { status: "failed", reason } }));
 }
 
-// Asks the desktop app to start the daemon again after it failed.
+// Asks the desktop app to start the daemon again after it failed. On another PC, it tries that PC again.
 export function restartDaemon(): void {
-  if (isAndroidApp()) { connectPhone(); return; }
+  if (isAndroidApp() || isRemote(latest)) {
+    connectRemote(isRemote(latest) ? latest.remoteHostId : undefined);
+    return;
+  }
   update((state) => ({ ...state, connection: { status: "connecting" } }));
   void desktop()?.restartDaemon();
 }
@@ -69,59 +98,164 @@ function open(connection: DesktopConnection): void {
   void attempt(connection);
 }
 
-export function connectPhone(id = mobileHosts()[0]?.id): void {
-  clearTimeout(retry);
-  failures = 0;
+// Connects to a saved PC now: on start, from the connect screen, the host switcher or a push. Another PC's cached screens go first; the same
+// PC's stay up while it reconnects. With no PC (Switch PC), this device goes to the connect screen.
+export function connectRemote(id = remoteHosts()[0]?.id): void {
+  if (!isRemote(latest) || latest.remoteHostId !== id) leave();
   if (!id) {
-    latest = null;
-    const previous = client; client = null; void previous?.close();
     update((state) => ({ ...state, connection: { status: "outside" } }));
     return;
   }
-  const target = { mobileHostId: id };
+  update((state) => (state.connection.status === "failed" ? { ...state, connection: { status: "connecting" } } : state)); // Connect was pressed
+  begin({ remoteHostId: id });
+}
+
+// The desktop app's own PC again, after another PC.
+export function connectLocal(): void {
+  if (!isRemote(latest)) return;
+  leave();
+  openLocal();
+}
+
+export async function forgetRemote(id: string): Promise<void> {
+  const current = isRemote(latest) && latest.remoteHostId === id;
+  if (current) leave();
+  await forgetRemoteHost(id);
+  if (!current) return;
+  if (isAndroidApp()) connectRemote();
+  else openLocal();
+}
+
+// A tapped push: its PC becomes the current one if it isn't (and is saved here), and the bot's chat is where to go.
+export function routePush(data: PushData): string {
+  const current = isRemote(latest) && latest.remoteHostId === data.hostId;
+  if (!current && remoteHosts().some((host) => host.id === data.hostId)) connectRemote(data.hostId);
+  return `/chat/?bot=${encodeURIComponent(data.botId)}`;
+}
+
+// Drops the current connection and everything cached from its PC.
+function leave(): void {
+  clearTimeout(retry);
+  clearTimeout(heartbeat);
+  latest = null;
+  const previous = client;
+  client = null;
+  link = null;
+  void previous?.close().catch(() => {});
+  fetchers.clear();
+  update(() => initialState);
+  syncKeepAlive("outside");
+}
+
+// Connects to this PC now, from the first backoff step. A ready link is closed (its calls in flight reject and are never sent again), and the
+// cached screens stay up while it reconnects. A failed first connect keeps its screen, so pairing there isn't interrupted.
+function begin(target: RemoteTarget): void {
+  clearTimeout(retry);
+  failures = 0;
   latest = target;
-  update((state) => ({ ...state, connection: { status: "connecting" } }));
+  update((state) => {
+    const { status } = state.connection;
+    if (status === "failed" || status === "connecting" || status === "reconnecting") return state;
+    return { ...state, connection: state.settings ? { status: "reconnecting" } : { status: "connecting" } };
+  });
   void attempt(target);
 }
 
-export async function forgetPhone(id: string): Promise<void> {
-  if (latest && "mobileHostId" in latest && latest.mobileHostId === id) {
-    latest = null; clearTimeout(retry);
-    const previous = client; client = null; await previous?.close();
+// The remote link may be dead: the network changed, a ping went unanswered, the app is back after a sleep, or the link closed. It is replaced at
+// once; a hidden app without keep-alive only lets it go, and its next return starts again.
+function reconnectNow(): void {
+  const target = latest;
+  if (!isRemote(target) || getState().connection.status === "removed") return;
+  if (awake()) {
+    begin({ remoteHostId: target.remoteHostId });
+    return;
   }
-  await forgetMobileHost(id);
-  connectPhone();
+  clearTimeout(heartbeat);
+  const previous = client;
+  client = null;
+  link = null;
+  void previous?.close().catch(() => {});
+  update((state) => (state.connection.status === "ready" ? { ...state, connection: { status: "reconnecting" } } : state));
+}
+
+function onVisibility(): void {
+  if (!isRemote(latest)) return;
+  if (!visible()) {
+    beat(); // slower with keep-alive, or none
+    return;
+  }
+  const status = getState().connection.status;
+  if (status === "removed") return;
+  syncKeepAlive(status);
+  // A link that answered within the last minute gets a ping now; an older one (the app slept, and its socket may be a zombie) is replaced at once.
+  if (link && Date.now() - lastPong <= LINK.pingBackgroundMs) beat(0);
+  else reconnectNow();
+}
+
+// The next ping on the remote link: every 20 s in front, every 60 s hidden while keep-alive runs, otherwise none.
+function beat(wait: number | null = visible() ? LINK.pingForegroundMs : keepAliveRunning() ? LINK.pingBackgroundMs : null): void {
+  clearTimeout(heartbeat);
+  const current = link;
+  if (!current || wait === null) return;
+  heartbeat = setTimeout(() => void ping(current), wait);
+}
+
+async function ping(current: Client): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const answered = await Promise.race([
+    // Any answer counts, an error too (a PC from before remote.ping says unknown_method); only silence or a closed link means it's gone.
+    current.call("remote.ping", {}).then(() => true, (error: unknown) => !(error instanceof ClientConnectionError)),
+    new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), LINK.pongTimeoutMs); }),
+  ]);
+  clearTimeout(timer);
+  if (link !== current) return; // replaced meanwhile
+  if (!answered) {
+    reconnectNow();
+    return;
+  }
+  lastPong = Date.now();
+  beat();
 }
 
 async function attempt(connection: ConnectionTarget): Promise<void> {
   clearTimeout(retry);
+  clearTimeout(heartbeat);
   const previous = client;
   client = null;
-  // A new connection is replacing one that still looked up (the daemon restarted): until it opens, calls fail as
+  link = null;
+  // A new connection is replacing one that still looked up (the daemon restarted, or the remote link went quiet): until it opens, calls fail as
   // they do while reconnecting, so the pill says so.
   if (previous) update((state) => (state.connection.status === "ready" ? { ...state, connection: { status: "reconnecting" } } : state));
   await previous?.close().catch(() => {});
-  let next: Client;
+  if (latest !== connection) return; // replaced while the old one closed
+  let raw: Client;
   try {
-    next = limitCalls("mobileHostId" in connection ? await openMobileClient(connection.mobileHostId) : await connect(connection.port, connection.token, { recordEvents: false }));
+    raw = isRemote(connection) ? await openRemoteClient(connection.remoteHostId) : await connect(connection.port, connection.token, { recordEvents: false });
   } catch (error) {
     lost(connection, error);
     return;
   }
   if (latest !== connection) {
-    void next.close();
+    void raw.close();
     return;
   }
+  const next = limitCalls(raw);
   // Events that arrive while the lists load are applied on top of them, in order. The daemon sends events and
   // replies in the order things happen, so the last word on each bot is always the newest.
   let early: ClientEvent[] | null = [];
   next.subscribe((event) => {
-    if (early) early.push(event);
-    else update((state) => applyEvent(state, event));
+    if (early) {
+      early.push(event);
+      return;
+    }
+    update((state) => applyEvent(state, event));
+    if (event.event === "message.added" || event.event === "message.updated" || event.event === "message.delta") arriving.get(event.data.conversationId)?.push(event);
   });
   try {
     // An older daemon has no accounts: the list stays unknown and the screens that need it say so.
-    const [bots, settings, routines, rooms, accounts] = await Promise.all([next.call("bots.list", {}), next.call("settings.get", {}), next.call("routines.list", {}), next.call("rooms.list", {}), next.call("accounts.list", {}).catch(() => null)]);
+    const [bots, settings, routines, rooms, accounts, notifications] = await Promise.all([
+      next.call("bots.list", {}), next.call("settings.get", {}), next.call("routines.list", {}), next.call("rooms.list", {}), next.call("accounts.list", {}).catch(() => null), next.call("notifications.pending", {}),
+    ]);
     if (latest !== connection) {
       void next.close();
       return;
@@ -129,8 +263,10 @@ async function attempt(connection: ConnectionTarget): Promise<void> {
     const pending = early;
     early = null;
     client = next;
+    link = raw;
     failures = 0;
-    update((state) => pending.reduce((current, event) => applyEvent(current, event), connected(state, { bots, settings, routines, rooms, accounts })));
+    lastPong = Date.now();
+    update((state) => pending.reduce((current, event) => applyEvent(current, event), connected(state, { bots, settings, routines, rooms, accounts, notifications })));
   } catch (error) {
     void next.close();
     lost(connection, error);
@@ -146,9 +282,33 @@ async function attempt(connection: ConnectionTarget): Promise<void> {
       if (client === next) update((state) => ({ ...state, setup: failedSetup(errorText(error)) }));
     },
   );
+  catchUpAll(next);
+  if (isRemote(connection)) {
+    beat();
+    void registerPushIfAllowed(next).catch(() => {});
+    syncKeepAlive("ready", remoteHosts().find((host) => host.id === connection.remoteHostId)?.name ?? null);
+  }
   void next.disconnected.then((error) => {
-    if (client === next) lost(connection, error);
+    if (client !== next) return;
+    if (isRemote(connection)) reconnectNow();
+    else lost(connection, error);
   });
+}
+
+// After a reconnect, each loaded chat fetches its newest page again and merges it, so what happened meanwhile shows up without blanking.
+function catchUpAll(next: Client): void {
+  for (const [id, conversation] of Object.entries(getState().conversations)) {
+    const fetchPage = fetchers.get(id);
+    if (conversation.status !== "ready" || !fetchPage) continue;
+    const events: MessageEvent[] = [];
+    arriving.set(id, events);
+    fetchPage()
+      .then(
+        (page) => { if (client === next) update((state) => catchUp(state, id, page, events)); },
+        () => {}, // the link went again; the next connection catches up
+      )
+      .finally(() => { if (arriving.get(id) === events) arriving.delete(id); });
+  }
 }
 
 // The client with at most CALLS calls in flight; the rest wait their turn, in order. Every call goes through it (the startup lists, request and
@@ -171,16 +331,21 @@ function limitCalls(client: Client): Client {
   return { ...client, call };
 }
 
+// A connection attempt failed, or the desktop's daemon connection dropped.
 function lost(connection: ConnectionTarget, error: unknown): void {
   if (latest !== connection) return;
   client = null;
+  link = null;
   if (typeof error === "object" && error !== null && "code" in error && error.code === 4003) {
     update((state) => ({ ...state, connection: { status: "update" } }));
     return;
   }
+  if (isRemote(connection)) {
+    remoteFailed(connection, error);
+    return;
+  }
   failures += 1;
   update((state) => {
-    if ("mobileHostId" in connection && failures >= STARTING_TRIES) return { ...state, connection: { status: "failed", reason: errorText(error) } };
     if (state.connection.status === "ready") return { ...state, connection: { status: "reconnecting" } };
     if (state.connection.status === "reconnecting" || failures < STARTING_TRIES) return state;
     // Still starting (or after Try again): say why instead of spinning. The tries go on, so a daemon that recovers
@@ -193,6 +358,27 @@ function lost(connection: ConnectionTarget, error: unknown): void {
   retry = setTimeout(() => {
     if (latest === connection) void attempt(connection);
   }, 2_000);
+}
+
+// A saved PC couldn't be reached. With its screens cached they stay, marked offline (its relay says it's off, or it can't be reached), and the
+// tries go on with backoff while the app can run. Only a first connect with nothing cached says why in full. The PC refusing this device is final.
+function remoteFailed(target: RemoteTarget, error: unknown): void {
+  if (error instanceof RemoteRefusedError) {
+    clearTimeout(retry);
+    update((state) => ({ ...state, connection: { status: "removed" } }));
+    syncKeepAlive("removed");
+    return;
+  }
+  failures += 1;
+  update((state) => {
+    if (state.settings) return { ...state, connection: { status: "offline", reason: error instanceof HostOfflineError ? "host_offline" : "unreachable" } };
+    return failures < STARTING_TRIES ? state : { ...state, connection: { status: "failed", reason: errorText(error) } };
+  });
+  syncKeepAlive(getState().connection.status);
+  if (!awake()) return;
+  retry = setTimeout(() => {
+    if (latest === target) void attempt(target);
+  }, LINK.backoffMs[Math.min(failures, LINK.backoffMs.length - 1)]);
 }
 
 // A bot chat's pages, newest first.
@@ -215,9 +401,10 @@ export const exchangePage =
     return { messages, hasMore: false };
   };
 
-// Loads a conversation's newest page once; events keep it current from then on.
+// Loads a conversation's newest page once; events keep it current from then on, and a reconnect catches it up.
 export async function loadConversation(conversationId: string, fetchPage: (before?: string) => Promise<Page>): Promise<void> {
   if (getState().conversations[conversationId]) return;
+  fetchers.set(conversationId, fetchPage);
   update((state) => startLoading(state, conversationId));
   try {
     const page = await fetchPage();
@@ -245,6 +432,7 @@ export function retryConversation(conversationId: string, fetchPage: (before?: s
 
 // A closed view's conversation (an exchange) is forgotten, so it stops following events. It loads again if reopened.
 export function closeConversation(conversationId: string): void {
+  fetchers.delete(conversationId);
   update((state) => forgetConversation(state, conversationId));
 }
 
