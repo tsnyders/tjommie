@@ -7,6 +7,7 @@ type Listening = Promise<{ remove: () => Promise<void> }>;
 export type PushApi = {
   available(): boolean | Promise<boolean>;
   checkPermissions(): Promise<{ receive: string }>;
+  requestPermissions(): Promise<{ receive: string }>; // Settings' Allow
   register(): Promise<void>;
   addListener(event: "registration", listener: (token: { value: string }) => void): Listening;
   addListener(event: "registrationError", listener: (error: { error: string }) => void): Listening;
@@ -15,7 +16,7 @@ export type PushApi = {
 
 // No push until T7's wrapper (packages/mobile/src/plugins.ts) merges and is plugged in here (ruling R2). The official plugin's register() crashes
 // an APK built without Firebase config, so this doesn't guess at availability.
-const nativePush: PushApi | null = null;
+export const nativePush: PushApi | null = null;
 let token: Promise<string> | undefined; // this phone's push token, asked for once per run
 
 function pushToken(push: PushApi): Promise<string> {

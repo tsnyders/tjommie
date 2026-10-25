@@ -28,6 +28,7 @@ function fakePush(options: { available: boolean; permission: string }) {
   const push: PushApi = {
     available: () => options.available,
     checkPermissions: async () => ({ receive: options.permission }),
+    requestPermissions: async () => ({ receive: options.permission }),
     register: async () => { queueMicrotask(() => listeners.get("registration")?.({ value: "synthetic-push-token" } as never)); },
     addListener: (async (event: string, listener: (value: never) => void) => {
       listeners.set(event, listener);

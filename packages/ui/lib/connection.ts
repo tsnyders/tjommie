@@ -117,11 +117,12 @@ export function connectLocal(): void {
   openLocal();
 }
 
+// The PC's keys go first: if deleting them fails, nothing has moved (the removed screen stays and says why). Only then does the window leave
+// that PC, for the next saved one on a phone and this PC's own Tjommie on the desktop.
 export async function forgetRemote(id: string): Promise<void> {
-  const current = isRemote(latest) && latest.remoteHostId === id;
-  if (current) leave();
   await forgetRemoteHost(id);
-  if (!current) return;
+  if (!isRemote(latest) || latest.remoteHostId !== id) return;
+  leave();
   if (isAndroidApp()) connectRemote();
   else openLocal();
 }
@@ -155,8 +156,9 @@ function begin(target: RemoteTarget): void {
   latest = target;
   update((state) => {
     const { status } = state.connection;
-    if (status === "failed" || status === "connecting" || status === "reconnecting") return state;
-    return { ...state, connection: state.settings ? { status: "reconnecting" } : { status: "connecting" } };
+    const next = state.host === target.remoteHostId ? state : { ...state, host: target.remoteHostId };
+    if (status === "failed" || status === "connecting" || status === "reconnecting") return next;
+    return { ...next, connection: next.settings ? { status: "reconnecting" } : { status: "connecting" } };
   });
   void attempt(target);
 }

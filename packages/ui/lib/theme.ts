@@ -1,5 +1,5 @@
 import { desktop } from "./desktop";
-import { setNativeCanvas } from "./mobile";
+import { setNativeCanvas } from "./remote-hosts";
 import { hexColor, mobileStyleScript, saveMobileStyle, saveReduceEffects, showMobileStyle, type MobileStyle } from "./mobile-style";
 
 export type ThemeChoice = "dark" | "light" | "system";
