@@ -126,7 +126,7 @@ it("retains edited drafts, reveals keyboard mentions, dismisses native overlays 
     const calendar = await page.evaluate<string[]>("[new Date(2026,9,22,23,59,58),new Date(2026,9,22),new Date(2026,9,23)].map(date=>date.toISOString())");
     await page.clock.install({ time: new Date(calendar[0]) });
     await visit("/settings/?section=usage");
-    await page.getByRole("radio", { name: "Today", exact: true }).click();
+    await page.getByRole("group", { name: "Range", exact: true }).getByRole("button", { name: "Today", exact: true }).click();
     await eventually(async () => usageStarts.at(-1) === calendar[1] || undefined);
     await page.clock.fastForward(3000);
     await eventually(async () => usageStarts.at(-1) === calendar[2] || undefined);

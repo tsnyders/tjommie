@@ -27,6 +27,9 @@ import { RoomPost } from "./room-post";
 
 const PANEL_KEY = "tjommie.panel";
 
+// Where a room's messages are at: a message added, or any of them finishing, moves them on; a reply's words streaming in don't.
+export const progressOf = (messages: Message[]): string => messages.map((message) => message.status).join(",");
+
 // A room (WF5): Everyone, which every bot is in, or a room of chosen bots. Text posts get the room's own layout; activity rows, notices and
 // errors (with Retry) sit indented under the posts, drawn like in a chat.
 export function RoomScreen({ roomId }: { roomId: string }) {
@@ -46,6 +49,13 @@ export function RoomScreen({ roomId }: { roomId: string }) {
   const [editing, setEditing] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [problem, setProblem] = useState<string | null>(null); // why Delete room failed
+  // A refusal (a bot still answering) is about the room as it was then, so the notice goes once the room moves on.
+  const progress = progressOf(conversation?.messages ?? []);
+  const [seen, setSeen] = useState(progress);
+  if (progress !== seen) {
+    setSeen(progress);
+    setProblem(null);
+  }
   const opener = useRef<HTMLElement | null>(null);
   const panelButton = useRef<HTMLButtonElement>(null);
 

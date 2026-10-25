@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { Plus } from "lucide-react";
-import type { Message } from "@tjommie/protocol";
+import type { Message, Room } from "@tjommie/protocol";
 import { daemon, request } from "@/lib/connection";
 import { phoneCaptionClear } from "@/lib/native-capability";
 import { roomLine } from "@/lib/overview";
@@ -13,19 +13,29 @@ import { cn } from "@/lib/utils";
 import { AvatarStack, STRETCHED } from "../agents/cards";
 import { RoomForm } from "./room-form";
 
-const NO_MESSAGES: Message[] = [];
 const STACK = 5; // avatars on a row before "+N"
 const PREVIEW = 10; // each room's newest messages, for its line
 
-// A new or changed message, in the preview of the room it's in. A chat's message, or one for a room not read yet, changes nothing.
-export function withMessage(posts: Record<string, Message[]>, event: MessageEvent): Record<string, Message[]> {
-  const page = posts[event.data.conversationId];
-  return page ? { ...posts, [event.data.conversationId]: applyMessageEvent(page, event).slice(-PREVIEW) } : posts;
+// A new or changed message, in the preview of the room it's in. A room not read yet keeps a new post for its page to be merged with; a change to
+// one of its messages is in that page, so until it lands the room stays not read yet. A chat's message changes nothing.
+export function withMessage(posts: Record<string, Message[]>, event: MessageEvent, rooms: Pick<Room, "id">[]): Record<string, Message[]> {
+  const id = event.data.conversationId;
+  if (!rooms.some((room) => room.id === id) || (!posts[id] && event.event !== "message.added")) return posts;
+  return { ...posts, [id]: applyMessageEvent(posts[id] ?? [], event).slice(-PREVIEW) };
 }
 
-// Each room's newest messages, for its row here and its card on Agents. They're read for each list of rooms (a room made, changed or deleted, a
-// new connection), one room at a time, and a newer list stops an older read, so what it hadn't asked for yet isn't asked. After that, new posts
-// come as events: bots at work never make it read again (their names are looked up as the line is drawn).
+// A room's page, merged with what came as events while it was on its way: a message the page doesn't have yet is kept. For a message both have,
+// the page's copy wins: it's the daemon's, so a change an event missed (while reconnecting) isn't kept out of date.
+export function withPage(posts: Record<string, Message[]>, roomId: string, page: Message[]): Record<string, Message[]> {
+  const read = new Set(page.map((message) => message.id));
+  const merged = [...page, ...(posts[roomId] ?? []).filter((message) => !read.has(message.id))];
+  return { ...posts, [roomId]: merged.sort((a, b) => a.createdAt.localeCompare(b.createdAt)).slice(-PREVIEW) };
+}
+
+// Each room's newest messages, for its row here and its card on Agents; a room not read yet has none (undefined). They're read for each list of
+// rooms (a room made, changed or deleted, a new connection), one room at a time, and a newer list stops an older read, so what it hadn't asked for
+// yet isn't asked. New posts come as events, while a room is read too: bots at work never make it read again (their names are looked up as the
+// line is drawn).
 export function useRoomPosts(): Record<string, Message[]> {
   const rooms = useApp((state) => state.rooms);
   const ready = useApp((state) => state.connection.status === "ready");
@@ -37,7 +47,7 @@ export function useRoomPosts(): Record<string, Message[]> {
       for (const room of rooms) {
         if (!live) return;
         const page = await request("room.history", { roomId: room.id, limit: PREVIEW }).catch(() => null);
-        if (live && page) setPosts((current) => ({ ...current, [room.id]: page.messages }));
+        if (live && page) setPosts((current) => withPage(current, room.id, page.messages));
       }
     })();
     return () => {
@@ -49,13 +59,13 @@ export function useRoomPosts(): Record<string, Message[]> {
     let off = (): void => {};
     try {
       off = daemon().subscribe((event) => {
-        if (event.event === "message.added" || event.event === "message.updated") setPosts((current) => withMessage(current, event));
+        if (event.event === "message.added" || event.event === "message.updated") setPosts((current) => withMessage(current, event, rooms));
       });
     } catch {
       // not connected right now: the next connection subscribes again
     }
     return () => off();
-  }, [ready]);
+  }, [ready, rooms]);
   return posts;
 }
 
@@ -107,7 +117,7 @@ export function RoomsList() {
                   {members.length > STACK && <span className="shrink-0 text-[12px] text-caption">+{members.length - STACK}</span>}
                 </div>
                 <p data-slot="row-task" className="mt-2.5 truncate text-[13px] leading-[18px] text-body">
-                  {roomLine(posts[room.id] ?? NO_MESSAGES, bots)}
+                  {roomLine(posts[room.id], bots)}
                 </p>
               </article>
             );

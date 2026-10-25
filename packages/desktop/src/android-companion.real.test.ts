@@ -101,6 +101,7 @@ it.skipIf(!serial || !cdp)("keeps the original phone UI usable with real swipe s
   mkdirSync(shots, { recursive: true });
   try {
     app = await launchRealApp(undefined, { isolatedAccounts: true });
+    mkdirSync(resolve(".cache"), { recursive: true });
     writeFileSync(resolve(".cache/android-test-root.txt"), app.root);
     const bot = await app.client.call("bots.create", { name: "S25 test agent", provider: "claude", model: "sonnet", color: "blue", shape: "circle", instructions: "Disposable Android UI fixture. Never run a provider turn.", autonomy: "ask", browser: false });
     await app.client.call("bots.pause", { id: bot.id, paused: true });
@@ -280,6 +281,7 @@ it.skipIf(!serial || !cdp)("keeps the original phone UI usable with real swipe s
     expect(errors).toEqual([]);
   } catch (error) {
     if (phone) {
+      mkdirSync(resolve(".cache"), { recursive: true });
       writeFileSync(resolve(".cache/android-test-error.txt"), JSON.stringify({ acceptedConnections, page: await phone.evaluate("({path:location.pathname,search:location.search,width:innerWidth,height:innerHeight,socketErrors:window.__socketTestErrors??[],mobile:!!document.querySelector('.android-app'),scrolls:[...document.querySelectorAll('[data-testid$=scroll]')].map(el=>({kind:el.getAttribute('data-testid'),height:el.clientHeight,content:el.scrollHeight,top:el.scrollTop}))})").catch(() => ({ unavailable: true })) }));
     }
     throw new Error((error instanceof Error ? error.message : "Android test failed.").replaceAll(code || "no-code", "[synthetic pairing code]"));

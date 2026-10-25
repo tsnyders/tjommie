@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { MembersPanel } from "./members-panel";
 import { RoomPost } from "./room-post";
+import { progressOf } from "./room-screen";
 
 const everyone: Room = { id: "team", name: "Everyone", botIds: ["b1", "b2"], everyone: true, createdAt: null };
 const growth: Room = { id: "r1", name: "Growth", botIds: ["b1"], everyone: false, createdAt: "2026-10-25T09:00:00.000Z" };
@@ -27,6 +28,27 @@ describe("your post in a room", () => {
     expect(html("@Bot 2 please help")).not.toContain("text-mention"); // Bot 2 isn't in the room, and isn't taken for Bot
     expect(html("@Bot please help")).toContain('<span class="font-semibold text-mention">@Bot</span>');
     expect(html("@everyone hi")).toContain('<span class="font-semibold text-mention">@everyone</span>');
+  });
+});
+
+describe("a refused Delete room", () => {
+  const yours: Message = { id: "m1", conversationId: "r1", author: "you", kind: "text", body: "@Sales hi", data: null, status: "done", createdAt: "2026-10-25T09:00:00.000Z" };
+  const reply = (status: Message["status"], body: string): Message => ({ ...yours, id: "m2", author: "b1", body, status, createdAt: "2026-10-25T09:01:00.000Z" });
+
+  it("says why until the room moves on: a message added, or one finishing, not a reply's words streaming in", () => {
+    const refused = progressOf([yours, reply("streaming", "")]); // Sales is still answering
+    expect(progressOf([yours, reply("streaming", "Half an ans")])).toBe(refused);
+    expect(progressOf([yours, reply("done", "An answer.")])).not.toBe(refused);
+    expect(progressOf([yours, reply("streaming", ""), { ...yours, id: "m3" }])).not.toBe(refused);
+    const source = readFileSync(new URL("./room-screen.tsx", import.meta.url), "utf8");
+    expect(source).toMatch(/if \(progress !== seen\) \{\s+setSeen\(progress\);\s+setProblem\(null\);/);
+  });
+
+  it("stops saying why when an earlier reply finishes behind a newer post", () => {
+    const later: Message = { ...yours, id: "m3", body: "@Sales and another thing", createdAt: "2026-10-25T09:02:00.000Z" };
+    const refused = progressOf([yours, reply("streaming", ""), later]); // refused after the newer post
+    expect(progressOf([yours, reply("streaming", "Half an ans"), later])).toBe(refused);
+    expect(progressOf([yours, reply("done", "An answer."), later])).not.toBe(refused);
   });
 });
 

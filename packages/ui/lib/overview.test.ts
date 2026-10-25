@@ -121,6 +121,10 @@ describe("the Agents overview", () => {
     expect(roomLine([notice, streaming], bots, now)).toBe("No posts yet");
     expect(roomLine([yours, notice, streaming], bots, now)).toBe("You posted 10 minutes ago");
   });
+
+  it("leaves a room's line blank while its posts are being read, rather than saying it has none", () => {
+    expect(roomLine(undefined, [], now)).toBe("\xa0"); // a blank that keeps the line's height
+  });
 });
 
 describe("the phone's filter chips", () => {

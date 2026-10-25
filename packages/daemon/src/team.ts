@@ -189,7 +189,7 @@ export type TeamDeps = {
   botView?: (bot: StoredBot) => Bot;
 };
 
-// Bots working together: the tools on Tjommie's MCP server, exchanges between bots, and the Team room.
+// Bots working together: the tools on Tjommie's MCP server, exchanges between bots, and rooms (Everyone and the others).
 export class Team {
   #db: Db;
   #broadcast: Broadcast;
@@ -280,7 +280,7 @@ export class Team {
     ];
   }
 
-  // A post from the person in the Team room. Every bot it mentions answers in the room.
+  // A post from the person in a room. Every bot of the room it mentions answers in the room.
   postToRoom(roomId: string, text: string): Message {
     const room = getRoom(this.#db, roomId);
     const context = this.#describe(history(this.#db, roomId, undefined, ROOM_CONTEXT));

@@ -28,6 +28,7 @@ async function resize(app: RealApp, width: number, height: number): Promise<void
 
 async function fits(app: RealApp): Promise<void> {
   const okay = await app.page.evaluate("document.documentElement.scrollWidth <= innerWidth");
+  if (!okay) mkdirSync(resolve(".cache"), { recursive: true });
   if (!okay) writeFileSync(resolve(".cache/phone-overflow.json"), JSON.stringify(await app.page.evaluate("({width:innerWidth,scroll:document.documentElement.scrollWidth,offenders:[...document.querySelectorAll('body *')].filter(el=>{const r=el.getBoundingClientRect();return r.width&&r.right>innerWidth+1}).slice(-25).map(el=>({tag:el.tagName,class:el.className,left:el.getBoundingClientRect().left,right:el.getBoundingClientRect().right}))})"), null, 2));
   expect(okay).toBe(true);
 }
@@ -201,7 +202,7 @@ it("uses Quiet pill navigation and reachable phone sheets, forms, account dialog
       await visit(app, "/settings/?section=usage");
       await page.getByText("API value (subscriptions)", { exact: true }).waitFor();
       await page.getByText("Combined cost estimate", { exact: true }).waitFor();
-      await page.getByRole("radio", { name: "This year", exact: true }).click();
+      await page.getByRole("group", { name: "Range", exact: true }).getByRole("button", { name: "This year", exact: true }).click();
       await page.getByText("Combined cost estimate", { exact: true }).waitFor();
       await page.getByText(/^Months in /).waitFor();
       await capture(app, `usage-${width}-dark.png`);
@@ -278,6 +279,7 @@ it("uses Quiet pill navigation and reachable phone sheets, forms, account dialog
   } catch (error) {
     if (app) {
       await app.page.screenshot({ path: join(screenshots, "failure.png"), timeout: 5000 }).catch(() => {});
+      mkdirSync(resolve(".cache"), { recursive: true });
       writeFileSync(resolve(".cache/phone-error.json"), JSON.stringify({ url: app.page.url(), active: await app.page.evaluate("({tag:document.activeElement?.tagName,label:document.activeElement?.getAttribute('aria-label')})").catch(() => null) }, null, 2));
     }
     throw error;

@@ -46,6 +46,8 @@ function BotSettings({ bot, bots }: { bot: Bot; bots: Bot[] }) {
   const router = useRouter();
   const allRoutines = useApp((state) => state.routines);
   const routines = useMemo(() => allRoutines.filter((routine) => routine.botId === bot.id), [allRoutines, bot.id]);
+  // The bot as the form opened. The bot prop follows changes made elsewhere; the edit is measured from this.
+  const [opened] = useState(bot);
   const [form, setForm] = useState<BotForm>(() => formFromBot(bot));
   const [editing, setEditing] = useState<Routine | "new" | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -53,7 +55,7 @@ function BotSettings({ bot, bots }: { bot: Bot; bots: Bot[] }) {
   const [problem, setProblem] = useState<string | null>(null);
   const chat = `/chat/?bot=${encodeURIComponent(bot.id)}`;
   const nameError = nameProblem(form.name, bots, bot.id);
-  const patch = patchFor(bot, form);
+  const patch = patchFor(opened, form, bots);
   const dirty = Object.keys(patch).length > 0;
 
   async function run(action: () => Promise<unknown>, then?: () => void): Promise<void> {

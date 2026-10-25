@@ -195,14 +195,14 @@ function CardMenu({ bot, onProblem }: { bot: Bot; onProblem: (problem: string | 
   );
 }
 
-// A room's card (WF2): its last two bot-to-bot posts, and its newest post.
-export function TeamRoomCard({ room, messages, bots }: { room: Room; messages: Message[]; bots: Bot[] }) {
-  const posts = messages.filter((message) => message.kind === "text" && ExchangePostData.safeParse(message.data).success).slice(-2);
+// A room's card (WF2): its last two bot-to-bot posts, and its newest post. While its messages are being read (undefined), it says nothing of them.
+export function TeamRoomCard({ room, messages, bots }: { room: Room; messages: Message[] | undefined; bots: Bot[] }) {
+  const posts = (messages ?? []).filter((message) => message.kind === "text" && ExchangePostData.safeParse(message.data).success).slice(-2);
   return (
     <article className={cn(CARD, "border-card-stroke hover:border-input-stroke max-sm:hidden")}>
       <div className="flex h-[181px] shrink-0 flex-col justify-center gap-3 overflow-hidden rounded-[10px] bg-popover p-3">
         {posts.length === 0 ? (
-          <p className="text-center text-[12px] text-placeholder">No bot chats yet</p>
+          messages && <p className="text-center text-[12px] text-placeholder">No bot chats yet</p>
         ) : (
           posts.map((post) => {
             const author = bots.find((each) => each.id === post.author);

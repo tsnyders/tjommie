@@ -101,8 +101,10 @@ export function talkingWith(botId: string, messages: Message[], now: Date = new 
 }
 
 // A room's line (its card on Agents, its row in the rooms list), from its newest post of any kind: yours, a bot's answer, or a bot-to-bot
-// exchange, which names both bots. Notices, activity and a reply still on its way aren't posts.
-export function roomLine(messages: Message[], bots: Pick<Bot, "id" | "name">[], now: Date = new Date()): string {
+// exchange, which names both bots. Notices, activity and a reply still on its way aren't posts. A room whose posts are still being read
+// (undefined) gets a blank line that keeps its height, not "No posts yet".
+export function roomLine(messages: Message[] | undefined, bots: Pick<Bot, "id" | "name">[], now: Date = new Date()): string {
+  if (!messages) return "\u00a0";
   const post = [...messages].reverse().find((message) => message.kind === "text" && message.body.trim() !== "");
   if (!post) return "No posts yet";
   const ago = timeAgo(post.createdAt, now);

@@ -23,10 +23,10 @@ function Avatar({ bot, size }: { bot: Bot | undefined; size: number }) {
   return bot ? <BotAvatar color={bot.color} shape={bot.shape} size={size} className="shrink-0" /> : <MissingAvatar size={size} />;
 }
 
-// The exchange view (WF6): who asked whom, the whole exchange, and a box that replies in the Team room with both
-// bots mentioned. It opens in the right panel, in place of the bot panel or the Team room's members. refreshKey
-// changes when the exchange is answered or fails, in the place it was opened from: a chat's handoff row status, or
-// the Team room's newest post or notice for the exchange.
+// The exchange view (WF6): who asked whom, the whole exchange, and a box that replies in Everyone with both bots
+// mentioned. It opens in the right panel, in place of the bot panel or a room's members. refreshKey changes when
+// the exchange is answered or fails, in the place it was opened from: a chat's handoff row status, or the room's
+// newest post or notice for the exchange.
 export function ExchangeView({ exchangeId, refreshKey, onClose, bar }: { exchangeId: string; refreshKey?: string; onClose: () => void; bar: ReactNode }) {
   const bots = useApp((state) => state.bots);
   const conversation = useApp((state) => state.conversations[exchangeId]);
@@ -116,8 +116,8 @@ function AuthorRow({ id, bots }: { id: string; bots: Bot[] }) {
   );
 }
 
-// Replies in the Team room with both bots already @mentioned (spec 6.2), so both answer there. There are no
-// attachments here.
+// Replies in Everyone, wherever the exchange was opened, with both bots already @mentioned (spec 6.2), so both
+// answer there. There are no attachments here.
 export function ExchangeComposer({ bots }: { bots: Bot[] }) {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
@@ -127,7 +127,7 @@ export function ExchangeComposer({ bots }: { bots: Bot[] }) {
   const guard = useSendGuard();
   const [problem, setProblem] = useState<string | null>(null);
   const canSend = bots.length > 0 && text.trim() !== ""; // with both bots gone there's no one to mention
-  const asked = bots.length === 2 ? "Ask both bots in the Team room" : bots.length === 1 ? `Ask ${bots[0].name} in the Team room` : "Reply in Team room";
+  const asked = bots.length === 2 ? "Ask both bots in Everyone" : bots.length === 1 ? `Ask ${bots[0].name} in Everyone` : "Reply in Everyone";
   async function send(): Promise<void> {
     if (busy || !canSend || !guard.begin()) return;
     const sentText = text;
@@ -157,7 +157,7 @@ export function ExchangeComposer({ bots }: { bots: Bot[] }) {
     >
       {posted && (
         <p className="mb-2 text-[12px] leading-[18px] text-secondary">
-          Posted in the Team room.{" "}
+          Posted in Everyone.{" "}
           <Link href={`/room/?id=${TEAM_ROOM_ID}`} className="text-accent hover:underline">
             Open room
           </Link>
@@ -182,7 +182,7 @@ export function ExchangeComposer({ bots }: { bots: Bot[] }) {
             setText(event.target.value);
             setPosted(false);
           }}
-          aria-label="Reply in Team room"
+          aria-label="Reply in Everyone"
           placeholder={asked}
           className="min-w-0 flex-1 truncate bg-transparent text-[14px] text-text outline-none placeholder:text-placeholder max-sm:basis-0 max-sm:pl-2"
         />

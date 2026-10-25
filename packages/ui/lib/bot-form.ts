@@ -59,9 +59,10 @@ export const createInput = (form: BotForm): ParamsIn<"bots.create"> => ({ ...for
 
 export const sameSet = (a: string[], b: string[]): boolean => a.length === b.length && a.every((id) => b.includes(id));
 
-// Only what the person changed, so a save never puts back a value that changed elsewhere since the form opened.
-// Provider and model travel together: the daemon needs a model whenever the provider changes. The account travels on its own.
-export function patchFor(bot: Bot, form: BotForm): BotPatch {
+// Only what the person changed, measured from the bot as the form opened (`bot`), so a save never puts back a value that changed elsewhere since.
+// Provider and model travel together: the daemon needs a model whenever the provider changes. The account travels on its own. Can message counts
+// only the bots there still are: one deleted since the form opened left with its bot, so it isn't a change, and it's never sent.
+export function patchFor(bot: Bot, form: BotForm, bots: Pick<Bot, "id">[]): BotPatch {
   const patch: BotPatch = {};
   const name = form.name.trim();
   if (name !== bot.name) patch.name = name;
@@ -76,7 +77,8 @@ export function patchFor(bot: Bot, form: BotForm): BotPatch {
   if (form.autonomy !== bot.autonomy) patch.autonomy = form.autonomy;
   if (form.projectFolder !== bot.projectFolder) patch.projectFolder = form.projectFolder;
   if (form.browser !== bot.browser) patch.browser = form.browser;
-  if (!sameSet(form.canMessage, bot.canMessage)) patch.canMessage = form.canMessage;
+  const canMessage = form.canMessage.filter((id) => bots.some((each) => each.id === id));
+  if (!sameSet(canMessage, bot.canMessage.filter((id) => bots.some((each) => each.id === id)))) patch.canMessage = canMessage;
   return patch;
 }
 

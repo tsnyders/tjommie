@@ -119,7 +119,7 @@ export default function AgentsPage() {
           {shown.map((bot) => (
             <BotCard key={bot.id} bot={bot} bots={bots} messages={digests[bot.id] ?? NO_MESSAGES} routines={routines} />
           ))}
-          {everything && rooms.map((room) => <TeamRoomCard key={room.id} room={room} messages={roomPosts[room.id] ?? NO_MESSAGES} bots={bots} />)}
+          {everything && rooms.map((room) => <TeamRoomCard key={room.id} room={room} messages={roomPosts[room.id]} bots={bots} />)}
           {everything && <NewBotCard />}
           {everything && <NewRoomCard onClick={() => setCreatingRoom(true)} />}
         </div>
