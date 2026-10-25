@@ -11,6 +11,16 @@ function listen(channel, listener) {
 contextBridge.exposeInMainWorld("tjommie", {
   connection: () => ipcRenderer.invoke("daemon:connection"),
   restartDaemon: () => ipcRenderer.invoke("daemon:restart"),
+  loginItem: {
+    get: () => ipcRenderer.invoke("login-item:get"),
+    set: (on) => ipcRenderer.invoke("login-item:set", on),
+  },
+  updates: {
+    state: () => ipcRenderer.invoke("updates:state"),
+    onState: (listener) => listen("updates:state", listener),
+    check: () => ipcRenderer.invoke("updates:check"),
+    restart: () => ipcRenderer.send("updates:restart"),
+  },
   nativeBrowser: {
     command: (botId, command) => ipcRenderer.invoke("native-browser:command", botId, command),
     mount: (botId, mount) => ipcRenderer.invoke("native-browser:mount", botId, mount),

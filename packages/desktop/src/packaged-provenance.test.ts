@@ -21,7 +21,7 @@ function fixture(): string {
   for (const path of ["package.json", "package-lock.json", "tsconfig.json", "vitest.config.ts", "packages/desktop/src/main.ts", "packages/desktop/assets/icon.png"]) put(repo, path);
   git(repo, ["add", "."]);
   put(repo, packagedExecutable, "executable bytes");
-  put(repo, "dist-desktop/installer/Tjommie Setup 0.1.0.exe", "installer bytes");
+  put(repo, "dist-desktop/installer/Tjommie-Setup-0.1.0.exe", "installer bytes");
   put(repo, "dist-desktop/installer/win-unpacked/resources/app.asar", "desktop payload");
   put(repo, "dist-desktop/installer/win-unpacked/resources/daemon/main.mjs", "daemon payload");
   put(repo, "dist-desktop/installer/win-unpacked/resources/ui/index.html", "UI payload");
@@ -96,7 +96,7 @@ it("rejects an older build when current worktree source changes", () => {
   expect(() => verifyPackagedProvenance(repo)).toThrow("build is stale");
 });
 
-it.each([packagedExecutable, "dist-desktop/installer/Tjommie Setup 0.1.0.exe", "dist-desktop/installer/win-unpacked/resources/app.asar", "dist-desktop/installer/win-unpacked/resources/daemon/main.mjs", "dist-desktop/installer/win-unpacked/resources/ui/index.html"])("rejects a replaced packaged artifact %s", (path) => {
+it.each([packagedExecutable, "dist-desktop/installer/Tjommie-Setup-0.1.0.exe", "dist-desktop/installer/win-unpacked/resources/app.asar", "dist-desktop/installer/win-unpacked/resources/daemon/main.mjs", "dist-desktop/installer/win-unpacked/resources/ui/index.html"])("rejects a replaced packaged artifact %s", (path) => {
   const repo = fixture();
   writePackagedProvenance(repo, buildInputHash(repo));
   put(repo, path, "different artifact bytes");
@@ -109,7 +109,7 @@ it("rejects a missing packaged executable or NSIS installer", () => {
   rmSync(join(repo, packagedExecutable));
   expect(() => verifyPackagedProvenance(repo)).toThrow("executable is missing");
   put(repo, packagedExecutable, "executable bytes");
-  rmSync(join(repo, "dist-desktop/installer/Tjommie Setup 0.1.0.exe"));
+  rmSync(join(repo, "dist-desktop/installer/Tjommie-Setup-0.1.0.exe"));
   expect(() => verifyPackagedProvenance(repo)).toThrow("NSIS installer is required");
 });
 
