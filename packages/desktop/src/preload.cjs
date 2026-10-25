@@ -3,7 +3,7 @@
 const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
 function listen(channel, listener) {
-  const handler = (_event, value) => listener(value);
+  const handler = (_event, ...values) => listener(...values);
   ipcRenderer.on(channel, handler);
   return () => ipcRenderer.removeListener(channel, handler);
 }
@@ -11,6 +11,16 @@ function listen(channel, listener) {
 contextBridge.exposeInMainWorld("tjommie", {
   connection: () => ipcRenderer.invoke("daemon:connection"),
   restartDaemon: () => ipcRenderer.invoke("daemon:restart"),
+  remote: {
+    open: (endpoint, timeoutMs) => ipcRenderer.invoke("remote:open", endpoint, timeoutMs),
+    send: (id, frame) => ipcRenderer.invoke("remote:send", id, frame),
+    close: (id) => ipcRenderer.send("remote:close", id),
+    onFrame: (listener) => listen("remote:frame", listener),
+    onClosed: (listener) => listen("remote:closed", listener),
+    seal: (name, value) => ipcRenderer.invoke("remote:seal", name, value),
+    read: (name) => ipcRenderer.invoke("remote:read", name),
+    delete: (name) => ipcRenderer.invoke("remote:delete", name),
+  },
   loginItem: {
     get: () => ipcRenderer.invoke("login-item:get"),
     set: (on) => ipcRenderer.invoke("login-item:set", on),
