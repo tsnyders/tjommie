@@ -65,13 +65,13 @@ export function RoomScreen({ roomId }: { roomId: string }) {
   const render = useCallback(
     (message: Message) =>
       message.kind === "text" ? (
-        <RoomPost message={message} bots={bots} onOpenExchange={openExchange} />
+        <RoomPost message={message} bots={bots} members={members} onOpenExchange={openExchange} />
       ) : (
         <div className="w-full pl-10">
           <MessageView message={message} bot={undefined} bots={bots} conversationId={roomId} />
         </div>
       ),
-    [bots, openExchange, roomId],
+    [bots, members, openExchange, roomId],
   );
 
   if (!room) return null;
@@ -177,7 +177,7 @@ export function RoomScreen({ roomId }: { roomId: string }) {
         ) : (
           <MessageList messages={loaded.messages} hasMore={loaded.hasMore} onOlder={older} render={render} />
         )}
-        <RoomComposer room={room} members={members} />
+        <RoomComposer room={room} />
       </section>
       {exchangeId ? (
         <ExchangeView

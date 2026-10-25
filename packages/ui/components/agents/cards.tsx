@@ -195,7 +195,7 @@ function CardMenu({ bot, onProblem }: { bot: Bot; onProblem: (problem: string | 
   );
 }
 
-// A room's card (WF2): its last two bot-to-bot posts, and who talked last.
+// A room's card (WF2): its last two bot-to-bot posts, and its newest post.
 export function TeamRoomCard({ room, messages, bots }: { room: Room; messages: Message[]; bots: Bot[] }) {
   const posts = messages.filter((message) => message.kind === "text" && ExchangePostData.safeParse(message.data).success).slice(-2);
   return (

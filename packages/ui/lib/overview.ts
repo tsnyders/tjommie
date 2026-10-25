@@ -100,10 +100,13 @@ export function talkingWith(botId: string, messages: Message[], now: Date = new 
   return [...partners];
 }
 
-// The Team room card's line: which bots talked last, and when.
+// A room's line (its card on Agents, its row in the rooms list), from its newest post of any kind: yours, a bot's answer, or a bot-to-bot
+// exchange, which names both bots. Notices, activity and a reply still on its way aren't posts.
 export function roomLine(messages: Message[], bots: Pick<Bot, "id" | "name">[], now: Date = new Date()): string {
-  const post = [...messages].reverse().find((message) => message.kind === "text" && ExchangePostData.safeParse(message.data).success);
-  if (!post) return "No bot chats yet";
-  const { toBotId } = ExchangePostData.parse(post.data);
-  return `${botName(bots, post.author)} and ${botName(bots, toBotId)} talked ${timeAgo(post.createdAt, now)}`;
+  const post = [...messages].reverse().find((message) => message.kind === "text" && message.body.trim() !== "");
+  if (!post) return "No posts yet";
+  const ago = timeAgo(post.createdAt, now);
+  const exchange = ExchangePostData.safeParse(post.data);
+  if (exchange.success) return `${botName(bots, post.author)} and ${botName(bots, exchange.data.toBotId)} talked ${ago}`;
+  return post.author === "you" ? `You posted ${ago}` : `${botName(bots, post.author)} answered ${ago}`;
 }

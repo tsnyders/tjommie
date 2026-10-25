@@ -153,7 +153,7 @@ try {
   await page.getByRole("link", { name: "Agents", exact: true }).click();
   await page.getByRole("heading", { level: 1, name: "Agents", exact: true }).waitFor();
   await page.getByText("Review", { exact: true }).waitFor();
-  await page.getByText(/ talked /).waitFor();
+  await page.getByText(/ (talked|answered) /).waitFor(); // Everyone's card line
   await page.getByRole("link", { name: "CV Writer", exact: true }).hover();
   await shot("wf2-agents-overview-dark");
 } finally {

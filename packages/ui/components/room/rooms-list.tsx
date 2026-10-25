@@ -4,10 +4,10 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { Plus } from "lucide-react";
 import type { Message } from "@tjommie/protocol";
-import { request } from "@/lib/connection";
+import { daemon, request } from "@/lib/connection";
 import { phoneCaptionClear } from "@/lib/native-capability";
 import { roomLine } from "@/lib/overview";
-import { roomBots } from "@/lib/state";
+import { applyMessageEvent, roomBots, type MessageEvent } from "@/lib/state";
 import { useApp } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { AvatarStack, STRETCHED } from "../agents/cards";
@@ -15,34 +15,52 @@ import { RoomForm } from "./room-form";
 
 const NO_MESSAGES: Message[] = [];
 const STACK = 5; // avatars on a row before "+N"
+const PREVIEW = 10; // each room's newest messages, for its line
 
-// Each room's newest posts, for its row here and its card on Agents: read when the page opens, and again whenever a room or a bot changes (a bot
-// that just finished may have posted).
+// A new or changed message, in the preview of the room it's in. A chat's message, or one for a room not read yet, changes nothing.
+export function withMessage(posts: Record<string, Message[]>, event: MessageEvent): Record<string, Message[]> {
+  const page = posts[event.data.conversationId];
+  return page ? { ...posts, [event.data.conversationId]: applyMessageEvent(page, event).slice(-PREVIEW) } : posts;
+}
+
+// Each room's newest messages, for its row here and its card on Agents. They're read for each list of rooms (a room made, changed or deleted, a
+// new connection), one room at a time, and a newer list stops an older read, so what it hadn't asked for yet isn't asked. After that, new posts
+// come as events: bots at work never make it read again (their names are looked up as the line is drawn).
 export function useRoomPosts(): Record<string, Message[]> {
   const rooms = useApp((state) => state.rooms);
-  const bots = useApp((state) => state.bots);
   const ready = useApp((state) => state.connection.status === "ready");
   const [posts, setPosts] = useState<Record<string, Message[]>>({});
   useEffect(() => {
     if (!ready) return;
     let live = true;
-    for (const room of rooms) {
-      request("room.history", { roomId: room.id, limit: 10 }).then(
-        ({ messages }) => {
-          if (live) setPosts((current) => ({ ...current, [room.id]: messages }));
-        },
-        () => {},
-      );
-    }
+    void (async () => {
+      for (const room of rooms) {
+        if (!live) return;
+        const page = await request("room.history", { roomId: room.id, limit: PREVIEW }).catch(() => null);
+        if (live && page) setPosts((current) => ({ ...current, [room.id]: page.messages }));
+      }
+    })();
     return () => {
       live = false;
     };
-  }, [rooms, bots, ready]);
+  }, [rooms, ready]);
+  useEffect(() => {
+    if (!ready) return;
+    let off = (): void => {};
+    try {
+      off = daemon().subscribe((event) => {
+        if (event.event === "message.added" || event.event === "message.updated") setPosts((current) => withMessage(current, event));
+      });
+    } catch {
+      // not connected right now: the next connection subscribes again
+    }
+    return () => off();
+  }, [ready]);
   return posts;
 }
 
-// The rooms list (/room/, where the rail's and the tab's room icon go): Everyone, then the other rooms, oldest first, each with its bots and who
-// talked last. New room opens the room form, and the room once it's made. The rows are the Agents list's, so each phone style draws them the same.
+// The rooms list (/room/, where the rail's and the tab's room icon go): Everyone, then the other rooms, oldest first, each with its bots and its
+// newest post. New room opens the room form, and the room once it's made. The rows are the Agents list's, so each phone style draws them the same.
 export function RoomsList() {
   const rooms = useApp((state) => state.rooms);
   const bots = useApp((state) => state.bots);

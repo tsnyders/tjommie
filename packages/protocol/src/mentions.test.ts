@@ -19,6 +19,14 @@ describe("mentions", () => {
     expect(findMentions("@everyone stop", [...bots, { id: "all", name: "Everyone" }])).toEqual(["w", "cv", "b", "b2", "all"]);
   });
 
+  it("reads a room's mentions against every bot's name, and counts only the room's members", () => {
+    const room = [bots[2]]; // only Bot is in the room
+    expect(findMentions("@Bot 2 please help", bots, room)).toEqual([]); // Bot 2 isn't taken for Bot
+    expect(findMentions("@bot please help", bots, room)).toEqual(["b"]);
+    expect(findMentions("@Writer and @Bot", bots, room)).toEqual(["b"]);
+    expect(findMentions("@everyone hi", bots, room)).toEqual(["b"]);
+  });
+
   it("finds where each mention is, for highlighting", () => {
     expect(mentionRanges("@CV Writer add it. @everyone skip seniors.", ["Writer", "CV Writer"])).toEqual([
       { start: 0, end: 10, name: "CV Writer" },
