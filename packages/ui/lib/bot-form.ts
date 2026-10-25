@@ -57,7 +57,7 @@ export function nameProblem(name: string, bots: Pick<Bot, "id" | "name">[], self
 
 export const createInput = (form: BotForm): ParamsIn<"bots.create"> => ({ ...form, name: form.name.trim() });
 
-const sameSet = (a: string[], b: string[]): boolean => a.length === b.length && a.every((id) => b.includes(id));
+export const sameSet = (a: string[], b: string[]): boolean => a.length === b.length && a.every((id) => b.includes(id));
 
 // Only what the person changed, so a save never puts back a value that changed elsewhere since the form opened.
 // Provider and model travel together: the daemon needs a model whenever the provider changes. The account travels on its own.
@@ -90,7 +90,7 @@ export function routinesSummary(routines: Pick<RoutineDraft, "days" | "times" | 
   return `${on.length} routines`;
 }
 
-// The Can message row's value. Deleted bots don't count.
+// The value of a row of bots to choose (Can message, a room's bots). Deleted bots don't count.
 export function canMessageSummary(ids: string[], bots: Pick<Bot, "id">[]): string {
   const count = ids.filter((id) => bots.some((bot) => bot.id === id)).length;
   return count === 0 ? "Nobody yet" : `${count} ${count === 1 ? "bot" : "bots"}`;

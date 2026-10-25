@@ -7,12 +7,14 @@ describe("phone navigation", () => {
     for (const path of ["/chat/", "/bots/new/", "/bots/settings/", "/chat"]) expect(showsTabBar(path)).toBe(false);
   });
 
-  it("has three labelled destinations", () => {
-    expect(TABS.map((tab) => tab.label)).toEqual(["Agents", "Team room", "Settings"]);
+  it("has three labelled destinations, Rooms opening the rooms list", () => {
+    expect(TABS.map((tab) => tab.label)).toEqual(["Agents", "Rooms", "Settings"]);
+    expect(TABS.find((tab) => tab.id === "room")?.href).toBe("/room/");
     for (const tab of TABS) expect(tab.label).toContain(tab.short); // the name holds what shows
   });
 
   it("knows which tab a page belongs to, and that first run belongs to none", () => {
+    // /room/ is the rooms list, and a room is /room/?id=: the query isn't part of the pathname, so both are the Rooms tab.
     expect([tabFor("/agents/"), tabFor("/room/"), tabFor("/settings/"), tabFor("/settings/x/")]).toEqual(["agents", "room", "settings", "settings"]);
     expect([tabFor("/"), tabFor("/chat/"), tabFor("/bots/settings/")]).toEqual([null, null, null]);
   });

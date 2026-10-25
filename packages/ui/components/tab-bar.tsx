@@ -11,7 +11,7 @@ import { cn } from "@/lib/utils";
 
 const ICONS: Record<TabId, LucideIcon> = { agents: LayoutGrid, room: Users, settings: Settings };
 
-// The phone's navigation (below 640 px, in place of the rail): a compact pill floating over the overview screens with Agents, Team room and
+// The phone's navigation (below 640 px, in place of the rail): a compact pill floating over the overview screens with Agents, Rooms and
 // Settings, each labelled. Nothing backs it: the screens scroll under it, and their scrollers end with room to clear it (data-nav-clear in
 // globals.css). One capsule slides to the current tab; the tabs are equal width, so it moves by whole widths. While the keyboard is up the pill
 // steps aside, out of the way of what's being typed.

@@ -2,7 +2,7 @@
 
 import type { ReactNode } from "react";
 import type { Bot, Provider } from "@tjommie/protocol";
-import type { BotForm } from "@/lib/bot-form";
+import { canMessageSummary, type BotForm } from "@/lib/bot-form";
 import { cn } from "@/lib/utils";
 import { FIELD, Label } from "../controls";
 import { Identity } from "./identity";
@@ -38,7 +38,16 @@ export function BotFormFields({ form, onChange, bots, selfId, saved, nameError, 
         <FolderRow projectFolder={form.projectFolder} onChange={(projectFolder) => onChange({ ...form, projectFolder })} />
         <AutonomyRow autonomy={form.autonomy} provider={form.provider} botName={form.name} onChange={(autonomy) => onChange({ ...form, autonomy })} />
         <BrowserRow browser={form.browser} onChange={(browser) => onChange({ ...form, browser })} />
-        <CanMessageRow selfId={selfId} canMessage={form.canMessage} bots={bots} onChange={(canMessage) => onChange({ ...form, canMessage })} />
+        <CanMessageRow
+          label="Can message"
+          summary={canMessageSummary(form.canMessage, bots.filter((bot) => bot.id !== selfId))}
+          selfId={selfId}
+          ids={form.canMessage}
+          bots={bots}
+          onChange={(canMessage) => onChange({ ...form, canMessage })}
+        >
+          It can ask these bots for help. They can&apos;t ask it back unless you allow that in their own settings.
+        </CanMessageRow>
         {routinesRow}
       </div>
     </div>

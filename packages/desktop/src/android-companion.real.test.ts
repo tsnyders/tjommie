@@ -198,13 +198,18 @@ it.skipIf(!serial || !cdp)("keeps the original phone UI usable with real swipe s
     await phone.getByRole("button", { name: "Create bot", exact: true }).click();
     await eventually(async () => (await app!.client.call("bots.list", {})).some((item) => item.name === "Mobile form proof") || undefined);
     await phone.getByRole("link", { name: "Back to Agents", exact: true }).click();
-    await phone.getByRole("navigation", { name: "Tjommie", exact: true }).getByRole("link", { name: "Team room", exact: true }).click();
+    // The Rooms tab opens the rooms list; the seeded post is in Everyone.
+    await phone.getByRole("navigation", { name: "Tjommie", exact: true }).getByRole("link", { name: "Rooms", exact: true }).click();
+    await phone.getByRole("heading", { name: "Rooms", exact: true }).waitFor();
+    await mobileFits(phone);
+    await shot(phone, "android-rooms.png");
+    await phone.getByRole("link", { name: "Everyone", exact: true }).click();
     await selectText(phone, "Selection proof in the Team room. The toolbar must keep its own surface without blanking the conversation.", "android-selection-room.png");
-    const roomInput = phone.getByRole("combobox", { name: "Message the Team room", exact: true });
+    const roomInput = phone.getByRole("combobox", { name: "Message Everyone", exact: true });
     // A CDP click may focus without asking Android to show its IME. Use the
     // handset's input path for the keyboard acceptance check.
     const inputBounds = await roomInput.boundingBox();
-    if (!inputBounds) throw new Error("The Team room input is not visible.");
+    if (!inputBounds) throw new Error("Everyone's input is not visible.");
     const screen = [...adb(["shell", "wm", "size"]).toString().matchAll(/(\d+)x(\d+)/g)].at(-1);
     if (!screen) throw new Error("Cannot measure the phone display.");
     const inputScale = Number(screen[1]) / await phone.evaluate<number>("innerWidth");
@@ -225,7 +230,7 @@ it.skipIf(!serial || !cdp)("keeps the original phone UI usable with real swipe s
     try { await phone.getByRole("listbox", { name: "Mention a bot", exact: true }).waitFor({ state: "hidden", timeout: 1500 }); }
     catch { adb(["shell", "input", "keyevent", "4"]); }
     await phone.getByRole("listbox", { name: "Mention a bot", exact: true }).waitFor({ state: "hidden" });
-    expect(phone.url()).toContain("/room/");
+    expect(phone.url()).toContain("/room/?id=team");
     await roomInput.fill("");
     await phone.getByRole("navigation", { name: "Tjommie", exact: true }).getByRole("link", { name: "Agents", exact: true }).click();
 

@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { ArrowRight, ChevronRight, Loader, Users } from "lucide-react";
-import type { Bot, HandoffData } from "@tjommie/protocol";
+import { TEAM_ROOM_ID, type Bot, type HandoffData } from "@tjommie/protocol";
 import { DELETED_BOT } from "@/lib/labels";
 import { cn } from "@/lib/utils";
 import { BotAvatar, MissingAvatar } from "../bot-avatar";
@@ -13,7 +13,8 @@ function Avatar({ bot }: { bot: Bot | undefined }) {
 
 // A one-line row for work with another bot (WF1, WF11). An exchange's row opens the exchange in the right panel,
 // and it's selected while that exchange is open (WF6); the chat finds it by data-exchange to give it focus back
-// when the view closes. A Team room answer's row opens the room.
+// when the view closes. A room answer's row says which room ("Answered in Growth") and opens it; rows from before there were other rooms
+// have no roomId and open Everyone.
 export function HandoffRow({ body, data, bots, conversationId, onOpen, selected = false }: {
   body: string;
   data: HandoffData;
@@ -24,9 +25,9 @@ export function HandoffRow({ body, data, bots, conversationId, onOpen, selected 
 }) {
   if ("roomMessageId" in data) {
     return (
-      <Link href="/room/" className={ROW}>
+      <Link href={`/room/?id=${encodeURIComponent(data.roomId ?? TEAM_ROOM_ID)}`} className={ROW}>
         <Users className="size-3.5 shrink-0 text-secondary" aria-hidden />
-        <span className="min-w-0 truncate text-body">Answered in the Team room</span>
+        <span className="min-w-0 truncate text-body">{body}</span>
         <ChevronRight className="size-3.5 shrink-0 text-caption" aria-hidden />
       </Link>
     );

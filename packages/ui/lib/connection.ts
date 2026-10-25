@@ -120,7 +120,7 @@ async function attempt(connection: ConnectionTarget): Promise<void> {
   });
   try {
     // An older daemon has no accounts: the list stays unknown and the screens that need it say so.
-    const [bots, settings, routines, accounts] = await Promise.all([next.call("bots.list", {}), next.call("settings.get", {}), next.call("routines.list", {}), next.call("accounts.list", {}).catch(() => null)]);
+    const [bots, settings, routines, rooms, accounts] = await Promise.all([next.call("bots.list", {}), next.call("settings.get", {}), next.call("routines.list", {}), next.call("rooms.list", {}), next.call("accounts.list", {}).catch(() => null)]);
     if (latest !== connection) {
       void next.close();
       return;
@@ -129,7 +129,7 @@ async function attempt(connection: ConnectionTarget): Promise<void> {
     early = null;
     client = next;
     failures = 0;
-    update((state) => pending.reduce((current, event) => applyEvent(current, event), connected(state, { bots, settings, routines, accounts })));
+    update((state) => pending.reduce((current, event) => applyEvent(current, event), connected(state, { bots, settings, routines, rooms, accounts })));
   } catch (error) {
     void next.close();
     lost(connection, error);
@@ -180,8 +180,11 @@ export const botHistory =
   (before?: string): Promise<Page> =>
     request("chat.history", { botId, before, limit: PAGE });
 
-// The Team room's pages, newest first.
-export const roomHistory = (before?: string): Promise<Page> => request("room.history", { before, limit: PAGE });
+// A room's pages, newest first.
+export const roomHistory =
+  (roomId: string) =>
+  (before?: string): Promise<Page> =>
+    request("room.history", { roomId, before, limit: PAGE });
 
 // An exchange's messages: the newest 200, with no older pages to load.
 export const exchangePage =

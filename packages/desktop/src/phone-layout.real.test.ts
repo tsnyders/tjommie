@@ -147,14 +147,21 @@ it("uses Quiet pill navigation and reachable phone sheets, forms, account dialog
       await exchange.getByRole("button", { name: "Close the exchange", exact: true }).click();
       await eventually(async () => await handoff.evaluate((element) => element === element.ownerDocument.activeElement) || undefined);
 
+      // The Rooms tab opens the rooms list, Everyone first; Everyone opens as /room/?id=team, and the tab stays current in both.
       await visit(app, "/room/");
-      await page.getByRole("combobox", { name: "Message the Team room" }).fill("@");
+      await page.getByRole("heading", { name: "Rooms", exact: true }).waitFor();
+      expect(await nav.getByRole("link", { name: "Rooms", exact: true }).getAttribute("aria-current")).toBe("page");
+      await capture(app, `rooms-${width}.png`);
+      await page.getByRole("link", { name: "Everyone", exact: true }).click();
+      await page.waitForURL((url) => url.pathname === "/room/" && url.searchParams.get("id") === "team");
+      expect(await nav.getByRole("link", { name: "Rooms", exact: true }).getAttribute("aria-current")).toBe("page");
+      await page.getByRole("combobox", { name: "Message Everyone" }).fill("@");
       await page.getByRole("listbox", { name: "Mention a bot" }).waitFor();
       await capture(app, `team-mention-${width}.png`);
       await page.keyboard.press("Escape");
-      await page.getByRole("combobox", { name: "Message the Team room" }).fill("");
-      await page.getByRole("heading", { name: /^Team room/ }).getByRole("button").click();
-      const members = page.getByRole("complementary", { name: "Team room members" });
+      await page.getByRole("combobox", { name: "Message Everyone" }).fill("");
+      await page.getByRole("heading", { name: /^Everyone/ }).getByRole("button").click();
+      const members = page.getByRole("complementary", { name: "Everyone members" });
       await members.waitFor();
       await eventually(async () => Math.round((await members.boundingBox())?.width ?? 0) === width || undefined, 5000);
       await eventually(async () => await members.evaluate((element) => element.contains(element.ownerDocument.activeElement)) || undefined);

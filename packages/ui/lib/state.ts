@@ -1,5 +1,5 @@
 import type { ClientEvent } from "@tjommie/client";
-import type { AccountInfo, Bot, Message, ProviderSetup, Routine, RoutineRun, Settings } from "@tjommie/protocol";
+import type { AccountInfo, Bot, Message, ProviderSetup, Room, Routine, RoutineRun, Settings } from "@tjommie/protocol";
 
 export type MessageEvent = Extract<ClientEvent, { event: "message.added" | "message.updated" | "message.delta" }>;
 
@@ -27,6 +27,7 @@ export type AppState = {
   settings: Settings | null;
   routines: Routine[];
   latestRuns: Record<string, RoutineRun>; // each routine's newest routine.run event, by routine id
+  rooms: Room[]; // Everyone first, then the others oldest first
   conversations: Record<string, Conversation>;
 };
 
@@ -39,14 +40,16 @@ export const initialState: AppState = {
   settings: null,
   routines: [],
   latestRuns: {},
+  rooms: [],
   conversations: {},
 };
 
 type Page = { messages: Message[]; hasMore: boolean };
 
-const byCreated = <T extends { createdAt: string }>(a: T, b: T): number => a.createdAt.localeCompare(b.createdAt);
+// Everyone has no createdAt, so it comes first.
+const byCreated = <T extends { createdAt: string | null }>(a: T, b: T): number => (a.createdAt ?? "").localeCompare(b.createdAt ?? "");
 
-function upsert<T extends { id: string; createdAt: string }>(list: T[], item: T): T[] {
+function upsert<T extends { id: string; createdAt: string | null }>(list: T[], item: T): T[] {
   return [...list.filter((existing) => existing.id !== item.id), item].sort(byCreated);
 }
 
@@ -76,6 +79,7 @@ export function applyEvent(state: AppState, event: ClientEvent): AppState {
         ...state,
         bots: state.bots.filter((bot) => bot.id !== event.data.id),
         routines: state.routines.filter((routine) => routine.botId !== event.data.id),
+        rooms: state.rooms.map((room) => ({ ...room, botIds: room.botIds.filter((id) => id !== event.data.id) })),
         conversations: without(state.conversations, event.data.id),
       };
     case "setup.changed":
@@ -90,6 +94,10 @@ export function applyEvent(state: AppState, event: ClientEvent): AppState {
       return { ...state, routines: upsert(state.routines, event.data) };
     case "routine.deleted":
       return { ...state, routines: state.routines.filter((routine) => routine.id !== event.data.id) };
+    case "room.updated":
+      return { ...state, rooms: upsert(state.rooms, event.data) };
+    case "room.deleted":
+      return { ...state, rooms: state.rooms.filter((room) => room.id !== event.data.id), conversations: without(state.conversations, event.data.id) };
     case "routine.run":
       return { ...state, latestRuns: { ...state.latestRuns, [event.data.routineId]: event.data } };
     case "message.added":
@@ -135,15 +143,20 @@ export function forgetConversation(state: AppState, conversationId: string): App
 }
 
 // A new connection: everything is fetched again, and open chats reload their history.
-export function connected(state: AppState, snapshot: { bots: Bot[]; settings: Settings; routines: Routine[]; accounts?: AccountInfo[] | null }): AppState {
+export function connected(state: AppState, snapshot: { bots: Bot[]; settings: Settings; routines: Routine[]; rooms: Room[]; accounts?: AccountInfo[] | null }): AppState {
   return {
     ...state,
     connection: { status: "ready" },
     bots: [...snapshot.bots].sort(byCreated),
     settings: snapshot.settings,
     routines: [...snapshot.routines].sort(byCreated),
+    rooms: [...snapshot.rooms].sort(byCreated),
     accounts: snapshot.accounts ?? null,
     latestRuns: {},
     conversations: {},
   };
 }
+
+// A room's bots, in the bots' order. Everyone always holds every bot: the daemon sends no room.updated for it when a bot is made, so its
+// botIds can be out of date.
+export const roomBots = (room: Room, bots: Bot[]): Bot[] => (room.everyone ? bots : bots.filter((bot) => room.botIds.includes(bot.id)));

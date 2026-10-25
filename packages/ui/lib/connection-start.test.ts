@@ -35,9 +35,9 @@ async function start() {
   const client = await import("@tjommie/client");
   const { startConnection } = await import("./connection");
   const { getState } = await import("./store");
-  // A daemon client whose three list calls answer, or fail with the daemon's reason.
+  // A daemon client whose list calls answer, or fail with the daemon's reason.
   const daemonClient = (lists: "answer" | "fail"): Client => {
-    const answers: Record<string, unknown> = { "bots.list": [], "settings.get": { chainLimit: 5 }, "routines.list": [], "setup.status": [] };
+    const answers: Record<string, unknown> = { "bots.list": [], "settings.get": { chainLimit: 5 }, "routines.list": [], "rooms.list": [], "setup.status": [] };
     const call = async (method: string): Promise<unknown> => {
       if (lists === "fail" && method !== "setup.status") throw new client.ClientRpcError("internal", "The database is locked.");
       return answers[method];

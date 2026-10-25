@@ -10,7 +10,7 @@ describe("connection", () => {
 
   it("rejects a chat's history while Tjommie isn't connected, as the room's does", async () => {
     await expect(botHistory("b1")()).rejects.toThrow("Tjommie isn't connected right now.");
-    await expect(roomHistory()).rejects.toThrow("Tjommie isn't connected right now.");
+    await expect(roomHistory("team")()).rejects.toThrow("Tjommie isn't connected right now.");
   });
 
   it("loads a chat whose history failed to load again on Retry", async () => {

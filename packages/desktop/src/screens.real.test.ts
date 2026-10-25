@@ -62,11 +62,13 @@ describe("the Phase 1 screens with real bots", () => {
     await page.getByRole("heading", { level: 1, name: "Job scout", exact: true }).waitFor();
   });
 
-  it("answers a mention in the Team room, and hints when nobody was mentioned", async () => {
+  it("answers a mention in Everyone, and hints when nobody was mentioned", async () => {
     const { page } = running();
-    await page.getByRole("link", { name: "Team room", exact: true }).click();
+    // The rail's room icon opens the rooms list, Everyone first.
+    await page.getByRole("link", { name: "Rooms", exact: true }).click();
+    await page.getByRole("link", { name: "Everyone", exact: true }).click();
     await page.getByText("No posts yet. @mention a bot to ask it something.").waitFor();
-    const box = page.getByRole("combobox", { name: "Message the Team room" });
+    const box = page.getByRole("combobox", { name: "Message Everyone" });
     await box.fill("Hello team");
     await box.press("Enter");
     await page.getByText("No bot was mentioned, so nobody will reply. Type @ to ask a bot.").waitFor();

@@ -4,9 +4,11 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { Plus, Search } from "lucide-react";
 import type { Message } from "@tjommie/protocol";
-import { BotCard, NeedsYouCard, NewBotCard, TeamRoomCard } from "@/components/agents/cards";
+import { BotCard, NeedsYouCard, NewBotCard, NewRoomCard, TeamRoomCard } from "@/components/agents/cards";
 import { FIELD, Segmented } from "@/components/controls";
 import { IconButton } from "@/components/icon-button";
+import { RoomForm } from "@/components/room/room-form";
+import { useRoomPosts } from "@/components/room/rooms-list";
 import { request } from "@/lib/connection";
 import { FILTERS, matches, overviewLede, overviewSummary, phoneFilters, type OverviewFilter } from "@/lib/overview";
 import { useApp } from "@/lib/store";
@@ -21,14 +23,16 @@ export default function AgentsPage() {
   const bots = useApp((state) => state.bots);
   const phone = usePhone();
   const routines = useApp((state) => state.routines);
+  const rooms = useApp((state) => state.rooms);
   const ready = useApp((state) => state.connection.status === "ready");
   const [filter, setFilter] = useState<OverviewFilter>("all");
   const [query, setQuery] = useState("");
   const [searching, setSearching] = useState(false);
   const [digests, setDigests] = useState<Record<string, Message[]>>({});
-  const [room, setRoom] = useState<Message[]>(NO_MESSAGES);
+  const roomPosts = useRoomPosts();
+  const [creatingRoom, setCreatingRoom] = useState(false);
 
-  // Each card reads its bot's newest messages: fetched when the page opens, and again whenever a bot changes.
+  // Each card reads its bot's newest messages: fetched when the page opens, and again whenever a bot changes. Room cards read theirs the same way.
   useEffect(() => {
     if (!ready) return;
     let live = true;
@@ -40,12 +44,6 @@ export default function AgentsPage() {
         () => {},
       );
     }
-    request("room.history", { limit: 10 }).then(
-      ({ messages }) => {
-        if (live) setRoom(messages);
-      },
-      () => {},
-    );
     return () => {
       live = false;
     };
@@ -121,11 +119,13 @@ export default function AgentsPage() {
           {shown.map((bot) => (
             <BotCard key={bot.id} bot={bot} bots={bots} messages={digests[bot.id] ?? NO_MESSAGES} routines={routines} />
           ))}
-          {everything && <TeamRoomCard messages={room} bots={bots} />}
+          {everything && rooms.map((room) => <TeamRoomCard key={room.id} room={room} messages={roomPosts[room.id] ?? NO_MESSAGES} bots={bots} />)}
           {everything && <NewBotCard />}
+          {everything && <NewRoomCard onClick={() => setCreatingRoom(true)} />}
         </div>
         {!everything && shown.length === 0 && <p className="mt-10 text-center text-[13px] text-secondary">No bots match.</p>}
       </div>
+      {creatingRoom && <RoomForm onClose={() => setCreatingRoom(false)} />}
     </div>
   );
 }
