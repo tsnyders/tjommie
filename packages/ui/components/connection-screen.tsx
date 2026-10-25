@@ -2,16 +2,17 @@
 
 import { Loader } from "lucide-react";
 import { useSyncExternalStore } from "react";
-import { connectPhone, forgetPhone, restartDaemon } from "@/lib/connection";
+import { connectRemote, forgetRemote, restartDaemon } from "@/lib/connection";
 import { isAndroidApp, mobileHosts, pairMobile, scanMobilePairing } from "@/lib/mobile";
 import type { Connection } from "@/lib/state";
 import { MobileConnect, type MobileConnectApi } from "./mobile-connect";
 import { Pill } from "./pill";
 
-type Blocking = Exclude<Connection, { status: "ready" } | { status: "reconnecting" }>;
+type Blocking = Exclude<Connection, { status: "ready" } | { status: "reconnecting" } | { status: "offline" }>;
 
 const COPY: Record<Exclude<Blocking["status"], "failed">, { title: string; body: string | null }> = {
   connecting: { title: "Starting Tjommie", body: null },
+  removed: { title: "This PC removed this device", body: null },
   update: {
     title: "Update Tjommie on this device",
     body: "This window and Tjommie's background service are different versions. Install the latest Tjommie, then open it again.",
@@ -22,13 +23,13 @@ const COPY: Record<Exclude<Blocking["status"], "failed">, { title: string; body:
   },
 };
 
-const PHONE: MobileConnectApi = { hosts: mobileHosts, pair: pairMobile, connect: connectPhone, forget: forgetPhone, scan: scanMobilePairing };
+const PHONE: MobileConnectApi = { hosts: mobileHosts, pair: pairMobile, connect: connectRemote, forget: forgetRemote, scan: scanMobilePairing };
 
 // Shown in place of the pages until the daemon connection is ready. In the Android app that is the phone's own start (connect to a saved PC, or pair
 // with one) instead of the desktop's "open the desktop app"; a version mismatch keeps its own words everywhere.
 export function ConnectionScreen({ connection }: { connection: Blocking }) {
   const android = useSyncExternalStore(() => () => {}, isAndroidApp, () => false);
-  if (android && connection.status !== "update") return <MobileConnect status={connection.status} reason={connection.status === "failed" ? connection.reason : undefined} api={PHONE} />;
+  if (android && connection.status !== "update") return <MobileConnect status={connection.status === "removed" ? "outside" : connection.status} reason={connection.status === "failed" ? connection.reason : undefined} api={PHONE} />;
   return (
     <div className="flex flex-1 flex-col">
       <div className="drag h-11 shrink-0" />

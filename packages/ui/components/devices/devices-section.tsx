@@ -5,7 +5,7 @@ import { Smartphone } from "lucide-react";
 import { Dialog as BaseDialog } from "@base-ui/react/dialog";
 import type { Device } from "@tjommie/protocol";
 import { closeEpoch } from "@/lib/accounts";
-import { connectPhone, request } from "@/lib/connection";
+import { connectRemote, request } from "@/lib/connection";
 import { isAndroidApp } from "@/lib/mobile";
 import { errorText } from "@/lib/labels";
 import { stamp, timeAgo } from "@/lib/format";
@@ -41,7 +41,7 @@ export function DevicesSection() {
         Every paired device has full control of Tjommie, including pairing and revoking devices. Devices connect over the same Wi-Fi as this PC, and this PC has to be awake. This PC&apos;s own
         window always works.
       </p>
-      {isAndroidApp() && <div className="mt-3"><Pill onClick={() => connectPhone("")}>Switch PC</Pill></div>}
+      {isAndroidApp() && <div className="mt-3"><Pill onClick={() => connectRemote("")}>Switch PC</Pill></div>}
       {status && !status.listening && <p className="mt-3 max-w-[700px] text-[12px] leading-[18px] text-secondary">This PC isn&apos;t accepting devices right now.</p>}
       {error && (
         <p role="alert" className="mt-3 text-[12px] leading-[18px] text-danger">

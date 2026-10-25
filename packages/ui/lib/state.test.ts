@@ -2,7 +2,7 @@ import type { ClientEvent } from "@tjommie/client";
 import { TEAM_ROOM_ID, type AccountInfo, type Bot, type Message, type Room, type Routine, type RoutineRun } from "@tjommie/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { loadConversation } from "./connection";
-import { LINK, addOlder, applyEvent, connected, finishLoading, initialState, roomBots, startLoading, type AppState } from "./state";
+import { LINK, addOlder, applyEvent, catchUp, connected, finishLoading, initialState, roomBots, startLoading, type AppState, type MessageEvent } from "./state";
 import { getState, update } from "./store";
 
 const bot = (id: string, createdAt: string): Bot => ({
@@ -55,9 +55,9 @@ const run = (id: string, routineId: string, status: RoutineRun["status"]): Clien
 });
 const everyone = (botIds: string[]): Room => ({ id: TEAM_ROOM_ID, name: "Everyone", botIds, everyone: true, createdAt: null });
 const room = (id: string, botIds: string[], createdAt: string): Room => ({ id, name: id, botIds, everyone: false, createdAt });
-const added = (data: Message): ClientEvent => ({ type: "event", event: "message.added", data });
-const updated = (data: Message): ClientEvent => ({ type: "event", event: "message.updated", data });
-const delta = (id: string, text: string): ClientEvent => ({ type: "event", event: "message.delta", data: { id, conversationId: "b1", delta: text } });
+const added = (data: Message): MessageEvent => ({ type: "event", event: "message.added", data });
+const updated = (data: Message): MessageEvent => ({ type: "event", event: "message.updated", data });
+const delta = (id: string, text: string): MessageEvent => ({ type: "event", event: "message.delta", data: { id, conversationId: "b1", delta: text } });
 const ready = (messages: Message[]): AppState => finishLoading(startLoading(initialState, "b1"), "b1", { messages, hasMore: false });
 
 it("freezes the reconnect timing contract", () => {
@@ -152,13 +152,27 @@ describe("app state", () => {
     expect(state.conversations.b1.hasMore).toBe(true);
   });
 
-  it("adds older pages above without duplicates, and starts over on a new connection", () => {
+  it("adds older pages above without duplicates", () => {
     let state = ready([message("m3"), message("m4")]);
     state = addOlder(state, "b1", { messages: [message("m1"), message("m2"), message("m3")], hasMore: false });
     expect(state.conversations.b1.messages.map((m) => m.id)).toEqual(["m1", "m2", "m3", "m4"]);
+  });
+
+  it("keeps loaded chats on a new connection, so nothing blanks, and forgets ones still loading so their screens load them again", () => {
+    let state = startLoading(ready([message("m1"), message("m2")]), "b2");
+    state = { ...state, connection: { status: "reconnecting" } };
     state = connected(state, { bots: [], settings: { chainLimit: 5, relayUrl: null }, routines: [], rooms: [] });
-    expect(state.conversations).toEqual({});
     expect(state.connection).toEqual({ status: "ready" });
+    expect(state.conversations.b1.messages.map((m) => m.id)).toEqual(["m1", "m2"]);
+    expect(state.conversations.b2).toBeUndefined();
+  });
+
+  it("lists the routine failures waiting to be shown on each connection", () => {
+    const failure = { kind: "routine_failed" as const, botId: "b1", routineId: "r1", runId: "u1", title: "Morning check failed", body: "It ran out of time." };
+    expect(initialState.notifications).toEqual([]);
+    const state = connected(initialState, { bots: [], settings: { chainLimit: 5, relayUrl: null }, routines: [], rooms: [], notifications: [failure] });
+    expect(state.notifications).toEqual([failure]);
+    expect(connected(state, { bots: [], settings: { chainLimit: 5, relayUrl: null }, routines: [], rooms: [] }).notifications).toEqual([]);
   });
 
   it("keeps each routine's newest run event, so an open routine editor can fetch its runs again", () => {
@@ -184,6 +198,35 @@ describe("app state", () => {
     for (let i = 0; i < 30; i++) state = applyEvent(state, ended("claude", `n${i}`));
     expect(state.signInsEnded).toHaveLength(20);
     expect(state.signInsEnded.at(-1)).toBe("n29");
+  });
+
+  describe("catching up after a reconnect", () => {
+    it("replaces from the newest page's oldest message onward when that message is loaded, keeping the older pages", () => {
+      let state = ready([message("m1"), message("m2"), message("m3", { body: "Working" })]);
+      state = catchUp(state, "b1", { messages: [message("m2"), message("m3", { body: "Done." }), message("m4")], hasMore: true });
+      expect(state.conversations.b1.messages.map((m) => [m.id, m.body])).toEqual([["m1", ""], ["m2", ""], ["m3", "Done."], ["m4", ""]]);
+      expect(state.conversations.b1.hasMore).toBe(false); // the older pages were already loaded
+    });
+
+    it("replaces the chat with the newest page, with more to load, when more than a page arrived while away", () => {
+      let state = ready([message("m1"), message("m2")]);
+      state = catchUp(state, "b1", { messages: [message("m5"), message("m6")], hasMore: true });
+      expect(state.conversations.b1.messages.map((m) => m.id)).toEqual(["m5", "m6"]);
+      expect(state.conversations.b1.hasMore).toBe(true);
+    });
+
+    it("replays what arrived while the page was being fetched, so a new message and its streamed text survive", () => {
+      const during = [added(message("m2", { status: "streaming" })), delta("m2", "Hel"), delta("m2", "lo")];
+      let state = during.reduce(applyEvent, ready([message("m1")])); // shown live meanwhile
+      state = catchUp(state, "b1", { messages: [message("m1")], hasMore: false }, during); // the page was read before m2 started
+      expect(state.conversations.b1.messages.map((m) => [m.id, m.body])).toEqual([["m1", ""], ["m2", "Hello"]]);
+    });
+
+    it("leaves a chat that isn't loaded alone", () => {
+      const state = startLoading(initialState, "b1");
+      expect(catchUp(state, "b1", { messages: [message("m1")], hasMore: false })).toBe(state);
+      expect(catchUp(initialState, "b9", { messages: [], hasMore: false })).toBe(initialState);
+    });
   });
 
   it("keeps a failed history load until a new connection clears it", async () => {
