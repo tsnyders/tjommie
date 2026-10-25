@@ -1,20 +1,24 @@
-import { RemoteReady, remotePrologue, type RemotePreface } from "@tjommie/protocol";
+import { RemoteReady, RemoteRefused, remotePrologue, type RemotePreface } from "@tjommie/protocol";
 import { initiator } from "../../transport/src/index.ts";
 import { EncryptedMessages } from "./encrypted-channel.ts";
 import type { RpcTransport } from "./transport.ts";
+import type { FrameTransport } from "./frame-socket.ts";
+export type { FrameTransport } from "./frame-socket.ts";
 
-export interface FrameTransport {
-  send(frame: Uint8Array): void;
-  close(): void;
-  onFrame(listener: (frame: Uint8Array) => void): () => void;
-  onClose(listener: () => void): () => void;
+export class RemoteRefusedError extends Error {
+  readonly reason: "revoked" | "unknown";
+  constructor(reason: "revoked" | "unknown") {
+    super("This device is not paired with this PC.");
+    this.name = "RemoteRefusedError";
+    this.reason = reason;
+  }
 }
 
 // Noise authenticates the PC key from the out-of-band code. The first encrypted confirmation proves
 // PSK possession; neither peer treats an early IK message as permission to execute RPC.
 export function authenticateRemote(options: {
   wire: FrameTransport; preface: RemotePreface; privateKey: Uint8Array; hostPublicKey: Uint8Array; name: string; psk?: Uint8Array; onConfirmSent?: () => void;
-}): Promise<{ transport: RpcTransport; deviceId: string; hostId: string; hostName: string }> {
+}): Promise<{ transport: RpcTransport; deviceId: string; hostId: string; hostName: string; relay: string | null }> {
   return new Promise((resolve, reject) => {
     const { wire } = options;
     let phase: "handshake" | "ready" | "rpc" = "handshake", closed = false;
@@ -24,20 +28,20 @@ export function authenticateRemote(options: {
     const off: (() => void)[] = [];
     const noise = initiator({ privateKey: options.privateKey, remotePublicKey: options.hostPublicKey, psk: options.psk, prologue: remotePrologue(options.preface) });
     let messages: EncryptedMessages | null = null;
-    const close = (): void => {
+    const close = (error?: Error): void => {
       if (closed) return; closed = true; clearTimeout(timer);
       for (const unsubscribe of off.splice(0)) unsubscribe();
       messages?.close(); noise.close(); wire.close(); queued.splice(0);
       const event = { code: 1006, reason: "The PC connection closed. Check Wi-Fi and whether this device is still paired." };
       for (const listener of closedListeners) listener(event);
-      reject(new Error("The PC could not be authenticated. Check the pairing code and that the PC is reachable."));
+      reject(error ?? new Error("The PC could not be authenticated. Check the pairing code and that the PC is reachable."));
     };
     const send = (text: string): void => {
       if (closed || !messages) throw new Error("The PC connection is closed.");
       try { for (const frame of messages.encode(text)) wire.send(frame); } catch { close(); throw new Error("The PC connection is closed."); }
     };
     const timer = setTimeout(close, 15_000);
-    off.push(wire.onClose(close));
+    off.push(wire.onClose(() => close()));
     off.push(wire.onFrame((frame) => {
       try {
         if (closed) return;
@@ -49,10 +53,13 @@ export function authenticateRemote(options: {
         if (!messages) throw new Error();
         const text = messages.receive(frame); if (text === null) return;
         if (phase === "ready") {
-          const ready = RemoteReady.parse(JSON.parse(text));
+          const response: unknown = JSON.parse(text);
+          const refused = RemoteRefused.safeParse(response);
+          if (refused.success) { close(new RemoteRefusedError(refused.data.reason)); return; }
+          const ready = RemoteReady.parse(response);
           if (ready.hostId !== options.preface.hostId) throw new Error();
           phase = "rpc"; clearTimeout(timer);
-          resolve({ hostId: ready.hostId, hostName: ready.hostName, deviceId: ready.deviceId, transport: {
+          resolve({ hostId: ready.hostId, hostName: ready.hostName, deviceId: ready.deviceId, relay: ready.relay, transport: {
             send,
             close,
             onMessage: (listener) => {

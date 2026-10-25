@@ -230,7 +230,7 @@ it("prints Team room posts, bot names, local cards and streaming text", async ()
   chat.emit("notify", { kind: "routine_failed", routineId: "r", runId: "run", botId: writer.id, title: "Routine finished", body: "News checked" });
   chat.emit("notify", { kind: "limit", botId: "unknown", title: "Needs attention", body: "Unknown bot report" });
   chat.emit("notify", { kind: "approval", approvalId: "a", botId: tester.id, title: "Ready", body: "Your bot report" });
-  chat.emit("settings.changed", { chainLimit: 5 });
+  chat.emit("settings.changed", { chainLimit: 5, relayUrl: null });
   chat.emit("bot.deleted", { id: "Hidden deleted bot" });
   chat.emit("routine.deleted", { id: "Hidden deleted routine" });
   chat.emit("message.added", message({ kind: "notice", body: "Rendering complete" }));

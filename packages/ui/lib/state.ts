@@ -1,6 +1,9 @@
 import type { ClientEvent } from "@tjommie/client";
 import type { AccountInfo, Bot, Message, ProviderSetup, Room, Routine, RoutineRun, Settings } from "@tjommie/protocol";
 
+export const LINK = { pingForegroundMs: 20_000, pingBackgroundMs: 60_000, pongTimeoutMs: 10_000, lanWindowMs: 1_000,
+  backoffMs: [0, 1_000, 2_000, 5_000, 10_000] } as const;
+
 export type MessageEvent = Extract<ClientEvent, { event: "message.added" | "message.updated" | "message.delta" }>;
 
 export type Conversation = {

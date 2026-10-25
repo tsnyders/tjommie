@@ -39,15 +39,15 @@ describe("typed daemon client", () => {
     const port = await peer((socket, message) => {
       if (message.type === "hello") socket.send(JSON.stringify({ type: "welcome", protocol: 1 }));
       if (message.type === "req") {
-        socket.send(JSON.stringify({ type: "event", event: "settings.changed", data: { chainLimit: 4 } }));
-        socket.send(JSON.stringify({ type: "res", id: message.id, ok: true, result: { chainLimit: 4 } }));
+        socket.send(JSON.stringify({ type: "event", event: "settings.changed", data: { chainLimit: 4, relayUrl: null } }));
+        socket.send(JSON.stringify({ type: "res", id: message.id, ok: true, result: { chainLimit: 4, relayUrl: null } }));
       }
     });
     const client = await connect(port, "test-token", { recordEvents: false });
     clients.push(client);
     const seen: string[] = [];
     client.subscribe((event) => seen.push(event.event));
-    expect(await client.call("settings.get", {})).toEqual({ chainLimit: 4 });
+    expect(await client.call("settings.get", {})).toEqual({ chainLimit: 4, relayUrl: null });
     expect(seen).toEqual(["settings.changed"]);
     expect(client.events).toEqual([]);
   });
@@ -58,8 +58,8 @@ describe("typed daemon client", () => {
       requests.push(message);
       if (message.type === "hello") socket.send(JSON.stringify({ type: "welcome", protocol: 1 }));
       else {
-        socket.send(JSON.stringify({ type: "event", event: "settings.changed", data: { chainLimit: 4 } }));
-        socket.send(JSON.stringify({ type: "res", id: message.id, ok: true, result: { chainLimit: 4 } }));
+        socket.send(JSON.stringify({ type: "event", event: "settings.changed", data: { chainLimit: 4, relayUrl: null } }));
+        socket.send(JSON.stringify({ type: "res", id: message.id, ok: true, result: { chainLimit: 4, relayUrl: null } }));
       }
     });
     const client = await open(port);
@@ -67,13 +67,13 @@ describe("typed daemon client", () => {
     const unsubscribe = client.subscribe((event) => {
       if (event.event === "settings.changed") changes.push(event.data.chainLimit);
     });
-    expect(await client.call("settings.set", { chainLimit: 4 })).toEqual({ chainLimit: 4 });
+    expect(await client.call("settings.set", { chainLimit: 4 })).toEqual({ chainLimit: 4, relayUrl: null });
     expect(requests).toEqual([
       { type: "hello", protocol: 1, token: "test-token" },
       { type: "req", id: 1, method: "settings.set", params: { chainLimit: 4 } },
     ]);
     expect(changes).toEqual([4]);
-    expect(client.events).toEqual([{ type: "event", event: "settings.changed", data: { chainLimit: 4 } }]);
+    expect(client.events).toEqual([{ type: "event", event: "settings.changed", data: { chainLimit: 4, relayUrl: null } }]);
     unsubscribe();
     await client.call("settings.get", {});
     expect(changes).toEqual([4]);
@@ -87,7 +87,7 @@ describe("typed daemon client", () => {
       allowedOrigins: [],
       handlers: {
         "bots.delete": () => { throw new RpcError("not_found", "No such bot"); },
-        "settings.get": () => ({ chainLimit: 3 }),
+        "settings.get": () => ({ chainLimit: 3, relayUrl: null }),
       },
     });
     const client = await open(server.port);
@@ -95,7 +95,7 @@ describe("typed daemon client", () => {
     await expect(failure).rejects.toThrow("not_found: No such bot");
     await expect(failure).rejects.toBeInstanceOf(ClientRpcError);
     await expect(failure).rejects.toMatchObject({ code: "not_found" });
-    expect(await client.call("settings.get", {})).toEqual({ chainLimit: 3 });
+    expect(await client.call("settings.get", {})).toEqual({ chainLimit: 3, relayUrl: null });
   });
 
   it("rejects every pending call on disconnect, including the close code and reason", async () => {

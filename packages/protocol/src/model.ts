@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { RelayUrl } from "./remote.ts";
 
 // The conversation id of the Team room, the one room every bot is in.
 export const TEAM_ROOM_ID = "team";
@@ -272,5 +273,5 @@ export function messageData(message: Pick<Message, "kind" | "data">): MessageDat
 }
 
 // chainLimit: how many bot-to-bot requests one chain (a message from you, a room post or a routine run) may make.
-export const Settings = z.object({ chainLimit: z.number().int().min(1).max(20) });
+export const Settings = z.object({ chainLimit: z.number().int().min(1).max(20), relayUrl: RelayUrl.nullable() });
 export type Settings = z.infer<typeof Settings>;

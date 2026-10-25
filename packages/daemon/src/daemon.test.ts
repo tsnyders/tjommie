@@ -178,8 +178,8 @@ async function tool(options: StartOptions, name: string, args: Record<string, un
 it("wires settings, routine CRUD and the Team room through the WebSocket methods", async () => {
   const { client } = await harness();
   const bot = await client.call("bots.create", input("Roomy"));
-  expect(await client.call("settings.get", {})).toEqual({ chainLimit: 5 });
-  expect(await client.call("settings.set", { chainLimit: 7 })).toEqual({ chainLimit: 7 });
+  expect(await client.call("settings.get", {})).toEqual({ chainLimit: 5, relayUrl: null });
+  expect(await client.call("settings.set", { chainLimit: 7 })).toEqual({ chainLimit: 7, relayUrl: null });
   await client.call("room.post", { text: "Hello team" });
   expect(await client.call("room.history", {})).toMatchObject({ messages: [{ body: "Hello team" }], hasMore: false });
   const routine = await client.call("routines.create", { botId: bot.id, name: "Check", prompt: "Check", days: [1], times: ["08:00"] });
