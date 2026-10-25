@@ -2,7 +2,7 @@
 
 import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import type { Room, RoomPatch } from "@tjommie/protocol";
+import type { Bot, Room, RoomPatch } from "@tjommie/protocol";
 import { canMessageSummary, sameSet } from "@/lib/bot-form";
 import { request } from "@/lib/connection";
 import { errorText } from "@/lib/labels";
@@ -14,11 +14,23 @@ import { FIELD, Label } from "../controls";
 import { Dialog } from "../dialog";
 import { Pill } from "../pill";
 
+// What saving an edit sends: only what was changed in the form, measured from the room as the form opened (`opened`), so a rename or a member
+// change made elsewhere meanwhile is never put back. `botIds` are the form's members that still exist; a member deleted since the form opened left
+// with its bot, so it isn't a change.
+export function roomPatch(opened: Pick<Room, "name" | "botIds">, name: string, botIds: string[], bots: Pick<Bot, "id">[]): RoomPatch {
+  const patch: RoomPatch = {};
+  if (name.trim() !== opened.name) patch.name = name.trim();
+  if (!sameSet(botIds, opened.botIds.filter((id) => bots.some((bot) => bot.id === id)))) patch.botIds = botIds;
+  return patch;
+}
+
 // New room and Edit room, in a dialog: the name and the bots in the room. Save stays off until there are both (and, for an edit, a change), and the
 // dialog stays open until it works, saying why when it doesn't. A new room opens once it's made.
 export function RoomForm({ room, onClose }: { room?: Room; onClose: () => void }) {
   const router = useRouter();
   const bots = useApp((state) => state.bots);
+  // The room as the form opened. The room prop follows changes made elsewhere; the edit is measured from this.
+  const [opened] = useState(room);
   const [name, setName] = useState(room?.name ?? "");
   const [botIds, setBotIds] = useState(room?.botIds ?? []);
   const [busy, setBusy] = useState(false);
@@ -27,19 +39,16 @@ export function RoomForm({ room, onClose }: { room?: Room; onClose: () => void }
   // A save that finishes after this form was closed (and maybe another opened in its place) closes or opens nothing.
   const alive = useAlive();
   const chosen = botIds.filter((id) => bots.some((bot) => bot.id === id)); // a bot deleted meanwhile isn't sent
-  // Only what changed, as Bot settings does, so a save never puts back a name or members that changed elsewhere since the form opened.
-  const patch: RoomPatch = {};
-  if (room && name.trim() !== room.name) patch.name = name.trim();
-  if (room && !sameSet(chosen, room.botIds)) patch.botIds = chosen;
-  const canSave = !busy && name.trim() !== "" && chosen.length > 0 && (!room || Object.keys(patch).length > 0);
+  const patch = opened ? roomPatch(opened, name, chosen, bots) : {};
+  const canSave = !busy && name.trim() !== "" && chosen.length > 0 && (!opened || Object.keys(patch).length > 0);
 
   async function save(): Promise<void> {
     if (!canSave) return;
     setBusy(true);
     setProblem(null);
     try {
-      if (room) {
-        await request("rooms.update", { id: room.id, patch });
+      if (opened) {
+        await request("rooms.update", { id: opened.id, patch });
         ifAlive(alive, onClose);
       } else {
         const made = await request("rooms.create", { name: name.trim(), botIds: chosen });
@@ -59,7 +68,7 @@ export function RoomForm({ room, onClose }: { room?: Room; onClose: () => void }
       onOpenChange={(open) => {
         if (!open) onClose();
       }}
-      title={room ? "Edit room" : "New room"}
+      title={opened ? "Edit room" : "New room"}
       width={420}
       closable
       initialFocus={nameField}
@@ -87,7 +96,7 @@ export function RoomForm({ room, onClose }: { room?: Room; onClose: () => void }
         <div className="mt-5 flex justify-end gap-2">
           <Pill onClick={onClose}>Cancel</Pill>
           <Pill primary type="submit" disabled={!canSave}>
-            {room ? "Save" : "Create room"}
+            {opened ? "Save" : "Create room"}
           </Pill>
         </div>
       </form>
