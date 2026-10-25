@@ -36,5 +36,16 @@ it("stores push tokens separately from device details and clears them on revoke"
   revokeDevice(db, device.id);
   expect(pushTargets(db)).toEqual([]);
   expect(db.prepare("SELECT push_token FROM devices WHERE id = ?").get(device.id)).toEqual({ push_token: null });
+  db.prepare("UPDATE devices SET push_token = ? WHERE id = ?").run("stale-token", device.id);
+  expect(pushTargets(db)).toEqual([]);
   expect(() => setPushToken(db, device.id, "new-token")).toThrow();
+});
+
+it("moves a token to the latest active device registration", () => {
+  const first = addDevice(db, { publicKey: key, name: "Old pairing" });
+  const second = addDevice(db, { publicKey: Buffer.alloc(32, 2).toString("base64url"), name: "New pairing" });
+  setPushToken(db, first.id, "shared-install-token");
+  setPushToken(db, second.id, "shared-install-token");
+  expect(db.prepare("SELECT push_token FROM devices WHERE id = ?").get(first.id)).toEqual({ push_token: null });
+  expect(pushTargets(db)).toEqual([{ deviceId: second.id, token: "shared-install-token" }]);
 });

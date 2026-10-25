@@ -99,7 +99,7 @@ it("maps one binary WebSocket message to one frame and rejects text", async () =
   }
 });
 
-it("closes a WebSocket wire on an oversized binary frame", async () => {
+it.each([0, 65_536])("closes a WebSocket wire on a %i-byte binary frame", async (size) => {
   const server = new WebSocketServer({ port: 0 });
   await once(server, "listening");
   const accepted = new Promise<import("ws").WebSocket>((resolve) => server.once("connection", resolve));
@@ -111,9 +111,29 @@ it("closes a WebSocket wire on an oversized binary frame", async () => {
     const frames: Uint8Array[] = [];
     wire.onFrame((frame) => frames.push(frame));
     const closed = new Promise<void>((resolve) => wire.onClose(resolve));
-    peer.send(new Uint8Array(65_536));
+    peer.send(new Uint8Array(size));
     await closed;
     expect(frames).toEqual([]);
+  } finally {
+    socket.close();
+    for (const peer of server.clients) peer.terminate();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+it.each(["oversized", "closing"] as const)("rejects a %s WebSocket wire write", async (caseName) => {
+  const server = new WebSocketServer({ port: 0 });
+  await once(server, "listening");
+  const accepted = new Promise<import("ws").WebSocket>((resolve) => server.once("connection", resolve));
+  const socket = new WebSocket(`ws://127.0.0.1:${(server.address() as AddressInfo).port}`);
+  try {
+    await new Promise<void>((resolve) => socket.addEventListener("open", () => resolve(), { once: true }));
+    await accepted;
+    const wire = webSocketWire(socket);
+    const closed = new Promise<void>((resolve) => wire.onClose(resolve));
+    if (caseName === "closing") socket.close();
+    expect(() => wire.write(new Uint8Array(caseName === "oversized" ? 65_536 : 1))).toThrow("Connection closed.");
+    await closed;
   } finally {
     socket.close();
     for (const peer of server.clients) peer.terminate();

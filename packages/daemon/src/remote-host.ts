@@ -64,6 +64,7 @@ export class RemoteHost {
     const identity = this.#identity ?? await loadRemoteIdentity({ db: this.#options.db, root: this.#options.root, name: hostname(), generate: generateKeypair, credentials: this.#options.credentials });
     if (this.#closed) { identity.privateKey.fill(0); throw new Error("The phone connection is closed."); }
     this.#identity = identity;
+    if (!this.#timer) { this.#timer = setInterval(() => this.#expire(), 30_000); this.#timer.unref(); }
     const listener = createServer((socket) => this.acceptWire(tcpWire(socket)));
     await new Promise<void>((resolve, reject) => {
       listener.once("error", reject);
@@ -72,7 +73,6 @@ export class RemoteHost {
     if (this.#closed) { listener.close(); throw new Error("The phone connection is closed."); }
     listener.on("error", () => { /* Connection failure is reported by the next explicit pairing attempt. */ });
     this.#listener = listener;
-    this.#timer = setInterval(() => this.#expire(), 30_000); this.#timer.unref();
   }
   async createPairing(): Promise<{ id: string; code: string; uri: string; expires: string }> {
     await this.start();
@@ -130,10 +130,10 @@ export class RemoteHost {
     const identity = this.#identity;
     let phase: "preface" | "handshake" | "confirm" | "refused" | "hello" | "rpc" = "preface";
     let preface: RemotePreface | null = null, noise: NoiseSession | null = null, messages: EncryptedMessages | null = null;
-    let inFlight = 0, done = false;
+    let inFlight = 0, done = false, refusalTimer: ReturnType<typeof setTimeout> | undefined;
     const pendingIds = new Set<number>();
     const close = (): void => {
-      if (done) return; done = true; clearTimeout(timer); messages?.close(); noise?.close(); wire.destroy();
+      if (done) return; done = true; clearTimeout(timer); clearTimeout(refusalTimer); messages?.close(); noise?.close(); wire.destroy();
     };
     const write = (frame: Uint8Array): void => {
       if (done || wire.buffered + frame.length > 32 * 1024 * 1024) throw new Error("Connection closed.");
@@ -192,7 +192,8 @@ export class RemoteHost {
             device = deviceForKey(this.#options.db, keyText(remote));
             if (!device || device.revokedAt) {
               send({ type: "refused", reason: device ? "revoked" : "unknown" });
-              phase = "refused";
+              // Give the encrypted frame time to leave TCP before destroying the wire.
+              if (!done) { phase = "refused"; refusalTimer = setTimeout(close, 1_000); refusalTimer.unref(); }
               return;
             }
           }
