@@ -253,6 +253,24 @@ it("limits pending channels, rejects reused and expired channel ids, and resets 
   expect(allowed.closes).toEqual([]);
 });
 
+it("caps pending device channels per source IP without blocking a different IP", async () => {
+  const f = fixture();
+  await login(f.core, hostKey());
+  const first = new FakeSock(), second = new FakeSock(), third = new FakeSock(), other = new FakeSock();
+  f.core.connectDevice(first, "192.0.2.1");
+  f.core.connectDevice(second, "192.0.2.1");
+  f.core.connectDevice(third, "192.0.2.1");
+  f.core.connectDevice(other, "192.0.2.2");
+  expect(first.closes).toEqual([]);
+  expect(second.closes).toEqual([]);
+  expect(third.closes).toContain(RelayClose.limited);
+  expect(other.closes).toEqual([]);
+  f.core.onClose(first);
+  const replacement = new FakeSock();
+  f.core.connectDevice(replacement, "192.0.2.1");
+  expect(replacement.closes).toEqual([]);
+});
+
 it("restores the newest ready host even if a stale ready attachment is listed last", () => {
   const newest = new FakeSock();
   newest.attachment = { role: "control", stage: "ready", since: 20 };

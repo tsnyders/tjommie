@@ -13,7 +13,7 @@ import type { PeerWire } from "./peer-wire.ts";
 const cleanup: (() => Promise<void> | void)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); vi.useRealTimers(); });
 
-function relayWire(host: RemoteHost, address = "relay"): FrameTransport {
+function relayWire(host: RemoteHost, address = "relay", kind: PeerWire["kind"] = "relay"): FrameTransport {
   const toHost = new Set<(frame: Uint8Array) => void>(), toClient = new Set<(frame: Uint8Array) => void>();
   const hostClosed = new Set<() => void>(), clientClosed = new Set<() => void>();
   let closed = false;
@@ -24,7 +24,7 @@ function relayWire(host: RemoteHost, address = "relay"): FrameTransport {
     for (const listener of clientClosed) listener();
   };
   const server: PeerWire = {
-    kind: "relay", address, get buffered() { return 0; },
+    kind, address, get buffered() { return 0; },
     write: (frame) => { if (closed) throw new Error("closed"); queueMicrotask(() => { if (!closed) for (const listener of toClient) listener(frame.slice()); }); },
     destroy: close, onFrame: (listener) => { toHost.add(listener); }, onClose: (listener) => { hostClosed.add(listener); },
   };
@@ -68,7 +68,7 @@ async function pair(code: PairingCode, privateKey: Uint8Array, psk = Buffer.from
     preface: { v: 1, mode: "pair", hostId: code.hostId, pairingId: code.pairingId } });
 }
 
-it.each(["lan", "relay"] as const)("refused after revoke", async (kind) => {
+it.each(["lan", "relay"] as const)("pairs and resumes before being refused after revoke over %s", async (kind) => {
   const { db, host, code, mutations } = await fixture();
   const open = () => kind === "relay" ? Promise.resolve(relayWire(host)) : wire(code.lan[0].port);
   const keys = generateKeypair();
@@ -172,7 +172,7 @@ it.each(["lan", "relay"] as const)("registers and clears only the authenticated 
   expect(db.prepare("SELECT push_token FROM devices WHERE id = ?").get(paired.deviceId)).toEqual({ push_token: "synthetic-fcm-token" });
   expect(db.prepare("SELECT push_token FROM devices WHERE id = ?").get(other.deviceId)).toEqual({ push_token: "other-device-token" });
   expect(host.pushTargets()).toHaveLength(2);
-  host.clearPushToken(paired.deviceId);
+  host.clearPushToken(paired.deviceId, "synthetic-fcm-token");
   expect(host.pushTargets()).toEqual([{ deviceId: other.deviceId, token: "other-device-token" }]);
   expect(await client.call("device.registerPush", { token: "synthetic-fcm-token" })).toEqual({});
   expect(await client.call("device.registerPush", { token: null })).toEqual({});
@@ -195,8 +195,7 @@ it.each(["lan", "relay"] as const)("keeps a %s peer alive on ping, then closes i
   expect(host.status().connectedDeviceIds).toEqual([paired.deviceId]);
   await vi.advanceTimersByTimeAsync(30_000);
   await client.disconnected;
-  for (let index = 0; index < 10 && host.status().connectedDeviceIds.length; index++) await new Promise<void>((resolve) => setImmediate(resolve));
-  expect(host.status().connectedDeviceIds).toEqual([]);
+  await vi.waitFor(() => expect(host.status().connectedDeviceIds).toEqual([]));
 });
 
 it("applies relay pending and active limits without a per-address relay cap", async () => {
@@ -217,6 +216,33 @@ it("applies relay pending and active limits without a per-address relay cap", as
   expect(host.status().connectedDeviceIds).toHaveLength(32);
   for (const peer of active) peer.transport.close();
 }, 30_000);
+
+it("keeps LAN pending handshakes when relay handshakes fill and rotate their own budget", async () => {
+  const { host } = await fixture();
+  const lan = Array.from({ length: 8 }, (_, index) => relayWire(host, `192.0.2.${index + 1}`, "lan"));
+  const closed = lan.map((peer) => vi.fn(() => {}));
+  lan.forEach((peer, index) => peer.onClose(closed[index]));
+  const relay = Array.from({ length: 8 }, () => relayWire(host));
+  const rotated = new Promise<void>((resolve) => relay[0].onClose(() => resolve()));
+  const next = relayWire(host);
+  await rotated;
+  expect(closed.every((listener) => listener.mock.calls.length === 0)).toBe(true);
+  [...lan, ...relay, next].forEach((peer) => peer.close());
+});
+
+it("keeps relay pending handshakes when LAN handshakes fill and rotate their own budget", async () => {
+  const { host } = await fixture();
+  const relay = Array.from({ length: 8 }, () => relayWire(host));
+  const relayClosed = vi.fn();
+  relay.forEach((peer) => peer.onClose(relayClosed));
+  const lan = Array.from({ length: 8 }, (_, index) => relayWire(host, `192.0.2.${index + 1}`, "lan"));
+  const rotated = vi.fn();
+  lan[0].onClose(rotated);
+  const next = relayWire(host, "192.0.2.9", "lan");
+  expect(rotated).toHaveBeenCalledOnce();
+  expect(relayClosed).not.toHaveBeenCalled();
+  [...relay, ...lan, next].forEach((peer) => peer.close());
+});
 
 it.each(["lan", "relay"] as const)("never consumes or registers on a wrong PSK over %s, and rejects reuse", async (kind) => {
   const { db, host, code } = await fixture();

@@ -1,12 +1,12 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { generateKeyPairSync, sign } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterAll, expect, it } from "vitest";
 import { RelayClose, RelayToHost, loginMessage } from "@tjommie/protocol";
+import { startLocalRelay, stopLocalRelay } from "./local-relay.test-helper.ts";
 
-const root = resolve(import.meta.dirname, "../../..");
 const hostId = "99cf98ba-2638-4b16-8a6e-1691c1673b45";
 let child: ChildProcessWithoutNullStreams | null = null;
 let configDir: string | null = null;
@@ -46,43 +46,13 @@ async function waitOpen(socket: WebSocket): Promise<void> {
 
 async function startRelay(): Promise<string> {
   configDir = await mkdtemp(resolve(tmpdir(), "tjommie-relay-"));
-  child = spawn(process.execPath, [resolve(root, "node_modules/wrangler/bin/wrangler.js"), "dev", "--local", "--port", "0", "--persist-to", configDir, "--config", "packages/relay/wrangler.toml"], {
-    cwd: root, windowsHide: true, stdio: ["pipe", "pipe", "pipe"],
-    env: { ...process.env, CI: "true", WRANGLER_SEND_METRICS: "false", XDG_CONFIG_HOME: configDir },
-  });
-  return await new Promise((resolveUrl, reject) => {
-    let output = "";
-    const ports = new Set<string>();
-    const timer = setTimeout(() => { clearInterval(probe); reject(new Error(`Wrangler did not start: ${output.slice(-1000)}`)); }, 30_000);
-    const probe = setInterval(() => {
-      for (const port of ports) void fetch(`http://127.0.0.1:${port}/v1/health`).then(async (response) => {
-        if (response.ok && (await response.json() as { relay?: string }).relay === "tjommie-relay/1") {
-          clearTimeout(timer); clearInterval(probe);
-          child?.stdout.off("data", collect); child?.stderr.off("data", collect);
-          resolveUrl(`ws://127.0.0.1:${port}`);
-        }
-      }).catch(() => {});
-    }, 250);
-    const collect = (chunk: Buffer) => {
-      output += chunk.toString();
-      for (const match of output.matchAll(/http:\/\/(?:127\.0\.0\.1|localhost):(\d+)/g)) if (match[1] !== "0") ports.add(match[1]);
-    };
-    child?.stdout.on("data", collect);
-    child?.stderr.on("data", collect);
-    child?.once("exit", (code) => { clearTimeout(timer); clearInterval(probe); reject(new Error(`Wrangler exited ${code}: ${output.slice(-1000)}`)); });
-  });
+  const started = await startLocalRelay(configDir);
+  child = started.child;
+  return started.base.replace(/^http:/, "ws:");
 }
 
 afterAll(async () => {
-  if (child?.pid) {
-    const running = child;
-    await new Promise<void>((resolveDone) => {
-      if (running.exitCode !== null) { resolveDone(); return; }
-      const timer = setTimeout(() => { running.kill(); running.stdout.destroy(); running.stderr.destroy(); resolveDone(); }, 3_000);
-      running.once("exit", () => { clearTimeout(timer); resolveDone(); });
-      running.stdin.end("q\n");
-    });
-  }
+  if (child) await stopLocalRelay(child);
   if (configDir && configDir.startsWith(tmpdir())) {
     for (let attempt = 0; attempt < 10; attempt++) {
       try { await rm(configDir, { recursive: true, force: true }); break; }

@@ -6,12 +6,12 @@ const notice: EventData<"notify"> = { kind: "approval", botId: "bot-1", title: "
 type Result = { ok: boolean; unregistered: boolean };
 function setup(count = 1) {
   const targets = Array.from({ length: count }, (_, index) => ({ deviceId: `device-${index}`, token: `synthetic-token-${index}` }));
-  const cleared: string[] = [];
+  const cleared: { deviceId: string; token: string }[] = [];
   const calls: { tokens: string[]; kind: PushKind; botId: string }[] = [];
   let results: Result[] | null = null;
   let reject = false;
   const sender = startPush({
-    host: { pushTargets: () => targets, clearPushToken: (id) => { cleared.push(id); } },
+    host: { pushTargets: () => targets, clearPushToken: (deviceId, token) => { cleared.push({ deviceId, token }); } },
     relay: { push: async (tokens, kind, botId) => { calls.push({ tokens, kind, botId }); if (reject) throw new Error("synthetic-token-0"); return results && calls.length === 1 ? results : tokens.map(() => ({ ok: true, unregistered: false })); } },
   });
   return { sender, calls, cleared, setResults: (value: Result[]) => { results = value; }, fail: () => { reject = true; }, recover: () => { reject = false; } };
@@ -40,7 +40,7 @@ it("batches at 16, clears unregistered tokens, and counts failures without loggi
     setResults(Array.from({ length: 16 }, (_, index) => ({ ok: index !== 0, unregistered: index === 0 })));
     sender(notice);
     await vi.waitFor(() => expect(calls).toHaveLength(2));
-    await vi.waitFor(() => expect(cleared).toEqual(["device-0"]));
+    await vi.waitFor(() => expect(cleared).toEqual([{ deviceId: "device-0", token: "synthetic-token-0" }]));
     expect(calls.map((call) => call.tokens.length)).toEqual([16, 1]);
     expect(calls[0]).toMatchObject({ kind: "approval", botId: "bot-1" });
     expect(JSON.stringify(calls)).not.toContain("private detail");

@@ -1,6 +1,5 @@
-import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { execFileSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { get } from "node:https";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { getCACertificates, setDefaultCACertificates } from "node:tls";
@@ -12,8 +11,7 @@ import { startDaemon, type Daemon } from "../../daemon/src/daemon.ts";
 import { createDeviceKeys } from "./device-keys.ts";
 import { newToken } from "./daemon-process.ts";
 import { closeRealApp, eventually, launchRealApp, openChat, send, type RealApp } from "./real-app.ts";
-
-const repo = resolve(import.meta.dirname, "../../..");
+import { startLocalRelay, stopLocalRelay } from "../../relay/src/local-relay.test-helper.ts";
 
 function certificate(root: string): string {
   const gitCore = execFileSync("git", ["--exec-path"], { encoding: "utf8", windowsHide: true }).trim();
@@ -26,57 +24,6 @@ function certificate(root: string): string {
   return cert;
 }
 
-function healthy(base: string, cert: string): Promise<boolean> {
-  return new Promise((done) => {
-    const request = get(`${base}/v1/health`, { ca: readFileSync(cert) }, (response) => {
-      response.resume();
-      done(response.statusCode === 200);
-    });
-    request.setTimeout(2_000, () => request.destroy());
-    request.once("error", () => done(false));
-  });
-}
-
-async function startRelay(root: string, cert: string): Promise<{ child: ChildProcessWithoutNullStreams; base: string }> {
-  const child = spawn(process.execPath, [join(repo, "node_modules/wrangler/bin/wrangler.js"), "dev", "--local",
-    "--port", "0", "--local-protocol", "https", "--https-key-path", join(root, "relay.key"),
-    "--https-cert-path", cert, "--persist-to", root, "--config", "packages/relay/wrangler.toml"], {
-    cwd: repo, windowsHide: true, stdio: ["pipe", "pipe", "pipe"],
-    env: { PATH: process.env.PATH ?? "", SystemRoot: process.env.SystemRoot ?? "C:\\Windows", WINDIR: process.env.SystemRoot ?? "C:\\Windows",
-      TEMP: tmpdir(), TMP: tmpdir(), USERPROFILE: root, APPDATA: root, LOCALAPPDATA: root, HOME: root,
-      CI: "true", WRANGLER_SEND_METRICS: "false", XDG_CONFIG_HOME: root },
-  });
-  let output = "";
-  const collect = (chunk: Buffer): void => { output = (output + chunk.toString()).slice(-4_000); };
-  child.stdout.on("data", collect);
-  child.stderr.on("data", collect);
-  try {
-    const base = await eventually(async () => {
-      const port = /https:\/\/(?:127\.0\.0\.1|localhost):(\d+)/.exec(output)?.[1];
-      if (!port || port === "0") return undefined;
-      const url = `https://127.0.0.1:${port}`;
-      return await healthy(url, cert) ? url : undefined;
-    }, 30_000);
-    return { child, base };
-  } catch {
-    await stopRelay(child).catch(() => {});
-    throw new Error(`Local HTTPS relay did not start: ${output.slice(-1_000)}`);
-  }
-}
-
-async function stopRelay(child: ChildProcessWithoutNullStreams): Promise<void> {
-  if (child.exitCode !== null || child.signalCode !== null) return;
-  child.stdin.end("q\n");
-  const exited = await Promise.race([
-    new Promise<boolean>((done) => child.once("exit", () => done(true))),
-    new Promise<false>((done) => setTimeout(() => done(false), 3_000)),
-  ]);
-  if (!exited && child.pid) {
-    try { execFileSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" }); }
-    catch { if (child.exitCode === null && child.signalCode === null) throw new Error("The local relay did not stop."); }
-  }
-}
-
 it("pairs two isolated desktop profiles through the relay, chats without a provider, switches hosts and removes the device", async () => {
   const relayRoot = mkdtempSync(join(tmpdir(), "tjommie-two-hosts-relay-"));
   const aRoot = mkdtempSync(join(tmpdir(), "tjommie-two-hosts-a-"));
@@ -87,7 +34,7 @@ it("pairs two isolated desktop profiles through the relay, chats without a provi
   const failures: unknown[] = [];
   try {
     const cert = certificate(relayRoot);
-    const started = await startRelay(relayRoot, cert);
+    const started = await startLocalRelay(relayRoot, { keyPath: join(relayRoot, "relay.key"), certPath: cert });
     relay = started.child;
     process.env.NODE_EXTRA_CA_CERTS = cert;
     setDefaultCACertificates([...oldCertificates, readFileSync(cert, "utf8")]);
@@ -157,7 +104,7 @@ it("pairs two isolated desktop profiles through the relay, chats without a provi
     }
     if (aClient) await aClient.close().catch((error: unknown) => failures.push(error));
     if (aDaemon) await aDaemon.close().catch((error: unknown) => failures.push(error));
-    if (relay) await stopRelay(relay).catch((error: unknown) => failures.push(error));
+    if (relay) await stopLocalRelay(relay).catch((error: unknown) => failures.push(error));
     for (const root of [relayRoot, aRoot]) {
       if (dirname(resolve(root)) !== resolve(tmpdir())) failures.push(new Error("Refusing to remove a root outside the temp directory."));
       else await eventually(async () => {
