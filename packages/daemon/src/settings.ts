@@ -22,7 +22,7 @@ export function setSettings(db: Db, patch: Partial<Settings>): Settings {
   const parsed = Settings.safeParse({ ...getSettings(db), ...patch });
   if (!parsed.success) throw new RpcError("bad_params", "Invalid settings");
   transaction(db, () => {
-    for (const [key, value] of Object.entries(parsed.data)) {
+    for (const [key, value] of Object.entries(parsed.data).filter(([key]) => Object.hasOwn(patch, key))) {
       db.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(key, JSON.stringify(value));
     }
   });

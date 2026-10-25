@@ -35,4 +35,12 @@ describe("settings", () => {
     db.prepare("UPDATE settings SET value = 'not json' WHERE key = 'chainLimit'").run();
     expect(getSettings(db)).toEqual({ chainLimit: 5, relayUrl: null });
   });
+
+  it("stores only patched keys so a later relay default can take effect", () => {
+    const db = openDb(join(tempRoot(), "t.db"));
+    setSettings(db, { chainLimit: 2 });
+    expect(db.prepare("SELECT key, value FROM settings ORDER BY key").all()).toEqual([{ key: "chainLimit", value: "2" }]);
+    setSettings(db, { relayUrl: "https://relay.example/old-base" });
+    expect(db.prepare("SELECT key FROM settings ORDER BY key").all()).toEqual([{ key: "chainLimit" }, { key: "relayUrl" }]);
+  });
 });
