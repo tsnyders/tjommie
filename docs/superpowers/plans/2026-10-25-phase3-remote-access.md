@@ -704,9 +704,9 @@ Findings go back to the owning task's agent. No reviewer edits files.
 1. **Deploy and configure.** Deploy the relay and set the FCM secret. Install `Tjommie-Setup-0.3.0.exe`. Uninstall the debug APK on the S25 and install the release APK.
 2. **Sign out of Windows and back in.** Tjommie is in the tray with no window. Closing the window later keeps the tray. Tray → Quit ends both `Tjommie.exe` and the daemon (Task Manager).
 3. **Phone liveness.**
-   - With the S25 on mobile data (Wi-Fi off), pair by QR. Allow notifications and keep "Always connected" on.
-   - Lock the phone for 30 min, switch Wi-Fi on and off once, then unlock and open Tjommie. It is live immediately with no reconnect screen, and a message a bot sent meanwhile is there.
-   - Turn "Always connected" off, swipe the app away, wait 10 min, then reopen. It's live within about a second.
+   - With the S25 on mobile data (Wi-Fi off), pair by QR and allow notifications.
+   - Lock the phone for 30 min, toggle Wi-Fi during the interval, then unlock and open Tjommie. Check that it resumes within about 1 s with the gap's messages present and no manual reconnect.
+   - Swipe the app away, trigger a bot approval on the PC, receive the push, and reopen the app. Check that it resumes with the waiting approval present.
 4. **On the phone over mobile data:** chat with a bot, approve a tool request, and create a bot.
 5. **Push.** Close the app (swipe away). Make a bot ask for approval on the PC. A "A bot needs you" push arrives, with no bot text. Tapping it opens that bot's chat.
 6. **Second PC.** On the second PC, install Tjommie, then rail menu → "Connect to another computer…" and paste the code. Chat from it, then switch back to "This PC".
@@ -724,7 +724,7 @@ Findings go back to the owning task's agent. No reviewer edits files.
 | A push arrives when a bot waits | T3 `fcm.test.ts`, T5 push tests, T7/T9 registration and tap; owner step 5 |
 | Pair a second PC with the code | T8 bridge, T10 host switcher, T12 `two-hosts.real.test.ts`; owner step 6 |
 | Revoke the phone and it's cut off at once | T4 "refused after revoke", T9 `removed`, T12 two-hosts revoke; owner step 7 |
-| **Added (owner, 2026-10-25):** the phone stays connected, with no manual reconnect while the PC is up | T0 spike, T9 resume and heartbeat tests, T7 keep-alive; owner step 3 |
+| **Added (owner, 2026-10-25):** the phone resumes without manual reconnect after lock or network change; push prompts a return after swipe-away | T9 `connection.resume.test.ts` and `connection.heartbeat.test.ts`; owner step 3. T0 failed its foreground-service gate, so background liveness uses reconnect on return plus FCM push. |
 | Host offline when the PC sleeps; auto-update (spec §9.2.1) | T3 host-dead test, T5 drift relogin, T6 updater real test; owner steps 8–9 |
 
 ## Out of scope
@@ -739,4 +739,10 @@ Findings go back to the owning task's agent. No reviewer edits files.
 
 ## Integration evidence
 
-(Filled in during execution: T0 verdict, gate results, artifact hashes.)
+T0 **FAIL** (Galaxy S25 Ultra spike, 2026-10-25): foreground-service screen-off delivery was 23/30 (76.7%) over 30 minutes, with the last RPC about seven minutes before the endpoint; forced deep idle delivered 0/15 scheduled RPCs over 14m41s, ending 20 s early because of motion. The batterystats UID estimate rose about 59 mAh in the service screen-off pass (roughly 120 mAh/h). Without the service, screen-off delivery was 0/30. Wi-Fi-to-data-to-Wi-Fi recovered only after Wi-Fi returned; that probe did not test relay reachability on mobile data. The no-service deep-idle and network-switch baselines were not measured; Samsung app sleeping was not separately exercised, and neither a battery-optimization exemption nor a wakelock was tested. The owner accepted the FAIL verdict and the reconnect-on-return plus FCM push fallback. The foreground-service path was dropped, and the “Always connected” toggle is hidden.
+
+T12 integration gates passed: `npm run typecheck`, `npm run lint`, `npm run check:no-any` (445 TypeScript files), `npm test` (170 files, 1,826 tests), the focused real relay gate (2 tests), the two-host real test (1), `npm run package`, `npm run test:packaged` (1), `npm run package:android` (75 matching UI assets), and Android JVM tests (13). The two-host test paired isolated profiles through local `wrangler dev` with LAN unreachable, sent to a paused synthetic bot, checked the remote browser label and host switching, and observed the removed screen within two seconds of revocation. No paid provider call or live service was used.
+
+The final Windows and Android provenance records share source-input SHA-256 `3e9cb030914d99c1f4b1e4604c48d7eb365f9907ce1c628e79bff47af0fe4c79`. SHA-256: installer `c9dbd26816a14a03f255108df4822d9348f62b92ad73b52843d24a2c3b5636c1`; blockmap `7eb4d174e12b41090489f9c6e750a58ff6d46c5d031a5ebf8bb683a71245ce37`; `latest.yml` `5c1587cda25573c070a876c8d7563eb6638474e41699fc19474f1e06e830fceb`; debug APK `71712f3a8a6d4d092a0ca9eafc54d4c192e8c7c89c8ec4e0d2d4b8f8937ac257`. APK badging confirms `versionCode=3` and `versionName=0.3.0`.
+
+These artifacts are **pre-T11** because `DEFAULT_RELAY_URL` is `null`; rebuild after the owner deploys the relay and its URL lands. S25, a real second PC, live FCM, release signing and GitHub publication remain owner/ops steps. Full gate commands, sizes, provenance and limits are in `2026-10-25-phase3-delivery-verification.md`.
