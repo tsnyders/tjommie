@@ -5,7 +5,7 @@ import { isAbsolute, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { connect, type Client } from "@tjommie/client";
 import { NativeBrowserMount, NativeBrowserUiCommand, type EventData } from "@tjommie/protocol";
-import { autoUpdater } from "electron-updater";
+import updater from "electron-updater";
 import { navigationFor, uiFile } from "./app-protocol.ts";
 import { notesFile } from "./bot-files.ts";
 import { startDaemonProcess, type DaemonConnection, type RunningDaemon } from "./daemon-process.ts";
@@ -16,7 +16,10 @@ import { nativeBrowserAutomation, cancelNativeBrowserAutomation } from "./native
 import { startNativeBrowserHost } from "./native-browser-host.ts";
 import { getLoginItem, setLoginItem, startsHidden, syncLoginItem } from "./login-item.ts";
 import { createUpdater, trayTemplate } from "./updater.ts";
+import { RemoteWires } from "./remote-wire.ts";
+import { createDeviceKeys } from "./device-keys.ts";
 
+const { autoUpdater } = updater;
 const here = import.meta.dirname;
 const packaged = app.isPackaged;
 const packageIdentity = packaged
@@ -33,9 +36,9 @@ const uiDir = packaged ? join(process.resourcesPath, "ui") : join(here, "..", ".
 const daemonEntry = packaged ? join(process.resourcesPath, "daemon", "main.mjs") : join(here, "..", "..", "daemon", "src", "main.ts");
 const appIcon = join(assets, "icon-256.png");
 const APP_ID = packageIdentity.appId ?? "com.tsnyders.tjommie";
-// Next's static export needs 'unsafe-inline' bootstrap scripts; Task 8's Markdown sanitizer, not this CSP, blocks injected script.
+// Next needs inline bootstrap scripts; Noise WASM needs wasm-unsafe-eval; Markdown sanitization handles injected content.
 const CSP =
-  "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' ws://127.0.0.1:*; object-src 'none'; base-uri 'none'; frame-src 'none'";
+  "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' ws://127.0.0.1:*; object-src 'none'; base-uri 'none'; frame-src 'none'";
 const THEMES = { dark: { color: "#070707", symbolColor: "#ACACAC" }, light: { color: "#FCFCFC", symbolColor: "#5C5C5C" } } as const;
 const TITLE_BAR_HEIGHT = 44;
 // A dialog's scrim is 60% black (the UI's bg-black/60), so what it covers keeps 40% of each channel: #ACACAC is #454545.
@@ -45,6 +48,8 @@ const underScrim = (hex: string): string =>
 type ConnectionResult = ({ ok: true } & DaemonConnection) | { ok: false; error: string };
 
 let win: BrowserWindow | null = null;
+let remoteWires: RemoteWires | null = null;
+const deviceKeys = createDeviceKeys(dataRoot);
 let tray: Tray | null = null;
 let updates: ReturnType<typeof createUpdater> | null = null;
 let quitting = false;
@@ -87,6 +92,7 @@ if (!app.requestSingleInstanceLock()) {
   app.on("second-instance", showWindow);
   app.on("before-quit", () => {
     quitting = true;
+    remoteWires?.closeAll();
   });
   app.on("will-quit", (event) => {
     updates?.stop();
@@ -351,6 +357,18 @@ async function resolveNativeBot(id: unknown) {
 }
 
 function registerIpc(): void {
+  const remote = (event: Electron.IpcMainInvokeEvent): RemoteWires => {
+    if (event.sender !== win?.webContents || event.senderFrame !== win.webContents.mainFrame || !remoteWires) throw new Error("Untrusted remote bridge.");
+    return remoteWires;
+  };
+  ipcMain.handle("remote:open", (event, endpoint: unknown, timeoutMs: unknown) => remote(event).open(endpoint, timeoutMs));
+  ipcMain.handle("remote:send", (event, id: unknown, frame: unknown) => remote(event).send(id, frame));
+  ipcMain.on("remote:close", (event, id: unknown) => {
+    if (event.sender === win?.webContents && event.senderFrame === win.webContents.mainFrame) remoteWires?.close(id);
+  });
+  ipcMain.handle("remote:seal", (event, name: unknown, value: unknown) => { remote(event); return deviceKeys.seal(name, value); });
+  ipcMain.handle("remote:read", (event, name: unknown) => { remote(event); return deviceKeys.read(name); });
+  ipcMain.handle("remote:delete", (event, name: unknown) => { remote(event); return deviceKeys.delete(name); });
   ipcMain.handle("login-item:get", () => getLoginItem(app));
   ipcMain.handle("login-item:set", (_event, on: unknown) => {
     if (typeof on !== "boolean") throw new Error("Invalid start at login setting.");
@@ -460,6 +478,7 @@ function createWindow(): void {
     webPreferences: { preload: join(here, "preload.cjs"), contextIsolation: true, sandbox: true, nodeIntegration: false },
   });
   win = window;
+  remoteWires = new RemoteWires(window.webContents);
   nativeEngine = new NativeBrowserEngine({
     window, profileRoot: join(dataRoot, "data", "native-browser"), automation: nativeBrowserAutomation,
     onState: (state) => { if (!window.isDestroyed()) window.webContents.send("native-browser:state", state); },
