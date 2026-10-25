@@ -51,14 +51,20 @@ it("persists three phone styles, keeps floating navigation and menus reachable, 
           expect(box!.x).toBeGreaterThan(20);
           expect(box!.y + box!.height).toBeLessThanOrEqual(839);
           await page.screenshot({ path: resolve(`docs/screenshots/phone/appearance/${style}-${theme}-${width}-agents.png`), animations: "disabled" });
+          // The rooms list draws its rows as the Agents rows are drawn, in each style.
           await page.goto(new URL("/room/", origin).href);
-          await page.getByRole("heading", { name: /^Team room/ }).waitFor();
-          const roomBox = await page.getByRole("combobox", { name: "Message the Team room", exact: true }).boundingBox();
+          await page.getByRole("heading", { name: "Rooms", exact: true }).waitFor();
+          await page.getByRole("link", { name: "Everyone", exact: true }).waitFor();
+          expect(await page.evaluate("document.documentElement.scrollWidth<=innerWidth")).toBe(true);
+          await page.screenshot({ path: resolve(`docs/screenshots/phone/appearance/${style}-${theme}-${width}-rooms.png`), animations: "disabled" });
+          await page.goto(new URL("/room/?id=team", origin).href);
+          await page.getByRole("heading", { name: /^Everyone/ }).waitFor();
+          const roomBox = await page.getByRole("combobox", { name: "Message Everyone", exact: true }).boundingBox();
           const roomNav = await nav.boundingBox();
           expect(roomBox!.y + roomBox!.height).toBeLessThan(roomNav!.y);
           expect(await page.evaluate("document.documentElement.scrollWidth<=innerWidth")).toBe(true);
-          await page.getByRole("heading", { name: /^Team room/ }).getByRole("button").click();
-          await page.getByRole("complementary", { name: "Team room members", exact: true }).waitFor();
+          await page.getByRole("heading", { name: /^Everyone/ }).getByRole("button").click();
+          await page.getByRole("complementary", { name: "Everyone members", exact: true }).waitFor();
           await eventually(async () => await page.getByTestId("phone-nav").getAttribute("aria-hidden") === "true" || undefined, 5000);
           await page.getByRole("button", { name: "Hide the members", exact: true }).click();
           await nav.waitFor();

@@ -137,8 +137,9 @@ try {
   await page.keyboard.press("Escape");
 
   // WF5: an answered mention. Then CV Writer is paused too, and the popover is open over a new post.
-  await page.getByRole("link", { name: "Team room", exact: true }).click();
-  const box = page.getByRole("combobox", { name: "Message the Team room" });
+  await page.getByRole("link", { name: "Rooms", exact: true }).click();
+  await page.getByRole("link", { name: "Everyone", exact: true }).click();
+  const box = page.getByRole("combobox", { name: "Message Everyone" });
   await box.fill("@CV Writer reply with exactly: ROOM-OK");
   await box.press("Enter");
   await botReply(page, "ROOM-OK").waitFor({ timeout: 180_000 });

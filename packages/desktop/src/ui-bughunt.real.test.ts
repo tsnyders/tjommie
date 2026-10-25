@@ -94,8 +94,8 @@ it("retains edited drafts, reveals keyboard mentions, dismisses native overlays 
     await routine.waitFor({ state: "hidden" });
     expect(await page.getByRole("button", { name: "Close details", exact: true }).isVisible()).toBe(true);
 
-    await visit("/room/");
-    const room = page.getByRole("combobox", { name: "Message the Team room", exact: true });
+    await visit("/room/?id=team");
+    const room = page.getByRole("combobox", { name: "Message Everyone", exact: true });
     heldMethod = "room.post";
     await room.fill("Submitted room post A");
     await page.getByRole("button", { name: "Send", exact: true }).click();
