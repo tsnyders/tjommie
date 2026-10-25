@@ -88,7 +88,7 @@ describe("the Agents overview", () => {
     ];
     const post = message("p1", "text", { conversationId: "team", author: "b2", body: "Done.", createdAt: new Date(2026, 8, 27, 13, 56).toISOString(), data: { exchangeId: "x1", toBotId: "b1" } });
     expect(roomLine([post], bots, now)).toBe("CV Writer and Pnet apply talked 4 minutes ago");
-    expect(roomLine([], bots, now)).toBe("No bot chats yet");
+    expect(roomLine([], bots, now)).toBe("No posts yet");
   });
 
   it("gives each room the line from its own posts", () => {
@@ -104,9 +104,22 @@ describe("the Agents overview", () => {
     const growth = [post("p3", "r1", "b1", "b2", new Date(2026, 8, 27, 13, 0))];
     expect(roomLine(everyone, bots, now)).toBe("Chief and Sales talked 10 minutes ago");
     expect(roomLine(growth, bots, now)).toBe("Sales and Marketing talked 1 hour ago");
-    // A room with only your posts and its bots' answers has no bot chats yet.
-    const asked = [message("p4", "text", { conversationId: "r2", author: "you", body: "@Sales hi" }), message("p5", "text", { conversationId: "r2", author: "b1", body: "Hi." })];
-    expect(roomLine(asked, bots, now)).toBe("No bot chats yet");
+  });
+
+  it("gives a room the line from its newest post of any kind, and says so when it has none", () => {
+    const bots = [{ id: "b1", name: "Sales" }];
+    const at = (minute: number) => new Date(2026, 8, 27, 13, minute).toISOString();
+    const yours = message("p1", "text", { conversationId: "r1", author: "you", body: "@Sales hi", createdAt: at(50) });
+    const answer = message("p2", "text", { conversationId: "r1", author: "b1", body: "Hi.", createdAt: at(56) });
+    const exchange = message("p3", "text", { conversationId: "r1", author: "b1", body: "Done.", createdAt: at(30), data: { exchangeId: "x1", toBotId: "b2" } });
+    expect(roomLine([exchange, yours], bots, now)).toBe("You posted 10 minutes ago");
+    expect(roomLine([exchange, yours, answer], bots, now)).toBe("Sales answered 4 minutes ago");
+    expect(roomLine([exchange], bots, now)).toBe("Sales and A deleted bot talked 30 minutes ago");
+    // Notices, activity and a reply still on its way aren't posts.
+    const notice = message("p4", "notice", { conversationId: "r1", author: "system", body: "Sales couldn't answer." });
+    const streaming = message("p5", "text", { conversationId: "r1", author: "b1", body: "", status: "streaming" });
+    expect(roomLine([notice, streaming], bots, now)).toBe("No posts yet");
+    expect(roomLine([yours, notice, streaming], bots, now)).toBe("You posted 10 minutes ago");
   });
 });
 

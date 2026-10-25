@@ -195,6 +195,16 @@ describe("Team room", () => {
     expect(delivered).toEqual([]);
   });
 
+  it("reads mentions against every bot's name, so a member's name inside a non-member's doesn't start the member", () => {
+    const bot = createBot(db, join(root, "bots"), { name: "Bot", color: "gray", shape: "pill", instructions: "", provider: "claude", model: "haiku" });
+    createBot(db, join(root, "bots"), { name: "Bot 2", color: "gray", shape: "pill", instructions: "", provider: "claude", model: "haiku" });
+    const room = createRoom(db, { name: "Solo", botIds: [bot.id] });
+    team.postToRoom(room.id, "@Bot 2 please help");
+    expect(delivered).toEqual([]);
+    team.postToRoom(room.id, "@Bot please help");
+    expect(delivered.map((item) => item.botId)).toEqual([bot.id]);
+  });
+
   it("keeps custom room replies there and records their room id in the handoff", () => {
     const room = createRoom(db, { name: "Planning", botIds: [writer.id] });
     team.postToRoom(room.id, "@Writer hi");

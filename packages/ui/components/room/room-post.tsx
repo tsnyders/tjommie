@@ -7,10 +7,10 @@ import { BotAvatar, MissingAvatar } from "../bot-avatar";
 import { BotBubble } from "../chat/bubbles";
 import { FileCard } from "../chat/file-card";
 
-// A text post in the Team room (WF5). Bots' posts have the avatar, a header line (name, "to <bot>" for bot-to-bot
-// posts, time), the bubble, their files and "Open exchange". Your posts are right-aligned, with mentions in blue.
-export function RoomPost({ message, bots, onOpenExchange }: { message: Message; bots: Bot[]; onOpenExchange: (exchangeId: string) => void }) {
-  if (message.author === "you") return <YourPost text={message.body} bots={bots} />;
+// A text post in a room (WF5). Bots' posts have the avatar, a header line (name, "to <bot>" for bot-to-bot
+// posts, time), the bubble, their files and "Open exchange". Your posts are right-aligned, with the mentions of the room's bots (members) in blue.
+export function RoomPost({ message, bots, members, onOpenExchange }: { message: Message; bots: Bot[]; members: Bot[]; onOpenExchange: (exchangeId: string) => void }) {
+  if (message.author === "you") return <YourPost text={message.body} bots={bots} members={members} />;
   const parsed = ExchangePostData.safeParse(message.data);
   const post = parsed.success ? parsed.data : null;
   const author = bots.find((bot) => bot.id === message.author);
@@ -39,10 +39,12 @@ export function RoomPost({ message, bots, onOpenExchange }: { message: Message; 
   );
 }
 
-function YourPost({ text, bots }: { text: string; bots: Bot[] }) {
+// Mentions are read against every bot's name, as the daemon reads them, and only the room's bots, who answer, are marked.
+function YourPost({ text, bots, members }: { text: string; bots: Bot[]; members: Bot[] }) {
   const parts: ReactNode[] = [];
   let at = 0;
-  for (const range of mentionRanges(text, bots.map((bot) => bot.name))) {
+  const answering = mentionRanges(text, bots.map((bot) => bot.name)).filter((range) => range.name === null || members.some((bot) => bot.name === range.name));
+  for (const range of answering) {
     if (range.start > at) parts.push(text.slice(at, range.start));
     parts.push(
       <span key={range.start} className="font-semibold text-mention">

@@ -9,6 +9,7 @@ import { getState, update } from "./store";
 
 const PAGE = 50;
 const STARTING_TRIES = 3; // failed tries before "Starting Tjommie" says why it can't connect
+const CALLS = 16; // calls in flight at once; the PC's host for phones closes a connection with 32
 let client: Client | null = null;
 type ConnectionTarget = DesktopConnection | { mobileHostId: string };
 let latest: ConnectionTarget | null = null;
@@ -102,7 +103,7 @@ async function attempt(connection: ConnectionTarget): Promise<void> {
   await previous?.close().catch(() => {});
   let next: Client;
   try {
-    next = "mobileHostId" in connection ? await openMobileClient(connection.mobileHostId) : await connect(connection.port, connection.token, { recordEvents: false });
+    next = limitCalls("mobileHostId" in connection ? await openMobileClient(connection.mobileHostId) : await connect(connection.port, connection.token, { recordEvents: false }));
   } catch (error) {
     lost(connection, error);
     return;
@@ -148,6 +149,26 @@ async function attempt(connection: ConnectionTarget): Promise<void> {
   void next.disconnected.then((error) => {
     if (client === next) lost(connection, error);
   });
+}
+
+// The client with at most CALLS calls in flight; the rest wait their turn, in order. Every call goes through it (the startup lists, request and
+// daemon()), so no burst, such as each room's or bot's history being read again at once, can trip the phone host's limit and drop the connection.
+// A call that ends hands its slot straight to the next one waiting.
+function limitCalls(client: Client): Client {
+  let active = 0;
+  const waiting: (() => void)[] = [];
+  async function call<M extends MethodName>(method: M, params: ParamsIn<M>): Promise<Result<M>> {
+    if (active < CALLS) active += 1;
+    else await new Promise<void>((resolve) => waiting.push(resolve));
+    try {
+      return await client.call(method, params);
+    } finally {
+      const next = waiting.shift();
+      if (next) next();
+      else active -= 1;
+    }
+  }
+  return { ...client, call };
 }
 
 function lost(connection: ConnectionTarget, error: unknown): void {

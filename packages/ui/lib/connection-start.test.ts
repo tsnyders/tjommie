@@ -33,7 +33,7 @@ afterEach(() => {
 // classes connection.ts sees.
 async function start() {
   const client = await import("@tjommie/client");
-  const { startConnection } = await import("./connection");
+  const { request, startConnection } = await import("./connection");
   const { getState } = await import("./store");
   // A daemon client whose list calls answer, or fail with the daemon's reason.
   const daemonClient = (lists: "answer" | "fail"): Client => {
@@ -44,7 +44,7 @@ async function start() {
     };
     return { call: call as unknown as Client["call"], events: [], subscribe: () => () => {}, disconnected: new Promise(() => {}), close: vi.fn(async () => {}) };
   };
-  return { client, daemonClient, startConnection, status: () => getState().connection };
+  return { client, daemonClient, request, startConnection, status: () => getState().connection };
 }
 
 describe("the first connection", () => {
@@ -96,5 +96,39 @@ describe("a pushed connection", () => {
     open(daemonClient("answer"));
     await vi.advanceTimersByTimeAsync(0);
     expect(status()).toEqual({ status: "ready" });
+  });
+});
+
+describe("calls in flight", () => {
+  it("keeps at most 16 calls outstanding, so a burst can't trip the phone host's limit of 32, and answers every call", async () => {
+    const { daemonClient, request, startConnection, status } = await start();
+    const answering = daemonClient("answer");
+    const lists = answering.call as unknown as (method: string) => Promise<unknown>;
+    let outstanding = 0;
+    let most = 0;
+    const ends: (() => void)[] = [];
+    // A room's history waits until the test lets it answer; the startup lists answer at once.
+    const call = async (method: string): Promise<unknown> => {
+      if (method !== "room.history") return lists(method);
+      outstanding += 1;
+      most = Math.max(most, outstanding);
+      await new Promise<void>((resolve) => ends.push(resolve));
+      outstanding -= 1;
+      return { messages: [], hasMore: false };
+    };
+    connect.mockImplementation(async () => ({ ...answering, call: call as unknown as Client["call"] }));
+    startConnection();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(status()).toEqual({ status: "ready" });
+
+    let answered = 0;
+    const burst = Array.from({ length: 40 }, () => request("room.history", { roomId: "team", limit: 10 }).then(() => (answered += 1)));
+    while (answered < 40) {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(outstanding).toBeLessThanOrEqual(16);
+      for (const end of ends.splice(0)) end();
+    }
+    await Promise.all(burst);
+    expect(most).toBe(16);
   });
 });

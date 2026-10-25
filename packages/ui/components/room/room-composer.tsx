@@ -1,18 +1,21 @@
 "use client";
 
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { ArrowUp, AtSign, Users } from "lucide-react";
-import { findMentions, type Bot, type Room } from "@tjommie/protocol";
+import { findMentions, type Room } from "@tjommie/protocol";
 import { request } from "@/lib/connection";
 import { errorText, SHORT_STATE, STATE_TEXT } from "@/lib/labels";
 import { insertMention, mentionOptions, typedMention, type MentionOption } from "@/lib/mentions";
+import { roomBots } from "@/lib/state";
+import { useApp } from "@/lib/store";
 import { scrollToShow, useRevision, useSendGuard } from "@/lib/use-draft";
 import { usePhone } from "@/lib/use-phone";
 import { cn } from "@/lib/utils";
 import { BotAvatar } from "../bot-avatar";
 
 // A room's composer (WF5). Typing "@" opens the mention popover above it, filtered by what follows; it offers the room's own bots (members),
-// as only they answer there. A post that mentions none of them gets no answer, and the composer says so (WF11). Room posts carry no files.
+// as only they answer there. A post that mentions none of them gets no answer, and the composer says so (WF11); mentions are read as the daemon
+// reads them, against every bot's name. Room posts carry no files.
 // Whether an Escape should close the open mention list: only while it is open, and not one the box already took.
 export const mentionEscape = (event: { key: string; defaultPrevented: boolean }, open: boolean): boolean => open && event.key === "Escape" && !event.defaultPrevented;
 
@@ -26,8 +29,10 @@ export function withAt(text: string, caret: number): { text: string; caret: numb
 // What @everyone stands for in the mention list.
 export const everyoneLabel = (count: number): string => `All ${count} ${count === 1 ? "bot" : "bots"} in this room`;
 
-export function RoomComposer({ room, members }: { room: Room; members: Bot[] }) {
+export function RoomComposer({ room }: { room: Room }) {
   const phone = usePhone();
+  const bots = useApp((state) => state.bots);
+  const members = useMemo(() => roomBots(room, bots), [room, bots]);
   const field = useRef<HTMLTextAreaElement>(null);
   const list = useRef<HTMLUListElement>(null);
   // Typing goes on while a post is on its way; its success clears the box only if nothing was typed since.
@@ -91,7 +96,7 @@ export function RoomComposer({ room, members }: { room: Room; members: Bot[] }) 
     setProblem(null);
     try {
       await request("room.post", { roomId: room.id, text: sentText });
-      setHint(findMentions(sentText, members).length === 0);
+      setHint(findMentions(sentText, bots, members).length === 0);
       if (revision.now() === sentRevision) edit("", 0); // what was typed meanwhile, with its caret and mention, stays
     } catch (error) {
       setProblem(errorText(error));

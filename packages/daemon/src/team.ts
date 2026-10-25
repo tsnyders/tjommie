@@ -284,7 +284,7 @@ export class Team {
   postToRoom(roomId: string, text: string): Message {
     const room = getRoom(this.#db, roomId);
     const context = this.#describe(history(this.#db, roomId, undefined, ROOM_CONTEXT));
-    const mentioned = findMentions(text, roomMembers(this.#db, roomId));
+    const mentioned = findMentions(text, listStoredBots(this.#db), roomMembers(this.#db, roomId));
     const queued: WorkItem[] = [];
     const post = this.#atomic(() => {
       const message = this.#add({ conversationId: roomId, author: "you", kind: "text", body: text, status: "done" });

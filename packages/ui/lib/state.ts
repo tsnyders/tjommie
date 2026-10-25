@@ -58,7 +58,7 @@ function without<T>(record: Record<string, T>, key: string): Record<string, T> {
 }
 
 // An update or delta for a message outside the loaded pages (an old card being answered) changes nothing.
-function applyMessageEvent(messages: Message[], event: MessageEvent): Message[] {
+export function applyMessageEvent(messages: Message[], event: MessageEvent): Message[] {
   switch (event.event) {
     case "message.added":
       return messages.some((m) => m.id === event.data.id) ? messages : [...messages, event.data];

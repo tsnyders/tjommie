@@ -1,4 +1,4 @@
-// @mentions in Team room posts. The daemon uses them to pick who answers, and the UI uses the same rule for its
+// @mentions in room posts. The daemon uses them to pick who answers, and the UI uses the same rule for its
 // hint and its highlighting, so the two never disagree.
 const WORD = /[\p{L}\p{N}\p{M}_]/u;
 const EMAIL_END = /[.\-+%]/u;
@@ -24,10 +24,11 @@ export function mentionRanges(text: string, names: string[]): MentionRange[] {
   return ranges.sort((a, b) => a.start - b.start);
 }
 
-// The ids of the bots a post mentions, in the order given. "@everyone" mentions every bot.
-export function findMentions(text: string, bots: { id: string; name: string }[]): string[] {
+// The ids of the members a post mentions, in the order given; in a room, its bots. Names are read against every bot, so "@Bot 2" is never
+// taken for "@Bot" in a room without Bot 2. "@everyone" mentions every member.
+export function findMentions(text: string, bots: { id: string; name: string }[], members = bots): string[] {
   const ranges = mentionRanges(text, bots.map((bot) => bot.name));
-  if (ranges.some((range) => range.name === null)) return bots.map((bot) => bot.id);
+  if (ranges.some((range) => range.name === null)) return members.map((bot) => bot.id);
   const named = new Set(ranges.map((range) => range.name));
-  return bots.filter((bot) => named.has(bot.name)).map((bot) => bot.id);
+  return members.filter((bot) => named.has(bot.name)).map((bot) => bot.id);
 }

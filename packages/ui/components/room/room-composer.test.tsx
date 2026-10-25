@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import type { Bot, Room } from "@tjommie/protocol";
+import { findMentions, type Bot, type Room } from "@tjommie/protocol";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { mentionOptions } from "@/lib/mentions";
@@ -10,14 +10,14 @@ const growth: Room = { id: "r1", name: "Growth", botIds: ["b1", "b2"], everyone:
 
 describe("RoomComposer", () => {
   it("points at the mention list only while it's open", () => {
-    const html = renderToStaticMarkup(<RoomComposer room={growth} members={[]} />);
+    const html = renderToStaticMarkup(<RoomComposer room={growth} />);
     expect(html).toContain('role="combobox"');
     expect(html).toContain('aria-expanded="false"');
     expect(html).not.toContain("aria-controls");
   });
 
   it("names the room it posts in", () => {
-    const html = renderToStaticMarkup(<RoomComposer room={growth} members={[]} />);
+    const html = renderToStaticMarkup(<RoomComposer room={growth} />);
     expect(html).toContain('aria-label="Message Growth"');
     expect(html).toContain('placeholder="Message Growth. Type @ to mention a bot."');
   });
@@ -33,7 +33,14 @@ describe("mentions in a room", () => {
     expect(everyoneLabel(1)).toBe("All 1 bot in this room");
     const source = readFileSync(new URL("./room-composer.tsx", import.meta.url), "utf8");
     expect(source).toContain("mentionOptions(typed.query, members)");
-    expect(source).toContain("findMentions(sentText, members)"); // "nobody will reply" counts the room's bots only
+    expect(source).toContain("findMentions(sentText, bots, members)"); // "nobody will reply" counts the room's bots only
+  });
+
+  it("says nobody will reply to a bot outside the room, even one whose name starts with a member's", () => {
+    const bots = [{ id: "b", name: "Bot" }, { id: "b2", name: "Bot 2" }] as Bot[];
+    const solo = roomBots({ ...growth, botIds: ["b"] }, bots);
+    expect(findMentions("@Bot 2 please help", bots, solo)).toEqual([]); // read against every name: not Bot
+    expect(findMentions("@Bot please help", bots, solo)).toEqual(["b"]);
   });
 });
 
