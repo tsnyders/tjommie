@@ -1,0 +1,14 @@
+name = "tjommie-relay"
+main = "src/worker.ts"
+compatibility_date = "2026-10-19"
+
+[[durable_objects.bindings]]
+name = "HOSTS"
+class_name = "HostRoom"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["HostRoom"]
+
+[observability]
+enabled = false
