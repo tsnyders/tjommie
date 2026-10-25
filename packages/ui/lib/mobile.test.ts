@@ -27,7 +27,7 @@ import { mobileHosts, openMobileClient, pairMobile } from "./mobile";
 
 const id = "ee87d56c-f1ba-453f-8210-d0f3536e5f53", hostKey = "AQ".padEnd(43, "A");
 const host = { id, name: "Synthetic PC", hostKey, lan: [{ host: "192.168.1.2", port: 47101 }], deviceId: "322bccbc-6ba0-409e-8d7f-b736bb7ce3e3" };
-const invite = () => encodePairingCode({ v: 1, relay: null, pairingId: "8074dc6f-2eb2-4e53-84d5-6263dfe4c0a2", hostId: id, hostName: host.name, hostKey, lan: host.lan, secret: "Ag".padEnd(43, "A"), expires: new Date(Date.now() + 600_000).toISOString() });
+const invite = () => encodePairingCode({ v: 2, relay: null, pairingId: "8074dc6f-2eb2-4e53-84d5-6263dfe4c0a2", hostId: id, hostName: host.name, hostKey, lan: host.lan, secret: "Ag".padEnd(43, "A"), expires: new Date(Date.now() + 600_000).toISOString() });
 const base64 = (bytes: Uint8Array) => Buffer.from(bytes).toString("base64");
 beforeEach(() => {
   fake.vault.clear(); fake.publicStore.clear(); fake.acceptKeys.clear(); fake.afterConfirm = false;

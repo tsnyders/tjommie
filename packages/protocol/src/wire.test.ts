@@ -162,8 +162,8 @@ describe("protocol for bots working together", () => {
   });
 
   it("bounds the chain limit between 1 and 20", () => {
-    expect(Settings.parse({ chainLimit: 5 })).toEqual({ chainLimit: 5 });
-    expect(() => Settings.parse({ chainLimit: 0 })).toThrow();
-    expect(() => Settings.parse({ chainLimit: 21 })).toThrow();
+    expect(Settings.parse({ chainLimit: 5, relayUrl: null })).toEqual({ chainLimit: 5, relayUrl: null });
+    expect(() => Settings.parse({ chainLimit: 0, relayUrl: null })).toThrow();
+    expect(() => Settings.parse({ chainLimit: 21, relayUrl: null })).toThrow();
   });
 });

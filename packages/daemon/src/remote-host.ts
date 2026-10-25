@@ -47,7 +47,8 @@ export class RemoteHost {
   status(): RemoteStatus {
     return { hostId: this.#identity?.id ?? null, hostName: this.#identity?.name ?? hostname(), listening: this.#listener !== null,
       port: this.#listener ? (this.#listener.address() as { port: number }).port : null,
-      connectedDeviceIds: [...new Set([...this.#peers].flatMap((peer) => peer.deviceId ? [peer.deviceId] : []))] };
+      connectedDeviceIds: [...new Set([...this.#peers].flatMap((peer) => peer.deviceId ? [peer.deviceId] : []))],
+      relay: { url: null, state: "off", push: false } };
   }
   async start(): Promise<void> {
     if (this.#closed) throw new RpcError("bad_state", "The phone connection is closed.");
@@ -81,7 +82,7 @@ export class RemoteHost {
     const id = newId(), secret = new Uint8Array(randomBytes(32)), expires = Date.now() + 600_000;
     this.#options.db.prepare("INSERT INTO pairing_codes(id,secret_hash,expires_at,created_at) VALUES(?,?,?,?)").run(id, createHash("sha256").update(secret).digest("hex"), new Date(expires).toISOString(), nowIso());
     this.#invites.set(id, { id, secret, expires });
-    const code = encodePairingCode({ v: 1, relay: null, pairingId: id, hostId: identity.id, hostName: identity.name, hostKey: keyText(identity.publicKey), secret: keyText(secret),
+    const code = encodePairingCode({ v: 2, relay: null, pairingId: id, hostId: identity.id, hostName: identity.name, hostKey: keyText(identity.publicKey), secret: keyText(secret),
       lan: [...new Set(addresses)].slice(0, 16).map((host) => ({ host, port: (this.#listener!.address() as { port: number }).port })), expires: new Date(expires).toISOString() });
     return { id, code, uri: `tjommie://pair#${code}`, expires: new Date(expires).toISOString() };
   }
@@ -185,7 +186,7 @@ export class RemoteHost {
             } else device = deviceForKey(this.#options.db, keyText(remote));
             if (!device) throw new Error();
             peer.deviceId = (device as Device).id; touchDevice(this.#options.db, peer.deviceId);
-            send({ type: "ready", deviceId: peer.deviceId, hostId: identity.id, hostName: identity.name }); phase = "hello";
+            send({ type: "ready", deviceId: peer.deviceId, hostId: identity.id, hostName: identity.name, relay: null }); phase = "hello";
             continue;
           }
           if (!peer.deviceId || getDevice(this.#options.db, peer.deviceId).revokedAt) throw new Error();

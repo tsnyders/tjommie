@@ -1,8 +1,8 @@
-import { Settings } from "@tjommie/protocol";
+import { DEFAULT_RELAY_URL, Settings } from "@tjommie/protocol";
 import { transaction, type Db } from "./db.ts";
 import { RpcError } from "./server.ts";
 
-const DEFAULTS: Settings = { chainLimit: 5 };
+const DEFAULTS: Settings = { chainLimit: 5, relayUrl: DEFAULT_RELAY_URL };
 
 export function getSettings(db: Db): Settings {
   const rows = db.prepare("SELECT key, value FROM settings").all() as { key: string; value: string }[];
