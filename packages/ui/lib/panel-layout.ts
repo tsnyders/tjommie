@@ -8,6 +8,10 @@ const OVERLAY_EDGE = 48; // the strip of chat left showing beside an overlay
 const KEY_STEP = 16;
 const KEY_STEP_BIG = 64;
 
+export const PHONE_BELOW = 640; // a viewport narrower than this is a phone (Tailwind's sm); the panel is then a full-screen sheet
+
+export const isPhone = (viewportWidth: number): boolean => viewportWidth > 0 && viewportWidth < PHONE_BELOW;
+
 export function isOverlay(room: number): boolean {
   return room > 0 && room < OVERLAY_BELOW;
 }

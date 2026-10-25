@@ -31,16 +31,16 @@ const WAIT_LABEL_MS = 800; // a frame that takes longer than this is worth sayin
 // directly. The pane stays mounted while Details shows, so tabs and the address draft survive the switch; leaving it hides the
 // view and hands the browser back to the bot (a page dialog dismissed), so coming back means Take control again. Unmounting
 // (hiding the panel) closes the session, which hands it back too. The bot's browser itself lives on in the desktop app.
-export function BrowserPanel({ bot, active, expanded, onToggleExpanded }: { bot: Bot; active: boolean; expanded: boolean; onToggleExpanded: () => void }) {
+export function BrowserPanel({ bot, active, expanded, canExpand = true, onToggleExpanded }: { bot: Bot; active: boolean; expanded: boolean; canExpand?: boolean; onToggleExpanded: () => void }) {
   const api = desktop()?.nativeBrowser;
   if (!api) return <p className="px-4 text-[13px] leading-[18px] text-secondary">The browser needs the Tjommie desktop app.</p>;
-  return <NativePane key={bot.id} bot={bot} api={api} active={active} expanded={expanded} onToggleExpanded={onToggleExpanded} />;
+  return <NativePane key={bot.id} bot={bot} api={api} active={active} expanded={expanded} canExpand={canExpand} onToggleExpanded={onToggleExpanded} />;
 }
 
 // Shift+Tab out of the page lands on the control strip's button, where the keyboard would have gone.
 const focusControl = (): void => document.querySelector<HTMLElement>('[data-focus-return="control"]')?.focus();
 
-function NativePane({ bot, api, active, expanded, onToggleExpanded }: { bot: Bot; api: NativeBrowserApi; active: boolean; expanded: boolean; onToggleExpanded: () => void }) {
+function NativePane({ bot, api, active, expanded, canExpand, onToggleExpanded }: { bot: Bot; api: NativeBrowserApi; active: boolean; expanded: boolean; canExpand: boolean; onToggleExpanded: () => void }) {
   const [view, setView] = useState<BrowserView>(nativeView(null, null));
   const [session] = useState(() => new NativeBrowserSession(bot.id, api, setView, focusControl));
   useEffect(() => {
@@ -71,6 +71,7 @@ function NativePane({ bot, api, active, expanded, onToggleExpanded }: { bot: Bot
       botName={bot.name}
       controls={controls}
       expanded={expanded}
+      canExpand={canExpand}
       onToggleExpanded={onToggleExpanded}
       onRetry={() => session.open()}
       viewport={<NativeViewport session={session} active={active} />}
@@ -108,6 +109,7 @@ export function BrowserChrome({
   botName,
   controls,
   expanded,
+  canExpand = true,
   onToggleExpanded,
   onRetry,
   viewport,
@@ -116,6 +118,7 @@ export function BrowserChrome({
   botName: string;
   controls: BrowserControls;
   expanded: boolean;
+  canExpand?: boolean; // the sheet on a phone is already the whole screen
   onToggleExpanded: () => void;
   onRetry: () => void;
   viewport?: ReactNode; // the native page's place; without it, the picture-based viewport
@@ -156,7 +159,7 @@ export function BrowserChrome({
             </IconButton>
           </div>
           <form
-            className="flex items-center gap-1"
+            className="flex flex-wrap items-center gap-1"
             onSubmit={(event) => {
               event.preventDefault();
               // The form's own value, so a blur that cleared the draft just before this click can't lose the address.
@@ -185,14 +188,16 @@ export function BrowserChrome({
               autoComplete="off"
               onChange={(event) => setDraft(event.target.value)}
               onKeyDown={(event) => event.key === "Escape" && setDraft(null)}
-              className="h-8 min-w-0 flex-1 rounded-[10px] bg-card px-3 text-[13px] leading-[18px] text-text placeholder:text-caption"
+              className="h-8 min-w-[8rem] flex-1 rounded-[10px] bg-card px-3 text-[13px] leading-[18px] text-text placeholder:text-caption max-sm:h-11"
             />
             <button type="submit" disabled={!human} onMouseDown={(event) => event.preventDefault()} className={BUTTON}>
               Go
             </button>
-            <IconButton label={expanded ? "Restore browser" : "Expand browser"} data-focus-return="expand" onClick={onToggleExpanded}>
-              {expanded ? <Minimize2 aria-hidden /> : <Maximize2 aria-hidden />}
-            </IconButton>
+            {canExpand && (
+              <IconButton label={expanded ? "Restore browser" : "Expand browser"} data-focus-return="expand" onClick={onToggleExpanded}>
+                {expanded ? <Minimize2 aria-hidden /> : <Maximize2 aria-hidden />}
+              </IconButton>
+            )}
           </form>
           <div className="flex items-center justify-between gap-3 text-[12px] leading-[18px] text-secondary">
             <span title={human ? "Closing this panel, or opening Details, hands the browser back to the bot." : undefined}>

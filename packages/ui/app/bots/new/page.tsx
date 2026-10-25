@@ -6,11 +6,14 @@ import type { Bot } from "@tjommie/protocol";
 import { BotAvatar } from "@/components/bot-avatar";
 import { BotFormFields } from "@/components/bot-form/bot-form";
 import { RoutinesRow } from "@/components/bot-form/rows";
+import { BackLink } from "@/components/back-link";
 import { BAR_PILL, Pill } from "@/components/pill";
 import { RoutineEditor } from "@/components/routines/routine-editor";
 import { RoutineRows } from "@/components/routines/routine-rows";
 import { createInput, nameProblem, NEW_BOT, routinesSummary, type BotForm, type RoutineDraft } from "@/lib/bot-form";
 import { request } from "@/lib/connection";
+import { phoneCaptionClear } from "@/lib/native-capability";
+import { cn } from "@/lib/utils";
 import { errorText } from "@/lib/labels";
 import { EMPTY_ROUTINE, localZone } from "@/lib/routine-form";
 import { useApp } from "@/lib/store";
@@ -74,18 +77,19 @@ export default function NewBotPage() {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {/* The chip is centered over the form column (WF3). */}
-      <header className="drag flex h-14 shrink-0 items-center pl-[120px] pr-6 max-xl:pl-10">
-        <div className="flex w-[640px] min-w-0 shrink justify-center">
+      <header className={cn("drag flex h-14 shrink-0 items-center pl-[120px] pr-6 max-xl:pl-10 max-sm:gap-1 max-sm:pl-1", phoneCaptionClear())}>
+        <BackLink href="/agents/" label="Back" history />
+        <div className="flex w-[640px] min-w-0 shrink justify-center max-sm:w-auto max-sm:flex-1 max-sm:justify-start">
           <div className="flex h-10 items-center gap-2 rounded-full bg-chip px-3.5">
             <BotAvatar color={form.color} shape={form.shape} size={24} />
             <h1 className="text-[15px] font-semibold text-title">New bot</h1>
           </div>
         </div>
       </header>
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div data-testid="bot-form-scroll" className="min-h-0 flex-1 overflow-y-auto">
         {/* When the form and Suggestions don't fit side by side, Suggestions move under the form. 532 px holds the avatar tile and the color row. */}
-        <div className="flex flex-wrap justify-between gap-10 pb-6 pl-[120px] pr-6 pt-2 max-xl:pl-10">
-          <div className="w-[640px] min-w-[532px] shrink">
+        <div className="flex flex-wrap justify-between gap-10 pb-6 pl-[120px] pr-6 pt-2 max-xl:pl-10 max-sm:gap-6 max-sm:pl-4 max-sm:pr-4">
+          <div className="w-[640px] min-w-[532px] shrink max-sm:w-full max-sm:min-w-0">
             <BotFormFields
               form={form}
               onChange={setForm}
@@ -102,7 +106,7 @@ export default function NewBotPage() {
               }
             />
           </div>
-          <aside className="w-[340px] shrink-0">
+          <aside className="w-[340px] shrink-0 max-sm:w-full">
             <h2 className="text-[13px] font-semibold leading-[18px] text-label">Suggestions</h2>
             <div className="mt-1.5 flex flex-col gap-3">
               {SUGGESTIONS.map((suggestion) => (
@@ -123,7 +127,7 @@ export default function NewBotPage() {
           </aside>
         </div>
       </div>
-      <footer className="flex h-16 shrink-0 items-center justify-end gap-2 border-t border-card-stroke px-6">
+      <footer className="flex h-16 shrink-0 items-center justify-end gap-2 border-t border-card-stroke px-6 max-sm:h-auto max-sm:flex-wrap max-sm:px-4 max-sm:py-3">
         {problem && (
           <p role="alert" className="mr-auto min-w-0 text-[13px] leading-[18px] text-danger">
             {problem}

@@ -126,8 +126,9 @@ export async function startCodexServer(
   cmd: CliCommand,
   env: Record<string, string>,
   cwd: string,
+  options: { ephemeralAuth?: boolean } = {},
 ): Promise<CodexServer> {
-  const child = spawnCli(cmd, ["app-server"], { cwd, env });
+  const child = spawnCli(cmd, [...(options.ephemeralAuth ? ["-c", 'cli_auth_credentials_store="ephemeral"'] : []), "app-server"], { cwd, env });
   const rpc = new JsonRpcLines((line) => child.stdin.write(`${line}\n`));
   createInterface({ input: child.stdout, crlfDelay: Infinity }).on("line", (line) => rpc.handleLine(line));
   child.stderr.resume(); // Codex logs to stderr; drain it so a full pipe can never block the process

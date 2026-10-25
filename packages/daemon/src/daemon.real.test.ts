@@ -201,7 +201,7 @@ it("a bot mentioned in the Team room answers there", async () => {
       event.event === "message.added" &&
       event.data.conversationId === bot.id &&
       event.data.kind === "handoff" &&
-      event.data.body === "Answered in the Team room",
+      event.data.body === "Answered in Everyone",
     ));
     await expect(client.call("bots.showBrowser", { id: bot.id })).rejects.toThrow(/bad_params/);
   });

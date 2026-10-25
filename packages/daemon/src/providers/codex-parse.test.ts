@@ -100,12 +100,12 @@ describe("mapCodexNotification", () => {
 
   it("reports each model call's tokens, uncached input separately", () => {
     expect(mapCodexNotification(TOKEN_USAGE.method, TOKEN_USAGE.params, MODEL)).toEqual([
-      { type: "usage", model: MODEL, input: 26025 - 25600, cachedInput: 25600, output: 138, reasoning: 9, costUsd: null },
+      { type: "usage", eventId: expect.stringMatching(/^[a-f0-9]{64}$/), model: MODEL, input: 26025 - 25600, cachedInput: 25600, output: 138, reasoning: 9, costUsd: null },
     ]);
   });
 
   it("reports rate limits with percent and reset time", () => {
-    expect(mapCodexNotification(RATE_LIMITS.method, RATE_LIMITS.params, MODEL)).toEqual([
+    expect(mapCodexNotification(RATE_LIMITS.method, RATE_LIMITS.params, MODEL)).toMatchObject([
       { type: "limit", state: "ok", usedPercent: 25, resetsAt: new Date(1790438506 * 1000).toISOString() },
     ]);
   });
@@ -118,16 +118,16 @@ describe("mapCodexNotification", () => {
     { primary: { usedPercent: 25, resetsAt: 100 }, secondary: { usedPercent: 95, resetsAt: 200 }, state: "near", used: 95, reset: 200 },
   ])("reports the restrictive quota window ($state, $used%) with its own reset", ({ primary, secondary, state, used, reset }) => {
     expect(mapCodexNotification("account/rateLimits/updated", { rateLimits: { primary, secondary } }, MODEL))
-      .toEqual([{ type: "limit", state, usedPercent: used, resetsAt: new Date(reset * 1000).toISOString() }]);
+      .toMatchObject([{ type: "limit", state, usedPercent: used, resetsAt: new Date(reset * 1000).toISOString() }]);
   });
 
   it("keeps account snapshots independent and handles invalid quota values", () => {
     expect(mapCodexNotification("account/rateLimits/updated", { rateLimits: { secondary: { usedPercent: 100, resetsAt: 200 } } }, MODEL))
-      .toEqual([{ type: "limit", state: "reached", usedPercent: 100, resetsAt: new Date(200_000).toISOString() }]);
+      .toMatchObject([{ type: "limit", state: "reached", usedPercent: 100, resetsAt: new Date(200_000).toISOString() }]);
     expect(mapCodexNotification("account/rateLimits/updated", { rateLimits: { primary: { usedPercent: 10, resetsAt: 100 } } }, MODEL))
-      .toEqual([{ type: "limit", state: "ok", usedPercent: 10, resetsAt: new Date(100_000).toISOString() }]);
+      .toMatchObject([{ type: "limit", state: "ok", usedPercent: 10, resetsAt: new Date(100_000).toISOString() }]);
     expect(mapCodexNotification("account/rateLimits/updated", { rateLimits: { primary: { usedPercent: NaN, resetsAt: Infinity }, secondary: { usedPercent: "100", resetsAt: 1e30 } } }, MODEL))
-      .toEqual([{ type: "limit", state: "ok", usedPercent: null, resetsAt: null }]);
+      .toMatchObject([{ type: "limit", state: "ok", usedPercent: null, resetsAt: null }]);
   });
 
   it("ends turns, and reports either usage-limit spelling as a reached limit first", () => {
@@ -235,4 +235,14 @@ describe("codex policy and config", () => {
       browser: { command: "C:\\node.exe", args: ["cli.js"], env: { ELECTRON_RUN_AS_NODE: "1" } },
     });
   });
+});
+
+
+it("preserves independent Codex quota windows including an exhausted unknown reset", () => {
+  expect(mapCodexNotification("account/rateLimits/updated", { rateLimits: { limitId: "codex", primary: { usedPercent: 100, windowDurationMins: 300, resetsAt: null }, secondary: { usedPercent: 92, windowDurationMins: 10080, resetsAt: 200 } } }, MODEL)).toMatchObject([{
+    type: "limit", state: "reached", resetsAt: null, limitId: "codex", windows: [
+      { windowKey: "primary", usedPercent: 100, durationMinutes: 300, resetsAt: null, state: "reached" },
+      { windowKey: "secondary", usedPercent: 92, durationMinutes: 10080, resetsAt: new Date(200_000).toISOString(), state: "near" },
+    ],
+  }]);
 });

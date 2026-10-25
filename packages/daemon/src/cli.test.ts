@@ -314,3 +314,18 @@ describe("killTreeAndWait", () => {
     }
   });
 });
+
+
+it("injects only an explicitly selected Claude API key and requests child-tool environment scrubbing", async () => {
+  const previous = process.env.ANTHROPIC_API_KEY; process.env.ANTHROPIC_API_KEY = "ambient-secret";
+  const script = "process.stdout.write(JSON.stringify({key:process.env.ANTHROPIC_API_KEY,scrub:process.env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB,managed:process.env.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST}))";
+  const child = spawnCli({ file: process.execPath, args: [] }, ["-e", script], { cwd: dir(), env: cliEnv({}), claudeApiKey: "synthetic-explicit-key" });
+  try {
+    let output = ""; child.stdout.on("data", (chunk: Buffer) => { output += chunk.toString(); });
+    await new Promise<void>((resolve, reject) => { child.once("error", reject); child.once("close", () => resolve()); });
+    expect(JSON.parse(output)).toEqual({ key: "synthetic-explicit-key", scrub: "1", managed: "1" });
+    const args = vi.mocked(spawn).mock.calls.at(-1)!;
+    expect(JSON.stringify(args[1])).not.toContain("synthetic-explicit-key");
+    expect(args[2]).toMatchObject({ windowsHide: true });
+  } finally { if (previous === undefined) delete process.env.ANTHROPIC_API_KEY; else process.env.ANTHROPIC_API_KEY = previous; }
+});

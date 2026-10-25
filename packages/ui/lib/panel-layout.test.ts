@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { choosePane, clampWidth, coversChat, isOverlay, panelFor, readWidth, saveWidth, setExpanded, splitterWidth, widthBounds } from "./panel-layout";
+import { isPhone, PHONE_BELOW, choosePane, clampWidth, coversChat, isOverlay, panelFor, readWidth, saveWidth, setExpanded, splitterWidth, widthBounds } from "./panel-layout";
 
 describe("panel width", () => {
   it("keeps the chat's minimum beside the panel, and the pane's own minimum", () => {
@@ -38,6 +38,14 @@ describe("panel width", () => {
     expect(readWidth(storage, "details")).toBe(460);
     store.set("tjommie.panel-width.details", "junk");
     expect(readWidth(storage, "details")).toBe(460);
+  });
+});
+
+describe("isPhone", () => {
+  it("is a viewport narrower than 640 px, and unknown (0) is not a phone", () => {
+    expect(PHONE_BELOW).toBe(640);
+    expect([360, 390, 639].map(isPhone)).toEqual([true, true, true]);
+    expect([640, 999, 1440, 0].map(isPhone)).toEqual([false, false, false, false]);
   });
 });
 

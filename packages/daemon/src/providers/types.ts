@@ -1,6 +1,7 @@
 import type { Autonomy } from "@tjommie/protocol";
 
 export type ApprovalAnswer = "once" | "always" | "deny";
+export type ProviderAuthentication = { kind: "api_key"; key: string };
 
 // What every CLI adapter reports, whatever its CLI prints.
 export type ProviderEvent =
@@ -10,8 +11,8 @@ export type ProviderEvent =
   | { type: "tool"; id: string; name: string; summary: string }
   | { type: "tool_done"; id: string; ok: boolean }
   | { type: "approval"; id: string; tool: string; summary: string; detail: string; rule: string | null }
-  | { type: "usage"; model: string; input: number; cachedInput: number; output: number; reasoning: number; costUsd: number | null; totalCostUsd?: number | null }
-  | { type: "limit"; state: "ok" | "near" | "reached"; usedPercent: number | null; resetsAt: string | null }
+  | { type: "usage"; model: string; input: number; cachedInput: number; output: number; reasoning: number; costUsd: number | null; totalCostUsd?: number | null; eventId?: string }
+  | { type: "limit"; state: "ok" | "near" | "reached"; usedPercent: number | null; resetsAt: string | null; limitId?: string; windows?: { windowKey: string; durationMinutes: number | null; usedPercent: number | null; resetsAt: string | null; state: "ok" | "near" | "reached" }[] }
   | { type: "turn_done"; ok: boolean; error: string | null }
   | { type: "exit"; error: string | null; completedTurn?: { ok: boolean; error: string | null } };
 
@@ -32,6 +33,8 @@ export type StartOptions = {
   resumeId: string | null;
   resumeCostUsd?: number | null; // last reported cumulative cost for this saved CLI session
   env: Record<string, string>;
+  authentication?: ProviderAuthentication; // private daemon -> owned CLI only; never serialize or broadcast
+  maxBudgetUsd?: number; // additional provider estimate threshold, not an external billing guarantee
   mcpServers: McpServer[];
 };
 
@@ -46,4 +49,10 @@ export interface ProviderSession {
   waitForExit?(): Promise<void>; // resolves after the underlying process has exited, including a pending start
   pid(): number | undefined;
   onEvent(listener: (event: ProviderEvent) => void): void;
+}
+
+// Provider errors/echoed approval details must never put the explicit API key on the wire.
+export function redactProviderEvent(event: ProviderEvent, key?: string): ProviderEvent {
+  if (!key) return event;
+  return JSON.parse(JSON.stringify(event, (_name: string, value: unknown) => typeof value === "string" ? value.split(key).join("[redacted]") : value)) as ProviderEvent;
 }

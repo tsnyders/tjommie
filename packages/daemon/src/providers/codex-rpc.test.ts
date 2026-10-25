@@ -205,3 +205,13 @@ describe("startCodexServer", () => {
     }
   });
 });
+
+
+it("starts API-key app-server authentication in ephemeral storage without secret argv/env", async () => {
+  const { child, stdin, stdout, stderr } = fakeChild(); cliMocks.spawnCli.mockReturnValueOnce(child); answerInitialize(stdin, stdout);
+  try {
+    const server = await startCodexServer({ file: "codex", args: [] }, { CODEX_HOME: "isolated" }, ".", { ephemeralAuth: true });
+    expect(cliMocks.spawnCli).toHaveBeenLastCalledWith({ file: "codex", args: [] }, ["-c", 'cli_auth_credentials_store="ephemeral"', "app-server"], { env: { CODEX_HOME: "isolated" }, cwd: "." });
+    server.close();
+  } finally { child.emit("exit", 0, null); stdin.destroy(); stdout.destroy(); stderr.destroy(); }
+});

@@ -1,3 +1,4 @@
+import type { ProviderEvent } from "./types.ts";
 import { activityLabel } from "./activity-labels.ts";
 
 // One line of `claude -p --output-format stream-json` output, reduced to what Tjommie uses.
@@ -15,9 +16,10 @@ export type ClaudeLine =
       rule: string;
       suggestion: Record<string, unknown> | null;
     }
-  | { kind: "rate_limit"; state: "ok" | "near" | "reached"; usedPercent: number | null; resetsAt: string | null }
+  | { kind: "rate_limit"; state: "ok" | "near" | "reached"; usedPercent: number | null; resetsAt: string | null; windows?: Extract<ProviderEvent, { type: "limit" }>["windows"] }
   | {
       kind: "result";
+      eventId?: string;
       ok: boolean;
       error: string | null;
       totalCostUsd: number | null;
@@ -120,7 +122,15 @@ export function parseClaudeLine(line: string): ClaudeLine {
       const windows = isRecord(info.unifiedWindows) ? info.unifiedWindows : {};
       const selectedWindow = typeof info.rateLimitType === "string" ? windows[info.rateLimitType] : undefined;
       const window = isRecord(selectedWindow) ? selectedWindow : null;
+      const allWindows = Object.entries(windows).filter((entry): entry is [string, Record<string, unknown>] => isRecord(entry[1])).map(([windowKey, value]) => {
+        const percent = typeof value.utilization === "number" && Number.isFinite(value.utilization) ? Math.max(0, Math.min(100, Math.round(value.utilization * 100))) : null;
+        const seconds = typeof value.resetsAt === "number" ? value.resetsAt : null;
+        const resetsAt = seconds !== null && Number.isFinite(seconds) && Math.abs(seconds * 1000) <= 8.64e15 ? new Date(seconds * 1000).toISOString() : null;
+        return { windowKey, durationMinutes: windowKey === "five_hour" ? 300 : windowKey === "seven_day" ? 10080 : null, usedPercent: percent, resetsAt,
+          state: windowKey === info.rateLimitType && info.status === "rejected" || percent !== null && percent >= 100 ? "reached" as const : percent !== null && percent >= 90 ? "near" as const : "ok" as const };
+      });
       return {
+        ...(allWindows.length ? { windows: allWindows } : {}),
         kind: "rate_limit",
         state: info.status === "rejected" ? "reached" : info.status === "allowed_warning" ? "near" : "ok",
         usedPercent: window && typeof window.utilization === "number" ? Math.round(window.utilization * 100) : null,
@@ -134,6 +144,7 @@ export function parseClaudeLine(line: string): ClaudeLine {
       const failed = parsed.is_error === true || parsed.subtype !== "success";
       return {
         kind: "result",
+        ...(typeof parsed.uuid === "string" ? { eventId: parsed.uuid } : {}),
         ok: !failed,
         error: failed ? String(parsed.result || parsed.terminal_reason || parsed.subtype || "The turn failed") : null,
         totalCostUsd: typeof parsed.total_cost_usd === "number" ? parsed.total_cost_usd : null,

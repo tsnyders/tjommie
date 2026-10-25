@@ -3,11 +3,14 @@
 import Link from "next/link";
 import { useEffect, useState, type ReactNode } from "react";
 import { ArrowRight, ArrowUp, X } from "lucide-react";
-import type { Bot, Exchange, Message } from "@tjommie/protocol";
+import { TEAM_ROOM_ID, type Bot, type Exchange, type Message } from "@tjommie/protocol";
 import { closeConversation, exchangePage, loadConversation, request, retryConversation } from "@/lib/connection";
 import { exchangeCaption, exchangeMeta } from "@/lib/exchange";
 import { DELETED_BOT, errorText } from "@/lib/labels";
 import { useApp } from "@/lib/store";
+import { useSheet } from "@/lib/use-sheet";
+import { useRevision, useSendGuard } from "@/lib/use-draft";
+import { usePhone } from "@/lib/use-phone";
 import { cn } from "@/lib/utils";
 import { BotAvatar, MissingAvatar } from "../bot-avatar";
 import { MessageView, shownMessages } from "../chat/message-view";
@@ -20,10 +23,10 @@ function Avatar({ bot, size }: { bot: Bot | undefined; size: number }) {
   return bot ? <BotAvatar color={bot.color} shape={bot.shape} size={size} className="shrink-0" /> : <MissingAvatar size={size} />;
 }
 
-// The exchange view (WF6): who asked whom, the whole exchange, and a box that replies in the Team room with both
-// bots mentioned. It opens in the right panel, in place of the bot panel or the Team room's members. refreshKey
-// changes when the exchange is answered or fails, in the place it was opened from: a chat's handoff row status, or
-// the Team room's newest post or notice for the exchange.
+// The exchange view (WF6): who asked whom, the whole exchange, and a box that replies in Everyone with both bots
+// mentioned. It opens in the right panel, in place of the bot panel or a room's members. refreshKey changes when
+// the exchange is answered or fails, in the place it was opened from: a chat's handoff row status, or the room's
+// newest post or notice for the exchange.
 export function ExchangeView({ exchangeId, refreshKey, onClose, bar }: { exchangeId: string; refreshKey?: string; onClose: () => void; bar: ReactNode }) {
   const bots = useApp((state) => state.bots);
   const conversation = useApp((state) => state.conversations[exchangeId]);
@@ -57,12 +60,14 @@ export function ExchangeView({ exchangeId, refreshKey, onClose, bar }: { exchang
     };
   }, [exchangeId, progress, refreshKey]);
 
+  const phone = usePhone();
+  const { ref: sheetRef, onKeyDown: sheetKeys } = useSheet<HTMLElement>(phone, onClose, '[aria-label="Close the exchange"]');
   const from = exchange ? bots.find((bot) => bot.id === exchange.fromBotId) : undefined;
   const to = exchange ? bots.find((bot) => bot.id === exchange.toBotId) : undefined;
   const caption = exchange ? exchangeCaption(exchange, messages, bots) : null;
   const shown = shownMessages(messages); // a reply that ended blank leaves no empty row
   return (
-    <aside aria-label="Exchange" className="flex w-[460px] shrink-0 flex-col border-l border-divider bg-canvas">
+    <aside ref={sheetRef} onKeyDown={sheetKeys} aria-label="Exchange" className="mobile-motion-sheet flex w-[460px] shrink-0 flex-col border-l border-divider bg-canvas max-sm:absolute max-sm:inset-0 max-sm:z-20 max-sm:w-auto max-sm:border-l-0">
       {bar}
       <header className="mx-4 flex shrink-0 items-start gap-3 border-b border-divider pb-2.5 pt-3">
         <span className="mt-1 flex shrink-0 items-center gap-1.5">
@@ -104,34 +109,42 @@ export function ExchangeView({ exchangeId, refreshKey, onClose, bar }: { exchang
 function AuthorRow({ id, bots }: { id: string; bots: Bot[] }) {
   const bot = bots.find((candidate) => candidate.id === id);
   return (
-    <p className="flex items-center gap-2 text-[12px] font-semibold leading-[18px] text-secondary">
+    <p className="flex min-w-0 max-w-full items-center gap-2 text-[12px] font-semibold leading-[18px] text-secondary">
       <Avatar bot={bot} size={18} />
-      {bot?.name ?? DELETED_BOT}
+      <span className="min-w-0 truncate">{bot?.name ?? DELETED_BOT}</span>
     </p>
   );
 }
 
-// Replies in the Team room with both bots already @mentioned (spec 6.2), so both answer there. There are no
-// attachments here.
-function ExchangeComposer({ bots }: { bots: Bot[] }) {
+// Replies in Everyone, wherever the exchange was opened, with both bots already @mentioned (spec 6.2), so both
+// answer there. There are no attachments here.
+export function ExchangeComposer({ bots }: { bots: Bot[] }) {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [posted, setPosted] = useState(false);
+  // Typing goes on while a reply is on its way; its success clears the box only if nothing was typed since.
+  const revision = useRevision();
+  const guard = useSendGuard();
   const [problem, setProblem] = useState<string | null>(null);
   const canSend = bots.length > 0 && text.trim() !== ""; // with both bots gone there's no one to mention
-  const asked = bots.length === 2 ? "Ask both bots in the Team room" : bots.length === 1 ? `Ask ${bots[0].name} in the Team room` : "Reply in Team room";
+  const asked = bots.length === 2 ? "Ask both bots in Everyone" : bots.length === 1 ? `Ask ${bots[0].name} in Everyone` : "Reply in Everyone";
   async function send(): Promise<void> {
-    if (busy || !canSend) return;
+    if (busy || !canSend || !guard.begin()) return;
+    const sentText = text;
+    const sentRevision = revision.now();
     setBusy(true);
     setProblem(null);
     try {
-      await request("room.post", { text: `${bots.map((bot) => `@${bot.name}`).join(" ")} ${text.trim()}` });
-      setText("");
-      setPosted(true);
+      await request("room.post", { text: `${bots.map((bot) => `@${bot.name}`).join(" ")} ${sentText.trim()}` });
+      if (revision.now() === sentRevision) {
+        setText("");
+        setPosted(true);
+      }
     } catch (error) {
       setProblem(errorText(error));
     } finally {
       setBusy(false);
+      guard.end();
     }
   }
   return (
@@ -144,28 +157,34 @@ function ExchangeComposer({ bots }: { bots: Bot[] }) {
     >
       {posted && (
         <p className="mb-2 text-[12px] leading-[18px] text-secondary">
-          Posted in the Team room.{" "}
-          <Link href="/room/" className="text-accent hover:underline">
+          Posted in Everyone.{" "}
+          <Link href={`/room/?id=${TEAM_ROOM_ID}`} className="text-accent hover:underline">
             Open room
           </Link>
         </p>
       )}
-      <div className="flex items-center gap-2 rounded-[22px] border border-composer-stroke bg-composer py-[5px] pl-2 pr-[5px] shadow-composer">
-        {bots.map((bot) => (
-          <span key={bot.id} className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full bg-pill px-2.5 text-[12px] text-text">
-            <BotAvatar color={bot.color} shape={bot.shape} size={18} />@{bot.name}
-          </span>
-        ))}
+      <div className="flex items-center gap-2 rounded-[22px] border border-composer-stroke bg-composer py-[5px] pl-2 pr-[5px] shadow-composer max-sm:flex-wrap">
+        {/* The mentions. On a phone they are a row of their own above the box, each as wide as the row at most and cut short with its full name kept
+            (a long name can't push the box or the Send button off the screen); on a desktop panel they sit in the box, as they always did. */}
+        <div className="flex min-w-0 gap-2 sm:contents max-sm:basis-full max-sm:flex-wrap">
+          {bots.map((bot) => (
+            <span key={bot.id} title={`@${bot.name}`} className="inline-flex h-7 min-w-0 items-center gap-1.5 rounded-full bg-pill px-2.5 text-[12px] text-text max-sm:max-w-full sm:shrink-0">
+              <BotAvatar color={bot.color} shape={bot.shape} size={18} className="shrink-0" />
+              <span className="min-w-0 truncate max-sm:max-w-full">@{bot.name}</span>
+            </span>
+          ))}
+        </div>
         {/* The caret shows focus here, as in the chat's composer. */}
         <input
           value={text}
           onChange={(event) => {
+            revision.bump();
             setText(event.target.value);
             setPosted(false);
           }}
-          aria-label="Reply in Team room"
+          aria-label="Reply in Everyone"
           placeholder={asked}
-          className="min-w-0 flex-1 truncate bg-transparent text-[14px] text-text outline-none placeholder:text-placeholder"
+          className="min-w-0 flex-1 truncate bg-transparent text-[14px] text-text outline-none placeholder:text-placeholder max-sm:basis-0 max-sm:pl-2"
         />
         <button
           type="submit"

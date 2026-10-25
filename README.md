@@ -1,6 +1,6 @@
 # Tjommie
 
-Tjommie is a free, open-source desktop app for AI bots that chat with you, work on your PC, talk to each other and run routines. The bots run on your own computer through the official Claude Code and Codex CLIs, signed in with your own accounts. Phone access is planned for a later phase.
+Tjommie is a free, open-source desktop app for AI bots that chat with you, work on your PC, talk to each other and run routines. The bots run on your own computer through the official Claude Code and Codex CLIs, signed in with your own accounts. An Android companion connects over the same Wi-Fi; mobile-data access and push are still planned.
 
 **Status:** early development. The design is in [`docs/superpowers/specs/2026-09-25-tjommie-design.md`](docs/superpowers/specs/2026-09-25-tjommie-design.md).
 
@@ -39,6 +39,8 @@ npm run build      # static export to packages/ui/out
 | `packages/daemon` | The background process that runs the bots |
 | `packages/ui` | The UI: Next.js static export, Base UI, Tailwind |
 | `packages/desktop` | Electron shell |
+| `packages/mobile` | Android Capacitor companion and native plugins |
+| `packages/transport` | Shared pinned Snow WASM Noise implementation |
 
 ## Install
 
@@ -49,6 +51,26 @@ After packaging, run `npm run test:packaged`. This mandatory gate requires the u
 After installing, set `TJOMMIE_TEST_EXECUTABLE` to the installed `Tjommie.exe` absolute path to run the existing desktop lifecycle and screen suites against that executable. They retain disposable data roots and Electron profiles and use the Tjommie-owned provider accounts. Unset it before returning to source-app tests. The mandatory packaged smoke always supplies its own unpacked executable path.
 
 TypeScript must never use explicit `any` types. `npm run typecheck` enforces this with the syntax-based `check:no-any` gate before checking types. Test commands fail when no test files are found.
+
+## Accounts and usage
+
+For Android, run `npm run package:android` for a debug-signed test APK and a UI-byte/source provenance record in `dist-mobile/`. On the PC, open Settings → Devices → Pair a device, then scan or paste its code in the Android app. Pairing expires after ten minutes and works once. The PC must be awake and reachable on the same network (TCP port 47101); Windows may ask to allow the app on the private network. Every paired device has full owner authority. Revoke a lost phone from Devices. See [`packages/mobile/README.md`](packages/mobile/README.md) for signing, build requirements and current limits.
+
+Settings → Accounts manages separate Claude Code and Codex accounts. Existing accounts keep their IDs and sign-in folders when upgraded. Each bot has an account pin; changing the provider's default affects new bots, while changing a bot's pin starts a fresh provider session and keeps its chat.
+
+Subscription sign-in is an explicit action that opens the provider's page in the system browser. Claude uses the browser's loopback callback without opening a terminal; manual-code entry is not offered by this integration. API keys are stored in Windows Credential Manager, with only an opaque reference in the database. They are not returned in account status. Windows protects these entries for the current user; this is not protection against unrestricted code running as that same user.
+
+Claude API-key work requires Claude Code 2.1.251 or later for subprocess environment scrubbing. A synthetic loopback API test with the installed CLI verified that its Bash subprocess did not inherit the API key. This does not isolate secrets from arbitrary code running under the same Windows account.
+
+An API-key account needs a spending cap. The cap covers its total recorded API spending, with no automatic monthly reset. Prices and provider reports are local accounting inputs, not an invoice or a guaranteed billing ceiling. Unsupported Codex pricing prevents a paid turn; an unpriced completed turn blocks further API-key work rather than treating its cost as zero. A subscription can use the provider's explicitly selected API-key fallback when limited, then return to its pinned account when the limit resets. Tjommie does not silently rotate between subscription accounts.
+
+Settings → Usage shows Today, This week, This month and This year (calendar year to date). A combined cost estimate gives the API-equivalent value of all recorded token usage, alongside separate API-key spending and subscription API value. It is not your subscription bill. Missing costs remain unknown; incomplete totals show a known minimum. Date ranges use the displayed time zone; the year chart groups tokens by month.
+
+The provider cards show reported allowance windows, reset times, plan/account details, provider credits and extra-usage status where available. Credits are provider units, not dollars. Refresh asks for metadata only, without starting a model turn. Codex uses its app-server metadata RPC. Claude's selected-account reader uses the same fixed OAuth usage endpoint as Paseo; it is an unofficial metadata endpoint and can become unavailable. The backend does not expose, log, modify or refresh the CLI token. A failed reading retains and labels the last successful data. Removing an account requires moving its assigned bots first, disconnects it locally, and retains historical usage.
+
+Below 640 px, the Quiet pill replaces the desktop rail with Agents, Team and Settings navigation. Details, exchanges and members become full-screen sheets, and forms and account dialogs fit the narrow layout. Narrowing the desktop window still provides its native browser. The Android companion connects through the encrypted pairing flow described above.
+
+The isolated desktop account check can be run with `npx vitest run --mode real packages/desktop/src/accounts.real.test.ts` after `npm run build`. It uses unsigned disposable profiles, synthetic usage, and a fake key stored under a disposable credential target; it does not sign in or make a paid provider call. The broader `test:real` command includes real-provider tests and must not be used as a substitute for this isolated check.
 
 ## Bot browser
 

@@ -13,8 +13,9 @@
   "scripts": {
     "dev": "npm run dev -w @tjommie/ui",
     "desktop": "npm start -w @tjommie/desktop",
-    "build": "npm run build -w @tjommie/ui",
+    "build": "node scripts/prepare-ui.ts && npm run build -w @tjommie/ui",
     "package": "node --disable-warning=ExperimentalWarning packages/desktop/scripts/package.ts",
+    "package:android": "node packages/mobile/scripts/package.ts",
     "lint": "npm run lint -w @tjommie/ui",
     "check:no-any": "node scripts/check-no-any.ts",
     "typecheck": "npm run check:no-any && tsc -p . && npm run typecheck -w @tjommie/ui",

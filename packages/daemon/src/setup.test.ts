@@ -1,9 +1,11 @@
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import { PassThrough } from "node:stream";
 import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { EventEmitter } from "node:events";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { openDb } from "./db.ts";
-import { accountEnv, accountFor, checkSetup, ensureAccounts, parseClaudeStatus, parseVersion, prepareCodexSandbox, signIn } from "./setup.ts";
+import { accountEnv, accountFor, checkAccountLimits, checkAccountUsage, checkSetup, ensureAccounts, parseClaudeStatus, parseCodexAccountLimits, parseVersion, prepareCodexSandbox, signIn, cancelAccountSignIn, logoutAccount } from "./setup.ts";
 import { tempRoot } from "./testing.ts";
 
 type CliCommand = { file: string; args: string[] };
@@ -14,6 +16,8 @@ const cliMocks = vi.hoisted(() => ({
   runCli: vi.fn<(cmd: CliCommand, args: string[], env: Record<string, string>) => Promise<CliResult>>(),
   openConsole: vi.fn<(title: string, command: string, env: Record<string, string>) => EventEmitter>(),
   openUrl: vi.fn<(url: string) => void>(),
+  spawnCli: vi.fn<(cmd: CliCommand, args: string[], options: { cwd: string; env: Record<string, string> }) => ChildProcessWithoutNullStreams>(),
+  killTreeAndWait: vi.fn<(pid: number | undefined) => Promise<void>>(),
 }));
 
 const codexMocks = vi.hoisted(() => ({
@@ -22,7 +26,7 @@ const codexMocks = vi.hoisted(() => ({
 
 vi.mock("./cli.ts", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./cli.ts")>();
-  return { ...actual, resolveCli: cliMocks.resolveCli, runCli: cliMocks.runCli, openConsole: cliMocks.openConsole, openUrl: cliMocks.openUrl };
+  return { ...actual, resolveCli: cliMocks.resolveCli, runCli: cliMocks.runCli, openConsole: cliMocks.openConsole, openUrl: cliMocks.openUrl, spawnCli: cliMocks.spawnCli, killTreeAndWait: cliMocks.killTreeAndWait };
 });
 
 vi.mock("./providers/codex-rpc.ts", () => codexMocks);
@@ -44,6 +48,11 @@ beforeEach(() => {
   cliMocks.resolveCli.mockImplementation((name) => ({ file: name, args: [] }));
   cliMocks.runCli.mockImplementation(successfulCliRun);
   cliMocks.openConsole.mockImplementation(() => new EventEmitter());
+  cliMocks.spawnCli.mockImplementation(() => Object.assign(new EventEmitter(), { pid: 12345, exitCode: null, signalCode: null, stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough() }) as unknown as ChildProcessWithoutNullStreams);
+  cliMocks.killTreeAndWait.mockImplementation(async (pid) => {
+    const child = cliMocks.spawnCli.mock.results.map((result) => result.value).find((value): value is ChildProcessWithoutNullStreams => typeof value === "object" && value !== null && "pid" in value && value.pid === pid);
+    if (child) { Object.assign(child, { exitCode: 1 }); child.emit("exit", 1); }
+  });
   codexMocks.startCodexServer.mockResolvedValue({
     rpc: { request: vi.fn().mockResolvedValue({ account: null }) },
     close: vi.fn(),
@@ -51,6 +60,64 @@ beforeEach(() => {
 });
 
 afterEach(() => { vi.unstubAllEnvs(); vi.useRealTimers(); });
+
+describe("authoritative Codex quota checks", () => {
+  const window = { usedPercent: 25, windowDurationMins: 300, resetsAt: null };
+  it("the full usage probe retains credit metadata and permission denial without a model turn or auth-file read", async () => {
+    const root = tempRoot(), account = { id: "selected", provider: "codex" as const, label: "Synthetic", folder: join(root, "selected") };
+    const request = vi.fn().mockResolvedValue({ ordinaryUsageAllowed: false, rateLimits: { primary: window, spendControlReached: false,
+      credits: { balance: "38917.83", hasCredits: true, unlimited: false }, planType: "pro" } }), close = vi.fn();
+    codexMocks.startCodexServer.mockResolvedValueOnce({ rpc: { request }, close, waitForExit: async () => {} });
+    expect(await checkAccountUsage(account, root)).toMatchObject({ status: "available", recoveryAllowed: false,
+      usage: { credits: { balance: "38917.83" }, planLabel: "pro" }, limits: expect.arrayContaining([expect.objectContaining({ limitId: "provider" })]) });
+    expect(request).toHaveBeenCalledExactlyOnceWith("account/rateLimits/read", {}, 15_000); expect(close).toHaveBeenCalledOnce();
+    request.mockRejectedValueOnce(new Error("synthetic private credential response")); codexMocks.startCodexServer.mockResolvedValueOnce({ rpc: { request }, close });
+    expect(await checkAccountUsage(account, root)).toEqual({ status: "error", error: "Provider usage could not be read. Try again later." });
+    expect(close).toHaveBeenCalledTimes(2);
+  });
+  it("parses every returned bucket/window and preserves unknown resets and provider-only exhaustion", () => {
+    expect(parseCodexAccountLimits({ rateLimitsByLimitId: {
+      codex: { limitId: "codex", primary: window, secondary: { ...window, usedPercent: 100, windowDurationMins: 10080 } },
+      other: { primary: window, rateLimitReachedType: "unknown" },
+    } })).toEqual([
+      { limitId: "codex", windows: [
+        { windowKey: "primary", usedPercent: 25, durationMinutes: 300, resetsAt: null, state: "ok" },
+        { windowKey: "secondary", usedPercent: 100, durationMinutes: 10080, resetsAt: null, state: "reached" },
+      ] },
+      { limitId: "other", windows: [
+        { windowKey: "primary", usedPercent: 25, durationMinutes: 300, resetsAt: null, state: "ok" },
+        { windowKey: "provider", usedPercent: null, durationMinutes: null, resetsAt: null, state: "reached" },
+      ] },
+    ]);
+    expect(parseCodexAccountLimits({ rateLimits: { primary: window } })?.[0].limitId).toBe("codex");
+  });
+  it.each([
+    {}, { rateLimitsByLimitId: {} }, { rateLimits: { primary: null, secondary: null } },
+    { rateLimits: { primary: { ...window, usedPercent: null } } },
+    { rateLimits: { primary: { ...window, resetsAt: "unknown" } } },
+    { rateLimitsByLimitId: { codex: { primary: window }, other: { primary: { ...window, usedPercent: 101 } } } },
+    { rateLimitsByLimitId: { codex: { limitId: "different", primary: window } } },
+  ])("rejects incomplete or malformed authoritative responses %#", (value) => {
+    expect(parseCodexAccountLimits(value)).toBeNull();
+  });
+  it("uses only a bounded metadata RPC in the selected account and awaits owned cleanup", async () => {
+    const account = { id: "selected", provider: "codex" as const, label: "Selected", folder: tempRoot() };
+    const request = vi.fn().mockResolvedValue({ rateLimits: { primary: window } }), close = vi.fn();
+    let exited: () => void = () => {}; const waitForExit = vi.fn(() => new Promise<void>((resolve) => { exited = resolve; }));
+    codexMocks.startCodexServer.mockResolvedValueOnce({ rpc: { request }, close, waitForExit });
+    const checking = checkAccountLimits(account); let settled = false; void checking.then(() => { settled = true; });
+    await vi.waitFor(() => expect(waitForExit).toHaveBeenCalledOnce());
+    expect(settled).toBe(false); expect(close).toHaveBeenCalledOnce();
+    expect(request).toHaveBeenCalledExactlyOnceWith("account/rateLimits/read", {}, 15_000);
+    expect(codexMocks.startCodexServer).toHaveBeenCalledWith(expect.objectContaining({ file: "codex" }), expect.objectContaining({ CODEX_HOME: account.folder }), account.folder);
+    exited(); expect(await checking).toHaveLength(1);
+    request.mockRejectedValueOnce(new Error("private provider error"));
+    codexMocks.startCodexServer.mockResolvedValueOnce({ rpc: { request }, close });
+    expect(await checkAccountLimits(account)).toBeNull(); expect(close).toHaveBeenCalledTimes(2);
+    expect(await checkAccountLimits({ ...account, provider: "claude" })).toBeNull();
+    expect(codexMocks.startCodexServer).toHaveBeenCalledTimes(2);
+  });
+});
 
 describe("accounts", () => {
   it("sweeps only confirmed stale session folders and preserves live or uncertain owners", () => {
@@ -420,43 +487,34 @@ describe("sign-in", () => {
 
   beforeEach(() => vi.useFakeTimers());
 
-  it("waits while Claude still reports the old account, then ends for the new one", async () => {
-    const db = fixture();
-    let current = "old@example.com";
-    useClaudeStatus(() => current);
-    const done = vi.fn();
-    await signIn(db, "claude", done);
-    expect(cliMocks.runCli).toHaveBeenCalledTimes(1);
-    expect(cliMocks.openConsole).toHaveBeenCalledOnce();
-
-    await vi.advanceTimersByTimeAsync(3000);
-    expect(done).not.toHaveBeenCalled();
-    current = "new@example.com";
-    await vi.advanceTimersByTimeAsync(3000);
-    expect(done).toHaveBeenCalledOnce();
-    expect(done).toHaveBeenCalledWith(true, expect.any(String));
+  it("runs hidden native Claude callback login and accepts successful re-authentication of the same account", async () => {
+    const db = fixture(); useClaudeStatus(() => "same@example.invalid"); const done = vi.fn();
+    const attempt = await signIn(db, "claude", done);
+    expect(cliMocks.openConsole).not.toHaveBeenCalled();
+    expect(cliMocks.spawnCli).toHaveBeenCalledWith({ file: "claude", args: [] }, ["auth", "login", "--claudeai"], expect.objectContaining({ cwd: accountFor(db, "claude").folder }));
+    expect(attempt.url).toBeNull(); expect(done).not.toHaveBeenCalled();
+    cliMocks.spawnCli.mock.results.at(-1)!.value.emit("close", 0);
+    expect(done).toHaveBeenCalledExactlyOnceWith(true, attempt.attempt);
   });
 
-  it("ends a first Claude sign-in at the first signed-in poll", async () => {
-    const db = fixture();
-    let current: string | null = null;
-    useClaudeStatus(() => current);
-    const done = vi.fn();
-    await signIn(db, "claude", done);
-    current = "first@example.com";
-    await vi.advanceTimersByTimeAsync(3000);
-    expect(done).toHaveBeenCalledOnce();
-    expect(done).toHaveBeenCalledWith(true, expect.any(String));
+  it("does not expose Claude's manual-code URL or raw auth diagnostics", async () => {
+    const db = fixture(); useClaudeStatus(() => null); const done = vi.fn();
+    const attempt = await signIn(db, "claude", done);
+    const child = cliMocks.spawnCli.mock.results.at(-1)!.value;
+    child.stdout.write("If the browser didn't open, visit: https://claude.ai/oauth/authorize?secret=synthetic\nPaste code here if prompted > ");
+    child.stderr.write("private authentication diagnostics");
+    expect(attempt.url).toBeNull(); expect(cliMocks.openUrl).not.toHaveBeenCalled();
+    child.emit("close", 1); expect(done).toHaveBeenCalledExactlyOnceWith(false, attempt.attempt);
   });
 
-  it("ends when the Claude console exits and ignores later polls", async () => {
+  it("ends when the hidden Claude process fails without polling the old account", async () => {
     const db = fixture();
     useClaudeStatus(() => "old@example.com");
-    const child = new EventEmitter();
-    cliMocks.openConsole.mockReturnValue(child);
+    const child = cliMocks.spawnCli.getMockImplementation()!({ file: "claude", args: [] }, [], { cwd: ".", env: {} });
+    cliMocks.spawnCli.mockReturnValueOnce(child);
     const done = vi.fn();
     await signIn(db, "claude", done);
-    child.emit("close", 0);
+    child.emit("close", 1);
     await vi.advanceTimersByTimeAsync(6000);
     expect(done).toHaveBeenCalledOnce();
     expect(done).toHaveBeenCalledWith(false, expect.any(String));
@@ -473,15 +531,12 @@ describe("sign-in", () => {
     expect(done).toHaveBeenCalledWith(false, expect.any(String));
   });
 
-  it("reuses a running Claude console and starts fresh after it closes", async () => {
+  it("reuses a running hidden Claude login and starts fresh after it closes", async () => {
     const db = fixture();
     useClaudeStatus(() => "old@example.com");
-    const children: EventEmitter[] = [];
-    cliMocks.openConsole.mockImplementation(() => {
-      const child = new EventEmitter();
-      children.push(child);
-      return child;
-    });
+    const children: ChildProcessWithoutNullStreams[] = [];
+    const create = cliMocks.spawnCli.getMockImplementation()!;
+    cliMocks.spawnCli.mockImplementation((...args) => { const child = create(...args); children.push(child); return child; });
     const firstDone = vi.fn();
     const repeatDone = vi.fn();
     const first = await signIn(db, "claude", firstDone);
@@ -489,7 +544,7 @@ describe("sign-in", () => {
     expect(children).toHaveLength(1);
     expect(cliMocks.runCli).toHaveBeenCalledTimes(1);
     children[0]?.emit("close", 0);
-    expect(firstDone).toHaveBeenCalledExactlyOnceWith(false, first.attempt);
+    expect(firstDone).toHaveBeenCalledExactlyOnceWith(true, first.attempt);
     expect(repeatDone).not.toHaveBeenCalled();
     const second = await signIn(db, "claude", vi.fn());
     expect(second).toEqual({ url: null, attempt: expect.any(String) });
@@ -507,8 +562,8 @@ describe("sign-in", () => {
     expect(cliMocks.openConsole).not.toHaveBeenCalled();
     release(claudeStatus(null));
     await first;
-    expect(cliMocks.openConsole).toHaveBeenCalledOnce();
-    cliMocks.openConsole.mock.results[0]?.value.emit("close", 0);
+    expect(cliMocks.spawnCli).toHaveBeenCalledOnce();
+    cliMocks.spawnCli.mock.results[0]?.value.emit("close", 0);
   });
 
   it("reopens the same Codex sign-in page without a second app-server, then starts fresh after completion", async () => {
@@ -516,7 +571,7 @@ describe("sign-in", () => {
     const notifications: ((method: string, params: unknown) => void)[] = [];
     codexMocks.startCodexServer.mockImplementation(async () => ({
       rpc: {
-        request: vi.fn(async () => ({ authUrl: "https://example.com/login" })),
+        request: vi.fn(async () => ({ authUrl: "https://example.com/login", loginId: "login-1" })),
         set onNotification(listener: (method: string, params: unknown) => void) { notifications.push(listener); },
       },
       close: vi.fn(),
@@ -529,18 +584,18 @@ describe("sign-in", () => {
     expect(cliMocks.openUrl).toHaveBeenCalledTimes(2);
     expect(cliMocks.openUrl).toHaveBeenNthCalledWith(1, "https://example.com/login");
     expect(cliMocks.openUrl).toHaveBeenNthCalledWith(2, "https://example.com/login");
-    notifications[0]?.("account/login/completed", { success: true });
+    notifications[0]?.("account/login/completed", { success: true, loginId: "login-1" });
     expect(done).toHaveBeenCalledExactlyOnceWith(true, first.attempt);
     expect(repeatDone).not.toHaveBeenCalled();
     await expect(signIn(db, "codex", vi.fn())).resolves.toEqual({ url: "https://example.com/login", attempt: expect.not.stringMatching(first.attempt) });
     expect(codexMocks.startCodexServer).toHaveBeenCalledTimes(2);
     expect(cliMocks.openUrl).toHaveBeenCalledTimes(3);
-    notifications[1]?.("account/login/completed", { success: true });
+    notifications[1]?.("account/login/completed", { success: true, loginId: "login-1" });
   });
 
   it("rejects a second Codex request while its app-server is starting", async () => {
     const db = fixture();
-    let release: (server: { rpc: { request: () => Promise<{ authUrl: string }>; onNotification?: (method: string, params: unknown) => void }; close: () => void }) => void = () => {};
+    let release: (server: { rpc: { request: () => Promise<{ authUrl: string; loginId: string }>; onNotification?: (method: string, params: unknown) => void }; close: () => void }) => void = () => {};
     const pending = new Promise<Parameters<typeof release>[0]>((resolve) => { release = resolve; });
     codexMocks.startCodexServer.mockReturnValueOnce(pending);
     const first = signIn(db, "codex", vi.fn());
@@ -549,23 +604,58 @@ describe("sign-in", () => {
     let notify: (method: string, params: unknown) => void = () => {};
     const server = {
       rpc: {
-        request: vi.fn(async () => ({ authUrl: "https://example.com/login" })),
+        request: vi.fn(async () => ({ authUrl: "https://example.com/login", loginId: "login-1" })),
         set onNotification(listener: typeof notify) { notify = listener; },
       },
       close: vi.fn(),
     };
     release(server);
     await first;
-    notify("account/login/completed", { success: true });
+    notify("account/login/completed", { success: true, loginId: "login-1" });
   });
 
   it("clears the sign-in guard after a launcher error", async () => {
     const db = fixture();
     useClaudeStatus(() => null);
-    cliMocks.openConsole.mockImplementationOnce(() => { throw new Error("Console unavailable"); });
+    cliMocks.spawnCli.mockImplementationOnce(() => { throw new Error("Hidden launcher unavailable"); });
     const done = vi.fn();
-    await expect(signIn(db, "claude", done)).rejects.toThrow("Console unavailable");
+    await expect(signIn(db, "claude", done)).rejects.toThrow("Hidden launcher unavailable");
     expect(done).toHaveBeenCalledExactlyOnceWith(false, expect.any(String));
     await expect(signIn(db, "claude", vi.fn())).resolves.toEqual({ url: null, attempt: expect.any(String) });
   });
+});
+
+
+it.each(["claude", "codex"] as const)("explicit logout uses only the selected %s account's environment", async (provider) => {
+  const root = tempRoot(), db = openDb(join(root, "db")); ensureAccounts(db, join(root, "accounts"));
+  cliMocks.runCli.mockResolvedValueOnce({ code: 0, stdout: "", stderr: "" });
+  const account = accountFor(db, provider); await logoutAccount(account);
+  expect(cliMocks.runCli).toHaveBeenLastCalledWith({ file: provider, args: [] }, provider === "claude" ? ["auth", "logout"] : ["logout"], expect.objectContaining(provider === "claude" ? { CLAUDE_CONFIG_DIR: account.folder } : { CODEX_HOME: account.folder }));
+  cliMocks.runCli.mockResolvedValueOnce({ code: 1, stdout: "private payload", stderr: "private payload" });
+  await expect(logoutAccount(account)).rejects.toThrow("kept");
+});
+
+it("cancels only the matching hidden Claude sign-in and retains an uncontained attempt for retry", async () => {
+  const root = tempRoot(), db = openDb(join(root, "db")); ensureAccounts(db, join(root, "accounts"));
+  const done = vi.fn(), account = accountFor(db, "claude"); const started = await signIn(db, "claude", done);
+  await expect(cancelAccountSignIn(account, "stale")).rejects.toThrow("no longer active");
+  cliMocks.killTreeAndWait.mockRejectedValueOnce(new Error("Containment failed"));
+  await expect(cancelAccountSignIn(account, started.attempt)).rejects.toThrow("Containment failed");
+  expect(done).not.toHaveBeenCalled();
+  await cancelAccountSignIn(account, started.attempt);
+  expect(cliMocks.killTreeAndWait).toHaveBeenLastCalledWith(12345);
+  expect(done).toHaveBeenCalledExactlyOnceWith(false, started.attempt);
+});
+
+it("correlates Codex early completion and ignores a stale login id", async () => {
+  const root = tempRoot(), db = openDb(join(root, "db")); ensureAccounts(db, join(root, "accounts"));
+  let notify: (method: string, params: unknown) => void = () => {};
+  const close = vi.fn();
+  codexMocks.startCodexServer.mockResolvedValueOnce({ rpc: {
+    set onNotification(listener: typeof notify) { notify = listener; },
+    request: async () => { notify("account/login/completed", { loginId: "old", success: true }); notify("account/login/completed", { loginId: "current", success: true }); return { loginId: "current", authUrl: "https://example.invalid/login" }; },
+  }, close });
+  const done = vi.fn(), result = await signIn(db, "codex", done);
+  expect(done).toHaveBeenCalledExactlyOnceWith(true, result.attempt); expect(close).toHaveBeenCalledOnce();
+  expect(cliMocks.openUrl).not.toHaveBeenCalled();
 });

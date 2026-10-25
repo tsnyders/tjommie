@@ -1,6 +1,6 @@
 import type { Bot, Message, Routine } from "@tjommie/protocol";
 import { describe, expect, it } from "vitest";
-import { matches, nextRoutineLine, overviewSummary, roomLine, talkingWith, taskLine } from "./overview";
+import { matches, nextRoutineLine, overviewLede, overviewSummary, phoneFilters, roomLine, talkingWith, taskLine } from "./overview";
 
 const now = new Date(2026, 8, 27, 14, 0);
 const bot = (state: Bot["state"], extra: Partial<Bot> = {}) => ({ id: "b1", name: "Pnet apply", state, limitedUntil: null, setupReason: null, paused: state === "paused", ...extra });
@@ -88,6 +88,69 @@ describe("the Agents overview", () => {
     ];
     const post = message("p1", "text", { conversationId: "team", author: "b2", body: "Done.", createdAt: new Date(2026, 8, 27, 13, 56).toISOString(), data: { exchangeId: "x1", toBotId: "b1" } });
     expect(roomLine([post], bots, now)).toBe("CV Writer and Pnet apply talked 4 minutes ago");
-    expect(roomLine([], bots, now)).toBe("No bot chats yet");
+    expect(roomLine([], bots, now)).toBe("No posts yet");
+  });
+
+  it("gives each room the line from its own posts", () => {
+    const bots = [
+      { id: "b1", name: "Sales" },
+      { id: "b2", name: "Marketing" },
+      { id: "b3", name: "Chief" },
+    ];
+    const post = (id: string, roomId: string, from: string, to: string, at: Date) =>
+      message(id, "text", { conversationId: roomId, author: from, body: "Done.", createdAt: at.toISOString(), data: { exchangeId: `x-${id}`, toBotId: to } });
+    // Sales and Marketing are both in Growth, so their exchange is mirrored there; Chief's isn't.
+    const everyone = [post("p1", "team", "b1", "b2", new Date(2026, 8, 27, 13, 0)), post("p2", "team", "b3", "b1", new Date(2026, 8, 27, 13, 50))];
+    const growth = [post("p3", "r1", "b1", "b2", new Date(2026, 8, 27, 13, 0))];
+    expect(roomLine(everyone, bots, now)).toBe("Chief and Sales talked 10 minutes ago");
+    expect(roomLine(growth, bots, now)).toBe("Sales and Marketing talked 1 hour ago");
+  });
+
+  it("gives a room the line from its newest post of any kind, and says so when it has none", () => {
+    const bots = [{ id: "b1", name: "Sales" }];
+    const at = (minute: number) => new Date(2026, 8, 27, 13, minute).toISOString();
+    const yours = message("p1", "text", { conversationId: "r1", author: "you", body: "@Sales hi", createdAt: at(50) });
+    const answer = message("p2", "text", { conversationId: "r1", author: "b1", body: "Hi.", createdAt: at(56) });
+    const exchange = message("p3", "text", { conversationId: "r1", author: "b1", body: "Done.", createdAt: at(30), data: { exchangeId: "x1", toBotId: "b2" } });
+    expect(roomLine([exchange, yours], bots, now)).toBe("You posted 10 minutes ago");
+    expect(roomLine([exchange, yours, answer], bots, now)).toBe("Sales answered 4 minutes ago");
+    expect(roomLine([exchange], bots, now)).toBe("Sales and A deleted bot talked 30 minutes ago");
+    // Notices, activity and a reply still on its way aren't posts.
+    const notice = message("p4", "notice", { conversationId: "r1", author: "system", body: "Sales couldn't answer." });
+    const streaming = message("p5", "text", { conversationId: "r1", author: "b1", body: "", status: "streaming" });
+    expect(roomLine([notice, streaming], bots, now)).toBe("No posts yet");
+    expect(roomLine([yours, notice, streaming], bots, now)).toBe("You posted 10 minutes ago");
+  });
+
+  it("leaves a room's line blank while its posts are being read, rather than saying it has none", () => {
+    expect(roomLine(undefined, [], now)).toBe("\xa0"); // a blank that keeps the line's height
+  });
+});
+
+describe("the phone's filter chips", () => {
+  const of = (...states: Bot["state"][]): Pick<Bot, "state">[] => states.map((state) => ({ state }));
+  const shown = (bots: Pick<Bot, "state">[], current: Parameters<typeof phoneFilters>[1] = "all"): string[] =>
+    phoneFilters(bots, current).map((chip) => `${chip.label} ${chip.count}`);
+
+  it("offers only the states some bot is in, with counts", () => {
+    expect(shown(of("working", "waiting", "idle"))).toEqual(["All 3", "Working 1", "Waiting 1"]);
+  });
+
+  it("shows nothing when no chip would narrow the list", () => {
+    expect(shown(of("working", "working"))).toEqual([]);
+    expect(shown(of("idle"))).toEqual([]);
+    expect(shown([])).toEqual([]);
+  });
+
+  it("keeps the picked chip, so a filter that now matches nobody can be left", () => {
+    expect(shown(of("idle", "idle"), "paused")).toEqual(["All 2", "Paused 0"]);
+  });
+});
+
+describe("Folio's lede", () => {
+  it("names a lone bot and counts several", () => {
+    expect(overviewLede([{ name: "Nova", state: "waiting" }, { name: "Ada", state: "working" }, { name: "Bo", state: "working" }])).toBe("2 bots are working; Nova is waiting for you.");
+    expect(overviewLede([{ name: "Ada", state: "idle" }])).toBe("All quiet.");
+    expect(overviewLede([])).toBe("No bots yet.");
   });
 });

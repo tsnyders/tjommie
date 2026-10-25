@@ -10,6 +10,57 @@ import { dataPaths, readOrCreateToken } from "./paths.ts";
 const root = () => mkdtempSync(join(tmpdir(), "tjommie test ñ-"));
 
 describe("openDb", () => {
+  it("upgrades a version 6 database with Everyone and empty room memberships", () => {
+    const file = join(root(), "v6.db");
+    const old = new DatabaseSync(file);
+    for (const migration of migrations.slice(0, 6)) old.exec(migration);
+    old.exec("PRAGMA user_version = 6");
+    old.close();
+    const db = openDb(file);
+    expect(db.prepare("PRAGMA user_version").get()).toEqual({ user_version: 7 });
+    expect(db.prepare("SELECT name, created_at FROM conversations WHERE id = 'team'").get()).toEqual({ name: "Everyone", created_at: null });
+    expect(db.prepare("SELECT * FROM room_members").all()).toEqual([]);
+    db.close();
+  });
+
+  it("migrates version 4 accounts, pins, sessions and historical usage without moving identities", () => {
+    const file = join(root(), "v4.db");
+    const old = new DatabaseSync(file);
+    for (const migration of migrations.slice(0, 4)) old.exec(migration);
+    old.exec(`INSERT INTO accounts VALUES ('claude-main', 'claude', 'Original', 'subscription', 'unchanged/main', '2026-01-01');
+      INSERT INTO accounts VALUES ('claude-second', 'claude', 'Second', 'subscription', 'unchanged/second', '2026-02-01');
+      INSERT INTO bots (id, name, color, shape, instructions, provider, model, autonomy, home_folder, created_at)
+        VALUES ('saved', 'Saved', 'blue', 'circle', '', 'claude', 'haiku', 'folder', 'x', 'then'),
+        ('unsaved', 'Unsaved', 'blue', 'circle', '', 'claude', 'haiku', 'folder', 'y', 'then');
+      INSERT INTO sessions VALUES ('saved', 'claude', 'claude-second', 'retained-session', 'then', 1.25);
+      INSERT INTO usage VALUES ('known', 'saved', 'claude-main', 'claude', 'haiku', 10, 2, 3, 0, 0.5, 'reported', '2026-10-22T12:00:00Z');
+      INSERT INTO usage VALUES ('unknown', 'deleted-bot', 'missing-account', 'codex', 'm', 1, 0, 2, 1, NULL, NULL, '2026-10-22T13:00:00Z');
+      PRAGMA user_version = 4;`);
+    old.close();
+    const db = openDb(file);
+    try {
+      expect(db.prepare("SELECT id, folder, is_default FROM accounts ORDER BY id").all()).toEqual([
+        { id: "claude-main", folder: "unchanged/main", is_default: 1 }, { id: "claude-second", folder: "unchanged/second", is_default: 0 },
+      ]);
+      expect(db.prepare("SELECT id, account_id FROM bots ORDER BY id").all()).toEqual([
+        { id: "saved", account_id: "claude-second" }, { id: "unsaved", account_id: "claude-main" },
+      ]);
+      expect(db.prepare("SELECT * FROM sessions").get()).toEqual({ bot_id: "saved", provider: "claude", account_id: "claude-second", cli_session_id: "retained-session", updated_at: "then", total_cost_usd: 1.25 });
+      db.prepare("INSERT INTO sessions VALUES ('saved', 'claude', 'claude-main', 'other-session', 'then', NULL)").run();
+      expect(db.prepare("SELECT COUNT(*) AS n FROM sessions").get()).toEqual({ n: 2 });
+      expect(db.prepare("SELECT id, account_kind, cost_usd, cost_source, pricing_revision FROM usage ORDER BY id").all()).toEqual([
+        { id: "known", account_kind: "subscription", cost_usd: 0.5, cost_source: "reported", pricing_revision: null },
+        { id: "unknown", account_kind: "unknown", cost_usd: null, cost_source: "unknown", pricing_revision: null },
+      ]);
+      db.prepare("DELETE FROM bots WHERE id = 'saved'").run();
+      expect(db.prepare("SELECT COUNT(*) AS n FROM sessions").get()).toEqual({ n: 0 });
+      expect(db.prepare("SELECT COUNT(*) AS n FROM usage").get()).toEqual({ n: 2 });
+    } finally { db.close(); }
+    const again = openDb(file);
+    expect(again.prepare("SELECT COUNT(*) AS n FROM accounts").get()).toEqual({ n: 2 });
+    again.close();
+  });
+
   it("upgrades version 3 without replaying historical failures", () => {
     const file = join(root(), "v3.db");
     const old = new DatabaseSync(file);

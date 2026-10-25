@@ -3,13 +3,16 @@ import type { Message, MethodName, ParamsIn, Result } from "@tjommie/protocol";
 import { desktop, type DesktopConnection } from "./desktop";
 import { errorText } from "./labels";
 import { failedSetup } from "./setup";
+import { forgetMobileHost, isAndroidApp, mobileHosts, openMobileClient } from "./mobile";
 import { addOlder, applyEvent, connected, finishLoading, forgetConversation, startLoading } from "./state";
 import { getState, update } from "./store";
 
 const PAGE = 50;
 const STARTING_TRIES = 3; // failed tries before "Starting Tjommie" says why it can't connect
+const CALLS = 16; // calls in flight at once; the PC's host for phones closes a connection with 32
 let client: Client | null = null;
-let latest: DesktopConnection | null = null;
+type ConnectionTarget = DesktopConnection | { mobileHostId: string };
+let latest: ConnectionTarget | null = null;
 let retry: ReturnType<typeof setTimeout> | undefined;
 let failures = 0; // the latest connection's failed tries in a row
 let started = false;
@@ -31,6 +34,7 @@ export function request<M extends MethodName>(method: M, params: ParamsIn<M>): P
 export function startConnection(): void {
   if (started) return;
   started = true;
+  if (isAndroidApp()) { connectPhone(); return; }
   const api = desktop();
   if (!api) {
     update((state) => ({ ...state, connection: { status: "outside" } }));
@@ -53,18 +57,43 @@ function failed(reason: string): void {
 
 // Asks the desktop app to start the daemon again after it failed.
 export function restartDaemon(): void {
+  if (isAndroidApp()) { connectPhone(); return; }
   update((state) => ({ ...state, connection: { status: "connecting" } }));
   void desktop()?.restartDaemon();
 }
 
 function open(connection: DesktopConnection): void {
-  if (latest?.token === connection.token) return; // already connecting with this one
+  if (latest && "token" in latest && latest.token === connection.token) return; // already connecting with this one
   latest = connection;
   failures = 0;
   void attempt(connection);
 }
 
-async function attempt(connection: DesktopConnection): Promise<void> {
+export function connectPhone(id = mobileHosts()[0]?.id): void {
+  clearTimeout(retry);
+  failures = 0;
+  if (!id) {
+    latest = null;
+    const previous = client; client = null; void previous?.close();
+    update((state) => ({ ...state, connection: { status: "outside" } }));
+    return;
+  }
+  const target = { mobileHostId: id };
+  latest = target;
+  update((state) => ({ ...state, connection: { status: "connecting" } }));
+  void attempt(target);
+}
+
+export async function forgetPhone(id: string): Promise<void> {
+  if (latest && "mobileHostId" in latest && latest.mobileHostId === id) {
+    latest = null; clearTimeout(retry);
+    const previous = client; client = null; await previous?.close();
+  }
+  await forgetMobileHost(id);
+  connectPhone();
+}
+
+async function attempt(connection: ConnectionTarget): Promise<void> {
   clearTimeout(retry);
   const previous = client;
   client = null;
@@ -74,7 +103,7 @@ async function attempt(connection: DesktopConnection): Promise<void> {
   await previous?.close().catch(() => {});
   let next: Client;
   try {
-    next = await connect(connection.port, connection.token, { recordEvents: false });
+    next = limitCalls("mobileHostId" in connection ? await openMobileClient(connection.mobileHostId) : await connect(connection.port, connection.token, { recordEvents: false }));
   } catch (error) {
     lost(connection, error);
     return;
@@ -91,7 +120,8 @@ async function attempt(connection: DesktopConnection): Promise<void> {
     else update((state) => applyEvent(state, event));
   });
   try {
-    const [bots, settings, routines] = await Promise.all([next.call("bots.list", {}), next.call("settings.get", {}), next.call("routines.list", {})]);
+    // An older daemon has no accounts: the list stays unknown and the screens that need it say so.
+    const [bots, settings, routines, rooms, accounts] = await Promise.all([next.call("bots.list", {}), next.call("settings.get", {}), next.call("routines.list", {}), next.call("rooms.list", {}), next.call("accounts.list", {}).catch(() => null)]);
     if (latest !== connection) {
       void next.close();
       return;
@@ -100,7 +130,7 @@ async function attempt(connection: DesktopConnection): Promise<void> {
     early = null;
     client = next;
     failures = 0;
-    update((state) => pending.reduce((current, event) => applyEvent(current, event), connected(state, { bots, settings, routines })));
+    update((state) => pending.reduce((current, event) => applyEvent(current, event), connected(state, { bots, settings, routines, rooms, accounts })));
   } catch (error) {
     void next.close();
     lost(connection, error);
@@ -121,7 +151,27 @@ async function attempt(connection: DesktopConnection): Promise<void> {
   });
 }
 
-function lost(connection: DesktopConnection, error: unknown): void {
+// The client with at most CALLS calls in flight; the rest wait their turn, in order. Every call goes through it (the startup lists, request and
+// daemon()), so no burst, such as each room's or bot's history being read again at once, can trip the phone host's limit and drop the connection.
+// A call that ends hands its slot straight to the next one waiting.
+function limitCalls(client: Client): Client {
+  let active = 0;
+  const waiting: (() => void)[] = [];
+  async function call<M extends MethodName>(method: M, params: ParamsIn<M>): Promise<Result<M>> {
+    if (active < CALLS) active += 1;
+    else await new Promise<void>((resolve) => waiting.push(resolve));
+    try {
+      return await client.call(method, params);
+    } finally {
+      const next = waiting.shift();
+      if (next) next();
+      else active -= 1;
+    }
+  }
+  return { ...client, call };
+}
+
+function lost(connection: ConnectionTarget, error: unknown): void {
   if (latest !== connection) return;
   client = null;
   if (typeof error === "object" && error !== null && "code" in error && error.code === 4003) {
@@ -130,6 +180,7 @@ function lost(connection: DesktopConnection, error: unknown): void {
   }
   failures += 1;
   update((state) => {
+    if ("mobileHostId" in connection && failures >= STARTING_TRIES) return { ...state, connection: { status: "failed", reason: errorText(error) } };
     if (state.connection.status === "ready") return { ...state, connection: { status: "reconnecting" } };
     if (state.connection.status === "reconnecting" || failures < STARTING_TRIES) return state;
     // Still starting (or after Try again): say why instead of spinning. The tries go on, so a daemon that recovers
@@ -150,8 +201,11 @@ export const botHistory =
   (before?: string): Promise<Page> =>
     request("chat.history", { botId, before, limit: PAGE });
 
-// The Team room's pages, newest first.
-export const roomHistory = (before?: string): Promise<Page> => request("room.history", { before, limit: PAGE });
+// A room's pages, newest first.
+export const roomHistory =
+  (roomId: string) =>
+  (before?: string): Promise<Page> =>
+    request("room.history", { roomId, before, limit: PAGE });
 
 // An exchange's messages: the newest 200, with no older pages to load.
 export const exchangePage =

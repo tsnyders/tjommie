@@ -8,6 +8,7 @@ export type BotForm = {
   instructions: string;
   provider: Provider;
   model: string;
+  accountId: string | null; // null: the provider's default account
   autonomy: Autonomy;
   projectFolder: string | null;
   browser: boolean;
@@ -24,6 +25,7 @@ export const NEW_BOT: BotForm = {
   instructions: "",
   provider: "claude",
   model: "sonnet",
+  accountId: null,
   autonomy: "folder",
   projectFolder: null,
   browser: false,
@@ -37,6 +39,7 @@ export const formFromBot = (bot: Bot): BotForm => ({
   instructions: bot.instructions,
   provider: bot.provider,
   model: bot.model,
+  accountId: bot.accountId ?? null,
   autonomy: bot.autonomy,
   projectFolder: bot.projectFolder,
   browser: bot.browser,
@@ -54,11 +57,12 @@ export function nameProblem(name: string, bots: Pick<Bot, "id" | "name">[], self
 
 export const createInput = (form: BotForm): ParamsIn<"bots.create"> => ({ ...form, name: form.name.trim() });
 
-const sameSet = (a: string[], b: string[]): boolean => a.length === b.length && a.every((id) => b.includes(id));
+export const sameSet = (a: string[], b: string[]): boolean => a.length === b.length && a.every((id) => b.includes(id));
 
-// Only what the person changed, so a save never puts back a value that changed elsewhere since the form opened.
-// Provider and model travel together: the daemon needs a model whenever the provider changes.
-export function patchFor(bot: Bot, form: BotForm): BotPatch {
+// Only what the person changed, measured from the bot as the form opened (`bot`), so a save never puts back a value that changed elsewhere since.
+// Provider and model travel together: the daemon needs a model whenever the provider changes. The account travels on its own. Can message counts
+// only the bots there still are: one deleted since the form opened left with its bot, so it isn't a change, and it's never sent.
+export function patchFor(bot: Bot, form: BotForm, bots: Pick<Bot, "id">[]): BotPatch {
   const patch: BotPatch = {};
   const name = form.name.trim();
   if (name !== bot.name) patch.name = name;
@@ -69,10 +73,12 @@ export function patchFor(bot: Bot, form: BotForm): BotPatch {
     patch.provider = form.provider;
     patch.model = form.model;
   }
+  if (form.accountId !== (bot.accountId ?? null)) patch.accountId = form.accountId;
   if (form.autonomy !== bot.autonomy) patch.autonomy = form.autonomy;
   if (form.projectFolder !== bot.projectFolder) patch.projectFolder = form.projectFolder;
   if (form.browser !== bot.browser) patch.browser = form.browser;
-  if (!sameSet(form.canMessage, bot.canMessage)) patch.canMessage = form.canMessage;
+  const canMessage = form.canMessage.filter((id) => bots.some((each) => each.id === id));
+  if (!sameSet(canMessage, bot.canMessage.filter((id) => bots.some((each) => each.id === id)))) patch.canMessage = canMessage;
   return patch;
 }
 
@@ -86,7 +92,7 @@ export function routinesSummary(routines: Pick<RoutineDraft, "days" | "times" | 
   return `${on.length} routines`;
 }
 
-// The Can message row's value. Deleted bots don't count.
+// The value of a row of bots to choose (Can message, a room's bots). Deleted bots don't count.
 export function canMessageSummary(ids: string[], bots: Pick<Bot, "id">[]): string {
   const count = ids.filter((id) => bots.some((bot) => bot.id === id)).length;
   return count === 0 ? "Nobody yet" : `${count} ${count === 1 ? "bot" : "bots"}`;

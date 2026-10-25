@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
+import { normalizeCodexUsage, readClaudeAccountUsage, type AccountUsageRead } from "./account-quota.ts";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import type { CodexSandboxReadiness, ModelInfo, Provider, ProviderSetup } from "@tjommie/protocol";
-import { cliEnv, openConsole, openUrl, resolveCli, runCli } from "./cli.ts";
+import { cliEnv, killTreeAndWait, openUrl, resolveCli, runCli, spawnCli } from "./cli.ts";
+import { bindLegacyBots, getDefaultAccount, listAccounts, type AccountLimitWindow } from "./accounts-store.ts";
 import { nowIso, type Db } from "./db.ts";
 import { startCodexServer } from "./providers/codex-rpc.ts";
 import { sweepClaudeSessionFiles } from "./providers/claude-files.ts";
@@ -24,13 +26,10 @@ export const CLAUDE_MODELS: ModelInfo[] = [
 // load the person's own CLI setup (hooks, plugins, skills, memories, MCP servers).
 export function ensureAccounts(db: Db, accountsDir: string, dataRoot = dirname(accountsDir)): Account[] {
   for (const provider of ["claude", "codex"] as const) {
+    if (listAccounts(db, { includeDeleted: true }).some((entry) => entry.provider === provider)) continue;
     const id = `${provider}-main`;
     const folder = join(accountsDir, id);
     mkdirSync(folder, { recursive: true });
-    if (provider === "claude") {
-      sweepClaudeSessionFiles(folder);
-      hardenClaudeSettings(folder, dataRoot);
-    }
     db.prepare("INSERT OR IGNORE INTO accounts (id, provider, label, kind, folder, created_at) VALUES (?, ?, ?, 'subscription', ?, ?)").run(
       id,
       provider,
@@ -39,7 +38,18 @@ export function ensureAccounts(db: Db, accountsDir: string, dataRoot = dirname(a
       nowIso(),
     );
   }
-  return db.prepare("SELECT id, provider, label, folder FROM accounts ORDER BY created_at, id").all() as Account[];
+  for (const account of listAccounts(db)) prepareAccountFolder(account, dataRoot);
+  for (const provider of ["claude", "codex"] as const) {
+    if (listAccounts(db).some((account) => account.provider === provider) && !listAccounts(db).some((account) => account.provider === provider && account.isDefault)) db.prepare("UPDATE accounts SET is_default = 1 WHERE id = ?").run(getDefaultAccount(db, provider).id);
+  }
+  bindLegacyBots(db);
+  return listAccounts(db).map(({ id, provider, label, folder }) => ({ id, provider, label, folder }));
+}
+
+export function prepareAccountFolder(account: Account, dataRoot: string): void {
+  mkdirSync(account.folder, { recursive: true });
+  if (lstatSync(account.folder).isSymbolicLink()) throw new Error("The account folder must not be a link.");
+  if (account.provider === "claude") { sweepClaudeSessionFiles(account.folder); hardenClaudeSettings(account.folder, dataRoot); }
 }
 
 function hardenClaudeSettings(folder: string, dataRoot: string): void {
@@ -105,11 +115,8 @@ function readClaudeSettings(file: string): { settings: Record<string, unknown>; 
 }
 
 export function accountFor(db: Db, provider: Provider): Account {
-  const account = db.prepare("SELECT id, provider, label, folder FROM accounts WHERE provider = ? ORDER BY created_at, id LIMIT 1").get(provider) as
-    | Account
-    | undefined;
-  if (!account) throw new RpcError("no_account", `No ${provider} account`);
-  return account;
+  const { id, label, folder } = getDefaultAccount(db, provider);
+  return { id, provider, label, folder };
 }
 
 export function accountEnv(account: Account): Record<string, string> {
@@ -125,7 +132,7 @@ function tryParseClaudeStatus(text: string): ClaudeStatus | null {
     const status = JSON.parse(text) as unknown;
     if (!isRecord(status) || typeof status.loggedIn !== "boolean") return null;
     return {
-      signedIn: status.loggedIn,
+      signedIn: status.loggedIn && !["api_key", "api_key_helper", "third_party"].includes(String(status.authMethod)),
       account: typeof status.email === "string" ? status.email : null,
       plan: typeof status.subscriptionType === "string" ? status.subscriptionType : null,
     };
@@ -171,16 +178,81 @@ async function codexSetup(account: Account): Promise<ProviderSetup> {
   try {
     const server = await startCodexServer(cmd, env, account.folder);
     try {
-      const { account: signedIn } = await server.rpc.request<{ account: { email?: string; planType?: string } | null }>("account/read", {});
+      const { account: signedIn } = await server.rpc.request<{ account: { type?: string; email?: string; planType?: string } | null }>("account/read", {});
       const sandbox = await codexSandboxStatus(server.rpc, account.folder);
-      return { provider: "codex", installed: true, version, signedIn: signedIn !== null, account: signedIn?.email ?? null, plan: signedIn?.planType ?? null, error: null, sandbox };
+      return { provider: "codex", installed: true, version, signedIn: signedIn !== null && signedIn.type !== "apiKey", account: signedIn?.email ?? null, plan: signedIn?.planType ?? null, error: null, sandbox };
     } finally {
       server.close();
       await server.waitForExit?.();
     }
-  } catch (error) {
-    return { provider: "codex", installed: true, version, signedIn: false, account: null, plan: null, error: String(error), sandbox: "unavailable" };
+  } catch {
+    return { provider: "codex", installed: true, version, signedIn: false, account: null, plan: null, error: "Codex account check failed.", sandbox: "unavailable" };
   }
+}
+
+export type AccountLimitSnapshot = { limitId: string; windows: AccountLimitWindow[] };
+
+// A malformed or incomplete read must never clear a known exhausted window.
+export function parseCodexAccountLimits(value: unknown): AccountLimitSnapshot[] | null {
+  if (!isRecord(value) || Array.isArray(value)) return null;
+  const multi = value.rateLimitsByLimitId;
+  if (multi !== undefined && multi !== null && (!isRecord(multi) || Array.isArray(multi))) return null;
+  const entries = isRecord(multi) ? Object.entries(multi) : [[undefined, value.rateLimits]] as const;
+  if (entries.length === 0 || entries.length > 32) return null;
+  const snapshots: AccountLimitSnapshot[] = [];
+  for (const [key, bucket] of entries) {
+    if (!isRecord(bucket) || Array.isArray(bucket)) return null;
+    const limitId = key ?? bucket.limitId ?? "codex";
+    if (typeof limitId !== "string" || !limitId.trim() || limitId.length > 100 || key !== undefined && bucket.limitId != null && key !== bucket.limitId) return null;
+    const windows: AccountLimitWindow[] = [];
+    for (const windowKey of ["primary", "secondary"] as const) {
+      const window = bucket[windowKey]; if (window == null) continue;
+      if (!isRecord(window) || Array.isArray(window)) return null;
+      const used = window.usedPercent, duration = window.windowDurationMins, reset = window.resetsAt;
+      if (typeof used !== "number" || !Number.isFinite(used) || used < 0 || used > 100) return null;
+      if (duration != null && (typeof duration !== "number" || !Number.isFinite(duration) || duration <= 0)) return null;
+      if (reset != null && (typeof reset !== "number" || !Number.isFinite(reset) || !Number.isFinite(new Date(reset * 1000).getTime()))) return null;
+      windows.push({ windowKey, durationMinutes: typeof duration === "number" ? duration : null, usedPercent: used,
+        resetsAt: typeof reset === "number" ? new Date(reset * 1000).toISOString() : null,
+        state: used >= 100 ? "reached" : used >= 90 ? "near" : "ok" });
+    }
+    if (bucket.rateLimitReachedType != null) {
+      if (typeof bucket.rateLimitReachedType !== "string" || !bucket.rateLimitReachedType.trim()) return null;
+      if (!windows.some((window) => window.state === "reached")) windows.push({ windowKey: "provider", durationMinutes: null, usedPercent: null, resetsAt: null, state: "reached" });
+    }
+    if (windows.length === 0) return null;
+    snapshots.push({ limitId, windows });
+  }
+  return snapshots;
+}
+
+// ChatGPT subscription metadata only: never creates a thread or starts a model turn.
+async function readCodexAccountLimits(account: Account): Promise<unknown> {
+  if (account.provider !== "codex") return null;
+  const cmd = resolveCli("codex"); if (!cmd) return null;
+  try {
+    const server = await startCodexServer(cmd, accountEnv(account), account.folder);
+    try { return await server.rpc.request("account/rateLimits/read", {}, 15_000); }
+    finally {
+      server.close();
+      let timer: NodeJS.Timeout | undefined;
+      try {
+        await Promise.race([server.waitForExit?.(), new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => reject(new Error("Account check process did not close.")), 5_000);
+        })]);
+      } finally { clearTimeout(timer); }
+    }
+  } catch { return null; }
+}
+
+export async function checkAccountLimits(account: Account): Promise<AccountLimitSnapshot[] | null> {
+  return parseCodexAccountLimits(await readCodexAccountLimits(account));
+}
+
+export async function checkAccountUsage(account: Account, accountsRoot: string): Promise<AccountUsageRead> {
+  if (account.provider === "claude") return readClaudeAccountUsage(account, { accountsRoot });
+  const value = await readCodexAccountLimits(account);
+  return normalizeCodexUsage(value, parseCodexAccountLimits(value));
 }
 
 type RpcRequester = { request: <T = unknown>(method: string, params?: unknown, timeoutMs?: number) => Promise<T> };
@@ -206,8 +278,11 @@ const SANDBOX_SETUP_TIMEOUT_MS = 15 * 60_000;
 
 // This is an explicit user action. A failed or declined setup is never retried automatically.
 export async function prepareCodexSandbox(db: Db, timeoutMs = SANDBOX_SETUP_TIMEOUT_MS): Promise<void> {
+  return prepareAccountCodexSandbox(accountFor(db, "codex"), timeoutMs);
+}
+export async function prepareAccountCodexSandbox(account: Account, timeoutMs = SANDBOX_SETUP_TIMEOUT_MS): Promise<void> {
   if (process.platform !== "win32") throw new RpcError("bad_state", "Codex's sandbox setup is available on Windows only.");
-  const account = accountFor(db, "codex");
+  if (account.provider !== "codex") throw new RpcError("bad_params", "Choose a Codex account.");
   if (sandboxSetupInProgress.has(account.folder)) throw new RpcError("busy", "Codex's sandbox setup is already running.");
   const cmd = resolveCli("codex");
   if (!cmd) throw new RpcError("not_installed", "Codex is not installed");
@@ -255,7 +330,24 @@ export async function prepareCodexSandbox(db: Db, timeoutMs = SANDBOX_SETUP_TIME
 }
 
 export function checkSetup(db: Db): Promise<ProviderSetup[]> {
-  return Promise.all([claudeSetup(accountFor(db, "claude")), codexSetup(accountFor(db, "codex"))]);
+  return Promise.all((["claude", "codex"] as const).map((provider) => {
+    try { return checkAccountSetup(accountFor(db, provider)); }
+    catch { return Promise.resolve(failedCheck(provider, null, "Add an account in Accounts.")); }
+  }));
+}
+export function checkAccountSetup(account: Account): Promise<ProviderSetup> {
+  return account.provider === "claude" ? claudeSetup(account) : codexSetup(account);
+}
+
+// Explicit owner removal only. The provider removes its own authentication using the
+// selected account home; Tjommie never reads or copies a credential file.
+export async function logoutAccount(account: Account): Promise<void> {
+  const command = resolveCli(account.provider);
+  if (!command) throw new RpcError("not_installed", "Install this account's provider before removing its local sign-in.");
+  try {
+    const result = await runCli(command, account.provider === "claude" ? ["auth", "logout"] : ["logout"], accountEnv(account));
+    if (result.code !== 0) throw new Error("Logout failed");
+  } catch { throw new RpcError("bad_state", "This account could not sign out. It has been kept so you can retry removal."); }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -263,13 +355,22 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 // Starts the provider's own sign-in for its Tjommie account and calls onDone once it finishes or times out.
-// Claude: `claude auth login` in a console window. Codex: OpenAI's sign-in URL from the app-server, opened
-// in the browser. Tjommie never sees a password or token; each CLI stores its login in the account folder.
-type SignInAttempt = { id: string; provider: Provider; url: string | null | undefined };
+// Claude: hidden `claude auth login` opens its own browser callback flow. Codex: the
+// app-server sign-in URL opens in the browser. Tjommie never sees a password or token; each CLI stores its login in the account folder.
+type SignInAttempt = { id: string; provider: Provider; url: string | null | undefined; cancel?: () => Promise<void> };
 const signInProgress = new Map<string, SignInAttempt>();
 
 export async function signIn(db: Db, provider: Provider, onDone: (ok: boolean, attempt: string) => void): Promise<{ url: string | null; attempt: string }> {
   const account = accountFor(db, provider);
+  return signInAccount(account, onDone);
+}
+export async function cancelAccountSignIn(account: Account, id: string): Promise<void> {
+  const attempt = signInProgress.get(account.folder);
+  if (!attempt || attempt.id !== id) throw new RpcError("bad_state", "That sign-in attempt is no longer active.");
+  await attempt.cancel?.();
+}
+export async function signInAccount(account: Account, onDone: (ok: boolean, attempt: string) => void): Promise<{ url: string | null; attempt: string }> {
+  const provider = account.provider;
   const running = signInProgress.get(account.folder);
   if (running) {
     if (running.provider !== provider || running.url === undefined) throw new RpcError("busy", `${provider === "claude" ? "Claude" : "Codex"} sign-in is already running.`);
@@ -286,10 +387,11 @@ export async function signIn(db: Db, provider: Provider, onDone: (ok: boolean, a
     try {
       cleanup();
     } finally {
-      signInProgress.delete(account.folder);
+      if (signInProgress.get(account.folder) === attempt) signInProgress.delete(account.folder);
       onDone(ok, attempt.id);
     }
   };
+  attempt.cancel = async () => { finish(false); };
   try {
     const cmd = resolveCli(provider);
     if (!cmd) throw new RpcError("not_installed", notInstalled(provider).error!);
@@ -297,46 +399,58 @@ export async function signIn(db: Db, provider: Provider, onDone: (ok: boolean, a
 
     if (provider === "claude") {
       const beforeResult = await runCli(cmd, ["auth", "status"], env);
+      if (finished) throw new RpcError("bad_state", "The sign-in attempt was cancelled.");
       const before = tryParseClaudeStatus(beforeResult.stdout);
       if (beforeResult.code === null || !before) throw new RpcError("bad_state", "Claude sign-in check failed.");
-      const child = openConsole("Sign in to Claude for Tjommie", "claude auth login", env);
+      const child = spawnCli(cmd, ["auth", "login", "--claudeai"], { cwd: account.folder, env });
+      // auth login opens the automatic loopback URL itself. Its printed URL is the
+      // manual-code fallback, so it must not be offered as an equivalent reopen link.
+      // No auth output is logged or returned; this integration supports callback login.
       attempt.url = null;
-      let pollTimer: NodeJS.Timeout | undefined;
-      const deadlineTimer = setTimeout(() => finish(false), SIGN_IN_TIMEOUT_MS);
-      const onConsoleExit = () => finish(false);
-      cleanup = () => {
-        clearTimeout(deadlineTimer);
-        clearTimeout(pollTimer);
-        child.removeListener("close", onConsoleExit);
+      child.stdout.resume(); child.stderr.resume(); child.stdin.on("error", () => {});
+      let exited = false, cancelling = false;
+      let resolveExit: () => void = () => {};
+      const exitedPromise = new Promise<void>((resolve) => { resolveExit = resolve; });
+      const deadlineTimer = setTimeout(() => {
+        void attempt.cancel?.().catch(() => { /* Retain the attempt for an explicit retry if containment fails. */ });
+      }, SIGN_IN_TIMEOUT_MS);
+      deadlineTimer.unref();
+      const onExit = (code: number | null): void => { exited = true; resolveExit(); finish(!cancelling && code === 0); };
+      const onError = (): void => { exited = true; resolveExit(); finish(false); };
+      cleanup = () => { clearTimeout(deadlineTimer); child.removeListener("close", onExit); child.removeListener("exit", onExit); child.removeListener("error", onError); };
+      child.once("close", onExit); child.once("exit", onExit); child.once("error", onError);
+      attempt.cancel = async () => {
+        cancelling = true;
+        if (!exited && child.exitCode === null && child.signalCode === null) await killTreeAndWait(child.pid);
+        await exitedPromise;
+        finish(false);
       };
-      child.once("close", onConsoleExit);
-      const poll = async (): Promise<void> => {
-        try {
-          const result = await runCli(cmd, ["auth", "status"], env);
-          if (finished) return;
-          const status = result.code === null ? null : tryParseClaudeStatus(result.stdout);
-          if (status?.signedIn && (!before.signedIn || status.account !== before.account)) return finish(true);
-          pollTimer = setTimeout(() => void poll(), 3000);
-        } catch {
-          finish(false);
-        }
-      };
-      pollTimer = setTimeout(() => void poll(), 3000);
       return { url: null, attempt: attempt.id };
     }
 
     const server = await startCodexServer(cmd, env, account.folder);
+    if (finished) { server.close(); await server.waitForExit?.(); throw new RpcError("bad_state", "The sign-in attempt was cancelled."); }
     const timer = setTimeout(() => finish(false), SIGN_IN_TIMEOUT_MS);
     cleanup = () => {
       clearTimeout(timer);
       server.close();
     };
+    let loginId: string | null = null;
+    const early: Record<string, unknown>[] = [];
     server.rpc.onNotification = (method, params) => {
-      if (method === "account/login/completed" && isRecord(params)) finish(params.success === true);
+      if (method !== "account/login/completed" || !isRecord(params)) return;
+      if (loginId === null) { if (early.length < 10) early.push(params); return; }
+      if (params.loginId === loginId) finish(params.success === true);
     };
-    const login = await server.rpc.request<{ authUrl: string }>("account/login/start", { type: "chatgpt" });
+    attempt.cancel = async () => { if (loginId) await server.rpc.request("account/login/cancel", { loginId }).catch(() => {}); finish(false); await server.waitForExit?.(); };
+    const login = await server.rpc.request<{ authUrl: string; loginId: string }>("account/login/start", { type: "chatgpt" });
+    if (typeof login.loginId !== "string" || !login.loginId || typeof login.authUrl !== "string") throw new RpcError("bad_state", "Codex returned an invalid sign-in attempt.");
+    loginId = login.loginId;
+    if (finished) { await server.rpc.request("account/login/cancel", { loginId }).catch(() => {}); throw new RpcError("bad_state", "The sign-in attempt was cancelled."); }
     attempt.url = login.authUrl;
-    openUrl(login.authUrl);
+    const completed = early.find((event) => event.loginId === loginId);
+    if (completed) finish(completed.success === true);
+    if (!finished) openUrl(login.authUrl);
     return { url: login.authUrl, attempt: attempt.id };
   } catch (error) {
     finish(false);

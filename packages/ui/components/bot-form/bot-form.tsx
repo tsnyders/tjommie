@@ -1,8 +1,8 @@
 "use client";
 
 import type { ReactNode } from "react";
-import type { Bot } from "@tjommie/protocol";
-import type { BotForm } from "@/lib/bot-form";
+import type { Bot, Provider } from "@tjommie/protocol";
+import { canMessageSummary, type BotForm } from "@/lib/bot-form";
 import { cn } from "@/lib/utils";
 import { FIELD, Label } from "../controls";
 import { Identity } from "./identity";
@@ -11,11 +11,12 @@ import { AutonomyRow, BrowserRow, CanMessageRow, FolderRow } from "./rows";
 
 // New bot and Bot settings share this column (WF3, WF8): the avatar and name, what the bot does, and its settings rows.
 // The two screens handle routines differently, so each passes its own Routines row.
-export function BotFormFields({ form, onChange, bots, selfId, nameError, routinesRow }: {
+export function BotFormFields({ form, onChange, bots, selfId, saved, nameError, routinesRow }: {
   form: BotForm;
   onChange: (form: BotForm) => void;
   bots: Bot[];
   selfId: string | null;
+  saved?: { provider: Provider; accountId: string | null }; // an existing bot's provider and account as saved
   nameError: string | null;
   routinesRow: ReactNode;
 }) {
@@ -33,11 +34,20 @@ export function BotFormFields({ form, onChange, bots, selfId, nameError, routine
         />
       </div>
       <div className="mt-6 flex flex-col gap-2">
-        <ModelRow provider={form.provider} model={form.model} onChange={(value) => onChange({ ...form, ...value })} />
+        <ModelRow provider={form.provider} model={form.model} accountId={form.accountId} saved={saved} onChange={(value) => onChange({ ...form, ...value })} />
         <FolderRow projectFolder={form.projectFolder} onChange={(projectFolder) => onChange({ ...form, projectFolder })} />
         <AutonomyRow autonomy={form.autonomy} provider={form.provider} botName={form.name} onChange={(autonomy) => onChange({ ...form, autonomy })} />
         <BrowserRow browser={form.browser} onChange={(browser) => onChange({ ...form, browser })} />
-        <CanMessageRow selfId={selfId} canMessage={form.canMessage} bots={bots} onChange={(canMessage) => onChange({ ...form, canMessage })} />
+        <CanMessageRow
+          label="Can message"
+          summary={canMessageSummary(form.canMessage, bots.filter((bot) => bot.id !== selfId))}
+          selfId={selfId}
+          ids={form.canMessage}
+          bots={bots}
+          onChange={(canMessage) => onChange({ ...form, canMessage })}
+        >
+          It can ask these bots for help. They can&apos;t ask it back unless you allow that in their own settings.
+        </CanMessageRow>
         {routinesRow}
       </div>
     </div>

@@ -1,6 +1,9 @@
 import { existsSync, lstatSync, readFileSync, rmSync } from "node:fs";
-import { join } from "node:path";
-import { SETUP_CODEX_SANDBOX_REASON, TEAM_ROOM_ID, type ProviderSetup } from "@tjommie/protocol";
+import { join, resolve } from "node:path";
+import { SETUP_CODEX_SANDBOX_REASON, type ProviderSetup } from "@tjommie/protocol";
+import { AccountRuntime, type AccountRuntimeOptions } from "./account-runtime.ts";
+import { accountHandlers } from "./account-handlers.ts";
+import { bindLegacyBots, getAccount, getDefaultAccount, listAccounts } from "./accounts-store.ts";
 import { getApproval } from "./approvals.ts";
 import { createBot, deleteBot, getStoredBot, listStoredBots, setPaused, sweepDeletedBotFolders, updateBot, validateBotPatch } from "./bots.ts";
 import { browsers, sharedBrowserServer, showBrowser } from "./browser.ts";
@@ -18,6 +21,7 @@ import { googleTools } from "./google-tools.ts";
 import { McpTokens, mcpHandler } from "./mcp.ts";
 import { DEFAULT_PORT, dataPaths, migrateLegacyDb, readOrCreateToken } from "./paths.ts";
 import { getWorkItem, type WorkItem } from "./queue.ts";
+import { createRoom, deleteRoom, getRoom, listRooms, updateRoom } from "./rooms.ts";
 import { createRoutine, deleteRoutine, getRoutine, listRoutines, listRuns, updateRoutine } from "./routines.ts";
 import { Runner, type SessionFactory, type TurnResult } from "./runner.ts";
 import { Scheduler } from "./scheduler.ts";
@@ -26,6 +30,9 @@ import { getSettings, setSettings } from "./settings.ts";
 import { checkSetup, ensureAccounts, listModels, prepareCodexSandbox, signIn } from "./setup.ts";
 import { Team, getExchange } from "./team.ts";
 import { protectCodexData, protectCodexDataAsync, type BotHome } from "./windows-acl.ts";
+import { RemoteHost } from "./remote-host.ts";
+import { listDevices, renameDevice } from "./devices-store.ts";
+import type { CredentialTransport } from "./account-credentials.ts";
 
 const NOTES_PREVIEW_CHARS = 4_000;
 
@@ -49,7 +56,9 @@ async function waitForBotClose(closed: Promise<void>): Promise<void> {
 export type Daemon = { port: number; token: string; runner: Runner; scheduler: Scheduler; close: () => Promise<void> };
 
 export type DaemonAuth = { mode: "development" } | { mode: "production"; token: string; desktopHostToken?: string };
-type DaemonOptions = { auth: DaemonAuth; root?: string; port?: number; accountsDir?: string; createSession?: SessionFactory; googleAuth?: GoogleAuth };
+type DaemonOptions = { auth: DaemonAuth; root?: string; port?: number; accountsDir?: string; createSession?: SessionFactory; googleAuth?: GoogleAuth;
+  remote?: { credentials?: CredentialTransport; port?: number; bind?: string; addresses?: () => string[] };
+  createAccountsRuntime?: (options: AccountRuntimeOptions) => AccountRuntime };
 
 export class PlainStartupError extends Error {}
 
@@ -74,6 +83,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
 
 async function initializeDaemon(options: DaemonOptions, server: Server, onCleanup: (cleanup: () => void) => void): Promise<Daemon> {
   const paths = dataPaths(options.root);
+  if (options.accountsDir) paths.accounts = resolve(options.accountsDir);
   migrateLegacyDb(paths);
   if (options.auth.mode === "production") {
     const leftover = existsSync(paths.token);
@@ -91,15 +101,16 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
   onCleanup(() => db.close());
   const token = options.auth.mode === "development" ? readOrCreateToken(paths.token) : options.auth.token;
   ensureAccounts(db, options.accountsDir ?? paths.accounts, paths.root);
+  bindLegacyBots(db);
   // Account and token creation, plus existing bot homes, need a fresh pass.
-  protection = await protectCodexDataAsync(paths, listStoredBots(db));
+  protection = await protectCodexDataAsync(paths, listStoredBots(db), undefined, undefined, listAccounts(db));
   let lastProtectionAt = Date.now();
   let aclQueue: Promise<void> = Promise.resolve();
   const refreshProtection = (force = false, override?: BotHome): Promise<void> => {
     const task = aclQueue.then(async () => {
       if (!force && Date.now() - lastProtectionAt < 60_000) return;
       const homes = listStoredBots(db).map((bot) => bot.id === override?.id ? override : bot);
-      protection = await protectCodexDataAsync(paths, homes);
+      protection = await protectCodexDataAsync(paths, homes, undefined, undefined, listAccounts(db));
       lastProtectionAt = Date.now();
     });
     aclQueue = task.catch(() => {});
@@ -136,7 +147,41 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
     } })
     : new BrowserMcp({ tokens, getBot: (id) => getStoredBot(db, id) });
   const switchingBots = new Set<string>();
-  const runner: Runner = new Runner({
+  const changingAccounts = new Set<string>();
+  const useAccountRuntime = options.createSession === undefined || options.createAccountsRuntime !== undefined;
+  let accountsReady = false;
+  let runner: Runner;
+  const runtimeOptions: AccountRuntimeOptions = {
+    db, paths,
+    onChanged: () => {
+      if (!accountsReady) return;
+      const current = accounts.list();
+      setup = current.filter((account) => account.isDefault).flatMap((account) => account.setup ? [account.setup] : []);
+      send("accounts.changed", current);
+      send("setup.changed", setup);
+      runner.setupChanged();
+      for (const bot of listStoredBots(db)) send("bot.updated", runner.toBot(bot));
+    },
+    onSignInEnded: (accountId, attempt) => {
+      send("accounts.signInEnded", { accountId, attempt });
+      const account = getAccount(db, accountId);
+      if (getDefaultAccount(db, account.provider).id === accountId) signInEnded(account.provider, attempt);
+    },
+    onCap: (accountId, threshold) => {
+      const account = getAccount(db, accountId);
+      const unpriced = accounts.info(accountId).spending.unknownRows > 0;
+      for (const bot of listStoredBots(db)) {
+        if (bot.accountId !== accountId && runner.toBot(bot).effectiveAccountId !== accountId) continue;
+        if (threshold === 100) void runner.stop(bot.id).catch(() => {
+          send("notify", { kind: "limit", botId: bot.id, title: "Check this bot after its spending cap", body: "The provider did not confirm Stop. Check the chat before starting more work." });
+        });
+        send("notify", { kind: "limit", botId: bot.id, title: unpriced ? `${account.label} has unpriced usage` : `${account.label} reached ${threshold}% of its local cap`,
+          body: unpriced ? "This key is blocked because a turn's cost is unknown. Review its usage in Accounts." : threshold === 100 ? "This key reached its local cap. Review its recorded spend in Accounts." : "Review this key's recorded spend in Accounts. Provider charges may differ from local estimates." });
+      }
+    },
+  };
+  const accounts = options.createAccountsRuntime?.(runtimeOptions) ?? new AccountRuntime(runtimeOptions);
+  runner = new Runner({
     db,
     broadcast: send,
     isSignedIn: (provider) => setup.some((status) => status.provider === provider && status.signedIn),
@@ -144,11 +189,12 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
     setupIssue: (bot) => {
       if (switchingBots.has(bot.id)) return "This bot is changing provider. Try again shortly.";
       if (bot.provider !== "codex" || bot.autonomy !== "folder") return null;
-      if (!setup.some((status) => status.provider === "codex" && status.sandbox === "ready")) return SETUP_CODEX_SANDBOX_REASON;
+      if (!useAccountRuntime && !setup.some((status) => status.provider === "codex" && status.sandbox === "ready")) return SETUP_CODEX_SANDBOX_REASON;
       return protection.reason;
     },
     isHeld: (botId) => switchingBots.has(botId),
     createSession: options.createSession,
+    ...(useAccountRuntime ? { accounts } : {}),
     hooks: {
       retryRoutine: (message) => scheduler.retry(message),
       mcpServers: (bot) => {
@@ -197,7 +243,12 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
 
   const refreshSetup = async (forceAcl = false): Promise<ProviderSetup[]> => {
     await refreshProtection(forceAcl);
-    setup = await checkSetup(db);
+    if (useAccountRuntime) {
+      const defaults = listAccounts(db).filter((account) => account.isDefault);
+      await Promise.all(defaults.map((account) => accounts.check(account.id)));
+      setup = accounts.list().filter((account) => account.isDefault)
+        .flatMap((account) => account.setup ? [account.setup] : []);
+    } else setup = await checkSetup(db);
     logVersionDrift(setup);
     broadcast("setup.changed", setup);
     for (const bot of listStoredBots(db)) broadcast("bot.updated", runner.toBot(bot));
@@ -214,7 +265,21 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
   };
 
   const deletionRequests = new Set<string>();
+  const accountsApi = accountHandlers({ db, runtime: accounts, changing: changingAccounts,
+    accountsDir: options.accountsDir ?? paths.accounts, protect: () => refreshProtection(true) });
+  function checkAccountAvailable(provider: ProviderSetup["provider"], requested?: string | null): void {
+    const id = requested ?? getDefaultAccount(db, provider).id;
+    if (changingAccounts.has(id)) throw new RpcError("busy", "This account is changing. Try again shortly.");
+  }
+  const remote = new RemoteHost({ db, root: paths.root, dispatch: server.dispatch, ...options.remote, onChanged: () => send("devices.changed", {}) });
   const handlers: Handlers = {
+    "remote.status": () => remote.status(),
+    "devices.list": () => listDevices(db),
+    "devices.rename": ({ id, name }) => { const device = renameDevice(db, id, name); send("devices.changed", {}); return device; },
+    "devices.revoke": ({ id }) => remote.revoke(id),
+    "pairing.create": () => remote.createPairing(),
+    "pairing.cancel": ({ id }) => { remote.cancelPairing(id); return {}; },
+    ...accountsApi,
     ...browserHandlers((id) => {
       if (deletionRequests.has(id)) throw new RpcError("busy", "This bot is being deleted.");
       return getStoredBot(db, id);
@@ -232,10 +297,13 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
       return auth.setGrant(botId, enabled);
     },
     "setup.status": () => refreshSetup(),
-    "setup.signIn": ({ provider }) => signIn(db, provider, (_ok, attempt) => signInEnded(provider, attempt)),
+    "setup.signIn": ({ provider }) => useAccountRuntime
+      ? accountsApi["accounts.signIn"]!({ id: getDefaultAccount(db, provider).id })
+      : signIn(db, provider, (_ok, attempt) => signInEnded(provider, attempt)),
     "setup.prepareCodexSandbox": async () => {
       try {
-        await prepareCodexSandbox(db);
+        if (useAccountRuntime) await accountsApi["accounts.prepareCodexSandbox"]!({ id: getDefaultAccount(db, "codex").id });
+        else await prepareCodexSandbox(db);
       } finally {
         await refreshSetup(true);
       }
@@ -246,6 +314,7 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
     "models.list": ({ provider }) => listModels(db, provider),
     "bots.list": () => listStoredBots(db).map((bot) => runner.toBot(bot)),
     "bots.create": async (input) => {
+      checkAccountAvailable(input.provider, input.accountId);
       let created;
       try { created = createBot(db, paths.bots, input); }
       catch (error) { await refreshProtection(true); runner.setupChanged(); throw error; }
@@ -258,7 +327,10 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
     "bots.update": async ({ id, patch }) => {
       const before = getStoredBot(db, id);
       const providerChanged = patch.provider !== undefined && patch.provider !== before.provider;
-      if (providerChanged) {
+      const accountChanged = patch.accountId !== undefined && patch.accountId !== before.accountId;
+      const identityChanged = providerChanged || accountChanged;
+      if (identityChanged) {
+        checkAccountAvailable(patch.provider ?? before.provider, patch.accountId ?? (providerChanged ? undefined : before.accountId));
         if (switchingBots.has(id)) throw new RpcError("busy", "This bot is already changing provider. Try again shortly.");
         validateBotPatch(db, before, patch);
         switchingBots.add(id);
@@ -266,9 +338,11 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
       let passAttempted = false;
       let changed: ReturnType<typeof updateBot>;
       try {
-        if (providerChanged) {
+        if (identityChanged) {
           await runner.stop(id);
           runner.botChanged(id, true);
+        }
+        if (providerChanged) {
           passAttempted = true;
           await refreshProtection(true, { id, homeFolder: before.homeFolder, provider: patch.provider! });
           if (protection.status === "check_failed") throw new RpcError("bad_state", "Could not update the bot folder protection. Try again after checking Codex's sandbox setup.");
@@ -278,12 +352,12 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
         if (providerChanged && passAttempted) await refreshProtection(true);
         throw error;
       } finally {
-        if (providerChanged) {
+        if (identityChanged) {
           switchingBots.delete(id);
           runner.setupChanged();
         }
       }
-      if (!providerChanged) runner.botChanged(id, false);
+      if (!identityChanged) runner.botChanged(id, false);
       const bot = runner.toBot(changed);
       try {
         if (before.browser && !changed.browser) {
@@ -361,8 +435,24 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
       runner.pump(approval.botId);
       return approval;
     },
-    "room.history": ({ before, limit }) => historyPage(db, TEAM_ROOM_ID, before, limit),
-    "room.post": ({ text }) => team.postToRoom(text),
+    "room.history": ({ roomId, before, limit }) => { getRoom(db, roomId); return historyPage(db, roomId, before, limit); },
+    "room.post": ({ roomId, text }) => team.postToRoom(roomId, text),
+    "rooms.list": () => listRooms(db),
+    "rooms.create": (input) => {
+      const room = createRoom(db, input);
+      broadcast("room.updated", room);
+      return room;
+    },
+    "rooms.update": ({ id, patch }) => {
+      const room = updateRoom(db, id, patch);
+      broadcast("room.updated", room);
+      return room;
+    },
+    "rooms.delete": ({ id }) => {
+      deleteRoom(db, id);
+      broadcast("room.deleted", { id });
+      return {};
+    },
     "exchanges.get": ({ id }) => ({ exchange: getExchange(db, id), ...historyPage(db, id, undefined, 200) }),
     "routines.list": ({ botId }) => {
       if (botId !== undefined) getStoredBot(db, botId);
@@ -406,10 +496,11 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
   sweepDeletedBotFolders(db, paths.bots);
   team.start();
   runner.recover(); // Synchronous after binding, before setup yields or requests can be served.
-  setup = await checkSetup(db);
+  setup = useAccountRuntime ? [] : await checkSetup(db);
   logVersionDrift(setup);
   mcpUrl = `http://127.0.0.1:${server.port}/mcp`;
-  broadcast = server.broadcast;
+  broadcast = (event, data) => { server.broadcast(event, data); remote.broadcast(event, data); };
+  accountsReady = true;
   runner.start();
   scheduler.start();
   server.activate({ token, handlers, routes: { "/mcp": mcpHandler({ tokens, tools: [...team.tools(), ...(options.googleAuth ? googleTools({ request: async (botId, service, path) => {
@@ -417,6 +508,8 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
     getStoredBot(db, botId);
     return (await google()).request(botId, service, path);
   } }) : [])] }), "/mcp/browser": browserMcp.handle, ...(nativeBroker ? { "/browser-host": nativeBroker.handle } : {}) } });
+  if (useAccountRuntime) void accounts.checkAll().catch(() => console.error("Some accounts could not be checked. Retry from Accounts."));
+  if (remote.hasDevices()) void remote.start().catch(() => console.error("The phone connection could not start. Retry from Devices."));
   return {
     port: server.port,
     token,
@@ -424,8 +517,10 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
     scheduler,
     close: async () => {
       await runCleanup([
+        () => remote.close(),
         () => scheduler.stop(),
         () => runner.shutdown(),
+        () => accounts.close(),
         async () => { if (googleOpening) await (await googleOpening).close(); },
         () => browserMcp.closeAll(),
         () => nativeBroker?.close(),

@@ -11,6 +11,28 @@ export const FILTERS = [
   { value: "paused", label: "Paused" },
 ] as const satisfies readonly { value: OverviewFilter; label: string }[];
 
+// The phone's filter chips, with how many bots each would show. A state no bot is in has no chip (unless it's the one picked, so it can be left),
+// and when no chip would narrow the list there are none at all.
+export function phoneFilters(bots: Pick<Bot, "state">[], current: OverviewFilter): { value: OverviewFilter; label: string; count: number }[] {
+  const chips = FILTERS.map((filter) => ({ ...filter, count: filter.value === "all" ? bots.length : bots.filter((bot) => bot.state === filter.value).length }));
+  const narrowing = chips.filter((chip) => chip.value !== "all" && chip.count > 0 && chip.count < bots.length);
+  if (narrowing.length === 0 && current === "all") return [];
+  return chips.filter((chip) => chip.value === "all" || chip.count > 0 || chip.value === current);
+}
+
+// Folio's one-sentence lede under the Agents title: "Two bots are working; Nova is waiting for you."
+export function overviewLede(bots: Pick<Bot, "name" | "state">[]): string {
+  if (bots.length === 0) return "No bots yet.";
+  const working = bots.filter((bot) => bot.state === "working");
+  const waiting = bots.filter((bot) => bot.state === "waiting");
+  const parts: string[] = [];
+  if (working.length) parts.push(working.length === 1 ? `${working[0].name} is working` : `${working.length} bots are working`);
+  if (waiting.length) parts.push(waiting.length === 1 ? `${waiting[0].name} is waiting for you` : `${waiting.length} bots are waiting for you`);
+  if (parts.length === 0) return "All quiet.";
+  const sentence = parts.join("; ");
+  return `${sentence[0].toUpperCase()}${sentence.slice(1)}.`;
+}
+
 // "6 bots, 2 working, 1 waiting for you".
 export function overviewSummary(bots: Pick<Bot, "state">[]): string {
   const count = (state: BotState): number => bots.filter((bot) => bot.state === state).length;
@@ -78,10 +100,15 @@ export function talkingWith(botId: string, messages: Message[], now: Date = new 
   return [...partners];
 }
 
-// The Team room card's line: which bots talked last, and when.
-export function roomLine(messages: Message[], bots: Pick<Bot, "id" | "name">[], now: Date = new Date()): string {
-  const post = [...messages].reverse().find((message) => message.kind === "text" && ExchangePostData.safeParse(message.data).success);
-  if (!post) return "No bot chats yet";
-  const { toBotId } = ExchangePostData.parse(post.data);
-  return `${botName(bots, post.author)} and ${botName(bots, toBotId)} talked ${timeAgo(post.createdAt, now)}`;
+// A room's line (its card on Agents, its row in the rooms list), from its newest post of any kind: yours, a bot's answer, or a bot-to-bot
+// exchange, which names both bots. Notices, activity and a reply still on its way aren't posts. A room whose posts are still being read
+// (undefined) gets a blank line that keeps its height, not "No posts yet".
+export function roomLine(messages: Message[] | undefined, bots: Pick<Bot, "id" | "name">[], now: Date = new Date()): string {
+  if (!messages) return "\u00a0";
+  const post = [...messages].reverse().find((message) => message.kind === "text" && message.body.trim() !== "");
+  if (!post) return "No posts yet";
+  const ago = timeAgo(post.createdAt, now);
+  const exchange = ExchangePostData.safeParse(post.data);
+  if (exchange.success) return `${botName(bots, post.author)} and ${botName(bots, exchange.data.toBotId)} talked ${ago}`;
+  return post.author === "you" ? `You posted ${ago}` : `${botName(bots, post.author)} answered ${ago}`;
 }

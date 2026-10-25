@@ -7,6 +7,7 @@ import { botHistory, loadConversation, loadOlder, retryConversation } from "@/li
 import { handoffStatus } from "@/lib/exchange";
 import { AUTONOMY_HINT } from "@/lib/labels";
 import { choosePane, coversChat, isOverlay, panelFor, setExpanded, type PanelView } from "@/lib/panel-layout";
+import { usePhone } from "@/lib/use-phone";
 import { useApp } from "@/lib/store";
 import { BotAvatar } from "../bot-avatar";
 import { ExchangeView } from "../exchange/exchange-view";
@@ -31,7 +32,11 @@ export function ChatScreen({ botId }: { botId: string }) {
   const conversation = useApp((state) => state.conversations[botId]);
   const ready = useApp((state) => state.connection.status === "ready");
   // This screen renders only in the window, never in the static build, so localStorage is there.
-  const [panel, setPanel] = useState(() => localStorage.getItem(PANEL_KEY) !== "closed");
+  const [desktopPanel, setPanel] = useState(() => localStorage.getItem(PANEL_KEY) !== "closed");
+  // On a phone the panel is a full-screen sheet that starts closed, and its state is its own: it never reads or writes the desktop preference.
+  const phone = usePhone();
+  const [phonePanel, setPhonePanel] = useState(false);
+  const panel = phone ? phonePanel : desktopPanel;
   const [exchangeId, setExchangeId] = useState<string | null>(null);
   // Which pane the right panel shows, and whether the browser fills the content area, for one bot (another bot starts at Details).
   const [shownPane, setShownPane] = useState<PanelView>({ bot: botId, pane: "details", expanded: false });
@@ -66,17 +71,22 @@ export function ChatScreen({ botId }: { botId: string }) {
   if (!bot) return null;
   const loaded = conversation?.status === "ready" ? conversation : null;
   const messages = loaded?.messages ?? NO_MESSAGES;
+  // Entering phone width un-expands the browser: the sheet is already the whole screen.
+  if (phone && shownPane.expanded) setShownPane((view) => setExpanded(view, botId, false));
   const showPanel = (open: boolean): void => {
-    localStorage.setItem(PANEL_KEY, open ? "open" : "closed");
-    setPanel(open);
+    if (phone) setPhonePanel(open);
+    else {
+      localStorage.setItem(PANEL_KEY, open ? "open" : "closed");
+      setPanel(open);
+    }
     if (!open) setShownPane((view) => setExpanded(view, botId, false));
   };
   const overlay = isOverlay(room);
   const panelShown = panel && !exchangeId;
   // An overlay or an expanded browser covers the chat, so the chat can't be reached by keyboard or screen reader meanwhile.
-  const covered = coversChat(panelShown, overlay, pane, bot.browser);
+  const covered = coversChat(panelShown, overlay || phone, pane, bot.browser) || (phone && exchangeId !== null);
   const focusPanel = (): void => {
-    if (overlay) requestAnimationFrame(() => root.current?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"], [aria-label="Hide panel"]')?.focus());
+    if (overlay || phone) requestAnimationFrame(() => root.current?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"], [aria-label="Hide panel"], [aria-label="Close details"]')?.focus());
   };
   const togglePanel = (): void => {
     if (exchangeId) setExchangeId(null);
@@ -93,21 +103,21 @@ export function ChatScreen({ botId }: { botId: string }) {
   };
   const hidePanel = (): void => {
     showPanel(false);
-    if (overlay) requestAnimationFrame(() => panelButton.current?.focus({ preventScroll: true }));
+    if (overlay || phone) requestAnimationFrame(() => panelButton.current?.focus({ preventScroll: true }));
   };
   // The view's own x and >> go with it, so focus goes back to the row that opened the exchange, or to the panel
   // button if that row is gone. It doesn't scroll there: the chat may have moved on meanwhile.
   const closeExchange = (id: string): void => {
-    const row = section.current?.querySelector<HTMLElement>(`[data-exchange="${CSS.escape(id)}"]`);
     setExchangeId(null);
-    (row ?? panelButton.current)?.focus({ preventScroll: true });
+    // After the change is drawn: until then a phone's sheet still covers the chat, which is inert and can't take focus.
+    requestAnimationFrame(() => (section.current?.querySelector<HTMLElement>(`[data-exchange="${CSS.escape(id)}"]`) ?? panelButton.current)?.focus({ preventScroll: true }));
   };
   const settings = `/bots/settings/?bot=${encodeURIComponent(bot.id)}`;
   return (
     <div ref={root} className="relative flex min-h-0 flex-1">
       <section ref={section} aria-label={`Chat with ${bot.name}`} inert={covered || undefined} className="flex min-w-0 flex-1 flex-col">
-        <ChatHeader bot={bot} panelOpen={panel || exchangeId !== null} onTogglePanel={togglePanel} panelButton={panelButton} onOpenBrowser={openBrowser} />
-        {bot.state === "needs_setup" && <SetupBanner bot={bot} />}
+        <ChatHeader bot={bot} panelOpen={panel || exchangeId !== null} onTogglePanel={togglePanel} panelButton={panelButton} onOpenBrowser={openBrowser} phone={phone} />
+        <SetupBanner bot={bot} />
         {conversation?.status === "failed" ? (
           <FailedLoad text="Couldn't load this chat." onRetry={() => void retryConversation(botId, botHistory(botId))} />
         ) : !loaded ? (
@@ -139,6 +149,7 @@ export function ChatScreen({ botId }: { botId: string }) {
             onExpandedChange={(expanded) => setShownPane((view) => setExpanded(view, botId, expanded))}
             room={room}
             overlay={overlay}
+            phone={phone}
             onHide={hidePanel}
           />
         )

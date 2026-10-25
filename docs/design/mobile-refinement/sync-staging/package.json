@@ -1,0 +1,20 @@
+{
+  "name": "@tjommie/ui-kit",
+  "version": "0.0.0-staging",
+  "private": true,
+  "description": "Staging-only package for /design-sync: Tjommie's real presentational components, copied verbatim from packages/ui.",
+  "type": "module",
+  "main": "dist/index.js",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "peerDependencies": {
+    "@base-ui/react": "^1.8.0",
+    "cn": "^0.4.0",
+    "lucide-react": "^1.48.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  }
+}

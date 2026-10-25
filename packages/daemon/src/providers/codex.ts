@@ -1,7 +1,9 @@
 import type { Autonomy } from "@tjommie/protocol";
+import { hasPricing } from "../account-pricing.ts";
 import { killTreeAndWait, type CliCommand } from "../cli.ts";
 import { RpcRemoteError, startCodexServer, type CodexServer, type JsonRpcLines } from "./codex-rpc.ts";
 import { isCodexMcpToolCall, mapCodexElicitation, mapCodexNotification, mapCodexRequest } from "./codex-parse.ts";
+import { redactProviderEvent } from "./types.ts";
 import type { ApprovalAnswer, ProviderEvent, ProviderSession, StartOptions } from "./types.ts";
 
 type Policy = { approvalPolicy: "untrusted" | "on-request" | "never"; sandbox: "read-only" | "workspace-write" | "danger-full-access" };
@@ -82,7 +84,9 @@ export class CodexSession implements ProviderSession {
   #threadId = "";
   #turnId: string | null = null;
   #completedTurns = new Set<string>();
+  #usageEvents = new Set<string>();
   #model = "";
+  #usageEnabled = false;
   #closed = false;
   #starting: Promise<void> | null = null;
   #sending: Promise<void> | null = null;
@@ -112,7 +116,7 @@ export class CodexSession implements ProviderSession {
 
   async #start(): Promise<void> {
     if (this.#closed) throw new Error("The Codex session is closed");
-    const server = await startCodexServer(this.#cmd, this.#options.env, this.#options.cwd);
+    const server = await startCodexServer(this.#cmd, this.#options.env, this.#options.cwd, ...(this.#options.authentication ? [{ ephemeralAuth: true }] : []));
     this.#exited = new Promise<void>((resolve) => {
       if (server.child.exitCode !== null && server.child.exitCode !== undefined || server.child.signalCode) resolve();
       else {
@@ -131,7 +135,16 @@ export class CodexSession implements ProviderSession {
       if (this.#stopping) return; // interrupt() publishes exit after the whole tree has stopped
       this.#emit({ type: "exit", error: code === 0 || code === null ? null : `Codex exited with code ${code}` });
     });
+    if (this.#options.authentication) {
+      try { await server.rpc.request("account/login/start", { type: "apiKey", apiKey: this.#options.authentication.key }); }
+      catch { this.#server = null; server.close(); await server.waitForExit?.(); throw new Error("Codex could not configure this API key. Check the account in Settings."); }
+      if (this.#closed) { server.close(); throw new Error("The Codex session closed while configuring its account."); }
+    }
     server.rpc.onNotification = (method, params) => {
+      // thread/resume can replay usage before its response supplies the resolved model.
+      // Those are historical snapshots, not work started by this session. Publishing them
+      // would both charge restored usage again and send an empty model to persistence.
+      if (method === "thread/tokenUsage/updated" && !this.#usageEnabled) return;
       const id = turnId(params);
       // An approved command can emit item/started and item/completed AFTER its interrupted
       // turn/completed. Do not let that old work look like a new background turn to the runner.
@@ -183,6 +196,10 @@ export class CodexSession implements ProviderSession {
       const response = this.#options.resumeId
         ? await server.rpc.request<ThreadResponse>("thread/resume", { threadId: this.#options.resumeId, ...params })
         : await server.rpc.request<ThreadResponse>("thread/start", params);
+      if (typeof response.model !== "string" || !response.model.trim()) throw new Error("Codex did not identify this session's model. Retry the queued work.");
+      if (this.#options.authentication && (typeof response.model !== "string" || !hasPricing("codex", response.model))) {
+        throw new Error("Codex resolved this API session to a model without supported local pricing. Choose a priced model before retrying.");
+      }
       this.#threadId = response.thread.id;
       this.#model = response.model;
     } catch (error) {
@@ -194,6 +211,9 @@ export class CodexSession implements ProviderSession {
   }
 
   async send(text: string): Promise<void> {
+    if (!this.#model) throw new Error("The Codex session has not finished starting.");
+    // Enable before writing: a provider may report new usage before turn/start replies.
+    this.#usageEnabled = true;
     const pending = this.#rpc().request<{ turn: { id: string } }>("turn/start", { threadId: this.#threadId, input: [{ type: "text", text }] })
       .then((response) => {
         // Notifications can finish this turn (and start another) before its start response.
@@ -327,6 +347,8 @@ export class CodexSession implements ProviderSession {
   }
 
   #emit(event: ProviderEvent): void {
+    if (event.type === "usage" && event.eventId) { if (this.#usageEvents.has(event.eventId)) return; this.#usageEvents.add(event.eventId); }
+    event = redactProviderEvent(event, this.#options.authentication?.key);
     for (const listener of this.#listeners) listener(event);
   }
 

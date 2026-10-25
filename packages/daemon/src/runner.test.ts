@@ -11,6 +11,9 @@ import type { ProviderEvent, ProviderSession, StartOptions } from "./providers/t
 import { enqueue, getWorkItem, newChain, setStatus, type WorkItem, type WorkStatus } from "./queue.ts";
 import { activityBody, botStateOf, copyIntoInbox, Runner, type RunnerHooks, type SessionFactory, type TurnResult } from "./runner.ts";
 import { RpcError, type Broadcast } from "./server.ts";
+import { AccountRuntime } from "./account-runtime.ts";
+import { createAccount, replaceAccountLimits } from "./accounts-store.ts";
+import { dataPaths } from "./paths.ts";
 import { ensureAccounts } from "./setup.ts";
 import { tempRoot, waitFor } from "./testing.ts";
 
@@ -2047,5 +2050,145 @@ describe("Runner unexpected error boundaries", () => {
     expect(h.db.prepare("SELECT id FROM bots WHERE id = ?").get(bot.id)).toBeUndefined();
     expect(logged).not.toHaveBeenCalled();
     expect(h.runner.currentWork(bot.id)).toBeNull();
+  });
+});
+
+
+describe("account-bound runner", () => {
+  async function accountHarness() {
+    const h = harness();
+    const paths = dataPaths(h.root), captured: StartOptions[] = [];
+    const keys = new Map<string, string>();
+    let runner: Runner | undefined;
+    const accounts = new AccountRuntime({ db: h.db, paths,
+      probeLimit: async () => null,
+      credentials: { reference: (id) => `test/${id}`, read: async (id) => keys.get(id) ?? null,
+        write: async (id, key) => { keys.set(id, key); }, delete: async (id) => { keys.delete(id); } },
+      probe: async (account) => account.provider === "codex"
+        ? { provider: "codex", installed: true, version: "0.160.0", signedIn: true, account: null, plan: null, error: null, sandbox: "ready" }
+        : { provider: "claude", installed: true, version: "2.1.304", signedIn: true, account: null, plan: null, error: null },
+      onChanged: () => runner?.setupChanged(),
+    });
+    runner = new Runner({ db: h.db, accounts, isSignedIn: () => true,
+      broadcast: (event, data) => h.events.push({ event, data } as SentEvent),
+      createSession: (_bot, options) => { captured.push(options); const session = new FakeSession(); h.sessions.push(session); return session; } });
+    h.runner = runner; runners.push(runner);
+    const api = async (id: string, fallback = false, cap = 1) => {
+      createAccount(h.db, { id, provider: "codex", label: id, kind: "api_key", folder: join(paths.accounts, id), spendingCapUsd: cap, isFallback: fallback });
+      await accounts.setApiKey(id, "synthetic-private-key"); await accounts.check(id);
+    };
+    await accounts.checkAll();
+    return { ...h, accounts, captured, api };
+  }
+  const usage = { type: "usage", model: "gpt-5.3-codex", input: 100, cachedInput: 20, output: 5, reasoning: 1, costUsd: null } as const;
+
+  it("attributes late usage to the captured old provider/account after the bot switches", async () => {
+    const h = await accountHarness();
+    const bot = newBot(h, { provider: "codex", model: "gpt-5.3-codex" });
+    h.runner.submit(bot.id, "First", []); await waitFor(() => h.sessions[0]?.sent.length);
+    const first = h.sessions[0]; first.emit({ type: "session", cliSessionId: "old-thread" });
+    h.db.prepare("UPDATE bots SET provider = 'claude', account_id = 'claude-main', model = 'haiku' WHERE id = ?").run(bot.id);
+    h.runner.botChanged(bot.id, true);
+    first.emit({ ...usage, eventId: "one" }); first.emit({ type: "turn_done", ok: true, error: null });
+    h.runner.submit(bot.id, "Second", []); await waitFor(() => h.sessions[1]?.sent.length);
+    h.sessions[1].emit({ type: "session", cliSessionId: "new-thread" });
+    first.emit({ ...usage, eventId: "two" }); first.emit({ ...usage, eventId: "two" });
+    const rows = h.db.prepare("SELECT provider, account_id, cost_source FROM usage ORDER BY rowid").all();
+    expect(rows).toEqual([{ provider: "codex", account_id: "codex-main", cost_source: "estimated" }, { provider: "codex", account_id: "codex-main", cost_source: "estimated" }]);
+    expect(h.captured[1].resumeId).toBeNull();
+    expect(h.captured[1].env.CLAUDE_CONFIG_DIR).toContain("claude-main");
+  });
+
+  it("holds the API account lease until the old process exits before another bot starts", async () => {
+    const h = await accountHarness(); await h.api("api");
+    const a = newBot(h, { provider: "codex", model: "gpt-5.3-codex", accountId: "api" });
+    const b = newBot(h, { provider: "codex", model: "gpt-5.3-codex", accountId: "api" });
+    h.runner.submit(a.id, "First", []); await waitFor(() => h.sessions[0]?.sent.length);
+    let exited: () => void = () => {}; h.sessions[0].exitPromise = new Promise((resolve) => { exited = resolve; });
+    const queued = h.runner.submit(b.id, "Second", []);
+    h.sessions[0].emit({ ...usage, eventId: "one" }); h.sessions[0].emit({ type: "turn_done", ok: true, error: null });
+    await Promise.resolve(); expect(h.sessions).toHaveLength(1); expect(h.accounts.inUse("api")).toBe(true);
+    expect(getMessage(h.db, queued.id).status).toBe("queued");
+    exited(); await waitFor(() => h.sessions[1]?.sent.length);
+    expect(h.captured[1].authentication).toEqual({ kind: "api_key", key: "synthetic-private-key" });
+    expect(h.sessions[0].closed).toBe(true);
+  });
+
+  it("requeues subscription-limit work on an opted-in API fallback and returns to a fresh pinned thread after reset", async () => {
+    const h = await accountHarness(); await h.api("api", true);
+    const bot = newBot(h, { provider: "codex", model: "gpt-5.3-codex" });
+    h.runner.submit(bot.id, "Continue this work", []); await waitFor(() => h.sessions[0]?.sent.length);
+    h.sessions[0].emit({ type: "session", cliSessionId: "pinned-thread" });
+    h.sessions[0].emit({ type: "limit", state: "reached", usedPercent: 100, resetsAt: null });
+    h.sessions[0].emit({ type: "turn_done", ok: false, error: "limit" });
+    await waitFor(() => h.sessions[1]?.sent.length);
+    h.sessions[1].emit({ type: "session", cliSessionId: "fallback-thread" });
+    expect(h.captured[1].resumeId).toBeNull(); expect(h.runner.toBot(getStoredBot(h.db, bot.id)).usingFallback).toBe(true);
+    h.sessions[1].emit({ ...usage, eventId: "fallback" }); h.sessions[1].emit({ type: "turn_done", ok: true, error: null });
+    await waitFor(() => !h.accounts.inUse("api"));
+    replaceAccountLimits(h.db, { accountId: "codex-main", limitId: "provider", observedAt: new Date(Date.now() + 1).toISOString(), windows: [] });
+    h.runner.submit(bot.id, "Back on subscription", []); await waitFor(() => h.sessions[2]?.sent.length);
+    expect(h.captured[2].resumeId).toBeNull(); expect(h.captured[2].authentication).toBeUndefined();
+    expect(h.runner.toBot(getStoredBot(h.db, bot.id)).effectiveAccountId).toBe("codex-main");
+    expect(h.db.prepare("SELECT account_id FROM sessions WHERE bot_id = ? ORDER BY account_id").all(bot.id)).toEqual([{ account_id: "api" }, { account_id: "codex-main" }]);
+  });
+
+  it("explicit Stop closes an idle subscription so the owner can change its sign-in", async () => {
+    const h = await accountHarness(); const bot = newBot(h);
+    h.runner.submit(bot.id, "First", []); await waitFor(() => h.sessions[0]?.sent.length);
+    h.sessions[0].emit({ type: "turn_done", ok: true, error: null });
+    expect(h.accounts.inUse("claude-main")).toBe(true);
+    await h.runner.stop(bot.id); expect(h.sessions[0].closed).toBe(true); expect(h.accounts.inUse("claude-main")).toBe(false);
+  });
+
+  it("awaits owned process retirement, records its final usage, then fences events before database teardown", async () => {
+    const h = await accountHarness(); await h.api("api");
+    const bot = newBot(h, { provider: "codex", model: "gpt-5.3-codex", accountId: "api" });
+    h.runner.submit(bot.id, "First", []); await waitFor(() => h.sessions[0]?.sent.length);
+    const session = h.sessions[0];
+    let exited: () => void = () => {};
+    session.exitPromise = new Promise((resolve) => { exited = resolve; });
+    const closing = h.runner.shutdown();
+    expect(h.runner.shutdown()).toBe(closing);
+    expect(session.closed).toBe(true);
+    let closed = false; void closing.then(() => { closed = true; });
+    await Promise.resolve(); expect(closed).toBe(false);
+    expect(h.accounts.inUse("api")).toBe(true);
+    session.emit({ ...usage, eventId: "final-usage" });
+    expect(h.db.prepare("SELECT account_id, cost_source FROM usage").all()).toEqual([{ account_id: "api", cost_source: "estimated" }]);
+    exited(); await closing;
+    expect(h.accounts.inUse("api")).toBe(false);
+    await h.accounts.close(); h.db.close();
+    expect(() => session.emit({ ...usage, eventId: "after-teardown" })).not.toThrow();
+    expect(() => session.emit({ type: "exit", error: null })).not.toThrow();
+  });
+
+  it.each(["success", "failed", "stopped"] as const)("settles an explicit unknown-reset retry from its real turn outcome: %s", async (outcome) => {
+    const h = await accountHarness(); const bot = newBot(h);
+    h.runner.submit(bot.id, "Queued work", []); await waitFor(() => h.sessions[0]?.sent.length);
+    h.sessions[0].emit({ type: "limit", state: "reached", usedPercent: 100, resetsAt: null });
+    h.sessions[0].emit({ type: "turn_done", ok: false, error: "Provider limit" });
+    await waitFor(() => !h.accounts.inUse("claude-main"));
+    expect(h.accounts.inspect(getStoredBot(h.db, bot.id)).ready).toBe(false);
+    h.accounts.retryLimit("claude-main"); await waitFor(() => h.sessions[1]?.sent.length);
+    const retry = h.sessions[1];
+    if (outcome === "stopped") await h.runner.stop(bot.id);
+    retry.emit({ type: "turn_done", ok: outcome === "success", error: outcome === "failed" ? "Synthetic request failed" : null });
+    await waitFor(() => !h.accounts.inUse("claude-main"));
+    expect(retry.closed).toBe(true);
+    expect(h.accounts.inspect(getStoredBot(h.db, bot.id)).ready).toBe(outcome === "success");
+    expect(h.accounts.info("claude-main").limits).toHaveLength(outcome === "success" ? 0 : 1);
+    expect(h.sessions).toHaveLength(2);
+  });
+
+  it("does not start paid work when the pin changes during credential loading", async () => {
+    const h = await accountHarness(); await h.api("api");
+    const bot = newBot(h, { provider: "codex", model: "gpt-5.3-codex", accountId: "api" });
+    // prepare awaits the private credential transport even for an immediately resolved read.
+    h.runner.submit(bot.id, "First", []);
+    h.db.prepare("UPDATE bots SET account_id = 'codex-main' WHERE id = ?").run(bot.id);
+    h.runner.botChanged(bot.id, false);
+    await waitFor(() => h.runner.currentWork(bot.id) === null);
+    expect(h.sessions).toHaveLength(0); expect(h.accounts.inUse("api")).toBe(false);
   });
 });

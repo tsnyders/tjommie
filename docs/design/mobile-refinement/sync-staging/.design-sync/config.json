@@ -1,0 +1,15 @@
+{
+  "pkg": "@tjommie/ui-kit",
+  "globalName": "TjommieUI",
+  "shape": "package",
+  "buildCmd": "node build.mjs",
+  "cssEntry": "dist/styles.css",
+  "tsconfig": "tsconfig.json",
+  "overrides": {
+    "Segmented": {
+      "cardMode": "column"
+    }
+  },
+  "readmeHeader": ".design-sync/conventions.md",
+  "projectId": "163cd1ab-5122-42d5-8216-715d803afc5c"
+}

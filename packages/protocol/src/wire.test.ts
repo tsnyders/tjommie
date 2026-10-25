@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Approval, Bot, BotInput, BotPatch, ClientMessage, ErrorCode, PROTOCOL_VERSION, ProviderSetup, RoutineInput, RoutinePatch, Settings, TEAM_ROOM_ID, events, methods } from "./index.ts";
+import { Approval, Bot, BotInput, BotPatch, ClientMessage, ErrorCode, PROTOCOL_VERSION, ProviderSetup, RoomInput, RoomPatch, RoutineInput, RoutinePatch, Settings, TEAM_ROOM_ID, events, methods } from "./index.ts";
 
 const bot = { name: "Writer", color: "blue", shape: "circle", instructions: "", provider: "claude", model: "sonnet" } as const;
 
@@ -56,6 +56,11 @@ describe("protocol", () => {
     expect(() => methods["chat.send"].params.parse({ botId: "b", text: "  " })).toThrow();
   });
 
+  it("defaults room calls to the Team room for older callers", () => {
+    expect(methods["room.history"].params.parse({})).toEqual({ limit: 50, roomId: TEAM_ROOM_ID });
+    expect(methods["room.post"].params.parse({ text: " hello " })).toEqual({ roomId: TEAM_ROOM_ID, text: "hello" });
+  });
+
   it("preserves an optional bot id when selecting a failed room turn to retry", () => {
     expect(methods["chat.retry"].params.parse({ messageId: "m" })).toEqual({ messageId: "m" });
     expect(methods["chat.retry"].params.parse({ messageId: "m", botId: "b" })).toEqual({ messageId: "m", botId: "b" });
@@ -86,6 +91,29 @@ describe("protocol for bots working together", () => {
 
   it("names the Team room", () => {
     expect(TEAM_ROOM_ID).toBe("team");
+  });
+
+  it("validates room inputs and permits an empty patch", () => {
+    expect(RoomInput.parse({ name: "  Research  ", botIds: ["bot"] })).toEqual({ name: "Research", botIds: ["bot"] });
+    expect(() => RoomInput.parse({ name: " ", botIds: ["bot"] })).toThrow();
+    expect(() => RoomInput.parse({ name: "x".repeat(61), botIds: ["bot"] })).toThrow();
+    expect(() => RoomInput.parse({ name: "Research", botIds: [] })).toThrow();
+    expect(RoomPatch.parse({})).toEqual({});
+  });
+
+  it("describes room methods and events", () => {
+    const room = { id: "research", name: "Research", botIds: ["writer"], everyone: false, createdAt: "created" };
+    const input = { name: room.name, botIds: room.botIds };
+    expect(methods["rooms.list"].params.parse({})).toEqual({});
+    expect(methods["rooms.list"].result.parse([room])).toEqual([room]);
+    expect(methods["rooms.create"].params.parse(input)).toEqual(input);
+    expect(methods["rooms.create"].result.parse(room)).toEqual(room);
+    expect(methods["rooms.update"].params.parse({ id: room.id, patch: {} })).toEqual({ id: room.id, patch: {} });
+    expect(methods["rooms.update"].result.parse(room)).toEqual(room);
+    expect(methods["rooms.delete"].params.parse({ id: room.id })).toEqual({ id: room.id });
+    expect(methods["rooms.delete"].result.parse({})).toEqual({});
+    expect(events["room.updated"].parse(room)).toEqual(room);
+    expect(events["room.deleted"].parse({ id: room.id })).toEqual({ id: room.id });
   });
 
   it("lets callers list all routines or one bot's routines", () => {

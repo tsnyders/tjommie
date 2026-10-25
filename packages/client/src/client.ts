@@ -1,4 +1,6 @@
 import { ErrorCode, PROTOCOL_VERSION, events, methods, type EventData, type EventName, type MethodName, type ParamsIn, type Result } from "@tjommie/protocol";
+import { transportSocket, type RpcSocket, type RpcTransport } from "./transport.ts";
+export type { RpcTransport } from "./transport.ts";
 
 export type ClientEvent = { [E in EventName]: { type: "event"; event: E; data: EventData<E> } }[EventName];
 export type Client = {
@@ -48,8 +50,16 @@ export class ClientConnectionError extends Error {
 
 // Uses the global WebSocket, so the same client runs in Node 24, in Electron's main process and in the UI.
 export async function connect(port: number, token: string, options: ConnectOptions = {}): Promise<Client> {
+  return connectSocket(new WebSocket(`ws://127.0.0.1:${port}`), token, options);
+}
+
+// Remote authentication is already complete. The fixed hello label is encrypted and carries no local credential.
+export async function connectTransport(transport: RpcTransport, options: ConnectOptions = {}): Promise<Client> {
+  return connectSocket(transportSocket(transport), "device", options);
+}
+
+async function connectSocket(socket: RpcSocket, token: string, options: ConnectOptions): Promise<Client> {
   const recordEvents = options.recordEvents ?? true;
-  const socket = new WebSocket(`ws://127.0.0.1:${port}`);
   const received: ClientEvent[] = [];
   const subscribers = new Set<(event: ClientEvent) => void>();
   const pending = new Map<number, PendingCall>();
@@ -160,7 +170,7 @@ export async function connect(port: number, token: string, options: ConnectOptio
   function call<M extends MethodName>(method: M, params: ParamsIn<M>): Promise<Result<M>> {
     return new Promise<Result<M>>((resolve, reject) => {
       if (failure) { reject(failure); return; }
-      if (socket.readyState !== WebSocket.OPEN) { reject(connectionError(1006, "Socket is not open")); return; }
+      if (socket.readyState !== 1) { reject(connectionError(1006, "Socket is not open")); return; }
       const id = nextId++;
       pending.set(id, {
         // This schema is selected by the method captured for this pending call.
@@ -185,7 +195,7 @@ export async function connect(port: number, token: string, options: ConnectOptio
       return () => { subscribers.delete(listener); };
     },
     close: async () => {
-      if (socket.readyState === WebSocket.CLOSED) return;
+      if (socket.readyState === 3) return;
       fail(connectionError(1000, "Client closed"));
       socket.close(1000, "Client closed");
       await closed;

@@ -62,11 +62,13 @@ describe("the Phase 1 screens with real bots", () => {
     await page.getByRole("heading", { level: 1, name: "Job scout", exact: true }).waitFor();
   });
 
-  it("answers a mention in the Team room, and hints when nobody was mentioned", async () => {
+  it("answers a mention in Everyone, and hints when nobody was mentioned", async () => {
     const { page } = running();
-    await page.getByRole("link", { name: "Team room", exact: true }).click();
+    // The rail's room icon opens the rooms list, Everyone first.
+    await page.getByRole("link", { name: "Rooms", exact: true }).click();
+    await page.getByRole("link", { name: "Everyone", exact: true }).click();
     await page.getByText("No posts yet. @mention a bot to ask it something.").waitFor();
-    const box = page.getByRole("combobox", { name: "Message the Team room" });
+    const box = page.getByRole("combobox", { name: "Message Everyone" });
     await box.fill("Hello team");
     await box.press("Enter");
     await page.getByText("No bot was mentioned, so nobody will reply. Type @ to ask a bot.").waitFor();
@@ -78,7 +80,7 @@ describe("the Phase 1 screens with real bots", () => {
     await botReply(page, "ROOM-OK").waitFor({ timeout: 180_000 });
   });
 
-  it("opens an exchange from a handoff row and replies in the Team room", async () => {
+  it("opens an exchange from a handoff row and replies in Everyone", async () => {
     const { client, page } = running();
     const writer = await claudeBot(client, "Writer");
     await claudeBot(client, "Researcher", { canMessage: [writer.id] });
@@ -91,9 +93,9 @@ describe("the Phase 1 screens with real bots", () => {
     await view.getByText(/Replied after/).waitFor({ timeout: 30_000 });
     // Researcher's request says MANGO too, so the check is on the last bubble, Writer's reply ("MANGO." passes).
     await view.locator('[data-author="bot"]').last().filter({ hasText: "MANGO" }).waitFor();
-    await view.getByRole("textbox", { name: "Reply in Team room" }).fill("Thanks, both of you.");
+    await view.getByRole("textbox", { name: "Reply in Everyone" }).fill("Thanks, both of you.");
     await view.getByRole("button", { name: "Send" }).click();
-    await view.getByText("Posted in the Team room.").waitFor();
+    await view.getByText("Posted in Everyone.").waitFor();
   });
 
   it("shows every bot on the Agents overview, and filters them", async () => {
@@ -110,7 +112,7 @@ describe("the Phase 1 screens with real bots", () => {
     await page.getByRole("menuitem", { name: "Resume bot" }).click();
     await page.getByRole("radio", { name: "All" }).click();
     await page.getByRole("link", { name: "Job scout", exact: true }).waitFor();
-    // Writer may still be answering the Team room post from the exchange test before it settles to Idle.
+    // Writer may still be answering the Everyone post from the exchange test before it settles to Idle.
     const writer = page.getByRole("article").filter({ has: page.getByRole("link", { name: "Writer", exact: true }) });
     await writer.getByText("Idle", { exact: true }).first().waitFor({ timeout: 180_000 });
   });

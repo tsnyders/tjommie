@@ -14,6 +14,7 @@ type BotRow = {
   instructions: string;
   provider: Bot["provider"];
   model: string;
+  account_id: string | null;
   autonomy: Bot["autonomy"];
   home_folder: string;
   project_folder: string | null;
@@ -35,6 +36,7 @@ export function getStoredBot(db: Db, id: string): StoredBot {
     instructions: row.instructions,
     provider: row.provider,
     model: row.model,
+    accountId: row.account_id,
     autonomy: row.autonomy,
     homeFolder: row.home_folder,
     projectFolder: row.project_folder,
@@ -53,6 +55,7 @@ export function listStoredBots(db: Db): StoredBot[] {
 
 export function createBot(db: Db, botsDir: string, input: BotInput): StoredBot {
   assertNameFree(db, input.name, null);
+  const accountId = accountPin(db, input.provider, input.accountId);
   const projectFolder = checkProjectFolder(input.projectFolder ?? null, botsDir);
   const id = newId();
   const home = join(botsDir, id);
@@ -61,9 +64,9 @@ export function createBot(db: Db, botsDir: string, input: BotInput): StoredBot {
   try {
     transaction(db, () => {
       db.prepare(
-        `INSERT INTO bots (id, name, color, shape, instructions, provider, model, autonomy, home_folder, project_folder, browser, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      ).run(id, input.name, input.color, input.shape, input.instructions, input.provider, input.model, input.autonomy ?? "folder", home, projectFolder, input.browser ? 1 : 0, nowIso());
+        `INSERT INTO bots (id, name, color, shape, instructions, provider, model, account_id, autonomy, home_folder, project_folder, browser, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(id, input.name, input.color, input.shape, input.instructions, input.provider, input.model, accountId, input.autonomy ?? "folder", home, projectFolder, input.browser ? 1 : 0, nowIso());
       db.prepare("INSERT INTO conversations (id, kind, bot_id) VALUES (?, 'bot', ?)").run(id, id);
       setLinks(db, id, input.canMessage ?? []);
     });
@@ -78,17 +81,22 @@ export function updateBot(db: Db, id: string, patch: BotPatch): StoredBot {
   const bot = getStoredBot(db, id);
   validateBotPatch(db, bot, patch);
   const next = { ...bot, ...patch, projectFolder: patch.projectFolder === undefined ? bot.projectFolder : checkProjectFolder(patch.projectFolder, dirname(bot.homeFolder)) };
+  const accountId = patch.accountId !== undefined || next.provider !== bot.provider
+    ? accountPin(db, next.provider, patch.accountId) : bot.accountId ?? null;
+  const limitedUntil = accountId !== bot.accountId || next.provider !== bot.provider ? null : bot.limitedUntil;
   transaction(db, () => {
-    db.prepare("UPDATE bots SET name = ?, color = ?, shape = ?, instructions = ?, provider = ?, model = ?, autonomy = ?, project_folder = ?, browser = ? WHERE id = ?").run(
+    db.prepare("UPDATE bots SET name = ?, color = ?, shape = ?, instructions = ?, provider = ?, model = ?, account_id = ?, autonomy = ?, project_folder = ?, browser = ?, limited_until = ? WHERE id = ?").run(
       next.name,
       next.color,
       next.shape,
       next.instructions,
       next.provider,
       next.model,
+      accountId,
       next.autonomy,
       next.projectFolder,
       next.browser ? 1 : 0,
+      limitedUntil,
       id,
     );
     if (patch.canMessage) setLinks(db, id, patch.canMessage);
@@ -105,6 +113,19 @@ export function validateBotPatch(db: Db, bot: StoredBot, patch: BotPatch): void 
   if (patch.name !== undefined) assertNameFree(db, patch.name, bot.id);
   if (patch.projectFolder !== undefined) checkProjectFolder(patch.projectFolder, dirname(bot.homeFolder));
   if (patch.canMessage !== undefined) validateLinks(db, bot.id, patch.canMessage);
+  if (patch.accountId !== undefined || patch.provider !== undefined) accountPin(db, patch.provider ?? bot.provider, patch.accountId);
+}
+
+function accountPin(db: Db, provider: StoredBot["provider"], requested: string | null | undefined): string | null {
+  const row = requested == null
+    ? db.prepare("SELECT id, provider FROM accounts WHERE provider = ? AND deleted_at IS NULL ORDER BY is_default DESC, created_at, id LIMIT 1").get(provider)
+    : db.prepare("SELECT id, provider FROM accounts WHERE id = ? AND deleted_at IS NULL").get(requested);
+  if (!row) {
+    if (requested != null) throw new RpcError("bad_params", "Choose an existing account for this provider.");
+    return null; // Legacy unit fixtures can have no accounts; the daemon bootstraps before creating bots.
+  }
+  if (row.provider !== provider || typeof row.id !== "string") throw new RpcError("bad_params", "The account must use the bot's provider.");
+  return row.id;
 }
 
 // Deletes the bot, its chat and its home folder. An attached project folder is never touched.

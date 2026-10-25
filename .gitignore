@@ -1,9 +1,11 @@
 node_modules/
 dist-desktop/
+dist-mobile/
 .next/
 out/
 *.tsbuildinfo
 next-env.d.ts
+/packages/ui/public/tjommie_noise_bg.wasm
 .env*
 *.pem
 

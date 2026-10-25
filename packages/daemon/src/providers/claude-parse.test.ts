@@ -68,7 +68,7 @@ describe("parseClaudeLine", () => {
   });
 
   it("reads rate limits: state, percent of the current window and reset time", () => {
-    expect(parseClaudeLine(RATE_LIMIT)).toEqual({ kind: "rate_limit", state: "ok", usedPercent: 2, resetsAt: new Date(1790341200 * 1000).toISOString() });
+    expect(parseClaudeLine(RATE_LIMIT)).toMatchObject({ kind: "rate_limit", state: "ok", usedPercent: 2, resetsAt: new Date(1790341200 * 1000).toISOString() });
     expect(parseClaudeLine(RATE_LIMIT_REJECTED)).toMatchObject({ kind: "rate_limit", state: "reached", usedPercent: 100 });
   });
 
@@ -143,4 +143,14 @@ describe("toolSummary", () => {
       expect(label).not.toMatch(/mcp__|select:/);
     }
   });
+});
+
+
+it("preserves both Claude quota windows and stable result identities", () => {
+  const parsed = parseClaudeLine(RATE_LIMIT_REJECTED);
+  expect(parsed).toMatchObject({ kind: "rate_limit", windows: [
+    { windowKey: "five_hour", durationMinutes: 300, usedPercent: 100, state: "reached" },
+    { windowKey: "seven_day", durationMinutes: 10080, usedPercent: 7, state: "ok" },
+  ] });
+  expect(parseClaudeLine(JSON.stringify({ type: "result", uuid: "result-one", subtype: "success" }))).toMatchObject({ kind: "result", eventId: "result-one" });
 });

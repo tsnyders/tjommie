@@ -7,6 +7,7 @@ import { cliEnv, killTree, spawnCli, type CliCommand } from "../cli.ts";
 import { plainActivityText } from "./activity-labels.ts";
 import { parseClaudeLine, toolSummary } from "./claude-parse.ts";
 import { recordClaudeSessionOwner } from "./claude-files.ts";
+import { redactProviderEvent } from "./types.ts";
 import type { ApprovalAnswer, McpServer, ProviderEvent, ProviderSession, StartOptions } from "./types.ts";
 
 const INTERRUPT_GRACE_MS = 10_000;
@@ -39,6 +40,10 @@ export function claudeArgs(options: StartOptions, files: SessionFiles): string[]
   if (options.mcpServers.length) args.push("--mcp-config", files.mcp);
   for (const dir of options.extraDirs) args.push("--add-dir", dir);
   if (options.resumeId) args.push("--resume", options.resumeId);
+  if (options.maxBudgetUsd !== undefined) {
+    if (!Number.isFinite(options.maxBudgetUsd) || options.maxBudgetUsd <= 0) throw new Error("The API account has no remaining spending allowance.");
+    args.push("--max-budget-usd", String(options.maxBudgetUsd));
+  }
   const allowed = [...options.mcpServers.filter((server) => server.autoAllow).map((server) => `mcp__${server.name}`), ...options.allowRules];
   if (allowed.length) args.push("--allowedTools", ...allowed); // takes several values, so it goes last
   return args;
@@ -67,6 +72,7 @@ export class ClaudeSession implements ProviderSession {
   #listeners: ((event: ProviderEvent) => void)[] = [];
   #pending = new Map<string, PendingApproval>();
   #lastTotalCost: number | null;
+  #results = new Set<string>();
   #cliSessionId: string | null;
   #streamed = "";
   #inTurn = false;
@@ -105,7 +111,7 @@ export class ClaudeSession implements ProviderSession {
       if (this.#options.mcpServers.length) writeFileSync(files.mcp, JSON.stringify(claudeMcpConfig(this.#options.mcpServers)), { mode: 0o600 });
       // A crash during spawn may leave a live CLI whose PID was not recorded.
       recordClaudeSessionOwner(dir, { phase: "starting", childPid: null });
-      child = spawnCli(this.#cmd, claudeArgs(this.#options, files), { cwd: this.#options.cwd, env: this.#options.env });
+      child = spawnCli(this.#cmd, claudeArgs(this.#options, files), { cwd: this.#options.cwd, env: this.#options.env, ...(this.#options.authentication ? { claudeApiKey: this.#options.authentication.key } : {}) });
     } catch (error) {
       this.#removeFiles();
       throw error;
@@ -204,6 +210,7 @@ export class ClaudeSession implements ProviderSession {
   }
 
   #emit(event: ProviderEvent): void {
+    event = redactProviderEvent(event, this.#options.authentication?.key);
     for (const listener of this.#listeners) listener(event);
   }
 
@@ -266,9 +273,11 @@ export class ClaudeSession implements ProviderSession {
         });
         return;
       case "rate_limit":
-        this.#emit({ type: "limit", state: out.state, usedPercent: out.usedPercent, resetsAt: out.resetsAt });
+        this.#emit({ type: "limit", state: out.state, usedPercent: out.usedPercent, resetsAt: out.resetsAt, ...(out.windows ? { windows: out.windows, limitId: "claude" } : {}) });
         return;
       case "result": {
+        if (out.eventId && this.#results.has(out.eventId)) return;
+        if (out.eventId) this.#results.add(out.eventId);
         clearTimeout(this.#interruptTimer);
         this.#interruptTimer = undefined;
         this.#inTurn = false;
@@ -277,7 +286,7 @@ export class ClaudeSession implements ProviderSession {
         // A legacy resumed session has no baseline, so its first turn's cost is unknown.
         const cost = out.totalCostUsd === null || this.#lastTotalCost === null ? null : Math.max(0, out.totalCostUsd - this.#lastTotalCost);
         if (out.totalCostUsd !== null) this.#lastTotalCost = out.totalCostUsd;
-        this.#emit({ type: "usage", model: out.model ?? this.#options.model, ...out.usage, costUsd: cost, totalCostUsd: out.totalCostUsd });
+        this.#emit({ type: "usage", model: out.model ?? this.#options.model, ...out.usage, costUsd: cost, totalCostUsd: out.totalCostUsd, ...(out.eventId ? { eventId: out.eventId } : {}) });
         this.#emit({ type: "turn_done", ok: out.ok, error: out.error });
         return;
       }

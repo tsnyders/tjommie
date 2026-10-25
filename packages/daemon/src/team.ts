@@ -12,6 +12,7 @@ import { addMessage, getMessage, history, updateMessage } from "./chat.ts";
 import { newId, nowIso, transaction, type Db } from "./db.ts";
 import { defineTool, type McpTool } from "./mcp.ts";
 import { enqueue, getWorkItem, newChain, setStatus, useChainRequest, type WorkItem } from "./queue.ts";
+import { getRoom, roomMembers } from "./rooms.ts";
 import { createRoutine, hostTimeZone } from "./routines.ts";
 import { copyIntoInbox, type TurnResult } from "./runner.ts";
 import { duration } from "./scheduler.ts";
@@ -83,9 +84,9 @@ const replyPrompt = (to: string, request: string, reply: string, files: string[]
 const failedPrompt = (to: string, request: string, reason: string) =>
   `[${to} couldn't finish your request "${firstLine(request, 120)}": ${reason}. Tell the person if it matters.]`;
 
-const roomPrompt = (context: string[], text: string) =>
+const roomPrompt = (name: string, context: string[], text: string) =>
   [
-    "[Team room: the person mentioned you. Your reply is posted in the room for everyone.",
+    `[Team room "${name}": the person mentioned you. Your reply is posted in the room for everyone.`,
     ...(context.length ? ["Recent room messages, oldest first:", ...context] : []),
     "]",
     `The person wrote: ${text}`,
@@ -188,7 +189,7 @@ export type TeamDeps = {
   botView?: (bot: StoredBot) => Bot;
 };
 
-// Bots working together: the tools on Tjommie's MCP server, exchanges between bots, and the Team room.
+// Bots working together: the tools on Tjommie's MCP server, exchanges between bots, and rooms (Everyone and the others).
 export class Team {
   #db: Db;
   #broadcast: Broadcast;
@@ -279,16 +280,17 @@ export class Team {
     ];
   }
 
-  // A post from the person in the Team room. Every bot it mentions answers in the room.
-  postToRoom(text: string): Message {
-    const context = this.#describe(history(this.#db, TEAM_ROOM_ID, undefined, ROOM_CONTEXT));
-    const mentioned = findMentions(text, listStoredBots(this.#db));
+  // A post from the person in a room. Every bot of the room it mentions answers in the room.
+  postToRoom(roomId: string, text: string): Message {
+    const room = getRoom(this.#db, roomId);
+    const context = this.#describe(history(this.#db, roomId, undefined, ROOM_CONTEXT));
+    const mentioned = findMentions(text, listStoredBots(this.#db), roomMembers(this.#db, roomId));
     const queued: WorkItem[] = [];
     const post = this.#atomic(() => {
-      const message = this.#add({ conversationId: TEAM_ROOM_ID, author: "you", kind: "text", body: text, status: "done" });
+      const message = this.#add({ conversationId: roomId, author: "you", kind: "text", body: text, status: "done" });
       if (mentioned.length) {
         const chainId = newChain(this.#db);
-        for (const botId of mentioned) queued.push(enqueue(this.#db, { botId, source: "room", text: roomPrompt(context, text), messageId: message.id, conversationId: TEAM_ROOM_ID, chainId }));
+        for (const botId of mentioned) queued.push(enqueue(this.#db, { botId, source: "room", text: roomPrompt(room.name, context, text), messageId: message.id, conversationId: roomId, chainId }));
       }
       return message;
     });
@@ -308,8 +310,9 @@ export class Team {
     this.#shared.delete(item.id);
     const exchange = this.#exchange(item.conversationId);
     if (exchange && exchange.to_bot_id === item.botId) this.#answer(exchange, result, files);
-    if (item.conversationId === TEAM_ROOM_ID && result.outcome === "done" && result.textMessageId) {
-      this.#add({ conversationId: item.botId, author: item.botId, kind: "handoff", body: "Answered in the Team room", data: { roomMessageId: result.textMessageId } satisfies RoomHandoffData, status: "done" });
+    const room = this.#db.prepare("SELECT name FROM conversations WHERE id = ? AND kind = 'room'").get(item.conversationId) as { name: string } | undefined;
+    if (room && result.outcome === "done" && result.textMessageId) {
+      this.#add({ conversationId: item.botId, author: item.botId, kind: "handoff", body: `Answered in ${room.name}`, data: { roomMessageId: result.textMessageId, roomId: item.conversationId } satisfies RoomHandoffData, status: "done" });
     }
   }
 
@@ -462,7 +465,7 @@ export class Team {
         .run(id, from.id, to.id, request, chainId, work?.conversationId ?? from.id, nowIso());
       this.#db.prepare("INSERT INTO conversations (id, kind, bot_id) VALUES (?, 'exchange', NULL)").run(id);
       const message = this.#add({ conversationId: id, author: from.id, kind: "text", body: request, status: "done" });
-      this.#add({ conversationId: TEAM_ROOM_ID, author: from.id, kind: "text", body: request, data: { exchangeId: id, toBotId: to.id } satisfies ExchangePostData, status: "done" });
+      for (const roomId of this.#roomsFor(from.id, to.id)) this.#add({ conversationId: roomId, author: from.id, kind: "text", body: request, data: { exchangeId: id, toBotId: to.id } satisfies ExchangePostData, status: "done" });
       const row = { exchangeId: id, fromBotId: from.id, toBotId: to.id, messages: 1, status: "waiting" } satisfies ExchangeHandoffData;
       for (const botId of [from.id, to.id]) this.#add({ conversationId: botId, author: from.id, kind: "handoff", body: firstLine(request), data: row, status: "done" });
       return enqueue(this.#db, { botId: to.id, source: "bot_request", text: requestPrompt(from.name, request), messageId: message.id, conversationId: id, chainId, exchangeId: id });
@@ -584,7 +587,7 @@ export class Team {
           this.#pointFileCards(path, durable);
           return { name: basename(path), path: durable };
         });
-        this.#add({ conversationId: TEAM_ROOM_ID, author: to.id, kind: "text", body: reply, data: { exchangeId: row.id, toBotId: row.from_bot_id, files: shared } satisfies ExchangePostData, status: "done" });
+        for (const roomId of this.#roomsFor(row.from_bot_id, to.id)) this.#add({ conversationId: roomId, author: to.id, kind: "text", body: reply, data: { exchangeId: row.id, toBotId: row.from_bot_id, files: shared } satisfies ExchangePostData, status: "done" });
         this.#refreshRows(row.id);
         return this.#queueReply(row, replyPrompt(to.name, row.request, reply, inbox, first));
       });
@@ -608,14 +611,19 @@ export class Team {
   #fail(row: ExchangeRow, reason: string, names?: { fromName: string; toName: string }): void {
     this.#db.prepare("UPDATE exchanges SET status = 'failed', reply = ?, replied_at = ? WHERE id = ?").run(reason, nowIso(), row.id);
     this.#refreshRows(row.id);
-    this.#add({
-      conversationId: TEAM_ROOM_ID,
+    for (const roomId of this.#roomsFor(row.from_bot_id, row.to_bot_id)) this.#add({
+      conversationId: roomId,
       author: "system",
       kind: "notice",
       body: `${names?.toName ?? this.#name(row.to_bot_id)} couldn't answer ${names?.fromName ?? this.#name(row.from_bot_id)}: ${reason}.`,
       data: { exchangeId: row.id } satisfies NoticeData,
       status: "done",
     });
+  }
+
+  #roomsFor(fromId: string, toId: string): string[] {
+    const rows = this.#db.prepare("SELECT room_id FROM room_members WHERE room_id <> ? AND bot_id IN (?, ?) GROUP BY room_id HAVING COUNT(*) = 2").all(TEAM_ROOM_ID, fromId, toId) as { room_id: string }[];
+    return [TEAM_ROOM_ID, ...rows.map((row) => row.room_id)];
   }
 
   // Sends a reply or a failure to the bot that asked, into the conversation its asking turn was writing to.

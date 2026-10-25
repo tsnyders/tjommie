@@ -1,0 +1,24 @@
+{
+  "name": "@tjommie/mobile",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "The Android companion: a Capacitor shell for the same UI, with native secure storage, a raw TCP transport and a QR scanner.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p .",
+    "native:apply": "node scripts/apply-native.mjs",
+    "android:add": "cap add android && node scripts/apply-native.mjs",
+    "android:sync": "cap sync android && node scripts/apply-native.mjs",
+    "android:debug": "node scripts/build-debug-apk.mjs"
+  },
+  "dependencies": {
+    "@capacitor/core": "^8.0.0"
+  },
+  "devDependencies": {
+    "@capacitor/android": "^8.0.0",
+    "@capacitor/cli": "^8.0.0"
+  }
+}

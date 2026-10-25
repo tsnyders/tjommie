@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { botPrompt, createBot, deleteBot, getStoredBot, listStoredBots, setPaused, sweepDeletedBotFolders, updateBot } from "./bots.ts";
 import { newId, openDb, type Db } from "./db.ts";
 import { RpcError } from "./server.ts";
+import { createAccount, updateAccount } from "./accounts-store.ts";
 import { tempRoot } from "./testing.ts";
 
 vi.mock("node:fs", async (importOriginal) => {
@@ -23,6 +24,33 @@ beforeEach(() => {
 });
 
 describe("bots store", () => {
+  it("pins new bots to the provider default and keeps existing pins when the default changes", () => {
+    createAccount(db, { id: "personal", provider: "claude", label: "Personal", kind: "subscription", folder: join(root, "personal") });
+    createAccount(db, { id: "work", provider: "claude", label: "Work", kind: "subscription", folder: join(root, "work") });
+    const first = createBot(db, botsDir, input);
+    expect(first.accountId).toBe("personal");
+    updateAccount(db, "work", { isDefault: true });
+    expect(getStoredBot(db, first.id).accountId).toBe("personal");
+    expect(createBot(db, botsDir, { ...input, name: "Second" }).accountId).toBe("work");
+  });
+
+  it("rejects missing and cross-provider account pins before creating a home", () => {
+    createAccount(db, { id: "codex", provider: "codex", label: "Codex", kind: "subscription", folder: join(root, "codex") });
+    expect(() => createBot(db, botsDir, { ...input, accountId: "missing" })).toThrow(/existing account/);
+    expect(() => createBot(db, botsDir, { ...input, accountId: "codex" })).toThrow(/provider/);
+    expect(listStoredBots(db)).toEqual([]);
+  });
+
+  it("clears the previous account's limit when explicitly switching accounts", () => {
+    for (const id of ["personal", "work"]) createAccount(db, { id, provider: "claude", label: id, kind: "subscription", folder: join(root, id) });
+    const bot = createBot(db, botsDir, { ...input, accountId: "personal" });
+    db.prepare("UPDATE bots SET limited_until = ? WHERE id = ?").run("2099-01-01T00:00:00.000Z", bot.id);
+    const changed = updateBot(db, bot.id, { accountId: "work" });
+    expect(changed.accountId).toBe("work");
+    expect(changed.limitedUntil).toBeNull();
+    expect(changed.homeFolder).toBe(bot.homeFolder);
+  });
+
   it("creates a bot with defaults, a home folder, notes.md and an inbox", () => {
     const bot = createBot(db, botsDir, input);
     expect(bot).toMatchObject({ name: "Researcher", autonomy: "folder", browser: false, paused: false, projectFolder: null, canMessage: [], limitedUntil: null });

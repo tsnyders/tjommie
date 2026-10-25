@@ -61,12 +61,13 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-async function session(autoAllow: boolean, startImmediately = true, resumeId: string | null = null) {
+async function session(autoAllow: boolean, startImmediately = true, resumeId: string | null = null, overrides: Partial<StartOptions> = {}, resolvedModel = "test-model", beforeThreadResponse?: (rpc: JsonRpcLines) => void) {
   const sent: { id: number | string; method?: string }[] = [];
   const rpc = new JsonRpcLines((line) => {
     const message = JSON.parse(line) as { id: number | string; method?: string };
     if (message.method === "thread/start" || message.method === "thread/resume") {
-      rpc.handleLine(JSON.stringify({ id: message.id, result: { thread: { id: "thread-1" }, model: "test-model" } }));
+      beforeThreadResponse?.(rpc);
+      rpc.handleLine(JSON.stringify({ id: message.id, result: { thread: { id: "thread-1" }, model: resolvedModel } }));
     } else {
       sent.push(message);
     }
@@ -93,6 +94,7 @@ async function session(autoAllow: boolean, startImmediately = true, resumeId: st
   vi.mocked(startCodexServer).mockResolvedValueOnce({ rpc, child, close });
   const codex = new CodexSession({ file: "codex", args: [] }, {
     ...options,
+    ...overrides,
     resumeId,
     mcpServers: [{ name: "tjommie", url: "http://127.0.0.1:47100/mcp", headers: {}, autoAllow }],
   });
@@ -275,6 +277,11 @@ describe("CodexSession steering", () => {
 
   it("keeps late usage while ignoring a completed turn's replayed start and content", async () => {
     const { codex, rpc, sent, events } = await session(true);
+    const sending = codex.send("Synthetic turn before Stop");
+    const request = sent.find((message) => message.method === "turn/start")!;
+    rpc.handleLine(JSON.stringify({ id: request.id, result: { turn: { id: "stopped" } } }));
+    await sending;
+    sent.length = 0;
     rpc.handleLine(JSON.stringify({ method: "turn/started", params: { turn: { id: "stopped" } } }));
     rpc.handleLine(JSON.stringify({ method: "turn/completed", params: { turn: { id: "stopped", status: "interrupted" } } }));
     events.length = 0;
@@ -283,7 +290,7 @@ describe("CodexSession steering", () => {
     rpc.handleLine(JSON.stringify({ method: "thread/tokenUsage/updated", params: { turnId: "stopped", tokenUsage: { last: { inputTokens: 10, cachedInputTokens: 2, outputTokens: 3, reasoningOutputTokens: 1 } } } }));
     await expect(codex.steer("Follow up")).resolves.toBe(false);
     expect(sent).toEqual([]);
-    expect(events).toEqual([{ type: "usage", model: "test-model", input: 8, cachedInput: 2, output: 3, reasoning: 1, costUsd: null }]);
+    expect(events).toEqual([{ type: "usage", eventId: expect.stringMatching(/^[a-f0-9]{64}$/), model: "test-model", input: 8, cachedInput: 2, output: 3, reasoning: 1, costUsd: null }]);
   });
 
   it("settles the current turn when a completion omits its ID", async () => {
@@ -500,5 +507,59 @@ describe("CodexSession steering", () => {
     const failure = new Error("no active turn to steer");
     rpc.failAll(failure);
     await expect(steered).rejects.toBe(failure);
+  });
+});
+
+
+describe("Codex API account transport", () => {
+  it.each([null, "saved-thread"])("does not publish restored usage before the model resolves or a new turn starts (resume %s)", async (resumeId) => {
+    const usage = { method: "thread/tokenUsage/updated", params: { threadId: "thread-1", turnId: "old-turn", tokenUsage: { last: { inputTokens: 20, cachedInputTokens: 1, outputTokens: 3, reasoningOutputTokens: 0 } } } };
+    const { codex, rpc, sent, events } = await session(true, false, resumeId, {}, "gpt-5.3-codex", (rpc) => rpc.handleLine(JSON.stringify(usage)));
+    await codex.start();
+    expect(events.filter((event) => event.type === "usage")).toEqual([]);
+    rpc.handleLine(JSON.stringify(usage));
+    expect(events.filter((event) => event.type === "usage")).toEqual([]);
+    const sending = codex.send("Synthetic new turn");
+    const request = sent.find((message) => message.method === "turn/start")!;
+    rpc.handleLine(JSON.stringify({ id: request.id, result: { turn: { id: "new-turn" } } }));
+    await sending;
+    rpc.handleLine(JSON.stringify({ ...usage, params: { ...usage.params, turnId: "new-turn" } }));
+    expect(events.filter((event) => event.type === "usage")).toEqual([expect.objectContaining({ model: "gpt-5.3-codex", input: 19 })]);
+  });
+  it("uses ephemeral storage and sends the key only over the private login RPC before creating a thread", async () => {
+    const { codex, rpc, sent } = await session(true, false, null, { authentication: { kind: "api_key", key: "synthetic-private-key" } }, "gpt-5.3-codex");
+    const starting = codex.start(); await waitFor(() => sent.find((message) => message.method === "account/login/start"));
+    expect(startCodexServer).toHaveBeenLastCalledWith(expect.objectContaining({ file: "codex" }), options.env, options.cwd, { ephemeralAuth: true });
+    expect(sent).toEqual([expect.objectContaining({ method: "account/login/start", params: { type: "apiKey", apiKey: "synthetic-private-key" } })]);
+    rpc.handleLine(JSON.stringify({ id: sent[0].id, result: {} })); await starting;
+  });
+  it.each([null, "saved-thread"])("rejects an unpriced resolved API model before dispatching work (resume %s)", async (resumeId) => {
+    const { codex, rpc, sent, child, events } = await session(true, false, resumeId,
+      { model: "gpt-5.3-codex", authentication: { kind: "api_key", key: "synthetic-private-key" } }, "unpriced-provider-alias");
+    const starting = codex.start(); const rejected = expect(starting).rejects.toThrow("without supported local pricing");
+    await waitFor(() => sent.some((message) => message.method === "account/login/start"));
+    rpc.handleLine(JSON.stringify({ id: sent[0].id, result: {} })); await rejected;
+    await expect(codex.send("This must not reach a model")).rejects.toThrow();
+    expect(sent.some((message) => message.method === "turn/start")).toBe(false);
+    expect(events.some((event) => event.type === "session")).toBe(false);
+    expect(child.exitCode).toBe(0);
+  });
+  it("redacts a rejected login payload and closes only its owned server", async () => {
+    const { codex, rpc, sent, child, events } = await session(true, false, null, { authentication: { kind: "api_key", key: "synthetic-private-key" } });
+    const starting = codex.start(); const rejected = expect(starting).rejects.toThrow("could not configure this API key");
+    await waitFor(() => sent.find((message) => message.method === "account/login/start"));
+    rpc.handleLine(JSON.stringify({ id: sent[0].id, error: { code: 401, message: "Bad key synthetic-private-key" } }));
+    await rejected; expect(child.exitCode).toBe(0); expect(JSON.stringify(events)).not.toContain("synthetic-private-key");
+  });
+  it("deduplicates repeated usage snapshots without dropping a later cumulative update", async () => {
+    const { codex, rpc, sent, events } = await session(true);
+    const sending = codex.send("Synthetic new turn");
+    const request = sent.find((message) => message.method === "turn/start")!;
+    rpc.handleLine(JSON.stringify({ id: request.id, result: { turn: { id: "turn-1" } } }));
+    await sending;
+    const params = { threadId: "thread-1", turnId: "turn-1", tokenUsage: { total: { inputTokens: 20 }, last: { inputTokens: 20, cachedInputTokens: 1, outputTokens: 3, reasoningOutputTokens: 0 } } };
+    const emit = () => rpc.handleLine(JSON.stringify({ method: "thread/tokenUsage/updated", params }));
+    emit(); emit(); params.tokenUsage.total.inputTokens = 40; emit();
+    expect(events.filter((event) => event.type === "usage")).toHaveLength(2);
   });
 });

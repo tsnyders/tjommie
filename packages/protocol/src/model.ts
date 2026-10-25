@@ -29,6 +29,9 @@ export const Bot = z.object({
   instructions: z.string(),
   provider: Provider,
   model: z.string(),
+  accountId: z.string().nullable().optional(), // Older v1 snapshots and fixtures omit the pin.
+  effectiveAccountId: z.string().nullable().optional(),
+  usingFallback: z.boolean().optional(),
   autonomy: Autonomy,
   homeFolder: z.string(),
   projectFolder: z.string().nullable(),
@@ -49,6 +52,7 @@ const botFields = {
   instructions: z.string().max(20_000),
   provider: Provider,
   model: z.string().min(1).max(100),
+  accountId: z.string().min(1).max(256).nullable().optional(),
   autonomy: Autonomy,
   projectFolder: z.string().nullable(),
   browser: z.boolean(),
@@ -167,6 +171,19 @@ export const Exchange = z.object({
 });
 export type Exchange = z.infer<typeof Exchange>;
 
+export const Room = z.object({
+  id: z.string(),
+  name: z.string(),
+  botIds: z.array(z.string()),
+  everyone: z.boolean(),
+  createdAt: z.string().nullable(),
+});
+export type Room = z.infer<typeof Room>;
+export const RoomInput = z.object({ name: z.string().trim().min(1).max(60), botIds: z.array(z.string()).min(1) });
+export type RoomInput = z.infer<typeof RoomInput>;
+export const RoomPatch = RoomInput.partial();
+export type RoomPatch = z.infer<typeof RoomPatch>;
+
 // Payload schemas are separate from Message.data so existing wire readers keep
 // accepting records. messageData validates a payload before a typed reader uses it.
 export const ExchangeHandoffData = z.strictObject({
@@ -177,7 +194,7 @@ export const ExchangeHandoffData = z.strictObject({
   status: Exchange.shape.status,
 });
 export type ExchangeHandoffData = z.infer<typeof ExchangeHandoffData>;
-export const RoomHandoffData = z.strictObject({ roomMessageId: z.string() });
+export const RoomHandoffData = z.strictObject({ roomMessageId: z.string(), roomId: z.string().optional() });
 export type RoomHandoffData = z.infer<typeof RoomHandoffData>;
 export const HandoffData = z.union([ExchangeHandoffData, RoomHandoffData]);
 export type HandoffData = z.infer<typeof HandoffData>;

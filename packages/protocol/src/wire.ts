@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { browserMethods } from "./browser.ts";
 import { googleEvents, googleMethods } from "./google.ts";
+import { accountEvents, accountMethods } from "./accounts.ts";
+import { remoteEvents, remoteMethods } from "./remote.ts";
 import {
   Approval,
   ApprovalDecision,
@@ -12,11 +14,15 @@ import {
   ModelInfo,
   Provider,
   ProviderSetup,
+  Room,
+  RoomInput,
+  RoomPatch,
   Routine,
   RoutineInput,
   RoutinePatch,
   RoutineRun,
   Settings,
+  TEAM_ROOM_ID,
 } from "./model.ts";
 
 export const PROTOCOL_VERSION = 1;
@@ -37,6 +43,8 @@ const PendingRoutineNotification = z.object({
 
 // Every request the daemon answers: params are validated on arrival, results are what handlers return.
 export const methods = {
+  ...remoteMethods,
+  ...accountMethods,
   ...browserMethods,
   ...googleMethods,
   "setup.status": { params: Empty, result: z.array(ProviderSetup) },
@@ -58,8 +66,12 @@ export const methods = {
   "chat.stop": { params: z.object({ botId: z.string() }), result: Empty },
   "chat.retry": { params: z.object({ messageId: z.string(), botId: z.string().optional() }), result: Message },
   "approvals.respond": { params: z.object({ approvalId: z.string(), decision: ApprovalDecision }), result: Approval },
-  "room.history": { params: z.object(Page), result: MessagePage },
-  "room.post": { params: z.object({ text: z.string().trim().min(1).max(100_000) }), result: Message },
+  "room.history": { params: z.object({ ...Page, roomId: z.string().default(TEAM_ROOM_ID) }), result: MessagePage },
+  "room.post": { params: z.object({ roomId: z.string().default(TEAM_ROOM_ID), text: z.string().trim().min(1).max(100_000) }), result: Message },
+  "rooms.list": { params: Empty, result: z.array(Room) },
+  "rooms.create": { params: RoomInput, result: Room },
+  "rooms.update": { params: z.object({ id: z.string(), patch: RoomPatch }), result: Room },
+  "rooms.delete": { params: Id, result: Empty },
   "exchanges.get": { params: Id, result: MessagePage.extend({ exchange: Exchange }) },
   "routines.list": { params: z.object({ botId: z.string().optional() }), result: z.array(Routine) },
   "routines.create": { params: RoutineInput, result: Routine },
@@ -76,6 +88,8 @@ const Notification = z.object({ botId: z.string(), title: z.string(), body: z.st
 
 // Everything the daemon pushes to connected clients.
 export const events = {
+  ...remoteEvents,
+  ...accountEvents,
   ...googleEvents,
   "message.added": Message,
   "message.updated": Message,
@@ -95,6 +109,8 @@ export const events = {
   ]),
   "routine.updated": Routine,
   "routine.deleted": Id,
+  "room.updated": Room,
+  "room.deleted": Id,
   "routine.run": RoutineRun,
   "settings.changed": Settings,
 } as const;

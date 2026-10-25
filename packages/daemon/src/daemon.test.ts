@@ -194,6 +194,29 @@ it("wires settings, routine CRUD and the Team room through the WebSocket methods
   expect(client.events.some((event) => event.event === "routine.deleted")).toBe(true);
 });
 
+it("creates a room, posts into it, and broadcasts room and message events", async () => {
+  const { client } = await harness();
+  const bot = await client.call("bots.create", input("Planner"));
+  const room = await client.call("rooms.create", { name: "Planning", botIds: [bot.id] });
+  expect(await client.call("rooms.list", {})).toMatchObject([
+    { id: "team", name: "Everyone", botIds: [bot.id], everyone: true },
+    { id: room.id, name: "Planning", botIds: [bot.id], everyone: false },
+  ]);
+  const post = await client.call("room.post", { roomId: room.id, text: "Planning note" });
+  expect(post.conversationId).toBe(room.id);
+  expect((await client.call("room.history", { roomId: room.id })).messages).toMatchObject([{ id: post.id, body: "Planning note" }]);
+  expect(client.events).toContainEqual({ type: "event", event: "room.updated", data: room });
+  expect(client.events).toContainEqual({ type: "event", event: "message.added", data: post });
+  await expect(client.call("room.post", { roomId: bot.id, text: "Wrong kind" })).rejects.toThrow(/not_found/);
+  await expect(client.call("room.history", { roomId: bot.id })).rejects.toThrow(/not_found/);
+  const renamed = await client.call("rooms.update", { id: room.id, patch: { name: "Plans" } });
+  expect(renamed.name).toBe("Plans");
+  expect(client.events).toContainEqual({ type: "event", event: "room.updated", data: renamed });
+  await client.call("rooms.delete", { id: room.id });
+  expect(client.events).toContainEqual({ type: "event", event: "room.deleted", data: { id: room.id } });
+  expect((await client.call("rooms.list", {})).map((entry) => entry.id)).toEqual(["team"]);
+});
+
 it.each(["folder", "ask"] as const)("attaches session MCP servers and revokes their token when closing (%s)", async (autonomy) => {
   const { client, sessions } = await harness();
   const bot = await client.call("bots.create", input("Browser", { browser: true, autonomy }));

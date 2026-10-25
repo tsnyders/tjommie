@@ -1,15 +1,20 @@
 "use client";
 
 import { useMemo, useState, type ReactNode } from "react";
-import { Check, Folder, Globe, Loader, Shield, Sparkles, X, type LucideIcon } from "lucide-react";
+import Link from "next/link";
+import { ChartColumn, Check, Folder, Gauge, Globe, Loader, Monitor, Shield, Sparkles, X, type LucideIcon } from "lucide-react";
 import type { Bot, Message, Routine } from "@tjommie/protocol";
+import { accountFor, limitLabel, topLimit, when } from "@/lib/accounts";
 import { recentActivity } from "@/lib/activity";
 import { desktop } from "@/lib/desktop";
 import { clock } from "@/lib/format";
 import { AUTONOMY_LINE, modelLabel, stateLabel } from "@/lib/labels";
 import { draftFrom, EMPTY_ROUTINE, localZone } from "@/lib/routine-form";
 import { removeRoutine, saveRoutine } from "@/lib/routines";
+import { nativeBrowserAvailable } from "@/lib/native-capability";
 import { useApp } from "@/lib/store";
+import { useUsage } from "@/lib/use-usage";
+import { botDayText, usageHref } from "@/lib/usage";
 import { BotAvatar } from "../bot-avatar";
 import { RoutineEditor } from "../routines/routine-editor";
 import { RoutineRows } from "../routines/routine-rows";
@@ -22,7 +27,7 @@ export function BotPanel({ bot, messages, onOpenBrowser }: { bot: Bot; messages:
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 pb-4">
         <Summary bot={bot} />
-        {bot.browser && <BrowserCard onOpen={onOpenBrowser} />}
+        {bot.browser && <BrowserCard bot={bot} onOpen={onOpenBrowser} />}
         <PanelRoutines bot={bot} routines={routines} />
         <SectionLabel>Recent activity</SectionLabel>
         {steps.length === 0 ? (
@@ -101,6 +106,10 @@ function OpenFolder({ path, label }: { path: string; label: string }) {
 
 // The avatar has a column of its own; the name and the rows under it share the other (WF1 Phase 1).
 function Summary({ bot }: { bot: Bot }) {
+  const accounts = useApp((state) => state.accounts);
+  const account = accounts ? accountFor(bot, accounts) : undefined;
+  const { report } = useUsage({ kind: "today", filters: { bot: bot.id } });
+  const limit = account ? topLimit([account]) : null;
   return (
     <section className="mt-3 flex gap-3 rounded-[12px] bg-card p-4">
       <BotAvatar color={bot.color} shape={bot.shape} size={40} className="shrink-0" />
@@ -115,7 +124,24 @@ function Summary({ bot }: { bot: Bot }) {
           )}
         </div>
         <div className="mt-1 flex flex-col gap-1.5 text-[13px] leading-[18px] text-body">
-          <Row icon={Sparkles}>{modelLabel(bot)}</Row>
+          <Row icon={Sparkles}>
+            {account ? `${account.label} · ` : ""}
+            {modelLabel(bot)}
+            {bot.usingFallback ? " (fallback)" : ""}
+          </Row>
+          {report && (
+            <Row icon={ChartColumn}>
+              <Link href={usageHref({ bot: bot.id })} className="hover:underline">
+                {botDayText(report.summary)}
+              </Link>
+            </Row>
+          )}
+          {limit && limit.usedPercent !== null && (
+            <Row icon={Gauge}>
+              {Math.round(limit.usedPercent)}% of {limitLabel(limit)}
+              {limit.resetsAt ? `, resets ${when(limit.resetsAt, new Date())}` : ""}
+            </Row>
+          )}
           <Row icon={Shield}>{AUTONOMY_LINE[bot.autonomy]}</Row>
           <Row icon={Folder} action={<OpenFolder path={bot.homeFolder} label="Open the home folder" />}>
             Home folder
@@ -131,7 +157,19 @@ function Summary({ bot }: { bot: Bot }) {
   );
 }
 
-function BrowserCard({ onOpen }: { onOpen: () => void }) {
+function BrowserCard({ bot, onOpen }: { bot: Bot; onOpen: () => void }) {
+  // Without the desktop app's bridge (a web or phone client) the browser can't be shown: it runs on the PC, and nothing here pretends otherwise.
+  if (!nativeBrowserAvailable()) {
+    return (
+      <section className="mt-4 flex items-center gap-3 rounded-[12px] bg-card p-3">
+        <Monitor className="size-5 shrink-0 text-icon" aria-hidden />
+        <div className="min-w-0 flex-1">
+          <h3 className="text-[13px] font-semibold leading-[18px] text-title">Browser</h3>
+          <p className="mt-0.5 text-[12px] leading-[18px] text-secondary">Runs on your PC. Open Tjommie on that PC to watch {bot.name} or take over.</p>
+        </div>
+      </section>
+    );
+  }
   return (
     <section className="mt-4 flex items-center gap-3 rounded-[12px] bg-card p-3">
       <Globe className="size-5 shrink-0 text-icon" aria-hidden />

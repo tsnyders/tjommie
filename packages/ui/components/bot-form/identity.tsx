@@ -12,8 +12,8 @@ import { FIELD, Label } from "../controls";
 // Each picker is one radio group: Tab reaches the chosen swatch, and the arrow keys move the choice.
 export function Identity({ form, onChange, nameError }: { form: BotForm; onChange: (form: BotForm) => void; nameError: string | null }) {
   return (
-    <div className="flex gap-6">
-      <div className="flex size-[156px] shrink-0 items-center justify-center rounded-[14px] bg-card">
+    <div className="flex gap-6 max-sm:flex-col max-sm:gap-4">
+      <div className="flex size-[156px] shrink-0 items-center justify-center rounded-[14px] bg-card max-sm:self-center">
         <BotAvatar color={form.color} shape={form.shape} size={96} />
       </div>
       <div className="min-w-0 flex-1">
@@ -31,7 +31,7 @@ export function Identity({ form, onChange, nameError }: { form: BotForm; onChang
             {nameError}
           </p>
         )}
-        <RadioGroup aria-label="Color" value={form.color} onValueChange={(color) => onChange({ ...form, color })} className="mt-3 flex justify-between gap-2">
+        <RadioGroup aria-label="Color" value={form.color} onValueChange={(color) => onChange({ ...form, color })} className="mt-3 flex justify-between gap-2 max-sm:flex-wrap max-sm:justify-start max-sm:gap-3">
           {BotColor.options.map((color) => (
             <Radio.Root
               key={color}
@@ -42,7 +42,7 @@ export function Identity({ form, onChange, nameError }: { form: BotForm; onChang
             />
           ))}
         </RadioGroup>
-        <RadioGroup aria-label="Shape" value={form.shape} onValueChange={(shape) => onChange({ ...form, shape })} className="mt-4 flex justify-between gap-2">
+        <RadioGroup aria-label="Shape" value={form.shape} onValueChange={(shape) => onChange({ ...form, shape })} className="mt-4 flex justify-between gap-2 max-sm:flex-wrap max-sm:justify-start max-sm:gap-3">
           {BotShape.options.map((shape) => (
             <Radio.Root
               key={shape}

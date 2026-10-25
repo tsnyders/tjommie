@@ -18,7 +18,7 @@ The Phase 1 spikes ran against Claude Code 2.1.280 and Codex CLI 0.155.1 while t
 3. **Claude reports usage percentages.** `rate_limit_event` includes the five-hour and seven-day utilization, so Claude shows live percentages like Codex. Its `total_cost_usd` is cumulative per CLI process, so each turn's cost is the difference from the previous one.
 4. **Bots don't get the person's MCP servers.** Because their CLI folder is Tjommie's own, bots only get the MCP servers Tjommie attaches. The per-bot Tools picker (Later) becomes the way to add Gmail, GitHub and similar tools.
 5. **Codex bots at "Own folder" use Codex's elevated Windows sandbox (revised 2026-09-27).** The first spike used `windows.sandbox = "unelevated"`, which needs no admin and enforces writes. Later measurements (Codex 0.155.1) showed it doesn't limit reads or local connections: a bot's shell could read any file of the person's and reach `127.0.0.1` without asking. The current implementation configures workspace-write with `network_access: false`, uses `windows.sandbox = "elevated"` for "Own folder", and checks ACL protection for Tjommie's sensitive data. Elevated sandbox setup requires a one-time admin prompt. This does not block all profile reads or local connections; the README describes the remaining limits. See section 5.4 and `packages/daemon/src/providers/codex.ts` / `packages/daemon/src/windows-acl.ts` for current details.
-6. **Codex sign-in doesn't need a terminal.** The app-server's `account/login/start` returns OpenAI's own sign-in URL, which the app opens in the browser. Claude's sign-in opens its own `claude auth login` in a console window.
+6. **Codex sign-in doesn't need a terminal.** The app-server's `account/login/start` returns OpenAI's own sign-in URL, which the app opens in the browser. Claude sign-in also runs hidden and uses the provider's browser callback; the owner requires no terminal windows.
 7. **Stop and steering work on both CLIs.** Claude reads a message written mid-turn at its next step, and stops on an `interrupt` control message. Codex uses `turn/steer` and `turn/interrupt`.
 8. **Browser spike and subsequent change.** Both CLIs drove Playwright MCP on a per-bot profile folder, and the profile kept its data. The original external "Show window" design is superseded by the owner's 2026-10-22 requirement: daemon-owned browsing presented interactively inside the application's side panel (section 5.7).
 9. **Codex's built-in extras are off for bots.** Codex 0.155.1 turns several of its own features on by default: ChatGPT apps, browser use (which drives the person's own Chrome), computer use, plugins and memories. With them on, a browsing request went to the person's real Chrome instead of the bot's own browser. Every bot thread turns them off, so bots only use Tjommie's tools.
@@ -140,7 +140,7 @@ shared-files\            files one bot shares with another, held until delivery 
 - The client sends `hello` with its protocol version and the token. The daemon closes the connection with code `4003` on a version mismatch; a successful connection receives `{ type: "welcome", protocol }`. The welcome carries only the protocol version; there is no capability negotiation. The client rejects an unexpected welcome version. See `packages/protocol/src/wire.ts`, `packages/daemon/src/server.ts`, and `packages/client/src/client.ts`.
 - **Requests** (client to daemon) carry an id and get exactly one response. Groups:
   - Phase 1: `bots.*`, `chat.*` (send, stop, history), `approvals.respond`, `room.*`, `exchanges.get`, `routines.*`, `setup.status`, `settings.*`
-  - Phase 2: `accounts.*`, `usage.query`, `terminal.*`
+  - Phase 2: `accounts.*`, `usage.query`
   - Phase 3: `devices.*`, `pairing.create`
 - **Events** (daemon to client): `message.added`, `message.updated`, `message.delta`, `bot.updated`, `bot.deleted`, `approval.added`, `approval.resolved`, `setup.changed`, `setup.signInEnded`, `notify`, `routine.updated`, `routine.deleted`, `routine.run`, and `settings.changed`. Phase 1 does not emit `usage.updated`; usage is recorded per turn in the database. The protocol event schemas are authoritative in `packages/protocol/src/wire.ts`.
 - Every message is a zod schema in `packages/protocol`, validated at both ends.
@@ -355,18 +355,18 @@ Neither CLI knows the other exists. Each only sees plain text through the daemon
 
 ### 8.1 Accounts
 
-- **Where.** Settings → Accounts (WF4's "Models" nav item becomes "Accounts"). Designed in OpenPencil first. Accounts are grouped by provider, each with a name you choose ("Claude (Work)", "Claude (Personal)", "Codex (Main)"), its type, sign-in status and usage.
+- **Where.** Settings → Accounts (WF4's "Models" nav item becomes "Accounts"). The screen follows the Accounts visual design and the Phase 2 implementation plan. Accounts are grouped by provider, each with a name you choose ("Claude (Work)", "Claude (Personal)", "Codex (Main)"), its type, sign-in status and usage.
 - **Subscription sign-in** (Claude Pro/Max, ChatGPT plans):
   - **Its own folder.** The app creates `accounts\<id>\` and points that CLI at it: `CLAUDE_CONFIG_DIR` for Claude, `CODEX_HOME` for Codex. It's the same approach as the `kuumba-paseo` fork's provider profiles.
-  - **Signing in.** Each provider's own sign-in, pointed at that account's folder. Claude: `claude auth login` in a console window (Phase 2 may move it into a small terminal view so it also works from the phone). Codex: the app-server's `account/login/start` returns OpenAI's sign-in URL, which opens in the browser; a device code (`chatgptDeviceCode`) works from any device. Phase 1 uses exactly this for its single account per provider.
+  - **Signing in.** Each provider's own sign-in, pointed at that account's folder. The owner's no-terminal requirement supersedes the original console/terminal plan: Claude runs hidden `claude auth login --claudeai` and completes through the system browser's loopback callback. This integration does not offer manual-code entry. Codex uses the app-server's `account/login/start` and opens its returned URL in the system browser. The backend owns the first browser launch; reopening a returned URL is an explicit user action.
   - **The app never handles your login.** The CLI stores it in that folder. The app never sees or reads your password or token.
 - **API key** (pay per use):
   - **Stored safely.** Kept in Windows Credential Manager.
-  - **Claude** gets the key as `ANTHROPIC_API_KEY` in its own process only.
-  - **Codex** gets it through `codex login --with-api-key` into the account's folder, with Codex set to keep credentials in the OS keyring.
+  - **Claude** gets the key as `ANTHROPIC_API_KEY`, with supported subprocess environment scrubbing enabled. This does not protect it from unrestricted code running under the same Windows user.
+  - **Codex** gets it through the owned app-server's stdin RPC with an ephemeral credential store. Windows Credential Manager is the single persistent API-key store; the key is not copied into a second CLI store.
   - **Fallback.** A key can be marked as the fallback for its provider.
   - **Spending cap.** Each key gets a spending cap, set when the key is added.
-- **Bots** are pinned to one account. The "Model" row becomes "Account and model". New bots get the provider's first account.
+- **Bots** are pinned to one account. The "Model" row becomes "Account and model". New bots get the provider's selected default account; changing that default does not rebind existing bots.
 
 ### 8.2 When an account hits its limit
 
@@ -381,22 +381,23 @@ Neither CLI knows the other exists. Each only sees plain text through the daemon
 - **Recording starts in Phase 1.** The daemon saves one record per turn: bot, account, model, tokens (input, cached, output, reasoning), and any cost the provider reports. The screens ship in Phase 2.
 - **Cost.**
   - **Claude** reports its own cost per turn (`total_cost_usd`).
-  - **Codex** reports token usage but no cost in Phase 1 (`costUsd` is null). Calculating Codex cost from a per-model price list, including refresh and bundled fallback behavior, is deferred to Phase 2.
+  - **Codex** reports token usage. Phase 2 uses a dated, bundled price snapshot for exact supported model IDs. Unknown models remain unpriced; paid Codex work is refused when no supported price is known.
 - **Screens.**
-  - **Usage page** (Settings → Usage): today, this week and this month; tokens and cost by bot, account and model; a daily bar chart; each account's limit status.
-  - **Each bot's right panel:** "Today: 1.2M tokens · $3.40".
+  - **Usage page** (Settings → Usage): today, this week, this month and this calendar year to date; tokens and cost by bot, account and model; daily bars for week/month and monthly bars for year. Provider allowance cards show each available quota window, reset, plan/account metadata, provider credits and extra-usage status. Failed refreshes retain the last successful reading with its age. Missing values are unknown, never fabricated as zero.
+  - **Combined cost estimate:** at the owner's request, sum the API-equivalent costs across subscription and API-key token usage in a separately labeled estimate. Keep actual API spend and subscription API value separately labeled. The combined number is not the subscription bill, and remains partial or unknown if any usage is unpriced.
+  - **Each bot's right panel:** tokens with separately labeled "Spent" and "API value" amounts, including when fallback use mixes account kinds.
   - **Accounts screen:** today and this month per account.
 - **Limits shown.** Both providers show live numbers ("62% of 5-hour limit, resets 3:45 PM"): Codex from `account/rateLimits/updated`, Claude from `rate_limit_event` (each window's utilization).
 - **Money, labelled honestly.**
-  - API-key accounts show "Spent: $12.40", which is real money.
+  - API-key accounts show recorded "Spent" amounts, with estimates labeled and incomplete totals kept unknown. This local accounting is not a provider invoice.
   - Subscription accounts show "API value: $48.10", which is what the same tokens would cost at API prices.
-- **Spending caps** on API keys: a notification at 80%, and at 100% bots stop using that key.
+- **Spending caps** on API keys cover lifetime recorded API spending, with notifications at 80% and 100%. At the cap, Tjommie requests Stop and blocks later work. Provider charges may exceed the cap during a turn or differ from local estimates; this is not a guaranteed billing ceiling. Unknown completed costs block further key use instead of counting as zero.
 
 ## 9. Phones and remote access (Phases 2.5 and 3)
 
 ### 9.1 Phase 2.5: phone screens
 
-- **Design in OpenPencil first:** bot list (home), bot chat, right-panel contents as a pull-up sheet (routines, activity, usage), Team room, exchange view, approval cards, New bot, Accounts with the sign-in terminal, Usage, Settings, Pair / scan, Devices.
+- **Visual designs first:** bot list (home), bot chat, right-panel contents as a pull-up sheet (routines, activity, usage), Team room, exchange view, approval cards, New bot, Accounts with browser-based sign-in, Usage, Settings, Pair / scan, Devices. The original tool choice was OpenPencil; where that integration is unavailable, the Phase 2.5 plan uses a reviewable local HTML visual specification. Pair / scan and Devices remain clearly labeled future Phase 3 designs.
 - **Build** them into the same web UI as a narrow-screen layout, testable by narrowing the desktop window.
 
 ### 9.2 Phase 3: connecting from anywhere
@@ -426,7 +427,7 @@ Neither CLI knows the other exists. Each only sees plain text through the daemon
 ## 10. Provider terms: rules the code must follow
 
 1. **Official CLIs only.** Run the unmodified official CLIs, and never use the Claude Agent SDK. Anthropic allows "an end user … signing in to the unmodified Claude Code binary with their own Claude subscription". It does not allow third-party products built on the Agent SDK to offer Claude subscription login.
-2. **Sign-in only through the CLI's own flow** (`claude auth login`, `codex login`). Never read, copy, store, send or proxy CLI credential files or tokens. That also rules out Claude's unofficial usage endpoint, which needs the token.
+2. **Sign-in only through the CLI's own flow** (`claude auth login`, `codex login`). The owner's 2026-10-22 request for Paseo-style live Usage adds one narrow exception to the earlier CLI-only metadata rule: the backend may read the selected Claude subscription account's OAuth access token from its own `.credentials.json` solely for the fixed HTTPS `/api/oauth/usage` metadata request. It must not expose, log, duplicate, refresh or modify that token or credential file, follow redirects, search global profiles, or use it for model calls. This endpoint follows Paseo's implementation and is not a guaranteed stable third-party API; unavailable/error readings preserve old data honestly. Codex allowance metadata continues through the CLI app-server RPC with no credential-file reader. Implementation verification uses synthetic credential files and responses only; agents do not inspect owner credentials or make owner account requests.
 3. **No automatic switching between subscription accounts.** A bot never moves from one subscription account to another without your tap. Automatic fallback goes only to API-key accounts. Anthropic's limits assume "ordinary, individual usage" and its policy bans coordinating accounts to "circumvent product guardrails". OpenAI bans circumventing "any rate limits".
 4. **Clean environments.** Strip API-key variables from each CLI's environment unless the bot is on an API-key account.
 5. **No Antigravity for now.** Google's terms call using a third-party tool with an Antigravity login a breach, and `agy` can't run two Google logins at once.
@@ -462,7 +463,7 @@ Each phase ends with a demo you approve before the next one starts. The spec cov
 | Phase | Screens |
 |---|---|
 | 1 | WF1 main chat (dark and light), WF2 Agents overview, WF3 New bot and edit bot, Team room, exchange view, routine editor, first-run setup, Settings (General, Bots) |
-| 2 | Accounts, sign-in terminal, Usage; the bot's "Account and model" row |
+| 2 | Accounts, browser-based sign-in, Usage; the bot's "Account and model" row |
 | 2.5 | Phone layouts of everything above |
 | 3 | Devices, Pair a device (QR and code), Connect to another computer, host switcher |
 | 4 | Full WF1 right panel (live screen, Take over, Pause, Stop, Chrome profile, Logins), expanded computer view, WF4 Logins, Chrome profiles |
@@ -477,8 +478,8 @@ In Phase 1:
 | Phase | Work | Demo |
 |---|---|---|
 | 1 Core app | Spikes (12.3). Design the missing screens in OpenPencil (Team room, exchange view, routine editor, bot settings, first-run setup, Phase 1 right panel). Build the daemon, desktop app, UI, both adapters, approvals, autonomy, bot to bot, Team room, routines, browser, desktop notifications, usage recording, Windows installer | Create a Claude bot and a Codex bot, one of them from a Suggestion. Chat with both; steer a busy bot; Stop; approve with Always allow. The Claude bot asks the Codex bot for something; rows in both chats; full exchange in the Team room; join from the exchange view. A bot uses its own Chrome window, and a site you signed in to by hand stays signed in. A routine runs on schedule with the window closed. A bot proposes a routine from chat and you approve it. The installer installs. Screenshots match WF1 to WF3, apart from the parts that arrive in later phases |
-| 2 Accounts | Design Accounts, sign-in terminal and Usage. Build multi-account (subscription folders, API keys), pinning, limit cards, API-key fallback, spending caps, usage and cost | Sign in two Claude accounts and one Codex account in the app. Add an API key with a tiny cap and watch the cap stop it. Pin bots. The Usage page shows tokens and cost by bot, account and model. Limit handling is shown live if a real limit happens, otherwise proven by tests on captured real limit output |
-| 2.5 Phone UI | Phone designs in OpenPencil, then the narrow layout | Every screen at phone width matches its design |
+| 2 Accounts | Design Accounts, browser-based sign-in and Usage. Build multi-account (subscription folders, API keys), pinning, limit cards, API-key fallback, spending caps, usage and cost | Sign in two Claude accounts and one Codex account in the app. Add an API key with a tiny cap and watch the cap stop it. Pin bots. The Usage page shows tokens and cost by bot, account and model. Limit handling is shown live if a real limit happens, otherwise proven by tests on captured real limit output |
+| 2.5 Phone UI | Reviewed phone visual designs, then the narrow layout | Every screen at phone width matches its design |
 | 3 Remote | Start at login, tray, pairing, devices and revoke, relay (public and self-host guide), same-Wi-Fi connections, Noise encryption, Android app, push, host switcher, desktop auto-update | The app starts at login. Pair an Android phone by QR over mobile data. Chat, approve and create a bot from the phone. A push arrives when a bot waits. Pair a second PC with the code. Revoke the phone and it's cut off at once |
 | 4 Computer | Live screen of the bot's Chrome, Take over, Pause, Stop, Logins vault, live Agents thumbnails | Watch a bot's Chrome live; take over to type a PIN; Pause and Stop. The vault fills a login, and a test proves the password never reaches the model |
 
