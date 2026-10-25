@@ -1,14 +1,39 @@
 import { readFileSync } from "node:fs";
+import type { Bot, Room } from "@tjommie/protocol";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { mentionEscape, RoomComposer, withAt } from "./room-composer";
+import { mentionOptions } from "@/lib/mentions";
+import { roomBots } from "@/lib/state";
+import { everyoneLabel, mentionEscape, RoomComposer, withAt } from "./room-composer";
+
+const growth: Room = { id: "r1", name: "Growth", botIds: ["b1", "b2"], everyone: false, createdAt: "2026-10-25T09:00:00.000Z" };
 
 describe("RoomComposer", () => {
   it("points at the mention list only while it's open", () => {
-    const html = renderToStaticMarkup(<RoomComposer />);
+    const html = renderToStaticMarkup(<RoomComposer room={growth} members={[]} />);
     expect(html).toContain('role="combobox"');
     expect(html).toContain('aria-expanded="false"');
     expect(html).not.toContain("aria-controls");
+  });
+
+  it("names the room it posts in", () => {
+    const html = renderToStaticMarkup(<RoomComposer room={growth} members={[]} />);
+    expect(html).toContain('aria-label="Message Growth"');
+    expect(html).toContain('placeholder="Message Growth. Type @ to mention a bot."');
+  });
+});
+
+describe("mentions in a room", () => {
+  it("offers only the room's own bots, and @everyone means all of them", () => {
+    const bots = [{ id: "b1", name: "Sales" }, { id: "b2", name: "Marketing" }, { id: "b3", name: "Chief" }] as Bot[];
+    const members = roomBots(growth, bots);
+    expect(mentionOptions("", members).map((option) => option.name)).toEqual(["Sales", "Marketing", "everyone"]);
+    expect(mentionOptions("Ch", members)).toEqual([]); // Chief isn't in Growth
+    expect(everyoneLabel(2)).toBe("All 2 bots in this room");
+    expect(everyoneLabel(1)).toBe("All 1 bot in this room");
+    const source = readFileSync(new URL("./room-composer.tsx", import.meta.url), "utf8");
+    expect(source).toContain("mentionOptions(typed.query, members)");
+    expect(source).toContain("findMentions(sentText, members)"); // "nobody will reply" counts the room's bots only
   });
 });
 
@@ -42,7 +67,7 @@ describe("a post that finishes after more was typed", () => {
   it("clears the box only if nothing was typed since it was sent", () => {
     const source = readFileSync(new URL("./room-composer.tsx", import.meta.url), "utf8");
     expect(source).toContain("if (revision.now() === sentRevision) edit(\"\", 0);");
-    expect(source).toContain('request("room.post", { text: sentText })');
+    expect(source).toContain('request("room.post", { roomId: room.id, text: sentText })');
     expect(source).toContain("guard.begin()");
   });
 });

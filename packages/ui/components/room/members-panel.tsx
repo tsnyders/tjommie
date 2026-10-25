@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { Info } from "lucide-react";
+import type { Bot, Room } from "@tjommie/protocol";
 import { stateLabel, STATE_TEXT } from "@/lib/labels";
 import { useApp } from "@/lib/store";
 import { usePhone } from "@/lib/use-phone";
@@ -8,19 +9,26 @@ import { cn } from "@/lib/utils";
 import { BotAvatar } from "../bot-avatar";
 import { PanelBar } from "../panel-bar";
 
-// The Team room's right panel (WF5): every bot with its state in words, and the chain limit with a way to change it.
-export function MembersPanel({ onHide }: { onHide: () => void }) {
+// A room's right panel (WF5): its bots with their state in words, and the chain limit with a way to change it. Everyone holds every bot; another
+// room's members can be changed here (onEdit opens the room form).
+export function MembersPanel({ room, members, onEdit, onHide }: { room: Room; members: Bot[]; onEdit: () => void; onHide: () => void }) {
   const phone = usePhone();
   const { ref: sheetRef, onKeyDown: sheetKeys } = useSheet<HTMLElement>(phone, onHide, '[aria-label="Hide the members"]');
-  const bots = useApp((state) => state.bots);
   const settings = useApp((state) => state.settings);
   return (
-    <aside ref={sheetRef} onKeyDown={sheetKeys} aria-label="Team room members" className="mobile-motion-sheet flex w-[460px] shrink-0 flex-col border-l border-divider bg-canvas max-sm:absolute max-sm:inset-0 max-sm:z-20 max-sm:w-auto max-sm:border-l-0">
+    <aside ref={sheetRef} onKeyDown={sheetKeys} aria-label={`${room.name} members`} className="mobile-motion-sheet flex w-[460px] shrink-0 flex-col border-l border-divider bg-canvas max-sm:absolute max-sm:inset-0 max-sm:z-20 max-sm:w-auto max-sm:border-l-0">
       <PanelBar settingsHref="/settings/?section=bots" settingsLabel="Bots settings" hideLabel="Hide the members" onHide={onHide} />
       <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-4">
-        <h2 className="mt-4 text-[13px] font-semibold leading-[18px] text-label">Members</h2>
+        <div className="mt-4 flex items-center justify-between gap-3">
+          <h2 className="text-[13px] font-semibold leading-[18px] text-label">Members</h2>
+          {!room.everyone && (
+            <button type="button" onClick={onEdit} className="text-[13px] leading-[18px] text-accent hover:underline max-sm:min-h-11">
+              Edit members
+            </button>
+          )}
+        </div>
         <ul className="-mx-2 flex flex-col">
-          {bots.map((bot) => (
+          {members.map((bot) => (
             <li key={bot.id}>
               <Link href={`/chat/?bot=${encodeURIComponent(bot.id)}`} className="flex h-11 items-center gap-3 rounded-[10px] px-2 hover:bg-card">
                 <BotAvatar color={bot.color} shape={bot.shape} size={24} className="shrink-0" />

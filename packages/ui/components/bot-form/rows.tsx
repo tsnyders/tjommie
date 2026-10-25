@@ -4,7 +4,7 @@ import { useState, type ReactNode } from "react";
 import { ChevronDown, ChevronRight, Clock, Folder, Globe, MessageCircle, Shield, type LucideIcon } from "lucide-react";
 import type { Autonomy, Bot, Provider } from "@tjommie/protocol";
 import { fileName } from "@/lib/attachments";
-import { AUTONOMY_LEVELS, autonomyHelp, canMessageSummary } from "@/lib/bot-form";
+import { AUTONOMY_LEVELS, autonomyHelp } from "@/lib/bot-form";
 import { desktop } from "@/lib/desktop";
 import { BotAvatar } from "../bot-avatar";
 import { Segmented, Switch } from "../controls";
@@ -102,20 +102,31 @@ export function BrowserRow({ browser, onChange }: { browser: boolean; onChange: 
   );
 }
 
-export function CanMessageRow({ selfId, canMessage, bots, onChange }: { selfId: string | null; canMessage: string[]; bots: Bot[]; onChange: (ids: string[]) => void }) {
-  const [open, setOpen] = useState(false);
+// Bots to choose, each with a switch: WF3's Can message, and the bots in a room. A bot's own form leaves the bot out (selfId). `label` is the row's
+// title and, before each bot's name, its switch's name; `summary` is the row's value, and `children` the line under the list.
+export function CanMessageRow({ label, summary, selfId = null, ids, bots, defaultOpen = false, onChange, children }: {
+  label: string;
+  summary: string;
+  selfId?: string | null;
+  ids: string[];
+  bots: Bot[];
+  defaultOpen?: boolean;
+  onChange: (ids: string[]) => void;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
   const others = bots.filter((bot) => bot.id !== selfId);
-  const chosen = others.filter((bot) => canMessage.includes(bot.id));
+  const chosen = others.filter((bot) => ids.includes(bot.id));
   return (
     <Row
       icon={MessageCircle}
-      title="Can message"
+      title={label}
       value={
         <>
           {chosen.slice(0, 3).map((bot) => (
             <BotAvatar key={bot.id} color={bot.color} shape={bot.shape} size={18} className="shrink-0" />
           ))}
-          {canMessageSummary(canMessage, others)}
+          {summary}
         </>
       }
       open={open}
@@ -129,16 +140,12 @@ export function CanMessageRow({ selfId, canMessage, bots, onChange }: { selfId: 
             <li key={bot.id} className="flex h-10 items-center gap-3">
               <BotAvatar color={bot.color} shape={bot.shape} size={24} className="shrink-0" />
               <span className="min-w-0 flex-1 truncate text-[14px] text-text">{bot.name}</span>
-              <Switch
-                label={`Can message ${bot.name}`}
-                checked={canMessage.includes(bot.id)}
-                onChange={(on) => onChange(on ? [...canMessage, bot.id] : canMessage.filter((id) => id !== bot.id))}
-              />
+              <Switch label={`${label} ${bot.name}`} checked={ids.includes(bot.id)} onChange={(on) => onChange(on ? [...ids, bot.id] : ids.filter((id) => id !== bot.id))} />
             </li>
           ))}
         </ul>
       )}
-      <p className="mt-2 text-[12px] leading-[18px] text-secondary">It can ask these bots for help. They can&apos;t ask it back unless you allow that in their own settings.</p>
+      <p className="mt-2 text-[12px] leading-[18px] text-secondary">{children}</p>
     </Row>
   );
 }

@@ -24,7 +24,8 @@ export function Rail() {
   }, []);
   return (
     <nav aria-label="Tjommie" className="flex w-[88px] shrink-0 flex-col items-center border-r border-rail-edge bg-rail pt-2.5 pb-4 max-sm:hidden">
-      <RailLink href="/room/" label="Team room" selected={pathname.startsWith("/room")}>
+      {/* The rooms list; a room (/room/?id=) has the same pathname, so it stays selected there. */}
+      <RailLink href="/room/" label="Rooms" selected={pathname.startsWith("/room")}>
         <TeamMark size={40} dimmed={bots.length === 0} />
       </RailLink>
       <div className="mt-1.5 mb-[1px] h-px w-8 shrink-0 bg-divider" />

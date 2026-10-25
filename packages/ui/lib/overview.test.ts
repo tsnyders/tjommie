@@ -90,6 +90,24 @@ describe("the Agents overview", () => {
     expect(roomLine([post], bots, now)).toBe("CV Writer and Pnet apply talked 4 minutes ago");
     expect(roomLine([], bots, now)).toBe("No bot chats yet");
   });
+
+  it("gives each room the line from its own posts", () => {
+    const bots = [
+      { id: "b1", name: "Sales" },
+      { id: "b2", name: "Marketing" },
+      { id: "b3", name: "Chief" },
+    ];
+    const post = (id: string, roomId: string, from: string, to: string, at: Date) =>
+      message(id, "text", { conversationId: roomId, author: from, body: "Done.", createdAt: at.toISOString(), data: { exchangeId: `x-${id}`, toBotId: to } });
+    // Sales and Marketing are both in Growth, so their exchange is mirrored there; Chief's isn't.
+    const everyone = [post("p1", "team", "b1", "b2", new Date(2026, 8, 27, 13, 0)), post("p2", "team", "b3", "b1", new Date(2026, 8, 27, 13, 50))];
+    const growth = [post("p3", "r1", "b1", "b2", new Date(2026, 8, 27, 13, 0))];
+    expect(roomLine(everyone, bots, now)).toBe("Chief and Sales talked 10 minutes ago");
+    expect(roomLine(growth, bots, now)).toBe("Sales and Marketing talked 1 hour ago");
+    // A room with only your posts and its bots' answers has no bot chats yet.
+    const asked = [message("p4", "text", { conversationId: "r2", author: "you", body: "@Sales hi" }), message("p5", "text", { conversationId: "r2", author: "b1", body: "Hi." })];
+    expect(roomLine(asked, bots, now)).toBe("No bot chats yet");
+  });
 });
 
 describe("the phone's filter chips", () => {

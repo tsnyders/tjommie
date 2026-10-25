@@ -2,8 +2,8 @@
 
 const trimmed = (pathname: string): string => pathname.replace(/\/+$/, "") || "/";
 
-// The pill shows on the overview screens (Agents, Team room, Settings and its sections), and not where a composer or an action footer sits
-// at the bottom: chat, New bot and Bot settings.
+// The pill shows on the overview screens (Agents, the rooms list and each room, Settings and its sections), and not where a composer or an
+// action footer sits at the bottom: chat, New bot and Bot settings. A room is /room/?id=, so it has the list's pathname.
 export function showsTabBar(pathname: string): boolean {
   const path = trimmed(pathname);
   return path === "/" || path === "/agents" || path === "/room" || path === "/settings" || path.startsWith("/settings/");
@@ -13,7 +13,7 @@ export type TabId = "agents" | "room" | "settings";
 // `label` is the name for a screen reader and `short` what shows under the icon.
 export const TABS: { id: TabId; href: string; label: string; short: string }[] = [
   { id: "agents", href: "/agents/", label: "Agents", short: "Agents" },
-  { id: "room", href: "/room/", label: "Team room", short: "Team" },
+  { id: "room", href: "/room/", label: "Rooms", short: "Rooms" },
   { id: "settings", href: "/settings/", label: "Settings", short: "Settings" },
 ];
 

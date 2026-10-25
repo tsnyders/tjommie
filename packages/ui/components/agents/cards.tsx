@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { CircleAlert, Clock, Ellipsis, Hourglass, Loader, MessageCircle, Pause, Play, Plug, Plus, Settings } from "lucide-react";
 import { Menu } from "@base-ui/react/menu";
-import { ExchangePostData, type Bot, type Message, type Routine } from "@tjommie/protocol";
+import { ExchangePostData, type Bot, type Message, type Room, type Routine } from "@tjommie/protocol";
 import { request } from "@/lib/connection";
 import { botName, DELETED_BOT, errorText, SHORT_STATE, stateLabel } from "@/lib/labels";
 import { nextRoutineLine, roomLine, talkingWith, taskLine } from "@/lib/overview";
@@ -22,8 +22,21 @@ const CARD_PILL = "flex h-7 items-center rounded-full px-3 text-[14px] font-medi
 const SLIDE = "transition-transform duration-150 ease-[cubic-bezier(0.23,1,0.32,1)]";
 // The card's title is a link stretched over the whole card; the menu sits above it. The footer's pill only shows
 // where a click on the card goes, so screen readers skip it and hear the link.
-const STRETCHED = "after:absolute after:inset-0 after:rounded-[14px]";
+export const STRETCHED = "after:absolute after:inset-0 after:rounded-[14px]";
+// New bot's dashed tile (WF2), and New room's beside it.
+const NEW_TILE = "flex h-[368px] flex-col items-center justify-center gap-3 rounded-[14px] border border-dashed border-selected text-center hover:bg-card max-sm:hidden";
 const chatOf = (id: string): string => `/chat/?bot=${encodeURIComponent(id)}`;
+
+// Bots' 18 px avatars, overlapping: who a bot is talking with, and a room's bots on the rooms list.
+export function AvatarStack({ bots }: { bots: Bot[] }) {
+  return (
+    <span className="flex -space-x-1">
+      {bots.map((bot) => (
+        <BotAvatar key={bot.id} color={bot.color} shape={bot.shape} size={18} />
+      ))}
+    </span>
+  );
+}
 
 // A bot's card (WF2 Phase 1).
 export function BotCard({ bot, bots, messages, routines }: { bot: Bot; bots: Bot[]; messages: Message[]; routines: Routine[] }) {
@@ -73,11 +86,7 @@ export function BotCard({ bot, bots, messages, routines }: { bot: Bot; bots: Bot
         {partners.length > 0 ? (
           <>
             <span className="text-[12px] text-caption">Talking with</span>
-            <span className="flex -space-x-1">
-              {partners.map((partner) => (
-                <BotAvatar key={partner.id} color={partner.color} shape={partner.shape} size={18} />
-              ))}
-            </span>
+            <AvatarStack bots={partners} />
           </>
         ) : (
           <span className="text-[12px] text-caption">No bot chats today</span>
@@ -186,8 +195,8 @@ function CardMenu({ bot, onProblem }: { bot: Bot; onProblem: (problem: string | 
   );
 }
 
-// The Team room's card (WF2): the last two bot-to-bot posts, and who talked last.
-export function TeamRoomCard({ messages, bots }: { messages: Message[]; bots: Bot[] }) {
+// A room's card (WF2): its last two bot-to-bot posts, and who talked last.
+export function TeamRoomCard({ room, messages, bots }: { room: Room; messages: Message[]; bots: Bot[] }) {
   const posts = messages.filter((message) => message.kind === "text" && ExchangePostData.safeParse(message.data).success).slice(-2);
   return (
     <article className={cn(CARD, "border-card-stroke hover:border-input-stroke max-sm:hidden")}>
@@ -214,9 +223,9 @@ export function TeamRoomCard({ messages, bots }: { messages: Message[]; bots: Bo
       </div>
       <div className="mt-4 flex items-center gap-2.5">
         <TeamMark size={28} />
-        <h2 className="text-[15px] font-semibold leading-[20px] text-title">
-          <Link href="/room/" className={STRETCHED}>
-            Team room
+        <h2 className="min-w-0 truncate text-[15px] font-semibold leading-[20px] text-title">
+          <Link href={`/room/?id=${encodeURIComponent(room.id)}`} className={STRETCHED}>
+            {room.name}
           </Link>
         </h2>
       </div>
@@ -232,12 +241,25 @@ export function TeamRoomCard({ messages, bots }: { messages: Message[]; bots: Bo
 
 export function NewBotCard() {
   return (
-    <Link href="/bots/new/" className="flex h-[368px] flex-col items-center justify-center gap-3 rounded-[14px] border border-dashed border-selected text-center hover:bg-card max-sm:hidden">
+    <Link href="/bots/new/" className={NEW_TILE}>
       <span className="flex size-12 items-center justify-center rounded-full bg-popover text-icon">
         <Plus className="size-6" aria-hidden />
       </span>
       <span className="text-[15px] font-semibold text-title">New bot</span>
       <span className="text-[12px] text-secondary">Start from a suggestion or from scratch</span>
     </Link>
+  );
+}
+
+// Opens the room form. On a phone, rooms are made from the Rooms tab.
+export function NewRoomCard({ onClick }: { onClick: () => void }) {
+  return (
+    <button type="button" onClick={onClick} className={NEW_TILE}>
+      <span className="flex size-12 items-center justify-center rounded-full bg-popover text-icon">
+        <Plus className="size-6" aria-hidden />
+      </span>
+      <span className="text-[15px] font-semibold text-title">New room</span>
+      <span className="text-[12px] text-secondary">Choose which bots are in it</span>
+    </button>
   );
 }

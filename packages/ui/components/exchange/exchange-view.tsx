@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState, type ReactNode } from "react";
 import { ArrowRight, ArrowUp, X } from "lucide-react";
-import type { Bot, Exchange, Message } from "@tjommie/protocol";
+import { TEAM_ROOM_ID, type Bot, type Exchange, type Message } from "@tjommie/protocol";
 import { closeConversation, exchangePage, loadConversation, request, retryConversation } from "@/lib/connection";
 import { exchangeCaption, exchangeMeta } from "@/lib/exchange";
 import { DELETED_BOT, errorText } from "@/lib/labels";
@@ -158,7 +158,7 @@ export function ExchangeComposer({ bots }: { bots: Bot[] }) {
       {posted && (
         <p className="mb-2 text-[12px] leading-[18px] text-secondary">
           Posted in the Team room.{" "}
-          <Link href="/room/" className="text-accent hover:underline">
+          <Link href={`/room/?id=${TEAM_ROOM_ID}`} className="text-accent hover:underline">
             Open room
           </Link>
         </p>

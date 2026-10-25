@@ -2,18 +2,17 @@
 
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { ArrowUp, AtSign, Users } from "lucide-react";
-import { findMentions } from "@tjommie/protocol";
+import { findMentions, type Bot, type Room } from "@tjommie/protocol";
 import { request } from "@/lib/connection";
 import { errorText, SHORT_STATE, STATE_TEXT } from "@/lib/labels";
 import { insertMention, mentionOptions, typedMention, type MentionOption } from "@/lib/mentions";
-import { useApp } from "@/lib/store";
 import { scrollToShow, useRevision, useSendGuard } from "@/lib/use-draft";
 import { usePhone } from "@/lib/use-phone";
 import { cn } from "@/lib/utils";
 import { BotAvatar } from "../bot-avatar";
 
-// The Team room's composer (WF5). Typing "@" opens the mention popover above it, filtered by what follows. A post
-// that mentions nobody gets no answer, and the composer says so (WF11). Room posts carry no files.
+// A room's composer (WF5). Typing "@" opens the mention popover above it, filtered by what follows; it offers the room's own bots (members),
+// as only they answer there. A post that mentions none of them gets no answer, and the composer says so (WF11). Room posts carry no files.
 // Whether an Escape should close the open mention list: only while it is open, and not one the box already took.
 export const mentionEscape = (event: { key: string; defaultPrevented: boolean }, open: boolean): boolean => open && event.key === "Escape" && !event.defaultPrevented;
 
@@ -24,9 +23,11 @@ export function withAt(text: string, caret: number): { text: string; caret: numb
   return { text: `${before}${at}${text.slice(caret)}`, caret: caret + at.length };
 }
 
-export function RoomComposer() {
+// What @everyone stands for in the mention list.
+export const everyoneLabel = (count: number): string => `All ${count} ${count === 1 ? "bot" : "bots"} in this room`;
+
+export function RoomComposer({ room, members }: { room: Room; members: Bot[] }) {
   const phone = usePhone();
-  const bots = useApp((state) => state.bots);
   const field = useRef<HTMLTextAreaElement>(null);
   const list = useRef<HTMLUListElement>(null);
   // Typing goes on while a post is on its way; its success clears the box only if nothing was typed since.
@@ -40,7 +41,7 @@ export function RoomComposer() {
   const [hint, setHint] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const typed = typedMention(text, caret);
-  const options = typed && typed.start !== dismissed ? mentionOptions(typed.query, bots) : [];
+  const options = typed && typed.start !== dismissed ? mentionOptions(typed.query, members) : [];
   const open = options.length > 0;
   const active = Math.min(highlight, options.length - 1);
 
@@ -89,8 +90,8 @@ export function RoomComposer() {
     setBusy(true);
     setProblem(null);
     try {
-      await request("room.post", { text: sentText });
-      setHint(findMentions(sentText, bots).length === 0);
+      await request("room.post", { roomId: room.id, text: sentText });
+      setHint(findMentions(sentText, members).length === 0);
       if (revision.now() === sentRevision) edit("", 0); // what was typed meanwhile, with its caret and mention, stays
     } catch (error) {
       setProblem(errorText(error));
@@ -153,7 +154,7 @@ export function RoomComposer() {
               {option.bot ? <BotAvatar color={option.bot.color} shape={option.bot.shape} size={18} className="shrink-0" /> : <Users className="size-[18px] shrink-0 text-icon" aria-hidden />}
               <span className="min-w-0 flex-1 truncate">{option.bot ? option.name : "@everyone"}</span>
               <span className={cn("shrink-0 text-[12px]", option.bot ? STATE_TEXT[option.bot.state] : "text-secondary")}>
-                {option.bot ? SHORT_STATE[option.bot.state] : `All ${bots.length} bots`}
+                {option.bot ? SHORT_STATE[option.bot.state] : everyoneLabel(members.length)}
               </span>
             </li>
           ))}
@@ -179,12 +180,12 @@ export function RoomComposer() {
           value={text}
           rows={1}
           role="combobox"
-          aria-label="Message the Team room"
+          aria-label={`Message ${room.name}`}
           aria-expanded={open}
           aria-controls={open ? "mention-list" : undefined}
           aria-activedescendant={open ? `mention-${active}` : undefined}
           aria-autocomplete="list"
-          placeholder={phone ? "Message the Team room" : "Message the Team room. Type @ to mention a bot."}
+          placeholder={phone ? `Message ${room.name}` : `Message ${room.name}. Type @ to mention a bot.`}
           onChange={(event) => edit(event.target.value, event.target.selectionStart)}
           onSelect={(event) => setCaret(event.currentTarget.selectionStart)}
           onKeyDown={onKeyDown}
