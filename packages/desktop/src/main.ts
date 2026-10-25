@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, net, Notification, protocol, session, shell, Tray } from "electron";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { connect, type Client } from "@tjommie/client";
 import { NativeBrowserMount, NativeBrowserUiCommand, type EventData } from "@tjommie/protocol";
@@ -18,6 +18,7 @@ import { getLoginItem, setLoginItem, startsHidden, syncLoginItem } from "./login
 import { createUpdater, trayTemplate } from "./updater.ts";
 import { RemoteWires } from "./remote-wire.ts";
 import { createDeviceKeys } from "./device-keys.ts";
+import { localFilePath } from "./local-file-path.ts";
 
 const { autoUpdater } = updater;
 const here = import.meta.dirname;
@@ -433,11 +434,11 @@ function registerIpc(): void {
     return result.canceled ? [] : result.filePaths;
   });
   ipcMain.handle("folder:open", async (_event, path: unknown) => {
-    if (typeof path !== "string" || !isAbsolute(path) || !existsSync(path) || !statSync(path).isDirectory()) return;
+    if (!localFilePath(path) || !existsSync(path) || !statSync(path).isDirectory()) return;
     await shell.openPath(path);
   });
   ipcMain.on("file:show", (_event, path: unknown) => {
-    if (typeof path === "string" && isAbsolute(path) && existsSync(path) && statSync(path).isFile()) shell.showItemInFolder(path);
+    if (localFilePath(path) && existsSync(path) && statSync(path).isFile()) shell.showItemInFolder(path);
   });
   ipcMain.on("theme:set", (_event, theme: unknown) => {
     pageTheme = theme === "light" ? "light" : "dark";

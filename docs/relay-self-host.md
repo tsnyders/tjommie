@@ -15,6 +15,8 @@ Copy the HTTPS `workers.dev` URL from Wrangler into **Settings → Devices → R
 
 Push is optional. To enable it, create a Firebase service-account key for your own Firebase project and set `FCM_SERVICE_ACCOUNT` as a Wrangler secret. The value is the complete service-account JSON. Push requires an APK built for that same Firebase project; another project's APK cannot receive these messages. The relay sends fixed notification text and only the push kind, host ID and bot ID as data.
 
+Enabling push means trusting the relay operator to see device push tokens and opaque bot IDs and to send pushes, though it never sees bot content.
+
 ```sh
 npx wrangler secret put FCM_SERVICE_ACCOUNT
 ```

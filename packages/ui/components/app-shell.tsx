@@ -35,7 +35,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   useEffect(() => startConnection(), []);
   useEffect(() => followTheme(), []);
   useEffect(() => desktop()?.onNavigate((path) => router.push(path)), [router]);
-  useEffect(() => onPushTap((data) => router.push(routePush(data))), [router]);
+  useEffect(() => onPushTap((data) => { const route = routePush(data); if (route) router.push(route); }), [router]);
   return (
     <div data-nav={nav || undefined} className={cn("flex h-dvh max-sm:flex-col", android && "android-app")}>
       <Suspense fallback={<div className="w-[88px] shrink-0 border-r border-rail-edge bg-rail max-sm:hidden" />}>

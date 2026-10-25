@@ -21,6 +21,7 @@ vi.mock("./remote-hosts", async (importOriginal) => ({
 }));
 
 const home = "5b0e2c8e-6f1a-4c55-9a43-2f0d7b1e9c11", office = "9c4f6b1d-2a7e-4e3b-8d55-0f6a1c2b3d4e";
+const homeBot = "7a1ccbc4-d89e-4e14-80c7-f64b5edcc1b0", officeBot = "6b1f37ea-cf49-4ca4-885c-f30acc11b415";
 
 // The phone's push as the connection sees it: whether this build has it, the permission, the token, and taps.
 function fakePush(options: { available: boolean; permission: string }) {
@@ -82,15 +83,20 @@ it("routes a tap to the bot's chat, switching to that bot's PC first, and ignore
 
   const { push, tap } = fakePush({ available: true, permission: "granted" });
   const routes: string[] = [];
-  onPushTap((data: PushData) => routes.push(connection.routePush(data)), push);
+  onPushTap((data: PushData) => { const route = connection.routePush(data); if (route) routes.push(route); }, push);
   await Promise.resolve();
-  tap({ v: "1", hostId: office, kind: "approval", botId: "b7" });
-  expect(routes).toEqual(["/chat/?bot=b7"]);
+  tap({ v: "1", hostId: office, kind: "approval", botId: officeBot });
+  expect(routes).toEqual([`/chat/?bot=${officeBot}`]);
   await vi.waitFor(() => expect(saved.opened).toEqual([home, office]));
   await vi.waitFor(() => expect(getState().connection).toEqual({ status: "ready" }));
 
-  tap({ v: "1", hostId: office, kind: "limit", botId: "b2" }); // already on that PC: no reconnect
-  tap({ v: "1", hostId: office, kind: "approval", title: "A bot needs you", botId: "b3" }); // not a push this app sends
-  expect(routes).toEqual(["/chat/?bot=b7", "/chat/?bot=b2"]);
+  tap({ v: "1", hostId: office, kind: "limit", botId: officeBot }); // already on that PC: no reconnect
+  tap({ v: "1", hostId: office, kind: "approval", title: "A bot needs you", botId: homeBot }); // not a push this app sends
+  expect(routes).toEqual([`/chat/?bot=${officeBot}`, `/chat/?bot=${officeBot}`]);
+  expect(saved.opened).toEqual([home, office]);
+
+  tap({ v: "1", hostId: "a34620cb-9f84-47f1-a428-51259cc1f3b6", kind: "approval", botId: homeBot });
+  tap({ v: "1", hostId: home, kind: "approval", botId: "javascript:alert(1)" });
+  expect(routes).toEqual([`/chat/?bot=${officeBot}`, `/chat/?bot=${officeBot}`]);
   expect(saved.opened).toEqual([home, office]);
 });

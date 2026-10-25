@@ -1,5 +1,6 @@
 import { ClientConnectionError, connect, type Client, type ClientEvent } from "@tjommie/client";
 import type { Message, MethodName, ParamsIn, PushData, Result } from "@tjommie/protocol";
+import { z } from "zod";
 import { RemoteRefusedError } from "../../client/src/remote-peer.ts";
 import { desktop, type DesktopConnection } from "./desktop";
 import { keepAliveRunning, syncKeepAlive } from "./keep-alive";
@@ -128,9 +129,10 @@ export async function forgetRemote(id: string): Promise<void> {
 }
 
 // A tapped push: its PC becomes the current one if it isn't (and is saved here), and the bot's chat is where to go.
-export function routePush(data: PushData): string {
+export function routePush(data: PushData): string | null {
+  if (!remoteHosts().some((host) => host.id === data.hostId) || !z.uuid().safeParse(data.botId).success) return null;
   const current = isRemote(latest) && latest.remoteHostId === data.hostId;
-  if (!current && remoteHosts().some((host) => host.id === data.hostId)) connectRemote(data.hostId);
+  if (!current) connectRemote(data.hostId);
   return `/chat/?bot=${encodeURIComponent(data.botId)}`;
 }
 

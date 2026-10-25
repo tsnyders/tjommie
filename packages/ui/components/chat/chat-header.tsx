@@ -5,10 +5,9 @@ import { useRouter } from "next/navigation";
 import { Menu } from "@base-ui/react/menu";
 import { Ellipsis, FolderOpen, Globe, Hourglass, PanelRight, Pause, Play, Plug, Settings } from "lucide-react";
 import { BackLink } from "../back-link";
-import { captionClear, nativeBrowserAvailable } from "@/lib/native-capability";
+import { captionClear, localFileActions, nativeBrowserAvailable } from "@/lib/native-capability";
 import type { Bot } from "@tjommie/protocol";
 import { daemon } from "@/lib/connection";
-import { desktop } from "@/lib/desktop";
 import { errorText, stateLabel } from "@/lib/labels";
 import { cn } from "@/lib/utils";
 import { BotAvatar } from "../bot-avatar";
@@ -130,8 +129,8 @@ function MoreMenu({ bot, onProblem, onOpenBrowser, onDetails }: { bot: Bot; onPr
               </Menu.Item>
             )}
             {/* Only the PC app can open a folder. */}
-            {desktop() && (
-              <Menu.Item className={MENU_ITEM} onClick={() => void run(async () => desktop()?.openFolder(bot.homeFolder))}>
+            {localFileActions() && (
+              <Menu.Item className={MENU_ITEM} onClick={() => void run(async () => localFileActions()?.openFolder(bot.homeFolder))}>
                 <FolderOpen aria-hidden />
                 Open home folder
               </Menu.Item>

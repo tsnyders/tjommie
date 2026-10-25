@@ -302,8 +302,43 @@ it("starts the relay for an invite after LAN listening, restarts on settings, an
     await client.call("pairing.cancel", { id: invite.id });
     expect((await client.call("remote.status", {})).relay.state).toBe("online");
     await client.call("devices.revoke", { id: device.id });
-    expect((await client.call("remote.status", {})).relay.state).toBe("off");
+    expect((await client.call("remote.status", {})).relay.state).toBe("online");
     expect(client.events.some((event) => event.event === "devices.changed")).toBe(true);
+  } finally { vi.unstubAllGlobals(); }
+});
+
+it("keeps the relay available for the last revoked device after restarting the daemon", async () => {
+  const values = new Map<string, string>();
+  const credentials: CredentialTransport = async ({ operation, target, key }) => {
+    if (operation === "write" && key) values.set(target, key);
+    return operation === "read" ? values.get(target) ?? null : null;
+  };
+  try {
+    const root = tempRoot();
+    const remote = { credentials, port: 0, bind: "127.0.0.1", addresses: () => ["127.0.0.1"] };
+    const first = await harness(root, { mode: "development" }, undefined, remote);
+    const invite = await first.client.call("pairing.create", {});
+    await first.client.call("pairing.cancel", { id: invite.id });
+    const device = addDevice(first.db, { name: "Only phone", publicKey: Buffer.alloc(32, 7).toString("base64url") });
+    expect((await first.client.call("devices.list", {})).map((value) => value.id)).toContain(device.id);
+    SilentRelaySocket.created = SilentRelaySocket.closed = 0;
+    vi.stubGlobal("WebSocket", SilentRelaySocket);
+    await first.client.call("settings.set", { relayUrl: "https://relay.example" });
+    expect((await first.client.call("remote.status", {})).relay.state).toBe("connecting");
+    expect(SilentRelaySocket.created).toBe(1);
+    await first.client.call("devices.revoke", { id: device.id });
+    await first.client.close(); clients.splice(clients.indexOf(first.client), 1);
+    await first.daemon.close(); daemons.splice(daemons.indexOf(first.daemon), 1);
+    first.db.close(); databases.splice(databases.indexOf(first.db), 1);
+
+    const second = await startDaemon({ root, port: 0, auth: { mode: "development" }, remote });
+    daemons.push(second);
+    await waitFor(() => SilentRelaySocket.created === 2, 5_000);
+    vi.unstubAllGlobals();
+    const client = await connect(second.port, second.token);
+    clients.push(client);
+    expect((await client.call("devices.list", {}))[0].revokedAt).not.toBeNull();
+    expect((await client.call("remote.status", {})).relay.state).toBe("connecting");
   } finally { vi.unstubAllGlobals(); }
 });
 

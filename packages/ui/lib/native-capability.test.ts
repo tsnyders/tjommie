@@ -29,4 +29,17 @@ describe("native capability", () => {
     update((state) => ({ ...state, host: null }));
     expect(nativeBrowserAvailable()).toBe(true);
   });
+
+  it("offers local file actions only while showing this PC", async () => {
+    vi.resetModules();
+    const bridge = { openFolder: vi.fn(), showFile: vi.fn() };
+    vi.stubGlobal("window", { tjommie: bridge });
+    const { update } = await import("./store");
+    const { localFileActions } = await import("./native-capability");
+    expect(localFileActions()).toBe(bridge);
+    update((state) => ({ ...state, host: "5b0e2c8e-6f1a-4c55-9a43-2f0d7b1e9c11" }));
+    expect(localFileActions()).toBeNull();
+    update((state) => ({ ...state, host: null }));
+    expect(localFileActions()).toBe(bridge);
+  });
 });

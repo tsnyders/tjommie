@@ -236,5 +236,5 @@ export class RemoteHost {
     if (this.#opening) await this.#opening.catch(() => {});
     this.#identity?.privateKey.fill(0); this.#identity = null;
   }
-  hasDevices(): boolean { return listDevices(this.#options.db).some((device) => device.revokedAt === null); }
+  hasDevices(): boolean { return listDevices(this.#options.db).length > 0; }
 }

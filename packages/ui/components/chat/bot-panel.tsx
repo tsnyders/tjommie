@@ -6,12 +6,11 @@ import { ChartColumn, Check, Folder, Gauge, Globe, Loader, Monitor, Shield, Spar
 import type { Bot, Message, Routine } from "@tjommie/protocol";
 import { accountFor, limitLabel, topLimit, when } from "@/lib/accounts";
 import { recentActivity } from "@/lib/activity";
-import { desktop } from "@/lib/desktop";
 import { clock } from "@/lib/format";
 import { AUTONOMY_LINE, modelLabel, stateLabel } from "@/lib/labels";
 import { draftFrom, EMPTY_ROUTINE, localZone } from "@/lib/routine-form";
 import { removeRoutine, saveRoutine } from "@/lib/routines";
-import { nativeBrowserAvailable } from "@/lib/native-capability";
+import { localFileActions, nativeBrowserAvailable } from "@/lib/native-capability";
 import { remoteHosts } from "@/lib/remote-hosts";
 import { useApp } from "@/lib/store";
 import { useUsage } from "@/lib/use-usage";
@@ -98,8 +97,9 @@ function Row({ icon: Icon, children, action }: { icon: LucideIcon; children: Rea
 }
 
 function OpenFolder({ path, label }: { path: string; label: string }) {
+  if (!localFileActions()) return null;
   return (
-    <button type="button" aria-label={label} onClick={() => void desktop()?.openFolder(path)} className="shrink-0 text-accent hover:underline">
+    <button type="button" aria-label={label} onClick={() => void localFileActions()?.openFolder(path)} className="shrink-0 text-accent hover:underline">
       Open
     </button>
   );

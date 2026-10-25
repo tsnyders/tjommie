@@ -102,6 +102,12 @@ it("pairs a real RemoteHost and Node device through the local relay with no reac
     expect(resumed.relay).toBe(base);
     client = await connectTransport(resumed.transport);
     expect(await client.call("remote.ping", {})).toEqual({});
+    await client.close(); client = null;
+    host.revoke(paired.deviceId);
+    const refusedWire = await webSocketFrames(relayConnectUrl(base, hostId).replace(/^wss:/, "ws:"), 10_000);
+    await expect(authenticateRemote({ wire: refusedWire, privateKey: deviceKey.privateKey,
+      hostPublicKey: Buffer.from(code.hostKey, "base64url"), name: "Synthetic device",
+      preface: { v: 1, mode: "resume", hostId } })).rejects.toMatchObject({ name: "RemoteRefusedError", reason: "revoked" });
   } finally {
     await client?.close(); relay?.stop(); await host?.close(); db?.close();
     if (child) await stopLocalRelay(child);
