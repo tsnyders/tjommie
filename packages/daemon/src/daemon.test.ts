@@ -375,6 +375,47 @@ it("announces the configured relay in ready when a device resumes over LAN durin
   } finally { vi.unstubAllGlobals(); }
 });
 
+it("keeps ready relay metadata while a separate pairing code is being built", async () => {
+  const values = new Map<string, string>();
+  const credentials: CredentialTransport = async ({ operation, target, key }) => {
+    if (operation === "write" && key) values.set(target, key);
+    return operation === "read" ? values.get(target) ?? null : null;
+  };
+  const { client } = await harness(tempRoot(), { mode: "development" }, undefined,
+    { credentials, port: 0, bind: "127.0.0.1", addresses: () => ["127.0.0.1"] });
+  const code = parsePairingCode((await client.call("pairing.create", {})).code);
+  const key = generateKeypair();
+  const paired = await authenticateRemote({ wire: await lanWire(code.lan[0].port), privateKey: key.privateKey,
+    hostPublicKey: Buffer.from(code.hostKey, "base64url"), psk: Buffer.from(code.secret, "base64url"),
+    name: "Synthetic device", preface: { v: 1, mode: "pair", hostId: code.hostId, pairingId: code.pairingId } });
+  await paired.transport.close();
+  SilentRelaySocket.created = SilentRelaySocket.closed = 0;
+  vi.stubGlobal("WebSocket", SilentRelaySocket);
+  const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  const createPairing = RemoteHost.prototype.createPairing;
+  vi.spyOn(RemoteHost.prototype, "createPairing").mockImplementation(async function (this: RemoteHost) {
+    entered.resolve();
+    await release.promise;
+    return createPairing.call(this);
+  });
+  vi.spyOn(RelayClient.prototype, "waitUntilOnline").mockResolvedValue();
+  let waiting: Promise<unknown> | undefined;
+  try {
+    await client.call("settings.set", { relayUrl: "https://relay.example" });
+    waiting = client.call("pairing.create", {});
+    await entered.promise;
+    const resumed = await authenticateRemote({ wire: await lanWire(code.lan[0].port), privateKey: key.privateKey,
+      hostPublicKey: Buffer.from(code.hostKey, "base64url"), name: "Synthetic device",
+      preface: { v: 1, mode: "resume", hostId: code.hostId } });
+    expect(resumed.relay).toBe("https://relay.example");
+    resumed.transport.close();
+  } finally {
+    release.resolve();
+    await waiting?.catch(() => {});
+    vi.unstubAllGlobals();
+  }
+});
+
 it("returns a LAN-only pairing code when the relay socket never answers", async () => {
   const credentials: CredentialTransport = async () => null;
   const { client } = await harness(tempRoot(), { mode: "development" }, undefined,

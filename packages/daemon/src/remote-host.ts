@@ -18,7 +18,7 @@ type Invite = { id: string; secret: Uint8Array; expires: number };
 type Peer = { wire: PeerWire; deviceId: string | null; welcomed: boolean; lastFrameAt: number; send: (value: unknown) => void; close: () => void };
 type Options = {
   db: Db; root: string; dispatch: (method: string, params: unknown) => Promise<unknown>; onChanged?: () => void;
-  credentials?: CredentialTransport; port?: number; bind?: string; addresses?: () => string[]; relayUrl?: () => string | null;
+  credentials?: CredentialTransport; port?: number; bind?: string; addresses?: () => string[]; relayUrl?: (forPairing: boolean) => string | null;
 };
 export const REMOTE_PORT = 47101;
 const empty = new Uint8Array();
@@ -49,7 +49,7 @@ export class RemoteHost {
     return { hostId: this.#identity?.id ?? null, hostName: this.#identity?.name ?? hostname(), listening: this.#listener !== null,
       port: this.#listener ? (this.#listener.address() as { port: number }).port : null,
       connectedDeviceIds: [...new Set([...this.#peers].flatMap((peer) => peer.deviceId ? [peer.deviceId] : []))],
-      relay: { url: this.#options.relayUrl?.() ?? null, state: "off", push: false } };
+      relay: { url: this.#options.relayUrl?.(false) ?? null, state: "off", push: false } };
   }
   async start(): Promise<void> {
     if (this.#closed) throw new RpcError("bad_state", "The phone connection is closed.");
@@ -84,7 +84,7 @@ export class RemoteHost {
     const id = newId(), secret = new Uint8Array(randomBytes(32)), expires = Date.now() + 600_000;
     this.#options.db.prepare("INSERT INTO pairing_codes(id,secret_hash,expires_at,created_at) VALUES(?,?,?,?)").run(id, createHash("sha256").update(secret).digest("hex"), new Date(expires).toISOString(), nowIso());
     this.#invites.set(id, { id, secret, expires });
-    const code = encodePairingCode({ v: 2, relay: this.#options.relayUrl?.() ?? null, pairingId: id, hostId: identity.id, hostName: identity.name, hostKey: keyText(identity.publicKey), secret: keyText(secret),
+    const code = encodePairingCode({ v: 2, relay: this.#options.relayUrl?.(true) ?? null, pairingId: id, hostId: identity.id, hostName: identity.name, hostKey: keyText(identity.publicKey), secret: keyText(secret),
       lan: [...new Set(addresses)].slice(0, 16).map((host) => ({ host, port: (this.#listener!.address() as { port: number }).port })), expires: new Date(expires).toISOString() });
     return { id, code, uri: `tjommie://pair#${code}`, expires: new Date(expires).toISOString() };
   }
@@ -98,7 +98,7 @@ export class RemoteHost {
     for (const peer of this.#peers) if (Date.now() - peer.lastFrameAt >= 150_000) peer.close();
   }
   pushTargets(): { deviceId: string; token: string }[] { return storedPushTargets(this.#options.db); }
-  clearPushToken(deviceId: string): void { clearStoredPushToken(this.#options.db, deviceId); }
+  clearPushToken(deviceId: string, token: string): void { clearStoredPushToken(this.#options.db, deviceId, token); }
   revoke(id: string): Device {
     const device = revokeDevice(this.#options.db, id);
     for (const peer of this.#peers) if (peer.deviceId === id) peer.close();
@@ -121,11 +121,10 @@ export class RemoteHost {
       attempt.count++;
       if (this.#attempts.size < 256 || previous) this.#attempts.set(address, attempt);
     }
-    const pending = [...this.#peers].filter((peer) => !peer.deviceId);
-    const active = this.#peers.size - pending.length;
-    if (this.#closed || active >= 32 || wire.kind === "lan" && (pending.filter((peer) => peer.wire.kind === "lan" && peer.wire.address === address).length >= 4 || attempt.count > 20) || !this.#identity) { wire.destroy(); return; }
-    // Rotate the oldest untrusted connection rather than refusing a new address merely because other
-    // addresses filled the pending pool. Authenticated peers are never evicted by this admission rule.
+    const pending = [...this.#peers].filter((peer) => !peer.deviceId && peer.wire.kind === wire.kind);
+    const active = [...this.#peers].filter((peer) => peer.deviceId).length;
+    if (this.#closed || active >= 32 || wire.kind === "lan" && (pending.filter((peer) => peer.wire.address === address).length >= 4 || attempt.count > 20) || !this.#identity) { wire.destroy(); return; }
+    // Rotate only within this wire kind so relay attempts cannot evict LAN handshakes.
     if (pending.length >= 8) { pending[0].close(); this.#peers.delete(pending[0]); }
     const identity = this.#identity;
     let phase: "preface" | "handshake" | "confirm" | "refused" | "hello" | "rpc" = "preface";
@@ -199,7 +198,7 @@ export class RemoteHost {
           }
           if (!device || [...this.#peers].filter((entry) => entry.deviceId).length >= 32) throw new Error();
           peer.deviceId = device.id; touchDevice(this.#options.db, peer.deviceId);
-          send({ type: "ready", deviceId: peer.deviceId, hostId: identity.id, hostName: identity.name, relay: this.#options.relayUrl?.() ?? null }); phase = "hello";
+          send({ type: "ready", deviceId: peer.deviceId, hostId: identity.id, hostName: identity.name, relay: this.#options.relayUrl?.(false) ?? null }); phase = "hello";
           return;
         }
         if (!peer.deviceId || getDevice(this.#options.db, peer.deviceId).revokedAt) throw new Error();

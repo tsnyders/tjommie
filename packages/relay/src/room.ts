@@ -43,7 +43,7 @@ async function verifyLogin(publicKey: string, signature: string, message: Uint8A
 export class HostRoomCore {
   private readonly options: RoomOptions;
   private readonly states = new Map<Sock, Attachment>();
-  private readonly pending = new Map<string, { device: Sock; expires: number; frames: Uint8Array[]; bytes: number }>();
+  private readonly pending = new Map<string, { device: Sock; ip?: string; expires: number; frames: Uint8Array[]; bytes: number }>();
   private readonly channels = new Map<string, { device: Sock; host: Sock }>();
   private readonly connects = new Map<string, { start: number; count: number }>();
   private host: Sock | null = null;
@@ -102,7 +102,10 @@ export class HostRoomCore {
   }
 
   connectDevice(sock: Sock, ip?: string): void {
-    if (this.limited(ip) || this.channels.size + this.pending.size >= RELAY.maxChannels || this.pending.size >= RELAY.maxPendingChannels) {
+    // ponytail: IPv6 /64 rotation can fill all 8 room slots; bucket /64s in both caps if abuse warrants it.
+    const maxPendingPerIp = 2;
+    if (this.limited(ip) || this.channels.size + this.pending.size >= RELAY.maxChannels || this.pending.size >= RELAY.maxPendingChannels ||
+      ip !== undefined && [...this.pending.values()].filter((entry) => entry.ip === ip).length >= maxPendingPerIp) {
       sock.close(RelayClose.limited); return;
     }
     if (!this.host) { sock.close(RelayClose.hostOffline); return; }
@@ -112,7 +115,7 @@ export class HostRoomCore {
     const state: Attachment = { role: "device", channel, expires, paired: false };
     this.states.set(sock, state);
     sock.setAttachment(state);
-    this.pending.set(channel, { device: sock, expires, frames: [], bytes: 0 });
+    this.pending.set(channel, { device: sock, ip, expires, frames: [], bytes: 0 });
     try { this.host.send(JSON.stringify({ t: "open", channel })); }
     catch { this.close(this.host, RelayClose.hostDead); }
   }
