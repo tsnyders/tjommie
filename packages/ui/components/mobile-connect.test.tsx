@@ -26,6 +26,7 @@ describe("MobileConnect", () => {
       expect(out).toContain(`aria-label="Forget ${name}"`);
     }
     expect(out).toContain("Pair another PC");
+    expect(out).toContain("To stop its notifications, remove this phone on that PC.");
   });
 
   it("holds the pairing code in a box the keyboard is told to leave alone, and cannot connect until a good code is in it", () => {
@@ -65,6 +66,7 @@ describe("MobileConnect", () => {
     expect(out).toContain('value="Another PC"');
     expect(out).toContain("On the other PC open Settings, then Devices, then Pair a device");
     expect(out).toMatch(/<textarea[^>]*id="pair-code"/);
+    expect(out).not.toContain("To stop its notifications");
   });
 
   it("fits in a dialog, whose title is its heading", () => {

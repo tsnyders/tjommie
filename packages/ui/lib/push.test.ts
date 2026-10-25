@@ -3,11 +3,16 @@ import type { PushData } from "@tjommie/protocol";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { PushApi } from "./push";
 
-const saved = vi.hoisted(() => ({ hosts: [] as { id: string; name: string }[], opened: [] as string[] }));
+const saved = vi.hoisted(() => ({ hosts: [] as { id: string; name: string }[], opened: [] as string[], events: [] as string[], nativeAvailable: false, clearFails: false }));
+const native = vi.hoisted(() => ({ unregister: vi.fn(async () => {}) }));
 vi.mock("@capacitor/core", () => ({
   Capacitor: { isNativePlatform: () => true, getPlatform: () => "android" },
-  registerPlugin: () => ({ start: async () => {}, stop: async () => {}, addListener: async () => ({ remove: async () => {} }) }),
+  registerPlugin: () => ({ start: async () => {}, stop: async () => {}, available: async () => ({ value: saved.nativeAvailable }), addListener: async () => ({ remove: async () => {} }) }),
 }));
+vi.mock("@capacitor/push-notifications", () => ({ PushNotifications: {
+  checkPermissions: async () => ({ receive: "denied" }), requestPermissions: async () => ({ receive: "denied" }),
+  register: async () => {}, unregister: native.unregister, addListener: async () => ({ remove: async () => {} }),
+} }));
 vi.mock("./remote-hosts", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./remote-hosts")>()),
   remoteHosts: () => saved.hosts,
@@ -15,9 +20,16 @@ vi.mock("./remote-hosts", async (importOriginal) => ({
   openRemoteClient: async (id: string): Promise<Client> => {
     saved.opened.push(id);
     const answers: Record<string, unknown> = { "settings.get": { chainLimit: 5, relayUrl: null } };
-    const call = async (method: string) => answers[method] ?? [];
+    const call = async (method: string, params: unknown) => {
+      if (method === "device.registerPush") {
+        saved.events.push(`push:${id}:${JSON.stringify(params)}`);
+        if (saved.clearFails) throw new Error("PC went offline");
+      }
+      return answers[method] ?? [];
+    };
     return { call: call as unknown as Client["call"], events: [], subscribe: () => () => {}, disconnected: new Promise(() => {}), close: async () => {} };
   },
+  forgetRemoteHost: async (id: string) => { saved.events.push(`forget:${id}`); saved.hosts = saved.hosts.filter((host) => host.id !== id); },
 }));
 
 const home = "5b0e2c8e-6f1a-4c55-9a43-2f0d7b1e9c11", office = "9c4f6b1d-2a7e-4e3b-8d55-0f6a1c2b3d4e";
@@ -31,6 +43,7 @@ function fakePush(options: { available: boolean; permission: string }) {
     checkPermissions: async () => ({ receive: options.permission }),
     requestPermissions: async () => ({ receive: options.permission }),
     register: async () => { queueMicrotask(() => listeners.get("registration")?.({ value: "synthetic-push-token" } as never)); },
+    unregister: native.unregister,
     addListener: (async (event: string, listener: (value: never) => void) => {
       listeners.set(event, listener);
       return { remove: async () => { listeners.delete(event); } };
@@ -48,10 +61,60 @@ const recorder = () => {
 
 beforeEach(() => {
   vi.resetModules();
-  saved.hosts = []; saved.opened = [];
+  saved.hosts = []; saved.opened = []; saved.events = []; saved.nativeAvailable = false; saved.clearFails = false;
+  native.unregister.mockClear();
   vi.stubGlobal("localStorage", { getItem: () => null, setItem: () => {} });
 });
 afterEach(() => vi.unstubAllGlobals());
+
+it("clears a connected PC's push token before forgetting its keys, then unregisters when it was the last saved PC", async () => {
+  saved.hosts = [{ id: home, name: "Home PC" }];
+  saved.nativeAvailable = true;
+  const connection = await import("./connection");
+  const { getState } = await import("./store");
+  connection.startConnection();
+  await vi.waitFor(() => expect(getState().connection.status).toBe("ready"));
+  saved.events = [];
+  await connection.forgetRemote(home);
+  expect(saved.events).toEqual([`push:${home}:{"token":null}`, `forget:${home}`]);
+  expect(native.unregister).toHaveBeenCalledOnce();
+});
+
+it("does not send a push-clear RPC to a different PC while forgetting it", async () => {
+  saved.hosts = [{ id: home, name: "Home PC" }, { id: office, name: "Office PC" }];
+  const connection = await import("./connection");
+  const { getState } = await import("./store");
+  connection.startConnection();
+  await vi.waitFor(() => expect(getState().connection.status).toBe("ready"));
+  saved.events = [];
+  await connection.forgetRemote(office);
+  expect(saved.events).toEqual([`forget:${office}`]);
+  expect(native.unregister).not.toHaveBeenCalled();
+});
+
+it("still deletes the PC keys if clearing its push token fails", async () => {
+  saved.hosts = [{ id: home, name: "Home PC" }];
+  const connection = await import("./connection");
+  const { getState } = await import("./store");
+  connection.startConnection();
+  await vi.waitFor(() => expect(getState().connection.status).toBe("ready"));
+  saved.events = [];
+  saved.clearFails = true;
+  await connection.forgetRemote(home);
+  expect(saved.events).toEqual([`push:${home}:{"token":null}`, `forget:${home}`]);
+});
+
+it("resets the cached token after unregistering so another pairing registers afresh", async () => {
+  const { registerPushIfAllowed, unregisterPush } = await import("./push");
+  const { push } = fakePush({ available: true, permission: "granted" });
+  const register = vi.spyOn(push, "register");
+  const { client } = recorder();
+  await registerPushIfAllowed(client, push);
+  await unregisterPush(push);
+  await registerPushIfAllowed(client, push);
+  expect(native.unregister).toHaveBeenCalledOnce();
+  expect(register).toHaveBeenCalledTimes(2);
+});
 
 it("registers this phone's push token with the PC only when this build has push and the person allowed notifications", async () => {
   const { registerPushIfAllowed } = await import("./push");
@@ -91,12 +154,13 @@ it("routes a tap to the bot's chat, switching to that bot's PC first, and ignore
   await vi.waitFor(() => expect(getState().connection).toEqual({ status: "ready" }));
 
   tap({ v: "1", hostId: office, kind: "limit", botId: officeBot }); // already on that PC: no reconnect
+  tap({ v: "1", hostId: office, kind: "limit", botId: officeBot, from: "fcm-transport" });
   tap({ v: "1", hostId: office, kind: "approval", title: "A bot needs you", botId: homeBot }); // not a push this app sends
-  expect(routes).toEqual([`/chat/?bot=${officeBot}`, `/chat/?bot=${officeBot}`]);
+  expect(routes).toEqual([`/chat/?bot=${officeBot}`, `/chat/?bot=${officeBot}`, `/chat/?bot=${officeBot}`]);
   expect(saved.opened).toEqual([home, office]);
 
   tap({ v: "1", hostId: "a34620cb-9f84-47f1-a428-51259cc1f3b6", kind: "approval", botId: homeBot });
   tap({ v: "1", hostId: home, kind: "approval", botId: "javascript:alert(1)" });
-  expect(routes).toEqual([`/chat/?bot=${officeBot}`, `/chat/?bot=${officeBot}`]);
+  expect(routes).toEqual([`/chat/?bot=${officeBot}`, `/chat/?bot=${officeBot}`, `/chat/?bot=${officeBot}`]);
   expect(saved.opened).toEqual([home, office]);
 });

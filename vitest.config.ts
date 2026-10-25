@@ -12,7 +12,7 @@ export default defineConfig(({ mode }) => {
     resolve: { alias: { "@": fileURLToPath(new URL("./packages/ui", import.meta.url)) } },
     test: {
       execArgv: ["--disable-warning=ExperimentalWarning"],
-      include: packaged ? ["packages/desktop/src/packaged.real.test.ts"] : real ? ["packages/*/src/**/*.real.test.ts", "packages/ui/visual/**/*.real.test.ts"] : ["packages/*/src/**/*.test.ts", "packages/ui/{lib,components}/**/*.test.{ts,tsx}"],
+      include: packaged ? ["packages/desktop/src/packaged.real.test.ts"] : real ? ["packages/*/src/**/*.real.test.ts", "packages/ui/visual/**/*.real.test.ts"] : ["packages/*/src/**/*.test.ts", "packages/mobile/scripts/**/*.test.ts", "packages/ui/{lib,components}/**/*.test.{ts,tsx}"],
       exclude: packaged ? ["**/node_modules/**"] : real ? ["**/node_modules/**", "**/packaged.real.test.ts"] : ["**/node_modules/**", "**/*.real.test.ts"],
       testTimeout: real ? 600_000 : 10_000,
       hookTimeout: real ? 600_000 : 10_000,

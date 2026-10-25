@@ -112,6 +112,7 @@ export function MobileConnect({ status, reason, api, device = "phone", dialog = 
           ))}
         </ul>
       )}
+      {device === "phone" && hosts.length > 0 && <p className="text-[12px] leading-[18px] text-secondary">To stop its notifications, remove this phone on that PC.</p>}
       <section aria-label="Pair a new PC" className={cn("flex flex-col gap-3", !dialog && "rounded-[12px] bg-card p-4")}>
         <h2 className="text-[14px] font-semibold text-title">{hosts.length > 0 ? "Pair another PC" : "Pair"}</h2>
         <p className="text-[12px] leading-[18px] text-secondary">{words.steps}</p>

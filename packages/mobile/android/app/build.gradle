@@ -4,11 +4,12 @@ android {
     namespace = "dev.tjommie.app"
     compileSdk = rootProject.ext.compileSdkVersion
     defaultConfig {
+        buildConfigField "boolean", "PUSH", file("google-services.json").isFile().toString()
         applicationId "dev.tjommie.app"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "0.1.0"
+        versionCode 3
+        versionName "0.3.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -16,8 +17,18 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    buildFeatures { buildConfig true }
+    signingConfigs {
+        release {
+            storeFile System.getenv("TJOMMIE_ANDROID_KEYSTORE") ? file(System.getenv("TJOMMIE_ANDROID_KEYSTORE")) : null
+            storePassword System.getenv("TJOMMIE_ANDROID_KEYSTORE_PASSWORD")
+            keyAlias System.getenv("TJOMMIE_ANDROID_KEY_ALIAS")
+            keyPassword System.getenv("TJOMMIE_ANDROID_KEY_PASSWORD")
+        }
+    }
     buildTypes {
         release {
+            signingConfig signingConfigs.release
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
@@ -53,3 +64,13 @@ try {
 } catch(Exception e) {
     logger.info("google-services.json not found, google-services plugin not applied. Push Notifications won't work")
 }
+
+tasks.register("requireReleaseSigning") {
+    doLast {
+        def names = ["TJOMMIE_ANDROID_KEYSTORE", "TJOMMIE_ANDROID_KEYSTORE_PASSWORD", "TJOMMIE_ANDROID_KEY_ALIAS", "TJOMMIE_ANDROID_KEY_PASSWORD"]
+        if (names.any { !System.getenv(it) } || !file(System.getenv("TJOMMIE_ANDROID_KEYSTORE") ?: ".").isFile()) {
+            throw new GradleException("Release signing requires all four TJOMMIE_ANDROID_* variables and a keystore file.")
+        }
+    }
+}
+tasks.matching { it.name in ["packageRelease", "packageReleaseUniversalApk", "signReleaseBundle"] }.configureEach { dependsOn(tasks.named("requireReleaseSigning")) }

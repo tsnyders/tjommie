@@ -112,9 +112,7 @@ export function frameSockets(): FrameSocketApi {
   };
 }
 
-// TjommieSocket's "network" event (frozen for T7): the phone's network changed, so an open socket may be a zombie. SocketPlugin's listener types
-// gain the event when T7 merges; until then this is its one typed use.
-type NetworkEvents = { addListener(event: "network", listener: (event: { type: "wifi" | "cellular" | "none" | "other" }) => void): Promise<{ remove: () => Promise<void> }> };
+// A network change can leave an open TCP socket stale.
 export function onNetworkChange(listener: () => void): void {
-  void (socket as unknown as NetworkEvents).addListener("network", () => listener()).catch(() => {});
+  void socket.addListener("network", () => listener()).catch(() => {});
 }

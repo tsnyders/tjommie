@@ -1,8 +1,10 @@
 import { registerPlugin } from "@capacitor/core";
-import { createPlugins } from "./wrappers.ts";
+import { PushNotifications } from "@capacitor/push-notifications";
+import { createPlugins, createPush, type PushRoutingPlugin } from "./wrappers.ts";
 
-// The native plugins, registered with Capacitor. Import this only where the app runs inside Capacitor (the web and desktop builds never load it).
+// Capacitor plugin proxies are safe to import on web and desktop; callers gate native operations by platform.
 export const { secureStore, socket, scanner } = createPlugins((name) => registerPlugin(name));
+export const push = createPush(registerPlugin<PushRoutingPlugin>("TjommiePushRouting"), PushNotifications);
 
 export type AppearanceInsets = { imeBottom: number; keyboardVisible: boolean };
 export const appearance = registerPlugin<{

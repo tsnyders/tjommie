@@ -8,6 +8,7 @@ next-env.d.ts
 /packages/ui/public/tjommie_noise_bg.wasm
 .env*
 *.pem
+/packages/mobile/android/app/google-services.json
 
 # Design renders and smoke-test output (regenerable)
 design/_smoke/

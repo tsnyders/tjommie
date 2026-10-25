@@ -53,6 +53,7 @@ describe("RemovedScreen", () => {
     expect(out).toContain("This PC removed this device");
     expect(out).toContain(">Pair again<");
     expect(out).toContain(">Forget<");
+    expect(renderToStaticMarkup(<RemovedScreen android />)).toContain("To stop its notifications, remove this phone on that PC.");
   });
 
   it("forgets that PC on Forget", () => {

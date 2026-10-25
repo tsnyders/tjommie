@@ -9,7 +9,7 @@ import { HostSwitcher } from "../host-switcher";
 import { Pill } from "../pill";
 
 // "Always connected" and the battery row wait on the Android background spike (T0): false hides both if the owner drops the keep-alive service.
-const ALWAYS_CONNECTED = true;
+const ALWAYS_CONNECTED = false;
 
 export type Notifications = "allow" | "on" | "off" | "unavailable";
 const NOTIFICATIONS: Record<Exclude<Notifications, "allow">, string> = { on: "On", off: "Off", unavailable: "Not in this build" };

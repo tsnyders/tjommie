@@ -1,6 +1,6 @@
 // Copies the native plugins into the generated Android project and makes the few settings changes this app needs. Safe to run again.
 // Run after `cap add android` or `cap sync android`:  node scripts/apply-native.mjs
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -10,6 +10,11 @@ const android = join(mobile, "android");
 if (!existsSync(android)) throw new Error("There is no android/ project yet: run `npm run android:add -w @tjommie/mobile` first.");
 
 const app = join(android, "app");
+const firebase = process.env.TJOMMIE_GOOGLE_SERVICES_JSON;
+if (firebase) {
+  if (!existsSync(firebase) || !statSync(firebase).isFile()) throw new Error("TJOMMIE_GOOGLE_SERVICES_JSON must name a file.");
+  cpSync(firebase, join(app, "google-services.json"));
+}
 const res = join(app, "src", "main", "res");
 const icon = join(mobile, "..", "desktop", "assets", "icon-256.png");
 mkdirSync(join(res, "drawable"), { recursive: true });
@@ -42,6 +47,9 @@ patch(join(app, "src", "main", "AndroidManifest.xml"), (xml) => {
   if (!/android:allowBackup="false"/.test(out)) out = /android:allowBackup="[^"]*"/.test(out) ? out.replace(/android:allowBackup="[^"]*"/, 'android:allowBackup="false"') : out.replace("<application", '<application\n        android:allowBackup="false"');
   if (!/android:usesCleartextTraffic=/.test(out)) out = out.replace("<application", '<application\n        android:usesCleartextTraffic="false"');
   if (!/android:windowSoftInputMode=/.test(out)) out = out.replace("<activity", '<activity\n            android:windowSoftInputMode="adjustResize"');
+  for (const permission of ["android.permission.ACCESS_NETWORK_STATE", "android.permission.POST_NOTIFICATIONS"]) {
+    if (!out.includes(permission)) out = out.replace("</manifest>", `    <uses-permission android:name="${permission}" />\n</manifest>`);
+  }
   return out;
 });
 
@@ -64,7 +72,38 @@ patch(join(app, "build.gradle"), (gradle) => {
   must(gradle, "dependencies {", "the dependencies block");
   let out = gradle;
   const version = JSON.parse(readFileSync(join(mobile, "package.json"), "utf8")).version;
+  // shortcut: Android version codes cover 0.x.0 releases, revise before patch or major releases.
+  if (!/^0\.\d+\.0$/.test(version)) throw new Error("Android versionCode needs a release-version rule for this package version.");
+  out = out.replace(/versionCode\s+\d+/, `versionCode ${Number(version.split(".")[1])}`);
   out = out.replace(/versionName\s+"[^"]*"/, `versionName "${version}"`);
+  if (!out.includes('buildConfigField "boolean", "PUSH"')) out = out.replace("defaultConfig {", 'defaultConfig {\n        buildConfigField "boolean", "PUSH", file("google-services.json").isFile().toString()');
+  if (!out.includes("buildFeatures {")) out = out.replace("    buildTypes {", "    buildFeatures { buildConfig true }\n    buildTypes {");
+  if (!out.includes("signingConfigs {")) out = out.replace("    buildTypes {", `    signingConfigs {
+        release {
+            storeFile System.getenv("TJOMMIE_ANDROID_KEYSTORE") ? file(System.getenv("TJOMMIE_ANDROID_KEYSTORE")) : null
+            storePassword System.getenv("TJOMMIE_ANDROID_KEYSTORE_PASSWORD")
+            keyAlias System.getenv("TJOMMIE_ANDROID_KEY_ALIAS")
+            keyPassword System.getenv("TJOMMIE_ANDROID_KEY_PASSWORD")
+        }
+    }
+    buildTypes {`);
+  if (!out.includes("signingConfig signingConfigs.release")) {
+    const signed = out.replace(/(buildTypes\s*\{\s*release\s*\{)/, "$1\n            signingConfig signingConfigs.release");
+    if (signed === out) throw new Error("Could not attach release signing to the Android build type.");
+    out = signed;
+  }
+  if (!out.includes('tasks.register("requireReleaseSigning")')) out += `
+tasks.register("requireReleaseSigning") {
+    doLast {
+        def names = ["TJOMMIE_ANDROID_KEYSTORE", "TJOMMIE_ANDROID_KEYSTORE_PASSWORD", "TJOMMIE_ANDROID_KEY_ALIAS", "TJOMMIE_ANDROID_KEY_PASSWORD"]
+        if (names.any { !System.getenv(it) } || !file(System.getenv("TJOMMIE_ANDROID_KEYSTORE") ?: ".").isFile()) {
+            throw new GradleException("Release signing requires all four TJOMMIE_ANDROID_* variables and a keystore file.")
+        }
+    }
+}
+tasks.matching { it.name in ["packageRelease", "packageReleaseUniversalApk", "signReleaseBundle"] }.configureEach { dependsOn(tasks.named("requireReleaseSigning")) }
+`;
+  out = out.replace('tasks.matching { it.name == "preReleaseBuild" }.configureEach { dependsOn(tasks.named("requireReleaseSigning")) }', 'tasks.matching { it.name in ["packageRelease", "packageReleaseUniversalApk", "signReleaseBundle"] }.configureEach { dependsOn(tasks.named("requireReleaseSigning")) }');
   if (!out.includes("play-services-code-scanner")) out = out.replace("dependencies {", "dependencies {\n    implementation 'com.google.android.gms:play-services-code-scanner:16.1.0'");
   if (!/testImplementation\s+['"]junit:junit/.test(out)) out = out.replace("dependencies {", "dependencies {\n    testImplementation 'junit:junit:4.13.2'");
   return out;
