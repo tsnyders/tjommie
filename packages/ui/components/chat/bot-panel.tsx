@@ -12,6 +12,7 @@ import { AUTONOMY_LINE, modelLabel, stateLabel } from "@/lib/labels";
 import { draftFrom, EMPTY_ROUTINE, localZone } from "@/lib/routine-form";
 import { removeRoutine, saveRoutine } from "@/lib/routines";
 import { nativeBrowserAvailable } from "@/lib/native-capability";
+import { remoteHosts } from "@/lib/remote-hosts";
 import { useApp } from "@/lib/store";
 import { useUsage } from "@/lib/use-usage";
 import { botDayText, usageHref } from "@/lib/usage";
@@ -158,14 +159,17 @@ function Summary({ bot }: { bot: Bot }) {
 }
 
 function BrowserCard({ bot, onOpen }: { bot: Bot; onOpen: () => void }) {
-  // Without the desktop app's bridge (a web or phone client) the browser can't be shown: it runs on the PC, and nothing here pretends otherwise.
+  const host = useApp((state) => state.host);
+  // Without the desktop app's bridge (a web or phone client), or with the desktop app on another PC, the browser can't be shown here: it runs on
+  // the bot's PC, named when this device knows it, and nothing here pretends otherwise.
   if (!nativeBrowserAvailable()) {
+    const pc = remoteHosts().find((saved) => saved.id === host)?.name ?? "your PC";
     return (
       <section className="mt-4 flex items-center gap-3 rounded-[12px] bg-card p-3">
         <Monitor className="size-5 shrink-0 text-icon" aria-hidden />
         <div className="min-w-0 flex-1">
           <h3 className="text-[13px] font-semibold leading-[18px] text-title">Browser</h3>
-          <p className="mt-0.5 text-[12px] leading-[18px] text-secondary">Runs on your PC. Open Tjommie on that PC to watch {bot.name} or take over.</p>
+          <p className="mt-0.5 text-[12px] leading-[18px] text-secondary">Runs on {pc}. Open Tjommie on that PC to watch {bot.name} or take over.</p>
         </div>
       </section>
     );

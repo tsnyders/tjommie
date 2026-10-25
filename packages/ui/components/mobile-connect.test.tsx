@@ -50,4 +50,27 @@ describe("MobileConnect", () => {
     expect(out).toMatch(/disabled=""[^>]*aria-label="Connect to Home PC"|aria-label="Connect to Home PC"[^>]*disabled=""/);
     expect(out).not.toContain("Connected");
   });
+
+  it("says a device reaches the PC on the same Wi-Fi, or from anywhere through the PC's relay", () => {
+    const out = html("outside");
+    expect(out).toContain("same Wi-Fi");
+    expect(out).toContain("relay");
+    expect(out).toContain("from anywhere");
+  });
+
+  it("lets another PC connect by pasting the code: no scanner, named Another PC until renamed", () => {
+    const out = renderToStaticMarkup(<MobileConnect status="outside" device="pc" api={api()} />);
+    expect(out).not.toContain("Scan code");
+    expect(out).toContain("Name for this PC");
+    expect(out).toContain('value="Another PC"');
+    expect(out).toContain("On the other PC open Settings, then Devices, then Pair a device");
+    expect(out).toMatch(/<textarea[^>]*id="pair-code"/);
+  });
+
+  it("fits in a dialog, whose title is its heading", () => {
+    const out = renderToStaticMarkup(<MobileConnect status="outside" device="pc" dialog api={api([{ id: "h1", name: "Home PC" }])} />);
+    expect(out).not.toContain("<h1");
+    expect(out).toContain('aria-label="Connect to Home PC"');
+    expect(out).toContain("Pair another PC");
+  });
 });

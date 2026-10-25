@@ -77,7 +77,7 @@ export function PairBody({ onClose }: { onClose: () => void }) {
   const left = pairing ? countdown(pairing.expires, now) : null;
   return (
     <div className="mt-3 flex flex-col gap-4 text-[13px] leading-[18px] text-body">
-      <p>Open Tjommie on the phone or other PC, and scan this code or paste it there. It works once and lasts ten minutes. It only works on the same Wi-Fi as this PC.</p>
+      <p>Open Tjommie on the phone or other PC, and scan this code or paste it there. It works once and lasts ten minutes. Pairing works on the same Wi-Fi as this PC, or over mobile data when the relay is on.</p>
       {pairing && left && !left.expired ? (
         <>
           {/* A QR code must be black on white to scan, whatever the theme: the one place raw colors are right. */}

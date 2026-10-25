@@ -27,6 +27,7 @@ export type Connection =
 
 export type AppState = {
   connection: Connection;
+  host: string | null; // the saved PC this device is on (its id), or null for the desktop's own Tjommie and before a phone picks a PC
   bots: Bot[];
   setup: ProviderSetup[] | null;
   accounts: AccountInfo[] | null; // null until the first list arrives
@@ -41,6 +42,7 @@ export type AppState = {
 
 export const initialState: AppState = {
   connection: { status: "connecting" },
+  host: null,
   bots: [],
   setup: null,
   accounts: null,
