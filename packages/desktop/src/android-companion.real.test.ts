@@ -101,6 +101,7 @@ it.skipIf(!serial || !cdp)("keeps the original phone UI usable with real swipe s
   mkdirSync(shots, { recursive: true });
   try {
     app = await launchRealApp(undefined, { isolatedAccounts: true });
+    await app.client.call("settings.set", { relayUrl: null });
     mkdirSync(resolve(".cache"), { recursive: true });
     writeFileSync(resolve(".cache/android-test-root.txt"), app.root);
     const bot = await app.client.call("bots.create", { name: "S25 test agent", provider: "claude", model: "sonnet", color: "blue", shape: "circle", instructions: "Disposable Android UI fixture. Never run a provider turn.", autonomy: "ask", browser: false });
