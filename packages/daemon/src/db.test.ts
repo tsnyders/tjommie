@@ -17,9 +17,21 @@ describe("openDb", () => {
     old.exec("PRAGMA user_version = 6");
     old.close();
     const db = openDb(file);
-    expect(db.prepare("PRAGMA user_version").get()).toEqual({ user_version: 7 });
+    expect(db.prepare("PRAGMA user_version").get()).toEqual({ user_version: migrations.length });
     expect(db.prepare("SELECT name, created_at FROM conversations WHERE id = 'team'").get()).toEqual({ name: "Everyone", created_at: null });
     expect(db.prepare("SELECT * FROM room_members").all()).toEqual([]);
+    db.close();
+  });
+
+  it("adds a nullable push token to the previous device schema without changing devices", () => {
+    const file = join(root(), "v7.db");
+    const old = new DatabaseSync(file);
+    for (const migration of migrations.slice(0, 7)) old.exec(migration);
+    old.exec(`INSERT INTO devices(id,name,public_key,paired_at) VALUES('phone','Phone','key','2026-10-25T00:00:00.000Z'); PRAGMA user_version = 7;`);
+    old.close();
+    const db = openDb(file);
+    expect(db.prepare("PRAGMA user_version").get()).toEqual({ user_version: migrations.length });
+    expect(db.prepare("SELECT id, push_token FROM devices WHERE id = 'phone'").get()).toEqual({ id: "phone", push_token: null });
     db.close();
   });
 

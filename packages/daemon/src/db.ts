@@ -225,6 +225,7 @@ export const migrations: readonly string[] = [
     room_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
     bot_id TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
     PRIMARY KEY (room_id, bot_id));`,
+  `ALTER TABLE devices ADD COLUMN push_token TEXT;`,
 ];
 
 export function transaction(db: Db, work: () => void): void {

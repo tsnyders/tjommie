@@ -12,8 +12,18 @@ export function getDevice(db: Db, id: string): Device {
   return Device.parse(row);
 }
 export function deviceForKey(db: Db, key: string): Device | null {
-  const row = db.prepare(`SELECT ${columns} FROM devices WHERE public_key = ? AND revoked_at IS NULL`).get(key);
+  const row = db.prepare(`SELECT ${columns} FROM devices WHERE public_key = ?`).get(key);
   return row ? Device.parse(row) : null;
+}
+export function pushTargets(db: Db): { deviceId: string; token: string }[] {
+  return db.prepare("SELECT id AS deviceId, push_token AS token FROM devices WHERE revoked_at IS NULL AND push_token IS NOT NULL").all() as { deviceId: string; token: string }[];
+}
+export function setPushToken(db: Db, id: string, token: string | null): void {
+  if (getDevice(db, id).revokedAt) throw new RpcError("bad_state", "This device has been revoked.");
+  db.prepare("UPDATE devices SET push_token = ? WHERE id = ? AND revoked_at IS NULL").run(token, id);
+}
+export function clearPushToken(db: Db, id: string): void {
+  db.prepare("UPDATE devices SET push_token = NULL WHERE id = ?").run(id);
 }
 export function addDevice(db: Db, input: { publicKey: string; name: string }): Device {
   const publicKey = RemoteKey.parse(input.publicKey), name = RemoteName.parse(input.name);
@@ -32,7 +42,7 @@ export function renameDevice(db: Db, id: string, value: string): Device {
 }
 export function revokeDevice(db: Db, id: string): Device {
   getDevice(db, id);
-  db.prepare("UPDATE devices SET revoked_at = COALESCE(revoked_at, ?) WHERE id = ?").run(nowIso(), id);
+  db.prepare("UPDATE devices SET revoked_at = COALESCE(revoked_at, ?), push_token = NULL WHERE id = ?").run(nowIso(), id);
   return getDevice(db, id);
 }
 export function touchDevice(db: Db, id: string, at = nowIso()): void {

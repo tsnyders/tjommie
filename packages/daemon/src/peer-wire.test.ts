@@ -1,8 +1,9 @@
 import { once } from "node:events";
 import { createConnection, createServer, type AddressInfo } from "node:net";
 import { expect, it } from "vitest";
+import { WebSocketServer } from "ws";
 import { FrameDecoder, lengthPrefixed } from "../../client/src/encrypted-channel.ts";
-import { tcpWire } from "./peer-wire.ts";
+import { tcpWire, webSocketWire } from "./peer-wire.ts";
 
 it("turns split TCP packets into frames and prefixes each written frame", async () => {
   const received: Uint8Array[] = [];
@@ -65,6 +66,57 @@ it("does not deliver later frames from a chunk after destruction", async () => {
     expect(received).toEqual([1]);
   } finally {
     client.destroy();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+it("maps one binary WebSocket message to one frame and rejects text", async () => {
+  const server = new WebSocketServer({ port: 0 });
+  await once(server, "listening");
+  const port = (server.address() as AddressInfo).port;
+  const accepted = new Promise<import("ws").WebSocket>((resolve) => server.once("connection", resolve));
+  const socket = new WebSocket(`ws://127.0.0.1:${port}`);
+  try {
+    await new Promise<void>((resolve, reject) => { socket.addEventListener("open", () => resolve(), { once: true }); socket.addEventListener("error", () => reject(new Error("open failed")), { once: true }); });
+    const peer = await accepted;
+    const wire = webSocketWire(socket);
+    const frames: Uint8Array[] = [];
+    const received = new Promise<void>((resolve) => wire.onFrame((frame) => { frames.push(frame); resolve(); }));
+    const sent = once(peer, "message");
+    wire.write(new Uint8Array([1, 2, 3]));
+    const [data] = await sent;
+    expect(new Uint8Array(data as Buffer)).toEqual(new Uint8Array([1, 2, 3]));
+    peer.send(new Uint8Array([4, 5]));
+    await received;
+    expect(frames).toEqual([new Uint8Array([4, 5])]);
+    const closed = new Promise<void>((resolve) => wire.onClose(resolve));
+    peer.send("text frame");
+    await closed;
+  } finally {
+    socket.close();
+    for (const peer of server.clients) peer.terminate();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+it("closes a WebSocket wire on an oversized binary frame", async () => {
+  const server = new WebSocketServer({ port: 0 });
+  await once(server, "listening");
+  const accepted = new Promise<import("ws").WebSocket>((resolve) => server.once("connection", resolve));
+  const socket = new WebSocket(`ws://127.0.0.1:${(server.address() as AddressInfo).port}`);
+  try {
+    await new Promise<void>((resolve) => socket.addEventListener("open", () => resolve(), { once: true }));
+    const peer = await accepted;
+    const wire = webSocketWire(socket);
+    const frames: Uint8Array[] = [];
+    wire.onFrame((frame) => frames.push(frame));
+    const closed = new Promise<void>((resolve) => wire.onClose(resolve));
+    peer.send(new Uint8Array(65_536));
+    await closed;
+    expect(frames).toEqual([]);
+  } finally {
+    socket.close();
+    for (const peer of server.clients) peer.terminate();
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 });

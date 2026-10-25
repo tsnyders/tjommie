@@ -1,6 +1,6 @@
 import { afterEach, expect, it } from "vitest";
 import { openDb } from "./db.ts";
-import { addDevice, getDevice, listDevices, renameDevice, revokeDevice, touchDevice } from "./devices-store.ts";
+import { addDevice, clearPushToken, getDevice, listDevices, pushTargets, renameDevice, revokeDevice, setPushToken, touchDevice } from "./devices-store.ts";
 
 const db = openDb(":memory:");
 afterEach(() => db.exec("DELETE FROM devices"));
@@ -23,4 +23,18 @@ it("rejects invalid names and keys before writing", () => {
   expect(() => addDevice(db, { publicKey: "bad", name: "Phone" })).toThrow();
   expect(() => addDevice(db, { publicKey: key, name: "\u0000" })).toThrow();
   expect(listDevices(db)).toEqual([]);
+});
+
+it("stores push tokens separately from device details and clears them on revoke", () => {
+  const device = addDevice(db, { publicKey: key, name: "Phone" });
+  setPushToken(db, device.id, "synthetic-token");
+  expect(getDevice(db, device.id)).toEqual(device);
+  expect(pushTargets(db)).toEqual([{ deviceId: device.id, token: "synthetic-token" }]);
+  clearPushToken(db, device.id);
+  expect(pushTargets(db)).toEqual([]);
+  setPushToken(db, device.id, "synthetic-token");
+  revokeDevice(db, device.id);
+  expect(pushTargets(db)).toEqual([]);
+  expect(db.prepare("SELECT push_token FROM devices WHERE id = ?").get(device.id)).toEqual({ push_token: null });
+  expect(() => setPushToken(db, device.id, "new-token")).toThrow();
 });
