@@ -6,7 +6,9 @@ const hostId = "99cf98ba-2638-4b16-8a6e-1691c1673b45";
 const key = "AQ".padEnd(43, "A");
 
 it("freezes relay limits and control messages", () => {
-  expect(RelayUrl.nullable().safeParse(DEFAULT_RELAY_URL).success).toBe(true);
+  expect(DEFAULT_RELAY_URL).toBe("https://tjommie-relay.tyrellsnyders30.workers.dev");
+  if (DEFAULT_RELAY_URL === null) throw new Error("The public relay URL must be set");
+  expect(RelayUrl.parse(DEFAULT_RELAY_URL)).toBe(DEFAULT_RELAY_URL);
   expect(RELAY).toEqual({ maxFrame: 65_535, hostPingMs: 30_000, hostDeadMs: 75_000, acceptTimeoutMs: 10_000,
     maxChannels: 32, maxPendingChannels: 8, connectsPerIpPerMinute: 20, maxPushTokens: 16 });
   expect(RelayClose).toEqual({ hostOffline: 4404, badLogin: 4401, replaced: 4409, hostDead: 4408, tooLarge: 1009, limited: 4429 });

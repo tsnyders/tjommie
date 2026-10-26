@@ -11,6 +11,7 @@ it("retains edited drafts, reveals keyboard mentions, dismisses native overlays 
   let app: RealApp | undefined;
   try {
     app = await launchRealApp(undefined, { isolatedAccounts: true });
+    await app.client.call("settings.set", { relayUrl: null });
     const { page, client } = app;
     const bot = await client.call("bots.create", { name: "Draft fixture", provider: "claude", model: "haiku", color: "blue", shape: "circle", instructions: "Synthetic UI fixture", autonomy: "ask", browser: false });
     await client.call("bots.pause", { id: bot.id, paused: true });

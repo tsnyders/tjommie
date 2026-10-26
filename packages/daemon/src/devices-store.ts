@@ -28,8 +28,8 @@ export function setPushToken(db: Db, id: string, token: string | null): void {
     db.prepare("UPDATE devices SET push_token = ? WHERE id = ? AND revoked_at IS NULL").run(token, id);
   });
 }
-export function clearPushToken(db: Db, id: string): void {
-  db.prepare("UPDATE devices SET push_token = NULL WHERE id = ?").run(id);
+export function clearPushToken(db: Db, id: string, token: string): void {
+  db.prepare("UPDATE devices SET push_token = NULL WHERE id = ? AND push_token = ?").run(id, token);
 }
 export function addDevice(db: Db, input: { publicKey: string; name: string }): Device {
   const publicKey = RemoteKey.parse(input.publicKey), name = RemoteName.parse(input.name);

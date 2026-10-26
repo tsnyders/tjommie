@@ -30,7 +30,7 @@ it("stores push tokens separately from device details and clears them on revoke"
   setPushToken(db, device.id, "synthetic-token");
   expect(getDevice(db, device.id)).toEqual(device);
   expect(pushTargets(db)).toEqual([{ deviceId: device.id, token: "synthetic-token" }]);
-  clearPushToken(db, device.id);
+  clearPushToken(db, device.id, "synthetic-token");
   expect(pushTargets(db)).toEqual([]);
   setPushToken(db, device.id, "synthetic-token");
   revokeDevice(db, device.id);
@@ -39,6 +39,16 @@ it("stores push tokens separately from device details and clears them on revoke"
   db.prepare("UPDATE devices SET push_token = ? WHERE id = ?").run("stale-token", device.id);
   expect(pushTargets(db)).toEqual([]);
   expect(() => setPushToken(db, device.id, "new-token")).toThrow();
+});
+
+it("keeps a newly registered token when an older push is reported unregistered", () => {
+  const device = addDevice(db, { publicKey: key, name: "Phone" });
+  setPushToken(db, device.id, "old-token");
+  setPushToken(db, device.id, "new-token");
+  clearPushToken(db, device.id, "old-token");
+  expect(pushTargets(db)).toEqual([{ deviceId: device.id, token: "new-token" }]);
+  clearPushToken(db, device.id, "new-token");
+  expect(pushTargets(db)).toEqual([]);
 });
 
 it("moves a token to the latest active device registration", () => {

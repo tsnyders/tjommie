@@ -1,4 +1,5 @@
 import type { RemoteStatus } from "@tjommie/protocol";
+import { DEFAULT_RELAY_URL } from "@tjommie/protocol";
 import type { ComponentProps } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -10,9 +11,9 @@ vi.mock("@/lib/connection", () => ({ request: requested }));
 vi.mock("@/components/pill", async (original) => (await import("@/components/press-fixture")).recordingPill(await original()));
 
 const OWN = "https://relay.example.dev";
-const PUBLIC = "https://tjommie-relay.example.workers.dev";
+const PUBLIC = DEFAULT_RELAY_URL;
 const relay = (state: RemoteStatus["relay"]["state"], push = false): RemoteStatus["relay"] => ({ url: OWN, state, push });
-const html = (props: Partial<ComponentProps<typeof RelayRow>> = {}) => renderToStaticMarkup(<RelayRow saved={OWN} relay={relay("online", true)} publicUrl={PUBLIC} {...props} />);
+const html = (props: Partial<ComponentProps<typeof RelayRow>> = {}) => renderToStaticMarkup(<RelayRow saved={OWN} relay={relay("online", true)} {...props} />);
 
 beforeEach(() => {
   clearPresses();
