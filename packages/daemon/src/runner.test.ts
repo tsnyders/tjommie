@@ -102,16 +102,19 @@ type Harness = {
 };
 
 const runners: Runner[] = [];
+const openDatabases: Db[] = [];
 
 afterEach(() => {
   for (const runner of runners) runner.shutdown();
   runners.length = 0;
+  for (const db of openDatabases.splice(0)) if (db.isOpen) db.close();
   vi.restoreAllMocks();
 });
 
 function harness(factory: (options: StartOptions) => FakeSession = () => new FakeSession(), signedIn = true, hooks: RunnerHooks = {}, onBroadcast?: Broadcast): Harness {
   const root = tempRoot();
   const db = openDb(join(root, "t.db"));
+  openDatabases.push(db);
   ensureAccounts(db, join(root, "accounts"));
   const events: SentEvent[] = [];
   const sessions: FakeSession[] = [];
@@ -332,6 +335,7 @@ describe("Runner session costs", () => {
     h.db.close();
 
     const db = openDb(join(h.root, "t.db"));
+    openDatabases.push(db);
     const resumed = new FakeSession();
     const options: StartOptions[] = [];
     const restarted = new Runner({
@@ -1007,6 +1011,7 @@ describe("Runner.start", () => {
   it("reports a turn a restart cut off to the hooks, and says so where the turn was writing", () => {
     const root = tempRoot();
     const db = openDb(join(root, "t.db"));
+    openDatabases.push(db);
     const bot = createBot(db, join(root, "bots"), { name: "Writer", color: "blue", shape: "circle", instructions: "", provider: "claude", model: "sonnet" });
     const item = enqueue(db, { botId: bot.id, source: "room", text: "@Writer hi", conversationId: "team" });
     setStatus(db, item.id, "running");

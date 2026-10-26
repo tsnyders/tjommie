@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { botPrompt, createBot, deleteBot, getStoredBot, listStoredBots, setPaused, sweepDeletedBotFolders, updateBot } from "./bots.ts";
 import { newId, openDb, type Db } from "./db.ts";
 import { RpcError } from "./server.ts";
@@ -22,6 +22,8 @@ beforeEach(() => {
   botsDir = join(root, "bots");
   db = openDb(join(root, "t.db"));
 });
+
+afterEach(() => db.close());
 
 describe("bots store", () => {
   it("pins new bots to the provider default and keeps existing pins when the default changes", () => {

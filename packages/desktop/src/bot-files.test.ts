@@ -1,11 +1,11 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { tempRoot } from "../../daemon/src/testing.ts";
 import { notesFile } from "./bot-files.ts";
 
 describe("notesFile", () => {
-  const root = mkdtempSync(join(tmpdir(), "tjommie notes ñ-"));
+  const root = tempRoot();
   const bots = join(root, "bots");
   const home = join(bots, "b1");
   mkdirSync(join(home, "inbox"), { recursive: true });

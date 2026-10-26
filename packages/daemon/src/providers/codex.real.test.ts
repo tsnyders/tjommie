@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { StoredBot } from "../bots.ts";
@@ -60,15 +60,20 @@ describe("CodexSession against the real CLI", () => {
     // Keep the denied target outside the sandbox's temp allowance and away from the real data root.
     const cache = resolve("node_modules/.cache/fix-A");
     mkdirSync(cache, { recursive: true });
-    const outside = join(mkdtempSync(join(cache, "codex-outside-")), "denied.txt");
+    const outsideRoot = mkdtempSync(join(cache, "codex-outside-"));
+    const outside = join(outsideRoot, "denied.txt");
     const { codex, events } = session();
-    await codex.start();
-    await codex.send(`Write the text hi to the file ${outside} with a shell command.`);
-    const approval = await waitFor(() => firstOf(events, "approval"));
-    codex.answer(approval.id, "deny");
-    await waitFor(() => firstOf(events, "turn_done"));
-    expect(existsSync(outside)).toBe(false);
-    codex.close();
+    try {
+      await codex.start();
+      await codex.send(`Write the text hi to the file ${outside} with a shell command.`);
+      const approval = await waitFor(() => firstOf(events, "approval"));
+      codex.answer(approval.id, "deny");
+      await waitFor(() => firstOf(events, "turn_done"));
+      expect(existsSync(outside)).toBe(false);
+    } finally {
+      try { codex.close(); }
+      finally { rmSync(outsideRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
+    }
   });
 
   it("asks before each browser tool of a server that isn't allowed outright, then browses in its own profile", async () => {

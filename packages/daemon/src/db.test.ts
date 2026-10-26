@@ -1,13 +1,13 @@
-import { existsSync, mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import { migrations, openDb } from "./db.ts";
 import { dataPaths, readOrCreateToken } from "./paths.ts";
+import { tempRoot } from "./testing.ts";
 
 // A root with a space and an accented letter, like a real Windows profile path.
-const root = () => mkdtempSync(join(tmpdir(), "tjommie test ñ-"));
+const root = tempRoot;
 
 describe("openDb", () => {
   it("upgrades a version 6 database with Everyone and empty room memberships", () => {
@@ -101,19 +101,23 @@ describe("openDb", () => {
     const again = openDb(file);
     expect(again.prepare("SELECT label FROM accounts WHERE id = 'a'").get()).toEqual({ label: "Claude" });
     expect(again.prepare("PRAGMA user_version").get()).toEqual({ user_version: migrations.length });
+    again.close();
   });
 
   it("has the Team room conversation and the routine tables after migration 2", () => {
     const db = openDb(join(root(), "t.db"));
-    expect(db.prepare("SELECT kind FROM conversations WHERE id = 'team'").get()).toEqual({ kind: "room" });
-    for (const table of ["settings", "chains", "exchanges", "routines", "routine_runs"]) {
-      expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)).toEqual({ name: table });
-    }
+    try {
+      expect(db.prepare("SELECT kind FROM conversations WHERE id = 'team'").get()).toEqual({ kind: "room" });
+      for (const table of ["settings", "chains", "exchanges", "routines", "routine_runs"]) {
+        expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)).toEqual({ name: table });
+      }
+    } finally { db.close(); }
   });
 
   it("enforces foreign keys", () => {
     const db = openDb(join(root(), "t.db"));
-    expect(() => db.prepare("INSERT INTO conversations (id, kind, bot_id) VALUES ('c', 'bot', 'missing')").run()).toThrow(/FOREIGN KEY/);
+    try { expect(() => db.prepare("INSERT INTO conversations (id, kind, bot_id) VALUES ('c', 'bot', 'missing')").run()).toThrow(/FOREIGN KEY/); }
+    finally { db.close(); }
   });
 
   it("upgrades saved sessions with an unknown cost baseline", () => {

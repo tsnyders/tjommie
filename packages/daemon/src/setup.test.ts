@@ -4,9 +4,16 @@ import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, unlinkSync, w
 import { EventEmitter } from "node:events";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { openDb } from "./db.ts";
+import { openDb as openDatabase } from "./db.ts";
 import { accountEnv, accountFor, checkAccountLimits, checkAccountUsage, checkSetup, ensureAccounts, parseClaudeStatus, parseCodexAccountLimits, parseVersion, prepareCodexSandbox, signIn, cancelAccountSignIn, logoutAccount } from "./setup.ts";
 import { tempRoot } from "./testing.ts";
+
+const openDatabases: ReturnType<typeof openDatabase>[] = [];
+const openDb = (file: string): ReturnType<typeof openDatabase> => {
+  const db = openDatabase(file);
+  openDatabases.push(db);
+  return db;
+};
 
 type CliCommand = { file: string; args: string[] };
 type CliResult = { code: number | null; stdout: string; stderr: string };
@@ -59,7 +66,11 @@ beforeEach(() => {
   });
 });
 
-afterEach(() => { vi.unstubAllEnvs(); vi.useRealTimers(); });
+afterEach(() => {
+  for (const db of openDatabases.splice(0)) if (db.isOpen) db.close();
+  vi.unstubAllEnvs();
+  vi.useRealTimers();
+});
 
 describe("authoritative Codex quota checks", () => {
   const window = { usedPercent: 25, windowDurationMins: 300, resetsAt: null };

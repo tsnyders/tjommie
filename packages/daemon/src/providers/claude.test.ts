@@ -1,7 +1,6 @@
 import { spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
@@ -22,11 +21,12 @@ vi.mock("node:child_process", async (importOriginal) => {
 });
 
 import { cliEnv, runCli } from "../cli.ts";
+import { tempRoot } from "../testing.ts";
 import { ClaudeSession, claudeArgs, claudeMode } from "./claude.ts";
 import type { ProviderEvent, StartOptions } from "./types.ts";
 
 const base: StartOptions = {
-  cwd: mkdtempSync(join(tmpdir(), "tjommie claude-")),
+  cwd: tempRoot(),
   extraDirs: [],
   model: "sonnet",
   instructions: "Be brief.",
@@ -106,7 +106,7 @@ describe("claudeArgs", () => {
   it("passes awkward instructions through process arguments unchanged (argument round trip)", async () => {
     const instructions = `Say "hi" & 'bye'\n100% ^caret <tag> | pipe naïve ✓ C:\\Users\\Thabo Mokoena`;
     const args = claudeArgs({ ...base, instructions }, files);
-    const script = join(mkdtempSync(join(tmpdir(), "tjommie args ñ-")), "print-args.js");
+    const script = join(tempRoot(), "print-args.js");
     writeFileSync(script, "process.stdout.write(JSON.stringify(process.argv.slice(2)))");
     const out = await runCli({ file: process.execPath, args: [script] }, args, cliEnv({}));
     expect(JSON.parse(out.stdout)).toEqual(args);
