@@ -8,8 +8,7 @@ const flush = async (): Promise<void> => { await vi.advanceTimersByTimeAsync(0);
 beforeEach(() => { vi.resetModules(); vi.useFakeTimers(); });
 afterEach(() => { vi.useRealTimers(); });
 
-// Bridge calls and token events settle independently. This JS model still completes deletion with unregister;
-// Android's fire-and-forget deleteToken completion needs a native contract change to model faithfully.
+// Bridge calls and token events settle independently; routing unregister completes only after token deletion.
 async function phone() {
   const lifecycle = await import("./push");
   type Target = Pick<Client, "call">;

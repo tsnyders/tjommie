@@ -8,7 +8,7 @@ const saved = vi.hoisted(() => ({
   connections: 0, sends: [] as string[], // each connection's number, and what each device.registerPush carried to which connection ("<host>#<n> <params>")
   opening: null as Promise<void> | null, lists: null as Promise<void> | null, disconnected: new Map<number, () => void>(),
 }));
-// This JS boundary model deletes on unregister completion; Android's unawaited deleteToken task is a separate native limitation.
+// The routing plugin resolves unregister only after token deletion completes.
 const native = vi.hoisted(() => {
   const live = new Set<string>(); // the tokens Firebase still delivers to
   const listeners = new Map<string, Set<(value: never) => void>>();
@@ -30,8 +30,9 @@ const native = vi.hoisted(() => {
 });
 vi.mock("@capacitor/core", () => ({
   Capacitor: { isNativePlatform: () => true, getPlatform: () => "android" },
-  registerPlugin: () => ({
+  registerPlugin: (name: string) => ({
     start: async () => {}, stop: async () => {}, available: () => native.answers.shift() ?? Promise.resolve({ value: saved.nativeAvailable }), addListener: async () => ({ remove: async () => {} }),
+    ...(name === "TjommiePushRouting" ? { unregister: native.unregister } : {}),
   }),
 }));
 vi.mock("@capacitor/push-notifications", () => ({ PushNotifications: {
@@ -42,7 +43,6 @@ vi.mock("@capacitor/push-notifications", () => ({ PushNotifications: {
     native.live.add(value);
     void Promise.resolve().then(() => native.emit("registration", { value }));
   },
-  unregister: native.unregister,
   addListener: async (event: string, listener: (value: never) => void) => {
     const listening = native.listeners.get(event) ?? new Set();
     native.listeners.set(event, listening.add(listener));
