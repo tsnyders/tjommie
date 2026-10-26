@@ -1,10 +1,11 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Mail } from "lucide-react";
+import { Mail, Monitor } from "lucide-react";
 import type { Bot } from "@tjommie/protocol";
 import { attemptProblem, abilities, canClearLocal, cardLine, canRead, googleStep, needsReconsent, serviceList, validClientId, watchGoogle, type GoogleApi, type GoogleStatus } from "@/lib/google-connection";
 import { errorText } from "@/lib/labels";
+import { pcName, useLocalFileActions } from "@/lib/native-capability";
 import { useApp } from "@/lib/store";
 import { ConfirmDialog, Dialog } from "../dialog";
 import { FIELD, Label } from "../controls";
@@ -12,7 +13,23 @@ import { Pill } from "../pill";
 
 // The Google card in the bot panel (WF1 Phase 1): one Google account for the app, and a per-bot choice to let this bot
 // read its Gmail. Connecting happens once, in the system browser; after that Google work goes through Google's API.
+// The sign-in belongs to the bots' PC, so the card on another PC (or a phone) says where it runs, as the browser card does.
 export function GoogleCard({ bot, api }: { bot: Bot; api: GoogleApi }) {
+  const host = useApp((state) => state.host);
+  const local = useLocalFileActions();
+  if (local) return <LocalGoogleCard bot={bot} api={api} />;
+  return (
+    <section className="mt-4 flex items-center gap-3 rounded-[12px] bg-card p-3">
+      <Monitor className="size-5 shrink-0 text-icon" aria-hidden />
+      <div className="min-w-0 flex-1">
+        <h3 className="text-[13px] font-semibold leading-[18px] text-title">Google</h3>
+        <p className="mt-0.5 text-[12px] leading-[18px] text-secondary">Runs on {pcName(host)}. Open Tjommie on that PC to connect or manage Google.</p>
+      </div>
+    </section>
+  );
+}
+
+function LocalGoogleCard({ bot, api }: { bot: Bot; api: GoogleApi }) {
   const [open, setOpen] = useState(false);
   const [status, setStatus] = useState<GoogleStatus | null>(null);
   const [problem, setProblem] = useState<string | null>(null);

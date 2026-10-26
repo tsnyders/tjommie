@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState, type ReactNode } from "react";
-import { request } from "@/lib/connection";
 import { keepAliveEnabled, keepAlivePlugin, setKeepAliveEnabled } from "@/lib/keep-alive";
 import { nativePush, registerPushIfAllowed, type PushApi } from "@/lib/push";
 import { Switch } from "../controls";
@@ -25,7 +24,7 @@ export async function notificationState(push: PushApi | null): Promise<Notificat
 export async function allowNotifications(push: PushApi | null): Promise<Notifications> {
   if (!push || !(await push.available())) return "unavailable";
   const state = answered((await push.requestPermissions()).receive);
-  if (state === "on") await registerPushIfAllowed({ call: request }, push).catch(() => {}); // not connected: the next connection sends it
+  if (state === "on") await registerPushIfAllowed(undefined, push).catch(() => {}); // not connected: the next welcome supplies the target
   return state;
 }
 

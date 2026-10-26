@@ -1,12 +1,13 @@
 "use client";
 
-import { useRef, useState, type DragEvent, type KeyboardEvent } from "react";
+import { useId, useRef, useState, type DragEvent, type KeyboardEvent } from "react";
 import { ArrowUp, Paperclip, Plus, Square, X } from "lucide-react";
 import { ApprovalData, type Bot, type Message } from "@tjommie/protocol";
 import { addFiles, fileName, MAX_FILES } from "@/lib/attachments";
 import { daemon } from "@/lib/connection";
-import { desktop } from "@/lib/desktop";
 import { errorText } from "@/lib/labels";
+import { localFileActions, pcName, useLocalFileActions } from "@/lib/native-capability";
+import { useApp } from "@/lib/store";
 import { attachPaths, useRevision, useSendGuard, withoutSent, type Attachment } from "@/lib/use-draft";
 import { cn } from "@/lib/utils";
 
@@ -48,6 +49,13 @@ export function Composer({ bot, messages }: { bot: Bot; messages: Message[] }) {
   const [problem, setProblem] = useState<string | null>(null);
   const hasText = text.trim().length > 0;
   const stop = !hasText && canStop(bot, messages);
+  // A file goes as its path on this PC, which only this PC's daemon can read. So, as on a phone, attaching is off while the window shows another PC
+  // (its files are attached in Tjommie on that PC), and no path of this PC's ever goes with a message to it. The button stays reachable, marked
+  // unavailable, and says why: to a screen reader, and on press.
+  const host = useApp((state) => state.host);
+  const local = useLocalFileActions();
+  const elsewhere = `Attach files on ${pcName(host)}`;
+  const reason = useId();
 
   function attach(paths: string[]): void {
     const next = attachPaths(latestFiles.current, paths, addFiles, () => (ids.current += 1));
@@ -79,7 +87,7 @@ export function Composer({ bot, messages }: { bot: Bot; messages: Message[] }) {
       // What this send carries, fixed now. Its success clears the text only if nothing was typed since, and only these files.
       const sentText = text;
       const sentRevision = revision.now();
-      const sentFiles = files;
+      const sentFiles = localFileActions() ? files : [];
       void run(
         () => daemon().call("chat.send", { botId: bot.id, text: sentText, files: sentFiles.map((file) => file.path) }),
         () => {
@@ -104,15 +112,16 @@ export function Composer({ bot, messages }: { bot: Bot; messages: Message[] }) {
   }
 
   async function pick(): Promise<void> {
-    const picked = await desktop()?.pickFiles();
+    const picked = await localFileActions()?.pickFiles();
     if (picked?.length) attach(picked);
   }
 
   function onDrop(event: DragEvent<HTMLFormElement>): void {
     if (!event.dataTransfer.types.includes("Files")) return;
     event.preventDefault();
-    const api = desktop();
+    const api = localFileActions();
     if (api) attach(Array.from(event.dataTransfer.files, (file) => api.pathForFile(file)));
+    else setProblem(`${elsewhere}.`);
   }
 
   return (
@@ -128,7 +137,7 @@ export function Composer({ bot, messages }: { bot: Bot; messages: Message[] }) {
       onDrop={onDrop}
       className="shrink-0 px-4 pb-4"
     >
-      {files.length > 0 && (
+      {local && files.length > 0 && (
         <ul aria-label="Attached files" className="mb-2 flex flex-wrap gap-1.5">
           {files.map(({ id, path }) => (
             <li key={id} className="inline-flex h-7 max-w-[240px] items-center gap-1.5 rounded-full bg-pill pl-2.5 pr-1 text-[12px] text-text">
@@ -150,13 +159,15 @@ export function Composer({ bot, messages }: { bot: Bot; messages: Message[] }) {
         <button
           type="button"
           aria-label="Attach files"
-          title={desktop() ? "Attach files" : "Attach files from the PC app"}
-          disabled={!desktop()}
-          onClick={() => void pick()}
-          className="mb-0.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-disabled text-icon hover:text-text"
+          aria-disabled={!local}
+          aria-describedby={local ? undefined : reason}
+          title={local ? "Attach files" : elsewhere}
+          onClick={() => (local ? void pick() : setProblem(`${elsewhere}.`))}
+          className="mb-0.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-disabled text-icon hover:text-text aria-disabled:hover:text-icon"
         >
           <Plus className="size-4" aria-hidden />
         </button>
+        {!local && <span id={reason} className="sr-only">{elsewhere}</span>}
         {/* The caret shows focus here: WF11 draws the typing composer without a ring. */}
         <textarea
           value={text}
