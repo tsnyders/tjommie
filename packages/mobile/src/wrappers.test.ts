@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { codeFromScan } from "./scan.ts";
-import { createPlugins, fromBase64, MAX_FRAME_BYTES, PLUGIN_NAMES, toBase64 } from "./wrappers.ts";
+import { createPlugins, createPush, fromBase64, MAX_FRAME_BYTES, PLUGIN_NAMES, toBase64 } from "./wrappers.ts";
 
 describe("plugin registration", () => {
   it("registers the three native plugins by their names", () => {
@@ -14,9 +14,8 @@ describe("plugin registration", () => {
 
 describe("push availability", () => {
   it("reports unavailable from the native build flag without registering for Firebase", async () => {
-    const { createPush } = await import("./wrappers.ts");
     const register = vi.fn(async () => {});
-    const push = createPush({ available: async () => ({ value: false }) }, {
+    const push = createPush({ available: async () => ({ value: false }), unregister: async () => {} }, {
       register,
       checkPermissions: async () => ({ receive: "granted" as const }),
       requestPermissions: async () => ({ receive: "granted" as const }),
@@ -25,6 +24,26 @@ describe("push availability", () => {
     expect(await push.available()).toBe(false);
     await expect(push.register()).rejects.toThrow("Push isn't in this build.");
     expect(register).not.toHaveBeenCalled();
+  });
+
+  it("waits for routing unregister instead of calling the official plugin", async () => {
+    let finish = () => {};
+    const deletion = new Promise<void>((resolve) => { finish = resolve; });
+    const unregister = vi.fn(() => deletion);
+    const officialUnregister = vi.fn(async () => {});
+    const push = createPush({ available: async () => ({ value: true }), unregister }, {
+      unregister: officialUnregister,
+      addListener: vi.fn(),
+    } as unknown as Parameters<typeof createPush>[1]);
+    const settled = vi.fn();
+    const waiting = push.unregister().then(settled);
+    await Promise.resolve();
+    expect(unregister).toHaveBeenCalledOnce();
+    expect(officialUnregister).not.toHaveBeenCalled();
+    expect(settled).not.toHaveBeenCalled();
+    finish();
+    await waiting;
+    expect(settled).toHaveBeenCalledOnce();
   });
 });
 

@@ -3,6 +3,7 @@
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { patchFirebaseDependency, patchFirebaseVersion } from "./firebase-dependency.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const mobile = join(here, "..");
@@ -39,6 +40,8 @@ function patch(file, change) {
 const must = (text, needle, what) => {
   if (!text.includes(needle)) throw new Error(`Could not find ${what} in the generated project; the template may have changed.`);
 };
+
+patch(join(android, "variables.gradle"), (gradle) => patchFirebaseVersion(gradle, "25.0.1"));
 
 // The manifest: nothing in the app is backed up, and nothing travels over cleartext HTTP (the socket plugin is raw TCP, which this doesn't govern).
 patch(join(app, "src", "main", "AndroidManifest.xml"), (xml) => {
@@ -105,6 +108,7 @@ tasks.matching { it.name in ["packageRelease", "packageReleaseUniversalApk", "si
 `;
   out = out.replace('tasks.matching { it.name == "preReleaseBuild" }.configureEach { dependsOn(tasks.named("requireReleaseSigning")) }', 'tasks.matching { it.name in ["packageRelease", "packageReleaseUniversalApk", "signReleaseBundle"] }.configureEach { dependsOn(tasks.named("requireReleaseSigning")) }');
   if (!out.includes("play-services-code-scanner")) out = out.replace("dependencies {", "dependencies {\n    implementation 'com.google.android.gms:play-services-code-scanner:16.1.0'");
+  out = patchFirebaseDependency(out, "$firebaseMessagingVersion");
   if (!/testImplementation\s+['"]junit:junit/.test(out)) out = out.replace("dependencies {", "dependencies {\n    testImplementation 'junit:junit:4.13.2'");
   return out;
 });

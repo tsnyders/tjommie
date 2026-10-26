@@ -28,7 +28,7 @@ export type SocketPlugin = {
   addListener(event: "network", listener: (event: SocketNetworkEvent) => void): Promise<{ remove: () => Promise<void> }>;
 };
 
-export type PushRoutingPlugin = { available(): Promise<{ value: boolean }> };
+export type PushRoutingPlugin = { available(): Promise<{ value: boolean }>; unregister(): Promise<void> };
 
 export function createPush(routing: PushRoutingPlugin, official: PushNotificationsPlugin) {
   return {
@@ -39,7 +39,7 @@ export function createPush(routing: PushRoutingPlugin, official: PushNotificatio
       if (!(await routing.available()).value) throw new Error("Push isn't in this build.");
       return official.register();
     },
-    unregister: () => official.unregister(),
+    unregister: () => routing.unregister(),
     addListener: official.addListener.bind(official),
   };
 }
