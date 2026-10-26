@@ -78,14 +78,15 @@ async function stopRelay(child: ChildProcessWithoutNullStreams): Promise<void> {
 }
 
 it("pairs two isolated desktop profiles through the relay, chats without a provider, switches hosts and removes the device", async () => {
-  const relayRoot = mkdtempSync(join(tmpdir(), "tjommie-two-hosts-relay-"));
-  const aRoot = mkdtempSync(join(tmpdir(), "tjommie-two-hosts-a-"));
+  let relayRoot = "", aRoot = "";
   let relay: ChildProcessWithoutNullStreams | undefined;
   let aDaemon: Daemon | undefined, aClient: Client | undefined, b: RealApp | undefined, hostId: string | undefined;
   const oldCa = process.env.NODE_EXTRA_CA_CERTS;
   const oldCertificates = getCACertificates("default");
   const failures: unknown[] = [];
   try {
+    relayRoot = mkdtempSync(join(tmpdir(), "tjommie-two-hosts-relay-"));
+    aRoot = mkdtempSync(join(tmpdir(), "tjommie-two-hosts-a-"));
     const cert = certificate(relayRoot);
     const started = await startRelay(relayRoot, cert);
     relay = started.child;
@@ -144,26 +145,32 @@ it("pairs two isolated desktop profiles through the relay, chats without a provi
   } catch (error) {
     failures.push(error);
   } finally {
-    if (oldCa === undefined) delete process.env.NODE_EXTRA_CA_CERTS;
-    else process.env.NODE_EXTRA_CA_CERTS = oldCa;
-    setDefaultCACertificates(oldCertificates);
-    if (b) {
-      const keys = createDeviceKeys(b.root);
-      await closeRealApp(b, false).catch((error: unknown) => failures.push(error));
-      if (hostId) {
-        await keys.delete(`identity-${hostId}`).catch((error: unknown) => failures.push(error));
-        await keys.delete(`identity-${hostId}.pending`).catch((error: unknown) => failures.push(error));
+    try {
+      if (oldCa === undefined) delete process.env.NODE_EXTRA_CA_CERTS;
+      else process.env.NODE_EXTRA_CA_CERTS = oldCa;
+      try { setDefaultCACertificates(oldCertificates); } catch (error) { failures.push(error); }
+      if (b) {
+        try {
+          const keys = createDeviceKeys(b.root);
+          await closeRealApp(b, false).catch((error: unknown) => failures.push(error));
+          if (hostId) {
+            await keys.delete(`identity-${hostId}`).catch((error: unknown) => failures.push(error));
+            await keys.delete(`identity-${hostId}.pending`).catch((error: unknown) => failures.push(error));
+          }
+        } catch (error) { failures.push(error); }
       }
-    }
-    if (aClient) await aClient.close().catch((error: unknown) => failures.push(error));
-    if (aDaemon) await aDaemon.close().catch((error: unknown) => failures.push(error));
-    if (relay) await stopRelay(relay).catch((error: unknown) => failures.push(error));
-    for (const root of [relayRoot, aRoot]) {
-      if (dirname(resolve(root)) !== resolve(tmpdir())) failures.push(new Error("Refusing to remove a root outside the temp directory."));
-      else await eventually(async () => {
-        try { rmSync(root, { recursive: true, force: true }); return true; }
-        catch { return undefined; }
-      }, 10_000).catch((error: unknown) => failures.push(error));
+      if (aClient) await aClient.close().catch((error: unknown) => failures.push(error));
+      if (aDaemon) await aDaemon.close().catch((error: unknown) => failures.push(error));
+      if (relay) await stopRelay(relay).catch((error: unknown) => failures.push(error));
+    } catch (error) { failures.push(error); }
+    finally {
+      for (const root of [relayRoot, aRoot].filter(Boolean)) {
+        if (dirname(resolve(root)) !== resolve(tmpdir())) failures.push(new Error("Refusing to remove a root outside the temp directory."));
+        else await eventually(async () => {
+          try { rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); return true; }
+          catch { return undefined; }
+        }, 10_000).catch((error: unknown) => failures.push(error));
+      }
     }
   }
   if (failures.length) throw new AggregateError(failures, "Two-host integration or cleanup failed.");

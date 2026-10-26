@@ -8,7 +8,7 @@ import { NativeBrowserMount, NativeBrowserUiCommand, type EventData } from "@tjo
 import updater from "electron-updater";
 import { navigationFor, uiFile } from "./app-protocol.ts";
 import { notesFile } from "./bot-files.ts";
-import { startDaemonProcess, type DaemonConnection, type RunningDaemon } from "./daemon-process.ts";
+import { daemonLaunchEnv, startDaemonProcess, stopDaemonBeforeQuit, type DaemonConnection, type RunningDaemon } from "./daemon-process.ts";
 import { notificationDelivery } from "./notification-delivery.ts";
 import { beginGoogleConsent } from "./google-consent.ts";
 import { NativeBrowserEngine } from "./native-browser.ts";
@@ -54,6 +54,7 @@ const deviceKeys = createDeviceKeys(dataRoot);
 let tray: Tray | null = null;
 let updates: ReturnType<typeof createUpdater> | null = null;
 let quitting = false;
+let stopping = false;
 let daemon: RunningDaemon | null = null;
 let current: Promise<DaemonConnection> | null = null;
 let starting = false;
@@ -93,39 +94,62 @@ if (!app.requestSingleInstanceLock()) {
   app.on("second-instance", showWindow);
   app.on("before-quit", () => {
     quitting = true;
-    remoteWires?.closeAll();
   });
   app.on("will-quit", (event) => {
-    updates?.stop();
-    const activeNotifier = notifier;
-    notifier = null;
-    void activeNotifier?.close().catch(() => {});
+    if (stopping) { event.preventDefault(); return; }
     if (!daemon && starting && current) {
       event.preventDefault();
       void current.catch(() => {}).finally(() => app.quit());
       return;
     }
-    if (!daemon) { updates?.installOnQuit(); return; }
+    if (!daemon) {
+      updates?.stop();
+      remoteWires?.closeAll();
+      const activeNotifier = notifier;
+      notifier = null;
+      void activeNotifier?.close().catch(() => {});
+      updates?.installOnQuit();
+      return;
+    }
     event.preventDefault(); // stop the daemon first, so its bots close cleanly
+    stopping = true;
     const running = daemon;
     daemon = null;
     let daemonStopped = false;
+    let forcedStop = false;
     void (async () => {
       try { await nativeEngine?.closeAll(); }
       finally {
+        forcedStop = (await stopDaemonBeforeQuit(running, 20_000)) === "forced";
+        daemonStopped = true;
         try { await nativeHost?.close(); }
         finally {
           nativeHost = null;
-          await running.stop();
-          daemonStopped = true;
           await (await nativeClient?.catch(() => null))?.close(); nativeClient = null;
         }
       }
-    })().catch((error: unknown) => log(`Shutdown failed: ${String(error)}`)).finally(() => {
-      if (daemonStopped) updates?.installOnQuit();
-      else autoUpdater.autoInstallOnAppQuit = false;
+      if (forcedStop) throw new Error("The background service required a forced stop.");
+    })().catch((error: unknown) => {
+      log(`Shutdown failed: ${String(error)}`);
+      if (!updates?.installationPending() || (daemonStopped && !forcedStop)) return true;
+      quitting = false;
+      updates?.shutdownFailed();
+      if (!win || win.isDestroyed()) {
+        remoteWires?.closeAll();
+        createWindow();
+      }
+      if (daemonStopped) reconnect();
+      else win?.webContents.send("daemon:failed", "Tjommie's background service could not be stopped. Restart Tjommie to reconnect.");
+      showWindow();
+      dialog.showErrorBox("Update not installed", daemonStopped
+        ? "The background service did not stop in time. The update was not installed. Tjommie is restarting the service."
+        : "Tjommie couldn't confirm its background service stopped. The update was not installed. Restart Tjommie to reconnect.");
+      return false;
+    }).finally(() => { stopping = false; }).then((finish = true) => {
+      if (!finish) return;
+      updates?.installOnQuit();
       app.quit();
-    });
+    }).catch((error: unknown) => log(`Quit recovery failed: ${String(error)}`));
   });
   app.on("window-all-closed", () => {}); // the window only hides; Tjommie keeps running in the tray
   // No top-level await here: Electron emits "ready" only after this module finishes evaluating.
@@ -214,7 +238,7 @@ async function launchDaemon(): Promise<DaemonConnection> {
     {
       execPath: process.execPath,
       args: ["--disable-warning=ExperimentalWarning", daemonEntry],
-      env: { ...process.env, TJOMMIE_HOME: dataRoot, ...(packageIdentity.testDataRoot ? { TJOMMIE_PORT: "0" } : {}) },
+      env: daemonLaunchEnv(process.env, dataRoot, !!packageIdentity.testDataRoot),
       // Only an isolated desktop test may redirect the daemon's account folders.
       testAccountsDir: packageIdentity.testDataRoot
         ? join(packageIdentity.testDataRoot, "accounts")
@@ -540,7 +564,7 @@ function refreshTray(): void {
 }
 
 function showWindow(): void {
-  if (!win) return;
+  if (!win || win.isDestroyed()) return;
   if (win.isMinimized()) win.restore();
   win.show();
   win.focus();

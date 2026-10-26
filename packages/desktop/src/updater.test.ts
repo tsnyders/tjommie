@@ -60,6 +60,34 @@ describe("desktop updater", () => {
     updates.stop();
   });
 
+  it("cancels installation when daemon shutdown fails", () => {
+    const fake = fakeUpdater();
+    const quit = vi.fn();
+    const updates = createUpdater(true, fake as unknown as typeof autoUpdater, {}, quit);
+    fake.emit("update-downloaded", { version: "0.3.1-test" });
+    expect(updates.installationPending()).toBe(true);
+    updates.restart();
+    updates.shutdownFailed();
+    updates.installOnQuit();
+    expect(updates.state()).toEqual({ status: "error", message: "Couldn't stop the background service. The update was not installed." });
+    expect(fake.autoInstallOnAppQuit).toBe(false);
+    expect(fake.quitAndInstall).not.toHaveBeenCalled();
+    expect(quit).toHaveBeenCalledOnce();
+    updates.stop();
+  });
+
+  it("does not treat a plain Quit or unsupported build as an update install", () => {
+    const fake = fakeUpdater();
+    const updates = createUpdater(true, fake as unknown as typeof autoUpdater);
+    expect(updates.installationPending()).toBe(false);
+    fake.emit("update-downloaded", { version: "0.3.1-test" });
+    expect(updates.installationPending()).toBe(true);
+    fake.autoInstallOnAppQuit = false;
+    expect(updates.installationPending()).toBe(false);
+    updates.stop();
+    expect(createUpdater(false, fake as unknown as typeof autoUpdater).installationPending()).toBe(false);
+  });
+
   it("shows restart in the tray only after an update is ready", () => {
     const open = vi.fn();
     const restart = vi.fn();
@@ -71,6 +99,13 @@ describe("desktop updater", () => {
       .toEqual(["Open Tjommie", "separator", "Restart to update to v0.3.1", "Quit Tjommie"]);
     ready[2]?.click?.({} as Electron.MenuItem, {} as Electron.BrowserWindow, {});
     expect(restart).toHaveBeenCalledOnce();
+    const failed = trayTemplate({ status: "error", message: "Couldn't stop the background service. The update was not installed." }, open, restart, quit);
+    expect(failed.map((item) => item.label ?? item.type))
+      .toEqual(["Open Tjommie", "separator", "Couldn't install the update", "Quit Tjommie"]);
+    expect(failed[2]?.enabled).toBe(false);
+    const http = trayTemplate({ status: "error", message: "Cannot download update\nHeaders: { authorization: secret }" }, open, restart, quit);
+    expect(http[2]?.label).toBe("Couldn't check for updates");
+    expect(http[2]?.enabled).toBe(false);
   });
 
   it("maps no-update and errors to state without throwing", async () => {

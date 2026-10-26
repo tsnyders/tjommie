@@ -9,6 +9,7 @@ import builder from "electron-builder";
 import { rolldown } from "rolldown";
 import { buildInputHash, writePackagedProvenance } from "./packaged-provenance.ts";
 import { prepareUiAssets } from "../../../scripts/prepare-ui.ts";
+import { assertTestDefines, assertTestInstallDir, assertTestInstaller, testIdentity, testNsisInclude } from "./update-test-guards.ts";
 
 const repo = resolve(import.meta.dirname, "..", "..", "..");
 const require = createRequire(import.meta.url);
@@ -16,12 +17,13 @@ const testAppId = process.env.TJOMMIE_PACKAGE_APP_ID;
 const testProduct = process.env.TJOMMIE_PACKAGE_PRODUCT;
 const testDataRoot = process.env.TJOMMIE_PACKAGE_TEST_ROOT;
 if ((testAppId || testProduct || testDataRoot || process.env.TJOMMIE_PACKAGE_VERSION) &&
-  (testAppId !== "com.tsnyders.tjommie.updatetest" || testProduct !== "Tjommie Update Test")) {
+  (testAppId !== testIdentity.appId || testProduct !== testIdentity.product)) {
   throw new Error("Update test packaging requires the isolated app identity.");
 }
 if (testAppId && (!testDataRoot || dirname(resolve(testDataRoot)) !== resolve(tmpdir()))) {
   throw new Error("Update test packaging requires a disposable data root.");
 }
+if (testDataRoot) assertTestInstallDir(join(testDataRoot, testIdentity.product));
 prepareUiAssets(repo);
 const inputsSha256 = buildInputHash(repo);
 const desktop = join(repo, "packages", "desktop");
@@ -61,7 +63,7 @@ await bundle(join(desktop, "src", "main.ts"), join(app, "src"), ["electron"]);
 cpSync(join(desktop, "src", "preload.cjs"), join(app, "src", "preload.cjs"));
 writeFileSync(
   join(app, "package.json"),
-  JSON.stringify({ name: testAppId ? "tjommie-updatetest" : "tjommie", appId, productName, version, ...(testDataRoot ? { testDataRoot } : {}), description: "AI bots on your own PC", author: "TSnyders", license: "Apache-2.0", type: "module", main: "src/main.mjs" }, null, 2),
+  JSON.stringify({ name: testAppId ? testIdentity.packageName : "tjommie", appId, productName, version, ...(testDataRoot ? { testDataRoot } : {}), description: "AI bots on your own PC", author: "TSnyders", license: "Apache-2.0", type: "module", main: "src/main.mjs" }, null, 2),
 );
 
 // ws's optional native helpers stay out; ws uses its own JavaScript without them.
@@ -71,9 +73,18 @@ cpSync(join(repo, "packages", "transport", "wasm", "tjommie_noise_bg.wasm"), joi
 cpSync(join(repo, "packages", "ui", "out"), join(resources, "ui"), { recursive: true });
 cpSync(join(desktop, "assets"), join(resources, "assets"), { recursive: true });
 
+const testInclude = testDataRoot ? join(out, "update-test-guard.nsh") : undefined;
+if (testInclude && testDataRoot) writeFileSync(testInclude, testNsisInclude(join(testDataRoot, testIdentity.product)));
+let testIdentityChecked = false;
+
 await builder.build({
   targets: builder.Platform.WINDOWS.createTarget("nsis", builder.Arch.x64),
   publish: "never",
+  ...(testAppId ? { effectiveOptionComputed: async (options: unknown): Promise<boolean> => {
+    assertTestDefines(options);
+    testIdentityChecked = true;
+    return false;
+  } } : {}),
   config: {
     appId,
     productName,
@@ -85,10 +96,13 @@ await builder.build({
     npmRebuild: false,
     win: { target: "nsis", icon: join(desktop, "assets", "icon-256.png") },
     // One click, for this Windows user only, no admin. Uninstalling keeps %LOCALAPPDATA%\Tjommie and the bots.
-    nsis: { oneClick: true, perMachine: false, deleteAppDataOnUninstall: false },
+    nsis: { oneClick: true, perMachine: false, deleteAppDataOnUninstall: false, ...(testInclude ? { include: testInclude } : {}) },
     publish: [{ provider: "github", owner: "tsnyders", repo: "tjommie" }],
   },
 });
+
+if (testAppId && !testIdentityChecked) throw new Error("Update-test NSIS identity gate did not run.");
+if (testDataRoot) assertTestInstaller(join(out, "installer", `Tjommie-Setup-${version}.exe`), join(testDataRoot, testIdentity.product));
 
 // A successful build is verifiable only for these exact inputs and all installer/payload bytes.
 if (!testAppId) writePackagedProvenance(repo, inputsSha256);

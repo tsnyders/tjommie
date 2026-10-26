@@ -30,9 +30,9 @@ it("loads the real Noise WASM under the desktop CSP in an isolated dev Electron 
     </script></body>`);
   });
   const root = mkdtempSync(join(tmpdir(), "tjommie-csp-test-"));
-  mkdirSync(join(root, "electron"));
   let electron: ElectronApplication | undefined;
   try {
+    mkdirSync(join(root, "electron"));
     await new Promise<void>((resolve) => http.listen(0, "127.0.0.1", resolve));
     const address = http.address();
     if (!address || typeof address === "string") throw new Error("The test server has no port.");
@@ -51,8 +51,8 @@ it("loads the real Noise WASM under the desktop CSP in an isolated dev Electron 
   } finally {
     try { await electron?.close(); }
     finally {
-      await new Promise<void>((resolve) => http.close(() => resolve()));
-      rmSync(root, { recursive: true, force: true });
+      try { await new Promise<void>((resolve) => http.close(() => resolve())); }
+      finally { rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
     }
   }
 });

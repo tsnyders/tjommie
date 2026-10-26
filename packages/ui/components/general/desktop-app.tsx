@@ -21,7 +21,7 @@ function updateText(update: UpdateState): string {
     case "ready":
       return `Ready: Restart to update to v${update.version}`;
     case "error":
-      return `Couldn't check: ${update.message}`;
+      return `Couldn't check: ${update.message.trim().split(/[\r\n]/, 1)[0]?.slice(0, 120) ?? ""}`;
     case "unsupported":
       return "This build doesn't update itself.";
   }

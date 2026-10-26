@@ -96,6 +96,10 @@ describe("DesktopApp", () => {
     expect(host.textContent).toContain("Downloading 42%");
     await emit({ status: "error", message: "Network is down." });
     expect(host.textContent).toContain("Couldn't check: Network is down.");
+    const detail = `HTTP 404: ${"x".repeat(140)}`;
+    await emit({ status: "error", message: `${detail}\r\nHeaders: { authorization: secret }` });
+    expect(Array.from(host.querySelectorAll("p")).find((row) => row.textContent?.startsWith("Couldn't check: HTTP 404:"))?.textContent)
+      .toBe(`Couldn't check: ${detail.slice(0, 120)}`);
   });
 
   it("says it couldn't check when the updater's state can't be read, and Check now tries again", async () => {

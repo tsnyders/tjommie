@@ -1,6 +1,8 @@
 import type { MenuItemConstructorOptions } from "electron";
 import type { autoUpdater } from "electron-updater";
 
+const shutdownFailure = "Couldn't stop the background service. The update was not installed.";
+
 export type UpdateState =
   | { status: "idle" | "checking" | "none" }
   | { status: "downloading"; percent: number }
@@ -17,8 +19,8 @@ export function createUpdater(
   let current: UpdateState = { status: packaged && env.TJOMMIE_UPDATES !== "off" ? "idle" : "unsupported" };
   let restartRequested = false;
   const listeners = new Set<(state: UpdateState) => void>();
-  const change = (state: UpdateState): void => {
-    if (current.status === "ready" && state.status !== "ready") return;
+  const change = (state: UpdateState, forced = false): void => {
+    if (!forced && current.status === "ready" && state.status !== "ready") return;
     current = state;
     for (const listener of listeners) listener(state);
   };
@@ -43,13 +45,19 @@ export function createUpdater(
   const repeat = active ? setInterval(() => void check(), 6 * 60 * 60_000) : null;
   return {
     state: (): UpdateState => current,
+    installationPending: (): boolean => restartRequested || (current.status === "ready" && updater.autoInstallOnAppQuit),
     onState: (listener: (state: UpdateState) => void): (() => void) => {
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
     check,
-    restart: (): void => { if (current.status === "ready" && !restartRequested) { restartRequested = true; quit(); } },
+    restart: (): void => { if (current.status === "ready" && !restartRequested) { restartRequested = true; updater.autoInstallOnAppQuit = true; quit(); } },
     installOnQuit: (): void => { if (restartRequested) { restartRequested = false; updater.quitAndInstall(true, true); } },
+    shutdownFailed: (): void => {
+      restartRequested = false;
+      updater.autoInstallOnAppQuit = false;
+      change({ status: "error", message: shutdownFailure }, true);
+    },
     stop: (): void => { if (first) clearTimeout(first); if (repeat) clearInterval(repeat); },
   };
 }
@@ -64,6 +72,7 @@ export function trayTemplate(
     { label: "Open Tjommie", click: open },
     { type: "separator" },
     ...(state.status === "ready" ? [{ label: `Restart to update to v${state.version}`, click: restart }] : []),
+    ...(state.status === "error" ? [{ label: state.message === shutdownFailure ? "Couldn't install the update" : "Couldn't check for updates", enabled: false }] : []),
     { label: "Quit Tjommie", click: quit },
   ];
 }
