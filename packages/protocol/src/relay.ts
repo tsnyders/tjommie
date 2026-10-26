@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { RemoteKey } from "./remote.ts";
 
-export const DEFAULT_RELAY_URL: string | null = null;
+export const DEFAULT_RELAY_URL: string | null = "https://tjommie-relay.tyrellsnyders30.workers.dev";
 export const RELAY = { maxFrame: 65_535, hostPingMs: 30_000, hostDeadMs: 75_000, acceptTimeoutMs: 10_000,
   maxChannels: 32, maxPendingChannels: 8, connectsPerIpPerMinute: 20, maxPushTokens: 16 } as const;
 export const PushKind = z.enum(["approval", "limit", "routine_failed"]);

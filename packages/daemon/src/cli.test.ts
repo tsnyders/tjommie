@@ -1,11 +1,11 @@
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { tempRoot } from "./testing.ts";
 import { cliEnv, killTree, killTreeAndWait, openUrl, resolveCli, runCli, spawnCli } from "./cli.ts";
 
 vi.mock("node:child_process", async (importOriginal) => {
@@ -19,7 +19,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-const dir = () => mkdtempSync(join(tmpdir(), "tjommie cli ñ-"));
+const dir = tempRoot;
 
 describe("resolveCli", () => {
   const codexInstall = (arch: "x64" | "arm64", layout: "nested" | "hoisted" | "legacy") => {

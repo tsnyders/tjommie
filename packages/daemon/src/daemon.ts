@@ -277,11 +277,11 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
   let relay: RelayClient | null = null;
   let relayOpening: Promise<RelayClient> | null = null;
   let pushNotify: ReturnType<typeof startPush> | null = null;
-  let pairingPending = 0, pairingCodePending = 0, invite: { id: string; expires: number } | null = null, closing = false;
+  let pairingPending = 0, invite: { id: string; expires: number } | null = null, closing = false;
   let inviteTimer: ReturnType<typeof setTimeout> | undefined;
   let relaySetup: "off" | "connecting" | "error" = "off";
   const remote = new RemoteHost({ db, root: paths.root, dispatch: server.dispatch, ...options.remote,
-    relayUrl: () => pairingCodePending && relay?.state() !== "online" ? null : getSettings(db).relayUrl,
+    relayUrl: (forPairing) => forPairing && relay?.state() !== "online" ? null : getSettings(db).relayUrl,
     onChanged: () => { void syncRelay().catch(() => {}); try { send("devices.changed", {}); } catch { /* Device state is already saved. */ } } });
   const relayNeeded = (): boolean => !closing && getSettings(db).relayUrl !== null &&
     (remote.hasDevices() || pairingPending > 0 || invite !== null && invite.expires > Date.now());
@@ -332,8 +332,7 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
       try {
         await remote.ensureListening();
         await syncRelay(true).catch(() => {});
-        pairingCodePending++;
-        const result = await remote.createPairing().finally(() => { pairingCodePending--; });
+        const result = await remote.createPairing();
         clearTimeout(inviteTimer);
         invite = { id: result.id, expires: Date.parse(result.expires) };
         inviteTimer = setTimeout(() => clearInvite(result.id), Math.max(0, invite.expires - Date.now()));

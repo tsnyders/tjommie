@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import type { Message } from "@tjommie/protocol";
 import { createBot } from "./bots.ts";
 import { addMessage, buildRecap, getMessage, history, historyPage, updateMessage } from "./chat.ts";
@@ -7,12 +7,17 @@ import { openDb } from "./db.ts";
 import { RpcError } from "./server.ts";
 import { tempRoot } from "./testing.ts";
 
+const openDatabases: ReturnType<typeof openDb>[] = [];
+
 function setup() {
   const root = tempRoot();
   const db = openDb(join(root, "t.db"));
+  openDatabases.push(db);
   const bot = createBot(db, join(root, "bots"), { name: "Writer", color: "blue", shape: "circle", instructions: "", provider: "codex", model: "gpt-5.6-sol" });
   return { db, bot, root };
 }
+
+afterEach(() => { for (const db of openDatabases.splice(0)) if (db.isOpen) db.close(); });
 
 describe("chat store", () => {
   it("pages through history, newest page first, each page oldest first", () => {

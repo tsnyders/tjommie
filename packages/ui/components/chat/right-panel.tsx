@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
 import Link from "next/link";
 import { ChevronsRight, Settings, X } from "lucide-react";
-import { captionClear, nativeBrowserAvailable } from "@/lib/native-capability";
+import { captionClear, useNativeBrowserAvailable } from "@/lib/native-capability";
 import type { Bot, Message } from "@tjommie/protocol";
 import { clampWidth, PANES, readWidth, saveWidth, splitterWidth, widthBounds, type Pane } from "@/lib/panel-layout";
 import { cn } from "@/lib/utils";
@@ -38,8 +38,10 @@ export function RightPanel({
   phone?: boolean; // below 640 px: a full-screen sheet with Close, in place of the docked panel
   onHide: () => void;
 }) {
-  // The browser is there where the desktop app's bridge is, at any width; without it (a web or phone client) there is no Browser pane at all.
-  const browserOn = bot.browser && nativeBrowserAvailable();
+  // The browser is there where the desktop app's bridge is, at any width; without it (a web or phone client), or on another PC, there is no Browser
+  // pane at all.
+  const browserAvailable = useNativeBrowserAvailable();
+  const browserOn = bot.browser && browserAvailable;
   const shown: Pane = browserOn ? pane : "details";
   const [opened, setOpened] = useState(shown === "browser");
   if (shown === "browser" && !opened) setOpened(true);

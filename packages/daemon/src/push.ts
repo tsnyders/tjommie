@@ -3,7 +3,7 @@ import type { EventData, PushKind } from "@tjommie/protocol";
 type Target = { deviceId: string; token: string };
 type Result = { ok: boolean; unregistered: boolean };
 type Stamp = { at: number; kind: PushKind; botId: string };
-type Host = { pushTargets(): Target[]; clearPushToken(deviceId: string): void };
+type Host = { pushTargets(): Target[]; clearPushToken(deviceId: string, token: string): void };
 type Relay = { push(tokens: string[], kind: PushKind, botId: string): Promise<Result[]> };
 type PushHandler = ((notify: EventData<"notify">) => void) & { failures: number };
 
@@ -26,7 +26,7 @@ export function startPush(options: { host: Host; relay: Relay }): PushHandler {
         results.forEach((result, position) => {
           if (!result.ok) send.failures++;
           if (result.unregistered) {
-            try { options.host.clearPushToken(batch[position].target.deviceId); }
+            try { options.host.clearPushToken(batch[position].target.deviceId, batch[position].target.token); }
             catch { send.failures++; }
           }
         });

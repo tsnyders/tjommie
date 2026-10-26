@@ -116,11 +116,16 @@ afterEach(async () => {
   for (const client of clients.splice(0)) await client.close();
   for (const daemon of daemons.splice(0)) await daemon.close();
   for (const db of databases.splice(0)) db.close();
+  vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
 
 async function harness(root = tempRoot(), auth: DaemonAuth = { mode: "development" }, googleAuth?: GoogleAuth,
-  remote?: { credentials?: CredentialTransport; port?: number; bind?: string; addresses?: () => string[] }) {
+  remote?: { credentials?: CredentialTransport; port?: number; bind?: string; addresses?: () => string[] }, relayUrl: string | null = null) {
+  const paths = dataPaths(root);
+  const settingsDb = openDb(existsSync(join(root, "tjommie.db")) ? join(root, "tjommie.db") : paths.db);
+  setSettings(settingsDb, { relayUrl });
+  settingsDb.close();
   const sessions: { botId: string; options: StartOptions; session: Session }[] = [];
   const daemon = await startDaemon({ root, port: 0, auth, googleAuth, remote, createSession: (bot, options) => {
     const session = new Session();
@@ -375,6 +380,47 @@ it("announces the configured relay in ready when a device resumes over LAN durin
   } finally { vi.unstubAllGlobals(); }
 });
 
+it("keeps ready relay metadata while a separate pairing code is being built", async () => {
+  const values = new Map<string, string>();
+  const credentials: CredentialTransport = async ({ operation, target, key }) => {
+    if (operation === "write" && key) values.set(target, key);
+    return operation === "read" ? values.get(target) ?? null : null;
+  };
+  const { client } = await harness(tempRoot(), { mode: "development" }, undefined,
+    { credentials, port: 0, bind: "127.0.0.1", addresses: () => ["127.0.0.1"] });
+  const code = parsePairingCode((await client.call("pairing.create", {})).code);
+  const key = generateKeypair();
+  const paired = await authenticateRemote({ wire: await lanWire(code.lan[0].port), privateKey: key.privateKey,
+    hostPublicKey: Buffer.from(code.hostKey, "base64url"), psk: Buffer.from(code.secret, "base64url"),
+    name: "Synthetic device", preface: { v: 1, mode: "pair", hostId: code.hostId, pairingId: code.pairingId } });
+  await paired.transport.close();
+  SilentRelaySocket.created = SilentRelaySocket.closed = 0;
+  vi.stubGlobal("WebSocket", SilentRelaySocket);
+  const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  const createPairing = RemoteHost.prototype.createPairing;
+  vi.spyOn(RemoteHost.prototype, "createPairing").mockImplementation(async function (this: RemoteHost) {
+    entered.resolve();
+    await release.promise;
+    return createPairing.call(this);
+  });
+  vi.spyOn(RelayClient.prototype, "waitUntilOnline").mockResolvedValue();
+  let waiting: Promise<unknown> | undefined;
+  try {
+    await client.call("settings.set", { relayUrl: "https://relay.example" });
+    waiting = client.call("pairing.create", {});
+    await entered.promise;
+    const resumed = await authenticateRemote({ wire: await lanWire(code.lan[0].port), privateKey: key.privateKey,
+      hostPublicKey: Buffer.from(code.hostKey, "base64url"), name: "Synthetic device",
+      preface: { v: 1, mode: "resume", hostId: code.hostId } });
+    expect(resumed.relay).toBe("https://relay.example");
+    resumed.transport.close();
+  } finally {
+    release.resolve();
+    await waiting?.catch(() => {});
+    vi.unstubAllGlobals();
+  }
+});
+
 it("returns a LAN-only pairing code when the relay socket never answers", async () => {
   const credentials: CredentialTransport = async () => null;
   const { client } = await harness(tempRoot(), { mode: "development" }, undefined,
@@ -418,11 +464,12 @@ it("reports a startup LAN listen failure in relay status", async () => {
   const root = tempRoot();
   const db = openDb(dataPaths(root).db);
   addDevice(db, { name: "Synthetic phone", publicKey: Buffer.alloc(32, 4).toString("base64url") });
-  setSettings(db, { relayUrl: "https://relay.example" });
   db.close();
   vi.spyOn(RemoteHost.prototype, "ensureListening").mockRejectedValue(new Error("Synthetic bind failure"));
   vi.spyOn(console, "error").mockImplementation(() => {});
   const { client } = await harness(root, { mode: "development" }, undefined, { credentials: async () => null });
+  vi.stubGlobal("WebSocket", SilentRelaySocket);
+  await client.call("settings.set", { relayUrl: "https://relay.example" });
   await vi.waitFor(async () => expect((await client.call("remote.status", {})).relay.state).toBe("error"));
 });
 
@@ -891,6 +938,9 @@ it("reports a plain error when the old development token file cannot be removed"
     throw new Error("Refusing to remove a folder outside the test root.");
   }
   const tokenFile = join(root, "daemon-token");
+  const settingsDb = openDb(dataPaths(root).db);
+  setSettings(settingsDb, { relayUrl: null });
+  settingsDb.close();
   try {
     writeFileSync(tokenFile, "old-development-token");
     removal.failTokenPath = tokenFile;
@@ -1401,9 +1451,11 @@ it("closes the server and database after browser cleanup failures and reports al
     return db;
   });
   const h = await harness();
+  const daemonDb = opened[1]; // The harness opens its settings DB before startDaemon opens the daemon DB.
+  if (!daemonDb) throw new Error("The daemon database was not tracked.");
   await h.client.close();
   clients.splice(clients.indexOf(h.client), 1);
-  const dbClose = vi.spyOn(opened[0], "close");
+  const dbClose = vi.spyOn(daemonDb, "close");
   const stop = vi.spyOn(h.daemon.scheduler, "stop");
   const shutdown = vi.spyOn(h.daemon.runner, "shutdown");
   const mcpError = new Error("MCP cleanup failed");
@@ -1418,7 +1470,7 @@ it("closes the server and database after browser cleanup failures and reports al
   expect(mcpClose).toHaveBeenCalledOnce();
   expect(browserClose).toHaveBeenCalledOnce();
   expect(dbClose).toHaveBeenCalledOnce();
-  expect(() => opened[0].prepare("SELECT 1")).toThrow();
+  expect(() => daemonDb.prepare("SELECT 1")).toThrow();
   const rebound = await serverModule.startServer({ port: h.daemon.port, token: "", handlers: {}, allowedOrigins: [] });
   await rebound.close();
 });

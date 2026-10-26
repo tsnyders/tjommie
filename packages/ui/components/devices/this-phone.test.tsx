@@ -1,7 +1,8 @@
 import type { ComponentProps } from "react";
+import type { Client } from "@tjommie/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { PushApi } from "@/lib/push";
+import { registerPushIfAllowed, stopSendingPush, unregisterPush, type PushApi } from "@/lib/push";
 import { initialState } from "@/lib/state";
 import { update } from "@/lib/store";
 import { clearPresses, press } from "../press-fixture";
@@ -40,6 +41,7 @@ function fakePush(options: { available?: boolean; permission: string; answer?: s
 }
 
 beforeEach(() => {
+  stopSendingPush();
   clearPresses();
   vi.clearAllMocks();
   saved.clear();
@@ -81,7 +83,10 @@ describe("notificationState", () => {
 
 describe("allowNotifications", () => {
   it("asks once and, on yes, gives the PC this phone's push token", async () => {
-    expect(await allowNotifications(fakePush({ permission: "prompt", answer: "granted" }))).toBe("on");
+    const push = fakePush({ permission: "prompt", answer: "granted" });
+    await registerPushIfAllowed({ call: requested as Client["call"] }, push); // welcome before Allow: no permission yet
+    expect(requested).not.toHaveBeenCalled();
+    expect(await allowNotifications(push)).toBe("on");
     expect(requested).toHaveBeenCalledWith("device.registerPush", { token: "synthetic-push-token" });
   });
 
@@ -92,5 +97,23 @@ describe("allowNotifications", () => {
 
   it("is Not in this build without push", async () => {
     expect(await allowNotifications(null)).toBe("unavailable");
+  });
+
+  it("does not revive a forgotten PC when the permission dialog answers late", async () => {
+    const options = { permission: "prompt", answer: "granted" };
+    const push = fakePush(options);
+    const register = vi.spyOn(push, "register");
+    let answer: (value: { receive: string }) => void = () => {};
+    const asking = vi.spyOn(push, "requestPermissions").mockImplementation(() => new Promise((resolve) => { answer = resolve; }));
+    await registerPushIfAllowed({ call: requested as Client["call"] }, push);
+    const allowing = allowNotifications(push);
+    await vi.waitFor(() => expect(asking).toHaveBeenCalledOnce());
+    stopSendingPush();
+    await unregisterPush(push);
+    options.permission = "granted";
+    answer({ receive: "granted" });
+    expect(await allowing).toBe("on");
+    expect(register).not.toHaveBeenCalled();
+    expect(requested).not.toHaveBeenCalled();
   });
 });

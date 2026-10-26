@@ -5,16 +5,18 @@ import { RemoteRefusedError } from "../../client/src/remote-peer.ts";
 import { desktop, type DesktopConnection } from "./desktop";
 import { keepAliveRunning, syncKeepAlive } from "./keep-alive";
 import { errorText } from "./labels";
-import { registerPushIfAllowed, unregisterPush } from "./push";
+import { registerPushIfAllowed, stopSendingPush, unregisterPush } from "./push";
 import { onNetworkChange } from "./relay-wire";
 import { HostOfflineError, forgetRemoteHost, isAndroidApp, openRemoteClient, remoteHosts } from "./remote-hosts";
 import { failedSetup } from "./setup";
 import { LINK, addOlder, applyEvent, catchUp, connected, finishLoading, forgetConversation, initialState, startLoading, type MessageEvent } from "./state";
 import { getState, update } from "./store";
+import { atMost } from "./utils";
 
 const PAGE = 50;
 const STARTING_TRIES = 3; // failed tries before "Starting Tjommie" says why it can't connect
 const CALLS = 16; // calls in flight at once; the PC's host for phones closes a connection with 32
+const FORGET_WAIT_MS = 3_000; // how long Forget waits on the PC, then on the phone's push service, to let go of push
 type RemoteTarget = { remoteHostId: string };
 type ConnectionTarget = DesktopConnection | RemoteTarget;
 let client: Client | null = null; // the ready connection, for calls
@@ -78,6 +80,7 @@ function openLocal(): void {
 // The desktop app couldn't start the daemon. Stop retrying the old connection; "Try again" asks for a new one.
 function failed(reason: string): void {
   clearTimeout(retry);
+  stopSendingPush();
   latest = null;
   update((state) => ({ ...state, connection: { status: "failed", reason } }));
 }
@@ -104,6 +107,7 @@ function open(connection: DesktopConnection): void {
 export function connectRemote(id = remoteHosts()[0]?.id): void {
   if (!isRemote(latest) || latest.remoteHostId !== id) leave();
   if (!id) {
+    if (isAndroidApp() && remoteHosts().length === 0) void unregisterPush();
     update((state) => ({ ...state, connection: { status: "outside" } }));
     return;
   }
@@ -119,11 +123,21 @@ export function connectLocal(): void {
 }
 
 // The PC's keys go first: if deleting them fails, nothing has moved (the removed screen stays and says why). Only then does the window leave
-// that PC, for the next saved one on a phone and this PC's own Tjommie on the desktop.
+// that PC, for the next saved one on a phone and this PC's own Tjommie on the desktop. Letting go of push is tidying up, so a PC or push service
+// that fails or doesn't answer in time never holds Forget up.
 export async function forgetRemote(id: string): Promise<void> {
-  if (isAndroidApp() && isRemote(latest) && latest.remoteHostId === id && client) await client.call("device.registerPush", { token: null }).catch(() => {});
-  await forgetRemoteHost(id);
-  if (isAndroidApp() && remoteHosts().length === 0) await unregisterPush().catch(() => {});
+  const current = link;
+  if (isAndroidApp() && isRemote(latest) && latest.remoteHostId === id) {
+    stopSendingPush(); // before its token is cleared there, so nothing reaches it after
+    if (current) await atMost(FORGET_WAIT_MS, current.call("device.registerPush", { token: null }));
+  }
+  try {
+    await forgetRemoteHost(id);
+  } catch (error) {
+    if (isAndroidApp() && isRemote(latest) && latest.remoteHostId === id && current && link === current) void registerPushIfAllowed(current).catch(() => {});
+    throw error;
+  }
+  if (isAndroidApp() && remoteHosts().length === 0) await atMost(FORGET_WAIT_MS, unregisterPush());
   if (!isRemote(latest) || latest.remoteHostId !== id) return;
   leave();
   if (isAndroidApp()) connectRemote();
@@ -147,6 +161,7 @@ function leave(): void {
   client = null;
   link = null;
   void previous?.close().catch(() => {});
+  stopSendingPush();
   fetchers.clear();
   update(() => initialState);
   syncKeepAlive("outside");
@@ -180,6 +195,7 @@ function reconnectNow(): void {
   const previous = client;
   client = null;
   link = null;
+  stopSendingPush();
   void previous?.close().catch(() => {});
   update((state) => (state.connection.status === "ready" ? { ...state, connection: { status: "reconnecting" } } : state));
 }
@@ -229,6 +245,7 @@ async function attempt(connection: ConnectionTarget): Promise<void> {
   const previous = client;
   client = null;
   link = null;
+  stopSendingPush();
   // A new connection is replacing one that still looked up (the daemon restarted, or the remote link went quiet): until it opens, calls fail as
   // they do while reconnecting, so the pill says so.
   if (previous) update((state) => (state.connection.status === "ready" ? { ...state, connection: { status: "reconnecting" } } : state));
@@ -291,7 +308,7 @@ async function attempt(connection: ConnectionTarget): Promise<void> {
   catchUpAll(next);
   if (isRemote(connection)) {
     beat();
-    void registerPushIfAllowed(next).catch(() => {});
+    void registerPushIfAllowed(raw).catch(() => {}); // raw sends immediately, without waiting in the screen RPC queue
     syncKeepAlive("ready", remoteHosts().find((host) => host.id === connection.remoteHostId)?.name ?? null);
   }
   void next.disconnected.then((error) => {
@@ -342,6 +359,7 @@ function lost(connection: ConnectionTarget, error: unknown): void {
   if (latest !== connection) return;
   client = null;
   link = null;
+  stopSendingPush();
   if (typeof error === "object" && error !== null && "code" in error && error.code === 4003) {
     update((state) => ({ ...state, connection: { status: "update" } }));
     return;
