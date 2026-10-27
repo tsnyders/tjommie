@@ -15,6 +15,7 @@ it("freezes relay limits and control messages", () => {
   expect(RelayToHost.safeParse({ t: "challenge", nonce: key }).success).toBe(true);
   expect(RelayToHost.parse({ t: "ready", push: true })).toEqual({ t: "ready", push: true });
   expect(RelayToHost.parse({ t: "ready", push: true, kinds: ["done"] })).toEqual({ t: "ready", push: true, kinds: ["done"] });
+  expect(RelayToHost.parse({ t: "ready", push: true, kinds: ["done", "mention"] })).toEqual({ t: "ready", push: true, kinds: ["done", "mention"] });
   expect(HostToRelay.safeParse({ t: "login", publicKey: key, signature: "A".repeat(86) }).success).toBe(true);
 });
 

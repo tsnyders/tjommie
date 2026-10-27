@@ -2,6 +2,9 @@ import type { EventData } from "@tjommie/protocol";
 
 type Notice = EventData<"notify">;
 
+export const notificationRoute = (notice: Notice): string =>
+  "roomId" in notice && notice.roomId ? `/room/?id=${encodeURIComponent(notice.roomId)}` : `/chat/?bot=${encodeURIComponent(notice.botId)}`;
+
 // Retain delivery identities across notifier reconnects. A failed acknowledgement is retried without
 // displaying the same live/startup notice twice during this desktop process's lifetime.
 export function notificationDelivery() {

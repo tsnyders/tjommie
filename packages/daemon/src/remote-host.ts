@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { createServer, type Server as TcpServer } from "node:net";
 import { hostname, networkInterfaces } from "node:os";
 import { fileURLToPath } from "node:url";
-import { ClientMessage, PROTOCOL_VERSION, RemoteConfirm, RemotePreface, encodePairingCode, remoteMethods, remotePrologue, type Device, type EventData, type EventName, type RemoteStatus } from "@tjommie/protocol";
+import { ClientMessage, PROTOCOL_VERSION, PushKind, RemoteConfirm, RemotePreface, encodePairingCode, remoteMethods, remotePrologue, type Device, type EventData, type EventName, type RemoteStatus } from "@tjommie/protocol";
 import { ZodError } from "zod";
 import { EncryptedMessages } from "../../client/src/encrypted-channel.ts";
 import { generateKeypair, initNoise, responder, type NoiseSession } from "../../transport/src/index.ts";
@@ -97,7 +97,7 @@ export class RemoteHost {
     for (const [address, value] of this.#attempts) if (Date.now() - value.at > 60_000) this.#attempts.delete(address);
     for (const peer of this.#peers) if (Date.now() - peer.lastFrameAt >= 150_000) peer.close();
   }
-  pushTargets(): { deviceId: string; token: string }[] { return storedPushTargets(this.#options.db); }
+  pushTargets(): ReturnType<typeof storedPushTargets> { return storedPushTargets(this.#options.db); }
   clearPushToken(deviceId: string, token: string): void { clearStoredPushToken(this.#options.db, deviceId, token); }
   revoke(id: string): Device {
     const device = revokeDevice(this.#options.db, id);
@@ -214,7 +214,9 @@ export class RemoteHost {
           let result: unknown;
           if (request.method === "remote.ping") { remoteMethods["remote.ping"].params.parse(request.params); result = {}; }
           else if (request.method === "device.registerPush") {
-            setPushToken(this.#options.db, peer.deviceId, remoteMethods["device.registerPush"].params.parse(request.params).token);
+            const { token, kinds } = remoteMethods["device.registerPush"].params.parse(request.params);
+            const known = kinds?.flatMap((kind) => { const parsed = PushKind.safeParse(kind); return parsed.success ? [parsed.data] : []; });
+            setPushToken(this.#options.db, peer.deviceId, token, known);
             result = {};
           } else result = await this.#options.dispatch(request.method, request.params);
           if (!done && peer.deviceId && !getDevice(this.#options.db, peer.deviceId).revokedAt) send({ type: "res", id: request.id, ok: true, result });

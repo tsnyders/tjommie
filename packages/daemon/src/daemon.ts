@@ -29,6 +29,7 @@ import { RpcError, startServer, type Broadcast, type Handlers, type Server } fro
 import { getSettings, setSettings } from "./settings.ts";
 import { checkSetup, ensureAccounts, listModels, prepareCodexSandbox, signIn } from "./setup.ts";
 import { Team, getExchange } from "./team.ts";
+import { turnNotice } from "./turn-notices.ts";
 import { protectCodexData, protectCodexDataAsync, type BotHome } from "./windows-acl.ts";
 import { RemoteHost } from "./remote-host.ts";
 import { RelayClient } from "./relay-client.ts";
@@ -241,6 +242,8 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
       if (item.routineRunId) scheduler.runEnded(item, result);
     } finally {
       team.turnEnded(item, result);
+      const notice = turnNotice(db, item, result);
+      if (notice) send("notify", notice);
     }
   }
 

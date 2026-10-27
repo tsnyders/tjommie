@@ -10,7 +10,7 @@ export const loginMessage = (hostId: string, nonce: string, relayHost: string) =
   new TextEncoder().encode(`tjommie-relay-login/v1\n${hostId}\n${nonce}\n${relayHost}`);
 export const RelayToHost = z.discriminatedUnion("t", [
   z.object({ t: z.literal("challenge"), nonce: RemoteKey }),
-  z.object({ t: z.literal("ready"), push: z.boolean(), kinds: z.array(PushKind).max(16).optional() }),
+  z.object({ t: z.literal("ready"), push: z.boolean(), kinds: z.array(z.string().max(32)).max(16).optional() }),
   z.object({ t: z.literal("open"), channel: RemoteKey }),
   z.object({ t: z.literal("pushed"), id: z.number().int(), results: z.array(z.object({ ok: z.boolean(), unregistered: z.boolean() })).max(16) }),
 ]);

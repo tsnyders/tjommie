@@ -64,7 +64,7 @@ export const remoteMethods = {
   "devices.list": { params: z.object({}), result: z.array(Device).max(64) },
   "devices.rename": { params: z.object({ id: z.uuid(), name: RemoteName }), result: Device },
   "devices.revoke": { params: z.object({ id: z.uuid() }), result: Device },
-  "device.registerPush": { params: z.object({ token: z.string().min(1).max(4096).nullable(), kinds: z.array(PushKind).max(16).optional() }), result: z.object({}) },
+  "device.registerPush": { params: z.object({ token: z.string().min(1).max(4096).nullable(), kinds: z.array(z.string().max(32)).max(16).optional() }), result: z.object({}) },
   "pairing.create": { params: z.object({}), result: z.object({ id: z.uuid(), code: z.string().max(8192), uri: z.string().max(8210), expires: z.iso.datetime() }) },
   "pairing.cancel": { params: z.object({ id: z.uuid() }), result: z.object({}) },
 } as const;

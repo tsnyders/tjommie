@@ -45,7 +45,8 @@ it("accepts optional push kinds when registering a device", () => {
     expect(remoteMethods["device.registerPush"].params.parse(params)).toEqual(params);
   }
   expect(remoteMethods["device.registerPush"].params.parse({ token: "synthetic-token", kinds: PushKind.options }).kinds).toEqual(PushKind.options);
-  expect(remoteMethods["device.registerPush"].params.safeParse({ token: "synthetic-token", kinds: ["other"] }).success).toBe(false);
+  expect(remoteMethods["device.registerPush"].params.parse({ token: "synthetic-token", kinds: ["done", "mention"] }).kinds).toEqual(["done", "mention"]);
+  expect(remoteMethods["device.registerPush"].params.safeParse({ token: "synthetic-token", kinds: ["x".repeat(33)] }).success).toBe(false);
 });
 
 it("rejects expired, overlong, malformed and unsupported pairing inputs without echoing them", () => {

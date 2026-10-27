@@ -1,19 +1,22 @@
 import type { EventData, PushKind } from "@tjommie/protocol";
 
-type Target = { deviceId: string; token: string };
+type Target = { deviceId: string; token: string; kinds: PushKind[] | null };
 type Result = { ok: boolean; unregistered: boolean };
 type Stamp = { at: number; kind: PushKind; botId: string };
 type Host = { pushTargets(): Target[]; clearPushToken(deviceId: string, token: string): void };
-type Relay = { push(tokens: string[], kind: PushKind, botId: string): Promise<Result[]> };
+type Relay = { kinds(): readonly PushKind[]; push(tokens: string[], kind: PushKind, botId: string, roomId?: string): Promise<Result[]> };
 type PushHandler = ((notify: EventData<"notify">) => void) & { failures: number };
 
 export function startPush(options: { host: Host; relay: Relay }): PushHandler {
   const history = new Map<string, Stamp[]>();
   const send: PushHandler = (notify) => {
+    if (!options.relay.kinds().includes(notify.kind)) return;
     const now = Date.now(), eligible: { target: Target; stamp: Stamp }[] = [];
     for (const target of options.host.pushTargets()) {
+      if (target.kinds && !target.kinds.includes(notify.kind)) continue;
       const recent = (history.get(target.deviceId) ?? []).filter((entry) => now - entry.at < 3_600_000);
-      if (recent.length >= 30 || recent.some((entry) => entry.kind === notify.kind && entry.botId === notify.botId && now - entry.at < 30_000)) continue;
+      if ((notify.kind !== "approval" && recent.filter((entry) => entry.kind !== "approval").length >= 30) ||
+        recent.some((entry) => entry.kind === notify.kind && entry.botId === notify.botId && now - entry.at < 30_000)) continue;
       const stamp = { at: now, kind: notify.kind, botId: notify.botId };
       recent.push(stamp);
       history.set(target.deviceId, recent);
@@ -21,7 +24,7 @@ export function startPush(options: { host: Host; relay: Relay }): PushHandler {
     }
     for (let index = 0; index < eligible.length; index += 16) {
       const batch = eligible.slice(index, index + 16);
-      void options.relay.push(batch.map(({ target }) => target.token), notify.kind, notify.botId).then((results) => {
+      void options.relay.push(batch.map(({ target }) => target.token), notify.kind, notify.botId, "roomId" in notify ? notify.roomId : undefined).then((results) => {
         if (results.length !== batch.length) { send.failures += batch.length; return; }
         results.forEach((result, position) => {
           if (!result.ok) send.failures++;

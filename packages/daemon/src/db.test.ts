@@ -35,6 +35,18 @@ describe("openDb", () => {
     db.close();
   });
 
+  it("upgrades a version 8 device schema with nullable push kinds", () => {
+    const file = join(root(), "v8.db");
+    const old = new DatabaseSync(file);
+    for (const migration of migrations.slice(0, 8)) old.exec(migration);
+    old.exec("INSERT INTO devices(id,name,public_key,paired_at,push_token) VALUES('phone','Phone','key','now','existing-token'); PRAGMA user_version = 8;");
+    old.close();
+    const db = openDb(file);
+    expect(db.prepare("PRAGMA user_version").get()).toEqual({ user_version: 9 });
+    expect(db.prepare("SELECT push_token, push_kinds FROM devices WHERE id = 'phone'").get()).toEqual({ push_token: "existing-token", push_kinds: null });
+    db.close();
+  });
+
   it("migrates version 4 accounts, pins, sessions and historical usage without moving identities", () => {
     const file = join(root(), "v4.db");
     const old = new DatabaseSync(file);

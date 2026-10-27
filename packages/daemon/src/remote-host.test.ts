@@ -168,19 +168,20 @@ it.each(["lan", "relay"] as const)("registers and clears only the authenticated 
   const other = await pair(next, generateKeypair().privateKey, Buffer.from(next.secret, "base64url"), await open());
   const otherClient = await connectTransport(other.transport);
   expect(await otherClient.call("device.registerPush", { token: "other-device-token" })).toEqual({});
-  expect(await client.call("device.registerPush", { token: "synthetic-fcm-token" })).toEqual({});
-  expect(db.prepare("SELECT push_token FROM devices WHERE id = ?").get(paired.deviceId)).toEqual({ push_token: "synthetic-fcm-token" });
+  expect(await client.call("device.registerPush", { token: "synthetic-fcm-token", kinds: ["done", "mention"] })).toEqual({});
+  expect(db.prepare("SELECT push_token, push_kinds FROM devices WHERE id = ?").get(paired.deviceId)).toEqual({ push_token: "synthetic-fcm-token", push_kinds: '["done"]' });
   expect(db.prepare("SELECT push_token FROM devices WHERE id = ?").get(other.deviceId)).toEqual({ push_token: "other-device-token" });
   expect(host.pushTargets()).toHaveLength(2);
+  expect(host.pushTargets()).toContainEqual({ deviceId: paired.deviceId, token: "synthetic-fcm-token", kinds: ["done"] });
   host.clearPushToken(paired.deviceId, "synthetic-fcm-token");
-  expect(host.pushTargets()).toEqual([{ deviceId: other.deviceId, token: "other-device-token" }]);
+  expect(host.pushTargets()).toEqual([{ deviceId: other.deviceId, token: "other-device-token", kinds: null }]);
   expect(await client.call("device.registerPush", { token: "synthetic-fcm-token" })).toEqual({});
   expect(await client.call("device.registerPush", { token: null })).toEqual({});
-  expect(host.pushTargets()).toEqual([{ deviceId: other.deviceId, token: "other-device-token" }]);
+  expect(host.pushTargets()).toEqual([{ deviceId: other.deviceId, token: "other-device-token", kinds: null }]);
   expect(await client.call("device.registerPush", { token: "synthetic-fcm-token" })).toEqual({});
   host.revoke(paired.deviceId);
-  expect(host.pushTargets()).toEqual([{ deviceId: other.deviceId, token: "other-device-token" }]);
-  expect(db.prepare("SELECT push_token FROM devices WHERE id = ?").get(paired.deviceId)).toEqual({ push_token: null });
+  expect(host.pushTargets()).toEqual([{ deviceId: other.deviceId, token: "other-device-token", kinds: null }]);
+  expect(db.prepare("SELECT push_token, push_kinds FROM devices WHERE id = ?").get(paired.deviceId)).toEqual({ push_token: null, push_kinds: null });
   await otherClient.close();
 });
 
