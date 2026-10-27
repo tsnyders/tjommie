@@ -1,6 +1,6 @@
 {
   "name": "@tjommie/mobile",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "type": "module",
   "description": "The Android companion: a Capacitor shell for the same UI, with native secure storage, a raw TCP transport and a QR scanner.",

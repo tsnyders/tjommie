@@ -75,9 +75,10 @@ patch(join(app, "build.gradle"), (gradle) => {
   must(gradle, "dependencies {", "the dependencies block");
   let out = gradle;
   const version = JSON.parse(readFileSync(join(mobile, "package.json"), "utf8")).version;
-  // shortcut: Android version codes cover 0.x.0 releases, revise before patch or major releases.
-  if (!/^0\.\d+\.0$/.test(version)) throw new Error("Android versionCode needs a release-version rule for this package version.");
-  out = out.replace(/versionCode\s+\d+/, `versionCode ${Number(version.split(".")[1])}`);
+  // Explicit codes prevent patch releases from reusing an Android versionCode.
+  const versionCode = new Map([["0.3.0", 3], ["0.3.1", 4]]).get(version);
+  if (versionCode === undefined) throw new Error("Android versionCode needs a release-version rule for this package version.");
+  out = out.replace(/versionCode\s+\d+/, `versionCode ${versionCode}`);
   out = out.replace(/versionName\s+"[^"]*"/, `versionName "${version}"`);
   if (!out.includes('buildConfigField "boolean", "PUSH"')) out = out.replace("defaultConfig {", 'defaultConfig {\n        buildConfigField "boolean", "PUSH", file("google-services.json").isFile().toString()');
   if (!out.includes("buildFeatures {")) out = out.replace("    buildTypes {", "    buildFeatures { buildConfig true }\n    buildTypes {");
