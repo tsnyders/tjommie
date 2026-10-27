@@ -1,4 +1,4 @@
-import { HostToRelay, PushData, RELAY, RelayClose, loginMessage, type PushData as PushDataValue } from "@tjommie/protocol";
+import { HostToRelay, PushData, PushKind, RELAY, RelayClose, loginMessage, type PushData as PushDataValue } from "@tjommie/protocol";
 
 export type Attachment =
   | { role: "control"; stage: "challenge"; nonce: string; relayHost: string; expires: number }
@@ -144,7 +144,10 @@ export class HostRoomCore {
       if (message.length > (state.stage === "challenge" ? 1_024 : 70_000)) { this.close(sock, RelayClose.tooLarge); return true; }
       let parsed: unknown;
       try { parsed = JSON.parse(message); } catch { this.close(sock, badControl); return true; }
-      const result = HostToRelay.safeParse(parsed);
+      const unknownPush = state.stage === "ready" && typeof parsed === "object" && parsed !== null &&
+        "t" in parsed && parsed.t === "push" && "kind" in parsed && typeof parsed.kind === "string" &&
+        !PushKind.safeParse(parsed.kind).success ? parsed : null;
+      const result = HostToRelay.safeParse(unknownPush ? { ...unknownPush, kind: "approval" } : parsed);
       if (!result.success) { this.close(sock, badControl); return true; }
       if (state.stage === "challenge") {
         if (state.expires <= this.options.now() || result.data.t !== "login" || !await verifyLogin(result.data.publicKey, result.data.signature,
@@ -157,15 +160,18 @@ export class HostRoomCore {
         this.host = sock;
         this.states.set(sock, ready);
         sock.setAttachment(ready);
-        sock.send(JSON.stringify({ t: "ready", push: this.options.pushEnabled }));
+        sock.send(JSON.stringify({ t: "ready", push: this.options.pushEnabled, kinds: PushKind.options }));
         return true;
       }
       if (result.data.t !== "push") { this.close(sock, 1008); return true; }
-      const data = PushData.parse({ v: "1", hostId: this.options.hostId, kind: result.data.kind, botId: result.data.botId });
       const failed = result.data.tokens.map(() => ({ ok: false, unregistered: false }));
       let results = failed;
-      if (this.options.pushEnabled) {
-        try { results = await this.options.push(result.data.tokens, data); } catch { results = failed; }
+      if (!unknownPush && this.options.pushEnabled) {
+        try {
+          const data = PushData.parse({ v: "1", hostId: this.options.hostId, kind: result.data.kind, botId: result.data.botId,
+            ...(result.data.roomId === undefined ? {} : { roomId: result.data.roomId }) });
+          results = await this.options.push(result.data.tokens, data);
+        } catch { results = failed; }
       }
       if (this.host === sock) {
         try { sock.send(JSON.stringify({ t: "pushed", id: result.data.id, results })); }

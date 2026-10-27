@@ -45,6 +45,31 @@ it("signs the service-account grant, sends content-free FCM payloads, caches OAu
   } });
 });
 
+it("uses fixed done and failed bodies and forwards roomId without bot content", async () => {
+  const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const env = {
+    FCM_SERVICE_ACCOUNT: JSON.stringify({ client_email: "notices@example.test", project_id: "notices", private_key: privateKey.export({ type: "pkcs8", format: "pem" }).toString() }),
+    FCM_TOKEN_ENDPOINT: "https://auth-notices.example.test/token",
+    FCM_ENDPOINT: "https://fcm-notices.example.test/v1",
+  };
+  const messages: unknown[] = [];
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    if (String(input) === env.FCM_TOKEN_ENDPOINT) return Response.json({ access_token: "fake", expires_in: 3600 });
+    messages.push(JSON.parse(String(init?.body)));
+    return Response.json({ name: "sent" });
+  }));
+  for (const kind of ["done", "failed"] as const) {
+    const data = PushData.parse({ v: "1", hostId: "99cf98ba-2638-4b16-8a6e-1691c1673b45", kind, botId: "bot-1", roomId: "room-1" });
+    expect(await sendPush(env, ["token"], data)).toEqual([{ ok: true, unregistered: false }]);
+  }
+  expect(messages).toEqual(["done", "failed"].map((kind, index) => ({ message: {
+    token: "token",
+    notification: { title: "Tjommie", body: ["A bot finished", "A bot ran into a problem"][index] },
+    data: { v: "1", hostId: "99cf98ba-2638-4b16-8a6e-1691c1673b45", kind, botId: "bot-1", roomId: "room-1" },
+    android: { priority: "high", notification: { tag: `${kind}:bot-1`, channel_id: "bots" } },
+  } })));
+});
+
 it("returns failed results without credentials and treats HTTP 404 as unregistered", async () => {
   const data = PushData.parse({ v: "1", hostId: "99cf98ba-2638-4b16-8a6e-1691c1673b45", kind: "limit", botId: "" });
   expect(await sendPush({}, ["token"], data)).toEqual([{ ok: false, unregistered: false }]);
