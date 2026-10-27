@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useState, type ReactNode } from "react";
+import type { PushKind } from "@tjommie/protocol";
 import { keepAliveEnabled, keepAlivePlugin, setKeepAliveEnabled } from "@/lib/keep-alive";
-import { nativePush, registerPushIfAllowed, type PushApi } from "@/lib/push";
+import { nativePush, notifyKinds, registerPushIfAllowed, setNotifyKinds, type PushApi } from "@/lib/push";
 import { Switch } from "../controls";
 import { HostSwitcher } from "../host-switcher";
 import { Pill } from "../pill";
@@ -12,6 +13,12 @@ const ALWAYS_CONNECTED = false;
 
 export type Notifications = "allow" | "on" | "off" | "unavailable";
 const NOTIFICATIONS: Record<Exclude<Notifications, "allow">, string> = { on: "On", off: "Off", unavailable: "Not in this build" };
+// What this phone is told about, under Notifications once they're on: each switch is one or two kinds of push, and all are on until turned off.
+const KINDS: readonly { label: string; kinds: readonly PushKind[] }[] = [
+  { label: "A bot needs you", kinds: ["approval", "limit"] },
+  { label: "A bot is done", kinds: ["done"] },
+  { label: "Something failed", kinds: ["failed", "routine_failed"] },
+];
 const answered = (receive: string): Notifications => (receive === "granted" ? "on" : receive === "denied" ? "off" : "allow");
 
 // Where this phone's notifications stand: not in this build (no push, or an APK built without Firebase), on, refused, or not asked yet.
@@ -47,6 +54,7 @@ export function ThisPhone() {
 
 export function PhoneSettings({ restricted, notifications, onNotifications }: { restricted: boolean; notifications: Notifications | null; onNotifications: (state: Notifications) => void }) {
   const [alwaysOn, setAlwaysOn] = useState(keepAliveEnabled);
+  const [kinds, setKinds] = useState(notifyKinds);
   return (
     <>
       <div className="mt-3">
@@ -78,6 +86,20 @@ export function PhoneSettings({ restricted, notifications, onNotifications }: { 
             notifications && <span className="shrink-0 text-[13px] text-secondary">{NOTIFICATIONS[notifications]}</span>
           )}
         </Row>
+        {notifications === "on" &&
+          KINDS.map((group) => (
+            <Row key={group.label} title={group.label}>
+              <Switch
+                label={group.label}
+                checked={group.kinds.every((kind) => kinds.includes(kind))}
+                onChange={(on) => {
+                  const next = [...kinds.filter((kind) => !group.kinds.includes(kind)), ...(on ? group.kinds : [])];
+                  setKinds(next);
+                  void setNotifyKinds(next).catch(() => {});
+                }}
+              />
+            </Row>
+          ))}
       </section>
     </>
   );

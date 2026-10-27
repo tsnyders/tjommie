@@ -1,5 +1,5 @@
 import type { Client } from "@tjommie/client";
-import { PushData } from "@tjommie/protocol";
+import { PushData, PushKind } from "@tjommie/protocol";
 import { Capacitor } from "@capacitor/core";
 import { push } from "../../mobile/src/plugins.ts";
 import { atMost } from "./utils";
@@ -20,11 +20,12 @@ export type PushApi = {
 
 export const nativePush: PushApi | null = Capacitor.isNativePlatform() && Capacitor.getPlatform() === "android" ? push : null;
 const PUSH_WAIT_MS = 5_000;
+const KINDS = "tjommie.mobile.notifyKinds.v1";
 type Target = Pick<Client, "call">;
 type Desired = { push: PushApi; target: Target | null; wanted: boolean; available?: boolean; allowed?: boolean; failed?: boolean };
 let desired: Desired | null = null;
 let live: string | null | undefined; // undefined until native state is known, including during a mutation
-let sent: { to: Target; token: string } | null = null;
+let sent: { to: Target; token: string; kinds: string } | null = null; // kinds joined, to compare
 let nativePending: Promise<void> | null = null;
 let reconciling: Promise<void> | null = null;
 let again = false;
@@ -45,6 +46,7 @@ async function pass(): Promise<void> {
   const current = desired;
   if (!current || current.failed || nativePending || (current.wanted && !current.target)) return;
   const { push, target, wanted } = current;
+  const kinds = notifyKinds(); // read each pass, so a send carries what the switches say now
   // Each pass captures the target before its await; stale checks cannot update the next welcome's state.
   if (current.available === undefined) {
     await nativeCall(current, () => push.available(), (value) => { if (desired === current) current.available = value; });
@@ -76,10 +78,10 @@ async function pass(): Promise<void> {
     live = undefined;
     requested = true;
     await nativeCall(current, () => push.register().catch((error: unknown) => { requested = false; throw error; }));
-  } else if (wanted && current.allowed && target && typeof live === "string" && (sent?.to !== target || sent.token !== live)) {
-    const given = { to: target, token: live };
+  } else if (wanted && current.allowed && target && typeof live === "string" && (sent?.to !== target || sent.token !== live || sent.kinds !== kinds.join())) {
+    const given = { to: target, token: live, kinds: kinds.join() };
     sent = given;
-    await atMost(PUSH_WAIT_MS, target.call("device.registerPush", { token: given.token }).catch(() => {
+    await atMost(PUSH_WAIT_MS, target.call("device.registerPush", { token: given.token, kinds }).catch(() => {
       if (sent === given) sent = null;
       current.failed = true; // a later welcome can retry; a failed link must not spin
     }));
@@ -112,6 +114,25 @@ export async function registerPushIfAllowed(client: Target | null = desired?.tar
   await reconcile();
 }
 
+// The kinds of push this phone asks its PCs for, as Settings' switches left them, in PushKind's order: every kind until one is turned off. A value
+// that isn't a list of kinds counts as never set.
+export function notifyKinds(): PushKind[] {
+  try {
+    const saved = PushKind.array().safeParse(JSON.parse(localStorage.getItem(KINDS) ?? "null"));
+    if (saved.success) return PushKind.options.filter((kind) => saved.data.includes(kind));
+  } catch {
+    // no storage here, or a value that isn't JSON
+  }
+  return [...PushKind.options];
+}
+
+// A switch changed: the choice is kept on this phone, so every PC hears it at its welcome, and the PC the window is on hears it now. With no PC
+// (none yet, or the window left it), it waits for the next welcome.
+export async function setNotifyKinds(kinds: readonly PushKind[]): Promise<void> {
+  localStorage.setItem(KINDS, JSON.stringify(PushKind.options.filter((kind) => kinds.includes(kind))));
+  await registerPushIfAllowed(undefined, desired?.push);
+}
+
 // The last saved PC was forgotten: the phone unregisters, unless a PC welcomes it again first.
 export async function unregisterPush(push: PushApi | null = nativePush): Promise<void> {
   desired = push ? { push, target: null, wanted: false } : null;
@@ -130,12 +151,12 @@ export function stopSendingPush(): void {
 export function onPushTap(handler: (data: PushData) => void, push: PushApi | null = nativePush): () => void {
   if (!push) return () => {};
   const listening = push.addListener("pushNotificationActionPerformed", ({ notification }) => {
-    // Android's tap intent adds FCM transport keys beside the four app fields.
+    // Android's tap intent adds FCM transport keys beside the app fields (a room's push also has roomId).
     const raw = notification.data;
     if (!raw || typeof raw !== "object") return;
     const fields = raw as Record<string, unknown>;
-    if (Object.keys(fields).some((key) => !["v", "hostId", "kind", "botId", "from", "collapse_key", "message_type"].includes(key) && !key.startsWith("google.") && !key.startsWith("gcm."))) return;
-    const data = PushData.safeParse({ v: fields.v, hostId: fields.hostId, kind: fields.kind, botId: fields.botId });
+    if (Object.keys(fields).some((key) => !["v", "hostId", "kind", "botId", "roomId", "from", "collapse_key", "message_type"].includes(key) && !key.startsWith("google.") && !key.startsWith("gcm."))) return;
+    const data = PushData.safeParse({ v: fields.v, hostId: fields.hostId, kind: fields.kind, botId: fields.botId, roomId: fields.roomId });
     if (data.success) handler(data.data);
   }).catch(() => null);
   return () => { void listening.then((subscription) => subscription?.remove()).catch(() => {}); };

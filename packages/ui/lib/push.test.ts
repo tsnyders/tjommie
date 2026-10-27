@@ -82,6 +82,15 @@ vi.mock("./remote-hosts", async (importOriginal) => ({
 
 const home = "5b0e2c8e-6f1a-4c55-9a43-2f0d7b1e9c11", office = "9c4f6b1d-2a7e-4e3b-8d55-0f6a1c2b3d4e";
 const homeBot = "7a1ccbc4-d89e-4e14-80c7-f64b5edcc1b0", officeBot = "6b1f37ea-cf49-4ca4-885c-f30acc11b415";
+// Every kind of push, in the order the phone lists them: what it asks a PC for until Settings turns some off.
+const ALL = ["approval", "limit", "routine_failed", "done", "failed"];
+const KINDS_KEY = "tjommie.mobile.notifyKinds.v1";
+
+// This phone's storage, holding what the switches were left at.
+function storage(entries: Record<string, string> = {}): void {
+  const stored = new Map(Object.entries(entries));
+  vi.stubGlobal("localStorage", { getItem: (key: string) => stored.get(key) ?? null, setItem: (key: string, value: string) => void stored.set(key, value) });
+}
 
 // The phone's push as the connection sees it: whether this build has it, the permission, the token, and taps.
 function fakePush(options: { available: boolean; permission: string }) {
@@ -205,7 +214,7 @@ describe("push reconciled through Forget and pairing, with the push service slow
     const connection = await import("./connection");
     const { getState } = await import("./store");
     connection.startConnection();
-    await vi.waitFor(() => expect(saved.events).toContain(`push:${home}:{"token":"token-1"}`));
+    await vi.waitFor(() => expect(saved.events).toContain(`push:${home}:${given("token-1")}`));
     const connected = (): Promise<void> => vi.waitFor(() => expect(getState().connection.status).toBe("ready"));
     return {
       forget: async (id: string): Promise<void> => {
@@ -226,7 +235,7 @@ describe("push reconciled through Forget and pairing, with the push service slow
   }
   // What a PC was given, from the `from`th event on.
   const sentTo = (id: string, from = 0): string[] => saved.events.slice(from).filter((event) => event.startsWith(`push:${id}:`)).map((event) => event.slice(`push:${id}:`.length));
-  const given = (token: string): string => JSON.stringify({ token });
+  const given = (token: string): string => JSON.stringify({ token, kinds: ALL });
 
   it("pairs with the live token after auto-init was retained and startup unregistered it", async () => {
     saved.nativeAvailable = true; native.permission = "granted";
@@ -471,7 +480,51 @@ it("registers this phone's push token with the PC only when this build has push 
   await registerPushIfAllowed(client, fakePush({ available: true, permission: "denied" }).push);
   expect(calls).toEqual([]);
   await registerPushIfAllowed(client, fakePush({ available: true, permission: "granted" }).push);
-  expect(calls).toEqual([["device.registerPush", { token: "synthetic-push-token" }]]);
+  expect(calls).toEqual([["device.registerPush", { token: "synthetic-push-token", kinds: ALL }]]);
+});
+
+it.each([
+  [JSON.stringify(["done", "approval"]), ["approval", "done"]],
+  [JSON.stringify(["failed", "failed"]), ["failed"]],
+  [JSON.stringify([]), []],
+  ["not json", ALL],
+  [JSON.stringify(["approval", "mention"]), ALL],
+  [JSON.stringify({ kinds: ["done"] }), ALL],
+])("asks the PC for the kinds saved as %s, and for every kind when that isn't a list of kinds", async (value, kinds) => {
+  storage({ [KINDS_KEY]: value });
+  const { registerPushIfAllowed } = await import("./push");
+  const { calls, client } = recorder();
+  await registerPushIfAllowed(client, fakePush({ available: true, permission: "granted" }).push);
+  expect(calls).toEqual([["device.registerPush", { token: "synthetic-push-token", kinds }]]);
+});
+
+it("tells the PC it's on at once when the switches change, and every later connection, after a restart too", async () => {
+  storage();
+  const first = await import("./push");
+  const before = recorder();
+  await first.registerPushIfAllowed(before.client, fakePush({ available: true, permission: "granted" }).push);
+  await first.setNotifyKinds(["failed", "approval", "limit", "routine_failed"]); // "A bot is done" turned off
+  const withoutDone = ["approval", "limit", "routine_failed", "failed"];
+  expect(before.calls).toEqual([["device.registerPush", { token: "synthetic-push-token", kinds: ALL }], ["device.registerPush", { token: "synthetic-push-token", kinds: withoutDone }]]);
+  vi.resetModules(); // the app starts again
+  const again = await import("./push");
+  const after = recorder();
+  await again.registerPushIfAllowed(after.client, fakePush({ available: true, permission: "granted" }).push);
+  expect(after.calls).toEqual([["device.registerPush", { token: "synthetic-push-token", kinds: withoutDone }]]);
+});
+
+it("only keeps a change made while no PC has this phone, and never sends it to a PC the window left", async () => {
+  storage();
+  const { registerPushIfAllowed, setNotifyKinds, stopSendingPush } = await import("./push");
+  const { push } = fakePush({ available: true, permission: "granted" });
+  await setNotifyKinds(["done"]); // before any PC welcomed this phone
+  const left = recorder(), next = recorder();
+  await registerPushIfAllowed(left.client, push);
+  stopSendingPush();
+  await setNotifyKinds(["approval", "limit"]);
+  expect(left.calls).toEqual([["device.registerPush", { token: "synthetic-push-token", kinds: ["done"] }]]);
+  await registerPushIfAllowed(next.client, push);
+  expect(next.calls).toEqual([["device.registerPush", { token: "synthetic-push-token", kinds: ["approval", "limit"] }]]);
 });
 
 it("does nothing at all in a build without push", async () => {
@@ -510,4 +563,29 @@ it("routes a tap to the bot's chat, switching to that bot's PC first, and ignore
   tap({ v: "1", hostId: home, kind: "approval", botId: "javascript:alert(1)" });
   expect(routes).toEqual([`/chat/?bot=${officeBot}`, `/chat/?bot=${officeBot}`, `/chat/?bot=${officeBot}`]);
   expect(saved.opened).toEqual([home, office]);
+});
+
+it("routes a room's tap to the room, its bot's chat without one, and still ignores a tap it can't read", async () => {
+  saved.hosts = [{ id: home, name: "Home PC" }];
+  const connection = await import("./connection");
+  const { onPushTap } = await import("./push");
+  const { getState } = await import("./store");
+  connection.startConnection();
+  await vi.waitFor(() => expect(getState().connection).toEqual({ status: "ready" }));
+  const { push, tap } = fakePush({ available: true, permission: "granted" });
+  const routes: string[] = [];
+  onPushTap((data: PushData) => { const route = connection.routePush(data); if (route) routes.push(route); }, push);
+  await Promise.resolve();
+  tap({ v: "1", hostId: home, kind: "done", botId: homeBot, roomId: "team" });
+  tap({ v: "1", hostId: home, kind: "failed", botId: homeBot, roomId: "r 1/2&x", "google.message_id": "0:1" });
+  tap({ v: "1", hostId: home, kind: "done", botId: homeBot });
+  expect(routes).toEqual(["/room/?id=team", "/room/?id=r%201%2F2%26x", `/chat/?bot=${homeBot}`]);
+  tap({ v: "1", hostId: home, kind: "done", botId: homeBot, roomId: "team", title: "Done in Everyone" }); // not a push this app sends
+  tap({ v: "1", hostId: home, kind: "done", botId: homeBot, roomId: "r".repeat(65) });
+  tap({ v: "1", hostId: home, kind: "done", botId: "javascript:alert(1)", roomId: "team" });
+  expect(routes).toHaveLength(3);
+  // A room id that isn't one (empty, or longer than any) opens the bot's chat instead.
+  expect(connection.routePush({ v: "1", hostId: home, kind: "done", botId: homeBot, roomId: "" })).toBe(`/chat/?bot=${homeBot}`);
+  expect(connection.routePush({ v: "1", hostId: home, kind: "done", botId: homeBot, roomId: "r".repeat(65) })).toBe(`/chat/?bot=${homeBot}`);
+  expect(saved.opened).toEqual([home]);
 });

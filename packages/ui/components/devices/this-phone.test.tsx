@@ -20,6 +20,10 @@ vi.stubGlobal("localStorage", { getItem: (key: string) => saved.get(key) ?? null
 
 const html = (props: Partial<ComponentProps<typeof PhoneSettings>> = {}) =>
   renderToStaticMarkup(<PhoneSettings restricted={false} notifications="on" onNotifications={() => {}} {...props} />);
+// Each switch on the page, as its label and whether it's on.
+const switches = (out: string): [string | undefined, boolean][] =>
+  [...out.matchAll(/<span[^>]*role="switch"[^>]*>/g)].map(([tag]) => [/aria-label="([^"]+)"/.exec(tag)?.[1], tag.includes('aria-checked="true"')]);
+const ALL = ["approval", "limit", "routine_failed", "done", "failed"];
 
 // The phone's push as the official plugin has it: whether this build has it, the permission now and after asking, and a token on register.
 function fakePush(options: { available?: boolean; permission: string; answer?: string }): PushApi {
@@ -68,6 +72,35 @@ describe("PhoneSettings", () => {
     press("Allow");
     await vi.waitFor(() => expect(shown).toHaveBeenCalledWith("unavailable"));
   });
+
+  it("offers the three kinds of notification, all on, only while notifications are On", () => {
+    expect(switches(html({ notifications: "on" }))).toEqual([["A bot needs you", true], ["A bot is done", true], ["Something failed", true]]);
+    for (const notifications of ["allow", "off", "unavailable", null] as const) expect(switches(html({ notifications }))).toEqual([]);
+  });
+
+  it.each([
+    ["A bot needs you", ["routine_failed", "done", "failed"]],
+    ["A bot is done", ["approval", "limit", "routine_failed", "failed"]],
+    ["Something failed", ["approval", "limit", "done"]],
+  ])("turning off %s registers again without its kinds, and stays off", async (label, kinds) => {
+    await registerPushIfAllowed({ call: requested as Client["call"] }, fakePush({ permission: "granted" }));
+    expect(requested).toHaveBeenLastCalledWith("device.registerPush", { token: "synthetic-push-token", kinds: ALL });
+    html();
+    press(label, false);
+    await vi.waitFor(() => expect(requested).toHaveBeenLastCalledWith("device.registerPush", { token: "synthetic-push-token", kinds }));
+    expect(switches(html()).filter(([, on]) => !on).map(([name]) => name)).toEqual([label]);
+  });
+
+  it("turning a switch back on asks for its kinds again", async () => {
+    await registerPushIfAllowed({ call: requested as Client["call"] }, fakePush({ permission: "granted" }));
+    html();
+    press("A bot is done", false);
+    await vi.waitFor(() => expect(requested).toHaveBeenLastCalledWith("device.registerPush", { token: "synthetic-push-token", kinds: ["approval", "limit", "routine_failed", "failed"] }));
+    html();
+    press("A bot is done", true);
+    await vi.waitFor(() => expect(requested).toHaveBeenLastCalledWith("device.registerPush", { token: "synthetic-push-token", kinds: ALL }));
+    expect(switches(html()).every(([, on]) => on)).toBe(true);
+  });
 });
 
 describe("notificationState", () => {
@@ -87,7 +120,7 @@ describe("allowNotifications", () => {
     await registerPushIfAllowed({ call: requested as Client["call"] }, push); // welcome before Allow: no permission yet
     expect(requested).not.toHaveBeenCalled();
     expect(await allowNotifications(push)).toBe("on");
-    expect(requested).toHaveBeenCalledWith("device.registerPush", { token: "synthetic-push-token" });
+    expect(requested).toHaveBeenCalledWith("device.registerPush", { token: "synthetic-push-token", kinds: ALL });
   });
 
   it("gives the PC nothing on no", async () => {
