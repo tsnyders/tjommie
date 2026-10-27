@@ -37,6 +37,9 @@ export const RemoteConfirm = z.object({ type: z.literal("confirm"), protocol: z.
 export const RemoteReady = z.object({ type: z.literal("ready"), deviceId: z.uuid(), hostId: z.uuid(), hostName: RemoteName, relay: RelayUrl.nullable() }).strict();
 export const RemoteRefused = z.object({ type: z.literal("refused"), reason: z.enum(["revoked", "unknown"]) }).strict();
 
+export const PushKind = z.enum(["approval", "limit", "routine_failed", "done", "failed"]);
+export type PushKind = z.infer<typeof PushKind>;
+
 export function encodePairingCode(input: PairingCode): string {
   const bytes = new TextEncoder().encode(JSON.stringify(PairingCode.parse(input)));
   return btoa(Array.from(bytes, (value) => String.fromCharCode(value)).join("")).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
@@ -61,7 +64,7 @@ export const remoteMethods = {
   "devices.list": { params: z.object({}), result: z.array(Device).max(64) },
   "devices.rename": { params: z.object({ id: z.uuid(), name: RemoteName }), result: Device },
   "devices.revoke": { params: z.object({ id: z.uuid() }), result: Device },
-  "device.registerPush": { params: z.object({ token: z.string().min(1).max(4096).nullable() }), result: z.object({}) },
+  "device.registerPush": { params: z.object({ token: z.string().min(1).max(4096).nullable(), kinds: z.array(PushKind).max(16).optional() }), result: z.object({}) },
   "pairing.create": { params: z.object({}), result: z.object({ id: z.uuid(), code: z.string().max(8192), uri: z.string().max(8210), expires: z.iso.datetime() }) },
   "pairing.cancel": { params: z.object({ id: z.uuid() }), result: z.object({}) },
 } as const;

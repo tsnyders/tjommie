@@ -106,6 +106,8 @@ export const events = {
     Notification.extend({ kind: z.literal("approval"), approvalId: z.string().optional() }),
     Notification.extend({ kind: z.literal("limit") }),
     Notification.extend({ kind: z.literal("routine_failed"), routineId: z.string().optional(), runId: z.string().optional() }),
+    Notification.extend({ kind: z.literal("done"), roomId: z.string().max(64).optional() }),
+    Notification.extend({ kind: z.literal("failed"), roomId: z.string().max(64).optional() }),
   ]),
   "routine.updated": Routine,
   "routine.deleted": Id,
