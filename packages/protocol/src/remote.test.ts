@@ -1,5 +1,6 @@
 import { expect, it } from "vitest";
-import { PairingCode, RemoteReady, RemoteRefused, encodePairingCode, parsePairingCode } from "./remote.ts";
+import { PairingCode, RemoteReady, RemoteRefused, encodePairingCode, parsePairingCode, remoteMethods } from "./remote.ts";
+import { PushKind } from "./relay.ts";
 import { Settings } from "./model.ts";
 
 const now = Date.parse("2026-10-22T12:00:00.000Z");
@@ -36,6 +37,15 @@ it("requires a relay on ready and accepts only named refusal reasons", () => {
 it("accepts a null relay URL in settings", () => {
   expect(Settings.parse({ chainLimit: 5, relayUrl: null })).toEqual({ chainLimit: 5, relayUrl: null });
   expect(Settings.safeParse({ chainLimit: 5, relayUrl: "http://r.example" }).success).toBe(false);
+});
+
+it("accepts optional push kinds when registering a device", () => {
+  for (const kinds of [undefined, [], ["done"]]) {
+    const params = { token: "synthetic-token", ...(kinds === undefined ? {} : { kinds }) };
+    expect(remoteMethods["device.registerPush"].params.parse(params)).toEqual(params);
+  }
+  expect(remoteMethods["device.registerPush"].params.parse({ token: "synthetic-token", kinds: PushKind.options }).kinds).toEqual(PushKind.options);
+  expect(remoteMethods["device.registerPush"].params.safeParse({ token: "synthetic-token", kinds: ["other"] }).success).toBe(false);
 });
 
 it("rejects expired, overlong, malformed and unsupported pairing inputs without echoing them", () => {
