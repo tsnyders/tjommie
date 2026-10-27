@@ -1,6 +1,6 @@
 import { createPublicKey, generateKeyPairSync, sign, verify } from "node:crypto";
 import { afterEach, expect, it, vi } from "vitest";
-import { loginMessage } from "@tjommie/protocol";
+import { LEGACY_PUSH_KINDS, loginMessage } from "@tjommie/protocol";
 import type { PeerWire } from "./peer-wire.ts";
 import { RelayClient } from "./relay-client.ts";
 
@@ -108,14 +108,34 @@ it("matches push replies to requests", async () => {
   vi.useFakeTimers();
     const { client, sockets } = setup();
     client.start(); sockets[0].open(); sockets[0].receive({ t: "challenge", nonce }); sockets[0].receive({ t: "ready", push: true });
-    const pending = client.push(["synthetic-device-token"], "approval", "bot-1");
-    const sent = JSON.parse(sockets[0].sent[1]) as { t: string; id: number; tokens: string[] };
+    const pending = client.push(["synthetic-device-token"], "done", "bot-1", "team");
+    const sent = JSON.parse(sockets[0].sent[1]) as { t: string; id: number; tokens: string[]; kind: string; botId: string; roomId: string };
     expect(sent.tokens).toEqual(["synthetic-device-token"]);
+    expect(sent).toEqual({ t: "push", id: sent.id, tokens: ["synthetic-device-token"], kind: "done", botId: "bot-1", roomId: "team" });
     sockets[0].receive({ t: "pushed", id: sent.id, results: [{ ok: true, unregistered: false }] });
     await expect(pending).resolves.toEqual([{ ok: true, unregistered: false }]);
     sockets[0].receive({ t: "open", channel });
     sockets[1].close();
     client.stop();
+});
+
+it("assumes legacy kinds until a ready advertises more, then resets on disconnect", () => {
+  const { client, sockets } = setup();
+  expect(client.kinds()).toEqual(LEGACY_PUSH_KINDS);
+  client.start(); sockets[0].open(); sockets[0].receive({ t: "challenge", nonce });
+  sockets[0].receive({ t: "ready", push: true, kinds: ["approval", "done"] });
+  expect(client.kinds()).toEqual(["approval", "done"]);
+  client.stop();
+  expect(client.kinds()).toEqual(LEGACY_PUSH_KINDS);
+});
+
+it("keeps a newer relay online while advertising only known push kinds", () => {
+  const { client, sockets } = setup();
+  client.start(); sockets[0].open(); sockets[0].receive({ t: "challenge", nonce });
+  sockets[0].receive({ t: "ready", push: true, kinds: ["approval", "limit", "routine_failed", "done", "failed", "mention"] });
+  expect(client.state()).toBe("online");
+  expect(client.kinds()).toEqual(["approval", "limit", "routine_failed", "done", "failed"]);
+  client.stop();
 });
 
 it("keeps secrets out of all console methods and errors on failure paths", async () => {

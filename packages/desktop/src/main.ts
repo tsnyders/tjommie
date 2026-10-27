@@ -9,7 +9,7 @@ import updater from "electron-updater";
 import { navigationFor, uiFile } from "./app-protocol.ts";
 import { notesFile } from "./bot-files.ts";
 import { daemonLaunchEnv, startDaemonProcess, stopDaemonBeforeQuit, type DaemonConnection, type RunningDaemon } from "./daemon-process.ts";
-import { notificationDelivery } from "./notification-delivery.ts";
+import { notificationDelivery, notificationRoute } from "./notification-delivery.ts";
 import { beginGoogleConsent } from "./google-consent.ts";
 import { NativeBrowserEngine } from "./native-browser.ts";
 import { nativeBrowserAutomation, cancelNativeBrowserAutomation } from "./native-browser-automation.ts";
@@ -337,7 +337,7 @@ async function listenForNotifications(connection: DaemonConnection): Promise<voi
       note.on("click", () => {
         notifications.delete(note);
         showWindow();
-        win?.webContents.send("navigate", `/chat/?bot=${encodeURIComponent(notice.botId)}`);
+        win?.webContents.send("navigate", notificationRoute(notice));
       });
       // show() merely requests delivery. Only the OS-backed show event permits acknowledgement.
       return new Promise<boolean>((resolve) => {

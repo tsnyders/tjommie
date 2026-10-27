@@ -1,4 +1,4 @@
-import { HostToRelay, RELAY, RelayClose, RelayToHost, loginMessage, type PushKind, type RelayState } from "@tjommie/protocol";
+import { HostToRelay, LEGACY_PUSH_KINDS, PushKind, RELAY, RelayClose, RelayToHost, loginMessage, type RelayState } from "@tjommie/protocol";
 import { relayWebSocketUrl } from "../../client/src/frame-socket.ts";
 import { webSocketWire, type PeerWire } from "./peer-wire.ts";
 import type { RelayIdentity } from "./relay-identity.ts";
@@ -26,6 +26,7 @@ export class RelayClient {
   #authenticated = false;
   #challenged = false;
   #push = false;
+  #kinds: readonly PushKind[] = LEGACY_PUSH_KINDS;
   #state: RelayState = "off";
   #attempt = 0;
   #nextPushId = 0;
@@ -36,6 +37,7 @@ export class RelayClient {
   constructor(options: Options) { this.#options = options; }
   state(): RelayState { return this.#state; }
   pushEnabled(): boolean { return this.#state === "online" && this.#push; }
+  kinds(): readonly PushKind[] { return this.#kinds; }
 
   waitUntilOnline(): Promise<void> {
     if (this.#state === "online") return Promise.resolve();
@@ -64,11 +66,11 @@ export class RelayClient {
     this.#setState("off");
   }
 
-  push(tokens: string[], kind: PushKind, botId: string): Promise<PushResult[]> {
+  push(tokens: string[], kind: PushKind, botId: string, roomId?: string): Promise<PushResult[]> {
     const socket = this.#socket;
     if (!socket || !this.pushEnabled()) return Promise.reject(connectionError());
     const id = ++this.#nextPushId;
-    const message = HostToRelay.safeParse({ t: "push", id, tokens, kind, botId });
+    const message = HostToRelay.safeParse({ t: "push", id, tokens, kind, botId, roomId });
     if (!message.success) return Promise.reject(new Error("Invalid relay push request."));
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => { this.#pending.delete(id); reject(connectionError()); }, RELAY.acceptTimeoutMs);
@@ -96,7 +98,7 @@ export class RelayClient {
     clearTimeout(this.#retry); this.#retry = undefined;
     clearTimeout(this.#loginTimer); this.#loginTimer = undefined;
     const socket = this.#socket; this.#socket = null;
-    this.#authenticated = false; this.#challenged = false; this.#push = false;
+    this.#authenticated = false; this.#challenged = false; this.#push = false; this.#kinds = LEGACY_PUSH_KINDS;
     for (const [id, pending] of this.#pending) { clearTimeout(pending.timer); pending.reject(connectionError()); this.#pending.delete(id); }
     for (const channel of this.#channels) channel.close();
     this.#channels.clear();
@@ -151,7 +153,9 @@ export class RelayClient {
     } else if (message.t === "ready") {
       if (!this.#challenged || this.#authenticated) { this.#fail(socket); return; }
       clearTimeout(this.#loginTimer); this.#loginTimer = undefined;
-      this.#authenticated = true; this.#push = message.push; this.#attempt = 0;
+      this.#authenticated = true; this.#push = message.push;
+      this.#kinds = message.kinds?.flatMap((kind) => { const parsed = PushKind.safeParse(kind); return parsed.success ? [parsed.data] : []; }) ?? LEGACY_PUSH_KINDS;
+      this.#attempt = 0;
       this.#lastPing = this.#lastPong = Date.now();
       this.#setState("online");
     } else if (message.t === "open") {

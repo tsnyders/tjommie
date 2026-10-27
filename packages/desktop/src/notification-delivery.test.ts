@@ -1,7 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
-import { notificationDelivery } from "./notification-delivery.ts";
+import { notificationDelivery, notificationRoute } from "./notification-delivery.ts";
 
 const notice = { kind: "routine_failed", botId: "bot", runId: "run", routineId: "routine", title: "Routine failed", body: "Failure" } as const;
+
+it("routes a room notice to the room and other notices to the bot chat", () => {
+  expect(notificationRoute({ kind: "done", botId: "bot", roomId: "room /?", title: "Done", body: "" })).toBe("/room/?id=room%20%2F%3F");
+  expect(notificationRoute(notice)).toBe("/chat/?bot=bot");
+});
 
 describe("routine notification delivery", () => {
   it("coalesces a live event and pending replay until acknowledgement completes", async () => {

@@ -3,34 +3,52 @@ import type { EventData, PushKind } from "@tjommie/protocol";
 import { startPush } from "./push.ts";
 
 const notice: EventData<"notify"> = { kind: "approval", botId: "bot-1", title: "private content", body: "private detail" };
+const done: EventData<"notify"> = { kind: "done", botId: "bot-1", title: "private content", body: "private detail", roomId: "team" };
 type Result = { ok: boolean; unregistered: boolean };
 function setup(count = 1) {
-  const targets = Array.from({ length: count }, (_, index) => ({ deviceId: `device-${index}`, token: `synthetic-token-${index}` }));
+  const targets: { deviceId: string; token: string; kinds: PushKind[] | null }[] = Array.from({ length: count }, (_, index) => ({ deviceId: `device-${index}`, token: `synthetic-token-${index}`, kinds: null }));
   const cleared: { deviceId: string; token: string }[] = [];
-  const calls: { tokens: string[]; kind: PushKind; botId: string }[] = [];
+  const calls: { tokens: string[]; kind: PushKind; botId: string; roomId?: string }[] = [];
   let results: Result[] | null = null;
   let reject = false;
+  let supported: PushKind[] = ["approval", "limit", "routine_failed", "done", "failed"];
   const sender = startPush({
     host: { pushTargets: () => targets, clearPushToken: (deviceId, token) => { cleared.push({ deviceId, token }); } },
-    relay: { push: async (tokens, kind, botId) => { calls.push({ tokens, kind, botId }); if (reject) throw new Error("synthetic-token-0"); return results && calls.length === 1 ? results : tokens.map(() => ({ ok: true, unregistered: false })); } },
+    relay: { kinds: () => supported, push: async (tokens, kind, botId, roomId) => { calls.push({ tokens, kind, botId, roomId }); if (reject) throw new Error("synthetic-token-0"); return results && calls.length === 1 ? results : tokens.map(() => ({ ok: true, unregistered: false })); } },
   });
-  return { sender, calls, cleared, setResults: (value: Result[]) => { results = value; }, fail: () => { reject = true; }, recover: () => { reject = false; } };
+  return { sender, calls, cleared, targets, setKinds: (kinds: PushKind[]) => { supported = kinds; }, setResults: (value: Result[]) => { results = value; }, fail: () => { reject = true; }, recover: () => { reject = false; } };
 }
 afterEach(() => vi.useRealTimers());
 
-it("coalesces by device, kind and bot, then enforces 30 per device per hour", async () => {
+it("coalesces by device, kind and bot, then enforces 30 non-approval pushes per device per hour", async () => {
   vi.useFakeTimers(); vi.setSystemTime(0);
   const { sender, calls } = setup();
-  sender(notice); sender(notice);
+  sender(done); sender(done);
   await vi.waitFor(() => expect(calls).toHaveLength(1));
   vi.setSystemTime(30_000);
-  for (let i = 0; i < 29; i++) sender({ ...notice, botId: `bot-${i}` });
+  for (let i = 0; i < 29; i++) sender({ ...done, botId: `bot-${i}` });
   await vi.waitFor(() => expect(calls).toHaveLength(30));
-  sender({ ...notice, botId: "overflow" });
+  sender({ ...done, botId: "overflow" });
   expect(calls).toHaveLength(30);
-  vi.setSystemTime(3_600_001);
   sender(notice);
-  await vi.waitFor(() => expect(calls).toHaveLength(31));
+  expect(calls).toHaveLength(31);
+  vi.setSystemTime(3_600_001);
+  sender(done);
+  await vi.waitFor(() => expect(calls).toHaveLength(32));
+});
+
+it("filters per device and relay capability and forwards only room routing metadata", async () => {
+  const { sender, calls, targets, setKinds } = setup(2);
+  targets[0].kinds = ["approval"];
+  targets[1].kinds = ["done"];
+  setKinds(["approval", "limit", "routine_failed"]);
+  sender(done);
+  expect(calls).toEqual([]);
+  setKinds(["approval", "done"]);
+  sender(done);
+  await vi.waitFor(() => expect(calls).toHaveLength(1));
+  expect(calls).toEqual([{ tokens: ["synthetic-token-1"], kind: "done", botId: "bot-1", roomId: "team" }]);
+  expect(JSON.stringify(calls)).not.toContain("private");
 });
 
 it("batches at 16, clears unregistered tokens, and counts failures without logging content", async () => {
@@ -54,14 +72,14 @@ it("batches at 16, clears unregistered tokens, and counts failures without loggi
 it("restores rate budget when an offline push is rejected", async () => {
   vi.useFakeTimers(); vi.setSystemTime(0);
   const { sender, calls, fail, recover } = setup();
-  fail(); sender(notice);
+  fail(); sender(done);
   await vi.waitFor(() => expect(sender.failures).toBe(1));
-  recover(); vi.setSystemTime(10_000); sender(notice);
+  recover(); vi.setSystemTime(10_000); sender(done);
   expect(calls).toHaveLength(2);
   for (let index = 0; index < 30; index++) {
-    fail(); sender({ ...notice, botId: `failed-${index}` });
+    fail(); sender({ ...done, botId: `failed-${index}` });
     await vi.waitFor(() => expect(sender.failures).toBe(index + 2));
   }
-  recover(); sender({ ...notice, botId: "after-outage" });
+  recover(); sender({ ...done, botId: "after-outage" });
   expect(calls).toHaveLength(33);
 });

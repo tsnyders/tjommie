@@ -265,7 +265,7 @@ it("starts the relay for an invite after LAN listening, restarts on settings, an
       if (typeof value !== "string") return;
       this.sent.push(value);
       const message = JSON.parse(value) as { t?: string; id?: number; tokens?: string[] };
-      if (message.t === "login") queueMicrotask(() => this.receive({ t: "ready", push: true }));
+      if (message.t === "login") queueMicrotask(() => this.receive({ t: "ready", push: true, kinds: ["approval", "limit", "routine_failed", "done", "failed"] }));
       if (message.t === "push") queueMicrotask(() => this.receive({ t: "pushed", id: message.id, results: message.tokens?.map(() => ({ ok: true, unregistered: false })) }));
     }
     close(): void { if (this.readyState === 3) return; this.readyState = 3; this.dispatchEvent(Object.assign(new Event("close"), { code: 1000 })); }
@@ -304,6 +304,16 @@ it("starts the relay for an invite after LAN listening, restarts on settings, an
     expect(push).toContain('"botId":"' + bot.id + '"');
     expect(push).not.toContain("Private summary");
     expect(push).not.toContain("Private body");
+    sessions[0].session.emit({ type: "turn_done", ok: false, error: "Private first error" });
+    await client.call("room.post", { text: "@everyone Report" });
+    await waitFor(() => sessions.some(({ session }) => session.sent.some((value) => value.includes("Report"))));
+    const roomSession = sessions.find(({ session }) => session.sent.some((value) => value.includes("Report")))!;
+    roomSession.session.finish("Private room reply");
+    await waitFor(() => sockets[1].sent.some((value) => value.includes('"roomId":"team"')));
+    const roomPush = JSON.parse(sockets[1].sent.find((value) => value.includes('"roomId":"team"'))!) as Record<string, unknown>;
+    expect(roomPush).toEqual({ t: "push", id: expect.any(Number), tokens: ["synthetic-device-token"], kind: "done", botId: bot.id, roomId: "team" });
+    expect(JSON.stringify(roomPush)).not.toContain("Private room reply");
+    expect(sockets[1].sent.join("")).not.toContain("Private first error");
     await client.call("pairing.cancel", { id: invite.id });
     expect((await client.call("remote.status", {})).relay.state).toBe("online");
     await client.call("devices.revoke", { id: device.id });
