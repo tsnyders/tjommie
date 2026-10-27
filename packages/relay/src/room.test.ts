@@ -1,6 +1,6 @@
 import { generateKeyPairSync, randomBytes, sign } from "node:crypto";
 import { afterEach, expect, it, vi } from "vitest";
-import { HostToRelay, RELAY, RelayClose, RelayToHost, loginMessage } from "@tjommie/protocol";
+import { HostToRelay, RELAY, RelayClose, RelayToHost, loginMessage, type PushData } from "@tjommie/protocol";
 import { HostRoomCore, type Attachment, type Sock } from "./room.ts";
 
 const hostId = "99cf98ba-2638-4b16-8a6e-1691c1673b45";
@@ -25,13 +25,14 @@ function fixture() {
   let now = 0;
   let stored: string | null = null;
   let pushes = 0;
+  const sent: PushData[] = [];
   const core = new HostRoomCore({
     hostId, now: () => now, random: () => randomBytes(32),
     registerKey: (key) => { stored ??= key; return stored; },
     pushEnabled: true,
-    push: async (tokens) => { pushes++; return tokens.map(() => ({ ok: true, unregistered: false })); },
+    push: async (tokens, data) => { pushes++; sent.push(data); return tokens.map(() => ({ ok: true, unregistered: false })); },
   });
-  return { core, advance: (ms: number) => { now += ms; }, stored: () => stored, pushes: () => pushes };
+  return { core, advance: (ms: number) => { now += ms; }, stored: () => stored, pushes: () => pushes, sent: () => sent };
 }
 
 async function login(core: HostRoomCore, key: ReturnType<typeof hostKey>, ip?: string): Promise<FakeSock> {
@@ -63,7 +64,9 @@ it("registers a verified key, rejects a different key without replacing the host
   const key = hostKey();
   const first = await login(f.core, key);
   expect(f.stored()).toBe(key.publicKey);
-  expect(RelayToHost.parse(JSON.parse(first.messages.at(-1) as string)).t).toBe("ready");
+  expect(RelayToHost.parse(JSON.parse(first.messages.at(-1) as string))).toEqual({
+    t: "ready", push: true, kinds: ["approval", "limit", "routine_failed", "done", "failed"],
+  });
   const attacker = await login(f.core, hostKey());
   expect(attacker.closes).toContain(RelayClose.badLogin);
   expect(f.core.controlSocket()).toBe(first);
@@ -308,10 +311,34 @@ it("rejects invalid push requests and never logs a token or IP", async () => {
   expect(JSON.stringify([...log.mock.calls, ...error.mock.calls, ...warn.mock.calls, ...info.mock.calls, ...debug.mock.calls])).not.toMatch(/secret-token|203\.0\.113\.77/);
 });
 
-it("rejects an unknown push kind before contacting FCM", async () => {
+it("answers an unknown push kind with failed results and keeps the host online", async () => {
   const f = fixture();
   const control = await login(f.core, hostKey());
+  await f.core.onMessage(control, JSON.stringify({ t: "push", id: 1, tokens: ["token-1", "token-2"], kind: "chat", botId: "bot" }));
+  expect(RelayToHost.parse(JSON.parse(control.messages.at(-1) as string))).toEqual({ t: "pushed", id: 1, results: [
+    { ok: false, unregistered: false }, { ok: false, unregistered: false },
+  ] });
+  expect(control.closes).toEqual([]);
+  expect(f.core.controlSocket()).toBe(control);
+  expect(f.pushes()).toBe(0);
+  await f.core.onMessage(control, JSON.stringify({ t: "push", id: 2, tokens: ["token-3"], kind: "done", botId: "bot", roomId: "room" }));
+  expect(RelayToHost.parse(JSON.parse(control.messages.at(-1) as string))).toEqual({ t: "pushed", id: 2, results: [{ ok: true, unregistered: false }] });
+  expect(f.sent()).toEqual([{ v: "1", hostId, kind: "done", botId: "bot", roomId: "room" }]);
+});
+
+it("closes an unknown-kind push before login with 4401", async () => {
+  const f = fixture();
+  const control = new FakeSock();
+  f.core.connectControl(control, relayHost);
   await f.core.onMessage(control, JSON.stringify({ t: "push", id: 1, tokens: ["token"], kind: "chat", botId: "bot" }));
+  expect(control.closes).toContain(RelayClose.badLogin);
+  expect(f.pushes()).toBe(0);
+});
+
+it("closes malformed pushes even when their kind is unknown", async () => {
+  const f = fixture();
+  const control = await login(f.core, hostKey());
+  await f.core.onMessage(control, JSON.stringify({ t: "push", id: 1, tokens: Array(17).fill("token"), kind: "chat", botId: "bot" }));
   expect(control.closes).toContain(1008);
   expect(f.pushes()).toBe(0);
 });
