@@ -144,12 +144,13 @@ export async function forgetRemote(id: string): Promise<void> {
   else openLocal();
 }
 
-// A tapped push: its PC becomes the current one if it isn't (and is saved here), and the bot's chat is where to go.
+// A tapped push: its PC becomes the current one if it isn't (and is saved here), and the room it came from, or else the bot's chat, is where to go.
 export function routePush(data: PushData): string | null {
   if (!remoteHosts().some((host) => host.id === data.hostId) || !z.uuid().safeParse(data.botId).success) return null;
   const current = isRemote(latest) && latest.remoteHostId === data.hostId;
   if (!current) connectRemote(data.hostId);
-  return `/chat/?bot=${encodeURIComponent(data.botId)}`;
+  const room = z.string().min(1).max(64).safeParse(data.roomId);
+  return room.success ? `/room/?id=${encodeURIComponent(room.data)}` : `/chat/?bot=${encodeURIComponent(data.botId)}`;
 }
 
 // Drops the current connection and everything cached from its PC.
