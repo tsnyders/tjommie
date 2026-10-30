@@ -8,6 +8,15 @@ import { patchFirebaseDependency, patchFirebaseVersion } from "./firebase-depend
 const here = dirname(fileURLToPath(import.meta.url));
 const mobile = join(here, "..");
 const android = join(mobile, "android");
+const versionCodes = new Map([["0.3.0", 3], ["0.3.1", 4], ["0.3.2", 5]]);
+if (process.argv[2] === "--check") {
+  const requestedVersion = process.argv[3];
+  if (process.argv.length !== 4 || !versionCodes.has(requestedVersion)) {
+    throw new Error("Android versionCode needs a release-version rule for " + (requestedVersion ?? "a missing version") + ".");
+  }
+  console.log("Android versionCode mapping found for " + requestedVersion + ".");
+  process.exit(0);
+}
 if (!existsSync(android)) throw new Error("There is no android/ project yet: run `npm run android:add -w @tjommie/mobile` first.");
 
 const app = join(android, "app");
@@ -76,7 +85,7 @@ patch(join(app, "build.gradle"), (gradle) => {
   let out = gradle;
   const version = JSON.parse(readFileSync(join(mobile, "package.json"), "utf8")).version;
   // Explicit codes prevent patch releases from reusing an Android versionCode.
-  const versionCode = new Map([["0.3.0", 3], ["0.3.1", 4]]).get(version);
+  const versionCode = versionCodes.get(version);
   if (versionCode === undefined) throw new Error("Android versionCode needs a release-version rule for this package version.");
   out = out.replace(/versionCode\s+\d+/, `versionCode ${versionCode}`);
   out = out.replace(/versionName\s+"[^"]*"/, `versionName "${version}"`);

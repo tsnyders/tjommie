@@ -21,9 +21,9 @@ Debug signing is for local testing only. A release build needs a signing key tha
 
 `npm run package:android` builds and syncs the current UI, checks every exported UI asset against its bytes inside the debug APK, and records source and artifact hashes under `dist-mobile/`.
 
-For a release APK, set `TJOMMIE_ANDROID_KEYSTORE`, `TJOMMIE_ANDROID_KEYSTORE_PASSWORD`, `TJOMMIE_ANDROID_KEY_ALIAS`, and `TJOMMIE_ANDROID_KEY_PASSWORD`, then run `npm run package:android -- --release` from the repo root. The output is `dist-mobile/Tjommie-Android-<version>.apk` and its matching provenance JSON. Packaging refuses missing signing values or a missing keystore.
+For a release APK, GitHub Actions runs `npm run package:android -- --release` after a version tag is pushed. It reads the signing key and passwords from GitHub Actions secrets, verifies the APK signer against `ANDROID_CERT_SHA256`, and attaches `Tjommie-Android-<version>.apk` to the release. Packaging refuses missing signing values or a missing keystore.
 
-To enable push, keep Firebase's `google-services.json` outside the repo and set `TJOMMIE_GOOGLE_SERVICES_JSON` to its path before packaging. `native:apply` copies it into the ignored Android app directory. Without it, the APK reports push unavailable and never registers with Firebase.
+For release builds, GitHub Actions decodes the Firebase `google-services.json` secret outside the repo and passes its path as `TJOMMIE_GOOGLE_SERVICES_JSON`. `native:apply` copies it into the ignored Android app directory. Without it, the APK reports push unavailable and never registers with Firebase.
 
 The transport uses the same pinned Rust Snow WASM module on the PC and phone: IKpsk2 for first pairing and IK for reconnecting. Snow is maintained but explicitly unaudited upstream. The Android Keystore key wraps the phone identity and its pinned PC key; the Noise private key enters JS/WASM memory while connecting. Pairing candidates remain separate from working identities until confirmation, including recovery after a lost acknowledgement.
 

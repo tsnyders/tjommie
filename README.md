@@ -1,6 +1,6 @@
 # Tjommie
 
-Tjommie is a free, open-source desktop app for AI bots that chat with you, work on your PC, talk to each other and run routines. The bots run on your own computer through the official Claude Code and Codex CLIs, signed in with your own accounts. An Android companion connects over the same Wi-Fi; mobile-data access and push are still planned.
+Tjommie is a free, open-source desktop app for AI bots that chat with you, work on your PC, talk to each other and run routines. The bots run on your own computer through the official Claude Code and Codex CLIs, signed in with your own accounts. An Android companion connects over Wi-Fi or mobile data through the relay and receives push notifications.
 
 **Status:** early development. The design is in [`docs/superpowers/specs/2026-09-25-tjommie-design.md`](docs/superpowers/specs/2026-09-25-tjommie-design.md).
 
@@ -44,9 +44,9 @@ npm run build      # static export to packages/ui/out
 
 ## Install
 
-`npm run package` builds the Windows 0.3.1 installer, `dist-desktop\installer\Tjommie-Setup-0.3.1.exe`. It installs Tjommie for the current Windows user, without admin rights, and starts it. The installer isn't signed yet, so Windows SmartScreen asks once: choose "More info", then "Run anyway". Uninstalling keeps your bots and their data in `%LOCALAPPDATA%\Tjommie`.
+The [latest GitHub release](https://github.com/tsnyders/tjommie/releases/latest) includes the Windows installer, `Tjommie-Setup-<version>.exe`. It installs Tjommie for the current Windows user, without admin rights, and starts it. The installer isn't signed yet, so Windows SmartScreen asks once: choose "More info", then "Run anyway". Uninstalling keeps your bots and their data in `%LOCALAPPDATA%\Tjommie`.
 
-After packaging, run `npm run test:packaged`. This mandatory gate requires the unpacked executable and fails if the smoke suite is missing, skipped, empty, or failing. The build stamps `dist-desktop/provenance.json`; the gate checks source-input hashes and every installer/payload file before and after the smoke test, rejecting stale or changed builds. It verifies packaged startup, required browser-tool files, and shutdown. `npm run test:real` covers the source application and providers separately. Installation and the full installed-app demo in Phase 1E Task 16 remain separate acceptance checks.
+GitHub Actions runs the release checks and builds after a version tag is pushed. It checks the installer against `latest.yml` before publishing. The build also stamps `dist-desktop/provenance.json`. `npm run test:packaged` remains a Windows smoke check for packaged startup, browser-tool files, shutdown, and source/artifact provenance; the hosted Windows release workflow runs it after packaging with disposable data and account folders. `npm run test:real` covers the source application and providers separately. Installation and the full installed-app demo remain separate acceptance checks.
 
 After installing, set `TJOMMIE_TEST_EXECUTABLE` to the installed `Tjommie.exe` absolute path to run the existing desktop lifecycle and screen suites against that executable. They retain disposable data roots and Electron profiles and use the Tjommie-owned provider accounts. Unset it before returning to source-app tests. The mandatory packaged smoke always supplies its own unpacked executable path.
 
@@ -54,7 +54,7 @@ TypeScript must never use explicit `any` types. `npm run typecheck` enforces thi
 
 ## Accounts and usage
 
-For Android, run `npm run package:android` for a debug-signed test APK and a UI-byte/source provenance record in `dist-mobile/`. On the PC, open Settings → Devices → Pair a device, then scan or paste its code in the Android app. Pairing expires after ten minutes and works once. The PC must be awake and reachable on the same network (TCP port 47101); Windows may ask to allow the app on the private network. Every paired device has full owner authority. Revoke a lost phone from Devices. See [`packages/mobile/README.md`](packages/mobile/README.md) for signing, build requirements and current limits.
+The GitHub release also includes a release-signed Android APK. On the PC, open Settings → Devices → Pair a device, then scan or paste its code in the Android app. Pairing expires after ten minutes and works once. The PC must be awake; on the same network the phone can connect directly over TCP port 47101, and elsewhere it connects through the relay. Windows may ask to allow the app on the private network. Every paired device has full owner authority. Revoke a lost phone from Devices. See [`packages/mobile/README.md`](packages/mobile/README.md) for signing, build requirements and current limits.
 
 Settings → Accounts manages separate Claude Code and Codex accounts. Existing accounts keep their IDs and sign-in folders when upgraded. Each bot has an account pin; changing the provider's default affects new bots, while changing a bot's pin starts a fresh provider session and keeps its chat.
 
