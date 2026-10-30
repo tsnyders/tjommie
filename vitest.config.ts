@@ -6,6 +6,7 @@ import { defineConfig } from "vitest/config";
 export default defineConfig(({ mode }) => {
   const packaged = mode === "packaged";
   const real = mode === "real" || packaged;
+  const ci = process.env.CI === "true";
   return {
     // The UI's tests render React components and import "@/..." paths the way the UI does.
     oxc: { jsx: { runtime: "automatic" } },
@@ -15,10 +16,11 @@ export default defineConfig(({ mode }) => {
       // Suppress the worker-count hint while retaining Vitest's default per-file isolation.
       experimental: { diagnostics: { isolate: false } },
       setupFiles: ["./scripts/vitest-setup.ts"],
-      include: packaged ? ["packages/desktop/src/packaged.real.test.ts"] : real ? ["packages/*/src/**/*.real.test.ts", "packages/ui/visual/**/*.real.test.ts"] : ["packages/*/src/**/*.test.ts", "packages/mobile/scripts/**/*.test.ts", "packages/ui/{lib,components}/**/*.test.{ts,tsx}"],
+      include: packaged ? ["packages/desktop/src/packaged.real.test.ts"] : real ? ["packages/*/src/**/*.real.test.ts", "packages/ui/visual/**/*.real.test.ts"] : ["packages/*/src/**/*.test.ts", "packages/mobile/scripts/**/*.test.ts", "packages/ui/{lib,components}/**/*.test.{ts,tsx}", "scripts/**/*.test.ts"],
       exclude: packaged ? ["**/node_modules/**"] : real ? ["**/node_modules/**", "**/packaged.real.test.ts"] : ["**/node_modules/**", "**/*.real.test.ts"],
-      testTimeout: real ? 600_000 : 10_000,
-      hookTimeout: real ? 600_000 : 10_000,
+      maxWorkers: ci ? 2 : undefined,
+      testTimeout: real ? 600_000 : ci ? 30_000 : 10_000,
+      hookTimeout: real ? 600_000 : ci ? 30_000 : 10_000,
       fileParallelism: !real,
     },
   };

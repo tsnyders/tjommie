@@ -1,0 +1,222 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - name: Check tag and extract release notes
+        shell: bash
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          if [[ "$GITHUB_REF_NAME" != "v$version" ]]; then
+            echo "Tag $GITHUB_REF_NAME does not match package.json version $version." >&2
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "Tag $GITHUB_REF_NAME must point to a commit on main." >&2
+            exit 1
+          fi
+          node packages/mobile/scripts/apply-native.mjs --check "$version"
+          node scripts/changelog-section.ts "$version" > notes.md
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-notes
+          path: notes.md
+          if-no-files-found: error
+
+  windows:
+    needs: verify
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
+        env:
+          TJOMMIE_CI_HOSTED: '1'
+      - run: npm run package
+      - run: npm run test:packaged
+      - name: Check installer update metadata
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $name = "Tjommie-Setup-$version.exe"
+          $installer = Join-Path dist-desktop/installer $name
+          $blockmap = "$installer.blockmap"
+          $metadata = 'dist-desktop/installer/latest.yml'
+          foreach ($path in @($installer, $blockmap, $metadata)) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Missing release asset: $path" }
+          }
+          $lines = Get-Content -LiteralPath $metadata
+          if ($lines -notcontains "version: $version" -or $lines -notcontains "path: $name") {
+            throw 'latest.yml does not name this installer version.'
+          }
+          $sha512 = [Convert]::ToBase64String([Convert]::FromHexString((Get-FileHash -LiteralPath $installer -Algorithm SHA512).Hash))
+          if (@($lines | Where-Object { $_.Trim() -eq "sha512: $sha512" }).Count -eq 0) {
+            throw 'latest.yml SHA-512 does not match the installer.'
+          }
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows-assets
+          path: |
+            dist-desktop/installer/Tjommie-Setup-*.exe
+            dist-desktop/installer/Tjommie-Setup-*.exe.blockmap
+            dist-desktop/installer/latest.yml
+          if-no-files-found: error
+
+  android:
+    needs: verify
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Install Android SDK packages
+        timeout-minutes: 10
+        shell: pwsh
+        run: |
+          $sdkmanager = Join-Path $env:ANDROID_HOME 'cmdline-tools/latest/bin/sdkmanager.bat'
+          if (-not (Test-Path -LiteralPath $sdkmanager -PathType Leaf)) { throw 'Preinstalled Android sdkmanager is missing.' }
+          1..100 | ForEach-Object { 'y' } | & $sdkmanager --licenses
+          if ($LASTEXITCODE -ne 0) { throw 'Android SDK license acceptance failed.' }
+          & $sdkmanager --install 'platforms;android-36' 'build-tools;36.0.0'
+          if ($LASTEXITCODE -ne 0) { throw 'Android SDK package installation failed.' }
+      - run: npm ci
+      - name: Decode Android signing and Firebase files
+        shell: pwsh
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:ANDROID_KEYSTORE_BASE64)) { throw 'Missing ANDROID_KEYSTORE_BASE64 secret.' }
+          if ([string]::IsNullOrWhiteSpace($env:GOOGLE_SERVICES_JSON_BASE64)) { throw 'Missing GOOGLE_SERVICES_JSON_BASE64 secret.' }
+          [IO.File]::WriteAllBytes((Join-Path $env:RUNNER_TEMP 'tjommie-release.keystore'), [Convert]::FromBase64String($env:ANDROID_KEYSTORE_BASE64))
+          [IO.File]::WriteAllBytes((Join-Path $env:RUNNER_TEMP 'tjommie-google-services.json'), [Convert]::FromBase64String($env:GOOGLE_SERVICES_JSON_BASE64))
+      # The signing environment is also visible to the UI build inside package:android.
+      - name: Build signed release APK
+        shell: pwsh
+        env:
+          TJOMMIE_ANDROID_KEYSTORE: ${{ runner.temp }}\tjommie-release.keystore
+          TJOMMIE_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          TJOMMIE_ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          TJOMMIE_ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          TJOMMIE_GOOGLE_SERVICES_JSON: ${{ runner.temp }}\tjommie-google-services.json
+        run: |
+          npm run package:android -- --release
+          if ($LASTEXITCODE -ne 0) { throw 'Android release packaging failed.' }
+      - name: Check Firebase configuration in APK provenance
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $path = "dist-mobile/Tjommie-Android-$version.provenance.json"
+          if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Missing Android provenance: $path" }
+          $provenance = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+          if ($provenance.firebaseConfigSha256 -notmatch '^[0-9a-fA-F]{64}$') {
+            throw 'Android release has no Firebase configuration hash; push notifications would be unavailable.'
+          }
+      - name: Verify APK signer
+        shell: pwsh
+        env:
+          ANDROID_CERT_SHA256: ${{ vars.ANDROID_CERT_SHA256 }}
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $apk = "dist-mobile/Tjommie-Android-$version.apk"
+          if (-not (Test-Path -LiteralPath $apk -PathType Leaf)) { throw 'Release APK is missing.' }
+          $apksigner = Join-Path $env:ANDROID_HOME 'build-tools/36.0.0/apksigner.bat'
+          if (-not (Test-Path -LiteralPath $apksigner -PathType Leaf)) { throw 'apksigner is missing.' }
+          $result = & $apksigner verify --print-certs $apk 2>&1
+          if ($LASTEXITCODE -ne 0) { throw 'apksigner verification failed.' }
+          $digests = @($result | ForEach-Object {
+            if ($_ -match '^Signer #\d+ certificate SHA-256 digest:\s*([0-9a-fA-F:]+)$') { $Matches[1] }
+          })
+          if ($digests.Count -ne 1) { throw 'apksigner must report exactly one SHA-256 signer digest.' }
+          $actual = $digests[0]
+          Write-Output "::add-mask::$actual"
+          $actual = $actual -replace ':', ''
+          Write-Output "::add-mask::$actual"
+          $expected = $env:ANDROID_CERT_SHA256 -replace ':', ''
+          if ($expected -notmatch '^[0-9a-fA-F]{64}$') { throw 'ANDROID_CERT_SHA256 variable is missing or invalid.' }
+          if ($actual.ToLowerInvariant() -ne $expected.ToLowerInvariant()) { throw 'APK signer does not match ANDROID_CERT_SHA256.' }
+          Write-Output 'APK signature and signing certificate verified.'
+      - name: Remove decoded signing and Firebase files
+        if: always()
+        shell: pwsh
+        run: |
+          foreach ($path in @(
+            (Join-Path $env:RUNNER_TEMP 'tjommie-release.keystore'),
+            (Join-Path $env:RUNNER_TEMP 'tjommie-google-services.json'),
+            'packages/mobile/android/app/google-services.json'
+          )) {
+            if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force -ErrorAction Stop }
+          }
+      - uses: actions/upload-artifact@v7
+        with:
+          name: android-assets
+          path: dist-mobile/Tjommie-Android-*.apk
+          if-no-files-found: error
+
+  release:
+    needs: [windows, android]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-notes
+          path: release-notes
+      - uses: actions/download-artifact@v8
+        with:
+          name: windows-assets
+          path: release-assets
+      - uses: actions/download-artifact@v8
+        with:
+          name: android-assets
+          path: release-assets
+      - name: Publish GitHub release
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          tag="$GITHUB_REF_NAME"
+          version="${tag#v}"
+          gh release create "$tag" \
+            "release-assets/Tjommie-Setup-$version.exe" \
+            "release-assets/Tjommie-Setup-$version.exe.blockmap" \
+            release-assets/latest.yml \
+            "release-assets/Tjommie-Android-$version.apk" \
+            --title "Tjommie $version" --notes-file release-notes/notes.md \
+            --generate-notes --verify-tag

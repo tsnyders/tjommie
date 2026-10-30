@@ -1,4 +1,6 @@
+import { spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { realpathSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -141,8 +143,22 @@ describe("native browser automation", () => {
     await f.tool("browser_snapshot"); f.debuggerEvents.emit("message", {}, "Page.fileChooserOpened", { backendNodeId: 12 });
     expect((await f.tool("browser_file_upload", { paths: [denied] })).isError).toBe(true); expect(f.sendCommand.mock.calls.some(([method]) => method === "DOM.setFileInputFiles")).toBe(false);
     expect((await f.tool("browser_file_upload", { paths: [allowed] })).isError).not.toBe(true);
-    expect(f.sendCommand).toHaveBeenCalledWith("DOM.setFileInputFiles", { backendNodeId: 12, files: [allowed] });
+    expect(f.sendCommand).toHaveBeenCalledWith("DOM.setFileInputFiles", { backendNodeId: 12, files: [realpathSync.native(allowed)] });
     expect(words(await f.tool("browser_file_upload", { paths: [allowed] }))).toContain("No bot-opened");
+  });
+  it.skipIf(process.platform !== "win32")("accepts an 8.3 upload alias and sends the canonical file path", async () => {
+    const f = fixture(), root = await temporary(), file = join(root, "upload.txt");
+    f.bot.homeFolder = root;
+    await writeFile(file, "local");
+    const short = spawnSync("cmd.exe", ["/d", "/c", "for %I in (\"" + file + "\") do @echo %~sI"], { encoding: "utf8", windowsHide: true, windowsVerbatimArguments: true });
+    expect(short.status).toBe(0);
+    const alias = short.stdout.trim();
+    const canonical = realpathSync.native(file);
+    expect(alias).toMatch(/~\d/);
+    expect(realpathSync.native(alias)).toBe(canonical);
+    await f.tool("browser_snapshot"); f.debuggerEvents.emit("message", {}, "Page.fileChooserOpened", { backendNodeId: 12 });
+    expect((await f.tool("browser_file_upload", { paths: [alias] })).isError).not.toBe(true);
+    expect(f.sendCommand).toHaveBeenCalledWith("DOM.setFileInputFiles", { backendNodeId: 12, files: [canonical] });
   });
   it("retains media overrides across calls and resets null values", async () => {
     const f = fixture(); await f.tool("browser_emulate_media", { colorScheme: "dark", reducedMotion: "reduce" }); await f.tool("browser_emulate_media", { colorScheme: null });
