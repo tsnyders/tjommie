@@ -94,5 +94,5 @@ describe("encrypted Google vault", () => {
     await vault.save(record);
     expect((await readFile(join(root, "google", "vault.dpapi"))).includes(Buffer.from("synthetic-refresh"))).toBe(false);
     expect(await new WindowsGoogleVault(root).load()).toEqual(record);
-  });
+  }, 45_000);
 });

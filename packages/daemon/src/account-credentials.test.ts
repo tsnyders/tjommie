@@ -31,7 +31,8 @@ describe("account credentials", () => {
     const invalid = new WindowsAccountCredentials(tempRoot(), async () => "has a space");
     await expect(invalid.read("a")).rejects.toThrow("Windows Credential Manager");
   });
-  it.skipIf(process.platform !== "win32")("round trips only a fresh synthetic Windows credential and deletes it", async () => {
+  // Hosted Windows service logons cannot reliably reach Credential Manager; local Windows still runs this round trip.
+  it.skipIf(process.platform !== "win32" || process.env.TJOMMIE_CI_HOSTED === "1")("round trips only a fresh synthetic Windows credential and deletes it", async () => {
     const credentials = new WindowsAccountCredentials(tempRoot());
     const id = `synthetic-test-${randomUUID()}`;
     const key = `synthetic-${randomUUID()}-é`;

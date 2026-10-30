@@ -83,7 +83,7 @@ it("defers a Windows file lock without retries and surfaces unexpected removal e
     await mkdir(join(root, hash));
     vi.mocked(rm).mockRejectedValueOnce(Object.assign(new Error("locked"), { code: "EBUSY" }));
     expect(await removeNativeProfile(root, hash)).toBe(false);
-    expect(rm).toHaveBeenLastCalledWith(join(root, hash), { recursive: true, force: true, maxRetries: 0 });
+    expect(rm).toHaveBeenLastCalledWith(await realpath(join(root, hash)), { recursive: true, force: true, maxRetries: 0 });
     vi.mocked(rm).mockRejectedValueOnce(Object.assign(new Error("I/O failure"), { code: "EIO" }));
     await expect(removeNativeProfile(root, hash)).rejects.toThrow("I/O failure");
   } finally { await rm(root, { recursive: true, force: true }); }

@@ -56,6 +56,8 @@ jobs:
       - run: npm run typecheck
       - run: npm run lint
       - run: npm test
+        env:
+          TJOMMIE_CI_HOSTED: '1'
       - run: npm run package
       - run: npm run test:packaged
       - name: Check installer update metadata

@@ -26,3 +26,5 @@ jobs:
       - run: npm run typecheck
       - run: npm run lint
       - run: npm test
+        env:
+          TJOMMIE_CI_HOSTED: '1'
