@@ -89,10 +89,11 @@ describe("encrypted Google vault", () => {
     expect(payload).toEqual({ mode: "protect", data: Buffer.from("synthetic-secret").toString("base64") });
     expect(args.join(" ")).toContain("DataProtectionScope]::CurrentUser");
   });
-  it.runIf(process.platform === "win32")("round-trips disposable synthetic data through real Windows DPAPI", async () => {
+  // Hosted Windows service logons cannot access DPAPI; local Windows still runs this round trip.
+  it.skipIf(process.platform !== "win32" || process.env.TJOMMIE_CI_HOSTED === "1")("round-trips disposable synthetic data through real Windows DPAPI", async () => {
     const root = await directory(), vault = new WindowsGoogleVault(root);
     await vault.save(record);
     expect((await readFile(join(root, "google", "vault.dpapi"))).includes(Buffer.from("synthetic-refresh"))).toBe(false);
     expect(await new WindowsGoogleVault(root).load()).toEqual(record);
-  }, 45_000);
+  });
 });
