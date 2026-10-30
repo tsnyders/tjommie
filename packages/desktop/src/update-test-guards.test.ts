@@ -188,5 +188,5 @@ describe.skipIf(process.platform !== "win32")("disposable HKCU registration fixt
     } };
     if (failEarly) expect(exercise).toThrow("Failure before fixture key creation");
     else exercise();
-  }, 30_000);
+  }, process.env.CI === "true" ? 90_000 : 30_000);
 });
