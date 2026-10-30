@@ -1,5 +1,9 @@
 package dev.tjommie.app;
 
+import android.content.Context;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
 import android.util.Base64;
 import android.webkit.WebView;
 import com.getcapacitor.JSObject;
@@ -16,6 +20,7 @@ import java.net.InetSocketAddress;
 import java.net.ProtocolException;
 import java.net.Socket;
 import java.util.Map;
+import java.util.Objects;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.UUID;
@@ -43,6 +48,10 @@ public class TjommieSocketPlugin extends Plugin {
   private long pageGeneration;
   private boolean destroyed;
   private WebViewListener pageListener;
+  private ConnectivityManager connectivity;
+  private Network activeNetwork;
+  private String activeType;
+  private ConnectivityManager.NetworkCallback networkCallback;
 
   @Override
   public void load() {
@@ -50,6 +59,35 @@ public class TjommieSocketPlugin extends Plugin {
       @Override
       public void onPageStarted(WebView web) { closePage(); }
     };
+    connectivity = (ConnectivityManager) getContext().getSystemService(Context.CONNECTIVITY_SERVICE);
+    activeNetwork = connectivity.getActiveNetwork();
+    activeType = networkType(activeNetwork);
+    networkCallback = new ConnectivityManager.NetworkCallback() {
+      @Override public void onAvailable(Network network) { emitNetworkChange(); }
+      @Override public void onLost(Network network) { emitNetworkChange(); }
+      @Override public void onCapabilitiesChanged(Network network, NetworkCapabilities capabilities) { emitNetworkChange(); }
+    };
+    connectivity.registerDefaultNetworkCallback(networkCallback);
+  }
+
+  private String networkType(Network network) {
+    NetworkCapabilities capabilities = network == null ? null : connectivity.getNetworkCapabilities(network);
+    return NetworkType.from(capabilities != null,
+      capabilities != null && capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI),
+      capabilities != null && capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR));
+  }
+
+  private void emitNetworkChange() {
+    getActivity().runOnUiThread(() -> {
+      Network network = connectivity.getActiveNetwork();
+      String type = networkType(network);
+      if (destroyed || (Objects.equals(network, activeNetwork) && type.equals(activeType))) return;
+      activeNetwork = network;
+      activeType = type;
+      JSObject event = new JSObject();
+      event.put("type", type);
+      notifyListeners("network", event);
+    });
   }
 
   @Override
@@ -251,6 +289,7 @@ public class TjommieSocketPlugin extends Plugin {
   @Override
   protected void handleOnDestroy() {
     synchronized (lifecycle) { destroyed = true; }
+    if (networkCallback != null) connectivity.unregisterNetworkCallback(networkCallback);
     if (pageListener != null) getBridge().removeWebViewListener(pageListener);
     closePage();
     connecting.shutdownNow();

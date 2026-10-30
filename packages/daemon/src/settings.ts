@@ -1,8 +1,8 @@
-import { Settings } from "@tjommie/protocol";
+import { DEFAULT_RELAY_URL, Settings } from "@tjommie/protocol";
 import { transaction, type Db } from "./db.ts";
 import { RpcError } from "./server.ts";
 
-const DEFAULTS: Settings = { chainLimit: 5 };
+const DEFAULTS: Settings = { chainLimit: 5, relayUrl: DEFAULT_RELAY_URL };
 
 export function getSettings(db: Db): Settings {
   const rows = db.prepare("SELECT key, value FROM settings").all() as { key: string; value: string }[];
@@ -22,7 +22,7 @@ export function setSettings(db: Db, patch: Partial<Settings>): Settings {
   const parsed = Settings.safeParse({ ...getSettings(db), ...patch });
   if (!parsed.success) throw new RpcError("bad_params", "Invalid settings");
   transaction(db, () => {
-    for (const [key, value] of Object.entries(parsed.data)) {
+    for (const [key, value] of Object.entries(parsed.data).filter(([key]) => Object.hasOwn(patch, key))) {
       db.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(key, JSON.stringify(value));
     }
   });

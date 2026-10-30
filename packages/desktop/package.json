@@ -1,7 +1,7 @@
 {
   "name": "@tjommie/desktop",
   "productName": "Tjommie",
-  "version": "0.1.0",
+  "version": "0.3.1",
   "private": true,
   "type": "module",
   "main": "src/main.ts",
@@ -9,7 +9,8 @@
     "start": "electron ."
   },
   "dependencies": {
-    "@tjommie/client": "*"
+    "@tjommie/client": "*",
+    "electron-updater": "^6.8.11"
   },
   "devDependencies": {
     "electron": "^44.4.5"

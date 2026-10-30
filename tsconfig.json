@@ -11,5 +11,5 @@
     "erasableSyntaxOnly": true,
     "skipLibCheck": true
   },
-  "include": ["scripts", "packages/protocol/src", "packages/client/src", "packages/daemon/src", "packages/daemon/scripts", "packages/desktop/src", "packages/desktop/scripts"]
+  "include": ["scripts", "packages/protocol/src", "packages/client/src", "packages/daemon/src", "packages/daemon/scripts", "packages/desktop/src", "packages/desktop/scripts", "packages/mobile/scripts"]
 }

@@ -1,4 +1,5 @@
 import type { BrowserState, GoogleService, NativeBrowserBounds, NativeBrowserMount, NativeBrowserUiCommand } from "@tjommie/protocol";
+import type { WireEndpoint } from "../../client/src/frame-socket.ts";
 // The native browser (WebContentsView). The page is drawn and takes input in the desktop app itself, not in the renderer: the
 // renderer only says where it goes (mount) and what the user did with the controls. Every call is for one bot's browser, whose
 // context (cookies, tabs, sign-ins) lives on in the main process while the panel is hidden. The state is the protocol's
@@ -17,9 +18,31 @@ export type NativeBrowserApi = {
 export type DesktopConnection = { port: number; token: string };
 export type ConnectionResult = ({ ok: true } & DesktopConnection) | { ok: false; error: string };
 
+// Wires to another PC, opened by the desktop app's main process (the renderer's CSP allows only the local daemon), each carrying one Noise
+// frame per message; closed reports the relay's WebSocket close code when there is one. The key store seals this PC's device identities.
+export type DesktopRemote = {
+  open(endpoint: WireEndpoint, timeoutMs: number): Promise<{ id: string }>;
+  send(id: string, frame: Uint8Array): Promise<void>;
+  close(id: string): void;
+  onFrame(listener: (id: string, frame: Uint8Array) => void): () => void;
+  onClosed(listener: (id: string, code?: number) => void): () => void;
+  seal(name: string, value: Uint8Array): Promise<void>;
+  read(name: string): Promise<Uint8Array | null>;
+  delete(name: string): Promise<void>;
+};
+export type UpdateState =
+  | { status: "idle" | "checking" | "none" }
+  | { status: "downloading"; percent: number }
+  | { status: "ready"; version: string }
+  | { status: "error"; message: string }
+  | { status: "unsupported" };
+
 // The bridge the desktop app's preload script exposes (packages/desktop/src/preload.cjs).
 export type DesktopApi = {
   connection(): Promise<ConnectionResult>;
+  remote: DesktopRemote;
+  loginItem: { get(): Promise<boolean>; set(on: boolean): Promise<void> };
+  updates: { state(): Promise<UpdateState>; onState(listener: (state: UpdateState) => void): () => void; check(): Promise<void>; restart(): void };
   restartDaemon(): Promise<void>;
   nativeBrowser: NativeBrowserApi;
   connectGoogle(services: GoogleService[]): Promise<{ attempt: string }>;

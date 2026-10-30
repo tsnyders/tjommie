@@ -3,21 +3,36 @@
 import { execSync } from "node:child_process";
 import { cpSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import builder from "electron-builder";
 import { rolldown } from "rolldown";
 import { buildInputHash, writePackagedProvenance } from "./packaged-provenance.ts";
 import { prepareUiAssets } from "../../../scripts/prepare-ui.ts";
+import { assertTestDefines, assertTestInstallDir, assertTestInstaller, testIdentity, testNsisInclude } from "./update-test-guards.ts";
 
 const repo = resolve(import.meta.dirname, "..", "..", "..");
+const require = createRequire(import.meta.url);
+const testAppId = process.env.TJOMMIE_PACKAGE_APP_ID;
+const testProduct = process.env.TJOMMIE_PACKAGE_PRODUCT;
+const testDataRoot = process.env.TJOMMIE_PACKAGE_TEST_ROOT;
+if ((testAppId || testProduct || testDataRoot || process.env.TJOMMIE_PACKAGE_VERSION) &&
+  (testAppId !== testIdentity.appId || testProduct !== testIdentity.product)) {
+  throw new Error("Update test packaging requires the isolated app identity.");
+}
+if (testAppId && (!testDataRoot || dirname(resolve(testDataRoot)) !== resolve(tmpdir()))) {
+  throw new Error("Update test packaging requires a disposable data root.");
+}
+if (testDataRoot) assertTestInstallDir(join(testDataRoot, testIdentity.product));
 prepareUiAssets(repo);
 const inputsSha256 = buildInputHash(repo);
 const desktop = join(repo, "packages", "desktop");
-const out = join(repo, "dist-desktop");
+const out = testDataRoot ? join(testDataRoot, "dist-desktop") : join(repo, "dist-desktop");
 const app = join(out, "app"); // what goes into app.asar: the main process and the preload
 const resources = join(out, "resources"); // plain files beside app.asar: the daemon, the UI and the icons
-const require = createRequire(import.meta.url);
-const version = (require(join(repo, "package.json")) as { version: string }).version;
+const appId = testAppId ?? "com.tsnyders.tjommie";
+const productName = testProduct ?? "Tjommie";
+const version = process.env.TJOMMIE_PACKAGE_VERSION ?? (require(join(repo, "package.json")) as { version: string }).version;
 const electronVersion = (require("electron/package.json") as { version: string }).version;
 
 // Node refuses to strip types under node_modules, so the installed app runs bundles, not the .ts sources.
@@ -42,13 +57,13 @@ function copyPlaywrightMcp(target: string): void {
 }
 
 rmSync(out, { recursive: true, force: true });
-execSync("npm run build", { cwd: repo, stdio: "inherit" }); // the static export
+execSync("npm run build", { cwd: repo, stdio: "inherit", windowsHide: true }); // the static export
 
 await bundle(join(desktop, "src", "main.ts"), join(app, "src"), ["electron"]);
 cpSync(join(desktop, "src", "preload.cjs"), join(app, "src", "preload.cjs"));
 writeFileSync(
   join(app, "package.json"),
-  JSON.stringify({ name: "tjommie", productName: "Tjommie", version, description: "AI bots on your own PC", author: "TSnyders", license: "Apache-2.0", type: "module", main: "src/main.mjs" }, null, 2),
+  JSON.stringify({ name: testAppId ? testIdentity.packageName : "tjommie", appId, productName, version, ...(testDataRoot ? { testDataRoot } : {}), description: "AI bots on your own PC", author: "TSnyders", license: "Apache-2.0", type: "module", main: "src/main.mjs" }, null, 2),
 );
 
 // ws's optional native helpers stay out; ws uses its own JavaScript without them.
@@ -58,11 +73,22 @@ cpSync(join(repo, "packages", "transport", "wasm", "tjommie_noise_bg.wasm"), joi
 cpSync(join(repo, "packages", "ui", "out"), join(resources, "ui"), { recursive: true });
 cpSync(join(desktop, "assets"), join(resources, "assets"), { recursive: true });
 
+const testInclude = testDataRoot ? join(out, "update-test-guard.nsh") : undefined;
+if (testInclude && testDataRoot) writeFileSync(testInclude, testNsisInclude(join(testDataRoot, testIdentity.product)));
+let testIdentityChecked = false;
+
 await builder.build({
   targets: builder.Platform.WINDOWS.createTarget("nsis", builder.Arch.x64),
+  publish: "never",
+  ...(testAppId ? { effectiveOptionComputed: async (options: unknown): Promise<boolean> => {
+    assertTestDefines(options);
+    testIdentityChecked = true;
+    return false;
+  } } : {}),
   config: {
-    appId: "com.tsnyders.tjommie",
-    productName: "Tjommie",
+    appId,
+    productName,
+    artifactName: "Tjommie-Setup-${version}.${ext}",
     electronVersion,
     directories: { app, output: join(out, "installer") },
     extraResources: [{ from: resources, to: ".", filter: ["**/*"] }],
@@ -70,10 +96,13 @@ await builder.build({
     npmRebuild: false,
     win: { target: "nsis", icon: join(desktop, "assets", "icon-256.png") },
     // One click, for this Windows user only, no admin. Uninstalling keeps %LOCALAPPDATA%\Tjommie and the bots.
-    nsis: { oneClick: true, perMachine: false, deleteAppDataOnUninstall: false },
-    publish: null,
+    nsis: { oneClick: true, perMachine: false, deleteAppDataOnUninstall: false, ...(testInclude ? { include: testInclude } : {}) },
+    publish: [{ provider: "github", owner: "tsnyders", repo: "tjommie" }],
   },
 });
 
+if (testAppId && !testIdentityChecked) throw new Error("Update-test NSIS identity gate did not run.");
+if (testDataRoot) assertTestInstaller(join(out, "installer", `Tjommie-Setup-${version}.exe`), join(testDataRoot, testIdentity.product));
+
 // A successful build is verifiable only for these exact inputs and all installer/payload bytes.
-writePackagedProvenance(repo, inputsSha256);
+if (!testAppId) writePackagedProvenance(repo, inputsSha256);

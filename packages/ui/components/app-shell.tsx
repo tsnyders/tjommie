@@ -2,11 +2,13 @@
 
 import { Suspense, useEffect, useSyncExternalStore, type ReactNode } from "react";
 import { usePathname, useRouter } from "next/navigation";
-import { Loader } from "lucide-react";
-import { startConnection } from "@/lib/connection";
+import { Loader, MonitorOff } from "lucide-react";
+import { routePush, startConnection } from "@/lib/connection";
 import { desktop } from "@/lib/desktop";
-import { isAndroidApp } from "@/lib/mobile";
 import { showsTabBar } from "@/lib/phone-nav";
+import { onPushTap } from "@/lib/push";
+import { isAndroidApp } from "@/lib/remote-hosts";
+import type { Connection } from "@/lib/state";
 import { useApp } from "@/lib/store";
 import { followTheme } from "@/lib/theme";
 import { useKeyboardVisible } from "@/lib/use-keyboard";
@@ -33,21 +35,28 @@ export function AppShell({ children }: { children: ReactNode }) {
   useEffect(() => startConnection(), []);
   useEffect(() => followTheme(), []);
   useEffect(() => desktop()?.onNavigate((path) => router.push(path)), [router]);
+  useEffect(() => onPushTap((data) => { const route = routePush(data); if (route) router.push(route); }), [router]);
   return (
     <div data-nav={nav || undefined} className={cn("flex h-dvh max-sm:flex-col", android && "android-app")}>
       <Suspense fallback={<div className="w-[88px] shrink-0 border-r border-rail-edge bg-rail max-sm:hidden" />}>
         <Rail />
       </Suspense>
       <main className="relative flex min-h-0 min-w-0 flex-1 flex-col">
-        {connection.status === "ready" || connection.status === "reconnecting" ? children : <ConnectionScreen connection={connection} />}
-        {connection.status === "reconnecting" && (
-          <div role="status" className="absolute left-1/2 top-14 z-10 flex -translate-x-1/2 items-center gap-2 rounded-full bg-popover px-3 py-1.5 text-[12px] text-secondary">
-            <Loader className="size-3.5 animate-spin" aria-hidden />
-            Reconnecting to Tjommie
-          </div>
-        )}
+        {connection.status === "ready" || connection.status === "reconnecting" || connection.status === "offline" ? children : <ConnectionScreen connection={connection} />}
+        <StatusPill connection={connection} />
       </main>
       <TabBar />
+    </div>
+  );
+}
+
+// Over the cached screens while the link is down: they stay usable under it, so it takes no clicks.
+export function StatusPill({ connection }: { connection: Connection }) {
+  if (connection.status !== "reconnecting" && connection.status !== "offline") return null;
+  return (
+    <div role="status" className="pointer-events-none absolute left-1/2 top-14 z-10 flex -translate-x-1/2 items-center gap-2 rounded-full bg-popover px-3 py-1.5 text-[12px] text-secondary">
+      {connection.status === "reconnecting" ? <Loader className="size-3.5 animate-spin" aria-hidden /> : <MonitorOff className="size-3.5" aria-hidden />}
+      {connection.status === "reconnecting" ? "Reconnecting…" : connection.reason === "host_offline" ? "Your PC is offline" : "Can't reach your PC"}
     </div>
   );
 }

@@ -1,6 +1,6 @@
 {
   "name": "tjommie",
-  "version": "0.1.0",
+  "version": "0.3.1",
   "private": true,
   "type": "module",
   "license": "Apache-2.0",
@@ -18,7 +18,7 @@
     "package:android": "node packages/mobile/scripts/package.ts",
     "lint": "npm run lint -w @tjommie/ui",
     "check:no-any": "node scripts/check-no-any.ts",
-    "typecheck": "npm run check:no-any && tsc -p . && npm run typecheck -w @tjommie/ui",
+    "typecheck": "npm run check:no-any && tsc -p . && npm run typecheck -w @tjommie/ui && npm run typecheck -w @tjommie/transport && npm run typecheck -w @tjommie/mobile && npm run typecheck -w @tjommie/relay",
     "test": "vitest run",
     "test:real": "npm run build && vitest run --mode real",
     "test:packaged": "node --disable-warning=ExperimentalWarning packages/desktop/scripts/verify-packaged.ts"

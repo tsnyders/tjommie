@@ -1,6 +1,6 @@
 {
   "name": "@tjommie/ui",
-  "version": "0.1.0",
+  "version": "0.3.1",
   "private": true,
   "scripts": {
     "dev": "next dev",
@@ -12,9 +12,9 @@
     "@base-ui/react": "^1.8.0",
     "@capacitor/core": "^8.5.3",
     "@tjommie/client": "*",
-    "@tjommie/mobile": "^0.1.0",
+    "@tjommie/mobile": "*",
     "@tjommie/protocol": "*",
-    "@tjommie/transport": "^0.1.0",
+    "@tjommie/transport": "*",
     "cn": "^0.4.0",
     "lucide-react": "^1.48.0",
     "next": "16.3.8",
@@ -22,7 +22,8 @@
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "react-markdown": "^10.1.0",
-    "remark-gfm": "^4.0.1"
+    "remark-gfm": "^4.0.1",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
@@ -31,6 +32,7 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.3.8",
+    "happy-dom": "^21.0.4",
     "tailwindcss": "^4",
     "typescript": "^5"
   }

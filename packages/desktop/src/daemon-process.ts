@@ -14,6 +14,7 @@ export type RunningDaemon = {
   pid: number | undefined;
   exited: Promise<{ code: number | null }>;
   stop: () => Promise<void>;
+  forceStop: () => Promise<void>;
 };
 
 const LISTENING = /Tjommie daemon listening on http:\/\/127\.0\.0\.1:(\d+)/;
@@ -38,6 +39,29 @@ export function daemonEnv(base: NodeJS.ProcessEnv, testAccountsDir?: string): No
   return env;
 }
 
+export function daemonLaunchEnv(base: NodeJS.ProcessEnv, dataRoot: string, testRoot = false): NodeJS.ProcessEnv {
+  return { ...base, TJOMMIE_HOME: dataRoot, ...(testRoot ? { TJOMMIE_PORT: "0" } : {}) };
+}
+
+export async function stopWithin(stop: Promise<void>, timeoutMs: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([stop, new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error("Tjommie's background service did not stop in time.")), timeoutMs);
+    })]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function stopDaemonBeforeQuit(
+  running: Pick<RunningDaemon, "stop" | "forceStop">,
+  timeoutMs: number,
+): Promise<"graceful" | "forced"> {
+  try { await stopWithin(running.stop(), timeoutMs); return "graceful"; }
+  catch { await stopWithin(running.forceStop(), 10_000); return "forced"; }
+}
+
 const lastLine = (value: string): string => value.trim().split(/\r?\n/).at(-1) ?? "";
 
 // Stdin stays open after the token line so the daemon stops when its parent quits or crashes.
@@ -55,6 +79,8 @@ export function startDaemonProcess(
   });
   let stdout = "";
   let stderr = "";
+  // A descendant can hold the pipes open after the daemon process has exited.
+  const processExited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
   const exited = new Promise<{ code: number | null }>((resolve) => child.once("close", (code) => resolve({ code })));
   child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
     onOutput(chunk);
@@ -93,6 +119,7 @@ export function startDaemonProcess(
       clearTimeout(timer);
     }
   };
+  const forceStop = async (): Promise<void> => { killTree(); await processExited; };
 
   return new Promise<RunningDaemon>((resolve, reject) => {
     let settled = false;
@@ -111,7 +138,7 @@ export function startDaemonProcess(
       if (port === null) return;
       settled = true;
       clearTimeout(timer);
-      resolve({ connection: { port, token }, desktopHostToken, pid: child.pid, exited, stop });
+      resolve({ connection: { port, token }, desktopHostToken, pid: child.pid, exited, stop, forceStop });
     });
     void exited.then(({ code }) => fail(new Error(lastLine(stderr) || `Tjommie's background service stopped (exit code ${code}).`)));
   });

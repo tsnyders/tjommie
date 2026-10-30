@@ -5,7 +5,7 @@ import { countdown, pairingProblem, pairingReady } from "./pairing";
 const NOW = Date.parse("2026-10-22T10:00:00.000Z");
 const key = "A".repeat(43);
 const code = (expires: string): string =>
-  encodePairingCode({ v: 1, relay: null, pairingId: "11111111-1111-4111-8111-111111111111", hostId: "22222222-2222-4222-8222-222222222222", hostName: "Home PC", hostKey: key, secret: key, lan: [{ host: "192.168.1.20", port: 4310 }], expires });
+  encodePairingCode({ v: 2, relay: null, pairingId: "11111111-1111-4111-8111-111111111111", hostId: "22222222-2222-4222-8222-222222222222", hostName: "Home PC", hostKey: key, secret: key, lan: [{ host: "192.168.1.20", port: 4310 }], expires });
 
 describe("pairingProblem", () => {
   it("accepts a good code, in a link or alone, and says nothing for an empty box", () => {

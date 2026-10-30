@@ -349,7 +349,7 @@ Neither CLI knows the other exists. Each only sees plain text through the daemon
   - If the PC was off or asleep, or the app was closed, the run is marked "Missed". Missed runs don't all fire at once later.
 - **History.** The last 20 runs per routine, each Done, Stopped, Failed, Missed or Skipped.
 - **Suggestions.** The New bot screen offers built-in templates (the three in WF3) that pre-fill the name, avatar, instructions and suggested routines.
-- **Notifications.** Desktop now, phone push from Phase 3. Sent only when a bot is waiting for you, a routine failed, an account hit its limit, or (Phase 2) an API key reached 80% of its cap.
+- **Notifications.** Desktop now, phone push from Phase 3. Sent when a bot is waiting for you, when a piece of work you started is done (once for your message, a room post or a routine), or when a bot runs into a problem. A routine stopped at its time limit counts as a failure. Also sent when a routine fails, an account hits its limit, or (Phase 2) an API key reaches 80% of its cap.
 
 ## 8. Accounts, limits, usage and cost (Phase 2)
 
@@ -420,7 +420,9 @@ Neither CLI knows the other exists. Each only sees plain text through the daemon
 7. **Same Wi-Fi.** The host also listens on the local network (Windows Firewall asks once). Devices try the LAN addresses from the pairing code first, give each one second, then use the relay. The encryption is the same either way.
 8. **Android app.** Capacitor wrapping the same UI, with a native barcode scanner, push (Firebase Cloud Messaging) and secure key storage. Ship the APK on GitHub Releases first; the Play Store comes later.
 9. **Push.**
-   - **How tokens travel.** The device registers its push token with the host over the encrypted connection. The host asks the relay to deliver "A bot needs you" to that token. The relay holds our Firebase credentials but no device tokens.
+   - **How tokens travel.** The device registers its push token and three switches with the host over the encrypted connection. All switches start on: "A bot needs you" (approval and limit), "A bot is done" (done) and "Something failed" (failed and routine failure). They are stored on the PC per device, which filters before pushing. The relay holds our Firebase credentials but no device tokens.
+   - **Relay text.** The relay sends fixed text for each kind: "A bot needs you", "An account hit its limit", "A routine failed", "A bot finished" or "A bot ran into a problem".
+   - **Hourly limit.** Approval pushes are exempt from the hourly push limit.
    - **What a push contains.** No bot content. Tapping it opens the app, which loads the details over the encrypted connection.
 10. **Other PCs.** The desktop app switches between hosts ("This PC", "Home desktop") from the menu at the bottom of the rail.
 

@@ -72,7 +72,7 @@ function artifactHashes(repo: string): Artifact[] {
   }
   entries.sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
   if (!entries.some(([path]) => path === packagedExecutable)) throw new Error(`Packaged executable is missing. ${rebuild}`);
-  const installers = entries.filter(([path]) => /^dist-desktop\/installer\/Tjommie Setup [^/]+\.exe$/.test(path));
+  const installers = entries.filter(([path]) => /^dist-desktop\/installer\/Tjommie-Setup-[^/]+\.exe$/.test(path));
   if (installers.length !== 1) throw new Error(`Exactly one packaged NSIS installer is required. ${rebuild}`);
   return entries;
 }

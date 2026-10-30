@@ -2,7 +2,7 @@ import type { ClientEvent } from "@tjommie/client";
 import { TEAM_ROOM_ID, type AccountInfo, type Bot, type Message, type Room, type Routine, type RoutineRun } from "@tjommie/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { loadConversation } from "./connection";
-import { addOlder, applyEvent, connected, finishLoading, initialState, roomBots, startLoading, type AppState } from "./state";
+import { LINK, addOlder, applyEvent, catchUp, connected, finishLoading, initialState, roomBots, startLoading, type AppState, type MessageEvent } from "./state";
 import { getState, update } from "./store";
 
 const bot = (id: string, createdAt: string): Bot => ({
@@ -55,25 +55,30 @@ const run = (id: string, routineId: string, status: RoutineRun["status"]): Clien
 });
 const everyone = (botIds: string[]): Room => ({ id: TEAM_ROOM_ID, name: "Everyone", botIds, everyone: true, createdAt: null });
 const room = (id: string, botIds: string[], createdAt: string): Room => ({ id, name: id, botIds, everyone: false, createdAt });
-const added = (data: Message): ClientEvent => ({ type: "event", event: "message.added", data });
-const updated = (data: Message): ClientEvent => ({ type: "event", event: "message.updated", data });
-const delta = (id: string, text: string): ClientEvent => ({ type: "event", event: "message.delta", data: { id, conversationId: "b1", delta: text } });
+const added = (data: Message): MessageEvent => ({ type: "event", event: "message.added", data });
+const updated = (data: Message): MessageEvent => ({ type: "event", event: "message.updated", data });
+const delta = (id: string, text: string): MessageEvent => ({ type: "event", event: "message.delta", data: { id, conversationId: "b1", delta: text } });
 const ready = (messages: Message[]): AppState => finishLoading(startLoading(initialState, "b1"), "b1", { messages, hasMore: false });
+
+it("freezes the reconnect timing contract", () => {
+  expect(LINK).toEqual({ pingForegroundMs: 20_000, pingBackgroundMs: 60_000, pongTimeoutMs: 10_000,
+    lanWindowMs: 1_000, backoffMs: [0, 1_000, 2_000, 5_000, 10_000] });
+});
 
 describe("app state", () => {
   it("holds the accounts: unknown until listed, replaced whole by each change, and listed again on a new connection", () => {
     const list = [{ id: "a1", label: "Claude (Personal)" }] as AccountInfo[];
     expect(initialState.accounts).toBeNull();
-    let state = connected(initialState, { bots: [], settings: { chainLimit: 5 }, routines: [], rooms: [], accounts: list });
+    let state = connected(initialState, { bots: [], settings: { chainLimit: 5, relayUrl: null }, routines: [], rooms: [], accounts: list });
     expect(state.accounts).toBe(list);
     const next = [{ id: "a2", label: "Work" }] as AccountInfo[];
     state = applyEvent(state, { type: "event", event: "accounts.changed", data: next });
     expect(state.accounts).toBe(next);
-    expect(connected(state, { bots: [], settings: { chainLimit: 5 }, routines: [], rooms: [] }).accounts).toBeNull(); // an older daemon has none
+    expect(connected(state, { bots: [], settings: { chainLimit: 5, relayUrl: null }, routines: [], rooms: [] }).accounts).toBeNull(); // an older daemon has none
   });
 
   it("keeps bots in creation order and forgets a deleted bot's chat and routines", () => {
-    let state = connected(initialState, { bots: [bot("b2", "2026-09-27T10:00:00.000Z"), bot("b1", "2026-09-27T09:00:00.000Z")], settings: { chainLimit: 5 }, routines: [routine("r1", "b1")], rooms: [] });
+    let state = connected(initialState, { bots: [bot("b2", "2026-09-27T10:00:00.000Z"), bot("b1", "2026-09-27T09:00:00.000Z")], settings: { chainLimit: 5, relayUrl: null }, routines: [routine("r1", "b1")], rooms: [] });
     expect(state.bots.map((b) => b.id)).toEqual(["b1", "b2"]);
     state = applyEvent(state, { type: "event", event: "bot.updated", data: { ...bot("b1", "2026-09-27T09:00:00.000Z"), state: "working" } });
     expect(state.bots[0].state).toBe("working");
@@ -86,7 +91,7 @@ describe("app state", () => {
 
   it("keeps Everyone first and the other rooms oldest first, updates and removes them, and lists them again on a new connection", () => {
     const growth = room("r2", ["b1"], "2026-10-25T10:00:00.000Z");
-    let state = connected(initialState, { bots: [], settings: { chainLimit: 5 }, routines: [], rooms: [growth, everyone(["b1"])] });
+    let state = connected(initialState, { bots: [], settings: { chainLimit: 5, relayUrl: null }, routines: [], rooms: [growth, everyone(["b1"])] });
     expect(state.rooms.map((each) => each.id)).toEqual([TEAM_ROOM_ID, "r2"]);
     state = applyEvent(state, { type: "event", event: "room.updated", data: room("r1", ["b1"], "2026-10-25T09:00:00.000Z") });
     state = applyEvent(state, { type: "event", event: "room.updated", data: { ...growth, name: "Growth" } });
@@ -95,19 +100,19 @@ describe("app state", () => {
     state = applyEvent(state, { type: "event", event: "room.deleted", data: { id: "r1" } });
     expect(state.rooms.map((each) => each.id)).toEqual([TEAM_ROOM_ID, "r2"]);
     expect(state.conversations.r1).toBeUndefined();
-    expect(connected(state, { bots: [], settings: { chainLimit: 5 }, routines: [], rooms: [everyone([])] }).rooms.map((each) => each.id)).toEqual([TEAM_ROOM_ID]);
+    expect(connected(state, { bots: [], settings: { chainLimit: 5, relayUrl: null }, routines: [], rooms: [everyone([])] }).rooms.map((each) => each.id)).toEqual([TEAM_ROOM_ID]);
   });
 
   it("takes a deleted bot out of every room", () => {
     const bots = [bot("b1", "2026-09-27T09:00:00.000Z"), bot("b2", "2026-09-27T10:00:00.000Z")];
     const rooms = [everyone(["b1", "b2"]), room("r1", ["b1", "b2"], "2026-10-25T09:00:00.000Z"), room("r2", ["b2"], "2026-10-25T10:00:00.000Z")];
-    let state = connected(initialState, { bots, settings: { chainLimit: 5 }, routines: [], rooms });
+    let state = connected(initialState, { bots, settings: { chainLimit: 5, relayUrl: null }, routines: [], rooms });
     state = applyEvent(state, { type: "event", event: "bot.deleted", data: { id: "b1" } });
     expect(state.rooms.map((each) => each.botIds)).toEqual([["b2"], ["b2"], ["b2"]]);
   });
 
   it("has every bot in Everyone, even one made after the rooms were listed, and only its members in another room", () => {
-    let state = connected(initialState, { bots: [bot("b1", "2026-09-27T09:00:00.000Z")], settings: { chainLimit: 5 }, routines: [], rooms: [everyone(["b1"]), room("r1", ["b1"], "2026-10-25T09:00:00.000Z")] });
+    let state = connected(initialState, { bots: [bot("b1", "2026-09-27T09:00:00.000Z")], settings: { chainLimit: 5, relayUrl: null }, routines: [], rooms: [everyone(["b1"]), room("r1", ["b1"], "2026-10-25T09:00:00.000Z")] });
     // The new bot comes with no room.updated: the daemon sends those for the other rooms only.
     state = applyEvent(state, { type: "event", event: "bot.updated", data: bot("b2", "2026-09-27T10:00:00.000Z") });
     const [all, growth] = state.rooms;
@@ -147,13 +152,27 @@ describe("app state", () => {
     expect(state.conversations.b1.hasMore).toBe(true);
   });
 
-  it("adds older pages above without duplicates, and starts over on a new connection", () => {
+  it("adds older pages above without duplicates", () => {
     let state = ready([message("m3"), message("m4")]);
     state = addOlder(state, "b1", { messages: [message("m1"), message("m2"), message("m3")], hasMore: false });
     expect(state.conversations.b1.messages.map((m) => m.id)).toEqual(["m1", "m2", "m3", "m4"]);
-    state = connected(state, { bots: [], settings: { chainLimit: 5 }, routines: [], rooms: [] });
-    expect(state.conversations).toEqual({});
+  });
+
+  it("keeps loaded chats on a new connection, so nothing blanks, and forgets ones still loading so their screens load them again", () => {
+    let state = startLoading(ready([message("m1"), message("m2")]), "b2");
+    state = { ...state, connection: { status: "reconnecting" } };
+    state = connected(state, { bots: [], settings: { chainLimit: 5, relayUrl: null }, routines: [], rooms: [] });
     expect(state.connection).toEqual({ status: "ready" });
+    expect(state.conversations.b1.messages.map((m) => m.id)).toEqual(["m1", "m2"]);
+    expect(state.conversations.b2).toBeUndefined();
+  });
+
+  it("lists the routine failures waiting to be shown on each connection", () => {
+    const failure = { kind: "routine_failed" as const, botId: "b1", routineId: "r1", runId: "u1", title: "Morning check failed", body: "It ran out of time." };
+    expect(initialState.notifications).toEqual([]);
+    const state = connected(initialState, { bots: [], settings: { chainLimit: 5, relayUrl: null }, routines: [], rooms: [], notifications: [failure] });
+    expect(state.notifications).toEqual([failure]);
+    expect(connected(state, { bots: [], settings: { chainLimit: 5, relayUrl: null }, routines: [], rooms: [] }).notifications).toEqual([]);
   });
 
   it("keeps each routine's newest run event, so an open routine editor can fetch its runs again", () => {
@@ -164,7 +183,7 @@ describe("app state", () => {
     expect(state.latestRuns.r1).toBe(running); // another routine's run leaves this one alone
     state = applyEvent(state, run("u1", "r1", "done"));
     expect(state.latestRuns.r1).toMatchObject({ id: "u1", status: "done" });
-    expect(connected(state, { bots: [], settings: { chainLimit: 5 }, routines: [], rooms: [] }).latestRuns).toEqual({});
+    expect(connected(state, { bots: [], settings: { chainLimit: 5, relayUrl: null }, routines: [], rooms: [] }).latestRuns).toEqual({});
   });
 
   it("records ended sign-in attempts, so an old attempt ending never reads as the new one ending", () => {
@@ -175,10 +194,39 @@ describe("app state", () => {
     state = applyEvent(state, ended("codex", "b"));
     expect(state.signInsEnded).toEqual(["a", "b"]);
     // A new connection keeps them, so an attempt that ended before it still reads as ended.
-    expect(connected(state, { bots: [], settings: { chainLimit: 5 }, routines: [], rooms: [] }).signInsEnded).toEqual(["a", "b"]);
+    expect(connected(state, { bots: [], settings: { chainLimit: 5, relayUrl: null }, routines: [], rooms: [] }).signInsEnded).toEqual(["a", "b"]);
     for (let i = 0; i < 30; i++) state = applyEvent(state, ended("claude", `n${i}`));
     expect(state.signInsEnded).toHaveLength(20);
     expect(state.signInsEnded.at(-1)).toBe("n29");
+  });
+
+  describe("catching up after a reconnect", () => {
+    it("replaces from the newest page's oldest message onward when that message is loaded, keeping the older pages", () => {
+      let state = ready([message("m1"), message("m2"), message("m3", { body: "Working" })]);
+      state = catchUp(state, "b1", { messages: [message("m2"), message("m3", { body: "Done." }), message("m4")], hasMore: true });
+      expect(state.conversations.b1.messages.map((m) => [m.id, m.body])).toEqual([["m1", ""], ["m2", ""], ["m3", "Done."], ["m4", ""]]);
+      expect(state.conversations.b1.hasMore).toBe(false); // the older pages were already loaded
+    });
+
+    it("replaces the chat with the newest page, with more to load, when more than a page arrived while away", () => {
+      let state = ready([message("m1"), message("m2")]);
+      state = catchUp(state, "b1", { messages: [message("m5"), message("m6")], hasMore: true });
+      expect(state.conversations.b1.messages.map((m) => m.id)).toEqual(["m5", "m6"]);
+      expect(state.conversations.b1.hasMore).toBe(true);
+    });
+
+    it("replays what arrived while the page was being fetched, so a new message and its streamed text survive", () => {
+      const during = [added(message("m2", { status: "streaming" })), delta("m2", "Hel"), delta("m2", "lo")];
+      let state = during.reduce(applyEvent, ready([message("m1")])); // shown live meanwhile
+      state = catchUp(state, "b1", { messages: [message("m1")], hasMore: false }, during); // the page was read before m2 started
+      expect(state.conversations.b1.messages.map((m) => [m.id, m.body])).toEqual([["m1", ""], ["m2", "Hello"]]);
+    });
+
+    it("leaves a chat that isn't loaded alone", () => {
+      const state = startLoading(initialState, "b1");
+      expect(catchUp(state, "b1", { messages: [message("m1")], hasMore: false })).toBe(state);
+      expect(catchUp(initialState, "b9", { messages: [], hasMore: false })).toBe(initialState);
+    });
   });
 
   it("keeps a failed history load until a new connection clears it", async () => {
@@ -192,7 +240,7 @@ describe("app state", () => {
     await loadConversation("b1", fetchPage);
     expect(fetchPage).toHaveBeenCalledTimes(1);
 
-    update((state) => connected(state, { bots: [], settings: { chainLimit: 5 }, routines: [], rooms: [] }));
+    update((state) => connected(state, { bots: [], settings: { chainLimit: 5, relayUrl: null }, routines: [], rooms: [] }));
     expect(getState().conversations.b1).toBeUndefined();
     await loadConversation("b1", fetchPage);
     expect(fetchPage).toHaveBeenCalledTimes(2);

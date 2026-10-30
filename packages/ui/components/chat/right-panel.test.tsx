@@ -1,7 +1,17 @@
 import type { Bot } from "@tjommie/protocol";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { initialState, type AppState } from "@/lib/state";
+import { update } from "@/lib/store";
 import { RightPanel } from "./right-panel";
+
+const HOME = "5b0e2c8e-6f1a-4c55-9a43-2f0d7b1e9c11";
+vi.mock("@/lib/remote-hosts", async (original) => ({ ...(await original<typeof import("@/lib/remote-hosts")>()), remoteHosts: () => [{ id: HOME, name: "Home PC" }] }));
+// Server rendering reads a store's server snapshot (the initial state); these tests render the state they set.
+vi.mock("@/lib/store", async (original) => {
+  const store = await original<typeof import("@/lib/store")>();
+  return { ...store, useApp: <T,>(select: (state: AppState) => T): T => select(store.getState()) };
+});
 
 const bot: Bot = {
   id: "b1",
@@ -62,6 +72,21 @@ describe("RightPanel without the desktop app's bridge", () => {
       expect(out).toContain('id="pane-details"');
     }
     expect(render({ phone: true })).toContain("pr-4"); // no caption buttons to clear
+  });
+});
+
+describe("RightPanel in the desktop app while it's on another PC", () => {
+  afterEach(() => update(() => initialState));
+
+  it("has no Browser tab or pane, and the card names the PC the browser runs on", () => {
+    update((state) => ({ ...state, host: HOME }));
+    for (const phone of [true, false]) {
+      const out = render({ phone, pane: "browser" });
+      expect(out).not.toContain("Bot panel views");
+      expect(out).not.toContain('id="pane-browser"');
+      expect(out).not.toContain('aria-label="Open browser"');
+      expect(out).toContain("Runs on Home PC. Open Tjommie on that PC to watch Scout or take over.");
+    }
   });
 });
 

@@ -15,9 +15,8 @@ import { RoutineEditor } from "@/components/routines/routine-editor";
 import { RoutineRows } from "@/components/routines/routine-rows";
 import { formFromBot, nameProblem, patchFor, routinesSummary, type BotForm } from "@/lib/bot-form";
 import { request } from "@/lib/connection";
-import { phoneCaptionClear } from "@/lib/native-capability";
+import { localFileActions, phoneCaptionClear, useLocalFileActions } from "@/lib/native-capability";
 import { cn } from "@/lib/utils";
-import { desktop } from "@/lib/desktop";
 import { longDate } from "@/lib/format";
 import { errorText } from "@/lib/labels";
 import { draftFrom, EMPTY_ROUTINE, localZone } from "@/lib/routine-form";
@@ -177,6 +176,7 @@ function BotSettings({ bot, bots }: { bot: Bot; bots: Bot[] }) {
 // back empty, so a failed call means the notes couldn't be read (or Tjommie isn't connected).
 function About({ bot }: { bot: Bot }) {
   const [notes, setNotes] = useState<{ text: string } | "failed" | null>(null);
+  const files = useLocalFileActions();
   useEffect(() => {
     request("bots.notes", { id: bot.id }).then(setNotes, () => setNotes("failed"));
   }, [bot.id]);
@@ -185,17 +185,17 @@ function About({ bot }: { bot: Bot }) {
       <p className="text-[12px] leading-[18px] text-secondary">Created</p>
       <p className="mt-0.5 text-[14px] text-text">{longDate(bot.createdAt)}</p>
       <p className="mt-2 text-[12px] leading-[18px] text-secondary">Home folder</p>
-      <button type="button" onClick={() => void desktop()?.openFolder(bot.homeFolder)} className="mt-0.5 flex items-center gap-1.5 text-[14px] text-accent hover:underline">
+      {files && <button type="button" onClick={() => void localFileActions()?.openFolder(bot.homeFolder)} className="mt-0.5 flex items-center gap-1.5 text-[14px] text-accent hover:underline">
         <Folder className="size-4" aria-hidden />
         Open folder
-      </button>
+      </button>}
       <p className="mt-2 text-[12px] leading-[18px] text-secondary">Notes</p>
       <pre className="mt-1.5 max-h-[160px] overflow-hidden whitespace-pre-wrap rounded-[10px] bg-canvas p-3 font-sans text-[12px] leading-[18px] text-body [overflow-wrap:anywhere]">
         {notes === null ? "Loading" : notes === "failed" ? "Couldn't read the notes." : notes.text.trim() || "No notes yet."}
       </pre>
-      <button type="button" onClick={() => void desktop()?.openNotes(bot.homeFolder)} className="mt-2.5 text-[14px] text-accent hover:underline">
+      {files && <button type="button" onClick={() => void localFileActions()?.openNotes(bot.homeFolder)} className="mt-2.5 text-[14px] text-accent hover:underline">
         Open notes.md
-      </button>
+      </button>}
     </section>
   );
 }

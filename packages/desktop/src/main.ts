@@ -1,34 +1,45 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, net, Notification, protocol, session, shell, Tray } from "electron";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { connect, type Client } from "@tjommie/client";
 import { NativeBrowserMount, NativeBrowserUiCommand, type EventData } from "@tjommie/protocol";
+import updater from "electron-updater";
 import { navigationFor, uiFile } from "./app-protocol.ts";
 import { notesFile } from "./bot-files.ts";
-import { startDaemonProcess, type DaemonConnection, type RunningDaemon } from "./daemon-process.ts";
-import { notificationDelivery } from "./notification-delivery.ts";
+import { daemonLaunchEnv, startDaemonProcess, stopDaemonBeforeQuit, type DaemonConnection, type RunningDaemon } from "./daemon-process.ts";
+import { notificationDelivery, notificationRoute } from "./notification-delivery.ts";
 import { beginGoogleConsent } from "./google-consent.ts";
 import { NativeBrowserEngine } from "./native-browser.ts";
 import { nativeBrowserAutomation, cancelNativeBrowserAutomation } from "./native-browser-automation.ts";
 import { startNativeBrowserHost } from "./native-browser-host.ts";
+import { getLoginItem, setLoginItem, startsHidden, syncLoginItem } from "./login-item.ts";
+import { createUpdater, trayTemplate } from "./updater.ts";
+import { RemoteWires } from "./remote-wire.ts";
+import { createDeviceKeys } from "./device-keys.ts";
+import { localFilePath } from "./local-file-path.ts";
 
+const { autoUpdater } = updater;
 const here = import.meta.dirname;
 const packaged = app.isPackaged;
+const packageIdentity = packaged
+  ? JSON.parse(readFileSync(join(app.getAppPath(), "package.json"), "utf8")) as { appId?: string; testDataRoot?: string }
+  : {};
+const productName = packaged ? app.getName() : "Tjommie";
 // Three ways to run. Development: the development daemon and `npm run dev` run separately. Production from source
 // (TJOMMIE_DESKTOP=production): this process starts the daemon and serves the static export. Installed: the same,
 // with the daemon, the UI and the icons as plain files in resources (npm run package).
 const production = packaged || process.env.TJOMMIE_DESKTOP === "production";
-const dataRoot = process.env.TJOMMIE_HOME ?? join(process.env.LOCALAPPDATA ?? join(homedir(), ".local", "share"), "Tjommie");
+const dataRoot = process.env.TJOMMIE_HOME ?? packageIdentity.testDataRoot ?? join(process.env.LOCALAPPDATA ?? join(homedir(), ".local", "share"), productName);
 const assets = packaged ? join(process.resourcesPath, "assets") : join(here, "..", "assets");
 const uiDir = packaged ? join(process.resourcesPath, "ui") : join(here, "..", "..", "ui", "out");
 const daemonEntry = packaged ? join(process.resourcesPath, "daemon", "main.mjs") : join(here, "..", "..", "daemon", "src", "main.ts");
 const appIcon = join(assets, "icon-256.png");
-const APP_ID = "com.tsnyders.tjommie";
-// Next's static export needs 'unsafe-inline' bootstrap scripts; Task 8's Markdown sanitizer, not this CSP, blocks injected script.
+const APP_ID = packageIdentity.appId ?? "com.tsnyders.tjommie";
+// Next needs inline bootstrap scripts; Noise WASM needs wasm-unsafe-eval; Markdown sanitization handles injected content.
 const CSP =
-  "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' ws://127.0.0.1:*; object-src 'none'; base-uri 'none'; frame-src 'none'";
+  "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' ws://127.0.0.1:*; object-src 'none'; base-uri 'none'; frame-src 'none'";
 const THEMES = { dark: { color: "#070707", symbolColor: "#ACACAC" }, light: { color: "#FCFCFC", symbolColor: "#5C5C5C" } } as const;
 const TITLE_BAR_HEIGHT = 44;
 // A dialog's scrim is 60% black (the UI's bg-black/60), so what it covers keeps 40% of each channel: #ACACAC is #454545.
@@ -38,8 +49,12 @@ const underScrim = (hex: string): string =>
 type ConnectionResult = ({ ok: true } & DaemonConnection) | { ok: false; error: string };
 
 let win: BrowserWindow | null = null;
+let remoteWires: RemoteWires | null = null;
+const deviceKeys = createDeviceKeys(dataRoot);
 let tray: Tray | null = null;
+let updates: ReturnType<typeof createUpdater> | null = null;
 let quitting = false;
+let stopping = false;
 let daemon: RunningDaemon | null = null;
 let current: Promise<DaemonConnection> | null = null;
 let starting = false;
@@ -63,8 +78,12 @@ function log(text: string): void {
   }
 }
 
-app.setName("Tjommie");
-if (process.env.TJOMMIE_USER_DATA) app.setPath("userData", process.env.TJOMMIE_USER_DATA); // tests: their own profile and lock
+app.setName(productName);
+if (process.env.TJOMMIE_USER_DATA || packageIdentity.testDataRoot) {
+  const userData = process.env.TJOMMIE_USER_DATA ?? join(dataRoot, "electron");
+  mkdirSync(userData, { recursive: true });
+  app.setPath("userData", userData); // tests: their own profile and lock, including the update relaunch
+}
 protocol.registerSchemesAsPrivileged([{ scheme: "app", privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
 
 if (!app.requestSingleInstanceLock()) {
@@ -77,21 +96,60 @@ if (!app.requestSingleInstanceLock()) {
     quitting = true;
   });
   app.on("will-quit", (event) => {
-    const activeNotifier = notifier;
-    notifier = null;
-    void activeNotifier?.close().catch(() => {});
-    if (!daemon) return;
+    if (stopping) { event.preventDefault(); return; }
+    if (!daemon && starting && current) {
+      event.preventDefault();
+      void current.catch(() => {}).finally(() => app.quit());
+      return;
+    }
+    if (!daemon) {
+      updates?.stop();
+      remoteWires?.closeAll();
+      const activeNotifier = notifier;
+      notifier = null;
+      void activeNotifier?.close().catch(() => {});
+      updates?.installOnQuit();
+      return;
+    }
     event.preventDefault(); // stop the daemon first, so its bots close cleanly
+    stopping = true;
     const running = daemon;
     daemon = null;
+    let daemonStopped = false;
+    let forcedStop = false;
     void (async () => {
       try { await nativeEngine?.closeAll(); }
       finally {
-        await nativeHost?.close(); nativeHost = null;
-        await (await nativeClient?.catch(() => null))?.close(); nativeClient = null;
-        await running.stop();
+        forcedStop = (await stopDaemonBeforeQuit(running, 20_000)) === "forced";
+        daemonStopped = true;
+        try { await nativeHost?.close(); }
+        finally {
+          nativeHost = null;
+          await (await nativeClient?.catch(() => null))?.close(); nativeClient = null;
+        }
       }
-    })().finally(() => app.quit());
+      if (forcedStop) throw new Error("The background service required a forced stop.");
+    })().catch((error: unknown) => {
+      log(`Shutdown failed: ${String(error)}`);
+      if (!updates?.installationPending() || (daemonStopped && !forcedStop)) return true;
+      quitting = false;
+      updates?.shutdownFailed();
+      if (!win || win.isDestroyed()) {
+        remoteWires?.closeAll();
+        createWindow();
+      }
+      if (daemonStopped) reconnect();
+      else win?.webContents.send("daemon:failed", "Tjommie's background service could not be stopped. Restart Tjommie to reconnect.");
+      showWindow();
+      dialog.showErrorBox("Update not installed", daemonStopped
+        ? "The background service did not stop in time. The update was not installed. Tjommie is restarting the service."
+        : "Tjommie couldn't confirm its background service stopped. The update was not installed. Restart Tjommie to reconnect.");
+      return false;
+    }).finally(() => { stopping = false; }).then((finish = true) => {
+      if (!finish) return;
+      updates?.installOnQuit();
+      app.quit();
+    }).catch((error: unknown) => log(`Quit recovery failed: ${String(error)}`));
   });
   app.on("window-all-closed", () => {}); // the window only hides; Tjommie keeps running in the tray
   // No top-level await here: Electron emits "ready" only after this module finishes evaluating.
@@ -110,6 +168,19 @@ function start(): void {
   session.defaultSession.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
   session.defaultSession.setPermissionCheckHandler(() => false);
   if (production) protocol.handle("app", serveUi);
+  // The disposable packaged smoke uses a real app identity, so never register it at Windows sign-in.
+  if (!process.env.TJOMMIE_USER_DATA && !packageIdentity.testDataRoot) {
+    try { syncLoginItem(app); } catch (error) { log(`Could not set start at login: ${String(error)}`); }
+  }
+  updates = createUpdater(packaged, autoUpdater, {
+    TJOMMIE_UPDATES: (process.env.TJOMMIE_USER_DATA && APP_ID === "com.tsnyders.tjommie") ||
+      (packageIdentity.testDataRoot && !process.env.TJOMMIE_UPDATE_FEED) ? "off" : process.env.TJOMMIE_UPDATES,
+    TJOMMIE_UPDATE_FEED: packageIdentity.testDataRoot ? process.env.TJOMMIE_UPDATE_FEED : undefined,
+  }, () => app.quit());
+  updates.onState((state) => {
+    if (win && !win.isDestroyed()) win.webContents.send("updates:state", state);
+    refreshTray();
+  });
   registerIpc();
   createWindow();
   createTray();
@@ -167,9 +238,11 @@ async function launchDaemon(): Promise<DaemonConnection> {
     {
       execPath: process.execPath,
       args: ["--disable-warning=ExperimentalWarning", daemonEntry],
-      env: process.env,
+      env: daemonLaunchEnv(process.env, dataRoot, !!packageIdentity.testDataRoot),
       // Only an isolated desktop test may redirect the daemon's account folders.
-      testAccountsDir: process.env.TJOMMIE_USER_DATA ? process.env.TJOMMIE_ACCOUNTS_DIR || undefined : undefined,
+      testAccountsDir: packageIdentity.testDataRoot
+        ? join(packageIdentity.testDataRoot, "accounts")
+        : process.env.TJOMMIE_USER_DATA ? process.env.TJOMMIE_ACCOUNTS_DIR || undefined : undefined,
     },
     log,
   );
@@ -264,7 +337,7 @@ async function listenForNotifications(connection: DaemonConnection): Promise<voi
       note.on("click", () => {
         notifications.delete(note);
         showWindow();
-        win?.webContents.send("navigate", `/chat/?bot=${encodeURIComponent(notice.botId)}`);
+        win?.webContents.send("navigate", notificationRoute(notice));
       });
       // show() merely requests delivery. Only the OS-backed show event permits acknowledgement.
       return new Promise<boolean>((resolve) => {
@@ -309,6 +382,27 @@ async function resolveNativeBot(id: unknown) {
 }
 
 function registerIpc(): void {
+  const remote = (event: Electron.IpcMainInvokeEvent): RemoteWires => {
+    if (event.sender !== win?.webContents || event.senderFrame !== win.webContents.mainFrame || !remoteWires) throw new Error("Untrusted remote bridge.");
+    return remoteWires;
+  };
+  ipcMain.handle("remote:open", (event, endpoint: unknown, timeoutMs: unknown) => remote(event).open(endpoint, timeoutMs));
+  ipcMain.handle("remote:send", (event, id: unknown, frame: unknown) => remote(event).send(id, frame));
+  ipcMain.on("remote:close", (event, id: unknown) => {
+    if (event.sender === win?.webContents && event.senderFrame === win.webContents.mainFrame) remoteWires?.close(id);
+  });
+  ipcMain.handle("remote:seal", (event, name: unknown, value: unknown) => { remote(event); return deviceKeys.seal(name, value); });
+  ipcMain.handle("remote:read", (event, name: unknown) => { remote(event); return deviceKeys.read(name); });
+  ipcMain.handle("remote:delete", (event, name: unknown) => { remote(event); return deviceKeys.delete(name); });
+  ipcMain.handle("login-item:get", () => getLoginItem(app));
+  ipcMain.handle("login-item:set", (_event, on: unknown) => {
+    if (typeof on !== "boolean") throw new Error("Invalid start at login setting.");
+    if (process.env.TJOMMIE_USER_DATA && APP_ID === "com.tsnyders.tjommie") return;
+    setLoginItem(app, on);
+  });
+  ipcMain.handle("updates:state", () => updates?.state() ?? { status: "unsupported" });
+  ipcMain.handle("updates:check", () => updates?.check());
+  ipcMain.on("updates:restart", () => updates?.restart());
   ipcMain.handle("native-browser:command", async (event, botId: unknown, command: unknown) => {
     if (event.sender !== win?.webContents || event.senderFrame !== win.webContents.mainFrame) throw new Error("Untrusted browser host.");
     const value = NativeBrowserUiCommand.parse(command);
@@ -364,11 +458,11 @@ function registerIpc(): void {
     return result.canceled ? [] : result.filePaths;
   });
   ipcMain.handle("folder:open", async (_event, path: unknown) => {
-    if (typeof path !== "string" || !isAbsolute(path) || !existsSync(path) || !statSync(path).isDirectory()) return;
+    if (!localFilePath(path) || !existsSync(path) || !statSync(path).isDirectory()) return;
     await shell.openPath(path);
   });
   ipcMain.on("file:show", (_event, path: unknown) => {
-    if (typeof path === "string" && isAbsolute(path) && existsSync(path) && statSync(path).isFile()) shell.showItemInFolder(path);
+    if (localFilePath(path) && existsSync(path) && statSync(path).isFile()) shell.showItemInFolder(path);
   });
   ipcMain.on("theme:set", (_event, theme: unknown) => {
     pageTheme = theme === "light" ? "light" : "dark";
@@ -409,6 +503,7 @@ function createWindow(): void {
     webPreferences: { preload: join(here, "preload.cjs"), contextIsolation: true, sandbox: true, nodeIntegration: false },
   });
   win = window;
+  remoteWires = new RemoteWires(window.webContents);
   nativeEngine = new NativeBrowserEngine({
     window, profileRoot: join(dataRoot, "data", "native-browser"), automation: nativeBrowserAutomation,
     onState: (state) => { if (!window.isDestroyed()) window.webContents.send("native-browser:state", state); },
@@ -417,7 +512,10 @@ function createWindow(): void {
   });
   window.on("hide", () => nativeEngine?.setOccluded(true));
   window.on("show", () => nativeEngine?.setOccluded(scrim));
-  window.once("ready-to-show", () => window.show());
+  window.once("ready-to-show", () => {
+    if (!startsHidden(process.argv)) window.show();
+    if (packageIdentity.testDataRoot) log(`Update test window ready: ${process.pid}`);
+  });
   // A reload starts the page with no dialog open, so a scrim left over from before it goes.
   window.webContents.on("did-navigate", () => {
     if (!scrim) return;
@@ -455,18 +553,18 @@ function paintTitleBar(): void {
 function createTray(): void {
   tray = new Tray(nativeImage.createFromPath(join(assets, "tray-32.png")));
   tray.setToolTip("Tjommie");
-  tray.setContextMenu(
-    Menu.buildFromTemplate([
-      { label: "Open Tjommie", click: showWindow },
-      { type: "separator" },
-      { label: "Quit Tjommie", click: () => app.quit() },
-    ]),
-  );
+  refreshTray();
   tray.on("click", showWindow);
 }
 
+function refreshTray(): void {
+  tray?.setContextMenu(Menu.buildFromTemplate(trayTemplate(
+    updates?.state() ?? { status: "unsupported" }, showWindow, () => updates?.restart(), () => app.quit(),
+  )));
+}
+
 function showWindow(): void {
-  if (!win) return;
+  if (!win || win.isDestroyed()) return;
   if (win.isMinimized()) win.restore();
   win.show();
   win.focus();

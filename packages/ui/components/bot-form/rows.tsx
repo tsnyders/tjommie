@@ -1,13 +1,14 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
+import { useId, useState, type ReactNode } from "react";
 import { ChevronDown, ChevronRight, Clock, Folder, Globe, MessageCircle, Shield, type LucideIcon } from "lucide-react";
 import type { Autonomy, Bot, Provider } from "@tjommie/protocol";
 import { fileName } from "@/lib/attachments";
 import { AUTONOMY_LEVELS, autonomyHelp } from "@/lib/bot-form";
-import { desktop } from "@/lib/desktop";
+import { localFileActions, pcName, useLocalFileActions } from "@/lib/native-capability";
+import { useApp } from "@/lib/store";
 import { BotAvatar } from "../bot-avatar";
-import { Segmented, Switch } from "../controls";
+import { FIELD, Segmented, Switch } from "../controls";
 import { ConfirmDialog } from "../dialog";
 
 // A settings row (WF3): 56 px on the card fill, radius 12, an icon, the title, and the value at the right.
@@ -37,33 +38,47 @@ export function Row({ icon, title, value, open, onToggle, children }: { icon: Lu
   );
 }
 
+// This PC's project folder comes from its folder picker. Another PC's folders can't be browsed from here, so its path is typed, as that PC knows it
+// (an empty one is the daemon's to refuse when saved).
 export function FolderRow({ projectFolder, onChange }: { projectFolder: string | null; onChange: (folder: string | null) => void }) {
   const [open, setOpen] = useState(false);
+  const host = useApp((state) => state.host);
+  const picker = useLocalFileActions();
+  const hint = useId();
   async function choose(): Promise<void> {
-    const folder = await desktop()?.pickFolder();
+    const folder = await localFileActions()?.pickFolder();
     if (folder) onChange(folder);
   }
   return (
-    <Row icon={Folder} title="Folder" value={<span className="truncate">{projectFolder ? fileName(projectFolder) : "Its own folder"}</span>} open={open} onToggle={() => setOpen(!open)}>
+    <Row icon={Folder} title="Folder" value={<span className="truncate">{projectFolder === null ? "Its own folder" : fileName(projectFolder) || "A project folder"}</span>} open={open} onToggle={() => setOpen(!open)}>
       <Segmented
         label="Folder"
-        value={projectFolder ? "project" : "own"}
+        value={projectFolder === null ? "own" : "project"}
         options={[
           { value: "own", label: "Its own folder" },
           { value: "project", label: "A project folder" },
         ]}
-        onChange={(value) => (value === "own" ? onChange(null) : void choose())}
+        onChange={(value) => {
+          if (value === "own") onChange(null);
+          else if (picker) void choose();
+          else onChange(projectFolder ?? "");
+        }}
       />
-      {projectFolder && (
+      {projectFolder !== null && (picker ? (
         <p className="mt-3 flex items-center gap-2 text-[12px] leading-[18px] text-secondary">
           <span className="min-w-0 truncate">{projectFolder}</span>
           <button type="button" onClick={() => void choose()} className="shrink-0 text-accent hover:underline">
             Change
           </button>
         </p>
-      )}
+      ) : (
+        <>
+          <input aria-label="Project folder path" aria-describedby={hint} value={projectFolder} onChange={(event) => onChange(event.target.value)} autoComplete="off" spellCheck={false} className={`${FIELD} mt-3 h-10`} />
+          <p id={hint} className="mt-1 text-[12px] leading-[18px] text-secondary">A folder on {pcName(host)}. Type its full path.</p>
+        </>
+      ))}
       <p className="mt-2 text-[12px] leading-[18px] text-secondary">
-        {projectFolder ? "It works in the project folder, and keeps its notes and inbox in its own folder." : "It works in its own folder, which Tjommie makes for it."}
+        {projectFolder !== null ? "It works in the project folder, and keeps its notes and inbox in its own folder." : "It works in its own folder, which Tjommie makes for it."}
       </p>
     </Row>
   );

@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import type { ProviderSetup } from "@tjommie/protocol";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { AccountRuntime, type AccountRunContext, type AccountRuntimeOptions } from "./account-runtime.ts";
 import { normalizeClaudeUsage, normalizeCodexUsage, type AccountUsageRead } from "./account-quota.ts";
 import type { CredentialStore } from "./account-credentials.ts";
@@ -12,8 +12,11 @@ import { ensureAccounts, parseCodexAccountLimits } from "./setup.ts";
 import { tempRoot, waitFor } from "./testing.ts";
 import { recordUsage } from "./usage.ts";
 
+const openDatabases: ReturnType<typeof openDb>[] = [];
+
 function fixture(extra: Partial<AccountRuntimeOptions> = {}) {
   const paths = dataPaths(tempRoot()), db = openDb(paths.db);
+  openDatabases.push(db);
   ensureAccounts(db, paths.accounts);
   const keys = new Map<string, string>();
   const credentials: CredentialStore = { reference: (id) => `fixture/${id}`, read: vi.fn(async (id) => keys.get(id) ?? null),
@@ -29,6 +32,9 @@ function fixture(extra: Partial<AccountRuntimeOptions> = {}) {
   const context = (): AccountRunContext => { const selected = runtime.inspect(getStoredBot(db, bot.id)); if (!selected.ready) throw new Error(selected.reason); return selected.context; };
   return { paths, db, runtime, keys, credentials, probe, onChanged, onCap, bot, api, context };
 }
+
+afterEach(() => { for (const db of openDatabases.splice(0)) if (db.isOpen) db.close(); });
+
 describe("account runtime", () => {
   const codexReading = (ordinaryUsageAllowed: boolean | null = true, spendControlReached: boolean | null = false): AccountUsageRead => {
     const value = { ordinaryUsageAllowed, rateLimits: { limitId: "codex", planType: "pro", spendControlReached,

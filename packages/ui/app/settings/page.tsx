@@ -10,6 +10,7 @@ import { RadioGroup } from "@base-ui/react/radio-group";
 import { Segmented, Stepper, Switch } from "@/components/controls";
 import { AccountsSection } from "@/components/accounts/accounts-section";
 import { DevicesSection } from "@/components/devices/devices-section";
+import { DesktopApp } from "@/components/general/desktop-app";
 import { UsageSection } from "@/components/usage/usage-section";
 import { request } from "@/lib/connection";
 import { errorText } from "@/lib/labels";
@@ -120,6 +121,7 @@ function General() {
           }}
         />
       </section>
+      <DesktopApp />
       {phone && <PhoneLook />}
     </>
   );

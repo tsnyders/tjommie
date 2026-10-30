@@ -1,7 +1,6 @@
 import { _electron, type ElectronApplication } from "playwright-core";
 import { createServer, type Server } from "node:http";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { rm } from "node:fs/promises";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, expect, it } from "vitest";
@@ -127,9 +126,11 @@ it("shares native automation refs, uploads, dialogs and downloads while enforcin
   await app.evaluate(async () => { await (globalThis as unknown as FixtureGlobal).nativeBrowserFixture.engine.closeAll(); });
 });
 afterAll(async () => {
-  await electron?.close();
-  await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
-  await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
+  try { await electron?.close(); }
+  finally {
+    try { if (server) await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())); }
+    finally { if (root) rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 }); }
+  }
 });
 
 it("renders native views with isolated persistent sessions, direct input/media, in-panel POST popups and lifecycle guards", async () => {

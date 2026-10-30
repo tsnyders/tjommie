@@ -3,8 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { connect } from "@tjommie/client";
-import { afterEach, describe, expect, it } from "vitest";
-import { daemonEnv, listeningPort, newToken, startDaemonProcess, type DaemonLaunch, type RunningDaemon } from "./daemon-process.ts";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { daemonEnv, daemonLaunchEnv, listeningPort, newToken, startDaemonProcess, stopWithin, type DaemonLaunch, type RunningDaemon } from "./daemon-process.ts";
 
 const entry = fileURLToPath(new URL("../../daemon/src/main.ts", import.meta.url));
 const roots: string[] = [];
@@ -39,6 +39,24 @@ describe("daemon process", () => {
 
   it("runs the daemon in production mode as plain Node", () => {
     expect(daemonEnv({ TJOMMIE_DEV: "1", TJOMMIE_HOME: "C:\\x" })).toEqual({ TJOMMIE_HOME: "C:\\x", ELECTRON_RUN_AS_NODE: "1" });
+  });
+
+  it("launches the desktop daemon on the explicit desktop data root", () => {
+    expect(daemonLaunchEnv({ TJOMMIE_HOME: "C:\\owner", PATH: "test" }, "C:\\disposable", true)).toEqual({
+      TJOMMIE_HOME: "C:\\disposable", PATH: "test", TJOMMIE_PORT: "0",
+    });
+  });
+
+  it("rejects a daemon stop that never settles so a later Quit can proceed", async () => {
+    vi.useFakeTimers();
+    try {
+      const stopped = stopWithin(new Promise<void>(() => {}), 20_000);
+      const failed = expect(stopped).rejects.toThrow("did not stop in time");
+      await vi.advanceTimersByTimeAsync(20_000);
+      await failed;
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("does not forward an inherited accounts-folder hook", () => {

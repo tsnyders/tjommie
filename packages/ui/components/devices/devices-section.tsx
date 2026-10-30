@@ -5,22 +5,28 @@ import { Smartphone } from "lucide-react";
 import { Dialog as BaseDialog } from "@base-ui/react/dialog";
 import type { Device } from "@tjommie/protocol";
 import { closeEpoch } from "@/lib/accounts";
-import { connectPhone, request } from "@/lib/connection";
-import { isAndroidApp } from "@/lib/mobile";
+import { request } from "@/lib/connection";
 import { errorText } from "@/lib/labels";
 import { stamp, timeAgo } from "@/lib/format";
+import { isAndroidApp } from "@/lib/remote-hosts";
+import { useApp } from "@/lib/store";
 import { FIELD, Label } from "../controls";
 import { Dialog } from "../dialog";
 import { Pill } from "../pill";
 import { PairDialog } from "./pair-dialog";
+import { RelayRow } from "./relay-row";
+import { ThisPhone } from "./this-phone";
 import { useDevices } from "./use-devices";
 
 type Open = ({ kind: "pair" } | { kind: "rename"; id: string } | { kind: "revoke"; id: string }) & { epoch: number };
 
 // Settings: Devices. The phones and other PCs paired with this one, and a way to pair more. Every paired device has full control of Tjommie, and revoking one
-// cuts it off at once. Pairing works on the same Wi-Fi only, and this PC has to be awake: there is no relay and no push yet, and nothing here says otherwise.
+// cuts it off at once. Devices connect on the same Wi-Fi or, through the relay, from anywhere; this PC has to be awake. The relay and the firewall belong
+// to the PC, so its own window sets them; the Android app adds this phone's own settings.
 export function DevicesSection() {
   const { devices, status, error, reload } = useDevices();
+  const relayUrl = useApp((state) => state.settings?.relayUrl ?? null);
+  const ownWindow = useApp((state) => state.host === null) && !isAndroidApp();
   const [open, setOpen] = useState<Open | null>(null);
   const epochs = useRef(0);
   const show = (dialog: { kind: "pair" } | { kind: "rename"; id: string } | { kind: "revoke"; id: string }): void => setOpen({ ...dialog, epoch: (epochs.current += 1) });
@@ -38,10 +44,10 @@ export function DevicesSection() {
         </Pill>
       </div>
       <p className="mt-2 max-w-[700px] text-[13px] leading-[18px] text-secondary">
-        Every paired device has full control of Tjommie, including pairing and revoking devices. Devices connect over the same Wi-Fi as this PC, and this PC has to be awake. This PC&apos;s own
-        window always works.
+        Every paired device has full control of Tjommie, including pairing and revoking devices. Phones and other PCs can connect over Wi-Fi or, through the relay, from anywhere. This PC has to
+        be awake. This PC&apos;s own window always works.
       </p>
-      {isAndroidApp() && <div className="mt-3"><Pill onClick={() => connectPhone("")}>Switch PC</Pill></div>}
+      {isAndroidApp() && <ThisPhone />}
       {status && !status.listening && <p className="mt-3 max-w-[700px] text-[12px] leading-[18px] text-secondary">This PC isn&apos;t accepting devices right now.</p>}
       {error && (
         <p role="alert" className="mt-3 text-[12px] leading-[18px] text-danger">
@@ -58,6 +64,12 @@ export function DevicesSection() {
             <DeviceRow key={device.id} device={device} connected={status?.connectedDeviceIds.includes(device.id) ?? false} onRename={() => show({ kind: "rename", id: device.id })} onRevoke={() => show({ kind: "revoke", id: device.id })} />
           ))}
         </ul>
+      )}
+      {ownWindow && (
+        <>
+          <RelayRow key={relayUrl ?? ""} saved={relayUrl} relay={status?.relay ?? null} />
+          <p className="mt-3 max-w-[700px] text-[12px] leading-[18px] text-secondary">On the same Wi-Fi, Windows Firewall asks once. If you say no, the relay still works.</p>
+        </>
       )}
       {open?.kind === "pair" && <PairDialog onClose={closer(open.epoch)} />}
       {target && open?.kind === "rename" && <RenameDevice device={target} onClose={closer(open.epoch)} onDone={reload} />}

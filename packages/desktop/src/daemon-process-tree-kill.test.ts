@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { startDaemonProcess } from "./daemon-process.ts";
+import { startDaemonProcess, stopDaemonBeforeQuit } from "./daemon-process.ts";
 
 vi.mock("node:child_process", () => ({ execFileSync: vi.fn(), spawn: vi.fn() }));
 
@@ -29,6 +29,24 @@ afterEach(() => {
 });
 
 describe("daemon process tree kill", () => {
+  it("confirms an unresponsive daemon exited before recovery, even when its pipes stay open", async () => {
+    vi.useFakeTimers();
+    const fake = fakeChild();
+    vi.mocked(spawn).mockReturnValue(fake.child as ReturnType<typeof spawn>);
+    const starting = startDaemonProcess(launch());
+    fake.stdout.write("Tjommie daemon listening on http://127.0.0.1:47123\n");
+    const daemon = await starting;
+    let recovered = false;
+    const stopping = stopDaemonBeforeQuit(daemon, 20_000).then((result) => { recovered = true; return result; });
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(recovered).toBe(false);
+    if (process.platform === "win32") expect(execFileSync).toHaveBeenCalledTimes(2);
+    else expect(fake.child.kill).toHaveBeenCalledTimes(2);
+    fake.child.emit("exit", null, "SIGKILL");
+    await expect(stopping).resolves.toBe("forced");
+    fake.child.emit("close", null, "SIGKILL");
+  });
+
   it("kills the daemon tree when graceful shutdown reaches its timeout", async () => {
     vi.useFakeTimers();
     const fake = fakeChild();

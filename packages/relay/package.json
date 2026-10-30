@@ -1,0 +1,20 @@
+{
+  "name": "@tjommie/relay",
+  "version": "0.3.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --local",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@tjommie/protocol": "*",
+    "jose": "^6.2.13",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261025.1",
+    "wrangler": "^4.152.0"
+  }
+}

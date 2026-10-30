@@ -29,11 +29,12 @@ export async function launchRealApp(executablePath?: string, options: { isolated
     ownedPids: new Map(),
   };
   const root = tempRoot();
-  const userData = mkdtempSync(join(tmpdir(), "tjommie-electron-"));
+  let userData = "";
   const inherited = Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined && entry[0] !== "TJOMMIE_DEV"));
   let electronApp: ElectronApplication | undefined;
   let client: Client | undefined;
   try {
+    userData = mkdtempSync(join(tmpdir(), "tjommie-electron-"));
     electronApp = await _electron.launch({
       executablePath: ownership.executablePath,
       args: selectedExecutable ? [] : [desktopDir],
@@ -61,7 +62,7 @@ export async function launchRealApp(executablePath?: string, options: { isolated
     await electronApp?.close().catch(() => {});
     const failures: unknown[] = [error];
     await cleanOwnedProcesses(ownership).catch((cleanup: unknown) => failures.push(cleanup));
-    await removeFolders(root, userData).catch((cleanup: unknown) => failures.push(cleanup));
+    await (userData ? removeFolders(root, userData) : remove(root)).catch((cleanup: unknown) => failures.push(cleanup));
     throw allOf(failures, "The app didn't start, and cleaning up after it failed too.");
   }
 }
@@ -261,7 +262,7 @@ async function remove(folder: string): Promise<void> {
   }
   for (let attempt = 0; attempt < 20 && existsSync(disposable); attempt++) {
     try {
-      rmSync(disposable, { recursive: true, force: true });
+      rmSync(disposable, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     } catch {
       await new Promise((done) => setTimeout(done, 500));
     }

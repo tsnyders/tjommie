@@ -1,9 +1,16 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
-import { realAccount, realAccountsDir, tempRoot } from "./testing.ts";
+import { cleanupTempRoots, realAccount, realAccountsDir, tempRoot } from "./testing.ts";
 
 afterEach(() => vi.unstubAllEnvs());
+
+it("removes every tracked temp root when cleanup runs", () => {
+  const roots = [tempRoot(), tempRoot()];
+  for (const root of roots) expect(existsSync(root)).toBe(true);
+  cleanupTempRoots();
+  for (const root of roots) expect(existsSync(root)).toBe(false);
+});
 
 it("uses the configured Tjommie accounts directly for real CLI tests", () => {
   const root = tempRoot();

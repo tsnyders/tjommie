@@ -132,6 +132,11 @@ describe("protocol for bots working together", () => {
     for (const kind of ["approval", "limit", "routine_failed"]) {
       expect(events.notify.parse({ ...notification, kind })).toEqual({ ...notification, kind });
     }
+    for (const kind of ["done", "failed"]) {
+      expect(events.notify.parse({ ...notification, kind })).toEqual({ ...notification, kind });
+      expect(events.notify.parse({ ...notification, kind, roomId: "room" })).toEqual({ ...notification, kind, roomId: "room" });
+      expect(events.notify.safeParse({ ...notification, kind, roomId: "x".repeat(65) }).success).toBe(false);
+    }
     expect(events.notify.safeParse({ ...notification, kind: "other" }).success).toBe(false);
     expect(events.notify.safeParse({ ...notification, kind: "approval", approvalId: 42 }).success).toBe(false);
   });
@@ -162,8 +167,8 @@ describe("protocol for bots working together", () => {
   });
 
   it("bounds the chain limit between 1 and 20", () => {
-    expect(Settings.parse({ chainLimit: 5 })).toEqual({ chainLimit: 5 });
-    expect(() => Settings.parse({ chainLimit: 0 })).toThrow();
-    expect(() => Settings.parse({ chainLimit: 21 })).toThrow();
+    expect(Settings.parse({ chainLimit: 5, relayUrl: null })).toEqual({ chainLimit: 5, relayUrl: null });
+    expect(() => Settings.parse({ chainLimit: 0, relayUrl: null })).toThrow();
+    expect(() => Settings.parse({ chainLimit: 21, relayUrl: null })).toThrow();
   });
 });

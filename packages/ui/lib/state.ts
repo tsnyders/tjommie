@@ -1,5 +1,8 @@
 import type { ClientEvent } from "@tjommie/client";
-import type { AccountInfo, Bot, Message, ProviderSetup, Room, Routine, RoutineRun, Settings } from "@tjommie/protocol";
+import type { AccountInfo, Bot, Message, ProviderSetup, Result, Room, Routine, RoutineRun, Settings } from "@tjommie/protocol";
+
+export const LINK = { pingForegroundMs: 20_000, pingBackgroundMs: 60_000, pongTimeoutMs: 10_000, lanWindowMs: 1_000,
+  backoffMs: [0, 1_000, 2_000, 5_000, 10_000] } as const;
 
 export type MessageEvent = Extract<ClientEvent, { event: "message.added" | "message.updated" | "message.delta" }>;
 
@@ -10,16 +13,21 @@ export type Conversation = {
   pending: MessageEvent[]; // message events that arrived while the first page was loading
 };
 
+// A saved remote PC that can't be reached keeps its cached screens and is "offline"; "failed" is only for the desktop's own daemon and a first
+// connect with nothing cached. "removed" is the PC refusing this device, which is final.
 export type Connection =
   | { status: "connecting" }
   | { status: "ready" }
   | { status: "reconnecting" }
+  | { status: "offline"; reason: "host_offline" | "unreachable" }
+  | { status: "removed" }
   | { status: "update" }
   | { status: "failed"; reason: string }
   | { status: "outside" };
 
 export type AppState = {
   connection: Connection;
+  host: string | null; // the saved PC this device is on (its id), or null for the desktop's own Tjommie and before a phone picks a PC
   bots: Bot[];
   setup: ProviderSetup[] | null;
   accounts: AccountInfo[] | null; // null until the first list arrives
@@ -28,11 +36,13 @@ export type AppState = {
   routines: Routine[];
   latestRuns: Record<string, RoutineRun>; // each routine's newest routine.run event, by routine id
   rooms: Room[]; // Everyone first, then the others oldest first
+  notifications: Result<"notifications.pending">; // routine failures not shown yet, listed again on each connection
   conversations: Record<string, Conversation>;
 };
 
 export const initialState: AppState = {
   connection: { status: "connecting" },
+  host: null,
   bots: [],
   setup: null,
   accounts: null,
@@ -41,6 +51,7 @@ export const initialState: AppState = {
   routines: [],
   latestRuns: {},
   rooms: [],
+  notifications: [],
   conversations: {},
 };
 
@@ -142,8 +153,12 @@ export function forgetConversation(state: AppState, conversationId: string): App
   return { ...state, conversations: without(state.conversations, conversationId) };
 }
 
-// A new connection: everything is fetched again, and open chats reload their history.
-export function connected(state: AppState, snapshot: { bots: Bot[]; settings: Settings; routines: Routine[]; rooms: Room[]; accounts?: AccountInfo[] | null }): AppState {
+// A new connection: the lists are fetched again. Loaded chats stay on screen and catch up (catchUp); one still loading or failed is forgotten,
+// so its screen loads it again.
+export function connected(
+  state: AppState,
+  snapshot: { bots: Bot[]; settings: Settings; routines: Routine[]; rooms: Room[]; accounts?: AccountInfo[] | null; notifications?: Result<"notifications.pending"> },
+): AppState {
   return {
     ...state,
     connection: { status: "ready" },
@@ -152,9 +167,25 @@ export function connected(state: AppState, snapshot: { bots: Bot[]; settings: Se
     routines: [...snapshot.routines].sort(byCreated),
     rooms: [...snapshot.rooms].sort(byCreated),
     accounts: snapshot.accounts ?? null,
+    notifications: snapshot.notifications ?? [],
     latestRuns: {},
-    conversations: {},
+    conversations: Object.fromEntries(Object.entries(state.conversations).filter(([, conversation]) => conversation.status === "ready")),
   };
+}
+
+// A loaded chat's newest page, fetched again after a reconnect. When the page's oldest message is loaded, the chat is replaced from there on;
+// otherwise more than a page arrived while away, so the page replaces the chat and older pages load again. Message events that arrived while
+// the page was fetched are replayed on it first, as finishLoading does.
+export function catchUp(state: AppState, conversationId: string, page: Page, arrived: MessageEvent[] = []): AppState {
+  const conversation = state.conversations[conversationId];
+  if (!conversation || conversation.status !== "ready") return state;
+  const newest = arrived.reduce((list, event) => applyMessageEvent(list, event), page.messages);
+  const at = conversation.messages.findIndex((message) => message.id === page.messages[0]?.id);
+  const next: Conversation =
+    at >= 0
+      ? { ...conversation, messages: [...conversation.messages.slice(0, at), ...newest] }
+      : { ...conversation, messages: newest, hasMore: page.hasMore || conversation.messages.length > 0 };
+  return { ...state, conversations: { ...state.conversations, [conversationId]: next } };
 }
 
 // A room's bots, in the bots' order. Everyone always holds every bot: the daemon sends no room.updated for it when a bot is made, so its

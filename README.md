@@ -44,7 +44,7 @@ npm run build      # static export to packages/ui/out
 
 ## Install
 
-`npm run package` builds the Windows installer, `dist-desktop\installer\Tjommie Setup 0.1.0.exe`. It installs Tjommie for the current Windows user, without admin rights, and starts it. The installer isn't signed yet, so Windows SmartScreen asks once: choose "More info", then "Run anyway". Uninstalling keeps your bots and their data in `%LOCALAPPDATA%\Tjommie`.
+`npm run package` builds the Windows 0.3.1 installer, `dist-desktop\installer\Tjommie-Setup-0.3.1.exe`. It installs Tjommie for the current Windows user, without admin rights, and starts it. The installer isn't signed yet, so Windows SmartScreen asks once: choose "More info", then "Run anyway". Uninstalling keeps your bots and their data in `%LOCALAPPDATA%\Tjommie`.
 
 After packaging, run `npm run test:packaged`. This mandatory gate requires the unpacked executable and fails if the smoke suite is missing, skipped, empty, or failing. The build stamps `dist-desktop/provenance.json`; the gate checks source-input hashes and every installer/payload file before and after the smoke test, rejecting stale or changed builds. It verifies packaged startup, required browser-tool files, and shutdown. `npm run test:real` covers the source application and providers separately. Installation and the full installed-app demo in Phase 1E Task 16 remain separate acceptance checks.
 

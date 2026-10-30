@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { allowRules, createApproval, expirePendingApprovals, getApproval, resolveApproval } from "./approvals.ts";
 import { createBot } from "./bots.ts";
 import { addMessage } from "./chat.ts";
@@ -15,6 +15,8 @@ beforeEach(() => {
   db = openDb(join(root, "t.db"));
   botId = createBot(db, join(root, "bots"), { name: "Writer", color: "blue", shape: "circle", instructions: "", provider: "claude", model: "sonnet" }).id;
 });
+
+afterEach(() => db.close());
 
 function approval(rule: string | null = "Write") {
   const message = addMessage(db, { conversationId: botId, author: botId, kind: "approval", body: "hello.txt", status: "done" });

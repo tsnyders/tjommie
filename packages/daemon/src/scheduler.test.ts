@@ -451,6 +451,17 @@ describe("Scheduler", () => {
     expect(stopped).toEqual([[item.id, "Stopped at the time limit (3 hours)."]]);
     s.runEnded(getWorkItem(db, item.id), { outcome: "interrupted", error: null });
     expect(getRun(db, runId)).toMatchObject({ status: "stopped", note: "Stopped at the time limit." });
+    expect(events.find((event) => event.event === "notify")?.data).toMatchObject({ kind: "routine_failed", botId, body: "Digest: Stopped at the time limit." });
+  });
+
+  it("announces a finished routine with the ending reply", () => {
+    digest();
+    const s = scheduler();
+    s.tick(at("2026-09-20T08:00:10Z"));
+    const item = delivered[0];
+    s.runStarted(item);
+    s.runEnded(item, { outcome: "done", error: null, text: `${"x".repeat(139)}😀y` });
+    expect(events.find((event) => event.event === "notify")?.data).toEqual({ kind: "done", botId, title: 'Night Shift finished "Digest"', body: `${"x".repeat(139)}😀` });
   });
 
   it("notifies the person when a run fails", () => {
@@ -732,7 +743,7 @@ describe("Scheduler", () => {
     expect(vi.getTimerCount()).toBe(0);
     vi.advanceTimersByTime(60_000);
     expect(stopped).toEqual([]);
-    expect(events.filter((event) => event.event === "notify")).toHaveLength(outcome === "failed" ? 1 : 0);
+    expect(events.filter((event) => event.event === "notify")).toHaveLength(outcome === "interrupted" ? 0 : 1);
   });
 
   it("does not arm a timer for an unlimited routine", () => {

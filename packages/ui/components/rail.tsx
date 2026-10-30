@@ -10,6 +10,7 @@ import { stateLabel } from "@/lib/labels";
 import { useApp } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { BotAvatar, TeamMark } from "./bot-avatar";
+import { HostSwitcher } from "./host-switcher";
 
 export function Rail() {
   const bots = useApp((state) => state.bots);
@@ -45,9 +46,7 @@ export function Rail() {
         <RailLink href="/settings/" label="Settings" selected={pathname.startsWith("/settings")} compact>
           <Settings className="size-5 text-icon" aria-hidden />
         </RailLink>
-        <span aria-hidden className="mt-3 flex size-8 items-center justify-center rounded-full bg-user-avatar text-[13px] font-semibold text-white">
-          {initial}
-        </span>
+        <HostSwitcher initial={initial} />
       </div>
     </nav>
   );

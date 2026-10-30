@@ -9,7 +9,7 @@ import { RpcError, type Broadcast } from "./server.ts";
 export const TICK_MS = 30_000;
 export const GRACE_MS = 120_000; // a run later than this counts as missed
 
-export type TurnOutcome = { outcome: "done" | "failed" | "interrupted"; error: string | null };
+export type TurnOutcome = { outcome: "done" | "failed" | "interrupted"; error: string | null; text?: string | null };
 
 export const duration = (minutes: number): string =>
   minutes % 60 === 0 ? `${minutes / 60} ${minutes === 60 ? "hour" : "hours"}` : `${minutes} ${minutes === 1 ? "minute" : "minutes"}`;
@@ -189,7 +189,9 @@ export class Scheduler {
       const routine = getRoutine(this.#db, run.routineId);
       this.#label(routine, ended, broadcast);
       broadcast("routine.run", ended);
-      if (status === "failed") broadcast("notify", this.#storeFailure(routine, ended, note ?? "Something went wrong."));
+      if (status === "failed" || timedOut) broadcast("notify", this.#storeFailure(routine, ended, note ?? "Something went wrong."));
+      else if (status === "done") broadcast("notify", { kind: "done", botId: routine.botId,
+        title: `${getStoredBot(this.#db, routine.botId).name} finished "${routine.name}"`, body: result.text ? Array.from(result.text).slice(0, 140).join("") : "" });
     });
     for (const send of events) send();
   }

@@ -1,13 +1,13 @@
-import { existsSync, mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import { migrations, openDb } from "./db.ts";
 import { dataPaths, readOrCreateToken } from "./paths.ts";
+import { tempRoot } from "./testing.ts";
 
 // A root with a space and an accented letter, like a real Windows profile path.
-const root = () => mkdtempSync(join(tmpdir(), "tjommie test ñ-"));
+const root = tempRoot;
 
 describe("openDb", () => {
   it("upgrades a version 6 database with Everyone and empty room memberships", () => {
@@ -17,9 +17,33 @@ describe("openDb", () => {
     old.exec("PRAGMA user_version = 6");
     old.close();
     const db = openDb(file);
-    expect(db.prepare("PRAGMA user_version").get()).toEqual({ user_version: 7 });
+    expect(db.prepare("PRAGMA user_version").get()).toEqual({ user_version: migrations.length });
     expect(db.prepare("SELECT name, created_at FROM conversations WHERE id = 'team'").get()).toEqual({ name: "Everyone", created_at: null });
     expect(db.prepare("SELECT * FROM room_members").all()).toEqual([]);
+    db.close();
+  });
+
+  it("adds a nullable push token to the previous device schema without changing devices", () => {
+    const file = join(root(), "v7.db");
+    const old = new DatabaseSync(file);
+    for (const migration of migrations.slice(0, 7)) old.exec(migration);
+    old.exec(`INSERT INTO devices(id,name,public_key,paired_at) VALUES('phone','Phone','key','2026-10-25T00:00:00.000Z'); PRAGMA user_version = 7;`);
+    old.close();
+    const db = openDb(file);
+    expect(db.prepare("PRAGMA user_version").get()).toEqual({ user_version: migrations.length });
+    expect(db.prepare("SELECT id, push_token FROM devices WHERE id = 'phone'").get()).toEqual({ id: "phone", push_token: null });
+    db.close();
+  });
+
+  it("upgrades a version 8 device schema with nullable push kinds", () => {
+    const file = join(root(), "v8.db");
+    const old = new DatabaseSync(file);
+    for (const migration of migrations.slice(0, 8)) old.exec(migration);
+    old.exec("INSERT INTO devices(id,name,public_key,paired_at,push_token) VALUES('phone','Phone','key','now','existing-token'); PRAGMA user_version = 8;");
+    old.close();
+    const db = openDb(file);
+    expect(db.prepare("PRAGMA user_version").get()).toEqual({ user_version: 9 });
+    expect(db.prepare("SELECT push_token, push_kinds FROM devices WHERE id = 'phone'").get()).toEqual({ push_token: "existing-token", push_kinds: null });
     db.close();
   });
 
@@ -89,19 +113,23 @@ describe("openDb", () => {
     const again = openDb(file);
     expect(again.prepare("SELECT label FROM accounts WHERE id = 'a'").get()).toEqual({ label: "Claude" });
     expect(again.prepare("PRAGMA user_version").get()).toEqual({ user_version: migrations.length });
+    again.close();
   });
 
   it("has the Team room conversation and the routine tables after migration 2", () => {
     const db = openDb(join(root(), "t.db"));
-    expect(db.prepare("SELECT kind FROM conversations WHERE id = 'team'").get()).toEqual({ kind: "room" });
-    for (const table of ["settings", "chains", "exchanges", "routines", "routine_runs"]) {
-      expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)).toEqual({ name: table });
-    }
+    try {
+      expect(db.prepare("SELECT kind FROM conversations WHERE id = 'team'").get()).toEqual({ kind: "room" });
+      for (const table of ["settings", "chains", "exchanges", "routines", "routine_runs"]) {
+        expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)).toEqual({ name: table });
+      }
+    } finally { db.close(); }
   });
 
   it("enforces foreign keys", () => {
     const db = openDb(join(root(), "t.db"));
-    expect(() => db.prepare("INSERT INTO conversations (id, kind, bot_id) VALUES ('c', 'bot', 'missing')").run()).toThrow(/FOREIGN KEY/);
+    try { expect(() => db.prepare("INSERT INTO conversations (id, kind, bot_id) VALUES ('c', 'bot', 'missing')").run()).toThrow(/FOREIGN KEY/); }
+    finally { db.close(); }
   });
 
   it("upgrades saved sessions with an unknown cost baseline", () => {
