@@ -5,10 +5,10 @@ function fixture() {
   let resolved: () => void = () => {};
   const lookup = new Promise<void>((done) => { resolved = done; });
   const vault = { lock: vi.fn(), command: vi.fn(async (_command: Parameters<VaultCommandGate["execute"]>[0]) => ({})) };
-  let connection = {};
-  const gate = new VaultCommandGate({ vault: () => vault, ready: () => true, connection: () => connection, resolveBot: () => lookup });
+  let connection = {}, ready = true;
+  const gate = new VaultCommandGate({ vault: () => vault, ready: () => ready, connection: () => connection, resolveBot: () => lookup });
   const entry = { controllerId: "rpc:one", action: { kind: "entry", botId: "bot" } } as const;
-  return { gate, vault, entry, resolved, reconnect: () => { connection = {}; } };
+  return { gate, vault, entry, resolved, reconnect: () => { connection = {}; }, quitting: () => { ready = false; } };
 }
 
 it("cancels a delayed bot lookup before native entry starts and allows a subsequent request", async () => {
@@ -27,4 +27,11 @@ it.each(["lock", "disconnect", "navigation", "reconnect"] as const)("fences dela
   else await h.gate.execute({ controllerId: kind === "lock" ? "local" : "rpc:one", action: { kind } });
   h.resolved(); await expect(pending).rejects.toThrow("connection changed");
   expect(h.vault.command.mock.calls.some(([command]) => command?.action.kind === "entry")).toBe(false);
+});
+
+it("permits only cleanup commands during application shutdown", async () => {
+  const h = fixture(); h.quitting();
+  await expect(h.gate.execute(h.entry)).rejects.toThrow("unavailable");
+  await h.gate.execute({ controllerId: "local", action: { kind: "lock" } });
+  expect(h.vault.command).toHaveBeenLastCalledWith({ controllerId: "local", action: { kind: "lock" } });
 });

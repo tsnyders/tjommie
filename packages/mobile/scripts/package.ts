@@ -73,5 +73,5 @@ const version = (JSON.parse(readFileSync(join(repo, "packages/mobile/package.jso
 const artifact = release ? `Tjommie-Android-${version}.apk` : acceptance ? `Tjommie-Phase4-Test-${version}.apk` : `Tjommie Android ${version} debug.apk`;
 cpSync(apk, join(out, artifact));
 const provenance = { version: 1, inputsSha256, firebaseConfigSha256, artifact, applicationId: acceptance ? "dev.tjommie.app.phase4test" : "dev.tjommie.app", sha256: digest(apk), uiAssetsVerified: assets, signing: release ? "Android release signing" : "Android debug signing; local testing only" };
-writeFileSync(join(out, release ? `Tjommie-Android-${version}.provenance.json` : "provenance.json"), JSON.stringify(provenance, null, 2));
+writeFileSync(join(out, release ? `Tjommie-Android-${version}.provenance.json` : acceptance ? `Tjommie-Phase4-Test-${version}.provenance.json` : "provenance.json"), JSON.stringify(provenance, null, 2));
 console.log(`Android package verified: ${assets} UI assets match the current build. ${join(out, artifact)}`);

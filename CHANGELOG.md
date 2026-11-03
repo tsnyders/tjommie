@@ -5,6 +5,8 @@
 - Preview shared Markdown, images, PDFs, audio and video, and download delivered files on the device you are using.
 - Markdown files can include explicitly shared companion images, with the same file permissions and cleanup as their document.
 - Large Markdown files open in readable sections, and PDFs use bounded range reads with selectable text, search and zoom.
+- Switching PDF pages no longer leaves text from the previous page.
+- Shared files work when Windows uses a shortened folder path.
 - Create project teams with bot roles, tasks and separate Git worktrees. Review and checks stay attached to the exact task commit before integration.
 - Task helper replies continue in the original managed worktree and keep the task active until they finish.
 - Settings now groups appearance, notifications, files, voice, diagnostics and About while preserving existing settings links.
@@ -12,6 +14,8 @@
 - Dictate an editable message draft using supported local desktop or Android speech engines before sending it.
 - View a bot's computer from a paired device, take control and return it to the bot with private-mode safeguards.
 - Manage saved website logins on the host, with exact-site confirmation and private browser filling after Windows worker isolation is verified. Bots can ask you for a named login without reading its secret.
+- Configured project checks use the same Windows worker isolation as bots when it is enabled.
+- Pending login operations are cancelled safely when the app closes or reconnects.
 - Update paired devices together for the new connection protocol.
 
 ## 0.3.2 — 2026-10-30

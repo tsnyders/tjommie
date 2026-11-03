@@ -57,14 +57,14 @@ export class Attachments {
   }
   #safeFile(base: string, candidate: string): string | null {
     const file = resolve(candidate);
-    if (!within(base, file)) return null;
     try {
-      let cursor = base;
-      for (const part of ["", ...relative(base, file).split(sep)]) {
-        cursor = part ? join(cursor, part) : cursor;
+      const canonical = realpathSync.native(file);
+      if (!within(realpathSync.native(base), canonical)) return null;
+      for (let cursor = file;; cursor = dirname(cursor)) {
         if (lstatSync(cursor).isSymbolicLink()) return null;
+        if (cursor === dirname(cursor)) break;
       }
-      return lstatSync(file).isFile() && within(realpathSync.native(base), realpathSync.native(file)) ? file : null;
+      return lstatSync(file).isFile() ? canonical : null;
     } catch { return null; }
   }
   #snapshotPath(candidate: string): string | null {

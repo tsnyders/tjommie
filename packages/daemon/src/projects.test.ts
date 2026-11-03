@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { realpathSync } from "node:fs";
 import { afterEach, expect, it, vi } from "vitest";
 import { projectFixture } from "./project-test-support.ts";
 import { Tasks } from "./tasks.ts";
@@ -56,7 +57,7 @@ it("archives a team without deleting its repository, tasks, room or worktree his
   const h = fixture(), task = h.newTask();
   const archived = h.projects.archive(h.project.id, h.project.revision);
   expect(archived.state).toBe("archived"); expect(h.tasks.task(task.id)).toEqual(task);
-  expect(h.projects.repository(h.repository.id).path).toBe(h.repoPath);
+  expect(h.projects.repository(h.repository.id).path).toBe(realpathSync.native(h.repoPath));
   expect(h.db.prepare("SELECT id FROM conversations WHERE id=?").get(h.project.roomId!)).toBeTruthy();
   expect(() => h.tasks.start(task.id, task.revision, "after-archive")).toThrow(/archived/);
 });

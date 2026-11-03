@@ -297,7 +297,7 @@ async function launchDaemon(): Promise<DaemonConnection> {
       env: daemonLaunchEnv(process.env, dataRoot, !!packageIdentity.testDataRoot),
       // Only an isolated desktop test may redirect the daemon's account folders.
       testAccountsDir: packageIdentity.testDataRoot
-        ? join(packageIdentity.testDataRoot, "accounts")
+        ? join(dataRoot, "accounts")
         : process.env.TJOMMIE_USER_DATA ? process.env.TJOMMIE_ACCOUNTS_DIR || undefined : undefined,
     },
     log,

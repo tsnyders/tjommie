@@ -47,7 +47,10 @@ export function PdfFileViewer({ url, size }: { url: string; size: number }) {
       target.width = Math.max(1, Math.floor(viewport.width * ratio)); target.height = Math.max(1, Math.floor(viewport.height * ratio)); target.style.width = `${viewport.width}px`; target.style.height = `${viewport.height}px`;
       layer.style.width = `${viewport.width}px`; layer.style.height = `${viewport.height}px`; layer.style.setProperty("--scale-factor", String(zoom)); layer.style.setProperty("--total-scale-factor", String(zoom * viewport.userUnit));
       render = current.render({ canvasContext: target.getContext("2d"), viewport, transform: [ratio, 0, 0, ratio, 0, 0], annotationMode: 0 }); await render.promise;
-      if (abort.signal.aborted) return; text = new loaded.api.TextLayer({ textContentSource: await current.getTextContent(), container: layer, viewport }); await text.render();
+      if (abort.signal.aborted) return;
+      const textContentSource = await current.getTextContent();
+      if (abort.signal.aborted) return;
+      text = new loaded.api.TextLayer({ textContentSource, container: layer, viewport }); await text.render();
     })().catch(() => { if (!abort.signal.aborted) setError("The PDF page could not be rendered. Download is still available."); }).finally(() => { current?.cleanup(); });
     return () => { abort.abort(); render?.cancel(); text?.cancel(); layer.replaceChildren(); target.width = 0; target.height = 0; };
   }, [loaded, page, zoom]);
