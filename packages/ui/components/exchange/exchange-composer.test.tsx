@@ -11,12 +11,17 @@ const LONG = "A very long bot name of thirty-nine";
 
 describe("ExchangeComposer on a phone", () => {
   const out = renderToStaticMarkup(<ExchangeComposer exchangeId="synthetic-exchange" bots={[bot("b1", LONG), bot("b2", "ResearchScout")]} />);
-  it("offers local dictation separately from Send", () => { expect(out).toContain('aria-label="Start dictation"'); });
+  it("offers local dictation separately from Send in a named action group without idle instructions", () => {
+    expect(out).toContain('aria-label="Start dictation"');
+    expect(out).toContain('aria-label="Message actions"');
+    expect(out).toContain('aria-label="Dictation settings"');
+    expect(out).not.toContain('role="status"');
+  });
 
   it("puts the mentions on a row of their own that wraps, so they can't push the box off the screen", () => {
-    expect(out).toContain("max-sm:basis-full");
-    expect(out).toContain("max-sm:flex-wrap");
-    expect(out).toContain("max-sm:max-w-full"); // a chip is at most as wide as the row
+    expect(out).toContain('aria-label="Reply recipients"');
+    expect(out).toContain("flex-wrap");
+    expect(out).toContain("max-w-full"); // a chip is at most as wide as the row
   });
 
   it("cuts a long name short but keeps its full name for a screen reader and a tooltip", () => {
@@ -29,12 +34,12 @@ describe("ExchangeComposer on a phone", () => {
   it("keeps the input and Send in the box, the input taking what room is left", () => {
     expect(out).toContain('aria-label="Reply in Everyone"');
     expect(out).toContain('aria-label="Send"');
-    expect(out).toContain("min-w-0 flex-1");
+    expect(out).toContain("w-full min-w-0");
   });
 
-  it("is unchanged on a desktop panel: the mentions sit in the box and don't shrink", () => {
-    expect(out).toContain("sm:contents");
-    expect(out).toContain("sm:shrink-0");
+  it("keeps recipients separate from the field at every panel width", () => {
+    expect(out).not.toContain("sm:contents");
+    expect(out).toContain("flex min-w-0 flex-col");
   });
 });
 

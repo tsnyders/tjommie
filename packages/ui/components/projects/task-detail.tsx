@@ -1,17 +1,17 @@
-import { useState } from "react";
+import { useState, type Ref } from "react";
 import type { Project, TaskCleanupPreview, TaskDetail as Detail, TaskDiff } from "../../../protocol/src/projects";
 import { request } from "@/lib/connection";
 import { canIntegrate, shortSha } from "@/lib/projects";
 import { Pill } from "../pill";
 import { TaskDiffView } from "./task-diff";
 
-export function TaskDetailView({ project, detail, diff, targetSha, busy, connected, onAction, onEdit }: { project: Project; detail: Detail; diff: TaskDiff | null; targetSha: string | null; busy: boolean; connected: boolean; onAction(action: () => Promise<unknown>, concurrent?: boolean): void; onEdit(): void }) {
+export function TaskDetailView({ project, detail, diff, targetSha, busy, connected, onAction, onEdit, focusRef }: { project: Project; detail: Detail; diff: TaskDiff | null; targetSha: string | null; busy: boolean; connected: boolean; onAction(action: () => Promise<unknown>, concurrent?: boolean): void; onEdit(): void; focusRef?: Ref<HTMLElement> }) {
   const { task } = detail, attempt = detail.attempts.find((candidate) => candidate.id === task.currentAttemptId);
   const [cleanup, setCleanup] = useState<TaskCleanupPreview | null>(null);
   const running = !!attempt && ["provisioning", "queued", "running"].includes(attempt.state);
   const evaluating = detail.evaluations.some((evaluation) => evaluation.state === "running") || detail.integrations.some((integration) => ["preparing", "checking"].includes(integration.state));
   const disabled = busy || !connected || project.state !== "active";
-  return <article className="min-w-0 space-y-5 rounded-2xl border border-divider bg-card p-4 sm:p-5" aria-label={`Task: ${task.title}`}>
+  return <article ref={focusRef} tabIndex={-1} className="min-w-0 scroll-mt-4 space-y-5 rounded-2xl border border-divider bg-card p-4 [overflow-wrap:anywhere] sm:p-5" aria-label={`Task: ${task.title}`}>
     <div className="flex flex-wrap items-start justify-between gap-3"><div className="min-w-0"><h2 className="break-words text-lg font-semibold text-title">{task.title}</h2><p role="status" className="mt-1 text-sm capitalize text-secondary">{task.state} · {attempt ? `Attempt ${attempt.ordinal}: ${attempt.state}` : "Not started"}</p></div>
       <Pill className="min-h-11" disabled={disabled || running || evaluating} onClick={onEdit}>Edit task</Pill></div>
     <p className="whitespace-pre-wrap break-words text-sm text-text">{task.instructions}</p>

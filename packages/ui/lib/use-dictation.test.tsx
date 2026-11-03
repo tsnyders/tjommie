@@ -141,8 +141,27 @@ describe("dictation composer hook", () => {
     expect(voice.phase).toBe("listening");
     await click("Stop"); await event({ kind: "final", sessionId: id, text: "spoken words" });
     expect(document.querySelector("input")!.value).toBe("before spoken words after");
+    expect(voice.issue).toBe("");
     await event({ kind: "final", sessionId: id, text: "duplicate" });
     expect(document.querySelector("input")!.value).not.toContain("duplicate");
+  });
+  it("keeps an explicit failure separate from idle success instructions and clears it before retrying", async () => {
+    vi.mocked(fixture.api!.start).mockRejectedValueOnce(new Error("Synthetic start failure"));
+    await mount(); await click("Start");
+    expect(voice.issue).toContain("Couldn’t start local dictation");
+    await click("Start");
+    expect(voice.issue).toBe("");
+    expect(voice.phase).toBe("listening");
+  });
+  it("does not show a previous conversation's failed-start message after its cleanup resolves", async () => {
+    let finish: () => void = () => {};
+    vi.mocked(fixture.api!.start).mockRejectedValueOnce(new Error("Synthetic start failure"));
+    vi.mocked(fixture.api!.cancel).mockReturnValueOnce(new Promise((done) => { finish = done; }));
+    await mount(); await click("Start");
+    await act(async () => root!.render(<Harness target="two" />));
+    await act(async () => finish());
+    expect(voice.issue).toBe("");
+    expect(voice.phase).toBe("idle");
   });
   it("keeps typed edits and requires an explicit insertion when the original range changed", async () => {
     await mount(); await click("Start"); const id = vi.mocked(fixture.api!.start).mock.calls[0][0].sessionId;

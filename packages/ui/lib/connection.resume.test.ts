@@ -12,8 +12,9 @@ const device = vi.hoisted(() => ({
   network: [] as ((event: { type: string }) => void)[],
   statuses: [] as string[], // the connection status after every state change
   invalidations: 0,
+  cleanup: null as Promise<void> | null,
 }));
-vi.mock("./attachment-device", () => ({ attachmentDevice: () => ({ invalidate: async () => { device.invalidations++; } }) }));
+vi.mock("./attachment-device", () => ({ attachmentDevice: () => ({ invalidate: async () => { device.invalidations++; await device.cleanup; } }) }));
 vi.mock("@capacitor/core", () => ({ Capacitor: { isNativePlatform: () => true, getPlatform: () => "android" } }));
 vi.mock("../../mobile/src/plugins.ts", () => ({
   secureStore: {
@@ -56,7 +57,7 @@ beforeAll(() => initNoise(wasm));
 beforeEach(() => {
   vi.resetModules(); // a fresh connection module and store for each test
   vi.useFakeTimers();
-  device.vault.clear(); device.saved.clear(); device.network.length = 0; device.statuses.length = 0; device.invalidations = 0;
+  device.vault.clear(); device.saved.clear(); device.network.length = 0; device.statuses.length = 0; device.invalidations = 0; device.cleanup = null;
   page = Object.assign(new EventTarget(), { visibilityState: "visible" });
   vi.stubGlobal("document", page);
   vi.stubGlobal("localStorage", { getItem: (key: string) => device.saved.get(key) ?? null, setItem: (key: string, value: string) => device.saved.set(key, value) });
@@ -115,6 +116,17 @@ it("keeps the link through a quick trip away, checking it with a ping instead of
   expect(pc.calls.filter((method) => method === "remote.ping")).toHaveLength(1);
   expect(changes()).toEqual(["connecting", "ready"]);
   expect(getState().connection).toEqual({ status: "ready" });
+});
+it("admits fresh file actions after a disconnect only when native thumbnail cleanup is confirmed", async () => {
+  const { pc, getState, start } = await boot(); await start();
+  const thumbnails = await import("./file-thumbnails"), { PreviewRetirementError } = await import("./attachment-transfer");
+  await expect(thumbnails.queueThumbnail(new AbortController().signal, async () => { throw new PreviewRetirementError(); })).rejects.toBeInstanceOf(PreviewRetirementError);
+  const blocked = thumbnails.pauseThumbnailWork(); await expect(blocked.ready).rejects.toBeInstanceOf(PreviewRetirementError); blocked.release();
+  let cleaned!: () => void; device.cleanup = new Promise<void>((resolve) => { cleaned = resolve; });
+  pc.wires[0].drop(); await settle(); const fresh = thumbnails.pauseThumbnailWork(), foreground = vi.fn(); void fresh.ready.then(foreground);
+  await settle(); expect(foreground).not.toHaveBeenCalled(); cleaned(); await fresh.ready; fresh.release();
+  await vi.advanceTimersByTimeAsync(2_000); await settle(); expect(getState().connection.status).toBe("ready");
+  const current = vi.fn(async () => "fresh file"); expect(await thumbnails.queueThumbnail(new AbortController().signal, current)).toBe("fresh file"); expect(foreground).toHaveBeenCalledOnce();
 });
 
 it("keeps authorized native save data when returning from a picker after two minutes on a healthy link", async () => {

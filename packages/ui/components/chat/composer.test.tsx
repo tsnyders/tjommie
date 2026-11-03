@@ -25,6 +25,9 @@ describe("canStop", () => {
     expect(html).toContain('aria-label="Start dictation"');
     expect(html).toContain('type="button"');
     expect(html).toContain('aria-label="Send"');
+    expect(html).toContain('aria-label="Message actions"');
+    expect(html).toContain('aria-label="Dictation settings"');
+    expect(html).not.toContain('role="status"');
   });
   it("offers Stop while the bot works, or waits on a tool card that holds its turn", () => {
     expect(canStop(bot("working"), [])).toBe(true);

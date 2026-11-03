@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import type { Banner } from "@/lib/accounts";
 import { BannerView } from "./setup-banner";
+import { SignInNotifications } from "./sign-in-toast";
 
 vi.mock("@/lib/connection", () => ({ request: vi.fn(), daemon: vi.fn() }));
 
@@ -10,14 +11,13 @@ const bot = { id: "b1", name: "Scout", provider: "claude" } as Bot;
 const account = (patch: Partial<AccountInfo> = {}): AccountInfo =>
   ({ id: "a1", provider: "claude", label: "Claude (Personal)", kind: "subscription", isDefault: true, isFallback: false, spendingCapUsd: null, hasCredential: false, setup: null, limits: [], signIn: null, spending: { knownUsd: 0, unknownRows: 0, capUsd: null, blocked: false }, ...patch }) as AccountInfo;
 const until = "2026-10-22T14:00:00.000Z";
-const html = (banner: Banner) => renderToStaticMarkup(<BannerView bot={bot} banner={banner} />);
+const html = (banner: Banner) => renderToStaticMarkup(<SignInNotifications><BannerView bot={bot} banner={banner} /></SignInNotifications>);
 
 describe("BannerView", () => {
-  it("sends a sign-in banner to the account's card, which only points at the button", () => {
+  it("reserves no chat space for a sign-in notification", () => {
     const out = html({ kind: "signIn", account: account() });
-    expect(out).toContain("Claude (Personal) isn&#x27;t signed in.");
-    expect(out).toContain("/settings?section=accounts&amp;account=a1&amp;action=signin");
-    expect(out).toContain("Sign in");
+    expect(out).not.toContain("isn&#x27;t signed in");
+    expect(out).not.toContain("bg-waiting-fill");
   });
 
   it("raises a cap through the account's card, and has no button when the cap can't be checked", () => {

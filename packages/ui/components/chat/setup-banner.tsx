@@ -12,13 +12,12 @@ import { useApp } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { MENU_ITEM, MENU_POPUP } from "../menu";
 import { Pill } from "../pill";
+import { SignInToast } from "./sign-in-toast";
 
 const PILL_LINK = "press inline-flex h-8 shrink-0 items-center rounded-full bg-user-bubble px-3.5 text-[14px] font-medium whitespace-nowrap text-user-text";
 const accountsLink = (id: string, action: "signin" | "cap" | "retry"): string => `/settings/?section=accounts&account=${encodeURIComponent(id)}&action=${action}`;
 
-// The banner under a bot's chat header (WF11), by what the bot is waiting on: setup (the sandbox, or a provider that has no account to
-// name), a sign-in, a spending cap, a limit with accounts it could switch to, or a fallback key already carrying on for it. Waiting colors
-// when the person can do something, card colors when it is only news. It never switches accounts on its own, and offers no "always".
+// Sign-in is a dismissible toast; spending limits and host setup stay beside the affected chat.
 export function SetupBanner({ bot }: { bot: Bot }) {
   const accounts = useApp((state) => state.accounts);
   const banner = bannerFor(bot, accounts, new Date());
@@ -28,13 +27,11 @@ export function SetupBanner({ bot }: { bot: Bot }) {
 export function BannerView({ bot, banner }: { bot: Bot; banner: Banner }) {
   switch (banner.kind) {
     case "setup":
-      return <ProviderSetupBanner bot={bot} banner={banner} />;
+      return banner.signIn
+        ? <SignInToast subject={`provider:${bot.provider}`} title={banner.text} href="/settings/?section=accounts" />
+        : <ProviderSetupBanner banner={banner} />;
     case "signIn":
-      return (
-        <Frame icon={<Plug className="size-4 shrink-0 text-accent" aria-hidden />} action={<Link href={accountsLink(banner.account.id, "signin")} className={PILL_LINK}>Sign in</Link>}>
-          <p>{banner.account.label} isn&apos;t signed in.</p>
-        </Frame>
-      );
+      return <SignInToast subject={`account:${banner.account.id}`} title={`${banner.account.label} isn't signed in.`} href={accountsLink(banner.account.id, "signin")} />;
     case "cap":
       return banner.unknownPrices > 0 ? (
         <Frame icon={<Plug className="size-4 shrink-0 text-accent" aria-hidden />}>
@@ -139,23 +136,16 @@ function LimitedBanner({ bot, banner }: { bot: Bot; banner: Extract<Banner, { ki
   );
 }
 
-// The old setup banner: what a provider needs when no account can be named (its sandbox, or any other reason the daemon gives). When
-// setup finishes, the daemon updates the bot and the banner goes away.
-function ProviderSetupBanner({ bot, banner }: { bot: Bot; banner: Extract<Banner, { kind: "setup" }> }) {
+// Host setup stays visible until the daemon confirms it is ready.
+function ProviderSetupBanner({ banner }: { banner: Extract<Banner, { kind: "setup" }> }) {
   const [busy, setBusy] = useState(false);
-  const [note, setNote] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
 
   async function fix(): Promise<void> {
     setBusy(true);
     setProblem(null);
     try {
-      if (banner.signIn) {
-        await daemon().call("setup.signIn", { provider: bot.provider });
-        setNote("Finish signing in in your browser.");
-      } else {
-        await daemon().call("setup.prepareCodexSandbox", {});
-      }
+      await daemon().call("setup.prepareCodexSandbox", {});
     } catch (error) {
       setProblem(errorText(error));
     } finally {
@@ -168,16 +158,15 @@ function ProviderSetupBanner({ bot, banner }: { bot: Bot; banner: Extract<Banner
       <Plug className="size-4 shrink-0 text-accent" aria-hidden />
       <div className="min-w-0 flex-1 text-[14px] leading-[21px] text-text">
         <p>{banner.text}</p>
-        {note && <p className="text-[12px] leading-[18px] text-secondary">{note}</p>}
         {problem && (
           <p role="alert" className="text-[12px] leading-[18px] text-danger">
             {problem}
           </p>
         )}
       </div>
-      {(banner.signIn || banner.sandbox) && (
+      {banner.sandbox && (
         <Pill primary disabled={busy} onClick={() => void fix()}>
-          {banner.signIn ? "Sign in" : "Set up"}
+          Set up
         </Pill>
       )}
     </div>

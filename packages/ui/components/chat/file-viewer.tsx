@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import type { AttachmentCompanion, AttachmentInfo, AttachmentNativeApi, AttachmentRef } from "../../../protocol/src/attachments";
 import { attachmentError, previewAttachment } from "@/lib/attachment-transfer";
 import { daemon } from "@/lib/connection";
+import { pauseThumbnailWork } from "@/lib/file-thumbnails";
 import { usePhone } from "@/lib/use-phone";
 import { Dialog } from "../dialog";
 import { MarkdownFileViewer } from "./markdown-file-viewer";
@@ -26,12 +27,17 @@ export function FileViewer({ reference, name, companions, native, onClose, onDow
   const closePreview = useRef<(() => Promise<void>) | undefined>(undefined), closeImage = useRef<() => Promise<void>>(async () => {}), [preparingDownload, setPreparingDownload] = useState(false);
   const { messageId, attachmentIndex, attachmentId } = reference;
   useEffect(() => {
-    const abort = new AbortController(); let release: (() => Promise<void>) | undefined;
-    void Promise.resolve().then(() => previewAttachment(daemon(), { messageId, attachmentIndex, ...(attachmentId ? { attachmentId } : {}) }, native, abort.signal, (failure) => { if (!abort.signal.aborted) { setError(attachmentError(failure)); void release?.(); } })).then((preview) => {
+    const abort = new AbortController(), thumbnails = pauseThumbnailWork(abort.signal); let release: (() => Promise<void>) | undefined;
+    const opening = thumbnails.ready.then(() => { abort.signal.throwIfAborted(); return previewAttachment(daemon(), { messageId, attachmentIndex, ...(attachmentId ? { attachmentId } : {}) }, native, abort.signal, (failure) => { if (!abort.signal.aborted) { setError(attachmentError(failure)); void release?.().catch(() => {}); } }); }).then((preview) => {
       release = preview.close; closePreview.current = preview.close;
       if (!abort.signal.aborted) setReady({ info: preview.attachment, url: preview.url });
-    }).catch((failure: unknown) => { if (!abort.signal.aborted) setError(failure instanceof RangeError ? failure.message : attachmentError(failure)); void release?.(); });
-    return () => { abort.abort(); void release?.(); };
+    }).catch((failure: unknown) => { if (!abort.signal.aborted) setError(failure instanceof RangeError ? failure.message : attachmentError(failure)); void release?.().catch(() => {}); });
+    return () => {
+      // This is the companion's latest resource closer, deliberately captured at teardown.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      const closeCompanion = closeImage.current;
+      abort.abort(); void opening.then(async () => { try { await closeCompanion(); } finally { await release?.(); } }).catch(() => {}).finally(thumbnails.release);
+    };
   }, [messageId, attachmentIndex, attachmentId, native]);
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onClose(); }} title={name} width={expanded ? 1280 : 960} closable className={expanded ? "h-[calc(100dvh-32px)]" : "h-[min(760px,calc(100dvh-48px))]"} actions={<>

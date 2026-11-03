@@ -39,9 +39,9 @@ export const fullOnPhone = (width: number): boolean => width >= FULL_SCREEN_FROM
 export function dialogHeader(full: boolean, inApp: boolean): { bar: string; title: string; actions: string; close: string } {
   return {
     bar: cn("flex items-start gap-3", full && "max-sm:flex-wrap max-sm:items-center max-sm:gap-y-1"),
-    title: cn("flex-1 text-[17px] font-semibold leading-[22px] text-title", full && "max-sm:order-last max-sm:basis-full max-sm:pb-2 max-sm:pt-1"),
-    actions: cn(full && "max-sm:order-2 max-sm:ml-auto max-sm:flex max-sm:min-h-11 max-sm:items-center", full && inApp && "max-sm:mr-[146px]"),
-    close: cn("-mr-1 -mt-0.5 flex size-7 items-center justify-center rounded-[8px] text-icon hover:bg-pill hover:text-text", full && "max-sm:order-first max-sm:-ml-2 max-sm:mr-0 max-sm:mt-0 max-sm:size-11"),
+    title: cn("min-w-0 flex-1 text-[17px] font-semibold leading-[22px] text-title [overflow-wrap:anywhere]", full && "max-sm:order-last max-sm:basis-full max-sm:pb-2 max-sm:pt-1"),
+    actions: cn("shrink-0", full && "max-sm:order-2 max-sm:ml-auto max-sm:flex max-sm:min-h-11 max-sm:items-center", full && inApp && "max-sm:mr-[146px]"),
+    close: cn("-mr-1 -mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-[8px] text-icon hover:bg-pill hover:text-text", full && "max-sm:order-first max-sm:-ml-2 max-sm:mr-0 max-sm:mt-0 max-sm:size-11"),
   };
 }
 

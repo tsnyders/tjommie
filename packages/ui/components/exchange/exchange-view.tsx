@@ -17,7 +17,7 @@ import { MessageView, shownMessages } from "../chat/message-view";
 import { FailedLoad } from "../failed-load";
 import { IconButton } from "../icon-button";
 import { useDictation } from "@/lib/use-dictation";
-import { DictationButton, DictationStatus } from "../chat/dictation-button";
+import { DictationButton, DictationOptions, DictationStatus } from "../chat/dictation-button";
 
 const NO_MESSAGES: Message[] = [];
 
@@ -169,18 +169,17 @@ export function ExchangeComposer({ bots, exchangeId }: { bots: Bot[]; exchangeId
           </Link>
         </p>
       )}
-      <div className="flex items-center gap-2 rounded-[22px] border border-composer-stroke bg-composer py-[5px] pl-2 pr-[5px] shadow-composer max-sm:flex-wrap">
-        {/* The mentions. On a phone they are a row of their own above the box, each as wide as the row at most and cut short with its full name kept
-            (a long name can't push the box or the Send button off the screen); on a desktop panel they sit in the box, as they always did. */}
-        <div className="flex min-w-0 gap-2 sm:contents max-sm:basis-full max-sm:flex-wrap">
+      <DictationStatus voice={voice} />
+      <div data-slot="composer" className="flex min-w-0 flex-col rounded-[24px] border border-composer-stroke bg-composer p-1 shadow-composer focus-within:border-accent">
+        {/* Recipients keep their own wrapping row, leaving the full field width for the reply. */}
+        <div aria-label="Reply recipients" className="flex min-w-0 flex-wrap gap-2 px-3 pt-2">
           {bots.map((bot) => (
-            <span key={bot.id} title={`@${bot.name}`} className="inline-flex h-7 min-w-0 items-center gap-1.5 rounded-full bg-pill px-2.5 text-[12px] text-text max-sm:max-w-full sm:shrink-0">
+            <span key={bot.id} title={`@${bot.name}`} className="inline-flex min-h-7 min-w-0 max-w-full items-center gap-1.5 rounded-full bg-pill px-2.5 py-1 text-[12px] leading-5 text-text">
               <BotAvatar color={bot.color} shape={bot.shape} size={18} className="shrink-0" />
-              <span className="min-w-0 truncate max-sm:max-w-full">@{bot.name}</span>
+              <span className="min-w-0 truncate">@{bot.name}</span>
             </span>
           ))}
         </div>
-        {/* The caret shows focus here, as in the chat's composer. */}
         <input
           ref={field}
           value={text}
@@ -191,19 +190,21 @@ export function ExchangeComposer({ bots, exchangeId }: { bots: Bot[]; exchangeId
           }}
           aria-label="Reply in Everyone"
           placeholder={asked}
-          className="min-w-0 flex-1 truncate bg-transparent text-[14px] text-text outline-none placeholder:text-placeholder max-sm:basis-0 max-sm:pl-2"
+          className="block min-h-11 w-full min-w-0 bg-transparent px-3 py-2.5 text-[16px] leading-6 text-text outline-none placeholder:text-placeholder sm:text-[14px]"
         />
-        <DictationButton voice={voice} />
-        <button
-          type="submit"
-          aria-label="Send"
-          disabled={busy || !canSend}
-          className={cn("flex size-8 shrink-0 items-center justify-center rounded-full", canSend ? "bg-user-bubble text-user-text" : "bg-disabled text-placeholder")}
-        >
-          <ArrowUp className="size-4" aria-hidden />
-        </button>
+        <div role="group" aria-label="Message actions" className="flex min-h-11 min-w-0 flex-wrap items-center gap-1">
+          <DictationButton voice={voice} />
+          <DictationOptions voice={voice} />
+          <button
+            type="submit"
+            aria-label="Send"
+            disabled={busy || !canSend}
+            className={cn("ml-auto flex size-11 shrink-0 touch-manipulation select-none items-center justify-center rounded-full enabled:active:opacity-80 disabled:opacity-50", canSend ? "bg-user-bubble text-user-text" : "bg-disabled text-placeholder")}
+          >
+            <ArrowUp className="size-5" aria-hidden />
+          </button>
+        </div>
       </div>
-      <DictationStatus voice={voice} />
       {problem && (
         <p role="alert" className="mt-1.5 text-[12px] leading-[18px] text-danger">
           {problem}

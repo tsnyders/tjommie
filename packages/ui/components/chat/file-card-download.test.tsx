@@ -6,11 +6,13 @@ import type { Client } from "@tjommie/client";
 import type { AttachmentInfo, AttachmentNativeApi } from "../../../protocol/src/attachments";
 import { initialState } from "@/lib/state";
 import { update } from "@/lib/store";
+import { queueThumbnail } from "@/lib/file-thumbnails";
 import { FileCard } from "./file-card";
 const fixture = vi.hoisted(() => ({ native: null as AttachmentNativeApi | null, client: null as Pick<Client, "call"> | null, abort: null as AbortController | null, close: vi.fn() }));
 vi.mock("@/lib/attachment-device", () => ({ attachmentDevice: () => fixture.native }));
 vi.mock("@/lib/native-capability", () => ({ useLocalFileActions: () => null, localFileActions: () => null }));
 vi.mock("./file-viewer", () => ({ previewKind: () => "markdown", FileViewer: () => null }));
+vi.mock("./file-thumbnail", () => ({ FileThumbnail: () => null }));
 vi.mock("@/lib/connection", () => ({ captureAttachmentDownload: (abort: AbortController) => { fixture.abort = abort; return { client: fixture.client!, reacquire: async () => fixture.client!, transferring: () => {}, close: fixture.close }; } }));
 Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
 const info: AttachmentInfo = { id: "83c70656-e163-478e-a934-6a5801f5ef18", hostId: "distinct-storage-host", name: "file.md", size: 0, contentType: "text/markdown", sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" };
@@ -33,6 +35,14 @@ it("keeps the byte-free picker through an offline render and saves after reconne
   expect(fixture.abort?.signal.aborted).toBe(false); expect(fixture.native!.activateSave).not.toHaveBeenCalled();
   await act(async () => update((state) => ({ ...state, connection: { status: "ready" } }))); await act(async () => choose({ saveId: "chosen" })); await settle();
   expect(document.body.textContent).toContain("Saved on this device."); expect(fixture.native!.activateSave).toHaveBeenCalledWith("chosen"); expect(fixture.close).toHaveBeenCalledOnce();
+});
+it("waits for thumbnail retirement before starting the destination picker", async () => {
+  let started!: () => void, close!: () => void;
+  const began = new Promise<void>((resolve) => { started = resolve; }), retired = new Promise<void>((resolve) => { close = resolve; });
+  const background = queueThumbnail(new AbortController().signal, async (signal) => { started(); await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true })); await retired; }); await began;
+  await start(); expect(fixture.native!.startSave).not.toHaveBeenCalled(); expect(fixture.abort).toBeNull();
+  await act(async () => close()); await background; await settle(); expect(fixture.native!.startSave).toHaveBeenCalledOnce();
+  await act(async () => choose({ saveId: "chosen" })); await settle(); expect(document.body.textContent).toContain("Saved on this device.");
 });
 it.each(["switch", "unmount"] as const)("cancels a pending picker on %s and cancels its late URI handle", async (reason) => {
   await start();

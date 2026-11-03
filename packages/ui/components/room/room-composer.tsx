@@ -13,7 +13,7 @@ import { usePhone } from "@/lib/use-phone";
 import { cn } from "@/lib/utils";
 import { BotAvatar } from "../bot-avatar";
 import { useDictation } from "@/lib/use-dictation";
-import { DictationButton, DictationStatus } from "../chat/dictation-button";
+import { DictationButton, DictationOptions, DictationStatus } from "../chat/dictation-button";
 
 // A room's composer (WF5). Typing "@" opens the mention popover above it, filtered by what follows; it offers the room's own bots (members),
 // as only they answer there. A post that mentions none of them gets no answer, and the composer says so (WF11); mentions are read as the daemon
@@ -74,7 +74,7 @@ export function RoomComposer({ room }: { room: Room }) {
     });
   }
 
-  // The phone's @ button: starts a mention at the caret, which opens the list, and keeps the keyboard up.
+  // The @ button starts a mention at the caret, opens the list and keeps the keyboard up.
   function mention(): void {
     const next = withAt(text, field.current?.selectionStart ?? text.length);
     voice.changed(next.text);
@@ -173,20 +173,15 @@ export function RoomComposer({ room }: { room: Room }) {
         </ul>
       )}
       {hint && !text && <p className="mb-2 text-center text-[12px] leading-[18px] text-caption">No bot was mentioned, so nobody will reply. Type @ to ask a bot.</p>}
+      <DictationStatus voice={voice} />
       <form
         onSubmit={(event) => {
           event.preventDefault();
           void send();
         }}
         data-slot="composer"
-        className="flex items-end gap-2 rounded-[22px] border border-composer-stroke bg-composer py-[5px] pl-4 pr-[5px] shadow-composer max-sm:pl-[5px]"
+        className="flex min-w-0 flex-col rounded-[24px] border border-composer-stroke bg-composer p-1 shadow-composer focus-within:border-accent"
       >
-        {phone && (
-          <button type="button" aria-label="Mention" onClick={mention} className="flex size-8 shrink-0 items-center justify-center rounded-full bg-disabled text-icon">
-            <AtSign className="size-4" aria-hidden />
-          </button>
-        )}
-        {/* The caret shows focus here, as in the chat's composer. */}
         <textarea
           ref={field}
           value={text}
@@ -201,19 +196,24 @@ export function RoomComposer({ room }: { room: Room }) {
           onChange={(event) => { voice.changed(event.target.value); edit(event.target.value, event.target.selectionStart); }}
           onSelect={(event) => setCaret(event.currentTarget.selectionStart)}
           onKeyDown={onKeyDown}
-          className="max-h-[200px] min-h-8 flex-1 resize-none max-sm:max-h-[min(200px,25dvh)] bg-transparent py-[5.5px] text-[14px] leading-[21px] text-text outline-none [field-sizing:content] placeholder:text-placeholder"
+          className="block max-h-[200px] min-h-11 w-full min-w-0 resize-none bg-transparent px-3 py-2.5 text-[16px] leading-6 text-text outline-none [field-sizing:content] placeholder:text-placeholder max-sm:max-h-[min(200px,25dvh)] sm:text-[14px]"
         />
-        <DictationButton voice={voice} />
-        <button
-          type="submit"
-          aria-label="Send"
-          disabled={busy || !text.trim()}
-          className={cn("flex size-8 shrink-0 items-center justify-center rounded-full", text.trim() ? "bg-user-bubble text-user-text" : "bg-disabled text-placeholder")}
-        >
-          <ArrowUp className="size-4" aria-hidden />
-        </button>
+        <div role="group" aria-label="Message actions" className="flex min-h-11 min-w-0 flex-wrap items-center gap-1">
+          <button type="button" aria-label="Mention" title="Mention a bot" onClick={mention} className="flex size-11 shrink-0 touch-manipulation select-none items-center justify-center rounded-full text-icon hover:bg-highlight hover:text-text active:bg-highlight">
+            <AtSign className="size-[18px]" aria-hidden />
+          </button>
+          <DictationButton voice={voice} />
+          <DictationOptions voice={voice} />
+          <button
+            type="submit"
+            aria-label="Send"
+            disabled={busy || !text.trim()}
+            className={cn("ml-auto flex size-11 shrink-0 touch-manipulation select-none items-center justify-center rounded-full enabled:active:opacity-80 disabled:opacity-50", text.trim() ? "bg-user-bubble text-user-text" : "bg-disabled text-placeholder")}
+          >
+            <ArrowUp className="size-5" aria-hidden />
+          </button>
+        </div>
       </form>
-      <DictationStatus voice={voice} />
       {problem && (
         <p role="alert" className="mt-1.5 px-3 text-[12px] leading-[18px] text-danger">
           {problem}

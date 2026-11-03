@@ -10,7 +10,11 @@ const growth: Room = { id: "r1", name: "Growth", botIds: ["b1", "b2"], everyone:
 
 describe("RoomComposer", () => {
   it("offers local dictation alongside the existing room composer", () => {
-    expect(renderToStaticMarkup(<RoomComposer room={growth} />)).toContain('aria-label="Start dictation"');
+    const html = renderToStaticMarkup(<RoomComposer room={growth} />);
+    expect(html).toContain('aria-label="Start dictation"');
+    expect(html).toContain('aria-label="Message actions"');
+    expect(html).toContain('aria-label="Dictation settings"');
+    expect(html).not.toContain('role="status"');
   });
   it("points at the mention list only while it's open", () => {
     const html = renderToStaticMarkup(<RoomComposer room={growth} />);

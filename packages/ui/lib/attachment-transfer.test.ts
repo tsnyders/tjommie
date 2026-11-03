@@ -103,6 +103,23 @@ describe("bounded attachment client", () => {
     listener({ previewId, requestId, offset: 0, length: 3 }); await vi.waitFor(() => expect(native.respond).toHaveBeenCalledWith(previewId, requestId, "YWFh"));
     await preview.close(); await preview.close(); expect(remove).toHaveBeenCalledTimes(1); expect(native.closePreview).toHaveBeenCalledTimes(1);
   });
+  it("waits for the first in-flight abort cleanup on every subsequent preview close", async () => {
+    const { client, native, call } = fixture(), abort = new AbortController(), previewId = "624d43d7-1a49-4d79-8d1d-85d846cfbd8e";
+    native.preview = async () => ({ previewId, url: `app://tjommie/_attachments/${previewId}` });
+    let retired!: () => void;
+    native.closePreview = vi.fn(() => new Promise<void>((resolve) => { retired = resolve; }));
+    const preview = await previewAttachment(client, ref, native, abort.signal); abort.abort();
+    const first = preview.close(), second = preview.close(); let closed = false; void second.then(() => { closed = true; });
+    expect(first).toBe(second); await Promise.resolve(); expect(closed).toBe(false); expect(call).not.toHaveBeenCalledWith("attachments.close", expect.anything());
+    retired(); await second; expect(closed).toBe(true); expect(native.closePreview).toHaveBeenCalledOnce(); expect(call).toHaveBeenLastCalledWith("attachments.close", { transferId: transfer.transferId });
+  });
+  it("retains the first preview cleanup failure for subsequent close callers while closing the host lease", async () => {
+    const { client, native, call } = fixture(), previewId = "624d43d7-1a49-4d79-8d1d-85d846cfbd8e", failure = new Error("Synthetic cleanup failure");
+    native.preview = async () => ({ previewId, url: `app://tjommie/_attachments/${previewId}` }); native.closePreview = vi.fn(async () => { throw failure; });
+    const preview = await previewAttachment(client, ref, native, new AbortController().signal), first = preview.close();
+    await expect(first).rejects.toBe(failure); await expect(preview.close()).rejects.toBe(failure);
+    expect(native.closePreview).toHaveBeenCalledOnce(); expect(call).toHaveBeenLastCalledWith("attachments.close", { transferId: transfer.transferId });
+  });
   it("reports a host read failure separately from an unsupported media codec", async () => {
     const { client, native, call } = fixture(), previewId = "624d43d7-1a49-4d79-8d1d-85d846cfbd8e", failure = Object.assign(new Error("Synthetic corrupt file"), { code: "corrupt" }), onError = vi.fn(); let listener: (request: AttachmentNativeRead) => void = () => {};
     native.preview = async () => ({ previewId, url: `app://tjommie/_attachments/${previewId}` }); native.onRead = (next) => { listener = next; return () => {}; };

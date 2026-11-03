@@ -14,6 +14,7 @@ import { LINK, addOlder, applyEvent, catchUp, connected, finishLoading, forgetCo
 import { getState, update } from "./store";
 import { atMost } from "./utils";
 import type { AttachmentSaveGuard } from "../../mobile/src/attachments";
+import { invalidateThumbnailWork } from "./file-thumbnails";
 
 const PAGE = 50;
 const STARTING_TRIES = 3; // failed tries before "Starting Tjommie" says why it can't connect
@@ -39,6 +40,7 @@ function invalidateFiles(scope: "all" | "transfers" = "all"): Promise<void> {
   let closing: Promise<void> | undefined;
   try { closing = attachmentDevice()?.invalidate(scope === "transfers" ? { scope } : undefined); }
   catch { closing = Promise.reject(new Error("Native file cleanup is unavailable.")); }
+  invalidateThumbnailWork(closing ?? Promise.resolve());
   filesClosed = Promise.all([filesClosed, closing]).then(() => {}).catch(() => {});
   return filesClosed;
 }

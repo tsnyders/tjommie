@@ -17,6 +17,7 @@ import { cn } from "@/lib/utils";
 import { ConnectionScreen } from "./connection-screen";
 import { Rail } from "./rail";
 import { TabBar } from "./tab-bar";
+import { SignInNotifications } from "./chat/sign-in-toast";
 
 export function AppShell({ children }: { children: ReactNode }) {
   const router = useRouter();
@@ -37,6 +38,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   useEffect(() => desktop()?.onNavigate((path) => router.push(path)), [router]);
   useEffect(() => onPushTap((data) => { const route = routePush(data); if (route) router.push(route); }), [router]);
   return (
+    <SignInNotifications>
     <div data-nav={nav || undefined} className={cn("flex h-dvh max-sm:flex-col", android && "android-app")}>
       <Suspense fallback={<div className="w-[88px] shrink-0 border-r border-rail-edge bg-rail max-sm:hidden" />}>
         <Rail />
@@ -47,6 +49,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       </main>
       <TabBar />
     </div>
+    </SignInNotifications>
   );
 }
 

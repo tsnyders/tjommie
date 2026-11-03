@@ -40,13 +40,15 @@ export class AttachmentTransfer {
   #signal: AbortSignal;
   #closed = false;
   #reading = false;
-  private constructor(client: Pick<Client, "call">, transfer: AttachmentOpen, signal: AbortSignal) { this.#client = client; this.transfer = transfer; this.#signal = signal; }
-  static async open(client: Pick<Client, "call">, ref: AttachmentRef, signal: AbortSignal): Promise<AttachmentTransfer> {
+  #strictRetirement: boolean;
+  private constructor(client: Pick<Client, "call">, transfer: AttachmentOpen, signal: AbortSignal, strictRetirement = false) { this.#client = client; this.transfer = transfer; this.#signal = signal; this.#strictRetirement = strictRetirement; }
+  static async open(client: Pick<Client, "call">, ref: AttachmentRef, signal: AbortSignal, retiring?: (cleanup: Promise<void>) => void): Promise<AttachmentTransfer> {
     const pending = client.call("attachments.open", ref), result = await untilAbort(pending, signal).catch((error: unknown) => {
-      void pending.then((late) => client.call("attachments.close", { transferId: late.transferId })).catch(() => {}); throw error;
+      const cleanup = pending.then((late) => client.call("attachments.close", { transferId: late.transferId }), () => {}).then(() => {});
+      retiring?.(cleanup); void cleanup.catch(() => {}); throw error;
     });
-    if (signal.aborted) { await client.call("attachments.close", { transferId: result.transferId }).catch(() => {}); throw new DOMException("Cancelled", "AbortError"); }
-    return new AttachmentTransfer(client, AttachmentOpen.parse(result), signal);
+    if (signal.aborted) { const cleanup = client.call("attachments.close", { transferId: result.transferId }).then(() => {}); retiring?.(cleanup); await cleanup.catch(() => {}); throw new DOMException("Cancelled", "AbortError"); }
+    return new AttachmentTransfer(client, AttachmentOpen.parse(result), signal, retiring !== undefined);
   }
   get info(): AttachmentInfo { return this.transfer.attachment; }
   async read(offset: number, length: number): Promise<AttachmentChunk> {
@@ -56,7 +58,7 @@ export class AttachmentTransfer {
     try { const chunk = await untilAbort(this.#client.call("attachments.read", { transferId: this.transfer.transferId, offset, length }), this.#signal); if (this.#closed || this.#signal.aborted) throw new DOMException("Cancelled", "AbortError"); attachmentBytes(chunk, this.transfer, offset, length); return chunk; }
     finally { this.#reading = false; }
   }
-  async close(): Promise<void> { if (this.#closed) return; this.#closed = true; await this.#client.call("attachments.close", { transferId: this.transfer.transferId }).catch(() => {}); }
+  async close(): Promise<void> { if (this.#closed) return; this.#closed = true; const cleanup = this.#client.call("attachments.close", { transferId: this.transfer.transferId }); if (this.#strictRetirement) await cleanup; else await cleanup.catch(() => {}); }
 }
 
 export type AttachmentDownloadOptions = {
@@ -95,15 +97,27 @@ export async function downloadAttachment(client: Pick<Client, "call">, ref: Atta
   }
 }
 
-export async function previewAttachment(client: Pick<Client, "call">, ref: AttachmentRef, native: AttachmentNativeApi, signal: AbortSignal, onError?: (error: unknown) => void): Promise<{ attachment: AttachmentInfo; url: string; close: () => Promise<void> }> {
-  const transfer = await AttachmentTransfer.open(client, ref, signal); let previewId: string | null = null, remove = () => {}, closed = false;
-  const abort = () => { void close(); };
-  async function close() { if (closed) return; closed = true; signal.removeEventListener("abort", abort); remove(); if (previewId) await native.closePreview(previewId).catch(() => {}); await transfer.close(); }
+export class PreviewRetirementError extends Error { constructor() { super("The previous file preview could not close. Reconnect and try again."); } }
+export async function previewAttachment(client: Pick<Client, "call">, ref: AttachmentRef, native: AttachmentNativeApi, signal: AbortSignal, onError?: (error: unknown) => void, retiring?: (cleanup: Promise<void>) => void): Promise<{ attachment: AttachmentInfo; url: string; close: () => Promise<void> }> {
+  const transfer = await AttachmentTransfer.open(client, ref, signal, retiring); let previewId: string | null = null, remove = () => {}, closing: Promise<void> | undefined;
+  const abort = () => { void close().catch(() => {}); };
+  function close(): Promise<void> {
+    if (closing) return closing;
+    signal.removeEventListener("abort", abort); remove();
+    return closing = (async () => {
+      let failure: unknown;
+      try { if (previewId) await native.closePreview(previewId); } catch (error) { failure = error; }
+      try { await transfer.close(); } catch (error) { failure ??= error; }
+      if (failure) throw failure;
+    })();
+  }
   signal.addEventListener("abort", abort, { once: true });
   try {
     const opening = native.preview(transfer.info);
-    const preview = await untilAbort(opening, signal).catch((error: unknown) => { void opening.then((late) => native.closePreview(late.previewId)).catch(() => {}); throw error; });
-    if (signal.aborted) { await native.closePreview(preview.previewId).catch(() => {}); throw new DOMException("Cancelled", "AbortError"); } previewId = preview.previewId;
+    const preview = await untilAbort(opening, signal).catch((error: unknown) => {
+      const cleanup = opening.then((late) => native.closePreview(late.previewId), () => {}); retiring?.(cleanup); void cleanup.catch(() => {}); throw error;
+    });
+    if (signal.aborted) { const cleanup = native.closePreview(preview.previewId); retiring?.(cleanup); await cleanup.catch(() => {}); throw new DOMException("Cancelled", "AbortError"); } previewId = preview.previewId;
     let previous = Promise.resolve(), queued = 0;
     remove = native.onRead((request) => {
       if (request.previewId !== previewId) return;

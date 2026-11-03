@@ -26,6 +26,8 @@ afterEach(async () => { if (root) await act(async () => root!.unmount()); root =
 it("opens only an explicitly associated image using its parent message/index and closes it when hidden", async () => {
   const close = vi.fn(async () => {}); preview.mockResolvedValue({ attachment: { contentType: "image/png" }, url: "app://tjommie/_attachments/41f8bac7-358c-48cf-9f48-a3a358804da6", close });
   await mount(); expect(document.querySelector("img")).toBeNull(); expect(document.body.textContent).toContain("remote");
+  const region = document.querySelector<HTMLElement>('[role="region"][aria-label="Markdown document; scroll to read this section"]');
+  expect(region?.tabIndex).toBe(0); region?.focus(); expect(document.activeElement).toBe(region);
   await act(async () => button("Show Chart").click()); await settle();
   expect(preview).toHaveBeenCalledWith({}, { messageId: "parent", attachmentIndex: 2, attachmentId: companions[0].attachmentId }, native, expect.any(AbortSignal), expect.any(Function));
   expect(document.querySelector("img")?.src).toContain("/_attachments/"); expect(document.querySelector('img[src^="https:"]')).toBeNull();

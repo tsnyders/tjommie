@@ -131,7 +131,7 @@ html[data-density="compact"] [data-slot="bot-list"] { gap: 0.5rem; }
   --secondary: #989898;
   --caption: #909090;
   --label: #9c9c9c;
-  --placeholder: #6e6e6e;
+  --placeholder: #989898;
   --icon: #acacac;
   --accent: #459fff;
   --working: #3fa37a;

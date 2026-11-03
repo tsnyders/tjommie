@@ -32,15 +32,19 @@ export function useDictation(kind: "chat" | "room" | "exchange", target: string,
   const [phase, setPhase] = useState<Phase>("idle");
   const [sessionScope, setSessionScope] = useState("");
   const [message, setMessage] = useState("");
+  const [issueState, setIssue] = useState({ scope: "", message: "" });
+  const issue = issueState.scope === scope ? issueState.message : "";
   const [pending, setPending] = useState({ scope: "", text: "" });
   const transcript = pending.scope === scope ? pending.text : "";
   const setTranscript = (value: string): void => { setPending({ scope: latest.current.scope, text: value }); };
   const [language, selectLanguage] = useState("");
   const [deviceId, selectDevice] = useState(() => preference("inputDevice"));
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
-  const [optionsOpen, setOptionsOpen] = useState(false);
   const [modelState, setModelState] = useState({ scope: "", busy: false });
   const modelWorking = modelState.scope === scope && modelState.busy;
+
+  function reportIssue(value: string): void { setMessage(value); setIssue({ scope: latest.current.scope, message: value }); }
+  function clearIssue(): void { if (mounted.current) setIssue({ scope: latest.current.scope, message: "" }); }
 
   function showStatus(value: SpeechStatus): void {
     setStatus(value);
@@ -61,13 +65,13 @@ export function useDictation(kind: "chat" | "room" | "exchange", target: string,
       try { await session.capture?.cancel(); } catch { failed = true; }
       try { await bridge?.cancel({ sessionId: session.id }); } catch { failed = true; }
       session.release?.();
-      if (failed && mounted.current) setMessage("Local speech cleanup could not finish. Check storage and reopen the app before dictating again.");
+      if (failed && mounted.current && latest.current.scope === session.scope && getState().host === session.host) reportIssue("Local speech cleanup could not finish. Check storage and reopen the app before dictating again.");
     })();
     cancelling.current = session.cleanup;
     try { await session.cleanup; } finally { if (cancelling.current === session.cleanup) cancelling.current = null; }
   }
 
-  function cancel(): Promise<void> { intent.current += 1; return cancelActive(); }
+  function cancel(): Promise<void> { intent.current += 1; clearIssue(); return cancelActive(); }
 
   function commit(value: string, range: InsertionRange): void {
     const next = insertTranscript(latest.current.text, range, value);
@@ -86,7 +90,11 @@ export function useDictation(kind: "chat" | "room" | "exchange", target: string,
       session.capture = undefined;
       if (owns(session)) await api.current?.stop({ sessionId: session.id });
     } catch {
-      if (owns(session)) { await cancel(); setMessage("Couldn’t finish local dictation. Your draft is unchanged; try again."); }
+      if (owns(session)) {
+        const cancelled = intent.current + 1;
+        await cancel();
+        if (mounted.current && intent.current === cancelled && latest.current.scope === session.scope && getState().host === session.host) reportIssue("Couldn’t finish local dictation. Your draft is unchanged; try again.");
+      }
     }
   }
 
@@ -115,7 +123,9 @@ export function useDictation(kind: "chat" | "room" | "exchange", target: string,
         if (session.phase !== "transcribing") { session.phase = "transcribing"; void session.capture?.cancel(); session.capture = undefined; }
         clearTimeout(session.timer); setPhase("transcribing"); setMessage("Transcribing on this device…");
       } else if (event.phase === "error" || event.phase === "cancelled") {
-        void cancel(); setMessage(event.problem?.message ?? "Dictation cancelled.");
+        void cancel();
+        if (event.phase === "error") reportIssue(event.problem?.message ?? "Dictation could not finish. Try again.");
+        else setMessage("Dictation cancelled.");
       }
     });
     void bridge?.status().then((input) => { if (!disposed && mounted.current) showStatus(SpeechStatus.parse(input)); }).catch(() => { if (!disposed && mounted.current) setMessage("Local speech is unavailable in this app build. You can keep typing."); });
@@ -149,9 +159,9 @@ export function useDictation(kind: "chat" | "room" | "exchange", target: string,
 
   async function start(): Promise<void> {
     if (modelPending.current) return;
-    setOptionsOpen(true); setMessage(""); setTranscript("");
+    clearIssue(); setMessage(""); setTranscript("");
     const bridge = api.current;
-    if (!bridge) { setMessage("Local dictation is available in supported desktop and Android app builds. You can keep typing here."); return; }
+    if (!bridge) { reportIssue("Local dictation is available in supported desktop and Android app builds. You can keep typing here."); return; }
     const request = ++intent.current;
     const initiatingScope = latest.current.scope;
     const initiatingHost = getState().host;
@@ -179,14 +189,19 @@ export function useDictation(kind: "chat" | "room" | "exchange", target: string,
         && available.model.confirmation.language === "en-US";
       // This intent only opens the native permission path; native support must confirm it before capture.
       const selected = available.languages.find((item) => item.tag === language)?.tag ?? available.languages[0]?.tag ?? (prepared ? "en-US" : permissionRequired ? desired : undefined);
-      if ((!available.available && !permissionRequired) || !selected) { await cancel(); setMessage(available.problem?.message ?? "No installed local language is available. Check system speech settings."); return; }
+      if ((!available.available && !permissionRequired) || !selected) {
+        const cancelled = intent.current + 1;
+        await cancel();
+        if (mounted.current && intent.current === cancelled && latest.current.scope === initiatingScope && getState().host === initiatingHost) reportIssue(available.problem?.message ?? "No installed local language is available. Check system speech settings.");
+        return;
+      }
       attemptedNative = available.engine === "android-on-device" && available.capture === "native";
       await bridge.start({ sessionId: session.id, language: selected });
       if (!owns(session) || session.phase !== "permission") return;
       if (available.capture === "pcm") {
         const capture = await capturePcm({ api: bridge, sessionId: session.id, deviceId: deviceId || undefined,
           current: () => owns(session) && session.phase === "permission" && document.visibilityState !== "hidden" && document.hasFocus(),
-          failed: () => { if (owns(session)) { void cancel(); setMessage("Microphone data could not be processed within its limits. Try again."); } },
+          failed: () => { if (owns(session)) { void cancel(); reportIssue("Microphone data could not be processed within its limits. Try again."); } },
           limit: () => { if (owns(session)) void stop(); },
         });
         if (!capture) { if (owns(session)) await cancel(); return; }
@@ -197,7 +212,10 @@ export function useDictation(kind: "chat" | "room" | "exchange", target: string,
       session.phase = "listening"; setPhase("listening"); setMessage("Listening on this device. Tap Stop when finished.");
       session.timer = setTimeout(() => { if (owns(session)) void stop(); }, 59750);
     } catch {
-      if (owns(session)) { await cancelActive(); setMessage("Couldn’t start local dictation. Check microphone permission and installed speech support, then try again."); }
+      if (owns(session)) {
+        await cancelActive();
+        if (mounted.current && intent.current === request && latest.current.scope === initiatingScope && getState().host === initiatingHost) reportIssue("Couldn’t start local dictation. Check microphone permission and installed speech support, then try again.");
+      }
     } finally {
       if (attemptedNative && mounted.current && intent.current === request && latest.current.scope === initiatingScope && getState().host === initiatingHost) {
         try {
@@ -222,7 +240,7 @@ export function useDictation(kind: "chat" | "room" | "exchange", target: string,
     const request = ++modelOperation.current, initiatingScope = latest.current.scope, initiatingHost = getState().host;
     const current = (): boolean => mounted.current && modelOperation.current === request && latest.current.scope === initiatingScope && getState().host === initiatingHost;
     const owner = modelOwner.current;
-    modelPending.current = true; setModelState({ scope: initiatingScope, busy: true }); setMessage("");
+    modelPending.current = true; setModelState({ scope: initiatingScope, busy: true }); clearIssue(); setMessage("");
     try {
       if (action === "downloadModel" && bridge.releaseModelRequest) {
         owner.requestId = crypto.randomUUID();
@@ -234,17 +252,18 @@ export function useDictation(kind: "chat" | "room" | "exchange", target: string,
         showStatus(next);
         setMessage(next.model.confirmation ? "Android prepared English (United States) for this foreground session. Start dictation checks it again before recording."
           : next.problem?.message ?? (action === "cancelModelDownload" ? "Model download cancelled." : "Speech model status refreshed."));
+        if (!next.available && next.problem) setIssue({ scope: initiatingScope, message: next.problem.message });
       }
     } catch {
       if (current()) {
-        try { const next = SpeechStatus.parse(await bridge.status()); if (current()) { showStatus(next); setMessage(next.problem?.message ?? "Couldn’t complete the speech model action. Check storage and network, then try again."); } }
-        catch { if (current()) setMessage("Couldn’t complete the speech model action. Check storage and network, then try again."); }
+        try { const next = SpeechStatus.parse(await bridge.status()); if (current()) { showStatus(next); reportIssue(next.problem?.message ?? "Couldn’t complete the speech model action. Check storage and network, then try again."); } }
+        catch { if (current()) reportIssue("Couldn’t complete the speech model action. Check storage and network, then try again."); }
       }
     } finally { if (current()) { modelPending.current = false; setModelState({ scope: initiatingScope, busy: false }); } }
   }
 
   return {
-    status, phase: sessionScope === scope ? phase : "idle" as Phase, message, transcript, language, deviceId, devices, optionsOpen, modelWorking,
+    status, phase: sessionScope === scope ? phase : "idle" as Phase, message, issue, transcript, language, deviceId, devices, modelWorking,
     start, stop, cancel, changed,
     setLanguage: (value: string): void => { selectLanguage(value); savePreference("language", value); },
     setDevice: (value: string): void => { selectDevice(value); savePreference("inputDevice", value); },

@@ -11,7 +11,7 @@ import { useApp } from "@/lib/store";
 import { attachPaths, useRevision, useSendGuard, withoutSent, type Attachment } from "@/lib/use-draft";
 import { cn } from "@/lib/utils";
 import { useDictation } from "@/lib/use-dictation";
-import { DictationButton, DictationStatus } from "./dictation-button";
+import { DictationButton, DictationOptions, DictationStatus } from "./dictation-button";
 
 // Whether the bot has a turn to stop: it's working, or waiting on a tool card in its chat, which holds its turn.
 // A bot waiting only on a routine it proposed isn't running anything.
@@ -145,35 +145,23 @@ export function Composer({ bot, messages }: { bot: Bot; messages: Message[] }) {
       {local && files.length > 0 && (
         <ul aria-label="Attached files" className="mb-2 flex flex-wrap gap-1.5">
           {files.map(({ id, path }) => (
-            <li key={id} className="inline-flex h-7 max-w-[240px] items-center gap-1.5 rounded-full bg-pill pl-2.5 pr-1 text-[12px] text-text">
+            <li key={id} className="inline-flex min-h-11 max-w-[240px] items-center gap-2 rounded-[14px] bg-pill pl-3 text-[13px] text-text">
               <Paperclip className="size-3 shrink-0 text-icon" aria-hidden />
               <span className="truncate">{fileName(path)}</span>
               <button
                 type="button"
                 aria-label={`Remove ${fileName(path)}`}
                 onClick={() => setFiles(latestFiles.current.filter((file) => file.id !== id))}
-                className="flex size-5 shrink-0 items-center justify-center rounded-full text-icon hover:text-text"
+                className="flex size-11 shrink-0 touch-manipulation select-none items-center justify-center rounded-full text-icon hover:bg-highlight hover:text-text active:bg-highlight"
               >
-                <X className="size-3" aria-hidden />
+                <X className="size-4" aria-hidden />
               </button>
             </li>
           ))}
         </ul>
       )}
-      <div className="flex items-end gap-2 rounded-[22px] border border-composer-stroke bg-composer py-[5px] pl-2 pr-[5px] shadow-composer">
-        <button
-          type="button"
-          aria-label="Attach files"
-          aria-disabled={!local}
-          aria-describedby={local ? undefined : reason}
-          title={local ? "Attach files" : elsewhere}
-          onClick={() => (local ? void pick() : setProblem(`${elsewhere}.`))}
-          className="mb-0.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-disabled text-icon hover:text-text aria-disabled:hover:text-icon"
-        >
-          <Plus className="size-4" aria-hidden />
-        </button>
-        {!local && <span id={reason} className="sr-only">{elsewhere}</span>}
-        {/* The caret shows focus here: WF11 draws the typing composer without a ring. */}
+      <DictationStatus voice={voice} />
+      <div data-slot="composer" className="flex min-w-0 flex-col rounded-[24px] border border-composer-stroke bg-composer p-1 shadow-composer focus-within:border-accent">
         <textarea
           ref={field}
           value={text}
@@ -182,23 +170,31 @@ export function Composer({ bot, messages }: { bot: Bot; messages: Message[] }) {
           rows={1}
           aria-label={`Message ${bot.name}`}
           placeholder={`Message ${bot.name}`}
-          className="max-h-[200px] min-h-8 flex-1 resize-none bg-transparent py-[5.5px] text-[14px] leading-[21px] text-text outline-none [field-sizing:content] placeholder:text-placeholder max-sm:max-h-[min(200px,25dvh)]"
+          className="block max-h-[200px] min-h-11 w-full min-w-0 resize-none bg-transparent px-3 py-2.5 text-[16px] leading-6 text-text outline-none [field-sizing:content] placeholder:text-placeholder max-sm:max-h-[min(200px,25dvh)] sm:text-[14px]"
         />
-        <DictationButton voice={voice} />
-        <button
-          type="submit"
-          disabled={busy || (!hasText && !stop)}
-          aria-label={stop ? "Stop" : "Send"}
-          title={stop ? "Stop" : "Send"}
-          className={cn(
-            "flex size-8 shrink-0 items-center justify-center rounded-full",
-            hasText || stop ? "bg-user-bubble text-user-text" : "bg-disabled text-placeholder",
-          )}
-        >
-          {stop ? <Square className="size-3.5" aria-hidden /> : <ArrowUp className="size-4" aria-hidden />}
-        </button>
+        <div role="group" aria-label="Message actions" className="flex min-h-11 min-w-0 flex-wrap items-center gap-1">
+          <button type="button" aria-label="Attach files" aria-disabled={!local} aria-describedby={local ? undefined : reason}
+            title={local ? "Attach files" : elsewhere} onClick={() => (local ? void pick() : setProblem(`${elsewhere}.`))}
+            className="flex size-11 shrink-0 touch-manipulation select-none items-center justify-center rounded-full text-icon hover:bg-highlight hover:text-text active:bg-highlight aria-disabled:opacity-50">
+            <Plus className="size-[18px]" aria-hidden />
+          </button>
+          {!local && <span id={reason} className="sr-only">{elsewhere}</span>}
+          <DictationButton voice={voice} />
+          <DictationOptions voice={voice} />
+          <button
+            type="submit"
+            disabled={busy || (!hasText && !stop)}
+            aria-label={stop ? "Stop" : "Send"}
+            title={stop ? "Stop" : "Send"}
+            className={cn(
+              "ml-auto flex size-11 shrink-0 touch-manipulation select-none items-center justify-center rounded-full enabled:active:opacity-80 disabled:opacity-50",
+              hasText || stop ? "bg-user-bubble text-user-text" : "bg-disabled text-placeholder",
+            )}
+          >
+            {stop ? <Square className="size-4" aria-hidden /> : <ArrowUp className="size-5" aria-hidden />}
+          </button>
+        </div>
       </div>
-      <DictationStatus voice={voice} />
       {problem && (
         <p role="alert" className="mt-1.5 px-3 text-[12px] leading-[18px] text-danger">
           {problem}

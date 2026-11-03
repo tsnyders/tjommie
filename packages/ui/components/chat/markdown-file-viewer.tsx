@@ -37,7 +37,7 @@ export function MarkdownFileViewer({ url, size, reference, companions = NO_COMPA
     }).catch((failure: unknown) => { if (!abort.signal.aborted && selected) setImageError({ selection: selected, text: attachmentError(failure) }); });
     const close = () => { abort.abort(); return previousImage.current = opening.then(async (preview) => { await preview?.close(); }); };
     if (closeImageRef) closeImageRef.current = close;
-    return () => { void close(); };
+    return () => { void close().catch(() => {}); };
   }, [selected, selectedName, companions, reference.messageId, native, closeImageRef]);
   async function search(event: FormEvent): Promise<void> {
     event.preventDefault(); if (!query.trim() || searching) return;
@@ -53,7 +53,7 @@ export function MarkdownFileViewer({ url, size, reference, companions = NO_COMPA
     <div className="flex flex-wrap items-center gap-2"><button type="button" className={BUTTON} disabled={section === 0} onClick={() => setSection(section - 1)}>Previous section</button><label className="text-sm">Section <input aria-label="Markdown section" type="number" min={1} max={sections} value={section + 1} onChange={(event) => { const value = Number(event.target.value); if (Number.isInteger(value) && value >= 1 && value <= sections) setSection(value - 1); }} className="min-h-11 w-20 rounded border border-divider px-2" /> / {sections}</label><button type="button" className={BUTTON} disabled={section + 1 >= sections} onClick={() => setSection(section + 1)}>Next section</button></div>
     {sections > 1 && <p className="text-xs text-secondary">Large Markdown is read in sections. A block may continue in the next section. Search reads through the complete file.</p>}
     <form onSubmit={(event) => { void search(event); }} className="flex flex-wrap gap-2"><input aria-label="Search Markdown" maxLength={256} value={query} onChange={(event) => setQuery(event.target.value)} className="min-h-11 min-w-0 flex-1 rounded border border-divider px-2" /><button type="submit" className={BUTTON} disabled={searching}>{match?.query === query ? "Find next" : "Search"}</button>{searching && <button type="button" className={BUTTON} onClick={() => searchAbort.current?.abort()}>Cancel search</button>}<span role="status" className="self-center text-xs text-secondary">{searching ? "Searching…" : searchNote}</span></form>
-    <div ref={scroll} className="min-h-0 flex-1 overflow-auto" aria-busy={content?.section !== section && !error}>
+    <div ref={scroll} className="min-h-0 flex-1 overflow-auto" role="region" tabIndex={0} aria-label="Markdown document; scroll to read this section" aria-busy={content?.section !== section && !error}>
       {error ? <p role="alert" className="text-sm text-danger">{error}</p> : content?.section !== section ? <p role="status">Reading section…</p> : <MarkdownText text={content.text} fileImages={(source, alt) => {
         const name = attachmentCompanionName(source), companion = companions.find((item) => item.name === name);
         if (!companion) return alt;

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Shared file cards now put real image, video, PDF and Markdown thumbnails above readable filenames, with download actions kept separate.
+- Chat, room and exchange inputs use aligned touch controls; voice settings open on demand and idle dictation guidance no longer fills the space below the input.
+- Provider sign-in reminders are dismissible toasts with a Settings shortcut instead of a permanent chat banner.
+- Dark input hints are easier to read, and long file and project titles wrap inside dialogs.
+- Developer team pages keep controls clear of the phone navigation, focus selected task details, and ask before archiving a team.
 - Preview shared Markdown, images, PDFs, audio and video, and download delivered files on the device you are using.
 - Markdown files can include explicitly shared companion images, with the same file permissions and cleanup as their document.
 - Large Markdown files open in readable sections, and PDFs use bounded range reads with selectable text, search and zoom.
