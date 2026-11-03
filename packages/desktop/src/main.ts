@@ -120,7 +120,7 @@ if (!app.requestSingleInstanceLock()) {
   app.on("will-quit", (event) => {
     if (deviceBridge && !deviceQuitReady) {
       event.preventDefault();
-      deviceQuitCleanup ??= revokeLocalDevice().then(() => { deviceQuitReady = true; app.quit(); });
+      deviceQuitCleanup ??= revokeLocalDevice().then(() => { deviceQuitReady = true; setImmediate(() => app.quit()); });
       return;
     }
     if (stopping) { event.preventDefault(); return; }

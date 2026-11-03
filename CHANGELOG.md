@@ -9,6 +9,7 @@
 - Shared files work when Windows uses a shortened folder path.
 - Returning from Android's Save picker keeps a healthy connection and its staged download.
 - Opening Android's Save picker no longer lets an older connection check cancel the staged download.
+- Quitting the desktop app now finishes shutdown after temporary file and speech cleanup.
 - Full-screen phone dialogs keep their controls clear of system bars.
 - Create project teams with bot roles, tasks and separate Git worktrees. Review and checks stay attached to the exact task commit before integration.
 - Task helper replies continue in the original managed worktree and keep the task active until they finish.
