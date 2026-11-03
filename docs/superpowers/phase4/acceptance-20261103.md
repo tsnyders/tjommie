@@ -31,3 +31,13 @@ Wireless ADB discovery confirmed a connected Android test device. No test app wa
 - Global Windows worker ownership validation is implemented and covered by an executable C# regression. The current host token could not prove a complete cross-user process/SID snapshot, so required-worker review and its acceptance fail closed. Account provisioning and a reboot alone have not been demonstrated to resolve this capability requirement.
 
 Desktop packaging, the actual Windows worker-SID acceptance and real isolated API review remain separate gates. No worker account, service, credential-store fixture, reboot or paid provider turn has been run by these continuation checks.
+
+## Successful CI and physical range retest
+
+GitHub Actions [41596329950](https://github.com/tsnyders/tjommie/actions/runs/41596329950) passed both jobs for `6c139b2e24521f88dff72e2e7ced2c7c822766e0`. Windows passed all typechecks/lint, **260 test files; 2,292 tests passed, one expected failure and two skips**, the hidden native HTTPS vault probe (9 ms fill), the pinned speech compilation and isolated desktop packaging. Android passed isolated packaging, identity/signature verification and `testDebugUnitTest`.
+
+The corrected APK SHA-256 is `02b1d69da01697219c25bbb41ea8680f7aa1cfa32f19b1e9ca75f2260ccaa179`. CI's disposable debug signing certificate changed, so only the separate test app and its synthetic data were replaced for Android user 0. The production app was not replaced. Physical checks now show a single correct Content-Length, actual small Markdown and PDF rendering, a 200 MiB PDF rendered through bounded 256 KiB reads, PNG rendering, WAV playback/seeking and MP4 playback/seeking without the previous decode error. Deeper page/search/last-section checks are still being recorded.
+
+The first native Save attempt remains a **failed acceptance check**: after the user returned from the picker, the UI reported cancellation and the uniquely named synthetic destination was not verified. The cause was forced reconnection after more than a minute hidden, which invalidated a healthy link and staged save. Source now probes the existing link with the bounded heartbeat before replacing it. Two additional RED/GREEN regressions fence old unanswered/overdue ping callbacks; **31/31** transfer/resume/heartbeat/host checks passed. This fix needs a new CI artifact and delayed-picker retest.
+
+The normal worker-SID snapshot approach above is an intermediate rejected design. Read-only review found that snapshots do not enforce lifetime separation from a same-SID Full auto process. A separate review-only SID/profile is being implemented with paired purpose-bound configuration and acceptance; real provisioning remains unrun.

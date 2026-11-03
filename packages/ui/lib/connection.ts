@@ -25,8 +25,8 @@ let link: Client | null = null; // the same connection without the call limit, f
 let latest: ConnectionTarget | null = null;
 let retry: ReturnType<typeof setTimeout> | undefined;
 let heartbeat: ReturnType<typeof setTimeout> | undefined;
+let pingGeneration = 0;
 let failures = 0; // the latest connection's failed tries in a row
-let lastPong = 0; // when the remote PC last answered a ping
 let started = false;
 let filesClosed: Promise<void> = Promise.resolve();
 function invalidateFiles(): Promise<void> {
@@ -218,8 +218,8 @@ function onVisibility(): void {
   const status = getState().connection.status;
   if (status === "removed") return;
   syncKeepAlive(status);
-  // A link that answered within the last minute gets a ping now; an older one (the app slept, and its socket may be a zombie) is replaced at once.
-  if (link && Date.now() - lastPong <= LINK.pingBackgroundMs) beat(0);
+  // Check before replacing a healthy link: returning from a native Save picker must retain its staged file.
+  if (link) { pingGeneration++; beat(0); }
   else reconnectNow();
 }
 
@@ -232,6 +232,7 @@ function beat(wait: number | null = visible() ? LINK.pingForegroundMs : keepAliv
 }
 
 async function ping(current: Client): Promise<void> {
+  const generation = ++pingGeneration;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const answered = await Promise.race([
     // Any answer counts, an error too (a PC from before remote.ping says unknown_method); only silence or a closed link means it's gone.
@@ -239,12 +240,11 @@ async function ping(current: Client): Promise<void> {
     new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), LINK.pongTimeoutMs); }),
   ]);
   clearTimeout(timer);
-  if (link !== current) return; // replaced meanwhile
+  if (link !== current || generation !== pingGeneration) return; // replaced or checked again meanwhile
   if (!answered) {
     reconnectNow();
     return;
   }
-  lastPong = Date.now();
   beat();
 }
 
@@ -298,7 +298,6 @@ async function attempt(connection: ConnectionTarget): Promise<void> {
     client = next;
     link = raw;
     failures = 0;
-    lastPong = Date.now();
     update((state) => pending.reduce((current, event) => applyEvent(current, event), connected(state, { bots, settings, routines, rooms, accounts, notifications })));
   } catch (error) {
     void next.close();

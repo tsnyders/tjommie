@@ -150,7 +150,7 @@ it("doesn't let a LAN endpoint that connects but stalls its handshake hold the r
   expect(pc.wires[0].closed).toBe(true);
 });
 
-it("stops heartbeat while hidden and reconnects on return without a foreground service", async () => {
+it("stops heartbeat while hidden and checks the link on return without a foreground service", async () => {
   const { pc, connection } = await boot();
   connection.startConnection();
   await settle();
@@ -160,5 +160,6 @@ it("stops heartbeat while hidden and reconnects on return without a foreground s
   expect(pc.opens).toHaveLength(1);
   show(true);
   await settle();
-  expect(pc.opens).toHaveLength(2);
+  expect(pc.opens).toHaveLength(1);
+  expect(pc.calls.filter((method) => method === "remote.ping")).toHaveLength(1);
 });

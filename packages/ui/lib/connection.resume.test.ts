@@ -11,7 +11,9 @@ const device = vi.hoisted(() => ({
   saved: new Map<string, string>(),
   network: [] as ((event: { type: string }) => void)[],
   statuses: [] as string[], // the connection status after every state change
+  invalidations: 0,
 }));
+vi.mock("./attachment-device", () => ({ attachmentDevice: () => ({ invalidate: async () => { device.invalidations++; } }) }));
 vi.mock("@capacitor/core", () => ({ Capacitor: { isNativePlatform: () => true, getPlatform: () => "android" } }));
 vi.mock("../../mobile/src/plugins.ts", () => ({
   secureStore: {
@@ -54,7 +56,7 @@ beforeAll(() => initNoise(wasm));
 beforeEach(() => {
   vi.resetModules(); // a fresh connection module and store for each test
   vi.useFakeTimers();
-  device.vault.clear(); device.saved.clear(); device.network.length = 0; device.statuses.length = 0;
+  device.vault.clear(); device.saved.clear(); device.network.length = 0; device.statuses.length = 0; device.invalidations = 0;
   page = Object.assign(new EventTarget(), { visibilityState: "visible" });
   vi.stubGlobal("document", page);
   vi.stubGlobal("localStorage", { getItem: (key: string) => device.saved.get(key) ?? null, setItem: (key: string, value: string) => device.saved.set(key, value) });
@@ -72,7 +74,7 @@ async function boot(options: { relay?: string | null } = {}) {
   return { pc, connection, getState, start: async () => { connection.startConnection(); await settle(); } };
 }
 
-it("locked 30 min then visible: the dead link is replaced at once, without a failed screen, and the open chat catches up", async () => {
+it("locked 30 min then visible: the dead link is replaced after a bounded ping, without a failed screen, and the open chat catches up", async () => {
   const { pc, connection, getState, start } = await boot();
   pc.messages.b1 = Array.from({ length: 60 }, (_, at) => message(`m${String(at + 1).padStart(2, "0")}`));
   await start();
@@ -88,7 +90,9 @@ it("locked 30 min then visible: the dead link is replaced at once, without a fai
   expect(pc.opens).toHaveLength(1);
 
   show(true);
-  expect(getState().connection).toEqual({ status: "reconnecting" }); // at once, not after a ping times out
+  await settle();
+  expect(pc.opens).toHaveLength(1);
+  await vi.advanceTimersByTimeAsync(10_000);
   await settle();
   expect(pc.opens).toHaveLength(2);
   expect(getState().connection).toEqual({ status: "ready" });
@@ -111,6 +115,47 @@ it("keeps the link through a quick trip away, checking it with a ping instead of
   expect(pc.calls.filter((method) => method === "remote.ping")).toHaveLength(1);
   expect(changes()).toEqual(["connecting", "ready"]);
   expect(getState().connection).toEqual({ status: "ready" });
+});
+
+it("keeps authorized native save data when returning from a picker after two minutes on a healthy link", async () => {
+  const { pc, getState, start } = await boot();
+  await start(); device.invalidations = 0;
+  show(false); await vi.advanceTimersByTimeAsync(120_000);
+  show(true); await settle();
+  expect(pc.opens).toHaveLength(1);
+  expect(pc.calls.filter((method) => method === "remote.ping")).toHaveLength(1);
+  expect(device.invalidations).toBe(0);
+  expect(getState().connection).toEqual({ status: "ready" });
+});
+
+it("does not let an older unanswered ping replace a link verified after returning", async () => {
+  const { pc, getState, start } = await boot();
+  await start(); device.invalidations = 0;
+  pc.hold.add("remote.ping"); await vi.advanceTimersByTimeAsync(20_000);
+  show(false); await vi.advanceTimersByTimeAsync(1_000);
+  pc.hold.delete("remote.ping"); show(true); await settle();
+  expect(pc.calls.filter((method) => method === "remote.ping")).toHaveLength(2);
+  await vi.advanceTimersByTimeAsync(10_000); await settle();
+  expect(pc.opens).toHaveLength(1);
+  expect(device.invalidations).toBe(0);
+  expect(getState().connection).toEqual({ status: "ready" });
+});
+
+it("fences an overdue hidden ping before the queued resume check runs", async () => {
+  const { pc, getState, start } = await boot();
+  await start(); device.invalidations = 0;
+  const timers = vi.spyOn(globalThis, "setTimeout");
+  try {
+    pc.hold.add("remote.ping"); await vi.advanceTimersByTimeAsync(20_000);
+    const deadline = timers.mock.calls.find((call) => call[1] === 10_000)?.[0];
+    expect(deadline).toBeTypeOf("function");
+    show(false); pc.hold.delete("remote.ping"); show(true);
+    deadline!();
+    for (let turn = 0; turn < 10; turn++) await Promise.resolve();
+    expect(device.invalidations).toBe(0);
+    expect(getState().connection).toEqual({ status: "ready" });
+    await settle(); expect(pc.opens).toHaveLength(1);
+  } finally { timers.mockRestore(); }
 });
 
 it("host offline over relay: the relay's 4404 says the PC is offline, over the bots already listed", async () => {
