@@ -8,7 +8,7 @@ import { patchFirebaseDependency, patchFirebaseVersion } from "./firebase-depend
 const here = dirname(fileURLToPath(import.meta.url));
 const mobile = join(here, "..");
 const android = join(mobile, "android");
-const versionCodes = new Map([["0.3.0", 3], ["0.3.1", 4], ["0.3.2", 5], ["0.4.0", 6]]);
+const versionCodes = new Map([["0.3.0", 3], ["0.3.1", 4], ["0.3.2", 5], ["0.4.0", 6], ["0.4.1", 7]]);
 if (process.argv[2] === "--check") {
   const requestedVersion = process.argv[3];
   if (process.argv.length !== 4 || !versionCodes.has(requestedVersion)) {

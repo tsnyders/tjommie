@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.4.1 — 2026-11-03
+
 - File cards and previews reuse the original compact styling and shared controls while keeping real content thumbnails.
 - Developer teams, settings, voice and browser logins now use the app's existing cards, menus, fields and pill buttons.
 - Chat, room and exchange composers and dismissible sign-in toasts match the original sizing, spacing and colours, with larger touch targets on phones.
