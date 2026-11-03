@@ -44,7 +44,8 @@ try {
     New-Item -ItemType Directory -Path $output | Out-Null
     Copy-Item -LiteralPath $binary -Destination (Join-Path $output 'whisper-cli.exe')
     Copy-Item -LiteralPath (Join-Path $source 'LICENSE') -Destination (Join-Path $output 'WHISPER-LICENSE.txt')
-    Copy-Item -LiteralPath (Join-Path $source 'ggml/LICENSE') -Destination (Join-Path $output 'GGML-LICENSE.txt')
+    # The pinned tree licenses whisper and its bundled ggml together at the repository root.
+    Copy-Item -LiteralPath (Join-Path $source 'LICENSE') -Destination (Join-Path $output 'GGML-LICENSE.txt')
     $openAiLicense = Join-Path $output 'OPENAI-WHISPER-LICENSE.txt'
     Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/openai/whisper/v20250625/LICENSE' -OutFile $openAiLicense
     if ((Get-FileHash -LiteralPath $openAiLicense -Algorithm SHA256).Hash.ToLowerInvariant() -ne 'b5d65a59060e68c4ff940e1eddfa6f94b2d68fdf58ed7f4dd57721c997e35e9d') { throw 'Pinned OpenAI Whisper license text changed.' }
