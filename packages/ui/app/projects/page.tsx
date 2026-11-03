@@ -87,9 +87,9 @@ function ProjectWorkspace() {
   }
   return <div className="flex min-h-0 flex-1 flex-col">
     <header className="drag shrink-0 px-6 pb-7 pt-12 max-sm:px-4 max-sm:pb-3 max-sm:pt-4">
-      <div className={cn("flex items-center justify-between gap-6 max-sm:gap-2", phoneCaptionClear())}>
-        <div className="min-w-0 flex-1"><h1 className="text-[20px] font-semibold leading-[26px] text-title">Developer teams</h1><p className="mt-1 text-[13px] leading-[18px] text-secondary">Project tasks, isolated workspaces and exact-commit integration.</p></div>
-        <Pill primary aria-label="New project" title="New project" className="max-sm:size-11 max-sm:justify-center max-sm:px-0" disabled={!ready || busy} onClick={() => setProjectForm("new")}><Plus className="size-3.5 max-sm:size-5" aria-hidden /><span className="max-sm:sr-only">New project</span></Pill>
+      <div className="flex items-center justify-between gap-6 max-sm:flex-wrap max-sm:gap-x-2 max-sm:gap-y-3">
+        <div className="min-w-0 flex-1 max-sm:order-last max-sm:basis-full"><h1 className="text-[20px] font-semibold leading-[26px] text-title">Developer teams</h1><p className="mt-1 text-[13px] leading-[18px] text-secondary">Project tasks, isolated workspaces and exact-commit integration.</p></div>
+        <div className={cn("shrink-0 max-sm:ml-auto", phoneCaptionClear())}><Pill primary aria-label="New project" title="New project" className="max-sm:size-11 max-sm:justify-center max-sm:px-0" disabled={!ready || busy} onClick={() => setProjectForm("new")}><Plus className="size-3.5 max-sm:size-5" aria-hidden /><span className="max-sm:sr-only">New project</span></Pill></div>
       </div>
     </header>
     <main data-nav-clear className="min-h-0 flex-1 overflow-y-auto px-6 pb-6 max-sm:px-4">

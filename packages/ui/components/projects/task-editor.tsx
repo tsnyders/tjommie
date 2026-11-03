@@ -31,13 +31,13 @@ export function TaskEditor({ project, task, bots, onClose, onSaved }: { project:
     } catch (error) { ifAlive(alive, () => { setProblem(errorText(error)); setBusy(false); }); }
   }
   return <Dialog open width={520} title={task ? "Edit task" : "New task"} closable initialFocus={focus} onOpenChange={(open) => { if (!open) onClose(); }}>
-    <form className="mt-4 space-y-4" onSubmit={(event) => { event.preventDefault(); void save(); }}>
+    <form className="mt-4 min-w-0 space-y-4" onSubmit={(event) => { event.preventDefault(); void save(); }}>
       <div><Label htmlFor="task-title">Title</Label><input id="task-title" ref={focus} className={`${FIELD} mt-1 h-11`} value={title} maxLength={200} onChange={(event) => setTitle(event.target.value)} required /></div>
       <div><Label htmlFor="task-instructions">Instructions</Label><textarea id="task-instructions" className={`${FIELD} mt-1 min-h-28 py-2`} value={instructions} onChange={(event) => setInstructions(event.target.value)} required /></div>
       <div><Label htmlFor="task-acceptance">Acceptance checklist (one item per line)</Label><textarea id="task-acceptance" className={`${FIELD} mt-1 min-h-24 py-2`} value={acceptance} onChange={(event) => setAcceptance(event.target.value)} /></div>
       {([ ["Developer", "developer", assigneeId, setAssignee], ["Reviewer", "reviewer", reviewerId, setReviewer], ["Tester", "tester", testerId, setTester] ] as const).map(([label, role, value, change]) => <div key={role}>
         <Label htmlFor={`task-${role}`}>{label}</Label>
-        <Menu.Root><Menu.Trigger id={`task-${role}`} aria-label={label} title={bots.find((bot) => bot.id === value)?.name ?? (role === "developer" ? "Choose a developer" : "Unassigned")} className={`${ROW_BUTTON} mt-1 border border-input-stroke bg-card`}>
+        <Menu.Root><Menu.Trigger id={`task-${role}`} aria-label={label} title={bots.find((bot) => bot.id === value)?.name ?? (role === "developer" ? "Choose a developer" : "Unassigned")} className={`${ROW_BUTTON} mt-1 min-w-0 border border-input-stroke bg-card sm:[&>span:first-of-type]:min-w-max max-sm:grid max-sm:grid-cols-[auto_minmax(0,1fr)_auto] max-sm:gap-y-1 max-sm:[&>span]:col-start-2 max-sm:[&>span]:max-w-full max-sm:[&>svg]:row-span-2 max-sm:[&>svg:last-child]:col-start-3 max-sm:[&>svg:last-child]:row-start-1`}>
           <RowHeader icon={UserRound} title={label} value={<span className="truncate">{bots.find((bot) => bot.id === value)?.name ?? (role === "developer" ? "Choose a developer" : "Unassigned")}</span>} chevron="down" />
         </Menu.Trigger><Menu.Portal><Menu.Positioner side="bottom" align="start" sideOffset={6} className="z-[60]"><Menu.Popup className={`${MENU_POPUP} z-50 max-h-[min(320px,60dvh)] max-w-[calc(100vw-32px)] overflow-y-auto`}>
           <Menu.RadioGroup value={value} onValueChange={(next: unknown) => { if (typeof next === "string") change(next); }}>
