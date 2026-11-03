@@ -18,21 +18,31 @@ let root: Root | undefined;
 const settle = () => act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
 async function mount(node: ReactNode) { root = createRoot(document.body.appendChild(document.createElement("div"))); await act(async () => root!.render(node)); await settle(); }
 const button = (label: string): HTMLButtonElement => { const found = [...document.querySelectorAll("button")].find(value => value.textContent === label); if (!found) throw new Error(`Missing ${label}`); return found; };
+async function chooseSavedLogin(): Promise<void> {
+  await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Saved login for this origin"]')!.click());
+  const choice = [...document.querySelectorAll<HTMLElement>('[role="menuitemradio"]')].find(item => item.textContent?.includes(entry.name));
+  if (!choice) throw new Error("Missing synthetic saved login");
+  await act(async () => choice.click());
+  expect(document.querySelector("button button")).toBeNull();
+}
 beforeEach(() => {
-  update(() => ({ ...initialState, host: "selected-host", connection: { status: "ready" }, bots: [{ id: "one", name: "Writer" } as Bot] }));
+  update(() => ({ ...initialState, host: "selected-host", connection: { status: "ready" }, bots: [{ id: "one", name: "Writer", color: "blue", shape: "circle" } as Bot] }));
   call.mockImplementation(async (method: string) => method === "vault.list" ? [entry] : method === "vault.status" || method === "vault.unlock" || method === "vault.lock" ? { state: "unlocked", reason: null, pendingDeletes: 0 } : method === "vault.entry" ? { status: "saved", entry } : method === "vault.fill" ? { status: "filled", privateEpoch: 9 } : method === "vault.finish" ? { status: "cleared" } : {});
 });
 afterEach(async () => { if (root) await act(async () => root!.unmount()); root = undefined; document.body.replaceChildren(); update(() => initialState); call.mockReset(); });
 it("shows metadata and invokes native host entry without ordinary secret inputs", async () => {
   await mount(<LoginsSection />); expect(document.body.textContent).toContain(entry.name); expect(document.body.textContent).toContain(entry.origin);
   expect(document.querySelector('input[type="password"]')).toBeNull(); expect(document.querySelector('input[name="username"]')).toBeNull();
-  await act(async () => { const select = document.querySelector<HTMLSelectElement>('[aria-label="Bot for new login"]')!; select.value = "one"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+  await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Bot for new login"]')!.click());
+  const choice = [...document.querySelectorAll<HTMLElement>('[role="menuitemradio"]')].find(item => item.textContent === "Writer")!;
+  await act(async () => choice.click());
+  expect(document.querySelector("select")).toBeNull();
   await act(async () => button("New login on host").click()); await settle(); expect(call).toHaveBeenCalledWith("vault.entry", { botId: "one" });
   await act(async () => button("Edit on host").click()); await settle(); expect(call).toHaveBeenCalledWith("vault.entry", { botId: "one", id: entry.id, revision: 3 });
 });
 it("requires current control/page/epoch, exact-origin metadata, and keeps Finish separate from Resume", async () => {
   const refreshed = vi.fn(); await mount(<BrowserLogins state={state} onRefresh={refreshed} />); await act(async () => button("Saved logins").click()); await settle();
-  await act(async () => { const select = document.querySelector<HTMLSelectElement>('[aria-label="Saved login for this origin"]')!; select.value = entry.id; select.dispatchEvent(new Event("change", { bubbles: true })); });
+  await chooseSavedLogin();
   await act(async () => button("Fill on host").click()); await settle();
   expect(call).toHaveBeenCalledWith("vault.fill", { botId: "one", generation: "generation-one", pageId: "page-one", controlEpoch: 7, id: entry.id, revision: 3 });
   await act(async () => root!.render(<BrowserLogins state={{ ...state, privateActive: true, privateEpoch: 9, tabs: [] }} onRefresh={refreshed} />));
@@ -45,7 +55,7 @@ it("cancels a pending fill on generation change and discards its late result", a
   let finish!: (value: unknown) => void; const refreshed = vi.fn();
   const regular = call.getMockImplementation()!; call.mockImplementation((method, params) => method === "vault.fill" ? new Promise(resolve => { finish = resolve; }) : regular(method, params));
   await mount(<BrowserLogins state={state} onRefresh={refreshed} />); await act(async () => button("Saved logins").click()); await settle();
-  await act(async () => { const select = document.querySelector<HTMLSelectElement>("select")!; select.value = entry.id; select.dispatchEvent(new Event("change", { bubbles: true })); }); await act(async () => button("Fill on host").click());
+  await chooseSavedLogin(); await act(async () => button("Fill on host").click());
   await act(async () => root!.render(<BrowserLogins state={{ ...state, generation: "generation-two" }} onRefresh={refreshed} />));
   expect(call).toHaveBeenCalledWith("vault.cancel", {}); await act(async () => finish({ status: "filled", privateEpoch: 9 })); await settle(); expect(refreshed).not.toHaveBeenCalled(); expect(document.body.textContent).not.toContain("Login filled privately");
 });

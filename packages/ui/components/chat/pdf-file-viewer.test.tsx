@@ -30,7 +30,8 @@ it("keeps a late previous-page text result out of the current page", async () =>
   try {
     await act(async () => root.render(<PdfFileViewer url="app://tjommie/_attachments/pdf" size={500} />)); await settle(); await settle();
     expect(fixture.text).toHaveBeenCalledWith(1);
-    await act(async () => ([...container.querySelectorAll("button")].find(button => button.textContent === "Next page")!).click()); await settle();
+    expect(container.querySelector<HTMLInputElement>('[aria-label="Search PDF"]')?.labels?.[0].textContent).toBe("Search PDF");
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Next page"]')!.click()); await settle();
     expect(container.querySelector(".textLayer")?.textContent).toBe("Current page");
     await act(async () => finish({ items: [{ str: "Stale page" }] })); await settle();
     expect(container.querySelector(".textLayer")?.textContent).toBe("Current page");

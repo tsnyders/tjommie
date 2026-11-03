@@ -12,6 +12,8 @@ import { coveredByAppOverlay, slotBounds } from "@/lib/native-overlay";
 import { addressToUrl, framePoint, framePointClamped, frameViewport, googleSignInRejected, imageReady, keyRoute, mouseButton, pictureKey, resizeWorthIt, viewportSize, wheelPixels, type Size } from "@/lib/browser-geometry";
 import { cn } from "@/lib/utils";
 import { IconButton } from "../icon-button";
+import { FIELD } from "../controls";
+import { Pill } from "../pill";
 import { BrowserLogins } from "./browser-logins";
 
 // The toolbar's calls. (Input, release and resize are for the picture-based fallback viewport; the native page needs none.)
@@ -58,9 +60,9 @@ function RemotePane({ bot, active, expanded, canExpand, onToggleExpanded }: { bo
   const canType = view.state?.canControl === true && !view.state.privateActive && !!view.frame && !view.busy;
   return <div className="flex min-h-0 flex-1 flex-col">
     <BrowserChrome view={view} botName={bot.name} controls={session} active={active} expanded={expanded} canExpand={canExpand} onToggleExpanded={onToggleExpanded} onRetry={() => session.open()} />
-    {active && !view.state?.privateActive && <form className="flex gap-2 px-4 pb-4" onSubmit={(event) => { event.preventDefault(); if (canType && text) session.input({ kind: "text", text }); }}>
-      <input aria-label="Text to type into the focused browser field" value={text} onChange={(event) => setText(event.target.value)} disabled={!canType} autoComplete="off" className="h-11 min-w-0 flex-1 rounded-lg bg-card px-3 text-[13px] text-text disabled:opacity-50" />
-      <button type="submit" disabled={!canType || !text} className={cn(BUTTON, "h-11")}>Type</button>
+    {active && !view.state?.privateActive && <form className="flex items-center gap-2 px-4 pb-4" onSubmit={(event) => { event.preventDefault(); if (canType && text) session.input({ kind: "text", text }); }}>
+      <input aria-label="Text to type into the focused browser field" value={text} onChange={(event) => setText(event.target.value)} disabled={!canType} autoComplete="off" className={cn(FIELD, "h-11 min-w-0 flex-1 disabled:opacity-50")} />
+      <Pill type="submit" disabled={!canType || !text} className="max-sm:min-h-11">Type</Pill>
     </form>}
   </div>;
 }

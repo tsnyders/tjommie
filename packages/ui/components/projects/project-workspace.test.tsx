@@ -3,13 +3,14 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { Project, ProjectTask, TaskDetail } from "../../../protocol/src/projects";
+import type { Bot } from "@tjommie/protocol";
 import { initialState } from "@/lib/state";
 import { update } from "@/lib/store";
 import ProjectsPage from "@/app/projects/page";
 
 const fixture = vi.hoisted(() => ({ request: vi.fn<(method: string, params: Record<string, unknown>) => Promise<unknown>>(), notify: () => {} }));
 vi.mock("@/lib/connection", () => ({ request: fixture.request, daemon: () => ({ subscribe: (listener: (event: { event: string }) => void) => { fixture.notify = () => listener({ event: "project.updated" }); return () => {}; } }) }));
-vi.mock("@/lib/native-capability", () => ({ phoneCaptionClear: () => "" }));
+vi.mock("@/lib/native-capability", () => ({ phoneCaptionClear: () => "", localFileActions: () => null }));
 vi.mock("@/components/projects/project-editor", () => ({ ProjectEditor: () => null }));
 vi.mock("@/components/projects/task-editor", () => ({ TaskEditor: () => null }));
 Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
@@ -79,4 +80,39 @@ it("brings a selected task into view and focus once, without stealing focus on b
   expect(scroll).toHaveBeenCalledTimes(2);
   expect(document.activeElement?.getAttribute("aria-label")).toBe("Task: Second task");
   expect(document.querySelector('[aria-label="Task: Second task"]')).not.toBeNull();
+});
+
+it("uses the existing role switches without changing repository identity or starting work when saving a team", async () => {
+  const { ProjectEditor } = await vi.importActual<typeof import("./project-editor")>("./project-editor");
+  const saved = vi.fn();
+  fixture.request.mockClear().mockResolvedValue(project);
+  await act(async () => root.render(<ProjectEditor project={project} repositories={[{ id: "repo", name: "Synthetic repository", createdAt: timestamp }]} bots={[{ id: "dev", name: "Developer", color: "blue", shape: "circle" } as Bot]} onClose={() => {}} onSaved={saved} />));
+  await settle();
+  expect(document.querySelector<HTMLButtonElement>("#project-repo")?.disabled).toBe(true);
+  expect(document.querySelector("select")).toBeNull();
+  const tester = document.querySelector<HTMLButtonElement>('[role="switch"][aria-label="Developer: tester"]')!;
+  await click(tester);
+  expect(tester.getAttribute("aria-checked")).toBe("true");
+  expect(fixture.request).not.toHaveBeenCalled();
+  await click(button("Save team"));
+  expect(fixture.request).toHaveBeenCalledExactlyOnceWith("projects.update", { id: project.id, expectedRevision: 7, patch: { name: project.name, baseRef: project.baseRef, targetRef: project.targetRef, members: [{ botId: "dev", roles: ["developer", "tester"], instructions: "" }], checks: [] } });
+  expect(saved).toHaveBeenCalledWith(project);
+});
+
+it("keeps task pickers limited to assigned roles and submits the selected developer with the original revision", async () => {
+  const { TaskEditor } = await vi.importActual<typeof import("./task-editor")>("./task-editor");
+  const configured = Project.parse({ ...project, members: [{ botId: "dev", roles: ["developer"] }, { botId: "dev2", roles: ["developer"] }, { botId: "review", roles: ["reviewer"] }, { botId: "test", roles: ["tester"] }] });
+  const people = ["dev", "dev2", "review", "test"].map(id => ({ id, name: id, color: "blue", shape: "circle" } as Bot));
+  fixture.request.mockClear().mockResolvedValue(tasks[0]);
+  await act(async () => root.render(<TaskEditor project={configured} task={tasks[0]} bots={people} onClose={() => {}} onSaved={() => {}} />));
+  await settle();
+  expect(document.querySelector("select")).toBeNull();
+  await click(document.querySelector<HTMLButtonElement>("#task-developer")!);
+  const choices = [...document.querySelectorAll<HTMLElement>('[role="menuitemradio"]')];
+  expect(choices.some(choice => choice.textContent === "review")).toBe(false);
+  const next = choices.find(choice => choice.textContent === "dev2")!;
+  await act(async () => next.click());
+  expect(fixture.request).not.toHaveBeenCalled();
+  await click(button("Save task"));
+  expect(fixture.request).toHaveBeenCalledExactlyOnceWith("tasks.update", { id: tasks[0].id, expectedRevision: tasks[0].revision, patch: { title: tasks[0].title, instructions: tasks[0].instructions, acceptance: [], assigneeId: "dev2", reviewerId: "review", testerId: "test" } });
 });

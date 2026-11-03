@@ -1,12 +1,15 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { Maximize, Minus, Plus } from "lucide-react";
 import type { AttachmentCompanion, AttachmentInfo, AttachmentNativeApi, AttachmentRef } from "../../../protocol/src/attachments";
 import { attachmentError, previewAttachment } from "@/lib/attachment-transfer";
 import { daemon } from "@/lib/connection";
 import { pauseThumbnailWork } from "@/lib/file-thumbnails";
 import { usePhone } from "@/lib/use-phone";
 import { Dialog } from "../dialog";
+import { IconButton } from "../icon-button";
+import { Pill } from "../pill";
 import { MarkdownFileViewer } from "./markdown-file-viewer";
 import { PdfFileViewer } from "./pdf-file-viewer";
 
@@ -20,7 +23,6 @@ export function previewKind(type: string): PreviewKind {
   return "unsupported";
 }
 
-const BUTTON = "min-h-11 rounded-lg bg-pill px-3 text-sm text-text disabled:opacity-50";
 export function FileViewer({ reference, name, companions, native, onClose, onDownload }: { reference: AttachmentRef; name: string; companions?: AttachmentCompanion[]; native: AttachmentNativeApi; onClose: () => void; onDownload: () => void }) {
   const [ready, setReady] = useState<{ info: AttachmentInfo; url: string } | null>(null), [error, setError] = useState<string | null>(null), [expanded, setExpanded] = useState(false);
   const phone = usePhone();
@@ -40,10 +42,10 @@ export function FileViewer({ reference, name, companions, native, onClose, onDow
     };
   }, [messageId, attachmentIndex, attachmentId, native]);
   return (
-    <Dialog open onOpenChange={(open) => { if (!open) onClose(); }} title={name} width={expanded ? 1280 : 960} closable className={expanded ? "h-[calc(100dvh-32px)]" : "h-[min(760px,calc(100dvh-48px))]"} actions={<>
-      {!phone && <button type="button" className={BUTTON} onClick={() => setExpanded(!expanded)}>{expanded ? "Restore" : "Expand"}</button>}
-      <button type="button" className={BUTTON} disabled={preparingDownload} onClick={() => { setPreparingDownload(true); void closeImage.current().then(() => closePreview.current?.()).then(() => { onClose(); onDownload(); }).catch(() => { setError("The preview could not close. Try again."); setPreparingDownload(false); }); }}>Download</button>
-    </>}>
+    <Dialog open onOpenChange={(open) => { if (!open) onClose(); }} title={name} width={expanded ? 1280 : 960} closable className={expanded ? "h-[calc(100dvh-32px)]" : "h-[min(760px,calc(100dvh-48px))]"} actions={<span className="flex items-center gap-2">
+      {!phone && <Pill onClick={() => setExpanded(!expanded)}>{expanded ? "Restore" : "Expand"}</Pill>}
+      <Pill primary className="max-sm:min-h-11" disabled={preparingDownload} onClick={() => { setPreparingDownload(true); void closeImage.current().then(() => closePreview.current?.()).then(() => { onClose(); onDownload(); }).catch(() => { setError("The preview could not close. Try again."); setPreparingDownload(false); }); }}>Download</Pill>
+    </span>}>
       <div className="mt-3 min-h-0 flex-1 overflow-auto" aria-busy={!ready && !error}>
         {error ? <p role="alert" className="text-sm text-danger">{error}</p> : !ready ? <p role="status" className="text-sm text-secondary">Opening file…</p> : ready.info.contentType === "text/markdown" ? <MarkdownFileViewer url={ready.url} size={ready.info.size} reference={reference} companions={companions} native={native} closeImageRef={closeImage} /> : <Preview info={ready.info} url={ready.url} />}
       </div>
@@ -63,7 +65,7 @@ function ImagePreview({ url, name }: { url: string; name: string }) {
   const [zoom, setZoom] = useState(1), [natural, setNatural] = useState(0), [failed, setFailed] = useState(false), scroll = useRef<HTMLDivElement>(null);
   if (failed) return <p role="alert" className="text-sm text-danger">This image is corrupt or unsupported. Download is still available.</p>;
   return <div className="flex h-full min-h-0 flex-col gap-2">
-    <div className="flex gap-2"><button type="button" className={BUTTON} disabled={zoom <= 1} onClick={() => setZoom(Math.max(1, zoom / 1.5))} aria-label="Zoom image out">−</button><button type="button" className={BUTTON} disabled={zoom >= 6} onClick={() => setZoom(Math.min(6, zoom * 1.5))} aria-label="Zoom image in">+</button><button type="button" className={BUTTON} onClick={() => { setZoom(1); scroll.current?.scrollTo(0, 0); }}>Reset</button></div>
+    <div className="flex items-center gap-2"><IconButton label="Zoom image out" className="max-sm:size-11 disabled:opacity-40" disabled={zoom <= 1} onClick={() => setZoom(Math.max(1, zoom / 1.5))}><Minus aria-hidden /></IconButton><IconButton label="Zoom image in" className="max-sm:size-11 disabled:opacity-40" disabled={zoom >= 6} onClick={() => setZoom(Math.min(6, zoom * 1.5))}><Plus aria-hidden /></IconButton><Pill className="max-sm:min-h-11" onClick={() => { setZoom(1); scroll.current?.scrollTo(0, 0); }}>Reset</Pill></div>
     <div ref={scroll} className="min-h-0 flex-1 overflow-auto" tabIndex={0} aria-label="Image; scroll to pan when zoomed">
       {/* eslint-disable-next-line @next/next/no-img-element -- Scoped native handles must not be fetched by the image optimizer. */}
       <img src={url} alt={name} onLoad={(event) => setNatural(event.currentTarget.naturalWidth)} onError={() => setFailed(true)} style={zoom === 1 ? { maxWidth: "100%", maxHeight: "100%", objectFit: "contain" } : { width: natural * zoom, maxWidth: "none" }} />
@@ -73,5 +75,5 @@ function ImagePreview({ url, name }: { url: string; name: string }) {
 function MediaPreview({ url, video }: { url: string; video: boolean }) {
   const [failed, setFailed] = useState(false), [fullscreenError, setFullscreenError] = useState(false), element = useRef<HTMLVideoElement>(null);
   if (failed) return <p role="alert" className="text-sm text-danger">This media is corrupt or its codec is unsupported on this device. Download is still available.</p>;
-  return video ? <div><video ref={element} src={url} controls playsInline preload="metadata" onError={() => setFailed(true)} className="max-h-[65dvh] w-full" /><button type="button" className={`${BUTTON} mt-2`} onClick={() => { void element.current?.requestFullscreen().catch(() => setFullscreenError(true)); }}>Fullscreen video</button>{fullscreenError && <p role="status" className="text-xs text-secondary">Fullscreen is unavailable on this device.</p>}</div> : <audio src={url} controls preload="metadata" onError={() => setFailed(true)} className="w-full" />;
+  return video ? <div><video ref={element} src={url} controls playsInline preload="metadata" onError={() => setFailed(true)} className="max-h-[65dvh] w-full" /><Pill className="mt-2 max-sm:min-h-11" onClick={() => { void element.current?.requestFullscreen().catch(() => setFullscreenError(true)); }}><Maximize className="size-3.5" aria-hidden />Fullscreen video</Pill>{fullscreenError && <p role="status" className="text-xs text-secondary">Fullscreen is unavailable on this device.</p>}</div> : <audio src={url} controls preload="metadata" onError={() => setFailed(true)} className="w-full" />;
 }

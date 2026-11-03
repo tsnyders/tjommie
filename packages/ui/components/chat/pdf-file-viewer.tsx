@@ -1,7 +1,11 @@
 "use client";
 
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useId, useRef, useState, type FormEvent } from "react";
+import { ChevronLeft, ChevronRight, Minus, Plus } from "lucide-react";
 import { PdfRangeQueue } from "@/lib/document-ranges";
+import { FIELD, Label } from "../controls";
+import { IconButton } from "../icon-button";
+import { Pill } from "../pill";
 
 type PdfText = { items: { str?: string }[] };
 type PdfPage = { getViewport(options: { scale: number }): { width: number; height: number; userUnit: number }; render(options: Record<string, unknown>): { promise: Promise<void>; cancel(): void }; getTextContent(): Promise<PdfText>; cleanup(): boolean };
@@ -14,8 +18,8 @@ type PdfApi = {
   getDocument(options: Record<string, unknown>): PdfLoading;
   TextLayer: new (options: Record<string, unknown>) => { render(): Promise<void>; cancel(): void };
 };
-const BUTTON = "min-h-11 rounded-lg bg-pill px-3 text-sm text-text disabled:opacity-50";
 export function PdfFileViewer({ url, size }: { url: string; size: number }) {
+  const passwordId = useId(), searchId = useId();
   const [loaded, setLoaded] = useState<{ api: PdfApi; document: PdfDocument } | null>(null), [page, setPage] = useState(1), [zoom, setZoom] = useState(1), [error, setError] = useState<string | null>(null);
   const [password, setPassword] = useState<{ submit: (value: string) => void; incorrect: boolean } | null>(null), [query, setQuery] = useState(""), [found, setFound] = useState<{ query: string; page: number } | null>(null), [searching, setSearching] = useState(false), [searchNote, setSearchNote] = useState("");
   const input = useRef<HTMLInputElement>(null), canvas = useRef<HTMLCanvasElement>(null), textLayer = useRef<HTMLDivElement>(null), alive = useRef<AbortController | null>(null);
@@ -67,10 +71,18 @@ export function PdfFileViewer({ url, size }: { url: string; size: number }) {
     } catch { if (alive.current && !alive.current.signal.aborted) setSearchNote("PDF search could not finish."); } finally { if (alive.current && !alive.current.signal.aborted) setSearching(false); }
   };
   if (error) return <p role="alert" className="text-sm text-danger">{error}</p>;
-  if (password) return <form onSubmit={(event) => { event.preventDefault(); const value = input.current?.value ?? ""; if (input.current) input.current.value = ""; password.submit(value); }} className="flex flex-wrap items-center gap-2"><label className="text-sm">{password.incorrect ? "Incorrect password. Try again" : "PDF password"}<input ref={(element) => { if (input.current && input.current !== element) input.current.value = ""; input.current = element; }} type="password" autoComplete="off" className="ml-2 min-h-11 rounded border border-divider px-2" /></label><button type="submit" className={BUTTON}>Open PDF</button><p className="text-xs text-secondary">Used only for this open document.</p></form>;
+  if (password) return <form onSubmit={(event) => { event.preventDefault(); const value = input.current?.value ?? ""; if (input.current) input.current.value = ""; password.submit(value); }} className="flex flex-wrap items-end gap-2">
+    <div className="w-full min-w-0 sm:flex-1"><Label htmlFor={passwordId}>{password.incorrect ? "Incorrect password. Try again" : "PDF password"}</Label><input id={passwordId} ref={(element) => { if (input.current && input.current !== element) input.current.value = ""; input.current = element; }} type="password" autoComplete="off" className={`${FIELD} mt-1 h-11`} /></div>
+    <Pill primary type="submit" className="max-sm:min-h-11">Open PDF</Pill><p className="w-full text-[12px] leading-[18px] text-secondary">Used only for this open document.</p>
+  </form>;
   return <div className="flex h-full min-h-0 flex-col gap-2">
-    <div className="flex flex-wrap items-center gap-2"><button type="button" className={BUTTON} disabled={!loaded || page <= 1} onClick={() => setPage(page - 1)}>Previous page</button><span role="status" className="text-sm">{loaded ? `${page} / ${loaded.document.numPages}` : "Loading PDF…"}</span><button type="button" className={BUTTON} disabled={!loaded || page >= loaded.document.numPages} onClick={() => setPage(page + 1)}>Next page</button><button type="button" className={BUTTON} disabled={zoom <= 0.5} onClick={() => setZoom(Math.max(0.5, zoom / 1.25))} aria-label="Zoom PDF out">−</button><button type="button" className={BUTTON} disabled={zoom >= 4} onClick={() => setZoom(Math.min(4, zoom * 1.25))} aria-label="Zoom PDF in">+</button></div>
-    <form onSubmit={(event) => { void search(event); }} className="flex flex-wrap gap-2"><input aria-label="Search PDF" maxLength={256} value={query} onChange={(event) => setQuery(event.target.value)} className="min-h-11 min-w-0 flex-1 rounded border border-divider px-2" /><button type="submit" className={BUTTON} disabled={!loaded || searching}>{searching ? "Searching…" : found?.query === query ? "Next matching page" : "Search"}</button><span role="status" className="self-center text-xs text-secondary">{searchNote}</span></form>
+    <div className="flex flex-wrap items-center gap-2">
+      <IconButton label="Previous page" className="max-sm:size-11 disabled:opacity-40" disabled={!loaded || page <= 1} onClick={() => setPage(page - 1)}><ChevronLeft aria-hidden /></IconButton><span role="status" className="text-[13px] leading-[18px] text-secondary">{loaded ? `${page} / ${loaded.document.numPages}` : "Loading PDF…"}</span><IconButton label="Next page" className="max-sm:size-11 disabled:opacity-40" disabled={!loaded || page >= loaded.document.numPages} onClick={() => setPage(page + 1)}><ChevronRight aria-hidden /></IconButton>
+      <IconButton label="Zoom PDF out" className="max-sm:size-11 disabled:opacity-40" disabled={zoom <= 0.5} onClick={() => setZoom(Math.max(0.5, zoom / 1.25))}><Minus aria-hidden /></IconButton><IconButton label="Zoom PDF in" className="max-sm:size-11 disabled:opacity-40" disabled={zoom >= 4} onClick={() => setZoom(Math.min(4, zoom * 1.25))}><Plus aria-hidden /></IconButton>
+    </div>
+    <form onSubmit={(event) => { void search(event); }} className="flex flex-wrap items-end gap-2">
+      <div className="w-full min-w-0 sm:flex-1"><Label htmlFor={searchId}>Search PDF</Label><input id={searchId} aria-label="Search PDF" maxLength={256} value={query} onChange={(event) => setQuery(event.target.value)} className={`${FIELD} mt-1 h-11`} /></div><Pill type="submit" className="max-sm:min-h-11" disabled={!loaded || searching}>{searching ? "Searching…" : found?.query === query ? "Next matching page" : "Search"}</Pill><span role="status" className="w-full text-[12px] leading-[18px] text-secondary">{searchNote}</span>
+    </form>
     <div className="min-h-0 flex-1 overflow-auto" tabIndex={0} aria-label="PDF page"><div className="relative w-fit bg-white"><canvas ref={canvas} aria-label={`PDF page ${page}`} /><div ref={textLayer} className="textLayer absolute inset-0" /></div></div>
   </div>;
 }

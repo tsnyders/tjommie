@@ -3,6 +3,7 @@
 import { useId, useRef, useState, type DragEvent, type KeyboardEvent } from "react";
 import { ArrowUp, Paperclip, Plus, Square, X } from "lucide-react";
 import { ApprovalData, type Bot, type Message } from "@tjommie/protocol";
+import { IconButton } from "@/components/icon-button";
 import { addFiles, fileName, MAX_FILES } from "@/lib/attachments";
 import { daemon } from "@/lib/connection";
 import { errorText } from "@/lib/labels";
@@ -145,23 +146,22 @@ export function Composer({ bot, messages }: { bot: Bot; messages: Message[] }) {
       {local && files.length > 0 && (
         <ul aria-label="Attached files" className="mb-2 flex flex-wrap gap-1.5">
           {files.map(({ id, path }) => (
-            <li key={id} className="inline-flex min-h-11 max-w-[240px] items-center gap-2 rounded-[14px] bg-pill pl-3 text-[13px] text-text">
+            <li key={id} className="inline-flex min-h-8 max-w-[240px] items-center gap-2 rounded-full bg-pill pl-3 text-[13px] text-text max-sm:min-h-11">
               <Paperclip className="size-3 shrink-0 text-icon" aria-hidden />
               <span className="truncate">{fileName(path)}</span>
-              <button
-                type="button"
-                aria-label={`Remove ${fileName(path)}`}
+              <IconButton
+                label={`Remove ${fileName(path)}`}
                 onClick={() => setFiles(latestFiles.current.filter((file) => file.id !== id))}
-                className="flex size-11 shrink-0 touch-manipulation select-none items-center justify-center rounded-full text-icon hover:bg-highlight hover:text-text active:bg-highlight"
+                className="rounded-full max-sm:size-11"
               >
                 <X className="size-4" aria-hidden />
-              </button>
+              </IconButton>
             </li>
           ))}
         </ul>
       )}
       <DictationStatus voice={voice} />
-      <div data-slot="composer" className="flex min-w-0 flex-col rounded-[24px] border border-composer-stroke bg-composer p-1 shadow-composer focus-within:border-accent">
+      <div data-slot="composer" className="flex min-w-0 flex-col rounded-[22px] border border-composer-stroke bg-composer p-[5px] shadow-composer focus-within:border-accent">
         <textarea
           ref={field}
           value={text}
@@ -170,14 +170,14 @@ export function Composer({ bot, messages }: { bot: Bot; messages: Message[] }) {
           rows={1}
           aria-label={`Message ${bot.name}`}
           placeholder={`Message ${bot.name}`}
-          className="block max-h-[200px] min-h-11 w-full min-w-0 resize-none bg-transparent px-3 py-2.5 text-[16px] leading-6 text-text outline-none [field-sizing:content] placeholder:text-placeholder max-sm:max-h-[min(200px,25dvh)] sm:text-[14px]"
+          className="block max-h-[200px] min-h-8 w-full min-w-0 resize-none bg-transparent px-3 py-2 text-[14px] leading-[21px] text-text outline-none [field-sizing:content] placeholder:text-placeholder max-sm:max-h-[min(200px,25dvh)] max-sm:min-h-11"
         />
-        <div role="group" aria-label="Message actions" className="flex min-h-11 min-w-0 flex-wrap items-center gap-1">
-          <button type="button" aria-label="Attach files" aria-disabled={!local} aria-describedby={local ? undefined : reason}
+        <div role="group" aria-label="Message actions" className="flex min-h-8 min-w-0 flex-wrap items-center gap-1 max-sm:min-h-11">
+          <IconButton label="Attach files" aria-disabled={!local} aria-describedby={local ? undefined : reason}
             title={local ? "Attach files" : elsewhere} onClick={() => (local ? void pick() : setProblem(`${elsewhere}.`))}
-            className="flex size-11 shrink-0 touch-manipulation select-none items-center justify-center rounded-full text-icon hover:bg-highlight hover:text-text active:bg-highlight aria-disabled:opacity-50">
+            className="rounded-full aria-disabled:opacity-50 max-sm:size-11">
             <Plus className="size-[18px]" aria-hidden />
-          </button>
+          </IconButton>
           {!local && <span id={reason} className="sr-only">{elsewhere}</span>}
           <DictationButton voice={voice} />
           <DictationOptions voice={voice} />
@@ -187,7 +187,7 @@ export function Composer({ bot, messages }: { bot: Bot; messages: Message[] }) {
             aria-label={stop ? "Stop" : "Send"}
             title={stop ? "Stop" : "Send"}
             className={cn(
-              "ml-auto flex size-11 shrink-0 touch-manipulation select-none items-center justify-center rounded-full enabled:active:opacity-80 disabled:opacity-50",
+              "ml-auto flex size-8 shrink-0 touch-manipulation select-none items-center justify-center rounded-full enabled:active:opacity-80 disabled:opacity-50 max-sm:size-11",
               hasText || stop ? "bg-user-bubble text-user-text" : "bg-disabled text-placeholder",
             )}
           >

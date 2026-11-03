@@ -48,10 +48,14 @@ describe("local voice settings", () => {
     const { api, emit } = speech({ ...initial, languages: [{ tag: "en", label: "English" }, { tag: "en-GB", label: "English (UK)" }] });
     await mount();
     expect(api.start).not.toHaveBeenCalled(); expect(api.downloadModel).not.toHaveBeenCalled();
-    const select = document.querySelector<HTMLSelectElement>('[aria-label="Dictation language"]');
-    if (!select) throw new Error("No language select");
-    await act(async () => { select.value = "en-GB"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    const picker = document.querySelector<HTMLButtonElement>('[aria-label="Dictation language"]');
+    if (!picker) throw new Error("No language picker");
+    await act(async () => picker.click());
+    const choice = [...document.querySelectorAll<HTMLElement>('[role="menuitemradio"]')].find((item) => item.textContent === "English (UK)")!;
+    await act(async () => choice.click());
     expect(localStorage.getItem("tjommie.voice.language")).toBe("en-GB");
+    expect(document.querySelector("select")).toBeNull();
+    expect(picker.getAttribute("aria-expanded")).toBe("false");
     await act(async () => emit({ kind: "final", sessionId: "elsewhere", text: "SYNTHETIC_TRANSCRIPT" }));
     expect(text()).not.toContain("SYNTHETIC_TRANSCRIPT");
   });
@@ -101,8 +105,10 @@ describe("local voice settings", () => {
     expect(fake.api.downloadModel).toHaveBeenCalledOnce(); expect(fake.api.start).not.toHaveBeenCalled();
     expect(text()).toContain("Each Start confirms it again before recording");
     expect(text()).toContain("SDK preparation");
-    expect(document.querySelectorAll("select[aria-label='Dictation language'] option")).toHaveLength(1);
-    expect(document.querySelector("select[aria-label='Dictation language']")?.textContent).toBe("No supported language available");
+    const languagePicker = document.querySelector<HTMLButtonElement>("button[aria-label='Dictation language']")!;
+    expect(languagePicker.disabled).toBe(true);
+    expect(languagePicker.textContent).toBe("No supported language available");
+    expect(document.querySelector('[role="menuitemradio"]')).toBeNull();
   });
   it("does not label a scheduled system download as completed and releases only its own request when unmounted", async () => {
     const native: SpeechStatus = { engine: "android-on-device", capture: "native", available: false, permission: "granted", languages: [], model: { state: "system-managed", bytes: 0, received: 0 } };

@@ -1,13 +1,18 @@
 "use client";
 
 import Link from "next/link";
+import { Menu } from "@base-ui/react/menu";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Check, ChevronDown, KeyRound } from "lucide-react";
 import type { BrowserState } from "@tjommie/protocol";
 import { LoginEntry, VaultStatus, type VaultFillTarget, type VaultHostAction } from "../../../protocol/src/vault";
+import { Row } from "@/components/bot-form/rows";
+import { MENU_ITEM, MENU_POPUP } from "@/components/menu";
+import { Pill } from "@/components/pill";
 import { createLoginsClient, LOGINS_PROBLEM } from "@/lib/logins";
 import { useApp } from "@/lib/store";
+import { cn } from "@/lib/utils";
 
-const BUTTON = "min-h-11 rounded-lg bg-pill px-3 text-sm text-text disabled:opacity-50";
 export function browserLoginTarget(state: BrowserState): VaultFillTarget | null {
   if (state.control !== "human" || state.canControl !== true || state.privateActive || !state.activePageId || state.controlEpoch === undefined) return null;
   return { botId: state.botId, generation: state.generation, pageId: state.activePageId, controlEpoch: state.controlEpoch };
@@ -45,11 +50,31 @@ function BrowserLoginScope({ state, onRefresh }: { state: BrowserState; onRefres
     finally { if (alive.current && expected === revision.current && client.current()) setBusy(false); }
   }
   const cancel = () => { revision.current++; setBusy(false); setNotice("Cancelled."); void client.cancel(); };
-  return <div className="rounded-lg border border-divider p-3 text-sm">
-    {state.privateActive ? <div className="flex flex-wrap items-center gap-2"><p className="basis-full text-secondary">Private interaction. Remote fields and pictures are hidden. Clearing fields or closing this browser requires host confirmation and keeps automation paused.</p><button type="button" className={BUTTON} disabled={busy || state.privateEpoch === undefined} onClick={() => { if (state.privateEpoch !== undefined) void run({ kind: "finish", botId: state.botId, generation: state.generation, privateEpoch: state.privateEpoch, mode: "clear" }); }}>Clear private fields on host</button><button type="button" className={BUTTON} disabled={busy || state.privateEpoch === undefined} onClick={() => { if (state.privateEpoch !== undefined) void run({ kind: "finish", botId: state.botId, generation: state.generation, privateEpoch: state.privateEpoch, mode: "close" }); }}>Close private browser on host</button></div> : <>
-      <button type="button" className={BUTTON} aria-expanded={open} onClick={() => { if (open) cancel(); setOpen(!open); }}>Saved logins</button>
-      {open && <div className="mt-2 flex flex-wrap gap-2"><p className="basis-full text-xs text-secondary">Only metadata is shown here. The host confirms its exact HTTPS destination before filling. {status ? `Logins ${status.state}.` : error ? "Logins unavailable." : "Checking host…"} {status?.reason}</p><select aria-label="Saved login for this origin" value={entry?.id ?? ""} onChange={event => setSelected(event.target.value)} className="min-h-11 min-w-0 flex-1 rounded border border-divider bg-canvas px-2"><option value="">Choose login for {origin || "an HTTPS page"}</option>{choices.map(value => <option key={value.id} value={value.id}>{value.name}</option>)}</select><button type="button" className={BUTTON} disabled={busy || !target || !entry || status?.state !== "unlocked"} onClick={() => { if (target && entry) void run({ kind: "fill", ...target, id: entry.id, revision: entry.revision }); }}>Fill on host</button><button type="button" className={BUTTON} disabled={busy || status?.state !== "locked"} onClick={() => void run({ kind: "unlock" })}>Unlock on host</button><Link href="/settings/?section=logins" className="self-center text-accent hover:underline">Manage Logins</Link>{!target && <p className="basis-full text-xs text-secondary">Take control of the current browser page before filling a login.</p>}</div>}
-    </>}
-    {busy && <button type="button" className={`${BUTTON} mt-2`} onClick={cancel}>Cancel host interaction</button>}{notice && <p role="status" className="mt-2 text-xs text-secondary">{notice}</p>}{error && <p role="alert" className="mt-2 text-xs text-danger">{LOGINS_PROBLEM}</p>}
+  return <div className="min-w-0 text-[14px] leading-[21px]">
+    {state.privateActive ? <div className="flex flex-wrap items-center gap-2 rounded-[12px] bg-card p-4">
+      <p className="basis-full text-[13px] leading-[18px] text-secondary">Private interaction. Remote fields and pictures are hidden. Clearing fields or closing this browser requires host confirmation and keeps automation paused.</p>
+      <Pill className="h-auto! min-h-8 max-w-full whitespace-normal! py-2 max-sm:min-h-11" disabled={busy || state.privateEpoch === undefined} onClick={() => { if (state.privateEpoch !== undefined) void run({ kind: "finish", botId: state.botId, generation: state.generation, privateEpoch: state.privateEpoch, mode: "clear" }); }}>Clear private fields on host</Pill>
+      <Pill className="h-auto! min-h-8 max-w-full whitespace-normal! py-2 max-sm:min-h-11" disabled={busy || state.privateEpoch === undefined} onClick={() => { if (state.privateEpoch !== undefined) void run({ kind: "finish", botId: state.botId, generation: state.generation, privateEpoch: state.privateEpoch, mode: "close" }); }}>Close private browser on host</Pill>
+    </div> : <Row icon={KeyRound} title="Saved logins" open={open} onToggle={() => { if (open) cancel(); setOpen(!open); }}>
+      <div className="flex min-w-0 flex-wrap items-center gap-2 pb-2">
+        <p className="basis-full text-[12px] leading-[18px] text-secondary [overflow-wrap:anywhere]">Only metadata is shown here. The host confirms its exact HTTPS destination before filling. {status ? `Logins ${status.state}.` : error ? "Logins unavailable." : "Checking host…"} {status?.reason}</p>
+        <Menu.Root>
+          <Menu.Trigger aria-label="Saved login for this origin" render={<Pill className="max-w-full max-sm:min-h-11" />}>
+            <span className="min-w-0 truncate">{entry?.name ?? `Choose login for ${origin || "an HTTPS page"}`}</span><ChevronDown className="size-4 shrink-0" aria-hidden />
+          </Menu.Trigger>
+          <Menu.Portal><Menu.Positioner sideOffset={6} align="start" className="z-50"><Menu.Popup className={cn(MENU_POPUP, "max-h-[var(--available-height)] max-w-[calc(100vw-32px)] overflow-y-auto")}>
+            <Menu.RadioGroup value={entry?.id ?? ""} onValueChange={(value: unknown) => { if (typeof value === "string") setSelected(value); }}>
+              <Menu.RadioItem value="" closeOnClick className={MENU_ITEM}><span className="min-w-0 flex-1 truncate">Choose login</span><Menu.RadioItemIndicator><Check aria-hidden /></Menu.RadioItemIndicator></Menu.RadioItem>
+              {choices.map(value => <Menu.RadioItem key={value.id} value={value.id} closeOnClick className={MENU_ITEM}><span className="min-w-0 flex-1 truncate">{value.name}</span><Menu.RadioItemIndicator><Check aria-hidden /></Menu.RadioItemIndicator></Menu.RadioItem>)}
+            </Menu.RadioGroup>
+          </Menu.Popup></Menu.Positioner></Menu.Portal>
+        </Menu.Root>
+        <Pill className="max-sm:min-h-11" disabled={busy || !target || !entry || status?.state !== "unlocked"} onClick={() => { if (target && entry) void run({ kind: "fill", ...target, id: entry.id, revision: entry.revision }); }}>Fill on host</Pill>
+        <Pill className="max-sm:min-h-11" disabled={busy || status?.state !== "locked"} onClick={() => void run({ kind: "unlock" })}>Unlock on host</Pill>
+        <Link href="/settings/?section=logins" className="inline-flex items-center text-[13px] text-accent hover:underline max-sm:min-h-11">Manage Logins</Link>
+        {!target && <p className="basis-full text-[12px] leading-[18px] text-secondary">Take control of the current browser page before filling a login.</p>}
+      </div>
+    </Row>}
+    {busy && <Pill className="mt-2 max-sm:min-h-11" onClick={cancel}>Cancel host interaction</Pill>}{notice && <p role="status" className="mt-2 text-[12px] leading-[18px] text-secondary">{notice}</p>}{error && <p role="alert" className="mt-2 text-[12px] leading-[18px] text-danger">{LOGINS_PROBLEM}</p>}
   </div>;
 }

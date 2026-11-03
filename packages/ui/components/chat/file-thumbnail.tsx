@@ -22,12 +22,12 @@ export function FileThumbnail({ reference, native, type, size, active, host }: {
     return () => { observer?.disconnect(); document.removeEventListener("visibilitychange", changed); };
   }, []);
   const eligible = size === undefined || thumbnailEligible(type, size);
-  return <span ref={element} data-slot="file-thumbnail" data-thumbnail-kind={kind} aria-hidden="true" className={`relative flex w-full items-center justify-center overflow-hidden bg-bubble ${visual ? "h-36" : "h-20"}`}>
+  return <span ref={element} data-slot="file-thumbnail" data-thumbnail-kind={kind} aria-hidden="true" className={`relative flex w-full items-center overflow-hidden rounded-[8px] ${visual ? "aspect-video justify-center bg-canvas" : "min-h-11 justify-start"}`}>
     {active && visible && !paused && native && reference && visual && eligible ? <ThumbnailContent key={identity} reference={reference} native={native} kind={kind} /> : <Fallback kind={kind} />}
   </span>;
 }
 function Fallback({ kind }: { kind: ReturnType<typeof thumbnailKind> }) {
-  const Icon = ICON[kind]; return <span className="flex items-center gap-2 text-caption"><Icon className="size-6 shrink-0" /><span className="text-xs">{LABEL[kind]}</span></span>;
+  const Icon = ICON[kind]; return <span className="flex items-center gap-3 text-caption"><span className="flex size-8 shrink-0 items-center justify-center rounded-[8px] bg-file-tile"><Icon className="size-4 text-danger" /></span><span className="text-[12px] leading-[18px]">{LABEL[kind]}</span></span>;
 }
 function ThumbnailContent({ reference, native, kind }: { reference: AttachmentRef; native: AttachmentNativeApi; kind: ReturnType<typeof thumbnailKind> }) {
   const target = useRef<HTMLCanvasElement>(null), [content, setContent] = useState<FileThumbnailContent | null>(null);
@@ -50,8 +50,8 @@ function ThumbnailContent({ reference, native, kind }: { reference: AttachmentRe
   }, [messageId, attachmentIndex, attachmentId, native]);
   return <>
     <canvas ref={target} className={`size-full object-contain ${content && "canvas" in content ? "" : "hidden"}`} />
-    {content && "text" in content ? <span className="block size-full overflow-hidden px-4 py-3 text-left font-mono text-[11px] leading-[18px] whitespace-pre-wrap break-words text-secondary">{content.text || "Empty document"}</span> : !content && <Fallback kind={kind} />}
-    {kind === "video" && content && <span className="absolute bottom-2 left-2 flex size-8 items-center justify-center rounded-full bg-card text-title"><Play className="size-4" /></span>}
-    {(kind === "pdf" || kind === "text") && content && <span className="absolute right-2 bottom-2 rounded bg-card px-1.5 py-0.5 text-[12px] font-medium text-caption">{kind === "pdf" ? "Page 1" : "Text excerpt"}</span>}
+    {content && "text" in content ? <span className="block size-full overflow-hidden px-3 py-2 text-left text-[12px] leading-[18px] whitespace-pre-wrap break-words text-body">{content.text || "Empty document"}</span> : !content && <Fallback kind={kind} />}
+    {kind === "video" && content && <span className="absolute bottom-2 left-2 flex size-8 items-center justify-center rounded-full bg-pill text-icon"><Play className="size-4" /></span>}
+    {(kind === "pdf" || kind === "text") && content && <span className="absolute right-2 bottom-2 rounded-full bg-pill px-2 text-[12px] leading-[18px] text-caption">{kind === "pdf" ? "Page 1" : "Text excerpt"}</span>}
   </>;
 }

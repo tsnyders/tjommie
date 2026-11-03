@@ -50,13 +50,13 @@ export function DiagnosticsSection() {
       <SettingsRow title="Last connection error" note="Historical errors are not retained. The preview includes only a fixed category for the current connection issue."><span className="text-[13px] text-secondary">Unavailable</span></SettingsRow>
     </SettingsCard>
     {info?.hostUnavailable && <SettingsProblem>The host diagnostic check is unavailable. Unknown values stay in the report.</SettingsProblem>}
-    <h3 className="mb-2 mt-6 text-[14px] font-semibold text-title">Report preview</h3>
+    <h3 className="mb-2.5 mt-9 text-[13px] font-semibold leading-[18px] text-label">Report preview</h3>
     <p className="mb-3 text-[12px] leading-[18px] text-secondary">Only versions and fixed health categories are included. Names, account identifiers, paths, URLs, tokens, pairing codes, logs, audio, transcripts, messages and file contents are excluded.</p>
     <textarea aria-label="Diagnostic report preview" readOnly value={report} spellCheck={false} className={`${FIELD} min-h-72 resize-y py-3 font-mono text-[12px]`} />
     <div className="mt-3 flex flex-wrap gap-2">
-      <Pill className="min-h-11" disabled={loading || action !== null} onClick={() => { setNotice(""); refresh(); }}>{loading ? "Checking…" : "Refresh checks"}</Pill>
-      <Pill className="min-h-11" disabled={action !== null} onClick={() => void exportReport("copy")}>{action === "copy" ? "Copying…" : "Copy report"}</Pill>
-      <Pill className="min-h-11" disabled={action !== null || !bridge && !native} onClick={() => void exportReport("save")}>{action === "save" ? "Saving…" : "Save report"}</Pill>
+      <Pill className="max-sm:min-h-11" disabled={loading || action !== null} onClick={() => { setNotice(""); refresh(); }}>{loading ? "Checking…" : "Refresh checks"}</Pill>
+      <Pill className="max-sm:min-h-11" disabled={action !== null} onClick={() => void exportReport("copy")}>{action === "copy" ? "Copying…" : "Copy report"}</Pill>
+      <Pill className="max-sm:min-h-11" disabled={action !== null || !bridge && !native} onClick={() => void exportReport("save")}>{action === "save" ? "Saving…" : "Save report"}</Pill>
     </div>
     {notice && <p role="status" className="mt-3 text-[13px] text-secondary">{notice}</p>}
     {problem && <SettingsProblem>{problem}</SettingsProblem>}
@@ -76,7 +76,7 @@ export function AboutSection() {
       <SettingsRow title="Source code"><a className="text-[13px] text-accent underline" href="https://github.com/tsnyders/tjommie" target="_blank" rel="noreferrer">GitHub project</a></SettingsRow>
       <SettingsRow title="License"><a className="text-[13px] text-accent underline" href="https://github.com/tsnyders/tjommie/blob/main/LICENSE" target="_blank" rel="noreferrer">Apache License 2.0</a></SettingsRow>
     </SettingsCard>
-    <p className="mt-5 text-[13px] leading-[20px] text-secondary"><button type="button" onClick={() => showNotices(true)} className="inline-flex min-h-11 items-center text-accent underline">Third-party notices</button></p>
+    <div className="mt-4"><Pill className="max-sm:min-h-11" onClick={() => showNotices(true)}>Third-party notices</Pill></div>
     {notices && <ThirdPartyNotices onClose={() => showNotices(false)} />}
   </SettingsSection>;
 }
@@ -94,6 +94,6 @@ function ThirdPartyNotices({ onClose }: { onClose(): void }) {
     return () => abort.abort();
   }, []);
   return <Dialog open title="Third-party notices" width={960} closable onOpenChange={(open) => { if (!open) onClose(); }}>
-    {failed ? <p role="alert">Notices are unavailable in this app build.</p> : text === null ? <p role="status">Loading notices…</p> : <pre tabIndex={0} aria-label="Third-party license texts" className="mt-3 max-h-[65dvh] overflow-auto whitespace-pre-wrap break-words text-xs text-secondary">{text}</pre>}
+    {failed ? <p role="alert">Notices are unavailable in this app build.</p> : text === null ? <p role="status">Loading notices…</p> : <pre tabIndex={0} aria-label="Third-party license texts" className="mt-3 max-h-[65dvh] overflow-auto whitespace-pre-wrap break-words text-[12px] leading-[18px] text-secondary">{text}</pre>}
   </Dialog>;
 }

@@ -61,4 +61,23 @@ describe("dictation controls", () => {
     expect(document.activeElement).toBe(trigger);
     expect(submit).not.toHaveBeenCalled();
   });
+  it("chooses a language and microphone through the house menus without starting dictation or submitting", async () => {
+    const current = voice({ status: { engine: "whisper.cpp", capture: "pcm", available: true, languages: [{ tag: "en", label: "English" }, { tag: "en-GB", label: "English (UK)" }], permission: "granted", model: { state: "ready", bytes: 1, received: 1 } }, devices: [{ deviceId: "desk", groupId: "synthetic", kind: "audioinput", label: "Desk microphone", toJSON: () => ({}) }] });
+    const submit = vi.fn();
+    root = createRoot(document.body.appendChild(document.createElement("div")));
+    await act(async () => root!.render(<form onSubmit={(event) => { event.preventDefault(); submit(); }}><DictationOptions voice={current} /></form>));
+    await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Dictation settings"]')!.click());
+    const language = document.querySelector<HTMLButtonElement>('[aria-label="Dictation language"]')!;
+    await act(async () => language.click());
+    const english = [...document.querySelectorAll<HTMLElement>('[role="menuitemradio"]')].find((item) => item.textContent === "English (UK)")!;
+    await act(async () => english.click());
+    expect(current.setLanguage).toHaveBeenCalledWith("en-GB");
+    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+    await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Dictation microphone"]')!.click());
+    const microphone = [...document.querySelectorAll<HTMLElement>('[role="menuitemradio"]')].find((item) => item.textContent === "Desk microphone")!;
+    await act(async () => microphone.click());
+    expect(current.setDevice).toHaveBeenCalledWith("desk");
+    expect(document.querySelector("button button")).toBeNull();
+    expect(current.start).not.toHaveBeenCalled(); expect(submit).not.toHaveBeenCalled();
+  });
 });
