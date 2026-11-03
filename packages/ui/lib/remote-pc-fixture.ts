@@ -1,3 +1,4 @@
+import { PROTOCOL_VERSION } from "@tjommie/protocol";
 // A synthetic PC used only by the connection tests; never imported by the product. It answers over a fake FrameSocketApi the way the PC's
 // RemoteHost does: the device's preface, a real Noise IK handshake with this PC's key, confirm → ready (or refused), then RPC inside the
 // encrypted channel. Each endpoint behaves as its leg says, and any wire can die silently or be closed with a code, the way a relay closes one.
@@ -121,7 +122,7 @@ export function fakePc(options: { hostId: string; deviceId: string; hostName: st
         return;
       }
       const request = JSON.parse(text) as { type: string; id: number; method: string; params: Record<string, unknown> };
-      if (request.type === "hello") { sendText(JSON.stringify({ type: "welcome", protocol: 1 })); return; }
+      if (request.type === "hello") { sendText(JSON.stringify({ type: "welcome", protocol: PROTOCOL_VERSION })); return; }
       pc.calls.push(request.method);
       if (!pc.hold.has(request.method)) sendText(JSON.stringify({ type: "res", id: request.id, ok: true, result: answer(request.method, request.params) }));
     }

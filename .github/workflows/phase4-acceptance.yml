@@ -1,0 +1,94 @@
+name: Phase 4 isolated acceptance artifacts
+
+on:
+  push:
+    branches: ['phase4-acceptance-*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
+        env:
+          TJOMMIE_CI_HOSTED: '1'
+      - name: Build pinned local speech runtime
+        shell: pwsh
+        run: ./packages/desktop/scripts/build-speech-runtime.ps1
+      - name: Package isolated desktop identity
+        shell: pwsh
+        run: |
+          $testRoot = node --input-type=module -e 'import {mkdtempSync} from "node:fs"; import {tmpdir} from "node:os"; import {join} from "node:path"; console.log(mkdtempSync(join(tmpdir(),"tjommie-phase4-")));'
+          if ($LASTEXITCODE -ne 0) { throw 'Could not allocate the test root.' }
+          $env:TJOMMIE_PACKAGE_TEST_ROOT = $testRoot
+          $env:TJOMMIE_PACKAGE_APP_ID = 'com.tsnyders.tjommie.updatetest'
+          $env:TJOMMIE_PACKAGE_PRODUCT = 'Tjommie Update Test'
+          npm run package
+          if ($LASTEXITCODE -ne 0) { throw 'Isolated desktop packaging failed.' }
+          $unpacked = Join-Path $testRoot 'dist-desktop/installer/win-unpacked'
+          if (-not (Test-Path -LiteralPath (Join-Path $unpacked 'Tjommie Update Test.exe') -PathType Leaf)) { throw 'Missing test application.' }
+          New-Item -ItemType Directory -Path acceptance-artifacts | Out-Null
+          Compress-Archive -LiteralPath $unpacked -DestinationPath acceptance-artifacts/desktop-phase4-test.zip
+          if (-not (Test-Path -LiteralPath acceptance-artifacts/desktop-phase4-test.zip -PathType Leaf)) { throw 'Missing desktop archive.' }
+          @{ commit = $env:GITHUB_SHA; identity = $env:TJOMMIE_PACKAGE_APP_ID; sha256 = (Get-FileHash acceptance-artifacts/desktop-phase4-test.zip -Algorithm SHA256).Hash.ToLowerInvariant() } | ConvertTo-Json | Set-Content acceptance-artifacts/desktop-phase4-test.json
+      - uses: actions/upload-artifact@v7
+        with:
+          name: phase4-desktop-test
+          path: acceptance-artifacts/*
+          if-no-files-found: error
+          retention-days: 7
+
+  android:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Install Android SDK packages
+        shell: pwsh
+        run: |
+          $sdkmanager = Join-Path $env:ANDROID_HOME 'cmdline-tools/latest/bin/sdkmanager.bat'
+          1..100 | ForEach-Object { 'y' } | & $sdkmanager --licenses
+          if ($LASTEXITCODE -ne 0) { throw 'Android SDK license acceptance failed.' }
+          & $sdkmanager --install 'platforms;android-36' 'build-tools;36.0.0'
+          if ($LASTEXITCODE -ne 0) { throw 'Android SDK installation failed.' }
+      - run: npm ci
+      - name: Package separate test APK
+        run: npm run package:android
+        env:
+          TJOMMIE_ANDROID_TEST_APP: '1'
+      - name: Verify isolated package and signature
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $apk = "dist-mobile/Tjommie-Phase4-Test-$version.apk"
+          $tools = Join-Path $env:ANDROID_HOME 'build-tools/36.0.0'
+          $package = & (Join-Path $tools 'aapt.exe') dump badging $apk
+          if ($LASTEXITCODE -ne 0 -or $package[0] -notmatch "^package: name='dev\.tjommie\.app\.phase4test'") { throw 'Unexpected Android package identity.' }
+          & (Join-Path $tools 'apksigner.bat') verify $apk
+          if ($LASTEXITCODE -ne 0) { throw 'Test APK signature verification failed.' }
+      - uses: actions/upload-artifact@v7
+        with:
+          name: phase4-android-test
+          path: dist-mobile/Tjommie-Phase4-Test-*
+          if-no-files-found: error
+          retention-days: 7

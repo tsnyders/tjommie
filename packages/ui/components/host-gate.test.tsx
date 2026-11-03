@@ -16,7 +16,7 @@ import { FileCard } from "./chat/file-card";
 import { RightPanel } from "./chat/right-panel";
 import { GoogleCard } from "./google/google-connection";
 
-// What acts on this PC (its files and folders, its folder picker, its browser, its Google sign-in, attaching its files to a message) is offered
+// What acts on this PC (its files and folders, its folder picker, its Google sign-in, attaching its files to a message) is offered
 // only while the window shows this PC, and changes the moment the window moves to another PC or back.
 
 Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
@@ -77,11 +77,13 @@ describe("this PC's buttons", () => {
         <RightPanel bot={bot} messages={[]} pane="details" onPane={() => {}} expanded={false} onExpandedChange={() => {}} room={1400} overlay={false} onHide={() => {}} />
       </>,
     );
-    const mine = ["Show report.pdf in its folder", "Open the home folder", "Bot panel views", "Open browser"];
+    const mine = ["Show report.pdf in its folder", "Open the home folder"];
     for (const label of mine) expect(labelled(label), label).not.toBeNull();
+    expect(labelled("Bot panel views")).not.toBeNull(); expect(labelled("Open computer")).not.toBeNull();
     await showPc(HOME);
     for (const label of mine) expect(labelled(label), label).toBeNull();
-    expect(text()).toContain("Runs on Home PC. Open Tjommie on that PC to watch Scout or take over.");
+    expect(labelled("Bot panel views")).not.toBeNull(); expect(labelled("Open computer")).not.toBeNull();
+    expect(document.querySelector('[data-slot="browser-thumbnail"]')).not.toBeNull();
     await showPc(null);
     for (const label of mine) expect(labelled(label), label).not.toBeNull();
   });
@@ -94,7 +96,7 @@ describe("this PC's buttons", () => {
     await showPc(HOME);
     expect(text()).toContain("Bot settings"); // still open
     expect(text()).not.toContain("Open home folder");
-    expect(text()).not.toContain("Open browser");
+    expect(text()).toContain("Open browser"); // remote Computer remains available; folders stay local-only
   });
 
   it("leave Bot settings' About this bot", async () => {

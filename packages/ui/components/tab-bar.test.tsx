@@ -11,11 +11,11 @@ const html = (pathname: string): string => {
 };
 
 describe("TabBar (the Quiet pill)", () => {
-  it("has the three destinations, each labelled, in a pill floating over the screen with nothing behind it", () => {
+  it("has four destinations, each labelled, in a pill floating over the screen with nothing behind it", () => {
     const out = html("/agents/");
     expect(out).toContain('aria-label="Tjommie"');
-    for (const name of ["Agents", "Rooms", "Settings"]) expect(out).toContain(`aria-label="${name}"`);
-    for (const shown of [">Agents<", ">Rooms<", ">Settings<"]) expect(out).toContain(shown);
+    for (const name of ["Agents", "Rooms", "Projects", "Settings"]) expect(out).toContain(`aria-label="${name}"`);
+    for (const shown of [">Agents<", ">Rooms<", ">Projects<", ">Settings<"]) expect(out).toContain(shown);
     expect(out).toContain("rounded-full");
     expect(out).toContain("bg-tabbar"); // each phone style colours it
     expect(out).toContain('data-testid="phone-nav"');
@@ -30,6 +30,7 @@ describe("TabBar (the Quiet pill)", () => {
     expect(out).toMatch(/aria-current="page"[^>]*aria-label="Rooms"|aria-label="Rooms"[^>]*aria-current="page"/);
     expect(out).toContain("translateX(100%)"); // the second tab
     expect(html("/agents/")).toContain("translateX(0%)");
+    expect(html("/projects/")).toContain("translateX(200%)");
     expect(html("/settings/accounts/")).toMatch(/aria-current="page"[^>]*aria-label="Settings"|aria-label="Settings"[^>]*aria-current="page"/);
   });
 

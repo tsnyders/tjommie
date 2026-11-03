@@ -35,6 +35,9 @@ import type { CredentialTransport } from "./account-credentials.ts";
 import { RemoteHost } from "./remote-host.ts";
 import { RelayClient } from "./relay-client.ts";
 import { setSettings } from "./settings.ts";
+import { projectFixture } from "./project-test-support.ts";
+import { Attachments } from "./attachments.ts";
+import { TaskIntegrations } from "./task-integration.ts";
 
 const removal = vi.hoisted(() => ({
   failPath: "",
@@ -179,7 +182,8 @@ it("routes production browser RPC and scoped MCP tools to the private desktop ho
     seen.push(command.kind);
     if (command.kind === "close" || command.kind === "delete_profile" || command.kind === "cancel_tools") return {};
     if (command.kind === "tool") return { content: [{ type: "text", text: "Synthetic native snapshot" }] };
-    return { botId: bot.id, generation: "native-g", control: "bot", revision: 1, activePageId: "native-p", tabs: [{ id: "native-p", title: "Native", url: "https://example.test/" }], dialog: null };
+    const state = { botId: bot.id, generation: "native-g", control: "bot", controlEpoch: 0, privateEpoch: 0, privateActive: false, canControl: false, revision: 1, viewportRevision: 0, activePageId: "native-p", tabs: [{ id: "native-p", title: "Native", url: "https://example.test/" }], dialog: null };
+    return command.kind === "remote" && command.action.kind === "frame" ? { state, frame: null } : state;
   } });
   const opening = vi.spyOn(browsers, "open");
   try {
@@ -232,6 +236,77 @@ it("wires settings, routine CRUD and the Team room through the WebSocket methods
   await expect(client.call("routines.list", { botId: "missing" })).rejects.toThrow(/not_found/);
   expect(client.events.some((event) => event.event === "settings.changed")).toBe(true);
   expect(client.events.some((event) => event.event === "routine.deleted")).toBe(true);
+});
+
+it("serves generated file bytes and bounded cached diagnostics through the running daemon", async () => {
+  const { client, sessions, root } = await harness();
+  const bot = await client.call("bots.create", input("Delivery fixture"));
+  await client.call("chat.send", { botId: bot.id, text: "Create a deliverable" });
+  await waitFor(() => sessions[0]?.session.sent.length);
+  writeFileSync(join(bot.homeFolder, "delivered.md"), "# Immutable delivery");
+  await tool(sessions[0].options, "share_file", { path: "delivered.md" });
+  const message = (await client.call("chat.history", { botId: bot.id })).messages.find((entry) => entry.kind === "file")!;
+  const reference = { messageId: message.id, attachmentIndex: 0 };
+  const info = await client.call("attachments.metadata", reference);
+  expect(info.contentType).toBe("text/markdown");
+  expect(message.data?.attachmentId).toBe(info.id);
+  writeFileSync(join(bot.homeFolder, "delivered.md"), "source changed");
+  const opened = await client.call("attachments.open", reference);
+  const chunk = await client.call("attachments.read", { transferId: opened.transferId, offset: 0, length: 100 });
+  expect(Buffer.from(chunk.bytes, "base64").toString()).toBe("# Immutable delivery");
+  await client.call("attachments.close", { transferId: opened.transferId });
+  const checks = vi.mocked(checkSetup).mock.calls.length;
+  const report = await client.call("diagnostics.get", {});
+  expect(report).toMatchObject({ daemonVersion: expect.stringMatching(/^\d+\.\d+\.\d+/), appVersion: null, storage: "ok", relay: "off" });
+  expect(report.providers.every((provider) => provider.version === null)).toBe(true);
+  expect(JSON.stringify(report)).not.toContain(root);
+  expect(vi.mocked(checkSetup).mock.calls).toHaveLength(checks);
+  sessions[0].session.finish("Done");
+});
+
+it("announces a newly created project room to an already-connected client", async () => {
+  const fixture = projectFixture();
+  try {
+    const { client } = await harness();
+    const bot = await client.call("bots.create", input("Project developer"));
+    const repository = await client.call("projects.registerRepository", { path: fixture.repoPath });
+    const project = await client.call("projects.create", { name: "Connected team", repositoryId: repository.id, baseRef: "refs/heads/main", targetRef: "refs/heads/main", members: [{ botId: bot.id, roles: ["developer"], instructions: "" }], checks: [], roomId: null });
+    await waitFor(() => client.events.some((event) => event.event === "room.updated" && event.data.id === project.roomId));
+    expect((await client.call("rooms.list", {})).find((room) => room.id === project.roomId)?.botIds).toEqual([bot.id]);
+    expect(await client.call("tasks.list", { projectId: project.id })).toEqual([]);
+  } finally { fixture.db.close(); }
+}, 30_000);
+
+it("announces committed bot and room deletions even when unused attachment cleanup fails", async () => {
+  const { client } = await harness();
+  const bot = await client.call("bots.create", input("Cleanup fixture"));
+  const room = await client.call("rooms.create", { name: "Cleanup room", botIds: [bot.id] });
+  const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+  vi.spyOn(Attachments.prototype, "cleanup").mockImplementation(() => { throw new Error("Synthetic locked orphan"); });
+  await expect(client.call("bots.delete", { id: bot.id })).resolves.toEqual({});
+  await expect(client.call("rooms.delete", { id: room.id })).resolves.toEqual({});
+  await waitFor(() => client.events.some((event) => event.event === "bot.deleted" && event.data.id === bot.id)
+    && client.events.some((event) => event.event === "room.deleted" && event.data.id === room.id));
+  expect(await client.call("bots.list", {})).toEqual([]);
+  expect((await client.call("rooms.list", {})).some((item) => item.id === room.id)).toBe(false);
+  expect(warning).toHaveBeenCalledTimes(2);
+});
+
+it("rejects new local work while integration shutdown is waiting for a check to stop", async () => {
+  const { client, daemon, db, sessions } = await harness();
+  const bot = await client.call("bots.create", input("Shutdown fixture"));
+  let release = () => {};
+  const waiting = new Promise<void>((resolve) => { release = resolve; });
+  const shutdown = vi.spyOn(TaskIntegrations.prototype, "shutdown").mockImplementationOnce(() => waiting);
+  const closing = daemon.close();
+  try {
+    await waitFor(() => shutdown.mock.calls.length > 0);
+    await expect(client.call("chat.send", { botId: bot.id, text: "Late paid turn" })).rejects.toMatchObject({ code: "bad_state" });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM work_items").get()?.n).toBe(0);
+    expect(sessions).toHaveLength(0);
+  } finally {
+    release(); await closing; daemons.splice(daemons.indexOf(daemon), 1);
+  }
 });
 
 it("starts the relay for an invite after LAN listening, restarts on settings, and sends content-free pushes", async () => {

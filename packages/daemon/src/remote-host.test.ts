@@ -9,6 +9,7 @@ import { openDb } from "./db.ts";
 import { addDevice, listDevices } from "./devices-store.ts";
 import { RemoteHost } from "./remote-host.ts";
 import type { PeerWire } from "./peer-wire.ts";
+import type { RequestContext } from "./request-context.ts";
 
 const cleanup: (() => Promise<void> | void)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); vi.useRealTimers(); });
@@ -54,14 +55,15 @@ async function fixture(relayUrl: () => string | null = () => null) {
   const db = openDb(":memory:"); cleanup.push(() => db.close());
   const vault = new Map<string, string>();
   let mutations = 0;
+  const contexts: (RequestContext | undefined)[] = [];
   const host = new RemoteHost({ db, root: "synthetic-remote-root", port: 0, bind: "127.0.0.1", addresses: () => ["127.0.0.1"], relayUrl,
     credentials: async (input) => { if (input.operation === "write" && input.key) vault.set(input.target, input.key); return input.operation === "read" ? vault.get(input.target) ?? null : null; },
-    dispatch: async (method) => { if (method === "chat.stop") { mutations++; return {}; } if (method === "bots.list") return []; throw new Error(); },
+    dispatch: async (method, _params, context) => { contexts.push(context); if (method === "chat.stop") { mutations++; return {}; } if (method === "bots.list") return []; throw new Error(); },
   });
   cleanup.push(() => host.close());
   const invite = await host.createPairing();
   const code = parsePairingCode(invite.code);
-  return { db, host, invite, code, port: code.lan[0].port, mutations: () => mutations };
+  return { db, host, invite, code, port: code.lan[0].port, mutations: () => mutations, contexts };
 }
 async function pair(code: PairingCode, privateKey: Uint8Array, psk = Buffer.from(code.secret, "base64url"), transport?: FrameTransport) {
   return authenticateRemote({ wire: transport ?? await wire(code.lan[0].port), privateKey, hostPublicKey: Buffer.from(code.hostKey, "base64url"), psk, name: "Synthetic Android",
@@ -69,7 +71,7 @@ async function pair(code: PairingCode, privateKey: Uint8Array, psk = Buffer.from
 }
 
 it.each(["lan", "relay"] as const)("pairs and resumes before being refused after revoke over %s", async (kind) => {
-  const { db, host, code, mutations } = await fixture();
+  const { db, host, code, mutations, contexts } = await fixture();
   const open = () => kind === "relay" ? Promise.resolve(relayWire(host)) : wire(code.lan[0].port);
   const keys = generateKeypair();
   const paired = await pair(code, keys.privateKey, Buffer.from(code.secret, "base64url"), await open());
@@ -80,15 +82,21 @@ it.each(["lan", "relay"] as const)("pairs and resumes before being refused after
   expect(await client.call("bots.list", {})).toEqual([]);
   await client.call("chat.stop", { botId: "synthetic" });
   expect(mutations()).toBe(1);
+  expect(contexts[0]?.principal).toEqual({ kind: "device", deviceId: paired.deviceId });
+  expect(contexts[1]).toBe(contexts[0]);
   const event = new Promise<void>((resolve) => client.subscribe((value) => { if (value.event === "devices.changed") resolve(); }));
   host.broadcast("devices.changed", {}); await event;
   await client.close();
+  await expect.poll(() => contexts[0]?.signal.aborted).toBe(true);
   const resumed = await authenticateRemote({ wire: await open(), privateKey: keys.privateKey, hostPublicKey: Buffer.from(code.hostKey, "base64url"), name: "Ignored on reconnect",
     preface: { v: 1, mode: "resume", hostId: code.hostId } });
   expect(resumed.deviceId).toBe(paired.deviceId);
   const second = await connectTransport(resumed.transport);
   expect(await second.call("bots.list", {})).toEqual([]);
+  expect(contexts[2]?.connectionId).not.toBe(contexts[0]?.connectionId);
+  expect(contexts[2]?.principal).toEqual({ kind: "device", deviceId: paired.deviceId });
   host.revoke(paired.deviceId);
+  expect(contexts[2]?.signal.aborted).toBe(true);
   await second.disconnected;
   expect(listDevices(db)[0].revokedAt).not.toBeNull();
   const refused = authenticateRemote({ wire: await open(), privateKey: keys.privateKey, hostPublicKey: Buffer.from(code.hostKey, "base64url"), name: "Revoked",

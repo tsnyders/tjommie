@@ -10,6 +10,8 @@ import { localFileActions, pcName, useLocalFileActions } from "@/lib/native-capa
 import { useApp } from "@/lib/store";
 import { attachPaths, useRevision, useSendGuard, withoutSent, type Attachment } from "@/lib/use-draft";
 import { cn } from "@/lib/utils";
+import { useDictation } from "@/lib/use-dictation";
+import { DictationButton, DictationStatus } from "./dictation-button";
 
 // Whether the bot has a turn to stop: it's working, or waiting on a tool card in its chat, which holds its turn.
 // A bot waiting only on a routine it proposed isn't running anything.
@@ -30,6 +32,7 @@ export function canStop(bot: Pick<Bot, "state">, messages: Message[]): boolean {
 export function Composer({ bot, messages }: { bot: Bot; messages: Message[] }) {
   const [text, setDraftText] = useState("");
   const [files, setFileState] = useState<Attachment[]>([]);
+  const field = useRef<HTMLTextAreaElement>(null);
   // The attachments as they are now, kept in step with every change. A picker that returns after a send cleared its files must add to what is left,
   // not to the list it saw when it opened, so nothing that was sent comes back.
   const latestFiles = useRef<Attachment[]>([]);
@@ -56,6 +59,7 @@ export function Composer({ bot, messages }: { bot: Bot; messages: Message[] }) {
   const local = useLocalFileActions();
   const elsewhere = `Attach files on ${pcName(host)}`;
   const reason = useId();
+  const voice = useDictation("chat", bot.id, field, text, setText);
 
   function attach(paths: string[]): void {
     const next = attachPaths(latestFiles.current, paths, addFiles, () => (ids.current += 1));
@@ -84,6 +88,7 @@ export function Composer({ bot, messages }: { bot: Bot; messages: Message[] }) {
     if (busy) return;
     if (hasText) {
       if (!guard.begin()) return;
+      void voice.cancel();
       // What this send carries, fixed now. Its success clears the text only if nothing was typed since, and only these files.
       const sentText = text;
       const sentRevision = revision.now();
@@ -170,14 +175,16 @@ export function Composer({ bot, messages }: { bot: Bot; messages: Message[] }) {
         {!local && <span id={reason} className="sr-only">{elsewhere}</span>}
         {/* The caret shows focus here: WF11 draws the typing composer without a ring. */}
         <textarea
+          ref={field}
           value={text}
-          onChange={(event) => setText(event.target.value)}
+          onChange={(event) => { voice.changed(event.target.value); setText(event.target.value); }}
           onKeyDown={onKeyDown}
           rows={1}
           aria-label={`Message ${bot.name}`}
           placeholder={`Message ${bot.name}`}
           className="max-h-[200px] min-h-8 flex-1 resize-none bg-transparent py-[5.5px] text-[14px] leading-[21px] text-text outline-none [field-sizing:content] placeholder:text-placeholder max-sm:max-h-[min(200px,25dvh)]"
         />
+        <DictationButton voice={voice} />
         <button
           type="submit"
           disabled={busy || (!hasText && !stop)}
@@ -191,6 +198,7 @@ export function Composer({ bot, messages }: { bot: Bot; messages: Message[] }) {
           {stop ? <Square className="size-3.5" aria-hidden /> : <ArrowUp className="size-4" aria-hidden />}
         </button>
       </div>
+      <DictationStatus voice={voice} />
       {problem && (
         <p role="alert" className="mt-1.5 px-3 text-[12px] leading-[18px] text-danger">
           {problem}

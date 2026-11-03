@@ -1,6 +1,6 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
-import { killTree, spawnCli, type CliCommand } from "../cli.ts";
+import { killTree, launchCli, waitForCliExit, type CliCommand } from "../cli.ts";
 
 export class RpcRemoteError extends Error {
   code: number;
@@ -128,15 +128,16 @@ export async function startCodexServer(
   cwd: string,
   options: { ephemeralAuth?: boolean } = {},
 ): Promise<CodexServer> {
-  const child = spawnCli(cmd, [...(options.ephemeralAuth ? ["-c", 'cli_auth_credentials_store="ephemeral"'] : []), "app-server"], { cwd, env });
+  const child = await launchCli(cmd, [...(options.ephemeralAuth ? ["-c", 'cli_auth_credentials_store="ephemeral"'] : []), "app-server"], { cwd, env });
   const rpc = new JsonRpcLines((line) => child.stdin.write(`${line}\n`));
   createInterface({ input: child.stdout, crlfDelay: Infinity }).on("line", (line) => rpc.handleLine(line));
   child.stderr.resume(); // Codex logs to stderr; drain it so a full pipe can never block the process
   let exited = false;
-  const exitPromise = new Promise<void>((resolve) => {
+  const exitPromise = waitForCliExit(child, new Promise<void>((resolve) => {
     child.once("exit", () => resolve());
     child.once("error", () => resolve());
-  });
+  }));
+  void exitPromise.catch(() => {});
   let killTimer: NodeJS.Timeout | undefined;
   child.on("exit", () => {
     exited = true;

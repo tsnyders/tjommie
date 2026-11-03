@@ -2,14 +2,14 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutGrid, Settings, Users, type LucideIcon } from "lucide-react";
+import { FolderGit2, LayoutGrid, Settings, Users, type LucideIcon } from "lucide-react";
 import { agentsTabName, showsTabBar, tabFor, TABS, type TabId } from "@/lib/phone-nav";
 import { useApp } from "@/lib/store";
 import { useKeyboardVisible } from "@/lib/use-keyboard";
 import { useSheetOpen } from "@/lib/use-sheet";
 import { cn } from "@/lib/utils";
 
-const ICONS: Record<TabId, LucideIcon> = { agents: LayoutGrid, room: Users, settings: Settings };
+const ICONS: Record<TabId, LucideIcon> = { agents: LayoutGrid, room: Users, projects: FolderGit2, settings: Settings };
 
 // The phone's navigation (below 640 px, in place of the rail): a compact pill floating over the overview screens with Agents, Rooms and
 // Settings, each labelled. Nothing backs it: the screens scroll under it, and their scrollers end with room to clear it (data-nav-clear in

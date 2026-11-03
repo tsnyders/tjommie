@@ -1,4 +1,5 @@
 import { desktop } from "./desktop";
+import { appearanceScript, showAppearance } from "./appearance-settings";
 import { setNativeCanvas } from "./remote-hosts";
 import { hexColor, mobileStyleScript, saveMobileStyle, saveReduceEffects, showMobileStyle, type MobileStyle } from "./mobile-style";
 
@@ -6,11 +7,13 @@ export type ThemeChoice = "dark" | "light" | "system";
 const KEY = "tjommie.theme";
 
 // Runs in <head> before the first paint, so the page never flashes the wrong theme (or phone style). Dark is the default.
-export const themeScript = `(function(){try{${mobileStyleScript};var c=localStorage.getItem("${KEY}");var light=c==="light"||(c==="system"&&matchMedia("(prefers-color-scheme: light)").matches);if(!light)document.documentElement.classList.add("dark")}catch(e){document.documentElement.classList.add("dark")}})()`;
+export const themeScript = `(function(){try{${mobileStyleScript};${appearanceScript};var c=localStorage.getItem("${KEY}");var light=c==="light"||(c==="system"&&matchMedia("(prefers-color-scheme: light)").matches);if(!light)document.documentElement.classList.add("dark")}catch(e){document.documentElement.classList.add("dark")}})()`;
 
 export function themeChoice(): ThemeChoice {
-  const stored = localStorage.getItem(KEY);
-  return stored === "light" || stored === "system" ? stored : "dark";
+  try {
+    const stored = localStorage.getItem(KEY);
+    return stored === "light" || stored === "system" ? stored : "dark";
+  } catch { return "dark"; }
 }
 
 const resolved = (choice: ThemeChoice): "dark" | "light" =>
@@ -19,6 +22,10 @@ const resolved = (choice: ThemeChoice): "dark" | "light" =>
 // Saves the choice, recolors the page, and tells the desktop app so the window's caption buttons match.
 export function applyTheme(choice: ThemeChoice): void {
   localStorage.setItem(KEY, choice);
+  showTheme(choice);
+}
+
+function showTheme(choice: ThemeChoice): void {
   const theme = resolved(choice);
   document.documentElement.classList.toggle("dark", theme === "dark");
   desktop()?.setTheme(theme);
@@ -44,11 +51,12 @@ export function applyReduceEffects(on: boolean): void {
 
 // Applies the saved choice now, and again when Windows switches between light and dark while it's "system".
 export function followTheme(): () => void {
+  showAppearance();
   showMobileStyle();
-  applyTheme(themeChoice());
+  showTheme(themeChoice());
   const media = matchMedia("(prefers-color-scheme: light)");
   const onChange = (): void => {
-    if (themeChoice() === "system") applyTheme("system");
+    if (themeChoice() === "system") showTheme("system");
   };
   media.addEventListener("change", onChange);
   return () => media.removeEventListener("change", onChange);

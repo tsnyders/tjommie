@@ -1,0 +1,34 @@
+name: Phase 4 native runtime probe
+
+on:
+  push:
+    branches: ['phase4-native-probe-*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phase4-native-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  speech:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - name: Compile and verify pinned CPU speech runtime
+        shell: pwsh
+        run: ./packages/desktop/scripts/build-speech-runtime.ps1
+      - uses: actions/upload-artifact@v7
+        with:
+          name: phase4-speech-runtime
+          path: .cache/speech-runtime/*
+          if-no-files-found: error
+          retention-days: 7

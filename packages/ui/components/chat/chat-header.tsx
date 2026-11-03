@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { Menu } from "@base-ui/react/menu";
 import { Ellipsis, FolderOpen, Globe, Hourglass, PanelRight, Pause, Play, Plug, Settings } from "lucide-react";
 import { BackLink } from "../back-link";
-import { captionClear, localFileActions, useLocalFileActions, useNativeBrowserAvailable } from "@/lib/native-capability";
+import { captionClear, localFileActions, useLocalFileActions } from "@/lib/native-capability";
 import type { Bot } from "@tjommie/protocol";
 import { daemon } from "@/lib/connection";
 import { errorText, stateLabel } from "@/lib/labels";
@@ -96,7 +96,6 @@ export function HeaderState({ bot, bounded = false }: { bot: Bot; bounded?: bool
 // On a phone the menu leads with Details, the sheet the title also opens.
 function MoreMenu({ bot, onProblem, onOpenBrowser, onDetails }: { bot: Bot; onProblem: (problem: string | null) => void; onOpenBrowser: () => void; onDetails?: () => void }) {
   const router = useRouter();
-  const browser = useNativeBrowserAvailable();
   const files = useLocalFileActions();
   async function run(action: () => Promise<unknown>): Promise<void> {
     onProblem(null);
@@ -124,7 +123,7 @@ function MoreMenu({ bot, onProblem, onOpenBrowser, onDetails }: { bot: Bot; onPr
               {bot.paused ? <Play aria-hidden /> : <Pause aria-hidden />}
               {bot.paused ? "Resume bot" : "Pause bot"}
             </Menu.Item>
-            {bot.browser && browser && (
+            {bot.browser && (
               <Menu.Item className={MENU_ITEM} onClick={onOpenBrowser}>
                 <Globe aria-hidden />
                 Open browser

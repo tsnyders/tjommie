@@ -1,3 +1,4 @@
+import { PROTOCOL_VERSION } from "@tjommie/protocol";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { encodePairingCode } from "@tjommie/protocol";
 import { decodeMobileIdentity, encodeMobileIdentity } from "./mobile-identity";
@@ -23,7 +24,7 @@ vi.mock("../../client/src/remote-peer.ts", () => ({ authenticateRemote: async (o
   if (!fake.acceptKeys.has(options.privateKey[0])) throw new Error("Synthetic unknown key");
   let message: ((text: string) => void) | undefined;
   return { deviceId: "0d6ff97e-a44e-42f4-86a0-27ace431918d", hostId: "ee87d56c-f1ba-453f-8210-d0f3536e5f53", hostName: "Synthetic PC", relay: fake.relay, transport: {
-    send: () => queueMicrotask(() => message?.('{"type":"welcome","protocol":1}')), close: () => {},
+    send: () => queueMicrotask(() => message?.(JSON.stringify({ type: 'welcome', protocol: PROTOCOL_VERSION }))), close: () => {},
     onMessage: (listener: (text: string) => void) => { message = listener; return () => { message = undefined; }; }, onClose: () => () => {},
   } };
 }, RemoteRefusedError: fake.Refused }));

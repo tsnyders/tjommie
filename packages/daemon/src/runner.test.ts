@@ -16,6 +16,7 @@ import { createAccount, replaceAccountLimits } from "./accounts-store.ts";
 import { dataPaths } from "./paths.ts";
 import { ensureAccounts } from "./setup.ts";
 import { tempRoot, waitFor } from "./testing.ts";
+import { PROJECT_MIGRATION } from "./project-schema.ts";
 
 const cliMocks = vi.hoisted(() => ({ killTree: vi.fn() }));
 vi.mock("./cli.ts", async (importOriginal) => ({
@@ -104,6 +105,12 @@ type Harness = {
 const runners: Runner[] = [];
 const openDatabases: Db[] = [];
 
+function taskTestDb(file: string): Db {
+  const db = openDb(file);
+  if (!db.prepare("SELECT name FROM sqlite_master WHERE name='projects'").get()) db.exec(PROJECT_MIGRATION);
+  return db;
+}
+
 afterEach(() => {
   for (const runner of runners) runner.shutdown();
   runners.length = 0;
@@ -113,7 +120,7 @@ afterEach(() => {
 
 function harness(factory: (options: StartOptions) => FakeSession = () => new FakeSession(), signedIn = true, hooks: RunnerHooks = {}, onBroadcast?: Broadcast): Harness {
   const root = tempRoot();
-  const db = openDb(join(root, "t.db"));
+  const db = taskTestDb(join(root, "t.db"));
   openDatabases.push(db);
   ensureAccounts(db, join(root, "accounts"));
   const events: SentEvent[] = [];
@@ -167,6 +174,64 @@ function expectActivitySettlement(h: Harness, messageId: string, statuses: ("don
   expect(updates).toHaveLength(1);
   expect(updates[0]?.data).toEqual(saved);
 }
+
+it("uses a task cwd, closes its session at completion and refuses cross-attempt CLI resume", async () => {
+  const captured: StartOptions[] = [];
+  const h = harness((options) => { captured.push(options); return new FakeSession(); }, true, {
+    executionContext: (_bot, item) => item.taskAttemptId ? { key: item.executionContextKey!, cwd: join(h.root, item.taskAttemptId),
+      attemptId: item.taskAttemptId, revision: item.taskRevision!, phase: "develop", instructions: "Task-scoped instructions" } : null,
+  });
+  const originalFolder = join(h.root, "original-project"); mkdirSync(originalFolder);
+  const bot = newBot(h, { projectFolder: originalFolder }); mkdirSync(join(h.root, "attempt-a")); mkdirSync(join(h.root, "attempt-b"));
+  h.runner.deliver({ botId: bot.id, source: "task", text: "Task A", taskAttemptId: "attempt-a", taskRevision: 1, executionContextKey: "context-a" });
+  await waitFor(() => h.sessions[0]?.sent.length);
+  expect(captured[0].cwd).toBe(join(h.root, "attempt-a")); expect(h.runner.effectiveFolder(bot.id)).toBe(captured[0].cwd);
+  expect(captured[0].instructions).toContain(captured[0].cwd); expect(captured[0].instructions).not.toContain(originalFolder); expect(getStoredBot(h.db, bot.id).projectFolder).toBe(originalFolder);
+  h.sessions[0].emit({ type: "session", cliSessionId: "saved-for-a" }); h.sessions[0].emit({ type: "turn_done", ok: true, error: null });
+  h.runner.deliver({ botId: bot.id, source: "task", text: "Task B", taskAttemptId: "attempt-b", taskRevision: 1, executionContextKey: "context-b" });
+  await waitFor(() => captured.length === 2);
+  expect(h.sessions[0].closed).toBe(true); expect(captured[1].cwd).toBe(join(h.root, "attempt-b")); expect(captured[1].resumeId).toBeNull();
+});
+
+it("keeps ordinary chat out of an active task and blocks review roles or missing task context before provider launch", async () => {
+  const h = harness(() => new FakeSession(), true, { executionContext: (_bot, item) => item.taskAttemptId ? {
+    key: item.executionContextKey!, cwd: h.root, attemptId: item.taskAttemptId, revision: item.taskRevision!, phase: "develop", instructions: "Task" } : null });
+  const bot = newBot(h);
+  h.runner.deliver({ botId: bot.id, source: "task", text: "Task", taskAttemptId: "a", taskRevision: 1, executionContextKey: "a" });
+  await waitFor(() => h.sessions[0]?.sent.length); h.runner.submit(bot.id, "Standalone chat", []);
+  await new Promise<void>((resolve) => setImmediate(resolve)); expect(h.sessions[0].steered).toEqual([]);
+  h.sessions[0].emit({ type: "turn_done", ok: true, error: null }); await waitFor(() => h.sessions.length === 2);
+  const blocked = harness(() => new FakeSession(), true, { executionContext: (_bot, item) => ({ key: "review", cwd: h.root, attemptId: item.taskAttemptId!, revision: 1, phase: "review", instructions: "Read only" }) });
+  const reviewer = newBot(blocked);
+  const work = blocked.runner.deliver({ botId: reviewer.id, source: "task", text: "Review", taskAttemptId: "review", taskRevision: 1, executionContextKey: "review" });
+  await waitFor(() => getWorkItem(blocked.db, work.id).status === "failed"); expect(blocked.sessions).toHaveLength(0);
+  const missing = harness(), other = newBot(missing);
+  const absent = missing.runner.deliver({ botId: other.id, source: "task", text: "Missing", taskAttemptId: "missing", taskRevision: 1, executionContextKey: "missing" });
+  await waitFor(() => getWorkItem(missing.db, absent.id).status === "failed"); expect(missing.sessions).toHaveLength(0);
+});
+
+it("keeps the next task queued until the previous task's owned process has exited", async () => {
+  let exited: (() => void) | undefined;
+  const first = new FakeSession(); first.exitPromise = new Promise<void>((resolve) => { exited = resolve; });
+  let count = 0;
+  const h = harness(() => count++ === 0 ? first : new FakeSession(), true, { executionContext: (_bot, item) => item.taskAttemptId ? {
+    key: item.executionContextKey!, cwd: h.root, attemptId: item.taskAttemptId, revision: 1, phase: "develop", instructions: "Task" } : null });
+  const bot = newBot(h);
+  h.runner.deliver({ botId: bot.id, source: "task", text: "A", taskAttemptId: "a", taskRevision: 1, executionContextKey: "a" });
+  await waitFor(() => first.sent.length);
+  let retired = false; const barrier = h.runner.retired(bot.id).then(() => { retired = true; });
+  first.emit({ type: "turn_done", ok: true, error: null });
+  h.runner.deliver({ botId: bot.id, source: "task", text: "B", taskAttemptId: "b", taskRevision: 1, executionContextKey: "b" });
+  await new Promise<void>((resolve) => setImmediate(resolve)); expect(h.sessions).toHaveLength(1); expect(retired).toBe(false);
+  exited!(); await barrier; await waitFor(() => h.sessions.length === 2); expect(retired).toBe(true);
+});
+
+it("honors the host hold gate before starting queued provider work", async () => {
+  const h = harness(), bot = newBot(h), session = new FakeSession(); let held = true;
+  const runner = new Runner({ db: h.db, broadcast: () => {}, isSignedIn: () => true, isHeld: () => held, createSession: () => session }); runners.push(runner);
+  const message = runner.submit(bot.id, "Explicit queued work", []); expect(session.sent).toEqual([]); expect(itemForMessage(h.db, message.id).status).toBe("queued");
+  held = false; runner.pumpAll(); await waitFor(() => session.sent.length); expect(itemForMessage(h.db, message.id).status).toBe("running");
+});
 
 describe("botStateOf", () => {
   const base = { signedIn: true, paused: false, limitedUntil: null, waiting: false, busy: false };
@@ -334,7 +399,7 @@ describe("Runner session costs", () => {
     h.runner.shutdown();
     h.db.close();
 
-    const db = openDb(join(h.root, "t.db"));
+    const db = taskTestDb(join(h.root, "t.db"));
     openDatabases.push(db);
     const resumed = new FakeSession();
     const options: StartOptions[] = [];
@@ -1010,7 +1075,7 @@ describe("Runner.start", () => {
 
   it("reports a turn a restart cut off to the hooks, and says so where the turn was writing", () => {
     const root = tempRoot();
-    const db = openDb(join(root, "t.db"));
+    const db = taskTestDb(join(root, "t.db"));
     openDatabases.push(db);
     const bot = createBot(db, join(root, "bots"), { name: "Writer", color: "blue", shape: "circle", instructions: "", provider: "claude", model: "sonnet" });
     const item = enqueue(db, { botId: bot.id, source: "room", text: "@Writer hi", conversationId: "team" });

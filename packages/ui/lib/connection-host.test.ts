@@ -9,13 +9,15 @@ const pc = (): Client => {
   const call = async (method: string): Promise<unknown> => answers[method] ?? [];
   return { call: call as unknown as Client["call"], events: [], subscribe: () => () => {}, disconnected: new Promise(() => {}), close: async () => {} };
 };
-const saved = vi.hoisted(() => ({ refusal: null as Error | null, forget: vi.fn<(id: string) => Promise<void>>(async () => {}), local: vi.fn() }));
+const saved = vi.hoisted(() => ({ refusal: null as Error | null, forget: vi.fn<(id: string) => Promise<void>>(async () => {}), local: vi.fn(), remote: vi.fn(), invalidate: vi.fn<() => Promise<void>>(async () => {}) }));
+vi.mock("./attachment-device", () => ({ attachmentDevice: () => ({ invalidate: saved.invalidate }) }));
 vi.mock("@tjommie/client", async (original) => ({ ...(await original<typeof import("@tjommie/client")>()), connect: async () => { saved.local(); return pc(); } }));
 vi.mock("./remote-hosts", async (original) => ({
   ...(await original<typeof import("./remote-hosts")>()),
   isAndroidApp: () => false,
   remoteHosts: () => [{ id: HOME, name: "Home PC" }],
   openRemoteClient: async () => {
+    saved.remote();
     if (saved.refusal) throw saved.refusal;
     return pc();
   },
@@ -30,11 +32,27 @@ beforeEach(() => {
   saved.refusal = null;
   saved.forget.mockClear();
   saved.local.mockClear();
+  saved.remote.mockClear();
+  saved.invalidate.mockReset().mockResolvedValue();
   vi.stubGlobal("window", {
     tjommie: { connection: async () => ({ ok: true, port: 47100, token: "local" }), onConnection: () => () => {}, onDaemonFailed: () => () => {}, restartDaemon: async () => {} },
   });
 });
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
+
+it("closes previous host file handles before a new host becomes ready", async () => {
+  const { startConnection, connectRemote } = await import("./connection");
+  const { getState } = await import("./store");
+  startConnection(); await settle();
+  let finish = () => {};
+  saved.invalidate.mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve; }));
+  connectRemote(HOME); await settle();
+  expect(saved.remote).not.toHaveBeenCalled();
+  expect(getState().connection.status).not.toBe("ready");
+  finish(); await settle();
+  expect(saved.remote).toHaveBeenCalledOnce();
+  expect(getState()).toMatchObject({ connection: { status: "ready" }, host: HOME });
+});
 
 it("remembers which saved PC the desktop window is on, from the moment it's picked until This PC or Forget", async () => {
   const { connectLocal, connectRemote, forgetRemote, startConnection } = await import("./connection");

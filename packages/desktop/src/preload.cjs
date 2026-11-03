@@ -9,6 +9,33 @@ function listen(channel, listener) {
 }
 
 contextBridge.exposeInMainWorld("tjommie", {
+  vault: { command: (action) => ipcRenderer.invoke("vault:command", action) },
+  attachments: {
+    startSave: (info) => ipcRenderer.invoke("attachments:start-save", info),
+    appendSave: (id, offset, bytes) => ipcRenderer.invoke("attachments:append-save", id, offset, bytes),
+    finishSave: (id) => ipcRenderer.invoke("attachments:finish-save", id),
+    cancelSave: (id) => ipcRenderer.invoke("attachments:cancel-save", id),
+    preview: (info) => ipcRenderer.invoke("attachments:preview", info),
+    onRead: (listener) => listen("attachments:read", listener),
+    respond: (previewId, requestId, bytes) => ipcRenderer.invoke("attachments:respond", previewId, requestId, bytes),
+    closePreview: (id) => ipcRenderer.invoke("attachments:close-preview", id),
+    invalidate: () => ipcRenderer.invoke("attachments:invalidate"),
+  },
+  speech: {
+    status: () => ipcRenderer.invoke("speech:status"),
+    downloadModel: () => ipcRenderer.invoke("speech:download-model"),
+    cancelModelDownload: () => ipcRenderer.invoke("speech:cancel-model-download"),
+    removeModel: () => ipcRenderer.invoke("speech:remove-model"),
+    start: (input) => ipcRenderer.invoke("speech:start", input),
+    appendPcm: (input) => ipcRenderer.invoke("speech:append-pcm", input),
+    stop: (input) => ipcRenderer.invoke("speech:stop", input),
+    cancel: (input) => ipcRenderer.invoke("speech:cancel", input),
+    onEvent: (listener) => listen("speech:event", listener),
+  },
+  diagnostics: {
+    info: () => ipcRenderer.invoke("diagnostics:info"),
+    saveReport: (report) => ipcRenderer.invoke("diagnostics:save", report),
+  },
   connection: () => ipcRenderer.invoke("daemon:connection"),
   restartDaemon: () => ipcRenderer.invoke("daemon:restart"),
   remote: {

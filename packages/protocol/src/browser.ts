@@ -5,6 +5,10 @@ export const BrowserState = z.object({
   botId: z.string(),
   generation: z.string(),
   control: BrowserControl,
+  controlEpoch: z.number().int().nonnegative().optional(),
+  privateEpoch: z.number().int().nonnegative().optional(),
+  privateActive: z.boolean().optional(),
+  canControl: z.boolean().optional(),
   revision: z.number().int().nonnegative().optional(),
   viewportRevision: z.number().int().nonnegative().optional(),
   busy: z.boolean().optional(),
@@ -24,20 +28,21 @@ export const BrowserInput = z.discriminatedUnion("kind", [
 ]);
 export type BrowserInput = z.infer<typeof BrowserInput>;
 export const BrowserFrame = z.object({
-  data: z.string(), mime: z.literal("image/jpeg"), width: z.number().int(), height: z.number().int(), sequence: z.number().int(),
+  data: z.string().max(Math.ceil(2 * 1024 * 1024 / 3) * 4).regex(/^[A-Za-z0-9+/]*={0,2}$/), mime: z.literal("image/jpeg"), width: z.number().int().positive().max(4096), height: z.number().int().positive().max(4096), sequence: z.number().int().nonnegative(),
   // Encoded pixels can be downsampled. Input always uses the separately reported CSS viewport.
   viewportWidth: z.number().int().positive().optional(), viewportHeight: z.number().int().positive().optional(),
   pageId: z.string().optional(), viewportRevision: z.number().int().nonnegative().optional(), streamId: z.string().optional(),
+  controlEpoch: z.number().int().nonnegative().optional(), privateEpoch: z.number().int().nonnegative().optional(),
 });
 export type BrowserFrame = z.infer<typeof BrowserFrame>;
 
 const Bot = { botId: z.string().min(1) };
-const Session = { ...Bot, generation: z.string().min(1) };
+const Session = { ...Bot, generation: z.string().min(1), controlEpoch: z.number().int().nonnegative().optional() };
 const Page = { ...Session, pageId: z.string().min(1) };
 export const browserMethods = {
   "browser.open": { params: z.object(Bot), result: BrowserState },
-  "browser.frame": { params: z.object({ ...Bot, after: z.object({ streamId: z.string(), sequence: z.number().int().nonnegative() }).optional() }), result: z.object({ state: BrowserState, frame: BrowserFrame.nullable(), unchanged: z.boolean().optional() }) },
-  "browser.control": { params: z.object({ ...Bot, control: BrowserControl }), result: BrowserState },
+  "browser.frame": { params: z.object({ ...Bot, thumbnail: z.boolean().optional(), after: z.object({ streamId: z.string(), sequence: z.number().int().nonnegative() }).optional() }), result: z.object({ state: BrowserState, frame: BrowserFrame.nullable(), unchanged: z.boolean().optional() }) },
+  "browser.control": { params: z.object({ ...Bot, control: BrowserControl, generation: z.string().min(1).optional(), controlEpoch: z.number().int().nonnegative().optional(), releaseOnly: z.boolean().optional() }), result: BrowserState },
   "browser.navigate": { params: z.object({ ...Page, url: z.string().max(8192) }), result: BrowserState },
   "browser.history": { params: z.object({ ...Page, action: z.enum(["back", "forward", "reload"]) }), result: BrowserState },
   "browser.tab": { params: z.object({ ...Session, action: z.enum(["new", "select", "close"]), pageId: z.string().optional() }), result: BrowserState },

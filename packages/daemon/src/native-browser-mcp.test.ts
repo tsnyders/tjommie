@@ -9,10 +9,10 @@ const servers: Server[] = [];
 afterEach(async () => { await Promise.all(servers.splice(0).map((server) => server.close())); });
 const ok = { content: [{ type: "text", text: "native result" }] };
 type Requester = (botId: string, command: NativeBrowserCommand, authorized?: () => boolean) => Promise<unknown>;
-async function fixture(run: Requester = async () => ok) {
+async function fixture(run: Requester = async () => ok, canRunTools?: (botId: string) => boolean) {
   const bot = { id: "bot-one", homeFolder: "C:/synthetic/one", browser: true } as StoredBot;
   const tokens = new McpTokens(), token = tokens.issue(bot.id), request = vi.fn(run), cancelTools = vi.fn();
-  const mcp = new NativeBrowserMcp({ tokens, getBot: () => bot, request, cancelTools });
+  const mcp = new NativeBrowserMcp({ tokens, getBot: () => bot, request, cancelTools, canRunTools });
   const server = await startServer({ port: 0, token: "renderer", handlers: {}, allowedOrigins: [], routes: { "/mcp/browser": mcp.handle } }); servers.push(server);
   const url = `http://127.0.0.1:${server.port}/mcp/browser`;
   const post = async (body: unknown, bearer = token, method = "POST") => {
@@ -25,6 +25,16 @@ async function fixture(run: Requester = async () => ok) {
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>((done) => { resolve = done; }); return { promise, resolve }; }
 
 describe("native browser MCP proxy", () => {
+  it("fences queued and late results when the bot is paused", async () => {
+    let allowed = true;
+    const pending = deferred<unknown>(), f = await fixture(async () => pending.promise, () => allowed);
+    const first = f.call("browser_snapshot"); await vi.waitFor(() => expect(f.request).toHaveBeenCalledTimes(1));
+    const second = f.call("browser_snapshot", {}, 2);
+    allowed = false; pending.resolve(ok);
+    expect(await first).toMatchObject({ body: { error: { code: -32001 } } });
+    expect(await second).toMatchObject({ body: { error: { code: -32001 } } });
+    expect(f.request).toHaveBeenCalledTimes(1);
+  });
   it("initializes/lists without opening a browser and only forwards validated tool commands", async () => {
     const f = await fixture();
     expect(await f.post({ id: 1, method: "initialize", params: { protocolVersion: "future" } })).toMatchObject({ status: 200, body: { result: { protocolVersion: "future" } } });

@@ -25,12 +25,12 @@ describe("protocol", () => {
     const status = { provider: "codex", installed: true, version: "0.155.1", signedIn: true, account: null, plan: null, error: null, sandbox: "ready" };
     expect(methods["setup.prepareCodexSandbox"].result.parse(status)).toEqual(status);
   });
-  it("is version 1", () => {
-    expect(PROTOCOL_VERSION).toBe(1);
+  it("is version 2 for the project, attachment and browser control contracts", () => {
+    expect(PROTOCOL_VERSION).toBe(2);
   });
 
   it("lists every daemon error code and rejects unknown codes", () => {
-    const codes = ["bad_params", "not_found", "busy", "name_taken", "already_answered", "bad_state", "not_installed", "no_account", "unknown_method", "internal"];
+    const codes = ["bad_params", "not_found", "busy", "name_taken", "already_answered", "bad_state", "not_installed", "no_account", "unknown_method", "internal", "forbidden", "unavailable", "expired", "corrupt"];
     expect(ErrorCode.options).toEqual(codes);
     for (const code of codes) expect(ErrorCode.parse(code)).toBe(code);
     expect(ErrorCode.safeParse("unexpected").success).toBe(false);

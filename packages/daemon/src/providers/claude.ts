@@ -3,7 +3,7 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import type { Autonomy } from "@tjommie/protocol";
-import { cliEnv, killTree, spawnCli, type CliCommand } from "../cli.ts";
+import { cliEnv, killTree, launchCli, prepareProviderDirectories, workerProcessRetired, WorkerLaunchTerminationError, type CliCommand } from "../cli.ts";
 import { plainActivityText } from "./activity-labels.ts";
 import { parseClaudeLine, toolSummary } from "./claude-parse.ts";
 import { recordClaudeSessionOwner } from "./claude-files.ts";
@@ -83,6 +83,8 @@ export class ClaudeSession implements ProviderSession {
   #filesDir: string | null = null;
   #exitPromise: Promise<void> = Promise.resolve();
   #resolveExit: (() => void) | null = null;
+  #rejectExit: ((error: Error) => void) | null = null;
+  readonly #exiting = new WeakSet<ChildProcessWithoutNullStreams>();
 
   constructor(cmd: CliCommand, options: StartOptions) {
     this.#cmd = cmd;
@@ -106,18 +108,21 @@ export class ClaudeSession implements ProviderSession {
     try {
       recordClaudeSessionOwner(dir, { phase: "preparing", childPid: null });
       restrictSessionFolder(dir);
+      const permissions = prepareProviderDirectories(dir, this.#options.cwd, ...this.#options.extraDirs); if (permissions) await permissions;
       const files = { instructions: join(dir, "instructions.txt"), mcp: join(dir, "mcp.json") };
       writeFileSync(files.instructions, this.#options.instructions, { mode: 0o600 });
       if (this.#options.mcpServers.length) writeFileSync(files.mcp, JSON.stringify(claudeMcpConfig(this.#options.mcpServers)), { mode: 0o600 });
       // A crash during spawn may leave a live CLI whose PID was not recorded.
       recordClaudeSessionOwner(dir, { phase: "starting", childPid: null });
-      child = spawnCli(this.#cmd, claudeArgs(this.#options, files), { cwd: this.#options.cwd, env: this.#options.env, ...(this.#options.authentication ? { claudeApiKey: this.#options.authentication.key } : {}) });
+      child = await launchCli(this.#cmd, claudeArgs(this.#options, files), { cwd: this.#options.cwd, env: this.#options.env, ...(this.#options.authentication ? { claudeApiKey: this.#options.authentication.key } : {}) });
     } catch (error) {
-      this.#removeFiles();
+      if (error instanceof WorkerLaunchTerminationError) { this.#exitPromise = Promise.reject(error); void this.#exitPromise.catch(() => {}); }
+      else this.#removeFiles();
       throw error;
     }
     this.#child = child;
-    this.#exitPromise = new Promise((resolve) => { this.#resolveExit = resolve; });
+    this.#exitPromise = new Promise((resolve, reject) => { this.#resolveExit = resolve; this.#rejectExit = reject; });
+    void this.#exitPromise.catch(() => {});
     let stderr = "";
     child.stdin.on("error", () => {});
     child.stderr.setEncoding("utf8");
@@ -220,11 +225,25 @@ export class ClaudeSession implements ProviderSession {
   }
 
   #exited(child: ChildProcessWithoutNullStreams, error: string | null): void {
+    if (this.#exiting.has(child)) return;
+    this.#exiting.add(child);
+    const proof = workerProcessRetired(child);
+    if (proof) {
+      void proof.then(() => this.#finishExited(child, error)).catch((failure: unknown) => {
+        this.#closing = true; this.#inTurn = false;
+        this.#rejectExit?.(failure instanceof Error ? failure : new WorkerLaunchTerminationError()); this.#rejectExit = null;
+        this.#emit({ type: "turn_done", ok: false, error: "The isolated provider could not confirm process-tree exit. Its account stays reserved." });
+      }); return;
+    }
+    this.#finishExited(child, error);
+  }
+  #finishExited(child: ChildProcessWithoutNullStreams, error: string | null): void {
     if (this.#child !== child) return; // already reported or from a superseded child
     this.#child = null;
     this.#removeFiles();
     this.#resolveExit?.();
     this.#resolveExit = null;
+    this.#rejectExit = null;
     this.#inTurn = false;
     clearTimeout(this.#interruptTimer);
     clearTimeout(this.#closeTimer);

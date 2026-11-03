@@ -49,6 +49,15 @@ const methods = (log: Log) => log.map((entry) => entry.method);
 describe("BrowserSession", () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
+  it("does not send input for another controller and suppresses private pixels", async () => {
+    const other = fake(state({ canControl: false, controlEpoch: 4 })); other.session.open(); await flush();
+    other.session.input({ kind: "text", text: "synthetic" }); await flush();
+    expect(other.log.some((entry) => entry.method === "browser.input")).toBe(false);
+    const privateBrowser = fake(state({ canControl: true, controlEpoch: 5, privateEpoch: 2, privateActive: true }));
+    privateBrowser.session.open(); await flush(); expect(privateBrowser.session.view.frame).toBeNull();
+    privateBrowser.session.setVisible(false); await flush();
+    expect(privateBrowser.log.find((entry) => entry.method === "browser.control")?.params).toMatchObject({ control: "bot", releaseOnly: true, controlEpoch: 5 });
+  });
 
   it("opens, then pulls frames one at a time every 250 ms when idle without redrawing identical images", async () => {
     const t = fake();
@@ -186,7 +195,7 @@ describe("BrowserSession", () => {
     t.log.length = 0;
     t.session.close();
     await vi.advanceTimersByTimeAsync(500);
-    expect(t.log.at(-1)).toEqual({ method: "browser.control", params: { botId: "b1", control: "bot" } });
+    expect(t.log.at(-1)).toEqual({ method: "browser.control", params: { botId: "b1", control: "bot", generation: "g1", controlEpoch: undefined, releaseOnly: true } });
 
     const bot = fake(state({ control: "bot" }));
     bot.session.open();
@@ -342,7 +351,7 @@ describe("BrowserSession", () => {
     t.session.setControl("bot");
     await flush();
     expect(t.session.view.state?.control).toBe("bot");
-    expect(t.log.find((e) => e.method === "browser.control")?.params).toEqual({ botId: "b1", control: "bot" });
+    expect(t.log.find((e) => e.method === "browser.control")?.params).toEqual({ botId: "b1", control: "bot", generation: "g1", controlEpoch: undefined });
   });
 
   it("sends navigation, history, tab, resize and dialog calls for the active page", async () => {

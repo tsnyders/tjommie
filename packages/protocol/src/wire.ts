@@ -3,6 +3,10 @@ import { browserMethods } from "./browser.ts";
 import { googleEvents, googleMethods } from "./google.ts";
 import { accountEvents, accountMethods } from "./accounts.ts";
 import { remoteEvents, remoteMethods } from "./remote.ts";
+import { attachmentMethods } from "./attachments.ts";
+import { projectEvents, projectMethods } from "./projects.ts";
+import { diagnosticMethods } from "./diagnostics.ts";
+import { vaultMethods } from "./vault.ts";
 import {
   Approval,
   ApprovalDecision,
@@ -25,11 +29,12 @@ import {
   TEAM_ROOM_ID,
 } from "./model.ts";
 
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 export const ErrorCode = z.enum([
   "bad_params", "not_found", "busy", "name_taken", "already_answered", "bad_state",
   "not_installed", "no_account", "unknown_method", "internal",
+  "forbidden", "unavailable", "expired", "corrupt",
 ]);
 export type ErrorCode = z.infer<typeof ErrorCode>;
 
@@ -43,6 +48,10 @@ const PendingRoutineNotification = z.object({
 
 // Every request the daemon answers: params are validated on arrival, results are what handlers return.
 export const methods = {
+  ...vaultMethods,
+  ...diagnosticMethods,
+  ...attachmentMethods,
+  ...projectMethods,
   ...remoteMethods,
   ...accountMethods,
   ...browserMethods,
@@ -88,6 +97,7 @@ const Notification = z.object({ botId: z.string(), title: z.string(), body: z.st
 
 // Everything the daemon pushes to connected clients.
 export const events = {
+  ...projectEvents,
   ...remoteEvents,
   ...accountEvents,
   ...googleEvents,

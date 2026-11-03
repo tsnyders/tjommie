@@ -8,3 +8,8 @@ export * from "./google.ts";
 export * from "./accounts.ts";
 export * from "./remote.ts";
 export * from "./relay.ts";
+export * from "./speech.ts";
+export * from "./attachments.ts";
+export * from "./projects.ts";
+export * from "./diagnostics.ts";
+export * from "./vault.ts";

@@ -1,9 +1,9 @@
 import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdtempSync, openSync, readdirSync, readSync, realpathSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
-  ExchangeHandoffData, FileData, RoutineApprovalData, RoutineInput, TEAM_ROOM_ID, findMentions,
+  ExchangeHandoffData, ExchangePostData, FileData, RoutineApprovalData, RoutineInput, TEAM_ROOM_ID, findMentions,
   type Approval, type ApprovalDecision, type Bot, type BotState, type EventData, type EventName,
-  type Exchange, type ExchangePostData, type Message, type NoticeData, type RoomHandoffData,
+  type Exchange, type Message, type NoticeData, type RoomHandoffData,
 } from "@tjommie/protocol";
 import { z } from "zod";
 import { createApproval, getApproval, resolveApproval } from "./approvals.ts";
@@ -18,6 +18,8 @@ import { copyIntoInbox, type TurnResult } from "./runner.ts";
 import { duration } from "./scheduler.ts";
 import { RpcError, type Broadcast } from "./server.ts";
 import { getSettings } from "./settings.ts";
+import type { Attachments } from "./attachments.ts";
+import { AttachmentCompanionName, AttachmentCompanions, MAX_ATTACHMENT_COMPANIONS, type AttachmentCompanion } from "../../protocol/src/attachments.ts";
 
 const ROOM_CONTEXT = 20;
 const MAX_SHARE_BYTES = 200 * 1024 * 1024;
@@ -50,6 +52,9 @@ type ExchangeRow = {
   reply_to: string;
   created_at: string;
   replied_at: string | null;
+  task_attempt_id: string | null;
+  task_revision: number | null;
+  execution_context_key: string | null;
 };
 
 export type BotDeletionHandle = Readonly<{
@@ -187,6 +192,8 @@ export type TeamDeps = {
   currentWork: (botId: string) => WorkItem | null;
   stateOf: (bot: StoredBot) => BotState;
   botView?: (bot: StoredBot) => Bot;
+  attachments?: Attachments;
+  effectiveFolder?: (botId: string) => string;
 };
 
 // Bots working together: the tools on Tjommie's MCP server, exchanges between bots, and rooms (Everyone and the others).
@@ -198,6 +205,8 @@ export class Team {
   #currentWork: (botId: string) => WorkItem | null;
   #stateOf: (bot: StoredBot) => BotState;
   #botView: (bot: StoredBot) => Bot;
+  #attachments?: Attachments;
+  #effectiveFolder?: (botId: string) => string;
   #shared = new Map<string, string[]>(); // work item id -> files the bot shared during that turn
   #sessionChains = new Map<string, string>(); // autonomous CLI work shares one chain until sessionClosed
   #pending: (() => void)[] | null = null;
@@ -212,6 +221,8 @@ export class Team {
     this.#currentWork = deps.currentWork;
     this.#stateOf = deps.stateOf;
     this.#botView = deps.botView ?? ((bot) => ({ ...bot, state: this.#stateOf(bot), setupReason: null }));
+    this.#attachments = deps.attachments;
+    this.#effectiveFolder = deps.effectiveFolder;
   }
 
   // Call once at daemon startup, before starting work. Old folders survived a crash.
@@ -230,6 +241,18 @@ export class Team {
   tools(): McpTool[] {
     return [
       defineTool({
+        name: "request_login",
+        description: "Asks the person to select and confirm a named saved login in Logins. This never reads credentials or fills a website; browser automation stays under the person's control.",
+        input: z.strictObject({ name: z.string().trim().min(1).max(100).regex(/^[^\x00-\x1f\x7f]+$/).describe("The website login name to ask the person for; never a password") }),
+        run: (botId, { name }) => {
+          const bot = getStoredBot(this.#db, botId);
+          if (bot.paused || !bot.browser) throw new Error("Resume this bot and enable its browser before requesting a login.");
+          const work = this.#currentWork(botId);
+          this.#add({ conversationId: work?.conversationId ?? botId, author: botId, kind: "text", body: `Login requested: ${name}. Open Logins in this bot's Computer view to select a saved login and confirm the exact website on the host.`, status: "done" });
+          return "The person was asked to select a login. No credential was read or filled. Wait for their instructions before continuing browser automation.";
+        },
+      }),
+      defineTool({
         name: "list_bots",
         description: "Lists the bots you may ask for help with message_bot: their names, what they do, and whether they're busy.",
         input: z.object({}),
@@ -247,12 +270,13 @@ export class Team {
       }),
       defineTool({
         name: "share_file",
-        description: "Shows a file from your own folders to the person, as a file card. When you're answering another bot, the file goes to that bot too.",
+        description: "Shows a file from your own folders to the person, as a file card. When you're answering another bot, the file goes to that bot too. For Markdown images, explicitly include each companion's relative Markdown name and owned source path; no directory is searched.",
         input: z.object({
           path: z.string().min(1).describe("An absolute path, or one relative to your working folder"),
           caption: z.string().max(500).optional().describe("A short note shown on the card"),
+          companions: z.array(z.strictObject({ name: AttachmentCompanionName.describe("The relative image name used in Markdown, such as images/chart.png"), path: z.string().min(1).max(32767).describe("An image source path, absolute or relative to your working folder") })).max(MAX_ATTACHMENT_COMPANIONS).optional(),
         }),
-        run: (botId, { path, caption }) => this.#shareFile(botId, path, caption),
+        run: (botId, { path, caption, companions }) => this.#shareFile(botId, path, caption, companions),
       }),
       defineTool({
         name: "add_routine",
@@ -367,16 +391,16 @@ export class Team {
           const existing = this.#exchange(row.id);
           if (existing && existing.status !== "waiting") continue;
           if (!existing) {
-            this.#db.prepare("INSERT INTO exchanges (id, from_bot_id, to_bot_id, request, reply, status, chain_id, reply_to, created_at, replied_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-              .run(row.id, row.from_bot_id, row.to_bot_id, row.request, row.reply, row.status, row.chain_id, row.reply_to, row.created_at, row.replied_at);
+            this.#db.prepare("INSERT INTO exchanges (id, from_bot_id, to_bot_id, request, reply, status, chain_id, reply_to, created_at, replied_at, task_attempt_id, task_revision, execution_context_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+              .run(row.id, row.from_bot_id, row.to_bot_id, row.request, row.reply, row.status, row.chain_id, row.reply_to, row.created_at, row.replied_at, row.task_attempt_id, row.task_revision, row.execution_context_key);
           }
           const running = this.#db.prepare("SELECT id FROM work_items WHERE exchange_id = ? AND source = 'bot_request' AND status = 'running'").all(row.id) as { id: string }[];
           stopping.push(...running.map((item) => item.id));
           this.#db.prepare("UPDATE work_items SET status = 'failed', ended_at = ? WHERE exchange_id = ? AND source = 'bot_request' AND status = 'queued'").run(nowIso(), row.id);
           this.#fail(row, `${handle.bot.name} was deleted`, captured);
           if (row.to_bot_id === botId && captured.asker && this.#botOrNull(captured.asker.id)) {
-            const replyTo = this.#db.prepare("SELECT 1 FROM conversations WHERE id = ?").get(captured.replyTo) ? captured.replyTo : captured.asker.id;
-            queued.push(enqueue(this.#db, { botId: captured.asker.id, source: "bot_reply", text: failedPrompt(handle.bot.name, row.request, `${handle.bot.name} was deleted`), conversationId: replyTo, chainId: row.chain_id, exchangeId: row.id }));
+            const reply = this.#queueReply(row, failedPrompt(handle.bot.name, row.request, `${handle.bot.name} was deleted`));
+            if (reply) queued.push(reply);
           }
         }
         // Renames are reversible if the transaction cannot commit. Delete the moved
@@ -461,8 +485,8 @@ export class Team {
       }
       if (work && !work.chainId) this.#db.prepare("UPDATE work_items SET chain_id = ? WHERE id = ?").run(chainId, work.id);
       this.#db
-        .prepare("INSERT INTO exchanges (id, from_bot_id, to_bot_id, request, status, chain_id, reply_to, created_at) VALUES (?, ?, ?, ?, 'waiting', ?, ?, ?)")
-        .run(id, from.id, to.id, request, chainId, work?.conversationId ?? from.id, nowIso());
+        .prepare("INSERT INTO exchanges (id, from_bot_id, to_bot_id, request, status, chain_id, reply_to, created_at, task_attempt_id, task_revision, execution_context_key) VALUES (?, ?, ?, ?, 'waiting', ?, ?, ?, ?, ?, ?)")
+        .run(id, from.id, to.id, request, chainId, work?.conversationId ?? from.id, nowIso(), work?.taskAttemptId ?? null, work?.taskRevision ?? null, work?.executionContextKey ?? null);
       this.#db.prepare("INSERT INTO conversations (id, kind, bot_id) VALUES (?, 'exchange', NULL)").run(id);
       const message = this.#add({ conversationId: id, author: from.id, kind: "text", body: request, status: "done" });
       for (const roomId of this.#roomsFor(from.id, to.id)) this.#add({ conversationId: roomId, author: from.id, kind: "text", body: request, data: { exchangeId: id, toBotId: to.id } satisfies ExchangePostData, status: "done" });
@@ -483,30 +507,44 @@ export class Team {
     return `Sent. ${to.name} will reply.`;
   }
 
-  #shareFile(botId: string, path: string, caption: string | undefined): string {
+  #shareFile(botId: string, path: string, caption: string | undefined, companions: { name: string; path: string }[] = []): string {
     const bot = getStoredBot(this.#db, botId);
-    const roots = bot.projectFolder ? [bot.projectFolder, bot.homeFolder] : [bot.homeFolder];
-    const file = fileInside(roots, resolve(roots[0], path));
-    // Legacy project folders must not expose the daemon's data or another bot's files.
-    const managed = realpathSync.native(dirname(this.#staging()));
-    if (within(managed, file) && !within(realpathSync.native(bot.homeFolder), file)) throw new Error("You can only share files from your own folders.");
     const work = this.#currentWork(botId);
+    const effective = this.#effectiveFolder?.(botId) ?? bot.projectFolder ?? bot.homeFolder;
+    const roots = [effective, bot.homeFolder];
+    const managed = realpathSync.native(dirname(this.#staging()));
+    const checked = (path: string) => {
+      const file = fileInside(roots, resolve(roots[0], path));
+      if (within(managed, file) && !within(realpathSync.native(bot.homeFolder), file) && !(work?.taskAttemptId && within(realpathSync.native(effective), file))) throw new Error("You can only share files from your own folders.");
+      return file;
+    };
+    if (new Set(companions.map((companion) => companion.name)).size !== companions.length) throw new Error("Companion names must be unique.");
+    const sources = [checked(path), ...companions.map((companion) => checked(companion.path))];
+    if (companions.length && !this.#attachments) throw new Error("Shared companion images are unavailable.");
     const exchange = work ? this.#exchange(work.conversationId) : undefined;
     const needsReply = exchange?.to_bot_id === botId && this.#botOrNull(exchange.from_bot_id) !== null;
-    const snapshot = snapshotFile(roots, file, this.#staging(), botId);
-    let durable: string | null = null;
+    const snapshots: FileData[] = [], durable: string[] = [];
     try {
-      // Without a bot recipient the person receives the file through this bot's inbox.
-      if (!needsReply) durable = join(bot.homeFolder, "inbox", copyIntoInbox(bot.homeFolder, snapshot.path));
-      this.#atomic(() => this.#add({ conversationId: work?.conversationId ?? botId, author: botId, kind: "file", body: caption?.trim() || snapshot.name, data: { ...snapshot, path: durable ?? snapshot.path } satisfies FileData, status: "done" }));
+      for (const source of sources) {
+        const snapshot = snapshotFile(roots, source, this.#staging(), botId); snapshots.push(snapshot);
+        const attachment = this.#attachments?.registerSnapshot(snapshot.path, snapshot.name);
+        if (attachment) { snapshot.attachmentId = attachment.id; snapshot.contentType = attachment.contentType; }
+      }
+      if (companions.length && (snapshots[0].contentType !== "text/markdown" || snapshots.slice(1).some((snapshot) => !/^image\/(png|jpeg|webp|gif)$/.test(snapshot.contentType ?? "")))) throw new Error("Only a Markdown document and explicitly shared raster images can form a companion bundle.");
+      if (companions.length) snapshots[0].companions = companions.map((companion, index) => ({ name: companion.name, attachmentId: snapshots[index + 1].attachmentId!, attachmentIndex: index + 1 }));
+      if (!needsReply) for (const snapshot of snapshots) durable.push(join(bot.homeFolder, "inbox", copyIntoInbox(bot.homeFolder, snapshot.path)));
+      this.#atomic(() => {
+        for (const [index, snapshot] of snapshots.entries()) this.#add({ conversationId: work?.conversationId ?? botId, author: botId, kind: "file", body: index === 0 ? caption?.trim() || snapshot.name : snapshot.name, data: { ...snapshot, path: durable[index] ?? snapshot.path } satisfies FileData, status: "done" });
+      });
     } catch (error) {
-      if (durable) rmSync(durable, { force: true });
-      rmSync(dirname(snapshot.path), { recursive: true, force: true });
+      for (const copy of durable) rmSync(copy, { force: true });
+      for (const snapshot of snapshots) rmSync(dirname(snapshot.path), { recursive: true, force: true });
+      this.#attachments?.cleanup();
       throw error;
     }
-    if (needsReply && work) this.#shared.set(work.id, [...(this.#shared.get(work.id) ?? []), snapshot.path]);
-    else this.#releaseSnapshots([snapshot.path]);
-    return `Shared ${snapshot.name}.`;
+    if (needsReply && work) this.#shared.set(work.id, [...(this.#shared.get(work.id) ?? []), ...snapshots.map((snapshot) => snapshot.path)]);
+    else this.#releaseSnapshots(snapshots.map((snapshot) => snapshot.path));
+    return `Shared ${snapshots[0].name}${companions.length ? ` with ${companions.length} companion image${companions.length === 1 ? "" : "s"}` : ""}.`;
   }
 
   #proposeRoutine(botId: string, r: { name: string; days: number[]; times: string[]; prompt: string; timeLimitMinutes: number | null }): string {
@@ -584,8 +622,10 @@ export class Team {
         if (first) this.#db.prepare("UPDATE exchanges SET status = 'replied', reply = ?, replied_at = ? WHERE id = ?").run(reply, nowIso(), row.id);
         const shared = files.map((path, index) => {
           const durable = join(recipient.homeFolder, "inbox", inbox[index]);
+          const card = this.#db.prepare("SELECT data FROM messages WHERE kind='file' AND json_extract(data,'$.path')=? LIMIT 1").get(path) as { data: string } | undefined;
+          const metadata = card ? FileData.safeParse(JSON.parse(card.data)) : null;
           this.#pointFileCards(path, durable);
-          return { name: basename(path), path: durable };
+          return { name: basename(path), path: durable, ...(metadata?.success && metadata.data.attachmentId ? { attachmentId: metadata.data.attachmentId, contentType: metadata.data.contentType, size: metadata.data.size, ...(metadata.data.companions ? { companions: metadata.data.companions } : {}) } : {}) };
         });
         for (const roomId of this.#roomsFor(row.from_bot_id, to.id)) this.#add({ conversationId: roomId, author: to.id, kind: "text", body: reply, data: { exchangeId: row.id, toBotId: row.from_bot_id, files: shared } satisfies ExchangePostData, status: "done" });
         this.#refreshRows(row.id);
@@ -635,7 +675,8 @@ export class Team {
   #queueReply(row: ExchangeRow, text: string): WorkItem | null {
     if (!this.#botOrNull(row.from_bot_id)) return null;
     const replyTo = this.#db.prepare("SELECT 1 FROM conversations WHERE id = ?").get(row.reply_to) ? row.reply_to : row.from_bot_id;
-    return enqueue(this.#db, { botId: row.from_bot_id, source: "bot_reply", text, conversationId: replyTo, chainId: row.chain_id, exchangeId: row.id });
+    return enqueue(this.#db, { botId: row.from_bot_id, source: "bot_reply", text, conversationId: replyTo, chainId: row.chain_id, exchangeId: row.id,
+      taskAttemptId: row.task_attempt_id, taskRevision: row.task_revision, executionContextKey: row.execution_context_key });
   }
 
   // Brings the handoff rows in both chats up to date: message count and status.
@@ -731,7 +772,22 @@ export class Team {
   }
 
   #add(m: { conversationId: string; author: string; kind: Message["kind"]; body: string; data?: Record<string, unknown> | null; status: Message["status"] }): Message {
-    const message = addMessage(this.#db, m);
+    let data = m.data;
+    let files: { attachmentId?: string; companions?: AttachmentCompanion[] }[] = [];
+    if (m.kind === "file") { const file = FileData.parse(data); data = file; files = [file]; }
+    else if (m.kind === "text") {
+      const post = ExchangePostData.safeParse(data);
+      if (post.success) { data = post.data; files = post.data.files ?? []; }
+    }
+    let companionIndex = files.length;
+    for (const file of files) if (file.companions) file.companions = AttachmentCompanions.parse(file.companions).map((companion) => ({ ...companion, attachmentIndex: companionIndex++ }));
+    const message = addMessage(this.#db, { ...m, data });
+    if (this.#attachments) {
+      for (const [index, file] of files.entries()) {
+        if (file.attachmentId) this.#attachments.link(message.id, index, file.attachmentId);
+        for (const companion of file.companions ?? []) this.#attachments.link(message.id, companion.attachmentIndex, companion.attachmentId);
+      }
+    }
     this.#emit("message.added", message);
     return message;
   }

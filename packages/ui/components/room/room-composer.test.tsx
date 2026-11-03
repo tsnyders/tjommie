@@ -9,6 +9,9 @@ import { everyoneLabel, mentionEscape, RoomComposer, withAt } from "./room-compo
 const growth: Room = { id: "r1", name: "Growth", botIds: ["b1", "b2"], everyone: false, createdAt: "2026-10-25T09:00:00.000Z" };
 
 describe("RoomComposer", () => {
+  it("offers local dictation alongside the existing room composer", () => {
+    expect(renderToStaticMarkup(<RoomComposer room={growth} />)).toContain('aria-label="Start dictation"');
+  });
   it("points at the mention list only while it's open", () => {
     const html = renderToStaticMarkup(<RoomComposer room={growth} />);
     expect(html).toContain('role="combobox"');

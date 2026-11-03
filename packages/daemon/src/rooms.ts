@@ -44,6 +44,9 @@ export function updateRoom(db: Db, id: string, patch: RoomPatch): Room {
 
 export function deleteRoom(db: Db, id: string): void {
   editable(db, id);
+  if (db.prepare("SELECT 1 FROM projects WHERE state='active' AND json_extract(data,'$.roomId')=? LIMIT 1").get(id)) {
+    throw new RpcError("busy", "Archive or unlink the project before deleting its team room.");
+  }
   if (db.prepare("SELECT 1 FROM work_items WHERE conversation_id = ? AND status IN ('queued', 'running') LIMIT 1").get(id)) {
     throw new RpcError("busy", "This room has a bot still answering");
   }

@@ -1,0 +1,48 @@
+{
+  "checkedOn": "2026-11-03",
+  "status": "candidate-only-no-runtime-or-model-downloaded",
+  "runtime": {
+    "repository": "https://github.com/ggml-org/whisper.cpp",
+    "version": "v1.9.5",
+    "tagObject": "d2a764c648779feb36d44363f212a29b00aad1af",
+    "commit": "d1be6fde11ac6e0407606b4e42fe72d34add8037",
+    "releaseMetadata": "https://api.github.com/repos/ggml-org/whisper.cpp/releases/tags/v1.9.5",
+    "commitMetadata": "https://api.github.com/repos/ggml-org/whisper.cpp/commits/d1be6fde11ac6e0407606b4e42fe72d34add8037",
+    "license": "MIT",
+    "licenseUrl": "https://github.com/ggml-org/whisper.cpp/blob/d1be6fde11ac6e0407606b4e42fe72d34add8037/LICENSE",
+    "selectedBuild": "GitHub Actions Windows x64 CPU-only static whisper-cli; no nightly binary",
+    "binaryBytes": null,
+    "binarySha256": null,
+    "stableReleaseAssetCount": 0
+  },
+  "model": {
+    "repository": "ggerganov/whisper.cpp",
+    "revision": "5359861c739e955e79d9a303bcbc70fb988958b1",
+    "file": "ggml-base.en.bin",
+    "bytes": 147964211,
+    "sha256": "a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002",
+    "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-base.en.bin",
+    "metadataUrl": "https://huggingface.co/api/models/ggerganov/whisper.cpp/tree/5359861c739e955e79d9a303bcbc70fb988958b1?recursive=false&expand=false",
+    "license": "MIT",
+    "language": "en"
+  },
+  "unselectedAlternatives": [
+    {
+      "reason": "Android JNI fallback needs ABI, cancellation, memory, battery and accuracy measurements before selection",
+      "repository": "ggerganov/whisper.cpp",
+      "revision": "5359861c739e955e79d9a303bcbc70fb988958b1",
+      "file": "ggml-tiny.en.bin",
+      "bytes": 77704715,
+      "sha256": "921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f"
+    },
+    {
+      "reason": "Do not add VAD unless measured silence/noise fixtures show built-in decoder no-speech filtering is insufficient",
+      "repository": "ggml-org/whisper-vad",
+      "revision": "9ffd54a1e1ee413ddf265af9913beaf518d1639b",
+      "file": "ggml-silero-v6.2.0.bin",
+      "bytes": 885098,
+      "sha256": "2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987",
+      "license": "MIT"
+    }
+  ]
+}

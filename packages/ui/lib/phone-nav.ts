@@ -6,14 +6,15 @@ const trimmed = (pathname: string): string => pathname.replace(/\/+$/, "") || "/
 // action footer sits at the bottom: chat, New bot and Bot settings. A room is /room/?id=, so it has the list's pathname.
 export function showsTabBar(pathname: string): boolean {
   const path = trimmed(pathname);
-  return path === "/" || path === "/agents" || path === "/room" || path === "/settings" || path.startsWith("/settings/");
+  return path === "/" || path === "/agents" || path === "/projects" || path === "/room" || path === "/settings" || path.startsWith("/settings/");
 }
 
-export type TabId = "agents" | "room" | "settings";
+export type TabId = "agents" | "room" | "projects" | "settings";
 // `label` is the name for a screen reader and `short` what shows under the icon.
 export const TABS: { id: TabId; href: string; label: string; short: string }[] = [
   { id: "agents", href: "/agents/", label: "Agents", short: "Agents" },
   { id: "room", href: "/room/", label: "Rooms", short: "Rooms" },
+  { id: "projects", href: "/projects/", label: "Projects", short: "Projects" },
   { id: "settings", href: "/settings/", label: "Settings", short: "Settings" },
 ];
 
@@ -22,6 +23,7 @@ export function tabFor(pathname: string): TabId | null {
   const path = trimmed(pathname);
   if (path === "/agents") return "agents";
   if (path === "/room") return "room";
+  if (path === "/projects") return "projects";
   if (path === "/settings" || path.startsWith("/settings/")) return "settings";
   return null;
 }

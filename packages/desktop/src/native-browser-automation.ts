@@ -6,6 +6,7 @@ import type { WebContents, MouseInputEvent } from "electron";
 import { z } from "zod";
 import type { NativeBrowserToolCommand, NativeBrowserUiCommand } from "../../protocol/src/native-browser.ts";
 import type { NativeBrowserEngine, NativeBrowserBot } from "./native-browser.ts";
+import { captureNativeBrowserFrame } from "./native-browser-frame.ts";
 
 const TEXT_LIMIT = 128 * 1024, IMAGE_LIMIT = 2 * 1024 * 1024, ACTION_MS = 10_000;
 const record = (value: unknown): Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -18,13 +19,14 @@ type Observation = { level: string; text: string; document: string };
 type Request = { id: string; index: number; url: string; method: string; type: string; status?: number; requestHeaders: Record<string, unknown>; responseHeaders?: Record<string, unknown> };
 type PageState = { document: string; nextRef: number; refs: Map<string, number>; reverse: Map<number, string>; console: Observation[]; requests: Map<string, Request>; nextRequest: number; fileInput?: number; ready?: Promise<void>; media: Map<string, string>; mediaType?: string };
 const pages = new WeakMap<WebContents, PageState>();
-type Context = { engine: NativeBrowserEngine; bot: NativeBrowserBot; contents?: WebContents; page?: PageState; deadline: number; viewportRevision?: number; cancelled?: boolean };
+type Context = { engine: NativeBrowserEngine; bot: NativeBrowserBot; contents?: WebContents; page?: PageState; deadline: number; viewportRevision?: number; controlEpoch?: number; privateEpoch?: number; cancelled?: boolean };
 const active = new WeakMap<WebContents, Context>();
 const activeBots = new Map<string, Set<Context>>();
 class PageDialogError extends Error {}
 function guard(ctx: Context): void {
   if (ctx.cancelled) throw new Error("The browser tool was cancelled. Take a fresh snapshot before continuing.");
   const state = ctx.engine.state(ctx.bot.id);
+  if (state.privateActive || ctx.privateEpoch !== undefined && state.privateEpoch !== ctx.privateEpoch || ctx.controlEpoch !== undefined && state.controlEpoch !== ctx.controlEpoch) throw new Error("The browser interaction changed; this tool result was discarded.");
   if (state.control !== "bot") throw new Error("The person has taken browser control. Return control to the bot before continuing.");
   if (ctx.viewportRevision !== undefined && state.viewportRevision !== ctx.viewportRevision) throw new Error("The browser panel resized during this action. Take a fresh snapshot before retrying.");
   if (Date.now() >= ctx.deadline) throw new Error("The browser tool exceeded its 22-second deadline. Take a fresh snapshot before retrying.");
@@ -93,14 +95,18 @@ async function prepare(ctx: Context): Promise<void> {
     contents.on("render-process-gone", reset);
     (contents as unknown as EventEmitter).on("tjommie-browser-control", (control: unknown) => {
       state.fileInput = undefined;
-      if (control === "human") void cleanupCommand(contents, "Page.setInterceptFileChooserDialog", { enabled: false });
+      if (control === "human") {
+        reset(); state.console.length = 0; state.ready = undefined;
+        const running = active.get(contents); if (running) running.cancelled = true;
+        void cleanupCommand(contents, "Page.setInterceptFileChooserDialog", { enabled: false });
+      }
     });
     contents.once("destroyed", () => { reset(); pages.delete(contents); });
     contents.debugger.on("message", (_event: unknown, method: string, raw: unknown) => {
       const params = record(raw);
       if (method === "DOM.documentUpdated") { reset(); return; }
       // Human sign-in traffic and console output are not retained for later bot inspection.
-      try { if (ctx.engine.state(ctx.bot.id).control !== "bot") return; } catch { return; }
+      try { const browser = ctx.engine.state(ctx.bot.id); if (browser.control !== "bot" || browser.privateActive) return; } catch { return; }
       if (method === "Runtime.consoleAPICalled") {
         const values = Array.isArray(params.args) ? params.args : [];
         const message = values.map((value) => { const item = record(value); return string(item.description) || String(item.value ?? ""); }).join(" ");
@@ -247,11 +253,13 @@ async function uploads(bot: NativeBrowserBot, paths: string[]): Promise<string[]
   }));
 }
 async function output(ctx: Context, data: string | Buffer, filename: string): Promise<string> {
+  guard(ctx);
   const base = await realpath(ctx.bot.homeFolder), directory = join(base, "browser-files");
   await mkdir(directory, { recursive: true });
   if ((await lstat(directory)).isSymbolicLink() || !inside(base, await realpath(directory))) throw new Error("Browser output must remain inside the bot's folder.");
   const path = resolve(directory, filename);
   if (!inside(directory, path) || dirname(path) !== directory || /[<>:"|?*]/.test(basename(path))) throw new Error("Use a plain filename inside this bot's browser-files folder.");
+  guard(ctx);
   await writeFile(path, data, { flag: "wx", mode: 0o600 });
   return path;
 }
@@ -342,7 +350,7 @@ async function capture(ctx: Context, args: { target?: string; ref?: string; full
   } else if (args.fullPage) clip = { x: 0, y: 0, width: Number(content.width), height: Number(content.height), scale: viewportScale };
   else clip = { x: Number(viewport.pageX ?? 0), y: Number(viewport.pageY ?? 0), width: Number(viewport.clientWidth), height: Number(viewport.clientHeight), scale: viewportScale };
   if (Object.values(clip).some((value) => !Number.isFinite(value)) || clip.width <= 0 || clip.height <= 0 || clip.width * clip.height > 16_000_000 || clip.width > 16000 || clip.height > 16000 || clip.scale <= 0 || clip.scale > 4) throw new Error("The screenshot exceeds the 16-megapixel limit. Use a smaller viewport or an element target.");
-  const data = string((await cdp(ctx.contents!, "Page.captureScreenshot", { format: type, ...(type === "png" ? {} : { quality: 75 }), clip, captureBeyondViewport: !!args.fullPage || !!args.target || !!args.ref })).data);
+  const data = await captureNativeBrowserFrame(ctx.contents!.debugger, () => guard(ctx), { format: type, ...(type === "png" ? {} : { quality: 75 }), clip, captureBeyondViewport: !!args.fullPage || !!args.target || !!args.ref });
   if (!data || data.length > Math.ceil(IMAGE_LIMIT / 3) * 4 || !/^[A-Za-z0-9+/]*={0,2}$/.test(data)) throw new Error("The screenshot exceeds the 2 MiB image limit. Use JPEG or a smaller target.");
   const bytes = Buffer.from(data, "base64");
   if (bytes.length > IMAGE_LIMIT) throw new Error("The screenshot exceeds the 2 MiB image limit.");
@@ -507,14 +515,19 @@ export async function nativeBrowserAutomation(engine: NativeBrowserEngine, bot: 
   const contexts = activeBots.get(bot.id) ?? new Set<Context>();
   contexts.add(ctx); activeBots.set(bot.id, contexts);
   try {
+    const initial = await engine.open(bot); ctx.controlEpoch = initial.controlEpoch; ctx.privateEpoch = initial.privateEpoch; guard(ctx);
     const command = validateNativeBrowserTool(raw.name, raw.args), definition = nativeBrowserTools[command.name];
-    if (!definition.page) return await definition.run(ctx, command.args);
+    if (!definition.page) { const value = await definition.run(ctx, command.args); guard(ctx); return value; }
     return await engine.withAutomation(bot, {}, async (contents) => {
       ctx.contents = contents;
       active.set(contents, ctx);
-      try { await prepare(ctx); return await definition.run(ctx, command.args); }
+      try { await prepare(ctx); const value = await definition.run(ctx, command.args); guard(ctx); return value; }
       finally { active.delete(contents); void contents.debugger.sendCommand("Runtime.releaseObjectGroup", { objectGroup: "tjommie-tools" }).catch(() => {}); }
     });
-  } catch (error) { return { ...text(error instanceof Error ? error.message : "The native browser tool failed."), isError: true }; }
+  } catch (error) {
+    let hidden = ctx.cancelled === true;
+    try { const state = engine.state(bot.id); hidden ||= state.privateActive === true || ctx.privateEpoch !== undefined && state.privateEpoch !== ctx.privateEpoch; } catch { hidden = true; }
+    return { ...text(hidden ? "The browser tool was cancelled; its result was discarded." : error instanceof Error ? error.message : "The native browser tool failed."), isError: true };
+  }
   finally { contexts.delete(ctx); if (!contexts.size) activeBots.delete(bot.id); }
 }

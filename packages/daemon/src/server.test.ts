@@ -1,7 +1,24 @@
+import { PROTOCOL_VERSION } from "@tjommie/protocol";
 import type { ServerMessage } from "@tjommie/protocol";
 import { afterEach, describe, expect, it } from "vitest";
 import WebSocket from "ws";
 import { RpcError, startServer, type Server } from "./server.ts";
+import { connect as connectClient } from "@tjommie/client";
+import type { RequestContext } from "./request-context.ts";
+
+it("stops admission on existing sockets and internal dispatch before closing transports", async () => {
+  let calls = 0;
+  const instance = await startServer({ port: 0, token: "fixture", handlers: { "remote.ping": () => { calls++; return {}; } }, allowedOrigins: [] });
+  const client = await connectClient(instance.port, "fixture");
+  try {
+    await client.call("remote.ping", {});
+    instance.stopRequests();
+    await expect(client.call("remote.ping", {})).rejects.toMatchObject({ code: "bad_state" });
+    await expect(instance.dispatch("remote.ping", {})).rejects.toMatchObject({ code: "bad_state" });
+    expect(calls).toBe(1);
+    expect(() => instance.activate({ token: "fixture", handlers: {} })).toThrow(/stopping/);
+  } finally { await client.close(); await instance.close(); }
+});
 
 let server: Server | undefined;
 afterEach(async () => {
@@ -33,11 +50,36 @@ function connect(port: number, headers: Record<string, string> = {}) {
 
 async function hello(client: ReturnType<typeof connect>, token: string) {
   await client.opened;
-  client.send({ type: "hello", protocol: 1, token });
+  client.send({ type: "hello", protocol: PROTOCOL_VERSION, token });
   return client.next();
 }
 
 describe("startServer", () => {
+  it("binds trusted context to each authenticated connection and aborts it on close", async () => {
+    const observed: (RequestContext | undefined)[] = [];
+    server = await startServer({ port: 0, token: "synthetic-context-token", allowedOrigins: [], handlers: {
+      "bots.list": (_params, context) => { observed.push(context); return []; },
+    } });
+    const first = connect(server.port), second = connect(server.port);
+    await hello(first, "synthetic-context-token");
+    await hello(second, "synthetic-context-token");
+    first.send({ type: "req", id: 1, method: "bots.list", params: { context: { connectionId: "spoofed", principal: { kind: "device", deviceId: "spoofed" } } } });
+    await first.next();
+    second.send({ type: "req", id: 2, method: "bots.list", params: {} });
+    await second.next();
+    expect(observed[0]?.principal).toEqual({ kind: "local" });
+    expect(observed[0]?.connectionId).not.toBe("spoofed");
+    expect(observed[1]?.connectionId).not.toBe(observed[0]?.connectionId);
+    first.ws.close();
+    await first.closed;
+    await expect.poll(() => observed[0]?.signal.aborted).toBe(true);
+    expect(observed[1]?.signal.aborted).toBe(false);
+    await server.dispatch("bots.list", {});
+    expect(observed[2]).toBeUndefined();
+    await server.close();
+    server = undefined;
+    expect(observed[1]?.signal.aborted).toBe(true);
+  });
   it("holds HTTP and WebSocket requests until recovery activates the server", async () => {
     server = await startServer({ port: 0, token: "", allowedOrigins: [], handlers: {}, deferRequests: true });
     expect((await fetch(`http://127.0.0.1:${server.port}/health`)).status).toBe(503);
@@ -46,7 +88,7 @@ describe("startServer", () => {
     server.activate({ token: "ready", handlers: { "bots.list": () => [] } });
     expect((await fetch(`http://127.0.0.1:${server.port}/health`)).status).toBe(200);
     const client = connect(server.port);
-    expect(await hello(client, "ready")).toEqual({ type: "welcome", protocol: 1 });
+    expect(await hello(client, "ready")).toEqual({ type: "welcome", protocol: PROTOCOL_VERSION });
     client.send({ type: "req", id: 1, method: "bots.list", params: {} });
     expect(await client.next()).toMatchObject({ ok: true, result: [] });
     client.ws.close();
@@ -54,7 +96,7 @@ describe("startServer", () => {
   it("answers requests after a valid hello", async () => {
     server = await startServer({ port: 0, token: "secret", allowedOrigins: [], handlers: { "bots.list": () => [] } });
     const client = connect(server.port);
-    expect(await hello(client, "secret")).toEqual({ type: "welcome", protocol: 1 });
+    expect(await hello(client, "secret")).toEqual({ type: "welcome", protocol: PROTOCOL_VERSION });
     client.send({ type: "req", id: 7, method: "bots.list", params: {} });
     expect(await client.next()).toEqual({ type: "res", id: 7, ok: true, result: [] });
     client.ws.close();
@@ -64,11 +106,11 @@ describe("startServer", () => {
     server = await startServer({ port: 0, token: "secret", allowedOrigins: [], handlers: {} });
     const wrongToken = connect(server.port);
     await wrongToken.opened;
-    wrongToken.send({ type: "hello", protocol: 1, token: "nope" });
+    wrongToken.send({ type: "hello", protocol: PROTOCOL_VERSION, token: "nope" });
     expect(await wrongToken.closed).toBe(4401);
     const missingToken = connect(server.port);
     await missingToken.opened;
-    missingToken.send({ type: "hello", protocol: 1 });
+    missingToken.send({ type: "hello", protocol: PROTOCOL_VERSION });
     expect(await missingToken.closed).toBe(4401);
     const wrongProtocol = connect(server.port);
     await wrongProtocol.opened;
@@ -92,7 +134,7 @@ describe("startServer", () => {
     expect(await badFrame.closed).toBe(1002);
 
     const fresh = connect(server.port);
-    expect(await hello(fresh, "secret")).toEqual({ type: "welcome", protocol: 1 });
+    expect(await hello(fresh, "secret")).toEqual({ type: "welcome", protocol: PROTOCOL_VERSION });
     fresh.ws.close();
   });
 

@@ -3,6 +3,7 @@ import type { Message, MethodName, ParamsIn, PushData, Result } from "@tjommie/p
 import { z } from "zod";
 import { RemoteRefusedError } from "../../client/src/remote-peer.ts";
 import { desktop, type DesktopConnection } from "./desktop";
+import { attachmentDevice } from "./attachment-device";
 import { keepAliveRunning, syncKeepAlive } from "./keep-alive";
 import { errorText } from "./labels";
 import { registerPushIfAllowed, stopSendingPush, unregisterPush } from "./push";
@@ -27,6 +28,11 @@ let heartbeat: ReturnType<typeof setTimeout> | undefined;
 let failures = 0; // the latest connection's failed tries in a row
 let lastPong = 0; // when the remote PC last answered a ping
 let started = false;
+let filesClosed: Promise<void> = Promise.resolve();
+function invalidateFiles(): Promise<void> {
+  filesClosed = filesClosed.then(() => attachmentDevice()?.invalidate()).catch(() => {});
+  return filesClosed;
+}
 const fetchers = new Map<string, (before?: string) => Promise<Page>>(); // each loaded conversation's pages, to catch up after a reconnect
 const arriving = new Map<string, MessageEvent[]>(); // message events for conversations whose newest page is being fetched again
 
@@ -155,6 +161,7 @@ export function routePush(data: PushData): string | null {
 
 // Drops the current connection and everything cached from its PC.
 function leave(): void {
+  void invalidateFiles();
   clearTimeout(retry);
   clearTimeout(heartbeat);
   latest = null;
@@ -197,6 +204,7 @@ function reconnectNow(): void {
   client = null;
   link = null;
   stopSendingPush();
+  void invalidateFiles();
   void previous?.close().catch(() => {});
   update((state) => (state.connection.status === "ready" ? { ...state, connection: { status: "reconnecting" } } : state));
 }
@@ -251,6 +259,7 @@ async function attempt(connection: ConnectionTarget): Promise<void> {
   // they do while reconnecting, so the pill says so.
   if (previous) update((state) => (state.connection.status === "ready" ? { ...state, connection: { status: "reconnecting" } } : state));
   await previous?.close().catch(() => {});
+  await invalidateFiles();
   if (latest !== connection) return; // replaced while the old one closed
   let raw: Client;
   try {
@@ -358,6 +367,7 @@ function limitCalls(client: Client): Client {
 // A connection attempt failed, or the desktop's daemon connection dropped.
 function lost(connection: ConnectionTarget, error: unknown): void {
   if (latest !== connection) return;
+  void invalidateFiles();
   client = null;
   link = null;
   stopSendingPush();

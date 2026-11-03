@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { createServer, type Server as TcpServer } from "node:net";
 import { hostname, networkInterfaces } from "node:os";
@@ -13,11 +13,12 @@ import { tcpWire, type PeerWire } from "./peer-wire.ts";
 import { loadRemoteIdentity, type HostIdentity } from "./remote-identity.ts";
 import { RpcError } from "./server.ts";
 import type { CredentialTransport } from "./account-credentials.ts";
+import type { RequestContext } from "./request-context.ts";
 
 type Invite = { id: string; secret: Uint8Array; expires: number };
 type Peer = { wire: PeerWire; deviceId: string | null; welcomed: boolean; lastFrameAt: number; send: (value: unknown) => void; close: () => void };
 type Options = {
-  db: Db; root: string; dispatch: (method: string, params: unknown) => Promise<unknown>; onChanged?: () => void;
+  db: Db; root: string; dispatch: (method: string, params: unknown, context?: RequestContext) => Promise<unknown>; onChanged?: () => void;
   credentials?: CredentialTransport; port?: number; bind?: string; addresses?: () => string[]; relayUrl?: (forPairing: boolean) => string | null;
 };
 export const REMOTE_PORT = 47101;
@@ -131,8 +132,10 @@ export class RemoteHost {
     let preface: RemotePreface | null = null, noise: NoiseSession | null = null, messages: EncryptedMessages | null = null;
     let inFlight = 0, done = false, refusalTimer: ReturnType<typeof setTimeout> | undefined;
     const pendingIds = new Set<number>();
+    const lifetime = new AbortController();
+    let context: RequestContext | undefined;
     const close = (): void => {
-      if (done) return; done = true; clearTimeout(timer); clearTimeout(refusalTimer); messages?.close(); noise?.close(); wire.destroy();
+      if (done) return; done = true; lifetime.abort(); clearTimeout(timer); clearTimeout(refusalTimer); messages?.close(); noise?.close(); wire.destroy();
     };
     const write = (frame: Uint8Array): void => {
       if (done || wire.buffered + frame.length > 32 * 1024 * 1024) throw new Error("Connection closed.");
@@ -198,6 +201,7 @@ export class RemoteHost {
           }
           if (!device || [...this.#peers].filter((entry) => entry.deviceId).length >= 32) throw new Error();
           peer.deviceId = device.id; touchDevice(this.#options.db, peer.deviceId);
+          context = { connectionId: randomUUID(), principal: { kind: "device", deviceId: device.id }, signal: lifetime.signal };
           send({ type: "ready", deviceId: peer.deviceId, hostId: identity.id, hostName: identity.name, relay: this.#options.relayUrl?.(false) ?? null }); phase = "hello";
           return;
         }
@@ -218,7 +222,7 @@ export class RemoteHost {
             const known = kinds?.flatMap((kind) => { const parsed = PushKind.safeParse(kind); return parsed.success ? [parsed.data] : []; });
             setPushToken(this.#options.db, peer.deviceId, token, known);
             result = {};
-          } else result = await this.#options.dispatch(request.method, request.params);
+          } else result = await this.#options.dispatch(request.method, request.params, context);
           if (!done && peer.deviceId && !getDevice(this.#options.db, peer.deviceId).revokedAt) send({ type: "res", id: request.id, ok: true, result });
         }).catch((error: unknown) => {
           if (done) return;

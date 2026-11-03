@@ -28,3 +28,6 @@ jobs:
       - run: npm test
         env:
           TJOMMIE_CI_HOSTED: '1'
+      - name: Build and verify pinned local speech runtime
+        shell: pwsh
+        run: ./packages/desktop/scripts/build-speech-runtime.ps1

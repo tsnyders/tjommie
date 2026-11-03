@@ -1,4 +1,4 @@
-import { timingSafeEqual } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
 import { ZodError } from "zod";
@@ -14,6 +14,7 @@ import {
   type Result,
   type ServerMessage,
 } from "@tjommie/protocol";
+import type { RequestContext } from "./request-context.ts";
 
 export class RpcError extends Error {
   readonly code: ErrorCode;
@@ -23,10 +24,10 @@ export class RpcError extends Error {
   }
 }
 
-export type Handlers = { [M in MethodName]?: (params: ParamsOut<M>) => Result<M> | Promise<Result<M>> };
+export type Handlers = { [M in MethodName]?: (params: ParamsOut<M>, context?: RequestContext) => Result<M> | Promise<Result<M>> };
 export type Broadcast = <E extends EventName>(event: E, data: EventData<E>) => void;
 type ServerConfig = { token: string; handlers: Handlers; routes?: Record<string, Route> };
-export type Server = { port: number; broadcast: Broadcast; activate: (config: ServerConfig) => void; dispatch: (method: string, params: unknown) => Promise<unknown>; close: () => Promise<void> };
+export type Server = { port: number; broadcast: Broadcast; activate: (config: ServerConfig) => void; stopRequests: () => void; dispatch: (method: string, params: unknown, context?: RequestContext) => Promise<unknown>; close: () => Promise<void> };
 // An extra HTTP endpoint, such as the app's MCP server at /mcp.
 export type Route = (req: IncomingMessage, res: ServerResponse) => void | Promise<void>;
 
@@ -41,9 +42,11 @@ export async function startServer(opts: {
   deferRequests?: boolean;
 }): Promise<Server> {
   const clients = new Set<WebSocket>();
+  const lifetimes = new WeakMap<WebSocket, AbortController>();
   let port = opts.port;
   let config: ServerConfig = opts;
   let ready = !opts.deferRequests;
+  let stopping = false;
 
   const http = createServer((req, res) => {
     if (!ready) {
@@ -88,9 +91,13 @@ export async function startServer(opts: {
 
   function accept(ws: WebSocket): void {
     let authed = false;
+    const lifetime = new AbortController();
+    lifetimes.set(ws, lifetime);
+    const context: RequestContext = { connectionId: randomUUID(), principal: { kind: "local" }, signal: lifetime.signal };
     const timer = setTimeout(() => ws.close(4401, "hello required"), HELLO_TIMEOUT_MS);
     ws.on("error", () => ws.terminate());
     ws.on("close", () => {
+      lifetime.abort();
       clearTimeout(timer);
       clients.delete(ws);
     });
@@ -133,19 +140,23 @@ export async function startServer(opts: {
       }
       if (message.type !== "req") return;
       try {
-        send(ws, { type: "res", id: message.id, ok: true, result: await call(message.method, message.params) });
+        const result = await call(message.method, message.params, context);
+        if (!lifetime.signal.aborted) send(ws, { type: "res", id: message.id, ok: true, result });
       } catch (error) {
+        if (lifetime.signal.aborted) return;
         const code = error instanceof RpcError ? error.code : error instanceof ZodError ? "bad_params" : "internal";
         send(ws, { type: "res", id: message.id, ok: false, error: { code, message: error instanceof Error ? error.message : String(error) } });
       }
     });
   }
 
-  async function call(method: string, params: unknown): Promise<unknown> {
+  async function call(method: string, params: unknown, context?: RequestContext): Promise<unknown> {
+    if (!ready) throw new RpcError("bad_state", stopping ? "Tjommie is stopping." : "Tjommie is starting.");
+    if (context?.signal.aborted) throw new RpcError("bad_state", "This connection is closed.");
     // Params are validated below before the call, so the handler table can be called untyped here.
-    const handler = Object.hasOwn(methods, method) ? (config.handlers[method as MethodName] as unknown as ((p: unknown) => unknown) | undefined) : undefined;
+    const handler = Object.hasOwn(methods, method) ? (config.handlers[method as MethodName] as unknown as ((p: unknown, context?: RequestContext) => unknown) | undefined) : undefined;
     if (!handler) throw new RpcError("unknown_method", `Unknown method ${method}`);
-    return handler(methods[method as MethodName].params.parse(params));
+    return handler(methods[method as MethodName].params.parse(params), context);
   }
 
   const broadcast: Broadcast = (event, data) => {
@@ -162,17 +173,19 @@ export async function startServer(opts: {
   return {
     port,
     broadcast,
-    dispatch: async (method, params) => {
-      if (!ready) throw new RpcError("bad_state", "Tjommie is starting.");
-      return call(method, params);
+    dispatch: async (method, params, context) => {
+      return call(method, params, context);
     },
+    stopRequests: () => { stopping = true; ready = false; },
     activate: (next) => {
+      if (stopping) throw new RpcError("bad_state", "Tjommie is stopping.");
       config = next;
       ready = true;
     },
     close: () =>
       new Promise<void>((resolve) => {
-        for (const ws of clients) ws.terminate();
+        stopping = true; ready = false;
+        for (const ws of clients) { lifetimes.get(ws)?.abort(); ws.terminate(); }
         wss.close();
         http.close(() => resolve());
       }),

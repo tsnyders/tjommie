@@ -61,14 +61,15 @@ describe("RightPanel on a phone", () => {
 });
 
 describe("RightPanel without the desktop app's bridge", () => {
-  it("has no Browser tab or pane, and the card says the browser runs on the PC", () => {
+  it("opens the remote Computer pane and keeps an explicit offline state", () => {
     vi.stubGlobal("window", {});
     for (const phone of [true, false]) {
       const out = render({ phone, pane: "browser" });
-      expect(out).not.toContain("Bot panel views");
-      expect(out).not.toContain('id="pane-browser"');
-      expect(out).not.toContain('aria-label="Open browser"');
-      expect(out).toContain("Runs on your PC. Open Tjommie on that PC to watch Scout or take over.");
+      expect(out).toContain("Bot panel views");
+      expect(out).toContain('id="pane-browser"');
+      expect(out).toContain('aria-label="Open computer"');
+      expect(out).toContain("The browser host is offline.");
+      expect(out).toContain('data-slot="browser-thumbnail"');
       expect(out).toContain('id="pane-details"');
     }
     expect(render({ phone: true })).toContain("pr-4"); // no caption buttons to clear
@@ -78,14 +79,14 @@ describe("RightPanel without the desktop app's bridge", () => {
 describe("RightPanel in the desktop app while it's on another PC", () => {
   afterEach(() => update(() => initialState));
 
-  it("has no Browser tab or pane, and the card names the PC the browser runs on", () => {
+  it("opens that PC's remote Computer pane rather than using the local native bridge", () => {
     update((state) => ({ ...state, host: HOME }));
     for (const phone of [true, false]) {
       const out = render({ phone, pane: "browser" });
-      expect(out).not.toContain("Bot panel views");
-      expect(out).not.toContain('id="pane-browser"');
-      expect(out).not.toContain('aria-label="Open browser"');
-      expect(out).toContain("Runs on Home PC. Open Tjommie on that PC to watch Scout or take over.");
+      expect(out).toContain("Bot panel views");
+      expect(out).toContain('id="pane-browser"');
+      expect(out).toContain('aria-label="Open computer"');
+      expect(out).toContain("The browser host is offline.");
     }
   });
 });

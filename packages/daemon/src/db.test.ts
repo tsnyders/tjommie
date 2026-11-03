@@ -42,7 +42,7 @@ describe("openDb", () => {
     old.exec("INSERT INTO devices(id,name,public_key,paired_at,push_token) VALUES('phone','Phone','key','now','existing-token'); PRAGMA user_version = 8;");
     old.close();
     const db = openDb(file);
-    expect(db.prepare("PRAGMA user_version").get()).toEqual({ user_version: 9 });
+    expect(db.prepare("PRAGMA user_version").get()).toEqual({ user_version: migrations.length });
     expect(db.prepare("SELECT push_token, push_kinds FROM devices WHERE id = 'phone'").get()).toEqual({ push_token: "existing-token", push_kinds: null });
     db.close();
   });
@@ -69,8 +69,8 @@ describe("openDb", () => {
       expect(db.prepare("SELECT id, account_id FROM bots ORDER BY id").all()).toEqual([
         { id: "saved", account_id: "claude-second" }, { id: "unsaved", account_id: "claude-main" },
       ]);
-      expect(db.prepare("SELECT * FROM sessions").get()).toEqual({ bot_id: "saved", provider: "claude", account_id: "claude-second", cli_session_id: "retained-session", updated_at: "then", total_cost_usd: 1.25 });
-      db.prepare("INSERT INTO sessions VALUES ('saved', 'claude', 'claude-main', 'other-session', 'then', NULL)").run();
+      expect(db.prepare("SELECT * FROM sessions").get()).toEqual({ bot_id: "saved", provider: "claude", account_id: "claude-second", cli_session_id: "retained-session", updated_at: "then", total_cost_usd: 1.25, execution_context_key: "" });
+      db.prepare("INSERT INTO sessions(bot_id,provider,account_id,cli_session_id,updated_at,total_cost_usd) VALUES ('saved', 'claude', 'claude-main', 'other-session', 'then', NULL)").run();
       expect(db.prepare("SELECT COUNT(*) AS n FROM sessions").get()).toEqual({ n: 2 });
       expect(db.prepare("SELECT id, account_kind, cost_usd, cost_source, pricing_revision FROM usage ORDER BY id").all()).toEqual([
         { id: "known", account_kind: "subscription", cost_usd: 0.5, cost_source: "reported", pricing_revision: null },

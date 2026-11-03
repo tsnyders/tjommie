@@ -1,3 +1,4 @@
+import { PROTOCOL_VERSION } from "@tjommie/protocol";
 import { request } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
@@ -321,7 +322,7 @@ describe("the app's MCP endpoint", () => {
     expect(await post(port, { id: 1, method: "ping" }, auth, "POST", "/mcp?client=codex")).toEqual({
       status: 200, body: { jsonrpc: "2.0", id: 1, result: {} },
     });
-    expect(await post(port, "", {}, "GET", "/health")).toEqual({ status: 200, body: { ok: true, protocol: 1 } });
+    expect(await post(port, "", {}, "GET", "/health")).toEqual({ status: 200, body: { ok: true, protocol: PROTOCOL_VERSION } });
     expect(await post(port, "", {}, "GET", "/missing")).toEqual({ status: 404, body: null });
   });
 });
@@ -337,6 +338,6 @@ describe("extra HTTP route errors", () => {
     server = await startServer({ port: 0, token: "t", allowedOrigins: [], handlers: {}, routes: { "/mcp": route } });
     expect(await post(server.port, {})).toEqual({ status: 500, body: null });
     expect(logged).toHaveBeenCalledExactlyOnceWith(failure);
-    expect(await post(server.port, "", {}, "GET", "/health")).toEqual({ status: 200, body: { ok: true, protocol: 1 } });
+    expect(await post(server.port, "", {}, "GET", "/health")).toEqual({ status: 200, body: { ok: true, protocol: PROTOCOL_VERSION } });
   });
 });

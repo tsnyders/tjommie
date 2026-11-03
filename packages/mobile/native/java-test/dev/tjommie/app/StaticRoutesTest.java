@@ -5,7 +5,7 @@ import static org.junit.Assert.*;
 
 public class StaticRoutesTest {
   @Test public void mapsExportedDocumentsOnly() {
-    for (String path : new String[]{"/agents/", "/chat/", "/room/", "/settings/", "/bots/new/", "/bots/settings/"}) {
+    for (String path : new String[]{"/agents/", "/chat/", "/room/", "/projects/", "/settings/", "/bots/new/", "/bots/settings/"}) {
       assertEquals(path + "index.html", StaticRoutes.document(path));
     }
   }

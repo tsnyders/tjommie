@@ -1,5 +1,8 @@
 import type { BrowserState, GoogleService, NativeBrowserBounds, NativeBrowserMount, NativeBrowserUiCommand } from "@tjommie/protocol";
 import type { WireEndpoint } from "../../client/src/frame-socket.ts";
+import type { SpeechApi } from "../../protocol/src/speech.ts";
+import type { AttachmentNativeApi } from "../../protocol/src/attachments.ts";
+import type { VaultNativeApi } from "../../protocol/src/vault.ts";
 // The native browser (WebContentsView). The page is drawn and takes input in the desktop app itself, not in the renderer: the
 // renderer only says where it goes (mount) and what the user did with the controls. Every call is for one bot's browser, whose
 // context (cookies, tabs, sign-ins) lives on in the main process while the panel is hidden. The state is the protocol's
@@ -39,6 +42,13 @@ export type UpdateState =
 
 // The bridge the desktop app's preload script exposes (packages/desktop/src/preload.cjs).
 export type DesktopApi = {
+  attachments?: AttachmentNativeApi;
+  vault?: VaultNativeApi;
+  diagnostics?: {
+    info(): Promise<{ appVersion: string; platform: "windows" | "macos" | "linux" }>;
+    saveReport(report: string): Promise<{ status: "saved" | "cancelled" }>;
+  };
+  speech?: SpeechApi;
   connection(): Promise<ConnectionResult>;
   remote: DesktopRemote;
   loginItem: { get(): Promise<boolean>; set(on: boolean): Promise<void> };

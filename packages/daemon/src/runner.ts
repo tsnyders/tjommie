@@ -17,6 +17,7 @@ import { AccountRuntime, type AccountRunContext } from "./account-runtime.ts";
 import { getAccount } from "./accounts-store.ts";
 import { priceUsage } from "./account-pricing.ts";
 import { recordUsage } from "./usage.ts";
+import { standaloneExecutionKey, type TaskExecutionContext } from "./task-execution.ts";
 
 export type SessionFactory = (bot: StoredBot, options: StartOptions) => ProviderSession;
 
@@ -30,7 +31,8 @@ export const cliSessionFactory: SessionFactory = (bot, options) => {
 export type TurnResult = { outcome: "done" | "failed" | "interrupted"; text: string | null; textMessageId: string | null; error: string | null };
 
 export type RunnerHooks = {
-  mcpServers?: (bot: StoredBot) => McpServer[];
+  mcpServers?: (bot: StoredBot, item: WorkItem) => McpServer[];
+  executionContext?: (bot: StoredBot, item: WorkItem) => TaskExecutionContext | null;
   sessionClosed?: (botId: string) => void;
   turnStarted?: (item: WorkItem) => void;
   turnEnded?: (item: WorkItem, result: TurnResult) => void;
@@ -55,12 +57,15 @@ function retryData(item: WorkItem): ErrorData | null {
 type Live = {
   session: ProviderSession | null;
   context: AccountRunContext | null;
+  execution: TaskExecutionContext | null;
+  executionKey: string;
   retiring: Promise<void> | null;
   fresh: boolean; // started without resuming
   sawSession: boolean; // the CLI reported its session id since it started
   busy: boolean; // a turn is running
   sent: boolean; // the current turn's first message has reached the CLI, so more can be steered in
   steering: boolean;
+  steeringDone: Promise<void> | null;
   steeringItem: WorkItem | null;
   item: WorkItem | null; // null while the CLI runs a turn it started by itself
   text: { id: string; body: string } | null;
@@ -139,6 +144,8 @@ export class Runner {
   #shutdown: Promise<void> | null = null;
   #eventsClosed = false;
   #launches = new Set<Promise<void>>();
+  #taskWaiters = new Map<string, Set<() => void>>();
+  #sessionKeys = new WeakMap<ProviderSession, string>();
 
   constructor(deps: { accounts?: AccountRuntime; db: Db; broadcast: Broadcast; isSignedIn: (provider: Bot["provider"]) => boolean; setupIssue?: (bot: StoredBot) => string | null; isHeld?: (botId: string) => boolean; codexSandboxReady?: () => boolean; createSession?: SessionFactory; hooks?: RunnerHooks }) {
     this.#db = deps.db;
@@ -216,6 +223,26 @@ export class Runner {
     return live?.busy ? live.item : null;
   }
 
+  effectiveFolder(botId: string): string {
+    const live = this.#live.get(botId);
+    if (live?.busy && live.item?.taskAttemptId) {
+      if (!live.execution || live.execution.key !== live.item.executionContextKey || live.execution.attemptId !== live.item.taskAttemptId) throw new RpcError("bad_state", "The task's folder context is not ready.");
+      return live.execution.cwd;
+    }
+    if (live?.busy && live.execution) return live.execution.cwd;
+    const bot = getStoredBot(this.#db, botId); return bot.projectFolder ?? bot.homeFolder;
+  }
+
+  retired(botId: string): Promise<void> {
+    const live = this.#live.get(botId);
+    if (live?.busy && live.item?.taskAttemptId) return new Promise((resolve) => {
+      let waiters = this.#taskWaiters.get(botId);
+      if (!waiters) this.#taskWaiters.set(botId, waiters = new Set());
+      waiters.add(resolve);
+    });
+    return Promise.all([live?.retiring, live?.steeringDone]).then(() => {});
+  }
+
   submit(botId: string, text: string, files: string[]): Message {
     const bot = getStoredBot(this.#db, botId);
     for (const file of files) {
@@ -270,6 +297,7 @@ export class Runner {
       if (!this.#hooks.retryRoutine) throw new RpcError("bad_state", "Routine retry is unavailable");
       return this.#hooks.retryRoutine(getMessage(this.#db, messageId));
     }
+    if (previous.taskAttemptId) throw new RpcError("bad_state", "Resume this attempt from its project task.");
     getMessage(this.#db, messageId);
     this.#setChatMessageStatus(previous, "queued");
     this.deliver({ botId: previous.botId, source: previous.source, text: previous.text, messageId, conversationId: previous.conversationId, exchangeId: previous.exchangeId, chainId: newChain(this.#db) });
@@ -309,6 +337,8 @@ export class Runner {
   }
 
   answerApproval(approvalId: string, decision: ApprovalDecision): Approval {
+    const pending = this.#db.prepare("SELECT bot_id FROM approvals WHERE id=?").get(approvalId) as { bot_id: string } | undefined;
+    if (decision !== "deny" && pending && this.#isHeld(pending.bot_id)) throw new RpcError("busy", "Resume the bot before allowing tools.");
     const approval = resolveApproval(this.#db, approvalId, decision);
     const live = this.#live.get(approval.botId);
     const providerId = live?.approvals.get(approvalId);
@@ -385,7 +415,7 @@ export class Runner {
     this.#flushText(detached.live, "interrupted");
     this.#closeActivity(detached.live, "failed");
     // Use a new object so pending callbacks from the closed session cannot change resumed work.
-    const live: Live = { ...detached.live, session: null, sent: false, steering: false, steeringItem: null,
+    const live: Live = { ...detached.live, session: null, sent: false, steering: false, steeringDone: null, steeringItem: null,
       text: null, activity: null, lastText: null, stopPending: null, idleTimer: null, limitTimer: null };
     this.#live.set(botId, live);
     if (detached.live.steeringItem) setStatus(this.#db, detached.live.steeringItem.id, "queued");
@@ -407,7 +437,7 @@ export class Runner {
   }
 
   pump(botId: string): void {
-    if (!this.#ready || this.#deleting.has(botId)) return;
+    if (!this.#ready || this.#deleting.has(botId) || this.#isHeld(botId)) return;
     const live = this.#liveFor(botId);
     if (live.busy || live.retiring) return;
     let bot: StoredBot;
@@ -511,12 +541,15 @@ export class Runner {
       live = {
         session: null,
         context: null,
+        execution: null,
+        executionKey: "",
         retiring: null,
         fresh: false,
         sawSession: false,
         busy: false,
         sent: false,
         steering: false,
+        steeringDone: null,
         steeringItem: null,
         item: null,
         text: null,
@@ -557,6 +590,20 @@ export class Runner {
       this.#finishTurn(bot.id, false, null);
       return;
     }
+    const execution = this.#hooks.executionContext?.(bot, item) ?? null;
+    if (item.taskAttemptId && (!execution || execution.attemptId !== item.taskAttemptId || execution.revision !== item.taskRevision || execution.key !== item.executionContextKey)) {
+      throw new RpcError("bad_state", "The task execution context is missing or stale.");
+    }
+    if (execution && ["review", "test"].includes(execution.phase)) throw new RpcError("bad_state", "review_isolation_unavailable: review and configured checks require their isolated execution service.");
+    const contextKey = execution?.key ?? standaloneExecutionKey(bot);
+    if (live.session && live.executionKey !== contextKey) {
+      const old = live.session;
+      this.#closeSession(bot.id, live);
+      await (live.retiring ?? old.waitForExit?.());
+      if (this.#live.get(bot.id) !== live || !live.busy || live.item?.id !== item.id) return;
+    }
+    live.execution = execution;
+    live.executionKey = contextKey;
     let text = item.text;
     let session = live.session;
     if (!session) {
@@ -576,18 +623,20 @@ export class Runner {
       }
       if (live.context) this.#accounts?.assertCurrent(live.context);
       const latest = this.#db.prepare("SELECT provider, account_id FROM sessions WHERE bot_id = ? ORDER BY updated_at DESC, rowid DESC LIMIT 1").get(bot.id) as { provider: string; account_id: string } | undefined;
-      const saved = (!latest || latest.account_id === account.id && latest.provider === bot.provider) ? this.#db.prepare("SELECT provider, account_id, cli_session_id, total_cost_usd FROM sessions WHERE bot_id = ? AND provider = ? AND account_id = ?").get(bot.id, bot.provider, account.id) as
-        | { provider: string; account_id: string; cli_session_id: string; total_cost_usd: number | null }
+      const saved = (!latest || latest.account_id === account.id && latest.provider === bot.provider) ? this.#db.prepare("SELECT provider, account_id, cli_session_id, total_cost_usd, execution_context_key FROM sessions WHERE bot_id = ? AND provider = ? AND account_id = ?").get(bot.id, bot.provider, account.id) as
+        | { provider: string; account_id: string; cli_session_id: string; total_cost_usd: number | null; execution_context_key: string }
         | undefined
       : undefined;
-      const resumeId = saved && saved.provider === bot.provider && saved.account_id === account.id && !(live.context?.kind === "api_key" && bot.provider === "claude" && saved.total_cost_usd === null) ? saved.cli_session_id : null;
+      const resumeId = saved && saved.provider === bot.provider && saved.account_id === account.id
+        && (saved.execution_context_key === contextKey || !execution && saved.execution_context_key === "")
+        && !(live.context?.kind === "api_key" && bot.provider === "claude" && saved.total_cost_usd === null) ? saved.cli_session_id : null;
       let created: ProviderSession;
       try {
         created = this.#createSession(bot, {
-          cwd: bot.projectFolder ?? bot.homeFolder,
-          extraDirs: bot.projectFolder ? [bot.homeFolder] : [],
+          cwd: execution?.cwd ?? bot.projectFolder ?? bot.homeFolder,
+          extraDirs: execution || bot.projectFolder ? [bot.homeFolder] : [],
           model: bot.model,
-          instructions: botPrompt(bot),
+          instructions: [botPrompt(execution ? { ...bot, projectFolder: execution.phase === "discussion" ? null : execution.cwd } : bot), execution?.instructions].filter(Boolean).join("\n\n"),
           autonomy: bot.autonomy,
           codexSandboxReady: prepared?.codexSandboxReady ?? this.#codexSandboxReady(),
           allowRules: allowRules(this.#db, bot.id),
@@ -596,7 +645,7 @@ export class Runner {
           env: prepared?.env ?? accountEnv(account),
           ...(prepared?.authentication ? { authentication: prepared.authentication } : {}),
           ...(prepared?.maxBudgetUsd === undefined ? {} : { maxBudgetUsd: prepared.maxBudgetUsd }),
-          mcpServers: this.#mcpServers(bot),
+          mcpServers: this.#mcpServers(bot, item),
         });
       } catch (error) {
         // The MCP hook can issue a token even when no ProviderSession was constructed.
@@ -609,6 +658,7 @@ export class Runner {
         pinnedAccountId: account.id, effectiveAccountId: account.id, kind: getAccount(this.#db, account.id).kind,
         accountRevision: 0, usingFallback: false, model: bot.model });
       this.#identities.set(created, identity);
+      this.#sessionKeys.set(created, contextKey);
       live.session = created;
       live.fresh = resumeId === null;
       live.sawSession = false;
@@ -641,7 +691,7 @@ export class Runner {
         this.#finishTurn(bot.id, false, null);
         return;
       }
-      if (live.fresh) {
+      if (live.fresh && !execution) {
         const before = item.conversationId === bot.id ? item.messageId ?? undefined : undefined;
         const recap = buildRecap(history(this.#db, bot.id, before, RECAP_MESSAGES), bot.name);
         if (recap) text = `${recap}\n\n${text}`;
@@ -678,12 +728,15 @@ export class Runner {
     const live = this.#liveFor(botId);
     if (live.steering) return;
     live.steering = true;
+    let finishSteering = (): void => {};
+    const steeringDone = new Promise<void>((resolve) => { finishSteering = resolve; });
+    live.steeringDone = steeringDone;
     try {
-      const next = () => nextSteerable(this.#db, botId, this.#dest(botId, live));
+      const next = () => nextSteerable(this.#db, botId, this.#dest(botId, live), live.item?.executionContextKey ?? null);
       for (let item = next(); item && live.busy && live.sent && !live.stopRequested && !live.reload; item = next()) {
         const session = live.session;
         if (!session) break;
-        setStatus(this.#db, item.id, "done"); // claim it first, so a turn that ends meanwhile can't pick it up too
+        setStatus(this.#db, item.id, "running"); // claim without reporting delivery before the provider acknowledges it
         live.steeringItem = item;
         let steered = false;
         try {
@@ -699,10 +752,13 @@ export class Runner {
           setStatus(this.#db, item.id, "queued"); // it runs as the next turn instead
           break;
         }
+        setStatus(this.#db, item.id, "done");
         this.#setChatMessageStatus(item, "sent");
       }
     } finally {
       live.steering = false;
+      if (live.steeringDone === steeringDone) live.steeringDone = null;
+      finishSteering();
     }
     if (this.#live.get(botId) !== live) return;
     if (!live.busy) this.pump(botId);
@@ -711,7 +767,7 @@ export class Runner {
   #onEvent(botId: string, session: ProviderSession, event: ProviderEvent): void {
     if (this.#eventsClosed) return;
     const identity = this.#identities.get(session);
-    if (identity && event.type === "usage") { this.#recordUsage(botId, event, identity); return; }
+    if (identity && event.type === "usage") { this.#recordUsage(botId, event, identity, this.#sessionKeys.get(session)); return; }
     const live = this.#live.get(botId);
     if (!live || live.session !== session) return; // a session we closed or replaced
     if (!live.busy && TURN_EVENTS.has(event.type)) {
@@ -753,14 +809,15 @@ export class Runner {
     const accountId = identity?.effectiveAccountId ?? accountFor(this.#db, provider).id;
     this.#db
       .prepare(
-        `INSERT INTO sessions (bot_id, provider, account_id, cli_session_id, updated_at) VALUES (?, ?, ?, ?, ?)
+        `INSERT INTO sessions (bot_id, provider, account_id, cli_session_id, updated_at, execution_context_key) VALUES (?, ?, ?, ?, ?, ?)
          ON CONFLICT(bot_id, provider, account_id) DO UPDATE SET
            total_cost_usd = CASE WHEN sessions.provider = excluded.provider AND sessions.account_id = excluded.account_id
+             AND (sessions.execution_context_key = excluded.execution_context_key OR sessions.execution_context_key = '' AND ?)
              AND sessions.cli_session_id = excluded.cli_session_id THEN sessions.total_cost_usd ELSE NULL END,
            provider = excluded.provider, account_id = excluded.account_id,
-           cli_session_id = excluded.cli_session_id, updated_at = excluded.updated_at`,
+           cli_session_id = excluded.cli_session_id, updated_at = excluded.updated_at, execution_context_key = excluded.execution_context_key`,
       )
-      .run(botId, provider, accountId, cliSessionId, nowIso());
+      .run(botId, provider, accountId, cliSessionId, nowIso(), this.#live.get(botId)?.executionKey ?? "", !this.#live.get(botId)?.execution && !this.#live.get(botId)?.fresh ? 1 : 0);
   }
 
   #appendText(botId: string, live: Live, delta: string): void {
@@ -829,6 +886,7 @@ export class Runner {
   }
 
   #onApproval(botId: string, live: Live, event: { id: string; tool: string; summary: string; detail: string; rule: string | null }): void {
+    if (this.#isHeld(botId) || live.execution && ["review", "test"].includes(live.execution.phase)) { live.session?.answer(event.id, "deny"); return; }
     if (event.rule && allowRules(this.#db, botId).includes(event.rule)) {
       live.session?.answer(event.id, "once"); // "Always allow" was chosen for this before
       return;
@@ -881,7 +939,7 @@ export class Runner {
     live.approvals.clear();
   }
 
-  #recordUsage(botId: string, event: Extract<ProviderEvent, { type: "usage" }>, identity?: AccountRunContext): void {
+  #recordUsage(botId: string, event: Extract<ProviderEvent, { type: "usage" }>, identity?: AccountRunContext, executionContextKey = this.#live.get(botId)?.executionKey ?? ""): void {
     const provider = identity?.provider ?? getStoredBot(this.#db, botId).provider;
     const accountId = identity?.effectiveAccountId ?? accountFor(this.#db, provider).id;
     const estimated = event.costUsd === null ? priceUsage(provider, event.model, { input: event.input, cachedInput: event.cachedInput, output: event.output, reasoning: event.reasoning }) : null;
@@ -892,8 +950,8 @@ export class Runner {
         costUsd: event.costUsd ?? estimated?.costUsd ?? null,
         costSource: event.costUsd !== null ? "reported" : estimated ? "estimated" : "unknown",
         pricingRevision: estimated?.pricingRevision ?? null });
-      if (inserted && event.totalCostUsd !== undefined) this.#db.prepare("UPDATE sessions SET total_cost_usd = ? WHERE bot_id = ? AND provider = ? AND account_id = ?")
-        .run(event.totalCostUsd, botId, provider, accountId);
+      if (inserted && event.totalCostUsd !== undefined) this.#db.prepare("UPDATE sessions SET total_cost_usd = ? WHERE bot_id = ? AND provider = ? AND account_id = ? AND execution_context_key = ?")
+        .run(event.totalCostUsd, botId, provider, accountId, executionContextKey);
     });
     if (inserted) { this.#accounts?.usageChanged(accountId); this.#broadcast("usage.changed", { accountId, botId }); }
   }
@@ -962,11 +1020,15 @@ export class Runner {
     live.stopPending = null;
     live.limitHit = false;
     live.lastText = null;
-    if (live.reload || retriedLimit || live.context?.kind === "api_key" || stopped && this.#accounts) {
+    if (live.reload || retriedLimit || live.context?.kind === "api_key" || stopped && this.#accounts || live.execution) {
       live.reload = false;
       this.#closeSession(botId, live);
     }
     if (item) this.#safely(() => requeued ? this.#hooks.turnRequeued?.(item) : this.#hooks.turnEnded?.(item, result));
+    if (item?.taskAttemptId) void Promise.all([live.retiring, live.steeringDone]).then(() => {
+      for (const resolve of this.#taskWaiters.get(botId) ?? []) resolve();
+      this.#taskWaiters.delete(botId);
+    }).catch(() => { /* An unconfirmed process exit keeps task leases held. */ });
     this.#emitBot(botId);
     this.pump(botId);
   }
@@ -1023,6 +1085,11 @@ export class Runner {
       this.#safely(() => this.#hooks.sessionClosed?.(botId));
       return;
     }
+    if (live.execution) {
+      live.retiring = Promise.resolve().then(() => session.waitForExit?.()).then(() => { live.retiring = null; this.pump(botId); });
+      try { session.close(); } finally { this.#safely(() => this.#hooks.sessionClosed?.(botId)); }
+      return;
+    }
     try { session.close(); } finally { this.#safely(() => this.#hooks.sessionClosed?.(botId)); }
   }
 
@@ -1061,9 +1128,9 @@ export class Runner {
     );
   }
 
-  #mcpServers(bot: StoredBot): McpServer[] {
+  #mcpServers(bot: StoredBot, item: WorkItem): McpServer[] {
     try {
-      return this.#hooks.mcpServers?.(bot) ?? [];
+      return this.#hooks.mcpServers?.(bot, item) ?? [];
     } catch (error) {
       console.error("Tjommie: a runner hook failed", error);
       throw error; // Starting without the requested servers would hide a broken tool configuration.

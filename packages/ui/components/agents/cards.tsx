@@ -12,6 +12,7 @@ import { nextRoutineLine, roomLine, talkingWith, taskLine } from "@/lib/overview
 import { cn } from "@/lib/utils";
 import { BotAvatar, MissingAvatar, TeamMark } from "../bot-avatar";
 import { MENU_ITEM, MENU_POPUP } from "../menu";
+import { BrowserThumbnail } from "../chat/browser-thumbnail";
 
 const CARD = "relative flex h-[368px] flex-col rounded-[14px] border bg-card p-3 pb-4";
 // On a phone a bot is a row, not a card: no thumbnail, routine line or footer, and the menu always there.
@@ -49,8 +50,10 @@ export function BotCard({ bot, bots, messages, routines }: { bot: Bot; bots: Bot
   return (
     <article data-slot="bot-row" data-state={bot.state} className={cn(CARD, ROW, "group", waiting ? "border-waiting-stroke" : "border-card-stroke hover:border-input-stroke")}>
       <div className={cn("flex h-[181px] shrink-0 flex-col items-center justify-center gap-2 rounded-[10px] bg-popover leading-[18px] max-sm:hidden", waiting && "ring-2 ring-inset ring-accent")}>
-        <BotAvatar color={bot.color} shape={bot.shape} size={56} className={dim} />
-        <PlaceholderState bot={bot} />
+        {bot.browser ? <BrowserThumbnail botId={bot.id} name={bot.name} /> : <>
+          <BotAvatar color={bot.color} shape={bot.shape} size={56} className={dim} />
+          <PlaceholderState bot={bot} />
+        </>}
       </div>
       <div data-slot="row-head" className="mt-4 flex items-center gap-2.5 max-sm:mt-0">
         <span data-slot="row-avatar" className="flex shrink-0 rounded-full">

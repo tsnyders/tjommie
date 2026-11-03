@@ -27,7 +27,7 @@ export function RoomPost({ message, bots, members, onOpenExchange }: { message: 
         <div className="min-w-0 max-w-[560px]">
           <BotBubble message={message} />
         </div>
-        {post?.files?.map((file) => <FileCard key={file.path} file={file} />)}
+        {post?.files?.map((file, index) => <FileCard key={`${message.id}-${index}`} file={file} messageId={message.id} attachmentIndex={index} />)}
         {post && (
           <button type="button" onClick={() => onOpenExchange(post.exchangeId)} className="flex items-center gap-1 text-[12px] leading-[18px] text-accent hover:underline">
             Open exchange

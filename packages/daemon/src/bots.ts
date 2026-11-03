@@ -201,6 +201,7 @@ export function botPrompt(bot: StoredBot): string {
     "Keep notes.md in your home folder up to date with the person's preferences, important facts and short summaries of finished work, and read it when a new session starts.",
     "Files the person attaches are copied into the inbox folder inside your home folder.",
     "Tjommie's tools: list_bots shows the bots you may ask for help; message_bot sends one a request, and its answer arrives later as a new message, so don't wait for it; share_file shows the person a file; add_routine proposes work on a schedule.",
+    "Call share_file for each file you create or deliver so the person can preview and download it. A file path in chat alone does not deliver the file.",
     ...(bot.browser
       ? ["Your browser tools share a browser with the person through the browser panel in Tjommie. Sites they sign in to there stay signed in. When they take over, ask them to choose Resume bot when finished. The panel has no native file picker; after they resume, use browser_file_upload to supply files or paths: [] to cancel a pending file chooser. Never open a separate browser window or use their personal browser profile."]
       : []),

@@ -56,11 +56,16 @@ patch(join(android, "variables.gradle"), (gradle) => patchFirebaseVersion(gradle
 patch(join(app, "src", "main", "AndroidManifest.xml"), (xml) => {
   must(xml, "<application", "the <application> element");
   let out = xml;
+  out = out.replaceAll('android:label="@string/app_name"', 'android:label="${appLabel}"').replaceAll('android:label="@string/title_activity_main"', 'android:label="${appLabel}"');
   if (!/android:allowBackup="false"/.test(out)) out = /android:allowBackup="[^"]*"/.test(out) ? out.replace(/android:allowBackup="[^"]*"/, 'android:allowBackup="false"') : out.replace("<application", '<application\n        android:allowBackup="false"');
   if (!/android:usesCleartextTraffic=/.test(out)) out = out.replace("<application", '<application\n        android:usesCleartextTraffic="false"');
   if (!/android:windowSoftInputMode=/.test(out)) out = out.replace("<activity", '<activity\n            android:windowSoftInputMode="adjustResize"');
-  for (const permission of ["android.permission.ACCESS_NETWORK_STATE", "android.permission.POST_NOTIFICATIONS"]) {
+  for (const permission of ["android.permission.ACCESS_NETWORK_STATE", "android.permission.POST_NOTIFICATIONS", "android.permission.RECORD_AUDIO"]) {
     if (!out.includes(permission)) out = out.replace("</manifest>", `    <uses-permission android:name="${permission}" />\n</manifest>`);
+  }
+  if (!out.includes("android.speech.RecognitionService")) {
+    const intent = '        <intent><action android:name="android.speech.RecognitionService" /></intent>\n';
+    out = out.includes("</queries>") ? out.replace("</queries>", `${intent}    </queries>`) : out.replace("<application", `    <queries>\n${intent}    </queries>\n    <application`);
   }
   return out;
 });
@@ -83,6 +88,15 @@ for (const [qualifier, color] of [["values", "#fcfcfc"], ["values-night", "#0707
 patch(join(app, "build.gradle"), (gradle) => {
   must(gradle, "dependencies {", "the dependencies block");
   let out = gradle;
+  if (!out.includes('manifestPlaceholders = [appLabel: "Tjommie"]')) out = out.replace("defaultConfig {", 'defaultConfig {\n        manifestPlaceholders = [appLabel: "Tjommie"]');
+  if (!out.includes('applicationIdSuffix ".phase4test"')) out = out.replace(/(buildTypes\s*\{)/, `$1
+        debug {
+            if (System.getenv("TJOMMIE_ANDROID_TEST_APP") == "1") {
+                applicationIdSuffix ".phase4test"
+                manifestPlaceholders = [appLabel: "Tjommie Phase 4 Test"]
+            }
+        }
+`);
   const version = JSON.parse(readFileSync(join(mobile, "package.json"), "utf8")).version;
   // Explicit codes prevent patch releases from reusing an Android versionCode.
   const versionCode = versionCodes.get(version);
@@ -101,7 +115,7 @@ patch(join(app, "build.gradle"), (gradle) => {
     }
     buildTypes {`);
   if (!out.includes("signingConfig signingConfigs.release")) {
-    const signed = out.replace(/(buildTypes\s*\{\s*release\s*\{)/, "$1\n            signingConfig signingConfigs.release");
+    const signed = out.replace(/(buildTypes\s*\{[\s\S]*?\brelease\s*\{)/, "$1\n            signingConfig signingConfigs.release");
     if (signed === out) throw new Error("Could not attach release signing to the Android build type.");
     out = signed;
   }

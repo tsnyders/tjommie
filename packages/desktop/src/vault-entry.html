@@ -1,0 +1,10 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'none'; connect-src 'none'; form-action 'none'; base-uri 'none'; frame-src 'none'"><title>Tjommie Logins</title><link rel="stylesheet" href="vault-entry.css"></head>
+<body><main><h1 id="title">Logins</h1><p id="description"></p><p class="destination" id="destination"></p>
+<form id="form" autocomplete="off"><div id="fields" hidden>
+<label>Login name<input id="name" maxlength="100" autocomplete="off"></label>
+<label>Exact HTTPS origin<input id="origin" type="url" maxlength="2048" placeholder="https://example.com" autocomplete="off"></label>
+<label>Username<input id="username" maxlength="320" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
+<label>Password<input id="password" type="password" maxlength="2400" autocomplete="new-password"></label>
+</div><p id="problem" role="alert"></p><div class="actions"><button type="button" id="cancel">Cancel</button><button type="submit" id="confirm">Continue</button></div></form>
+<p class="note">Secrets stay on this host. The website receiving a login can read or expose it. Tjommie keeps browser automation and captures paused until the private interaction is finished.</p></main><script src="vault-entry.js"></script></body></html>

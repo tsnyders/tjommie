@@ -1,7 +1,40 @@
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { createHash } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
-import { delimiter, dirname, join } from "node:path";
+import { delimiter, dirname, join, relative, resolve, isAbsolute } from "node:path";
+import type { WindowsWorkerBoundary } from "./windows-worker.ts";
+import { workerProcessRetired } from "./windows-worker.ts";
+export { WorkerLaunchTerminationError, workerProcessRetired } from "./windows-worker.ts";
+
+type WorkerBoundary = Pick<WindowsWorkerBoundary, "required" | "configuration" | "spawn" | "grantDirectory">;
+const workerScope = new AsyncLocalStorage<WorkerBoundary>();
+let installedWorker: WorkerBoundary | undefined, legacyUsed = false;
+const accountMappings = new WeakMap<WorkerBoundary, Map<string, string>>();
+const boundary = (): WorkerBoundary | undefined => workerScope.getStore() ?? installedWorker;
+export function withWindowsWorker<T>(worker: WorkerBoundary, action: () => T): T { return workerScope.run(worker, action); }
+export function installWindowsWorker(worker: WorkerBoundary): () => void {
+  if (installedWorker && installedWorker !== worker) throw new Error("A different Windows worker boundary is already installed.");
+  installedWorker = worker;
+  return () => { if (installedWorker === worker) installedWorker = undefined; };
+}
+export function workerCliExclusive(worker: WorkerBoundary): boolean { return installedWorker === worker && !legacyUsed; }
+export function workerAccountsRoot(): string | null {
+  const worker = boundary(); return worker?.required ? join(worker.configuration().workerRoot, "accounts") : null;
+}
+export function providerAccountFolder(folder: string): string {
+  const worker = boundary(); if (!worker?.required) return folder;
+  const root = worker.configuration().workerRoot, difference = relative(resolve(root), resolve(folder));
+  if (!difference.startsWith("..") && !isAbsolute(difference)) return folder;
+  const mapped = join(root, "accounts", createHash("sha256").update(resolve(folder).toLowerCase()).digest("hex").slice(0, 24));
+  let known = accountMappings.get(worker); if (!known) { known = new Map(); accountMappings.set(worker, known); }
+  known.set(resolve(folder).toLowerCase(), mapped); return mapped;
+}
+export function prepareProviderDirectories(...folders: string[]): Promise<void> | undefined {
+  const worker = boundary(); if (!worker?.required) return;
+  return (async () => { for (const folder of new Set(folders)) await worker.grantDirectory(folder); })();
+}
 
 export type CliName = "claude" | "codex";
 export type CliCommand = { file: string; args: string[]; codexPackage?: { root: string; pathDir?: string } };
@@ -14,6 +47,17 @@ const NPM_ENTRY: Record<CliName, string[]> = {
 // Prefer native executables: Codex's npm wrapper starts its binary without windowsHide, opening a
 // terminal even when we hide the wrapper. Unknown layouts keep their normal JS entry fallback.
 export function resolveCli(name: CliName, env: NodeJS.ProcessEnv = process.env, runtime: Pick<NodeJS.Process, "platform" | "arch"> = process): CliCommand | null {
+  const worker = boundary();
+  if (worker?.required) {
+    try {
+      const root = worker.configuration().runtimeRoot;
+      for (const file of [join(root, `${name}.exe`), join(root, name, `${name}.exe`)]) if (existsSync(file)) return { file, args: [] };
+      const entry = join(root, "node_modules", ...NPM_ENTRY[name]);
+      if (!existsSync(entry)) return null;
+      if (name === "codex") { const native = npmCodex(entry, runtime); if (native) return native; }
+      const node = join(root, "node.exe"); return existsSync(node) ? { file: node, args: [entry] } : null;
+    } catch { return null; }
+  }
   const path = Object.entries(env).find(([key]) => key.toUpperCase() === "PATH")?.[1] ?? "";
   const dirs = path.split(delimiter).filter(Boolean);
   const exe = runtime.platform === "win32" ? `${name}.exe` : name;
@@ -78,12 +122,14 @@ export function cliEnv(extra: Record<string, string>, base: NodeJS.ProcessEnv = 
     if (value !== undefined && !STRIPPED_ENV.includes(key.toUpperCase()) && !SECRET_ENV.test(key) && !CLOUD_ENV.test(key)) env[key] = value;
   }
   for (const [key, value] of Object.entries(extra)) {
-    if (!SECRET_ENV.test(key) && !CLOUD_ENV.test(key)) env[key] = value;
+    if (!SECRET_ENV.test(key) && !CLOUD_ENV.test(key)) env[key] = key.toUpperCase() === "CODEX_HOME" || key.toUpperCase() === "CLAUDE_CONFIG_DIR" ? providerAccountFolder(value) : value;
   }
   return env;
 }
 
 export function spawnCli(cmd: CliCommand, args: string[], opts: { cwd: string; env: Record<string, string>; claudeApiKey?: string }): ChildProcessWithoutNullStreams {
+  if (boundary()?.required) throw new Error("This provider must use the asynchronous Windows worker launcher.");
+  legacyUsed = true;
   // This is a new pipe for the CLI protocol. It never shares the daemon's token input pipe.
   const env = nodeEnv(cmd, opts.env);
   // Only this explicit private capability restores a key after inherited-environment scrubbing.
@@ -91,6 +137,15 @@ export function spawnCli(cmd: CliCommand, args: string[], opts: { cwd: string; e
   if (opts.claudeApiKey !== undefined) { env.ANTHROPIC_API_KEY = opts.claudeApiKey; env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB = "1"; env.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST = "1"; }
   return spawn(cmd.file, [...cmd.args, ...args], { cwd: opts.cwd, env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
 }
+
+export async function launchCli(cmd: CliCommand, args: string[], opts: { cwd: string; env: Record<string, string>; claudeApiKey?: string }): Promise<ChildProcessWithoutNullStreams> {
+  const worker = boundary(); if (!worker?.required) return spawnCli(cmd, args, opts);
+  const env = nodeEnv(cmd, opts.env);
+  if (opts.claudeApiKey !== undefined) { env.ANTHROPIC_API_KEY = opts.claudeApiKey; env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB = "1"; env.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST = "1"; }
+  const cwd = accountMappings.get(worker)?.get(resolve(opts.cwd).toLowerCase()) ?? opts.cwd;
+  return worker.spawn(cmd.file, [...cmd.args, ...args], { cwd, env });
+}
+export function waitForCliExit(child: ChildProcessWithoutNullStreams, legacyExit: Promise<void>): Promise<void> { return workerProcessRetired(child) ?? legacyExit; }
 
 function safeChildEnv(env: NodeJS.ProcessEnv): Record<string, string> {
   const accountFolders: Record<string, string> = {};
@@ -123,8 +178,9 @@ export function runCli(
   env: Record<string, string>,
   timeoutMs = 20_000,
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
-  return new Promise((resolve) => {
-    const child = spawn(cmd.file, [...cmd.args, ...args], { env: nodeEnv(cmd, env), stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+  const cwd = env.CODEX_HOME ?? env.CLAUDE_CONFIG_DIR ?? process.cwd();
+  return new Promise((resolve) => { void launchCli(cmd, args, { cwd, env }).then((child) => {
+    child.stdin.end();
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (chunk) => (stdout += chunk));
@@ -138,7 +194,7 @@ export function runCli(
       clearTimeout(timer);
       resolve({ code, stdout, stderr });
     });
-  });
+  }).catch(() => resolve({ code: null, stdout: "", stderr: "The provider could not start in its required execution boundary." })); });
 }
 
 // The CLIs start their own children (shells, MCP servers), so stopping one means stopping its whole tree.

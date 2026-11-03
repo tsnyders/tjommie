@@ -3,13 +3,16 @@
 import { useEffect, useRef, useState, type ClipboardEvent, type KeyboardEvent, type PointerEvent, type ReactNode } from "react";
 import { ArrowLeft, ArrowRight, Loader, Maximize2, Minimize2, Plus, RotateCw, X } from "lucide-react";
 import type { Bot, BrowserInput } from "@tjommie/protocol";
-import { type BrowserView } from "@/lib/browser-session";
+import { BrowserSession, type BrowserView } from "@/lib/browser-session";
+import { request } from "@/lib/connection";
+import { useApp } from "@/lib/store";
 import { desktop, type NativeBrowserApi } from "@/lib/desktop";
 import { NativeBrowserSession, nativeView } from "@/lib/native-browser-session";
 import { coveredByAppOverlay, slotBounds } from "@/lib/native-overlay";
 import { addressToUrl, framePoint, framePointClamped, frameViewport, googleSignInRejected, imageReady, keyRoute, mouseButton, pictureKey, resizeWorthIt, viewportSize, wheelPixels, type Size } from "@/lib/browser-geometry";
 import { cn } from "@/lib/utils";
 import { IconButton } from "../icon-button";
+import { BrowserLogins } from "./browser-logins";
 
 // The toolbar's calls. (Input, release and resize are for the picture-based fallback viewport; the native page needs none.)
 export type BrowserControls = {
@@ -32,9 +35,34 @@ const WAIT_LABEL_MS = 800; // a frame that takes longer than this is worth sayin
 // view and hands the browser back to the bot (a page dialog dismissed), so coming back means Take control again. Unmounting
 // (hiding the panel) closes the session, which hands it back too. The bot's browser itself lives on in the desktop app.
 export function BrowserPanel({ bot, active, expanded, canExpand = true, onToggleExpanded }: { bot: Bot; active: boolean; expanded: boolean; canExpand?: boolean; onToggleExpanded: () => void }) {
-  const api = desktop()?.nativeBrowser;
-  if (!api) return <p className="px-4 text-[13px] leading-[18px] text-secondary">The browser needs the Tjommie desktop app.</p>;
+  const host = useApp((state) => state.host);
+  const ready = useApp((state) => state.connection.status === "ready");
+  const api = host === null ? desktop()?.nativeBrowser : undefined;
+  if (!api && !ready) return <p role="status" className="px-4 text-[13px] leading-[18px] text-secondary">The browser host is offline. Reconnect to watch or take control.</p>;
+  if (!api) return <RemotePane key={`${host}:${bot.id}`} bot={bot} active={active} expanded={expanded} canExpand={canExpand} onToggleExpanded={onToggleExpanded} />;
   return <NativePane key={bot.id} bot={bot} api={api} active={active} expanded={expanded} canExpand={canExpand} onToggleExpanded={onToggleExpanded} />;
+}
+
+function RemotePane({ bot, active, expanded, canExpand, onToggleExpanded }: { bot: Bot; active: boolean; expanded: boolean; canExpand: boolean; onToggleExpanded: () => void }) {
+  const ready = useApp((state) => state.connection.status === "ready");
+  const [view, setView] = useState<BrowserView>({ state: null, frame: null, error: null });
+  const [text, setText] = useState("");
+  const [session] = useState(() => new BrowserSession(bot.id, request, setView));
+  useEffect(() => { if (ready) session.open(); return () => { void session.close(); }; }, [session, ready]);
+  useEffect(() => {
+    const visibility = (): void => session.setVisible(active && ready && document.visibilityState !== "hidden");
+    visibility(); document.addEventListener("visibilitychange", visibility);
+    return () => { document.removeEventListener("visibilitychange", visibility); session.setVisible(false); };
+  }, [active, ready, session]);
+  if (!ready) return <p role="status" className="px-4 text-[13px] leading-[18px] text-secondary">The browser host is offline. Reconnect to watch or take control.</p>;
+  const canType = view.state?.canControl === true && !view.state.privateActive && !!view.frame && !view.busy;
+  return <div className="flex min-h-0 flex-1 flex-col">
+    <BrowserChrome view={view} botName={bot.name} controls={session} active={active} expanded={expanded} canExpand={canExpand} onToggleExpanded={onToggleExpanded} onRetry={() => session.open()} />
+    {active && !view.state?.privateActive && <form className="flex gap-2 px-4 pb-4" onSubmit={(event) => { event.preventDefault(); if (canType && text) session.input({ kind: "text", text }); }}>
+      <input aria-label="Text to type into the focused browser field" value={text} onChange={(event) => setText(event.target.value)} disabled={!canType} autoComplete="off" className="h-11 min-w-0 flex-1 rounded-lg bg-card px-3 text-[13px] text-text disabled:opacity-50" />
+      <button type="submit" disabled={!canType || !text} className={cn(BUTTON, "h-11")}>Type</button>
+    </form>}
+  </div>;
 }
 
 // Shift+Tab out of the page lands on the control strip's button, where the keyboard would have gone.
@@ -70,6 +98,7 @@ function NativePane({ bot, api, active, expanded, canExpand, onToggleExpanded }:
       view={view}
       botName={bot.name}
       controls={controls}
+      active={active}
       expanded={expanded}
       canExpand={canExpand}
       onToggleExpanded={onToggleExpanded}
@@ -113,6 +142,7 @@ export function BrowserChrome({
   onToggleExpanded,
   onRetry,
   viewport,
+  active = true,
 }: {
   view: BrowserView;
   botName: string;
@@ -122,9 +152,10 @@ export function BrowserChrome({
   onToggleExpanded: () => void;
   onRetry: () => void;
   viewport?: ReactNode; // the native page's place; without it, the picture-based viewport
+  active?: boolean;
 }) {
   const { state, error } = view;
-  const human = state?.control === "human";
+  const human = state?.control === "human" && state.canControl !== false && !state.privateActive;
   const tab = state?.tabs.find((each) => each.id === state.activePageId);
   const [draft, setDraft] = useState<string | null>(null);
   return (
@@ -201,14 +232,15 @@ export function BrowserChrome({
           </form>
           <div className="flex items-center justify-between gap-3 text-[12px] leading-[18px] text-secondary">
             <span title={human ? "Closing this panel, or opening Details, hands the browser back to the bot." : undefined}>
-              {human ? "You're in control. Shift+Tab leaves the page." : `${botName} is using this browser. You can watch.`}
+              {state.privateActive ? "Private interaction. Browser automation and pictures are paused." : human ? "You're in control. Shift+Tab leaves the page." : state.control === "human" ? "Another device is controlling this browser. You can watch." : `${botName} is using this browser. You can watch.`}
             </span>
-            <button type="button" data-focus-return="control" onClick={() => controls.setControl(human ? "bot" : "human")} className="shrink-0 text-[13px] text-accent hover:underline">
+            <button type="button" disabled={state.privateActive} data-focus-return="control" onClick={() => controls.setControl(human ? "bot" : "human")} className="shrink-0 text-[13px] text-accent hover:underline disabled:opacity-50">
               {human ? "Resume bot" : "Take control"}
             </button>
           </div>
           {tab && googleSignInRejected(tab.url) && <p className="text-[12px] leading-[18px] text-secondary">Google may block sign-in in automated browsers.</p>}
           {state.dialog && <PageDialog key={state.dialog.pageId + state.dialog.message} dialog={state.dialog} human={human} controls={controls} />}
+          {active && <BrowserLogins state={state} onRefresh={onRetry} />}
         </>
       )}
       {viewport ?? <Viewport view={view} human={human} controls={controls} />}
@@ -273,7 +305,8 @@ function useAfter(on: boolean, ms: number): boolean {
 // The page as a picture, as large as the pane allows, letterboxed rather than stretched. With the user in control it takes
 // the mouse, wheel, keys and paste; otherwise it only shows. A pointer over the letterbox does nothing.
 function Viewport({ view, human, controls }: { view: BrowserView; human: boolean; controls: BrowserControls }) {
-  const { state, frame } = view;
+  const { state } = view;
+  const frame = state?.privateActive ? null : view.frame;
   const box = useRef<HTMLDivElement>(null);
   const image = useRef<HTMLImageElement>(null);
   const src = frame ? `data:${frame.mime};base64,${frame.data}` : "";
@@ -281,7 +314,7 @@ function Viewport({ view, human, controls }: { view: BrowserView; human: boolean
   const asked = useRef<Size | null>(null);
   const page = state?.activePageId ?? null;
   const busy = "busy" in view && view.busy === true;
-  const waiting = useAfter(state !== null && (frame === null || busy), WAIT_LABEL_MS);
+  const waiting = useAfter(state !== null && !state.privateActive && (frame === null || busy), WAIT_LABEL_MS);
 
   useEffect(() => {
     const element = box.current;

@@ -2,7 +2,7 @@
 
 import { useMemo, useState, type ReactNode } from "react";
 import Link from "next/link";
-import { ChartColumn, Check, Folder, Gauge, Globe, Loader, Monitor, Shield, Sparkles, X, type LucideIcon } from "lucide-react";
+import { ChartColumn, Check, Folder, Gauge, Globe, Loader, Shield, Sparkles, X, type LucideIcon } from "lucide-react";
 import type { Bot, Message, Routine } from "@tjommie/protocol";
 import { accountFor, limitLabel, topLimit, when } from "@/lib/accounts";
 import { recentActivity } from "@/lib/activity";
@@ -10,13 +10,14 @@ import { clock } from "@/lib/format";
 import { AUTONOMY_LINE, modelLabel, stateLabel } from "@/lib/labels";
 import { draftFrom, EMPTY_ROUTINE, localZone } from "@/lib/routine-form";
 import { removeRoutine, saveRoutine } from "@/lib/routines";
-import { localFileActions, nativeBrowserAvailable, pcName, useLocalFileActions } from "@/lib/native-capability";
+import { localFileActions, useLocalFileActions } from "@/lib/native-capability";
 import { useApp } from "@/lib/store";
 import { useUsage } from "@/lib/use-usage";
 import { botDayText, usageHref } from "@/lib/usage";
 import { BotAvatar } from "../bot-avatar";
 import { RoutineEditor } from "../routines/routine-editor";
 import { RoutineRows } from "../routines/routine-rows";
+import { BrowserThumbnail } from "./browser-thumbnail";
 
 // The Details pane of the right panel beside a bot's chat (WF1 Phase 1). 16 px between cards, 24 px above a section label.
 export function BotPanel({ bot, messages, onOpenBrowser }: { bot: Bot; messages: Message[]; onOpenBrowser: () => void }) {
@@ -158,34 +159,20 @@ function Summary({ bot }: { bot: Bot }) {
   );
 }
 
-function BrowserCard({ bot, onOpen }: { bot: Bot; onOpen: () => void }) {
-  const host = useApp((state) => state.host);
-  // Without the desktop app's bridge (a web or phone client), or with the desktop app on another PC, the browser can't be shown here: it runs on
-  // the bot's PC, named when this device knows it, and nothing here pretends otherwise.
-  if (!nativeBrowserAvailable()) {
-    const pc = pcName(host);
-    return (
-      <section className="mt-4 flex items-center gap-3 rounded-[12px] bg-card p-3">
-        <Monitor className="size-5 shrink-0 text-icon" aria-hidden />
-        <div className="min-w-0 flex-1">
-          <h3 className="text-[13px] font-semibold leading-[18px] text-title">Browser</h3>
-          <p className="mt-0.5 text-[12px] leading-[18px] text-secondary">Runs on {pc}. Open Tjommie on that PC to watch {bot.name} or take over.</p>
-        </div>
-      </section>
-    );
-  }
+export function BrowserCard({ bot, onOpen }: { bot: Bot; onOpen: () => void }) {
   return (
-    <section className="mt-4 flex items-center gap-3 rounded-[12px] bg-card p-3">
+    <section className="mt-4 flex flex-wrap items-center gap-3 rounded-[12px] bg-card p-3">
       <Globe className="size-5 shrink-0 text-icon" aria-hidden />
       <div className="min-w-0 flex-1">
         <div className="flex items-center justify-between gap-3">
-          <h3 className="text-[13px] font-semibold leading-[18px] text-title">Browser</h3>
-          <button type="button" aria-label="Open browser" onClick={onOpen} className="shrink-0 text-[13px] leading-[18px] text-accent hover:underline">
+          <h3 className="text-[13px] font-semibold leading-[18px] text-title">Computer</h3>
+          <button type="button" aria-label="Open computer" onClick={onOpen} className="shrink-0 text-[13px] leading-[18px] text-accent hover:underline">
             Open
           </button>
         </div>
         <p className="mt-0.5 text-[12px] leading-[18px] text-secondary">Built into Tjommie, with its own sign-ins. Watch the bot use it, or take over.</p>
       </div>
+      <BrowserThumbnail botId={bot.id} name={bot.name} />
     </section>
   );
 }

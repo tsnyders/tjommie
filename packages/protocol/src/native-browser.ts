@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { BrowserInput } from "./browser.ts";
 
 const Page = { generation: z.string().min(1).max(100), pageId: z.string().min(1).max(100) };
 export const NativeBrowserBounds = z.object({
@@ -27,7 +28,25 @@ export const NativeBrowserToolCommand = z.object({
   }, "Browser tool arguments exceed the size limit"),
 }).strict();
 export type NativeBrowserToolCommand = z.infer<typeof NativeBrowserToolCommand>;
+const Controlled = { controlEpoch: z.number().int().nonnegative(), ...Page };
+// Only the authenticated daemon adds controllerId. This command is excluded from renderer IPC.
+export const NativeBrowserRemoteAction = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("state") }).strict(),
+  z.object({ kind: z.literal("frame"), thumbnail: z.boolean().optional() }).strict(),
+  z.object({ kind: z.literal("disconnect") }).strict(),
+  z.object({ kind: z.literal("control"), control: z.enum(["human", "bot"]), generation: Page.generation.optional(), controlEpoch: Controlled.controlEpoch.optional(), releaseOnly: z.boolean().optional() }).strict(),
+  z.object({ kind: z.literal("navigate"), ...Controlled, url: z.string().min(1).max(8192) }).strict(),
+  z.object({ kind: z.literal("history"), ...Controlled, action: z.enum(["back", "forward", "reload"]) }).strict(),
+  z.object({ kind: z.literal("tab"), generation: Page.generation, controlEpoch: Controlled.controlEpoch, action: z.enum(["new", "select", "close"]), pageId: Page.pageId.optional() }).strict(),
+  z.object({ kind: z.literal("dialog"), ...Controlled, accept: z.boolean(), promptText: z.string().max(10000).optional() }).strict(),
+  z.object({ kind: z.literal("resize"), ...Controlled, width: z.number().int().min(240).max(2560), height: z.number().int().min(180).max(1600) }).strict(),
+  z.object({ kind: z.literal("input"), ...Controlled, viewportRevision: z.number().int().nonnegative(), input: BrowserInput }).strict(),
+]);
+export type NativeBrowserRemoteAction = z.infer<typeof NativeBrowserRemoteAction>;
+export const NativeBrowserRemoteCommand = z.object({ kind: z.literal("remote"), controllerId: z.string().min(1).max(256), action: NativeBrowserRemoteAction }).strict();
+export type NativeBrowserRemoteCommand = z.infer<typeof NativeBrowserRemoteCommand>;
 export const NativeBrowserCommand = z.union([NativeBrowserUiCommand, NativeBrowserToolCommand,
+  NativeBrowserRemoteCommand,
   z.object({ kind: z.literal("close") }).strict(), z.object({ kind: z.literal("delete_profile") }).strict(),
   z.object({ kind: z.literal("cancel_tools") }).strict()]);
 export type NativeBrowserCommand = z.infer<typeof NativeBrowserCommand>;

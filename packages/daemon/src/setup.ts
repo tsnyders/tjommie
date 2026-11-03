@@ -4,7 +4,7 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import type { CodexSandboxReadiness, ModelInfo, Provider, ProviderSetup } from "@tjommie/protocol";
-import { cliEnv, killTreeAndWait, openUrl, resolveCli, runCli, spawnCli } from "./cli.ts";
+import { cliEnv, killTreeAndWait, openUrl, resolveCli, runCli, launchCli, providerAccountFolder, workerAccountsRoot } from "./cli.ts";
 import { bindLegacyBots, getDefaultAccount, listAccounts, type AccountLimitWindow } from "./accounts-store.ts";
 import { nowIso, type Db } from "./db.ts";
 import { startCodexServer } from "./providers/codex-rpc.ts";
@@ -47,6 +47,7 @@ export function ensureAccounts(db: Db, accountsDir: string, dataRoot = dirname(a
 }
 
 export function prepareAccountFolder(account: Account, dataRoot: string): void {
+  account = { ...account, folder: providerAccountFolder(account.folder) };
   mkdirSync(account.folder, { recursive: true });
   if (lstatSync(account.folder).isSymbolicLink()) throw new Error("The account folder must not be a link.");
   if (account.provider === "claude") { sweepClaudeSessionFiles(account.folder); hardenClaudeSettings(account.folder, dataRoot); }
@@ -116,7 +117,7 @@ function readClaudeSettings(file: string): { settings: Record<string, unknown>; 
 
 export function accountFor(db: Db, provider: Provider): Account {
   const { id, label, folder } = getDefaultAccount(db, provider);
-  return { id, provider, label, folder };
+  return { id, provider, label, folder: providerAccountFolder(folder) };
 }
 
 export function accountEnv(account: Account): Record<string, string> {
@@ -157,6 +158,7 @@ const failedCheck = (provider: Provider, version: string | null, error: string):
 };
 
 async function claudeSetup(account: Account): Promise<ProviderSetup> {
+  account = { ...account, folder: providerAccountFolder(account.folder) };
   const cmd = resolveCli("claude");
   if (!cmd) return notInstalled("claude");
   const env = accountEnv(account);
@@ -169,6 +171,7 @@ async function claudeSetup(account: Account): Promise<ProviderSetup> {
 }
 
 async function codexSetup(account: Account): Promise<ProviderSetup> {
+  account = { ...account, folder: providerAccountFolder(account.folder) };
   const cmd = resolveCli("codex");
   if (!cmd) return notInstalled("codex");
   const env = accountEnv(account);
@@ -228,6 +231,7 @@ export function parseCodexAccountLimits(value: unknown): AccountLimitSnapshot[] 
 
 // ChatGPT subscription metadata only: never creates a thread or starts a model turn.
 async function readCodexAccountLimits(account: Account): Promise<unknown> {
+  account = { ...account, folder: providerAccountFolder(account.folder) };
   if (account.provider !== "codex") return null;
   const cmd = resolveCli("codex"); if (!cmd) return null;
   try {
@@ -250,6 +254,7 @@ export async function checkAccountLimits(account: Account): Promise<AccountLimit
 }
 
 export async function checkAccountUsage(account: Account, accountsRoot: string): Promise<AccountUsageRead> {
+  account = { ...account, folder: providerAccountFolder(account.folder) }; accountsRoot = workerAccountsRoot() ?? accountsRoot;
   if (account.provider === "claude") return readClaudeAccountUsage(account, { accountsRoot });
   const value = await readCodexAccountLimits(account);
   return normalizeCodexUsage(value, parseCodexAccountLimits(value));
@@ -281,6 +286,7 @@ export async function prepareCodexSandbox(db: Db, timeoutMs = SANDBOX_SETUP_TIME
   return prepareAccountCodexSandbox(accountFor(db, "codex"), timeoutMs);
 }
 export async function prepareAccountCodexSandbox(account: Account, timeoutMs = SANDBOX_SETUP_TIMEOUT_MS): Promise<void> {
+  account = { ...account, folder: providerAccountFolder(account.folder) };
   if (process.platform !== "win32") throw new RpcError("bad_state", "Codex's sandbox setup is available on Windows only.");
   if (account.provider !== "codex") throw new RpcError("bad_params", "Choose a Codex account.");
   if (sandboxSetupInProgress.has(account.folder)) throw new RpcError("busy", "Codex's sandbox setup is already running.");
@@ -342,6 +348,7 @@ export function checkAccountSetup(account: Account): Promise<ProviderSetup> {
 // Explicit owner removal only. The provider removes its own authentication using the
 // selected account home; Tjommie never reads or copies a credential file.
 export async function logoutAccount(account: Account): Promise<void> {
+  account = { ...account, folder: providerAccountFolder(account.folder) };
   const command = resolveCli(account.provider);
   if (!command) throw new RpcError("not_installed", "Install this account's provider before removing its local sign-in.");
   try {
@@ -365,11 +372,13 @@ export async function signIn(db: Db, provider: Provider, onDone: (ok: boolean, a
   return signInAccount(account, onDone);
 }
 export async function cancelAccountSignIn(account: Account, id: string): Promise<void> {
+  account = { ...account, folder: providerAccountFolder(account.folder) };
   const attempt = signInProgress.get(account.folder);
   if (!attempt || attempt.id !== id) throw new RpcError("bad_state", "That sign-in attempt is no longer active.");
   await attempt.cancel?.();
 }
 export async function signInAccount(account: Account, onDone: (ok: boolean, attempt: string) => void): Promise<{ url: string | null; attempt: string }> {
+  account = { ...account, folder: providerAccountFolder(account.folder) };
   const provider = account.provider;
   const running = signInProgress.get(account.folder);
   if (running) {
@@ -402,7 +411,7 @@ export async function signInAccount(account: Account, onDone: (ok: boolean, atte
       if (finished) throw new RpcError("bad_state", "The sign-in attempt was cancelled.");
       const before = tryParseClaudeStatus(beforeResult.stdout);
       if (beforeResult.code === null || !before) throw new RpcError("bad_state", "Claude sign-in check failed.");
-      const child = spawnCli(cmd, ["auth", "login", "--claudeai"], { cwd: account.folder, env });
+      const child = await launchCli(cmd, ["auth", "login", "--claudeai"], { cwd: account.folder, env });
       // auth login opens the automatic loopback URL itself. Its printed URL is the
       // manual-code fallback, so it must not be offered as an equivalent reopen link.
       // No auth output is logged or returned; this integration supports callback login.

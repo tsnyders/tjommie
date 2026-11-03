@@ -1,3 +1,4 @@
+import { PROTOCOL_VERSION } from "@tjommie/protocol";
 import { ClientMessage, type ClientMessage as Request } from "@tjommie/protocol";
 import { afterEach, describe, expect, it } from "vitest";
 import { WebSocketServer, type WebSocket } from "ws";
@@ -37,7 +38,7 @@ async function open(port: number): Promise<Client> {
 describe("typed daemon client", () => {
   it("can leave events unrecorded for a long-lived client and still notify subscribers", async () => {
     const port = await peer((socket, message) => {
-      if (message.type === "hello") socket.send(JSON.stringify({ type: "welcome", protocol: 1 }));
+      if (message.type === "hello") socket.send(JSON.stringify({ type: "welcome", protocol: PROTOCOL_VERSION }));
       if (message.type === "req") {
         socket.send(JSON.stringify({ type: "event", event: "settings.changed", data: { chainLimit: 4, relayUrl: null } }));
         socket.send(JSON.stringify({ type: "res", id: message.id, ok: true, result: { chainLimit: 4, relayUrl: null } }));
@@ -56,7 +57,7 @@ describe("typed daemon client", () => {
     const requests: Request[] = [];
     const port = await peer((socket, message) => {
       requests.push(message);
-      if (message.type === "hello") socket.send(JSON.stringify({ type: "welcome", protocol: 1 }));
+      if (message.type === "hello") socket.send(JSON.stringify({ type: "welcome", protocol: PROTOCOL_VERSION }));
       else {
         socket.send(JSON.stringify({ type: "event", event: "settings.changed", data: { chainLimit: 4, relayUrl: null } }));
         socket.send(JSON.stringify({ type: "res", id: message.id, ok: true, result: { chainLimit: 4, relayUrl: null } }));
@@ -69,7 +70,7 @@ describe("typed daemon client", () => {
     });
     expect(await client.call("settings.set", { chainLimit: 4 })).toEqual({ chainLimit: 4, relayUrl: null });
     expect(requests).toEqual([
-      { type: "hello", protocol: 1, token: "test-token" },
+      { type: "hello", protocol: PROTOCOL_VERSION, token: "test-token" },
       { type: "req", id: 1, method: "settings.set", params: { chainLimit: 4 } },
     ]);
     expect(changes).toEqual([4]);
@@ -101,7 +102,7 @@ describe("typed daemon client", () => {
   it("rejects every pending call on disconnect, including the close code and reason", async () => {
     let calls = 0;
     const port = await peer((socket, message) => {
-      if (message.type === "hello") socket.send(JSON.stringify({ type: "welcome", protocol: 1 }));
+      if (message.type === "hello") socket.send(JSON.stringify({ type: "welcome", protocol: PROTOCOL_VERSION }));
       else if (++calls === 2) socket.close(4401, "session ended");
     });
     const client = await open(port);
@@ -130,7 +131,7 @@ describe("typed daemon client", () => {
   it("rejects every pending call on a WebSocket error", async () => {
     let calls = 0;
     const port = await peer((socket, message) => {
-      if (message.type === "hello") socket.send(JSON.stringify({ type: "welcome", protocol: 1 }));
+      if (message.type === "hello") socket.send(JSON.stringify({ type: "welcome", protocol: PROTOCOL_VERSION }));
       // Server frames must not be masked. This triggers the native client's error event.
       else if (++calls === 2) socket.send("invalid frame", { mask: true });
     });
@@ -145,7 +146,7 @@ describe("typed daemon client", () => {
   it("reports a normal remote close while idle", async () => {
     const port = await peer((socket, message) => {
       if (message.type === "hello") {
-        socket.send(JSON.stringify({ type: "welcome", protocol: 1 }));
+        socket.send(JSON.stringify({ type: "welcome", protocol: PROTOCOL_VERSION }));
         socket.close(1000, "Daemon stopped");
       }
     });
@@ -170,7 +171,7 @@ describe("typed daemon client", () => {
     JSON.stringify({ type: "mystery" }),
   ])("rejects pending calls for an invalid incoming frame: %s", async (frame) => {
     const port = await peer((socket, message) => {
-      if (message.type === "hello") socket.send(JSON.stringify({ type: "welcome", protocol: 1 }));
+      if (message.type === "hello") socket.send(JSON.stringify({ type: "welcome", protocol: PROTOCOL_VERSION }));
       else socket.send(frame);
     });
     const client = await open(port);
@@ -179,7 +180,7 @@ describe("typed daemon client", () => {
 
   it("validates successful results against the requested method schema", async () => {
     const port = await peer((socket, message) => {
-      if (message.type === "hello") socket.send(JSON.stringify({ type: "welcome", protocol: 1 }));
+      if (message.type === "hello") socket.send(JSON.stringify({ type: "welcome", protocol: PROTOCOL_VERSION }));
       else socket.send(JSON.stringify({ type: "res", id: message.id, ok: true, result: { chainLimit: "invalid" } }));
     });
     const client = await open(port);
@@ -188,7 +189,7 @@ describe("typed daemon client", () => {
 
   it("settles pending calls when the caller closes the client", async () => {
     const port = await peer((socket, message) => {
-      if (message.type === "hello") socket.send(JSON.stringify({ type: "welcome", protocol: 1 }));
+      if (message.type === "hello") socket.send(JSON.stringify({ type: "welcome", protocol: PROTOCOL_VERSION }));
     });
     const client = await open(port);
     const pending = expect(client.call("settings.get", {})).rejects.toThrow(/1000.*client closed/i);

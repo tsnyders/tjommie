@@ -1,7 +1,7 @@
 import { newId, nowIso, type Db } from "./db.ts";
 
 // Where a piece of work came from.
-export type WorkSource = "you" | "room" | "bot_request" | "bot_reply" | "routine";
+export type WorkSource = "you" | "room" | "bot_request" | "bot_reply" | "routine" | "task";
 export type WorkStatus = "queued" | "running" | "done" | "failed" | "interrupted";
 export type WorkItem = {
   id: string;
@@ -15,6 +15,9 @@ export type WorkItem = {
   routineRunId: string | null;
   status: WorkStatus;
   createdAt: string;
+  taskAttemptId: string | null;
+  taskRevision: number | null;
+  executionContextKey: string | null;
 };
 export type NewWork = {
   botId: string;
@@ -25,10 +28,13 @@ export type NewWork = {
   chainId?: string | null;
   exchangeId?: string | null;
   routineRunId?: string | null;
+  taskAttemptId?: string | null;
+  taskRevision?: number | null;
+  executionContextKey?: string | null;
 };
 
 // Your messages and replies to a bot's own requests go first; requests from other bots and routine runs wait.
-const PRIORITY: Record<WorkSource, number> = { you: 0, room: 0, bot_reply: 0, bot_request: 1, routine: 1 };
+const PRIORITY: Record<WorkSource, number> = { you: 0, room: 0, bot_reply: 0, bot_request: 1, routine: 1, task: 1 };
 
 type WorkRow = {
   id: string;
@@ -42,6 +48,9 @@ type WorkRow = {
   routine_run_id: string | null;
   status: WorkStatus;
   created_at: string;
+  task_attempt_id: string | null;
+  task_revision: number | null;
+  execution_context_key: string | null;
 };
 
 const toItem = (row: WorkRow): WorkItem => {
@@ -58,14 +67,22 @@ const toItem = (row: WorkRow): WorkItem => {
     routineRunId: row.routine_run_id,
     status: row.status,
     createdAt: row.created_at,
+    taskAttemptId: row.task_attempt_id,
+    taskRevision: row.task_revision,
+    executionContextKey: row.execution_context_key,
   };
 };
 
 export function enqueue(db: Db, work: NewWork): WorkItem {
+  const taskContext = [work.taskAttemptId, work.taskRevision, work.executionContextKey];
+  if (taskContext.some((value) => value != null) && (!work.taskAttemptId || !work.executionContextKey || !Number.isInteger(work.taskRevision) || (work.taskRevision ?? 0) < 1)) {
+    throw new Error("A task work item needs its complete immutable execution context.");
+  }
+  if (work.source === "task" && !work.taskAttemptId) throw new Error("A task work item needs an attempt.");
   const id = newId();
   db.prepare(
-    `INSERT INTO work_items (id, bot_id, source, text, message_id, conversation_id, priority, chain_id, exchange_id, routine_run_id, status, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?)`,
+    `INSERT INTO work_items (id, bot_id, source, text, message_id, conversation_id, priority, chain_id, exchange_id, routine_run_id, task_attempt_id, task_revision, execution_context_key, status, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?)`,
   ).run(
     id,
     work.botId,
@@ -77,9 +94,16 @@ export function enqueue(db: Db, work: NewWork): WorkItem {
     work.chainId ?? null,
     work.exchangeId ?? null,
     work.routineRunId ?? null,
+    work.taskAttemptId ?? null,
+    work.taskRevision ?? null,
+    work.executionContextKey ?? null,
     nowIso(),
   );
   return getWorkItem(db, id);
+}
+
+export function workContext(item: WorkItem): Pick<NewWork, "taskAttemptId" | "taskRevision" | "executionContextKey"> {
+  return { taskAttemptId: item.taskAttemptId, taskRevision: item.taskRevision, executionContextKey: item.executionContextKey };
 }
 
 export function getWorkItem(db: Db, id: string): WorkItem {
@@ -97,13 +121,13 @@ export function nextQueued(db: Db, botId: string): WorkItem | null {
 }
 
 // Work that may join a turn already writing to `conversationId`: your messages there, and replies to the bot's own requests.
-export function nextSteerable(db: Db, botId: string, conversationId: string): WorkItem | null {
+export function nextSteerable(db: Db, botId: string, conversationId: string, executionContextKey: string | null = null): WorkItem | null {
   const row = db
     .prepare(
-      `SELECT * FROM work_items WHERE bot_id = ? AND status = 'queued' AND source IN ('you', 'bot_reply') AND conversation_id = ?
+      `SELECT * FROM work_items WHERE bot_id = ? AND status = 'queued' AND source IN ('you', 'bot_reply') AND conversation_id = ? AND execution_context_key IS ?
        ORDER BY priority, created_at, rowid LIMIT 1`,
     )
-    .get(botId, conversationId) as WorkRow | undefined;
+    .get(botId, conversationId, executionContextKey) as WorkRow | undefined;
   return row ? toItem(row) : null;
 }
 

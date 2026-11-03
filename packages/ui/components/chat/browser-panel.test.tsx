@@ -75,6 +75,16 @@ describe("BrowserChrome", () => {
     expect(out).toContain("This bot&#x27;s browser is off");
     expect(out).toContain("Try again");
   });
+  it("suppresses private pixels even if an unexpected frame reaches the pane", () => {
+    const out = html(shown({ control: "human", canControl: true, privateActive: true }));
+    expect(out).toContain("Private interaction"); expect(out).not.toContain("data:image");
+    expect(out).not.toContain("Resume bot");
+  });
+  it("keeps another device's controls disabled while allowing viewing", () => {
+    const out = html(shown({ control: "human", canControl: false }));
+    expect(out).toContain("Another device is controlling");
+    expect(out).toMatch(/<input[^>]*aria-label="Browser address"[^>]*readOnly=""/);
+  });
 });
 
 describe("native browser pane", () => {
@@ -89,8 +99,8 @@ describe("native browser pane", () => {
     expect(out).toContain('data-focus-return="control"');
   });
 
-  it("says the browser needs the desktop app anywhere else", () => {
+  it("explains an offline remote host without denying the remote Computer pane", () => {
     const bot = { id: "b1", name: "Scout" } as Bot;
-    expect(renderToStaticMarkup(<BrowserPanel bot={bot} active expanded={false} onToggleExpanded={() => {}} />)).toContain("The browser needs the Tjommie desktop app.");
+    expect(renderToStaticMarkup(<BrowserPanel bot={bot} active expanded={false} onToggleExpanded={() => {}} />)).toContain("The browser host is offline.");
   });
 });

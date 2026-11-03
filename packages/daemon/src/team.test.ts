@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { TEAM_ROOM_ID } from "@tjommie/protocol";
 import { getApproval } from "./approvals.ts";
-import { createBot, deleteBot, updateBot, type StoredBot } from "./bots.ts";
+import { createBot, deleteBot, setPaused, updateBot, type StoredBot } from "./bots.ts";
 import { addMessage, history } from "./chat.ts";
 import { openDb, type Db } from "./db.ts";
 import { enqueue, newChain, setStatus, type WorkItem } from "./queue.ts";
@@ -59,6 +59,22 @@ const chatTurn = (botId: string) => {
 const done = (text: string | null, textMessageId: string | null = null) => ({ outcome: "done" as const, text, textMessageId, error: null });
 
 describe("Team tools", () => {
+  it("records a named login request in its current conversation without accessing a vault", () => {
+    writer = updateBot(db, writer.id, { browser: true });
+    const work = chatTurn(writer.id);
+    expect(call(writer.id, "request_login", { name: "Example website" })).toContain("No credential was read or filled");
+    const message = history(db, work.conversationId, undefined, 50).at(-1)!;
+    expect(message.body).toContain("Login requested: Example website");
+    expect(message.data).toBeNull();
+    expect(events.some((event) => event.event === "message.added")).toBe(true);
+  });
+
+  it("refuses login requests from paused bots or with secret-bearing parameters", () => {
+    writer = updateBot(db, writer.id, { browser: true });
+    expect(() => call(writer.id, "request_login", { name: "Example", password: "synthetic-forbidden" })).toThrow();
+    setPaused(db, writer.id, true);
+    expect(() => call(writer.id, "request_login", { name: "Example" })).toThrow("Resume this bot");
+  });
   it("lists only the bots on the caller's Can message list", () => {
     expect(call(researcher.id, "list_bots", {})).toBe("- Writer (idle): Writes one-page summaries.");
     const loner = createBot(db, join(root, "bots"), { name: "Loner", color: "gray", shape: "pill", instructions: "", provider: "claude", model: "haiku" });

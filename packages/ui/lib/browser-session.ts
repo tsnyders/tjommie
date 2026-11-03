@@ -10,7 +10,7 @@ const IDLE_POLL_MS = 250;
 const RETRY_MS = 1000;
 type Task = { kind?: "move" | "wheel" | "resize"; key?: string; input?: BrowserInput; release?: boolean; cancel?: () => void; run: () => Promise<void> };
 type Button = "left" | "middle" | "right";
-type InputTarget = { generation: string; pageId: string; viewportRevision?: number };
+type InputTarget = { generation: string; pageId: string; viewportRevision?: number; controlEpoch?: number };
 type HeldPointer = InputTarget & { x: number; y: number };
 
 // Input and commands stay ordered. One independent, bounded frame request can never hold up a key
@@ -48,11 +48,11 @@ export class BrowserSession {
     } });
   }
 
-  // Document visibility only pauses pictures. Pane switches use suspend(), which also hands back control.
+  // Backgrounding releases this device's input/control as well as pausing pictures.
   setVisible(visible: boolean): void {
     this.#visible = visible;
     if (visible) { this.#suspended = false; this.#poll(0); }
-    else { this.#epoch++; this.#stopTimer(); }
+    else { void this.suspend(); }
   }
 
   suspend(): Promise<void> {
@@ -66,7 +66,7 @@ export class BrowserSession {
     let finish = (): void => {};
     const pending = new Promise<void>((resolve) => (finish = resolve));
     this.#suspending = pending;
-    this.#set({});
+    this.#set({ frame: null });
     this.#push({ release: true, run: async () => {
       try { await this.#handBack(); }
       catch (error) { this.#set({ error: errorText(error) }); }
@@ -116,16 +116,16 @@ export class BrowserSession {
     try { state = await this.call("browser.open", { botId: this.botId }); }
     catch { /* use last known ownership */ }
     if (state) this.#apply(state);
-    const human = state ? state.control === "human" : this.#human || this.#askedHuman;
+    const human = state ? state.control === "human" && state.canControl !== false : this.#human || this.#askedHuman;
     if (!human) return;
     const pageId = state?.activePageId;
     if (state && pageId) {
       const { generation } = state;
-      if (state.dialog) await this.call("browser.dialog", { botId: this.botId, generation, pageId: state.dialog.pageId, accept: false }).catch(() => {});
-      for (const [button, at] of [...this.#heldButtons]) await this.#send(at.generation, at.pageId, { kind: "mouse", action: "up", x: at.x, y: at.y, button }).catch(() => {});
-      for (const [key, target] of [...this.#heldKeys]) await this.#send(target.generation, target.pageId, { kind: "key", action: "up", key }).catch(() => {});
+      if (state.dialog) await this.call("browser.dialog", { botId: this.botId, generation, pageId: state.dialog.pageId, controlEpoch: state.controlEpoch, accept: false }).catch(() => {});
+      for (const [button, at] of [...this.#heldButtons]) await this.#send(at.generation, at.pageId, { kind: "mouse", action: "up", x: at.x, y: at.y, button }, at.viewportRevision, at.controlEpoch).catch(() => {});
+      for (const [key, target] of [...this.#heldKeys]) await this.#send(target.generation, target.pageId, { kind: "key", action: "up", key }, target.viewportRevision, target.controlEpoch).catch(() => {});
     }
-    this.#apply(await this.call("browser.control", { botId: this.botId, control: "bot" }));
+    this.#apply(await this.call("browser.control", { botId: this.botId, control: "bot", generation: state?.generation, controlEpoch: state?.controlEpoch, releaseOnly: true }));
     this.#heldKeys.clear(); this.#heldButtons.clear();
   }
 
@@ -137,10 +137,11 @@ export class BrowserSession {
   input(input: BrowserInput): void {
     const state = this.view.state;
     const pageId = state?.activePageId;
-    if (!state || !pageId || state.control !== "human" || this.#closing) return;
+    if (!state || !pageId || state.control !== "human" || state.canControl === false || state.privateActive || this.#closing) return;
     const release = (input.kind === "key" || input.kind === "mouse") && input.action === "up";
     if (!release && (!this.view.frame || this.view.busy || this.#suspended)) return;
-    let target: InputTarget = { generation: state.generation, pageId, viewportRevision: state.viewportRevision };
+    if (!release && this.view.frame && (this.view.frame.controlEpoch !== undefined && this.view.frame.controlEpoch !== state.controlEpoch || this.view.frame.privateEpoch !== undefined && this.view.frame.privateEpoch !== state.privateEpoch)) return;
+    let target: InputTarget = { generation: state.generation, pageId, viewportRevision: state.viewportRevision, controlEpoch: state.controlEpoch };
     if (input.kind === "key") {
       if (input.action === "up" && !this.#keys.has(input.key)) return;
       if (input.action === "down") this.#keys.set(input.key, target);
@@ -152,8 +153,8 @@ export class BrowserSession {
     }
     const task: Task = {
       kind: input.kind === "wheel" ? "wheel" : input.kind === "mouse" && input.action === "move" ? "move" : undefined,
-      key: `${target.generation}:${target.pageId}:${target.viewportRevision ?? ""}`, input, release,
-      run: async () => { await this.#send(target.generation, target.pageId, task.input!, target.viewportRevision); this.#wake(); },
+      key: `${target.generation}:${target.pageId}:${target.viewportRevision ?? ""}:${target.controlEpoch ?? ""}`, input, release,
+      run: async () => { await this.#send(target.generation, target.pageId, task.input!, target.viewportRevision, target.controlEpoch); this.#wake(); },
     };
     const last = this.#tasks.at(-1);
     if (task.kind === "move" && last?.kind === "move" && last.key === task.key) this.#tasks[this.#tasks.length - 1] = task;
@@ -167,22 +168,24 @@ export class BrowserSession {
   setControl(control: BrowserState["control"]): void {
     if (this.#suspended || this.#closing) return;
     if (control === "human") this.#askedHuman = true;
-    this.#command(async () => this.#apply(await this.call("browser.control", { botId: this.botId, control })));
+    const state = this.view.state;
+    this.#command(async () => this.#apply(await this.call("browser.control", { botId: this.botId, control, generation: state?.generation, controlEpoch: state?.controlEpoch })));
   }
-  navigate(url: string): void { this.#onPage((generation, pageId) => this.call("browser.navigate", { botId: this.botId, generation, pageId, url }), true); }
-  history(action: "back" | "forward" | "reload"): void { this.#onPage((generation, pageId) => this.call("browser.history", { botId: this.botId, generation, pageId, action }), true); }
-  resize(width: number, height: number): void { this.#onPage((generation, pageId) => this.call("browser.resize", { botId: this.botId, generation, pageId, width, height }), true, "resize"); }
-  dialog(accept: boolean, promptText?: string): void { this.#onPage((generation, pageId) => this.call("browser.dialog", { botId: this.botId, generation, pageId, accept, promptText })); }
+  navigate(url: string): void { this.#onPage((generation, pageId, controlEpoch) => this.call("browser.navigate", { botId: this.botId, generation, pageId, controlEpoch, url }), true); }
+  history(action: "back" | "forward" | "reload"): void { this.#onPage((generation, pageId, controlEpoch) => this.call("browser.history", { botId: this.botId, generation, pageId, controlEpoch, action }), true); }
+  resize(width: number, height: number): void { this.#onPage((generation, pageId, controlEpoch) => this.call("browser.resize", { botId: this.botId, generation, pageId, controlEpoch, width, height }), true, "resize"); }
+  dialog(accept: boolean, promptText?: string): void { this.#onPage((generation, pageId, controlEpoch) => this.call("browser.dialog", { botId: this.botId, generation, pageId, controlEpoch, accept, promptText })); }
   tab(action: "new" | "select" | "close", pageId?: string): void {
     const generation = this.view.state?.generation;
-    if (generation) this.#command(async () => this.#apply(await this.call("browser.tab", { botId: this.botId, generation, action, pageId })), true);
+    const controlEpoch = this.view.state?.controlEpoch;
+    if (generation) this.#command(async () => this.#apply(await this.call("browser.tab", { botId: this.botId, generation, controlEpoch, action, pageId })), true);
   }
 
-  #onPage(run: (generation: string, pageId: string) => Promise<BrowserState>, reshape = false, kind?: "resize"): void {
+  #onPage(run: (generation: string, pageId: string, controlEpoch?: number) => Promise<BrowserState>, reshape = false, kind?: "resize"): void {
     const state = this.view.state;
     if (state?.activePageId) {
       const pageId = state.activePageId;
-      this.#command(async () => this.#apply(await run(state.generation, pageId)), reshape, kind, `${state.generation}:${pageId}`);
+      this.#command(async () => this.#apply(await run(state.generation, pageId, state.controlEpoch)), reshape, kind, `${state.generation}:${pageId}`);
     }
   }
 
@@ -198,11 +201,11 @@ export class BrowserSession {
     else this.#push(task);
   }
 
-  async #send(generation: string, pageId: string, input: BrowserInput, viewportRevision?: number): Promise<void> {
-    await this.call("browser.input", { botId: this.botId, generation, pageId, input, viewportRevision });
-    if (input.kind === "key") { if (input.action === "down") this.#heldKeys.set(input.key, { generation, pageId }); else this.#heldKeys.delete(input.key); }
+  async #send(generation: string, pageId: string, input: BrowserInput, viewportRevision?: number, controlEpoch?: number): Promise<void> {
+    await this.call("browser.input", { botId: this.botId, generation, pageId, input, viewportRevision, controlEpoch });
+    if (input.kind === "key") { if (input.action === "down") this.#heldKeys.set(input.key, { generation, pageId, viewportRevision, controlEpoch }); else this.#heldKeys.delete(input.key); }
     else if (input.kind === "mouse" && input.button) {
-      if (input.action === "down") this.#heldButtons.set(input.button, { generation, pageId, x: input.x, y: input.y });
+      if (input.action === "down") this.#heldButtons.set(input.button, { generation, pageId, viewportRevision, controlEpoch, x: input.x, y: input.y });
       else if (input.action === "up") this.#heldButtons.delete(input.button);
     }
   }
@@ -244,12 +247,15 @@ export class BrowserSession {
     if (this.#closing || !this.#visible || epoch !== this.#epoch || this.#fences > 0 || !this.#fresh(result.state)) return;
     let frame = result.unchanged ? this.view.frame : result.frame;
     if (frame && ((frame.pageId && frame.pageId !== result.state.activePageId)
+      || (frame.controlEpoch !== undefined && frame.controlEpoch !== result.state.controlEpoch)
+      || (frame.privateEpoch !== undefined && frame.privateEpoch !== result.state.privateEpoch)
       || (frame.viewportRevision !== undefined && frame.viewportRevision !== result.state.viewportRevision))) frame = null;
     if (frame?.streamId) this.#cursor = { streamId: frame.streamId, sequence: frame.sequence };
     else if (!frame) this.#cursor = undefined;
     const before = this.view.frame;
     if (frame && before && frame.data === before.data && frame.width === before.width && frame.height === before.height
       && frame.viewportWidth === before.viewportWidth && frame.viewportHeight === before.viewportHeight
+      && frame.controlEpoch === before.controlEpoch && frame.privateEpoch === before.privateEpoch
       && frame.pageId === before.pageId && frame.viewportRevision === before.viewportRevision && frame.streamId === before.streamId) frame = before;
     this.#set({ state: result.state, frame, error: null });
   }
@@ -266,7 +272,7 @@ export class BrowserSession {
     const state = patch.state && JSON.stringify(patch.state) !== JSON.stringify(before.state) ? patch.state : before.state;
     const moved = state && (state.generation !== before.state?.generation || state.activePageId !== before.state.activePageId || state.viewportRevision !== before.state.viewportRevision);
     if (moved) this.#cursor = undefined;
-    const frame = patch.frame !== undefined ? patch.frame : moved ? null : before.frame;
+    const frame = state?.privateActive ? null : patch.frame !== undefined ? patch.frame : moved ? null : before.frame;
     const next = { ...before, ...patch, state, frame, busy: this.#fences > 0 || !!this.#suspending || !!state?.busy };
     if (next.state === before.state && next.frame === before.frame && next.error === before.error && next.busy === before.busy) return;
     this.view = next;

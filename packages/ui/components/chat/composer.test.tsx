@@ -1,6 +1,8 @@
 import type { Bot, Message } from "@tjommie/protocol";
 import { describe, expect, it } from "vitest";
 import { canStop } from "./composer";
+import { Composer } from "./composer";
+import { renderToStaticMarkup } from "react-dom/server";
 
 const card = (id: string, data: Record<string, unknown>): Message => ({
   id,
@@ -18,6 +20,12 @@ const answered = card("m3", { status: "allowed", rule: null });
 const bot = (state: Bot["state"]): Pick<Bot, "state"> => ({ state });
 
 describe("canStop", () => {
+  it("offers a separate local dictation control without making it Send", () => {
+    const html = renderToStaticMarkup(<Composer bot={{ id: "synthetic", name: "Synthetic", state: "idle" } as Bot} messages={[]} />);
+    expect(html).toContain('aria-label="Start dictation"');
+    expect(html).toContain('type="button"');
+    expect(html).toContain('aria-label="Send"');
+  });
   it("offers Stop while the bot works, or waits on a tool card that holds its turn", () => {
     expect(canStop(bot("working"), [])).toBe(true);
     expect(canStop(bot("waiting"), [answered, tool])).toBe(true);

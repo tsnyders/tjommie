@@ -10,7 +10,8 @@ const bot = (id: string, name: string): Bot => ({ id, name, color: "blue", shape
 const LONG = "A very long bot name of thirty-nine";
 
 describe("ExchangeComposer on a phone", () => {
-  const out = renderToStaticMarkup(<ExchangeComposer bots={[bot("b1", LONG), bot("b2", "ResearchScout")]} />);
+  const out = renderToStaticMarkup(<ExchangeComposer exchangeId="synthetic-exchange" bots={[bot("b1", LONG), bot("b2", "ResearchScout")]} />);
+  it("offers local dictation separately from Send", () => { expect(out).toContain('aria-label="Start dictation"'); });
 
   it("puts the mentions on a row of their own that wraps, so they can't push the box off the screen", () => {
     expect(out).toContain("max-sm:basis-full");
@@ -38,7 +39,7 @@ describe("ExchangeComposer on a phone", () => {
 });
 
 describe("ExchangeComposer's reply", () => {
-  const html = (names: string[]): string => renderToStaticMarkup(<ExchangeComposer bots={names.map((name, index) => bot(`b${index + 1}`, name))} />);
+  const html = (names: string[]): string => renderToStaticMarkup(<ExchangeComposer exchangeId="synthetic-exchange" bots={names.map((name, index) => bot(`b${index + 1}`, name))} />);
 
   it("is posted in Everyone, and says so", () => {
     expect(html(["Sales", "Marketing"])).toContain('placeholder="Ask both bots in Everyone"');

@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { AppShell } from "@/components/app-shell";
 import { themeScript } from "@/lib/theme";
 import "./globals.css";
+import "pdfjs-dist/web/pdf_viewer.css";
 
 export const metadata: Metadata = {
   title: "Tjommie",

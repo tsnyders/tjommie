@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { RelayUrl } from "./remote.ts";
+import { AttachmentCompanions } from "./attachments.ts";
 
 // The conversation id of the Team room, the one room every bot is in.
 export const TEAM_ROOM_ID = "team";
@@ -208,7 +209,7 @@ export const RoutineLabelData = z.strictObject({
 });
 export type RoutineLabelData = z.infer<typeof RoutineLabelData>;
 
-export const FileData = z.strictObject({ path: z.string(), name: z.string(), size: z.number().int().nonnegative() });
+export const FileData = z.strictObject({ path: z.string(), name: z.string(), size: z.number().int().nonnegative(), attachmentId: z.uuid().optional(), contentType: z.string().optional(), companions: AttachmentCompanions.optional() });
 export type FileData = z.infer<typeof FileData>;
 
 const approvalDataFields = {
@@ -249,7 +250,7 @@ export type UserMessageData = z.infer<typeof UserMessageData>;
 export const ExchangePostData = z.strictObject({
   exchangeId: z.string(),
   toBotId: z.string(),
-  files: z.array(z.strictObject({ name: z.string(), path: z.string() })).optional(),
+  files: z.array(z.strictObject({ name: z.string(), path: z.string(), attachmentId: z.uuid().optional(), contentType: z.string().optional(), size: z.number().int().nonnegative().optional(), companions: AttachmentCompanions.optional() })).optional(),
 });
 export type ExchangePostData = z.infer<typeof ExchangePostData>;
 export const TextData = z.union([UserMessageData, ExchangePostData]);

@@ -11,10 +11,13 @@ import java.util.Map;
 // Next exports a document per route. Capacitor's SPA fallback would serve the home
 // document on reload. Keep Capacitor's bridge injection and all other handling.
 final class StaticWebViewClient extends BridgeWebViewClient {
-  StaticWebViewClient(Bridge bridge) { super(bridge); }
+  private final Bridge appBridge;
+  StaticWebViewClient(Bridge bridge) { super(bridge); appBridge = bridge; }
 
   @Override
   public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+    WebResourceResponse attachment = TjommieAttachmentPlugin.intercept(appBridge, request);
+    if (attachment != null) return attachment;
     Uri url = request.getUrl();
     String path = StaticRoutes.document(url.getPath());
     if (!request.isForMainFrame() || !"GET".equals(request.getMethod()) ||

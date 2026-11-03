@@ -13,6 +13,8 @@ public class MainActivity extends BridgeActivity {
     registerPlugin(TjommiePairingScannerPlugin.class);
     registerPlugin(TjommieAppearancePlugin.class);
     registerPlugin(TjommiePushRoutingPlugin.class);
+    registerPlugin(TjommieAttachmentPlugin.class);
+    registerPlugin(TjommieSpeechPlugin.class);
     super.onCreate(savedInstanceState);
     getBridge().setWebViewClient(new StaticWebViewClient(getBridge()));
     TjommieAppearancePlugin.applySaved(getBridge());

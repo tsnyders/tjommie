@@ -6,6 +6,10 @@ out/
 *.tsbuildinfo
 next-env.d.ts
 /packages/ui/public/tjommie_noise_bg.wasm
+/packages/ui/public/pdfjs/
+/packages/ui/public/third-party-notices.txt
+/.cache/speech-runtime/
+/.cache/phase4-acceptance/
 .env*
 *.pem
 /packages/mobile/android/app/google-services.json

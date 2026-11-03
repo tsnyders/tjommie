@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ArrowRight, ArrowUp, X } from "lucide-react";
 import { TEAM_ROOM_ID, type Bot, type Exchange, type Message } from "@tjommie/protocol";
 import { closeConversation, exchangePage, loadConversation, request, retryConversation } from "@/lib/connection";
@@ -16,6 +16,8 @@ import { BotAvatar, MissingAvatar } from "../bot-avatar";
 import { MessageView, shownMessages } from "../chat/message-view";
 import { FailedLoad } from "../failed-load";
 import { IconButton } from "../icon-button";
+import { useDictation } from "@/lib/use-dictation";
+import { DictationButton, DictationStatus } from "../chat/dictation-button";
 
 const NO_MESSAGES: Message[] = [];
 
@@ -101,7 +103,7 @@ export function ExchangeView({ exchangeId, refreshKey, onClose, bar }: { exchang
           {caption && <p className="mt-3 text-[12px] leading-[18px] text-secondary">{caption}</p>}
         </div>
       )}
-      <ExchangeComposer bots={[from, to].filter((bot): bot is Bot => bot !== undefined)} />
+      <ExchangeComposer exchangeId={exchangeId} bots={[from, to].filter((bot): bot is Bot => bot !== undefined)} />
     </aside>
   );
 }
@@ -118,18 +120,22 @@ function AuthorRow({ id, bots }: { id: string; bots: Bot[] }) {
 
 // Replies in Everyone, wherever the exchange was opened, with both bots already @mentioned (spec 6.2), so both
 // answer there. There are no attachments here.
-export function ExchangeComposer({ bots }: { bots: Bot[] }) {
+export function ExchangeComposer({ bots, exchangeId }: { bots: Bot[]; exchangeId: string }) {
   const [text, setText] = useState("");
+  const field = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const [posted, setPosted] = useState(false);
   // Typing goes on while a reply is on its way; its success clears the box only if nothing was typed since.
   const revision = useRevision();
   const guard = useSendGuard();
   const [problem, setProblem] = useState<string | null>(null);
+  const change = (next: string): void => { revision.bump(); setText(next); };
+  const voice = useDictation("exchange", exchangeId, field, text, change);
   const canSend = bots.length > 0 && text.trim() !== ""; // with both bots gone there's no one to mention
   const asked = bots.length === 2 ? "Ask both bots in Everyone" : bots.length === 1 ? `Ask ${bots[0].name} in Everyone` : "Reply in Everyone";
   async function send(): Promise<void> {
     if (busy || !canSend || !guard.begin()) return;
+    void voice.cancel();
     const sentText = text;
     const sentRevision = revision.now();
     setBusy(true);
@@ -176,16 +182,18 @@ export function ExchangeComposer({ bots }: { bots: Bot[] }) {
         </div>
         {/* The caret shows focus here, as in the chat's composer. */}
         <input
+          ref={field}
           value={text}
           onChange={(event) => {
-            revision.bump();
-            setText(event.target.value);
+            voice.changed(event.target.value);
+            change(event.target.value);
             setPosted(false);
           }}
           aria-label="Reply in Everyone"
           placeholder={asked}
           className="min-w-0 flex-1 truncate bg-transparent text-[14px] text-text outline-none placeholder:text-placeholder max-sm:basis-0 max-sm:pl-2"
         />
+        <DictationButton voice={voice} />
         <button
           type="submit"
           aria-label="Send"
@@ -195,6 +203,7 @@ export function ExchangeComposer({ bots }: { bots: Bot[] }) {
           <ArrowUp className="size-4" aria-hidden />
         </button>
       </div>
+      <DictationStatus voice={voice} />
       {problem && (
         <p role="alert" className="mt-1.5 text-[12px] leading-[18px] text-danger">
           {problem}

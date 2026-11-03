@@ -4,6 +4,7 @@ import { createBot } from "./bots.ts";
 import { openDb, type Db } from "./db.ts";
 import { enqueue, getWorkItem, lastItemForMessage, newChain, nextQueued, nextSteerable, recoverAfterRestart, setStatus, useChainRequest, type NewWork, type WorkSource } from "./queue.ts";
 import { tempRoot } from "./testing.ts";
+import { PROJECT_MIGRATION } from "./project-schema.ts";
 
 let db: Db;
 let botId: string;
@@ -11,6 +12,7 @@ let botId: string;
 beforeEach(() => {
   const root = tempRoot();
   db = openDb(join(root, "t.db"));
+  if (!db.prepare("SELECT name FROM sqlite_master WHERE name='projects'").get()) db.exec(PROJECT_MIGRATION);
   botId = createBot(db, join(root, "bots"), { name: "Writer", color: "blue", shape: "circle", instructions: "", provider: "codex", model: "gpt-5.6-sol" }).id;
   return () => db.close();
 });
@@ -19,6 +21,17 @@ const add = (text: string, source: WorkSource = "you", extra: Omit<NewWork, "bot
   enqueue(db, { botId, source, text, ...extra, messageId: extra.messageId ?? null });
 
 const tiedCreatedAt = "2026-09-26T10:00:00.000Z";
+
+it("persists complete task context and never steers work across contexts", () => {
+  const task = add("task", "task", { taskAttemptId: "attempt-a", taskRevision: 1, executionContextKey: "context-a" });
+  expect(getWorkItem(db, task.id)).toMatchObject({ taskAttemptId: "attempt-a", taskRevision: 1, executionContextKey: "context-a" });
+  const ordinary = add("standalone reply", "bot_reply");
+  const reply = add("task reply", "bot_reply", { taskAttemptId: "attempt-a", taskRevision: 1, executionContextKey: "context-a" });
+  expect(nextSteerable(db, botId, botId)?.id).toBe(ordinary.id);
+  expect(nextSteerable(db, botId, botId, "context-a")?.id).toBe(reply.id);
+  expect(() => add("bad", "task", { taskAttemptId: "attempt-a" })).toThrow(/complete immutable/);
+  expect(() => add("bad", "task")).toThrow(/needs an attempt/);
+});
 
 describe("work queue", () => {
   it("hands out queued work oldest first within a priority, even within one millisecond", () => {
@@ -87,6 +100,9 @@ describe("work queue", () => {
       routineRunId: "run-1",
       status: "queued",
       createdAt: item.createdAt,
+      taskAttemptId: null,
+      taskRevision: null,
+      executionContextKey: null,
     });
     expect(nextQueued(db, botId)).toEqual(item);
   });

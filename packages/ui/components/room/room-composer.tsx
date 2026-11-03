@@ -12,6 +12,8 @@ import { scrollToShow, useRevision, useSendGuard } from "@/lib/use-draft";
 import { usePhone } from "@/lib/use-phone";
 import { cn } from "@/lib/utils";
 import { BotAvatar } from "../bot-avatar";
+import { useDictation } from "@/lib/use-dictation";
+import { DictationButton, DictationStatus } from "../chat/dictation-button";
 
 // A room's composer (WF5). Typing "@" opens the mention popover above it, filtered by what follows; it offers the room's own bots (members),
 // as only they answer there. A post that mentions none of them gets no answer, and the composer says so (WF11); mentions are read as the daemon
@@ -59,9 +61,12 @@ export function RoomComposer({ room }: { room: Room }) {
     if (typedMention(next, at)?.start !== dismissed) setDismissed(null);
   }
 
+  const voice = useDictation("room", room.id, field, text, (next) => edit(next, next.length));
+
   function pick(option: MentionOption): void {
     if (!typed) return;
     const next = insertMention(text, typed.start, caret, option.name);
+    voice.changed(next.text);
     edit(next.text, next.caret);
     requestAnimationFrame(() => {
       field.current?.focus();
@@ -72,6 +77,7 @@ export function RoomComposer({ room }: { room: Room }) {
   // The phone's @ button: starts a mention at the caret, which opens the list, and keeps the keyboard up.
   function mention(): void {
     const next = withAt(text, field.current?.selectionStart ?? text.length);
+    voice.changed(next.text);
     edit(next.text, next.caret);
     requestAnimationFrame(() => {
       field.current?.focus();
@@ -90,6 +96,7 @@ export function RoomComposer({ room }: { room: Room }) {
 
   async function send(): Promise<void> {
     if (busy || !text.trim() || !guard.begin()) return;
+    void voice.cancel();
     const sentText = text;
     const sentRevision = revision.now();
     setBusy(true);
@@ -191,11 +198,12 @@ export function RoomComposer({ room }: { room: Room }) {
           aria-activedescendant={open ? `mention-${active}` : undefined}
           aria-autocomplete="list"
           placeholder={phone ? `Message ${room.name}` : `Message ${room.name}. Type @ to mention a bot.`}
-          onChange={(event) => edit(event.target.value, event.target.selectionStart)}
+          onChange={(event) => { voice.changed(event.target.value); edit(event.target.value, event.target.selectionStart); }}
           onSelect={(event) => setCaret(event.currentTarget.selectionStart)}
           onKeyDown={onKeyDown}
           className="max-h-[200px] min-h-8 flex-1 resize-none max-sm:max-h-[min(200px,25dvh)] bg-transparent py-[5.5px] text-[14px] leading-[21px] text-text outline-none [field-sizing:content] placeholder:text-placeholder"
         />
+        <DictationButton voice={voice} />
         <button
           type="submit"
           aria-label="Send"
@@ -205,6 +213,7 @@ export function RoomComposer({ room }: { room: Room }) {
           <ArrowUp className="size-4" aria-hidden />
         </button>
       </form>
+      <DictationStatus voice={voice} />
       {problem && (
         <p role="alert" className="mt-1.5 px-3 text-[12px] leading-[18px] text-danger">
           {problem}

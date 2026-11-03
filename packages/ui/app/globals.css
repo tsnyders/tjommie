@@ -1,5 +1,45 @@
 @import "tailwindcss";
 
+html[data-text-size="large"] { font-size: 112.5%; }
+html[data-text-size="larger"] { font-size: 125%; }
+
+/* Preserve the existing type scale while following the device's default font size. */
+@layer utilities {
+  .text-\[11px\] { font-size: 0.6875rem; }
+  .text-\[12px\] { font-size: 0.75rem; }
+  .text-\[13px\] { font-size: 0.8125rem; }
+  .text-\[14px\] { font-size: 0.875rem; }
+  .text-\[15px\] { font-size: 0.9375rem; }
+  .text-\[17px\] { font-size: 1.0625rem; }
+  .text-\[20px\] { font-size: 1.25rem; }
+  .leading-\[14px\] { --tw-leading: 0.875rem; line-height: var(--tw-leading); }
+  .leading-\[16px\] { --tw-leading: 1rem; line-height: var(--tw-leading); }
+  .leading-\[18px\] { --tw-leading: 1.125rem; line-height: var(--tw-leading); }
+  .leading-\[20px\] { --tw-leading: 1.25rem; line-height: var(--tw-leading); }
+  .leading-\[21px\] { --tw-leading: 1.3125rem; line-height: var(--tw-leading); }
+  .leading-\[22px\] { --tw-leading: 1.375rem; line-height: var(--tw-leading); }
+  .leading-\[26px\] { --tw-leading: 1.625rem; line-height: var(--tw-leading); }
+}
+
+html[data-density="compact"] [data-slot="bot-list"] { gap: 0.5rem; }
+@media (width >= 640px) {
+  html[data-density="compact"] [data-slot="settings-row"] { min-height: 2.75rem; padding-block: 0.5rem; }
+  html[data-density="compact"] [data-slot="bot-row"] { padding-bottom: 0.5rem; }
+}
+
+.settings-surface [data-slot="settings-link"] { min-height: 2.75rem; }
+.settings-surface :is([role="radio"], [role="switch"]) { position: relative; }
+.settings-surface :is([role="radio"], [role="switch"])::after {
+  content: "";
+  position: absolute;
+  inset: 50% auto auto 50%;
+  min-width: 44px;
+  min-height: 44px;
+  width: 100%;
+  height: 100%;
+  transform: translate(-50%, -50%);
+}
+
 /* Tailwind's dark: variant follows the app's .dark class, not the Windows setting. */
 @custom-variant dark (&:is(.dark *));
 
@@ -167,8 +207,8 @@
     background: var(--canvas);
     color: var(--text);
     font-family: var(--font-sans);
-    font-size: 14px;
-    line-height: 21px;
+    font-size: 0.875rem;
+    line-height: 1.3125rem;
     -webkit-font-smoothing: antialiased;
   }
   * {
@@ -235,7 +275,7 @@
 .markdown h2,
 .markdown h3,
 .markdown h4 {
-  font-size: 15px;
+  font-size: 0.9375rem;
   font-weight: 600;
 }
 .markdown code {
@@ -243,7 +283,7 @@
   background: var(--code);
   padding: 1px 5px;
   font-family: "Cascadia Mono", Consolas, monospace;
-  font-size: 13px;
+  font-size: 0.8125rem;
 }
 .markdown pre {
   overflow-x: auto;
@@ -572,8 +612,8 @@
     letter-spacing: -0.005em;
   }
   html[data-mobile-style="folio"] [data-slot="title"] {
-    font-size: 40px;
-    line-height: 44px;
+    font-size: 2.5rem;
+    line-height: 2.75rem;
     letter-spacing: -0.02em;
   }
   html[data-mobile-style="folio"] .style-folio {
@@ -581,8 +621,8 @@
   }
   html[data-mobile-style="folio"] [data-slot="date"] {
     margin-bottom: 2px;
-    font-size: 13px;
-    line-height: 18px;
+    font-size: 0.8125rem;
+    line-height: 1.125rem;
     color: var(--secondary);
   }
   html[data-mobile-style="folio"] [data-slot="summary"] {
@@ -592,8 +632,8 @@
     display: -webkit-box; /* keeps its two-line clamp over .style-folio's block */
     margin-top: 8px;
     font-family: var(--font-display);
-    font-size: 17px;
-    line-height: 24px;
+    font-size: 1.0625rem;
+    line-height: 1.5rem;
     color: var(--body);
   }
   html[data-mobile-style="folio"] [data-slot="filters"] {
@@ -618,12 +658,12 @@
     padding: 16px 0;
   }
   html[data-mobile-style="folio"] [data-slot="row-name"] {
-    font-size: 18px;
-    line-height: 24px;
+    font-size: 1.125rem;
+    line-height: 1.5rem;
   }
   html[data-mobile-style="folio"] [data-slot="row-task"] {
-    font-size: 14px;
-    line-height: 20px;
+    font-size: 0.875rem;
+    line-height: 1.25rem;
   }
   html[data-mobile-style="folio"] [data-slot="bot-row"][data-state="waiting"] [data-slot="row-chip"] > span:first-child {
     background: transparent;
@@ -635,17 +675,17 @@
     background: transparent;
   }
   html[data-mobile-style="folio"] [data-slot="title-name"] {
-    font-size: 18px;
+    font-size: 1.125rem;
   }
   /* Bot replies are plain serif text, no bubble; the person's own messages sit on paper. */
   html[data-mobile-style="folio"] [data-author="bot"] {
     padding-inline: 0;
     font-family: var(--font-display);
-    font-size: 16.5px;
-    line-height: 25px;
+    font-size: 1.03125rem;
+    line-height: 1.5625rem;
   }
   html[data-mobile-style="folio"] [data-author="bot"] :is(code, pre) {
-    font-size: 13px;
+    font-size: 0.8125rem;
   }
   html[data-mobile-style="folio"] [data-author="you"] {
     background: var(--you-bubble);
@@ -844,8 +884,8 @@
     animation: aurora-in var(--view-dur) var(--phone-motion-ease) both;
   }
   html[data-mobile-style="aurora"] [data-slot="title"] {
-    font-size: 34px;
-    line-height: 40px;
+    font-size: 2.125rem;
+    line-height: 2.5rem;
     letter-spacing: -0.025em;
     font-weight: 700;
   }

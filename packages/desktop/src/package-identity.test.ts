@@ -1,16 +1,18 @@
 import { expect, it, vi } from "vitest";
 import builder from "electron-builder";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { cpSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { testIdentity } from "../scripts/update-test-guards.ts";
+import { verifySpeechResources } from "./speech-resources.ts";
 
 vi.mock("node:child_process", async (original) => ({ ...await original<typeof import("node:child_process")>(), execSync: vi.fn() }));
-vi.mock("node:fs", async (original) => ({ ...await original<typeof import("node:fs")>(), cpSync: vi.fn(), rmSync: vi.fn(), writeFileSync: vi.fn() }));
+vi.mock("node:fs", async (original) => ({ ...await original<typeof import("node:fs")>(), appendFileSync: vi.fn(), cpSync: vi.fn(), mkdirSync: vi.fn(), rmSync: vi.fn(), writeFileSync: vi.fn() }));
 vi.mock("electron-builder", () => ({ default: { build: vi.fn(), Platform: { WINDOWS: { createTarget: vi.fn() } }, Arch: { x64: 1 } } }));
 vi.mock("rolldown", () => ({ rolldown: async () => ({ write: vi.fn(), close: vi.fn() }) }));
 vi.mock("../../../scripts/prepare-ui.ts", () => ({ prepareUiAssets: vi.fn() }));
 vi.mock("../scripts/packaged-provenance.ts", () => ({ buildInputHash: () => "fixture", writePackagedProvenance: vi.fn() }));
+vi.mock("./speech-resources.ts", () => ({ verifySpeechResources: vi.fn(() => ({ files: [{ name: "whisper-cli.exe" }] })) }));
 
 it("leaves production packaging options unchanged, with no test hook or NSIS include", async () => {
   for (const key of ["TJOMMIE_PACKAGE_APP_ID", "TJOMMIE_PACKAGE_PRODUCT", "TJOMMIE_PACKAGE_TEST_ROOT", "TJOMMIE_PACKAGE_VERSION"]) vi.stubEnv(key, undefined);
@@ -23,6 +25,9 @@ it("leaves production packaging options unchanged, with no test hook or NSIS inc
     expect(config.appId).toBe("com.tsnyders.tjommie");
     expect(config.productName).toBe("Tjommie");
     expect(config.nsis).toEqual({ oneClick: true, perMachine: false, deleteAppDataOnUninstall: false });
+    expect(verifySpeechResources).toHaveBeenCalledWith(expect.stringMatching(/[\\/]\.cache[\\/]speech-runtime$/));
+    expect(vi.mocked(verifySpeechResources).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(builder.build).mock.invocationCallOrder[0]);
+    expect(vi.mocked(cpSync).mock.calls.some(([from, to]) => String(from).replaceAll("\\", "/").endsWith("speech-runtime/manifest.json") && String(to).replaceAll("\\", "/").endsWith("speech/manifest.json"))).toBe(true);
     const metadata = vi.mocked(writeFileSync).mock.calls.find(([file]) => String(file).endsWith("package.json"))?.[1];
     expect(JSON.parse(String(metadata))).toMatchObject({ name: "tjommie", appId: "com.tsnyders.tjommie", productName: "Tjommie" });
   } finally { vi.unstubAllEnvs(); }

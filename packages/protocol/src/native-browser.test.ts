@@ -7,6 +7,10 @@ describe("native browser trust boundaries", () => {
       expect(NativeBrowserCommand.safeParse(command).success).toBe(true);
       expect(NativeBrowserUiCommand.safeParse(command).success).toBe(false);
     }
+    const remote = { kind: "remote", controllerId: "trusted-connection", action: { kind: "input", generation: "one", pageId: "page", controlEpoch: 2, viewportRevision: 3, input: { kind: "text", text: "synthetic PIN" } } };
+    expect(NativeBrowserCommand.safeParse(remote).success).toBe(true);
+    expect(NativeBrowserUiCommand.safeParse(remote).success).toBe(false);
+    expect(NativeBrowserCommand.safeParse({ ...remote, action: { ...remote.action, controlEpoch: undefined } }).success).toBe(false);
   });
   it("requires a session and page identity for page mutations", () => {
     expect(NativeBrowserUiCommand.safeParse({ kind: "navigate", url: "https://example.test" }).success).toBe(false);

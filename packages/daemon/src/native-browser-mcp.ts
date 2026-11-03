@@ -5,7 +5,7 @@ import { nativeBrowserTools, validateNativeBrowserTool } from "../../desktop/src
 import type { StoredBot } from "./bots.ts";
 import type { McpTokens } from "./mcp.ts";
 
-type Options = { tokens: McpTokens; getBot: (id: string) => StoredBot; request: (botId: string, command: NativeBrowserCommand, authorized?: () => boolean) => Promise<unknown>; cancelTools?: (botId: string) => void };
+type Options = { tokens: McpTokens; getBot: (id: string) => StoredBot; request: (botId: string, command: NativeBrowserCommand, authorized?: () => boolean) => Promise<unknown>; cancelTools?: (botId: string) => void; canRunTools?: (botId: string) => boolean };
 type Answer = { jsonrpc: "2.0"; id: string | number | null; result?: unknown; error?: { code: number; message: string } };
 const record = (value: unknown): Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const failed = (message: string) => ({ isError: true, content: [{ type: "text", text: message.slice(0, 4000) }] });
@@ -31,7 +31,7 @@ export class NativeBrowserMcp {
     finally { if (this.#tails.get(botId) === tail) this.#tails.delete(botId); }
   }
   #authorized(token: string, botId: string, epoch: number): boolean {
-    try { return !this.#closed && this.#options.tokens.botFor(token) === botId && !!this.#options.getBot(botId).browser && (this.#epochs.get(botId) ?? 0) === epoch; }
+    try { return !this.#closed && this.#options.canRunTools?.(botId) !== false && this.#options.tokens.botFor(token) === botId && !!this.#options.getBot(botId).browser && (this.#epochs.get(botId) ?? 0) === epoch; }
     catch { return false; }
   }
   async #answer(token: string, botId: string, epoch: number, raw: unknown): Promise<Answer | null> {

@@ -3,12 +3,13 @@ import { agentsTabName, homeTarget, showsTabBar, tabFor, TABS } from "./phone-na
 
 describe("phone navigation", () => {
   it("shows the pill on the overview screens and not on chat or the bot forms", () => {
-    for (const path of ["/", "/agents/", "/agents", "/room/", "/settings/", "/settings/accounts/"]) expect(showsTabBar(path)).toBe(true);
+    for (const path of ["/", "/agents/", "/agents", "/room/", "/projects/", "/settings/", "/settings/accounts/"]) expect(showsTabBar(path)).toBe(true);
     for (const path of ["/chat/", "/bots/new/", "/bots/settings/", "/chat"]) expect(showsTabBar(path)).toBe(false);
   });
 
-  it("has three labelled destinations, Rooms opening the rooms list", () => {
-    expect(TABS.map((tab) => tab.label)).toEqual(["Agents", "Rooms", "Settings"]);
+  it("has four labelled destinations, Rooms opening the rooms list", () => {
+    expect(TABS.map((tab) => tab.label)).toEqual(["Agents", "Rooms", "Projects", "Settings"]);
+    expect(tabFor("/projects/")).toBe("projects");
     expect(TABS.find((tab) => tab.id === "room")?.href).toBe("/room/");
     for (const tab of TABS) expect(tab.label).toContain(tab.short); // the name holds what shows
   });

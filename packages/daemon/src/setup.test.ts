@@ -33,7 +33,7 @@ const codexMocks = vi.hoisted(() => ({
 
 vi.mock("./cli.ts", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./cli.ts")>();
-  return { ...actual, resolveCli: cliMocks.resolveCli, runCli: cliMocks.runCli, openConsole: cliMocks.openConsole, openUrl: cliMocks.openUrl, spawnCli: cliMocks.spawnCli, killTreeAndWait: cliMocks.killTreeAndWait };
+  return { ...actual, resolveCli: cliMocks.resolveCli, runCli: cliMocks.runCli, openConsole: cliMocks.openConsole, openUrl: cliMocks.openUrl, spawnCli: cliMocks.spawnCli, launchCli: async (...args: Parameters<typeof actual.launchCli>) => cliMocks.spawnCli(...args), killTreeAndWait: cliMocks.killTreeAndWait };
 });
 
 vi.mock("./providers/codex-rpc.ts", () => codexMocks);

@@ -71,3 +71,22 @@ it("keeps cancellation responsive when all four normal workers are occupied", as
   } finally { release(); }
   await Promise.all(jobs);
 });
+it("releases a remote controller through the urgent lane while its frame is pending", async () => {
+  const token = "h".repeat(43);
+  broker = new NativeBrowserBroker(token, 1000);
+  server = await startServer({ port: 0, token: "renderer-token", handlers: {}, allowedOrigins: [], routes: { "/browser-host": broker.handle } });
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const bot = { id: "one", name: "One", homeFolder: "C:/synthetic/one" };
+  const execute = vi.fn(async (_bot: typeof bot, command: NativeBrowserCommand) => {
+    if (command.kind === "remote" && command.action.kind === "frame") await gate;
+    return {};
+  });
+  host = startNativeBrowserHost({ port: server.port, token, execute });
+  const pending = broker.request(bot, { kind: "remote", controllerId: "connection-one", action: { kind: "frame" } });
+  try {
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledTimes(1));
+    await expect(broker.request(bot, { kind: "remote", controllerId: "connection-one", action: { kind: "disconnect" } })).resolves.toEqual({});
+  } finally { release(); }
+  await pending;
+});

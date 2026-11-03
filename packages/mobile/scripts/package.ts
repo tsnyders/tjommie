@@ -10,9 +10,13 @@ if (process.platform !== "win32") throw new Error("This packaging script current
 const args = process.argv.slice(2);
 if (args.length > 1 || (args.length === 1 && args[0] !== "--release")) throw new Error("Use package:android with optional --release only.");
 const release = args[0] === "--release";
+const acceptance = process.env.TJOMMIE_ANDROID_TEST_APP === "1";
+const signingVariables = ["TJOMMIE_ANDROID_KEYSTORE", "TJOMMIE_ANDROID_KEYSTORE_PASSWORD", "TJOMMIE_ANDROID_KEY_ALIAS", "TJOMMIE_ANDROID_KEY_PASSWORD"] as const;
+if (acceptance && (release || process.env.GITHUB_ACTIONS !== "true" || signingVariables.some((name) => process.env[name]) || process.env.TJOMMIE_GOOGLE_SERVICES_JSON || existsSync(join(repo, "packages/mobile/android/app/google-services.json")))) {
+  throw new Error("The isolated Android test app requires a secret-free GitHub Actions debug build.");
+}
 if (release) {
-  const names = ["TJOMMIE_ANDROID_KEYSTORE", "TJOMMIE_ANDROID_KEYSTORE_PASSWORD", "TJOMMIE_ANDROID_KEY_ALIAS", "TJOMMIE_ANDROID_KEY_PASSWORD"] as const;
-  if (names.some((name) => !process.env[name]) || !existsSync(process.env.TJOMMIE_ANDROID_KEYSTORE ?? "") || !statSync(process.env.TJOMMIE_ANDROID_KEYSTORE ?? "").isFile()) {
+  if (signingVariables.some((name) => !process.env[name]) || !existsSync(process.env.TJOMMIE_ANDROID_KEYSTORE ?? "") || !statSync(process.env.TJOMMIE_ANDROID_KEYSTORE ?? "").isFile()) {
     throw new Error("Release signing requires all four TJOMMIE_ANDROID_* variables and a keystore file.");
   }
 }
@@ -66,8 +70,8 @@ for (const file of readdirSync(ui, { recursive: true, withFileTypes: true })) {
 if (assets === 0 || buildInputHash(repo) !== inputsSha256 || (existsSync(firebaseFile) ? digest(firebaseFile) : null) !== firebaseConfigSha256) throw new Error("Android inputs changed during packaging. Run npm run package:android again.");
 const out = join(repo, "dist-mobile"); mkdirSync(out, { recursive: true });
 const version = (JSON.parse(readFileSync(join(repo, "packages/mobile/package.json"), "utf8")) as { version: string }).version;
-const artifact = release ? `Tjommie-Android-${version}.apk` : `Tjommie Android ${version} debug.apk`;
+const artifact = release ? `Tjommie-Android-${version}.apk` : acceptance ? `Tjommie-Phase4-Test-${version}.apk` : `Tjommie Android ${version} debug.apk`;
 cpSync(apk, join(out, artifact));
-const provenance = { version: 1, inputsSha256, firebaseConfigSha256, artifact, sha256: digest(apk), uiAssetsVerified: assets, signing: release ? "Android release signing" : "Android debug signing; local testing only" };
+const provenance = { version: 1, inputsSha256, firebaseConfigSha256, artifact, applicationId: acceptance ? "dev.tjommie.app.phase4test" : "dev.tjommie.app", sha256: digest(apk), uiAssetsVerified: assets, signing: release ? "Android release signing" : "Android debug signing; local testing only" };
 writeFileSync(join(out, release ? `Tjommie-Android-${version}.provenance.json` : "provenance.json"), JSON.stringify(provenance, null, 2));
 console.log(`Android package verified: ${assets} UI assets match the current build. ${join(out, artifact)}`);

@@ -4,6 +4,7 @@ android {
     namespace = "dev.tjommie.app"
     compileSdk = rootProject.ext.compileSdkVersion
     defaultConfig {
+        manifestPlaceholders = [appLabel: "Tjommie"]
         buildConfigField "boolean", "PUSH", file("google-services.json").isFile().toString()
         applicationId "dev.tjommie.app"
         minSdkVersion rootProject.ext.minSdkVersion
@@ -27,6 +28,13 @@ android {
         }
     }
     buildTypes {
+        debug {
+            if (System.getenv("TJOMMIE_ANDROID_TEST_APP") == "1") {
+                applicationIdSuffix ".phase4test"
+                manifestPlaceholders = [appLabel: "Tjommie Phase 4 Test"]
+            }
+        }
+
         release {
             signingConfig signingConfigs.release
             minifyEnabled false

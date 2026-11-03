@@ -15,7 +15,17 @@ import { nativeBrowserHandlers } from "./native-browser-handlers.ts";
 import type { NativeBrowserCommand } from "../../protocol/src/native-browser.ts";
 import { runCleanup } from "./cleanup.ts";
 import { historyPage } from "./chat.ts";
-import { openDb } from "./db.ts";
+import { newId, openDb } from "./db.ts";
+import { Attachments } from "./attachments.ts";
+import { attachmentHandlers } from "./attachment-handlers.ts";
+import { Projects } from "./projects.ts";
+import { Worktrees } from "./worktrees.ts";
+import { Tasks } from "./tasks.ts";
+import { TaskIntegrations } from "./task-integration.ts";
+import { projectHandlers } from "./project-handlers.ts";
+import { createProjectReviewRuntime } from "./project-review-runtime.ts";
+import { reviewAccountResolver } from "./project-review-account.ts";
+import { getHostDiagnostics, readDiagnosticVersions } from "./diagnostics.ts";
 import type { GoogleAuth } from "./google-auth.ts";
 import { googleTools } from "./google-tools.ts";
 import { McpTokens, mcpHandler } from "./mcp.ts";
@@ -37,6 +47,11 @@ import { loadRelayIdentity } from "./relay-identity.ts";
 import { startPush } from "./push.ts";
 import { listDevices, renameDevice } from "./devices-store.ts";
 import type { CredentialTransport } from "./account-credentials.ts";
+import { installWindowsWorker, workerCliExclusive } from "./cli.ts";
+import { WindowsWorkerBoundary } from "./windows-worker.ts";
+import { WorkerBoundaryHost } from "./worker-boundary-host.ts";
+import { VaultHostBroker } from "./vault-host-broker.ts";
+import { vaultHandlers } from "./vault-handlers.ts";
 
 const NOTES_PREVIEW_CHARS = 4_000;
 
@@ -74,19 +89,26 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     (!/^[A-Za-z0-9_-]{43,}$/.test(options.auth.desktopHostToken) || options.auth.desktopHostToken === options.auth.token)) {
     throw new PlainStartupError("The native browser host requires an independent private capability.");
   }
+  const worker: WindowsWorkerBoundary | null = !options.createSession
+    ? new WindowsWorkerBoundary({ configurationPath: join(dataPaths(options.root).root, "worker.json"), exclusive: () => workerCliExclusive(worker!) }) : null;
+  const uninstallWorker = worker?.required ? installWindowsWorker(worker) : undefined;
   // The listening port is the lock. A duplicate launch must not even open the database.
-  const server = await startServer({ port: options.port ?? DEFAULT_PORT, token: "", handlers: {}, allowedOrigins: allowedOrigins(options.auth.mode), deferRequests: true });
-  let cleanup = () => {};
+  let server: Server;
+  try { server = await startServer({ port: options.port ?? DEFAULT_PORT, token: "", handlers: {}, allowedOrigins: allowedOrigins(options.auth.mode), deferRequests: true }); }
+  catch (error) { worker?.close(); uninstallWorker?.(); throw error; }
+  let cleanup: () => void | Promise<void> = () => {};
   try {
-    return await initializeDaemon(options, server, (next) => { cleanup = next; });
+    const daemon = await initializeDaemon(options, server, (next) => { cleanup = next; }, worker);
+    return { ...daemon, close: async () => { await daemon.close(); worker?.close(); uninstallWorker?.(); } };
   } catch (error) {
-    try { cleanup(); } finally { await server.close(); }
+    try { await cleanup(); } finally { await server.close(); worker?.close(); uninstallWorker?.(); }
     throw error;
   }
 }
 
-async function initializeDaemon(options: DaemonOptions, server: Server, onCleanup: (cleanup: () => void) => void): Promise<Daemon> {
+async function initializeDaemon(options: DaemonOptions, server: Server, onCleanup: (cleanup: () => void | Promise<void>) => void, worker: WindowsWorkerBoundary | null): Promise<Daemon> {
   const paths = dataPaths(options.root);
+  const diagnosticVersions = readDiagnosticVersions();
   if (options.accountsDir) paths.accounts = resolve(options.accountsDir);
   migrateLegacyDb(paths);
   if (options.auth.mode === "production") {
@@ -131,6 +153,17 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
   let setup: ProviderSetup[] = [];
   let broadcast: Broadcast = () => {};
   const send: Broadcast = (event, data) => broadcast(event, data);
+  const savedAttachmentHost = db.prepare("SELECT value FROM settings WHERE key='attachmentHostId'").get() as { value: string } | undefined;
+  const attachmentHostId = savedAttachmentHost?.value ?? newId();
+  if (!savedAttachmentHost) db.prepare("INSERT INTO settings(key,value) VALUES('attachmentHostId',?)").run(attachmentHostId);
+  const attachments = new Attachments({ db, root: paths.root, hostId: attachmentHostId });
+  const cleanupSharedFiles = (): void => {
+    try { attachments.cleanup(); }
+    catch { console.warn("Unused shared files could not be removed. Cleanup will retry after restart."); }
+  };
+  const projects = new Projects(db, new Worktrees(join(paths.root, "workspaces")), send, (botId) => {
+    if (switchingBots.has(botId) || deletionRequests.has(botId)) throw new RpcError("busy", "This bot's settings or lifecycle is changing. Try again shortly.");
+  });
   // The separate API feature is on hold. Only isolated dependency-injected tests enable its wiring.
   let googleOpening: Promise<GoogleAuth> | undefined = options.googleAuth ? Promise.resolve(options.googleAuth) : undefined;
   const google = (): Promise<GoogleAuth> => googleOpening ?? Promise.reject(new RpcError("bad_state", "The separate Google API connection is not enabled in this version. Use the native browser."));
@@ -138,6 +171,10 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
   const tokens = new McpTokens();
   const nativeBroker = options.auth.mode === "production" && options.auth.desktopHostToken
     ? new NativeBrowserBroker<NativeBrowserCommand>(options.auth.desktopHostToken) : null;
+  const workerHost = worker && options.auth.mode === "production" && options.auth.desktopHostToken
+    ? new WorkerBoundaryHost(worker, options.auth.desktopHostToken) : null;
+  const vaultBroker = options.auth.mode === "production" && options.auth.desktopHostToken
+    ? new VaultHostBroker(options.auth.desktopHostToken) : null;
   const nativeRequest = async (id: string, command: NativeBrowserCommand, authorized?: () => boolean): Promise<unknown> => {
     const bot = getStoredBot(db, id);
     if (command.kind !== "close" && command.kind !== "cancel_tools" && command.kind !== "delete_profile" && !bot.browser) throw new RpcError("bad_state", "This bot's browser is off.");
@@ -145,7 +182,7 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
     return nativeBroker.request(bot, command, authorized);
   };
   const browserMcp = nativeBroker
-    ? new NativeBrowserMcp({ tokens, getBot: (id: string) => getStoredBot(db, id), request: nativeRequest, cancelTools: (id: string) => {
+    ? new NativeBrowserMcp({ tokens, getBot: (id: string) => getStoredBot(db, id), canRunTools: (id: string) => !getStoredBot(db, id).paused, request: nativeRequest, cancelTools: (id: string) => {
       nativeBroker.cancelTools(id);
       void nativeRequest(id, { kind: "cancel_tools" }).catch(() => {});
     } })
@@ -155,6 +192,7 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
   const useAccountRuntime = options.createSession === undefined || options.createAccountsRuntime !== undefined;
   let accountsReady = false;
   let runner: Runner;
+  let tasks: Tasks;
   const runtimeOptions: AccountRuntimeOptions = {
     db, paths,
     onChanged: () => {
@@ -200,6 +238,7 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
     createSession: options.createSession,
     ...(useAccountRuntime ? { accounts } : {}),
     hooks: {
+      executionContext: (bot, item) => tasks.executionContext(bot, item),
       retryRoutine: (message) => scheduler.retry(message),
       mcpServers: (bot) => {
         const sessionToken = tokens.issue(bot.id);
@@ -214,16 +253,24 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
         team.sessionClosed(botId);
       },
       turnStarted: (item) => {
+        tasks.turnStarted(item);
         if (item.routineRunId) scheduler.runStarted(item);
       },
       turnEnded,
       turnRequeued: (item) => {
+        tasks.turnRequeued(item);
         if (item.routineRunId) scheduler.runRequeued(item);
       },
     },
   });
+  tasks = new Tasks(projects, {
+    deliver: (item) => runner.deliver(item), currentWork: (botId) => runner.currentWork(botId),
+    stopItem: (id, notice) => runner.stopItem(id, notice), retired: (botId) => runner.retired(botId),
+  }, useAccountRuntime ? { review: createProjectReviewRuntime({ root: join(paths.root, "data", "reviewer"), resolve: reviewAccountResolver(db, accounts, send) }) } : {});
+  const integrations = new TaskIntegrations(tasks);
   const team = new Team({
     db, broadcast: send,
+    attachments, effectiveFolder: (botId) => runner.effectiveFolder(botId),
     deliver: (work) => runner.deliver(work),
     currentWork: (botId) => runner.currentWork(botId),
     stateOf: (bot) => runner.toBot(bot).state,
@@ -235,10 +282,14 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
     deliver: (work) => runner.deliver(work),
     stopItem: (itemId, notice) => runner.stopItem(itemId, notice),
   });
-  onCleanup(() => { scheduler.stop(); runner.shutdown(); db.close(); });
+  onCleanup(async () => {
+    workerHost?.close(); vaultBroker?.close();
+    await runCleanup([() => scheduler.stop(), () => integrations.shutdown(), () => tasks.shutdown(), () => runner.shutdown(), () => accounts.close(), () => nativeBroker?.close(), () => attachments.close(), () => db.close()], "Startup cleanup did not finish.");
+  });
 
   function turnEnded(item: WorkItem, result: TurnResult): void {
     try {
+      tasks.turnEnded(item, result);
       if (item.routineRunId) scheduler.runEnded(item, result);
     } finally {
       team.turnEnded(item, result);
@@ -324,6 +375,10 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
     void syncRelay().catch(() => {});
   };
   const handlers: Handlers = {
+    ...(vaultBroker ? vaultHandlers(vaultBroker.request) : {}),
+    "diagnostics.get": () => getHostDiagnostics({ db, setup, relay: relayStatus().relay.state, ...diagnosticVersions }),
+    ...attachmentHandlers(attachments),
+    ...projectHandlers(projects, tasks, integrations),
     "remote.status": relayStatus,
     "remote.ping": () => ({}),
     "device.registerPush": () => { throw new RpcError("bad_state", "Push registration is available only to paired devices."); },
@@ -390,6 +445,7 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
       return bot;
     },
     "bots.update": async ({ id, patch }) => {
+      if (tasks.botBusy(id)) throw new RpcError("busy", "Stop this bot's project task or check before changing its settings.");
       const before = getStoredBot(db, id);
       const providerChanged = patch.provider !== undefined && patch.provider !== before.provider;
       const accountChanged = patch.accountId !== undefined && patch.accountId !== before.accountId;
@@ -432,6 +488,7 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
       return bot;
     },
     "bots.delete": async ({ id }) => {
+      if (projects.botInUse(id) || tasks.botBusy(id)) throw new RpcError("busy", "Remove this bot from its project and finish its task or check before deleting it.");
       getStoredBot(db, id);
       if (deletionRequests.has(id)) throw new RpcError("busy", "The bot is already being deleted. Try again shortly.");
       deletionRequests.add(id);
@@ -457,6 +514,7 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
           team.botDeleted(handle);
         } finally {
           runner.forget(id);
+          cleanupSharedFiles();
           broadcast("bot.deleted", { id });
         }
         return {};
@@ -466,6 +524,10 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
     },
     "bots.pause": ({ id, paused }) => {
       setPaused(db, id, paused);
+      if (paused && nativeBroker) {
+        nativeBroker.cancelTools(id);
+        void nativeRequest(id, { kind: "cancel_tools" }).catch(() => {});
+      }
       const bot = runner.toBot(getStoredBot(db, id));
       broadcast("bot.updated", bot);
       if (!paused) runner.pump(id);
@@ -515,6 +577,7 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
     },
     "rooms.delete": ({ id }) => {
       deleteRoom(db, id);
+      cleanupSharedFiles();
       broadcast("room.deleted", { id });
       return {};
     },
@@ -563,8 +626,12 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
   };
 
   sweepDeletedBotFolders(db, paths.bots);
+  attachments.backfillLegacy();
+  cleanupSharedFiles();
   team.start();
   runner.recover(); // Synchronous after binding, before setup yields or requests can be served.
+  tasks.recover();
+  integrations.recover();
   setup = useAccountRuntime ? [] : await checkSetup(db);
   logVersionDrift(setup);
   mcpUrl = `http://127.0.0.1:${server.port}/mcp`;
@@ -579,7 +646,12 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
     if (deletionRequests.has(botId)) throw new RpcError("busy", "This bot is being deleted.");
     getStoredBot(db, botId);
     return (await google()).request(botId, service, path);
-  } }) : [])] }), "/mcp/browser": browserMcp.handle, ...(nativeBroker ? { "/browser-host": nativeBroker.handle } : {}) } });
+  } }) : [])] }),
+    "/mcp/browser": browserMcp.handle,
+    ...(nativeBroker ? { "/browser-host": nativeBroker.handle } : {}),
+    ...(workerHost ? { "/worker-host": workerHost.handle } : {}),
+    ...(vaultBroker ? { "/vault-host": vaultBroker.handle } : {}),
+  } });
   if (useAccountRuntime) void accounts.checkAll().catch(() => console.error("Some accounts could not be checked. Retry from Accounts."));
   if (remote.hasDevices()) {
     void remote.ensureListening().catch(() => console.error("The phone connection could not start. Retry from Devices."));
@@ -591,10 +663,15 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
     runner,
     scheduler,
     close: async () => {
+      server.stopRequests();
+      workerHost?.close();
+      vaultBroker?.close();
       await runCleanup([
         () => { closing = true; clearTimeout(inviteTimer); relay?.stop(); },
         () => remote.close(),
         () => scheduler.stop(),
+        () => integrations.shutdown(),
+        () => tasks.shutdown(),
         () => runner.shutdown(),
         () => accounts.close(),
         async () => { if (googleOpening) await (await googleOpening).close(); },
@@ -602,6 +679,7 @@ async function initializeDaemon(options: DaemonOptions, server: Server, onCleanu
         () => nativeBroker?.close(),
         () => browsers.closeAll(),
         () => server.close(),
+        () => attachments.close(),
         () => db.close(),
       ], "Tjommie stopped with cleanup errors.");
     },

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
-import { Hourglass, LayoutGrid, Plug, Plus, Settings } from "lucide-react";
+import { FolderGit2, Hourglass, LayoutGrid, Plug, Plus, Settings } from "lucide-react";
 import type { Bot } from "@tjommie/protocol";
 import { desktop } from "@/lib/desktop";
 import { stateLabel } from "@/lib/labels";
@@ -39,6 +39,9 @@ export function Rail() {
       <div className="mt-1 flex shrink-0 flex-col items-center gap-1">
         <RailLink href="/agents/" label="Agents" selected={pathname.startsWith("/agents")} compact>
           <LayoutGrid className="size-5 text-icon" aria-hidden />
+        </RailLink>
+        <RailLink href="/projects/" label="Projects" selected={pathname.startsWith("/projects")} compact>
+          <FolderGit2 className="size-5 text-icon" aria-hidden />
         </RailLink>
         <RailLink href="/bots/new/" label="New bot" selected={pathname.startsWith("/bots/new")} compact>
           <Plus className="size-5 text-icon" aria-hidden />

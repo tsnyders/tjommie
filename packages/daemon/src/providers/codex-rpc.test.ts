@@ -8,7 +8,7 @@ const cliMocks = vi.hoisted(() => ({
   spawnCli: vi.fn(),
 }));
 
-vi.mock("../cli.ts", () => cliMocks);
+vi.mock("../cli.ts", () => ({ ...cliMocks, launchCli: async (...args: unknown[]) => cliMocks.spawnCli(...args), waitForCliExit: (_child: unknown, exit: Promise<void>) => exit }));
 
 import { JsonRpcLines, RpcRemoteError, startCodexServer } from "./codex-rpc.ts";
 

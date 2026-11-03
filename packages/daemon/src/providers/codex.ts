@@ -1,6 +1,6 @@
 import type { Autonomy } from "@tjommie/protocol";
 import { hasPricing } from "../account-pricing.ts";
-import { killTreeAndWait, type CliCommand } from "../cli.ts";
+import { killTreeAndWait, prepareProviderDirectories, workerProcessRetired, WorkerLaunchTerminationError, type CliCommand } from "../cli.ts";
 import { RpcRemoteError, startCodexServer, type CodexServer, type JsonRpcLines } from "./codex-rpc.ts";
 import { isCodexMcpToolCall, mapCodexElicitation, mapCodexNotification, mapCodexRequest } from "./codex-parse.ts";
 import { redactProviderEvent } from "./types.ts";
@@ -116,24 +116,37 @@ export class CodexSession implements ProviderSession {
 
   async #start(): Promise<void> {
     if (this.#closed) throw new Error("The Codex session is closed");
-    const server = await startCodexServer(this.#cmd, this.#options.env, this.#options.cwd, ...(this.#options.authentication ? [{ ephemeralAuth: true }] : []));
-    this.#exited = new Promise<void>((resolve) => {
+    const permissions = prepareProviderDirectories(this.#options.cwd, ...this.#options.extraDirs); if (permissions) await permissions;
+    if (this.#closed) throw new Error("The Codex session is closed");
+    let server: CodexServer;
+    try { server = await startCodexServer(this.#cmd, this.#options.env, this.#options.cwd, ...(this.#options.authentication ? [{ ephemeralAuth: true }] : [])); }
+    catch (error) {
+      if (error instanceof WorkerLaunchTerminationError) { this.#exited = Promise.reject(error); void this.#exited.catch(() => {}); }
+      throw error;
+    }
+    this.#exited = server.waitForExit?.() ?? new Promise<void>((resolve) => {
       if (server.child.exitCode !== null && server.child.exitCode !== undefined || server.child.signalCode) resolve();
       else {
         server.child.once("exit", () => resolve());
         server.child.once("error", () => resolve());
       }
     });
+    void this.#exited.catch(() => {});
     if (this.#closed) {
       server.close();
       throw new Error("The Codex session is closed");
     }
     this.#server = server;
-    server.child.on("exit", (code) => {
+    const exited = (code: number | null): void => {
       if (this.#server !== server) return; // closed on purpose
       this.#server = null;
       if (this.#stopping) return; // interrupt() publishes exit after the whole tree has stopped
       this.#emit({ type: "exit", error: code === 0 || code === null ? null : `Codex exited with code ${code}` });
+    };
+    server.child.on("exit", (code: number | null) => {
+      const proof = workerProcessRetired(server.child);
+      if (proof) void proof.then(() => exited(code)).catch(() => this.#emit({ type: "turn_done", ok: false, error: "The isolated provider could not confirm process-tree exit. Its account stays reserved." }));
+      else exited(code);
     });
     if (this.#options.authentication) {
       try { await server.rpc.request("account/login/start", { type: "apiKey", apiKey: this.#options.authentication.key }); }

@@ -37,7 +37,13 @@ export class NativeBrowserBroker<C> {
       clearTimeout(item.timer); this.#pending.delete(id); item.reject(new Error("Browser session is no longer authorized."));
     }
     const jobs = [...this.#pending.values()];
-    const priority = (item: Pending<C>): boolean => typeof item.job.command === "object" && item.job.command !== null && "kind" in item.job.command && item.job.command.kind === "cancel_tools";
+    const priority = (item: Pending<C>): boolean => {
+      const command = item.job.command;
+      if (!command || typeof command !== "object" || !("kind" in command)) return false;
+      if (command.kind === "cancel_tools") return true;
+      if (command.kind !== "remote" || !("action" in command) || !command.action || typeof command.action !== "object" || !("kind" in command.action)) return false;
+      return command.action.kind === "control" || command.action.kind === "disconnect";
+    };
     const control = this.#controlPoll && jobs.find((item) => !item.sent && priority(item));
     if (control) { const response = this.#controlPoll!; this.#controlPoll = null; this.#send(control, response); }
     const pending = this.#poll && jobs.find((item) => !item.sent && !priority(item) && !jobs.some((other) => other !== item && other.job.bot.id === item.job.bot.id && (other.sent || priority(other))));
@@ -85,7 +91,8 @@ export class NativeBrowserBroker<C> {
     this.#pending.delete(value.id);
     clearTimeout(pending.timer);
     this.#dispatch();
-    if (value.ok) pending.resolve("result" in value ? value.result : null);
+    if (!pending.authorized()) pending.reject(new Error("Browser session is no longer authorized; the result was discarded."));
+    else if (value.ok) pending.resolve("result" in value ? value.result : null);
     else pending.reject(new Error("error" in value && typeof value.error === "string" ? value.error.slice(0, 2000) : "The native browser command failed."));
     res.writeHead(204).end();
   };

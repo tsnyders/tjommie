@@ -13,6 +13,7 @@ const cliMocks = vi.hoisted(() => ({
 vi.mock("../cli.ts", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../cli.ts")>()),
   ...cliMocks,
+  launchCli: async (...args: unknown[]) => cliMocks.spawnCli(...args),
 }));
 
 vi.mock("node:child_process", async (importOriginal) => {

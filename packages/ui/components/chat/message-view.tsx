@@ -47,7 +47,7 @@ export function MessageView({ message, bot, bots, conversationId, onOpenExchange
     case "routine":
       return <RoutineLabel text={message.body} data={payload.data} />;
     case "file":
-      return <FileCard file={payload.data} />;
+      return <FileCard file={payload.data} messageId={message.id} />;
   }
 }
 
