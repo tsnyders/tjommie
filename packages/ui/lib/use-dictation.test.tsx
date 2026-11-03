@@ -11,6 +11,7 @@ const fixture = vi.hoisted(() => ({ api: null as SpeechApi | null, capture: vi.f
 vi.mock("./local-speech", () => ({ localSpeech: () => fixture.api, capturePcm: fixture.capture, claimSpeech: async () => () => {} }));
 Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
 const ready: SpeechStatus = { engine: "android-on-device", capture: "native", available: true, languages: [{ tag: "en-US", label: "English" }], permission: "prompt", model: { state: "system-managed", bytes: 0, received: 0 } };
+const permissionRequired: SpeechStatus = { ...ready, available: false, languages: [], problem: { code: "permission_required", message: "Allow microphone access when you start dictation." } };
 let emit: (event: SpeechEvent) => void = () => {};
 let voice: Dictation;
 let root: Root | undefined;
@@ -27,6 +28,7 @@ async function click(label: string) { await act(async () => [...document.querySe
 async function event(value: SpeechEvent) { await act(async () => emit(value)); }
 beforeEach(() => {
   update(() => initialState);
+  localStorage.clear();
   fixture.capture.mockReset();
   fixture.api = {
     status: vi.fn(async () => ready), start: vi.fn(async () => {}), stop: vi.fn(async () => {}), cancel: vi.fn(async () => {}),
@@ -37,6 +39,61 @@ beforeEach(() => {
 afterEach(async () => { if (root) await act(async () => root!.unmount()); root = undefined; document.body.replaceChildren(); });
 
 describe("dictation composer hook", () => {
+  it("requests Android permission with the saved English intent without advertising it as installed", async () => {
+    localStorage.setItem("tjommie.voice.language", "en-GB");
+    vi.mocked(fixture.api!.status).mockResolvedValue(permissionRequired);
+    let finish: () => void = () => {};
+    vi.mocked(fixture.api!.start).mockReturnValue(new Promise<void>((done) => { finish = done; }));
+    await mount(); await click("Start");
+    expect(fixture.api!.start).toHaveBeenCalledWith({ sessionId: expect.any(String), language: "en-GB" });
+    expect(voice.phase).toBe("permission"); expect(voice.status?.languages).toEqual([]); expect(voice.language).toBe("");
+    expect(fixture.capture).not.toHaveBeenCalled();
+    const confirmed: SpeechStatus = { ...ready, permission: "granted", languages: [{ tag: "en-GB", label: "English (United Kingdom)" }] };
+    vi.mocked(fixture.api!.status).mockResolvedValue(confirmed);
+    await act(async () => finish());
+    expect(voice.phase).toBe("listening"); expect(voice.status).toEqual(confirmed); expect(voice.language).toBe("en-GB");
+    expect(document.querySelector("input")!.value).toBe("before OLD after");
+  });
+  it.each(["", "af-ZA", "en-" + "a".repeat(50)])("uses en-US only as a desired first-permission intent when preference %s is invalid", async (saved) => {
+    localStorage.setItem("tjommie.voice.language", saved);
+    vi.mocked(fixture.api!.status).mockResolvedValue(permissionRequired);
+    await mount(); await click("Start");
+    expect(fixture.api!.start).toHaveBeenCalledWith({ sessionId: expect.any(String), language: "en-US" });
+    expect(voice.status?.languages).toEqual([]); expect(voice.language).toBe("");
+    expect(fixture.capture).not.toHaveBeenCalled();
+  });
+  it.each([
+    { ...permissionRequired, problem: { code: "permission_denied", message: "Microphone access was denied." }, permission: "denied" as const },
+    { ...permissionRequired, permission: "denied" as const },
+    { ...permissionRequired, permission: "granted" as const },
+    { ...permissionRequired, engine: "whisper.cpp" as const, capture: "pcm" as const },
+    { ...permissionRequired, problem: { code: "on_device_unavailable", message: "No explicit on-device engine." } },
+    { ...permissionRequired, permission: "granted" as const, problem: { code: "language_unverified", message: "No installed English language." } },
+  ])("does not bypass another unavailable gate: $engine/$permission/$problem.code", async (status) => {
+    vi.mocked(fixture.api!.status).mockResolvedValue(status);
+    await mount(); await click("Start");
+    expect(fixture.api!.start).not.toHaveBeenCalled(); expect(fixture.capture).not.toHaveBeenCalled(); expect(voice.phase).toBe("idle");
+  });
+  it("refreshes confirmed languages after the first permission attempt fails and uses the confirmed language on retry", async () => {
+    vi.mocked(fixture.api!.status).mockResolvedValueOnce(permissionRequired).mockResolvedValueOnce(permissionRequired).mockResolvedValue({ ...ready, permission: "granted", languages: [{ tag: "en-GB", label: "English (United Kingdom)" }] });
+    vi.mocked(fixture.api!.start).mockRejectedValueOnce(new Error("The desired en-US language is not installed."));
+    await mount(); await click("Start");
+    expect(fixture.api!.start).toHaveBeenCalledOnce(); expect(voice.phase).toBe("idle"); expect(voice.language).toBe("en-GB");
+    expect(voice.status?.permission).toBe("granted");
+    await click("Start");
+    expect(vi.mocked(fixture.api!.start).mock.calls[1][0].language).toBe("en-GB"); expect(voice.phase).toBe("listening");
+    expect(document.querySelector("input")!.value).toBe("before OLD after");
+  });
+  it("cannot capture or insert when the first permission result arrives after cancellation", async () => {
+    vi.mocked(fixture.api!.status).mockResolvedValue(permissionRequired);
+    let finish: () => void = () => {};
+    vi.mocked(fixture.api!.start).mockReturnValue(new Promise<void>((done) => { finish = done; }));
+    await mount(); await click("Start");
+    expect(fixture.api!.start).toHaveBeenCalledOnce(); const id = vi.mocked(fixture.api!.start).mock.calls[0][0].sessionId;
+    await click("Cancel"); await act(async () => finish()); await event({ kind: "final", sessionId: id, text: "late permission" });
+    expect(voice.phase).toBe("idle"); expect(fixture.capture).not.toHaveBeenCalled();
+    expect(document.querySelector("input")!.value).toBe("before OLD after");
+  });
   it("inserts final local text at the captured range without sending", async () => {
     await mount(); await click("Start");
     const id = vi.mocked(fixture.api!.start).mock.calls[0][0].sessionId;

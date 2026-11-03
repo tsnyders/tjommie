@@ -234,19 +234,37 @@ function beat(wait: number | null = visible() ? LINK.pingForegroundMs : keepAliv
 
 async function ping(current: Client): Promise<void> {
   const generation = ++pingGeneration;
+  const answered = await probeLink(current);
+  if (link !== current || generation !== pingGeneration) return; // replaced or checked again meanwhile
+  if (!answered) { reconnectNow(); return; }
+  beat();
+}
+
+// The native save service supplies the clock while its picker hides the WebView. Storage hostId is a
+// different identity from RemoteHost.id: only the captured selected target and authenticated link authorize renewal.
+export function captureAttachmentSaveHeartbeat(attachmentHostId: string): ((signal?: AbortSignal) => Promise<boolean>) | null {
+  const current = link, target = latest, ready = client;
+  const matches = () => current !== null && ready !== null && link === current && client === ready && latest === target && getState().connection.status === "ready";
+  if (!attachmentHostId || !isRemote(target) || !matches()) return null;
+  return async (signal) => {
+    if (signal?.aborted || !matches()) return false;
+    const answered = await probeLink(current!, signal);
+    if (signal?.aborted || !matches()) return false;
+    if (!answered) reconnectNow();
+    return answered;
+  };
+}
+
+async function probeLink(current: Client, signal?: AbortSignal): Promise<boolean> {
+  if (signal?.aborted) return false;
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const answered = await Promise.race([
+  let abort: (() => void) | undefined;
+  try { return await Promise.race([
     // Any answer counts, an error too (a PC from before remote.ping says unknown_method); only silence or a closed link means it's gone.
     current.call("remote.ping", {}).then(() => true, (error: unknown) => !(error instanceof ClientConnectionError)),
     new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), LINK.pongTimeoutMs); }),
-  ]);
-  clearTimeout(timer);
-  if (link !== current || generation !== pingGeneration) return; // replaced or checked again meanwhile
-  if (!answered) {
-    reconnectNow();
-    return;
-  }
-  beat();
+    new Promise<false>((resolve) => { abort = () => resolve(false); signal?.addEventListener("abort", abort, { once: true }); }),
+  ]); } finally { clearTimeout(timer); if (abort) signal?.removeEventListener("abort", abort); }
 }
 
 async function attempt(connection: ConnectionTarget): Promise<void> {

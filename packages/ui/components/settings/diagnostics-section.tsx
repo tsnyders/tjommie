@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Dialog } from "@/components/dialog";
 import { Pill } from "@/components/pill";
 import { FIELD } from "@/components/controls";
-import { attachmentDevice } from "@/lib/attachment-device";
+import { attachmentDevice, attachmentDeviceForLocalExport } from "@/lib/attachment-device";
 import { desktop } from "@/lib/desktop";
 import { isAndroidApp, remoteHosts } from "@/lib/remote-hosts";
 import { useApp } from "@/lib/store";
@@ -20,19 +20,26 @@ export function DiagnosticsSection() {
   const [action, setAction] = useState<"copy" | "save" | null>(null);
   const [notice, setNotice] = useState("");
   const [problem, setProblem] = useState("");
+  const mounted = useRef(true), activeExport = useRef<ReturnType<typeof attachmentDeviceForLocalExport>>(null);
   const native = attachmentDevice();
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; void activeExport.current?.invalidate().catch(() => {}); };
+  }, []);
   const bridge = desktop()?.diagnostics;
   const report = diagnosticReport({ device: info?.device, host: info?.host, speech: info?.speech, connection, paired: host !== null, platform: isAndroidApp() ? "android" : "browser", attachments: native !== null });
   async function exportReport(kind: "copy" | "save"): Promise<void> {
+    const exportNative = kind === "save" && !bridge ? attachmentDeviceForLocalExport(() => mounted.current) : null;
+    activeExport.current = exportNative;
     setAction(kind); setNotice(""); setProblem("");
     try {
       if (kind === "copy") { await navigator.clipboard.writeText(report); setNotice("Report copied."); }
       else {
-        const result = bridge ? (await bridge.saveReport(report)).status : native ? await saveDiagnosticReport(report, native) : null;
-        setNotice(result === "saved" ? "Report saved on this device." : result === "cancelled" ? "Save cancelled." : "Saving is unavailable in this app. You can copy the report.");
+        const result = bridge ? (await bridge.saveReport(report)).status : exportNative ? await saveDiagnosticReport(report, exportNative) : null;
+        if (mounted.current) setNotice(result === "saved" ? "Report saved on this device." : result === "cancelled" ? "Save cancelled." : "Saving is unavailable in this app. You can copy the report.");
       }
-    } catch { setProblem(kind === "copy" ? "The report could not be copied. You can select the preview and copy it." : "The report could not be saved. Try again or copy the preview."); }
-    finally { setAction(null); }
+    } catch { if (mounted.current) setProblem(kind === "copy" ? "The report could not be copied. You can select the preview and copy it." : "The report could not be saved. Try again or copy the preview."); }
+    finally { activeExport.current = null; if (mounted.current) setAction(null); }
   }
   return <SettingsSection title="Diagnostics" note="Read-only checks. No model turn, upload or chat attachment is created.">
     <SettingsCard>

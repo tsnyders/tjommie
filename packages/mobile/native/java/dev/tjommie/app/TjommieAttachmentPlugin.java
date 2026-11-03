@@ -3,6 +3,7 @@ package dev.tjommie.app;
 import android.app.Activity;
 import android.content.Intent;
 import android.net.Uri;
+import android.os.SystemClock;
 import android.provider.DocumentsContract;
 import android.util.Base64;
 import android.webkit.WebResourceRequest;
@@ -49,6 +50,7 @@ public class TjommieAttachmentPlugin extends Plugin {
   private static final class Meta {
     final String name, mime; final long size, generation; final Semaphore serial = new Semaphore(1); final AtomicInteger queued = new AtomicInteger(); final AtomicBoolean cancelled = new AtomicBoolean();
     final Set<AttachmentInputStream> streams = ConcurrentHashMap.newKeySet();
+    volatile AttachmentSaveLifetime lifetime;
     Meta(JSObject info, long generation) throws IOException {
       name = info.optString("name", "file").replace('/', '_').replace('\\', '_').replace('\0', '_');
       Object bytes = info.opt("size");
@@ -66,6 +68,8 @@ public class TjommieAttachmentPlugin extends Plugin {
   private final ExecutorService io = Executors.newSingleThreadExecutor();
   private final AtomicLong generation = new AtomicLong();
   private final AtomicBoolean picking = new AtomicBoolean();
+  private final AtomicBoolean resumed = new AtomicBoolean();
+  private final AtomicReference<Meta> saving = new AtomicReference<>();
   private final Map<String, Meta> saves = new ConcurrentHashMap<>(), previews = new ConcurrentHashMap<>();
   private final Map<String, Pending> pending = new ConcurrentHashMap<>();
   private AttachmentFileStore store;
@@ -77,15 +81,17 @@ public class TjommieAttachmentPlugin extends Plugin {
     pageListener = new WebViewListener() { @Override public void onPageStarted(WebView web) { invalidatePage(); } };
   }
   @Override protected void handleOnStart() { getBridge().removeWebViewListener(pageListener); getBridge().addWebViewListener(pageListener); }
-  @Override protected void handleOnStop() { closePreviews(); if (!picking.get()) invalidatePage(); }
+  @Override protected void handleOnResume() { resumed.set(true); }
+  @Override protected void handleOnPause() { resumed.set(false); }
+  @Override protected void handleOnStop() { closePreviews(); Meta meta = saving.get(); if (meta == null || !saveValid(meta)) invalidatePage(); }
   @Override protected void handleOnDestroy() {
     invalidatePage(); getBridge().removeWebViewListener(pageListener); synchronized (INSTANCES) { INSTANCES.remove(getBridge()); } io.shutdown();
   }
   private void invalidatePage() { invalidatePage(null); }
   private void invalidatePage(PluginCall call) {
-    generation.incrementAndGet(); closePreviews(); saves.clear();
-    try { io.execute(() -> clearTemporary(store, call)); }
-    catch (RejectedExecutionException error) { if (call != null) call.reject("Temporary file cleanup is unavailable", "cleanup_failed"); }
+    generation.incrementAndGet(); closePreviews();
+    Meta meta = saving.get(); CompletableFuture<Void> stopped = meta == null ? CompletableFuture.completedFuture(null) : stopSave(meta, "invalidated"); saves.clear();
+    AttachmentSaveLifetime.cleanupAfterRetirement(io, stopped, () -> clearTemporary(store, call), () -> { if (call != null) call.reject("Temporary file cleanup is unavailable", "cleanup_failed"); });
   }
   static void clearTemporary(AttachmentFileStore store, PluginCall call) {
     try {
@@ -107,21 +113,66 @@ public class TjommieAttachmentPlugin extends Plugin {
     try { bytes = Base64.decode(encoded, Base64.NO_WRAP); } catch (IllegalArgumentException error) { throw new IOException("Invalid file chunk"); }
     if (bytes.length > AttachmentInputStream.CHUNK || !Base64.encodeToString(bytes, Base64.NO_WRAP).equals(encoded)) throw new IOException("Invalid file chunk"); return bytes;
   }
+  private boolean saveValid(Meta meta) { return !meta.cancelled.get() && meta.lifetime != null && meta.lifetime.valid(generation.get(), SystemClock.elapsedRealtime()); }
+  private CompletableFuture<Void> stopSave(Meta meta, String reason) {
+    meta.cancelled.set(true); saving.compareAndSet(meta, null);
+    if (meta.lifetime == null) return CompletableFuture.completedFuture(null);
+    saves.remove(meta.lifetime.id, meta); return AttachmentSaveService.stop(meta.lifetime, reason);
+  }
+  private void discardSave(String key, Meta meta) {
+    meta.cancelled.set(true); saving.compareAndSet(meta, null); saves.remove(key, meta);
+    try { io.execute(() -> { try { if (store != null) store.cancel(key); } catch (IOException ignored) { /* Retained for explicit clear or next startup. */ } }); }
+    catch (RejectedExecutionException ignored) { /* App destruction leaves private staging for next startup. */ }
+  }
   @PluginMethod public void startSave(PluginCall call) {
     long page = generation.get(); io.execute(() -> {
+      Meta started = null; String staged = null;
       try {
         if (store == null || page != generation.get()) throw new IOException("Download unavailable");
         JSObject info = call.getObject("info"); if (info == null) throw new IOException("Invalid file metadata");
-        Meta meta = new Meta(info, page); String key = store.start(meta.size, info.optString("sha256", ""));
-        if (page != generation.get()) { store.cancel(key); throw new IOException("Download closed"); }
-        saves.put(key, meta); JSObject result = new JSObject(); result.put("saveId", key); call.resolve(result);
-      } catch (IOException error) { call.reject(error.getMessage(), "unavailable"); }
+        String heartbeatId = id(call, "heartbeatId"); Meta meta = new Meta(info, page);
+        if (picking.get() || !saving.compareAndSet(null, meta)) throw new IOException("Another save is active"); started = meta;
+        String key = store.start(meta.size, info.optString("sha256", "")); staged = key;
+        meta.lifetime = new AttachmentSaveLifetime(key, heartbeatId, page, SystemClock.elapsedRealtime());
+        if (page != generation.get() || meta.cancelled.get()) throw new IOException("Download closed");
+        saves.put(key, meta);
+        getActivity().runOnUiThread(() -> {
+          if (!resumed.get() || getActivity().isFinishing() || getActivity().isDestroyed() || meta.cancelled.get() || page != generation.get()) {
+            stopSave(meta, "not_visible").whenComplete((ignored, error) -> discardSave(key, meta)); call.reject("Keep the app visible to start saving", "unavailable"); return;
+          }
+          AttachmentSaveService.start(getContext(), meta.lifetime, new AttachmentSaveService.Listener() {
+            public void heartbeat(String challenge) {
+              if (!saveValid(meta)) { stopSave(meta, "invalidated"); return; }
+              JSObject event = new JSObject(); event.put("heartbeatId", heartbeatId); event.put("challenge", challenge); notifyListeners("saveHeartbeat", event);
+            }
+            public void stopped() {
+              try { if (!"finished".equals(meta.lifetime.reason())) { JSObject event = new JSObject(); event.put("heartbeatId", heartbeatId); event.put("challenge", org.json.JSONObject.NULL); notifyListeners("saveHeartbeat", event); } }
+              finally { discardSave(key, meta); }
+            }
+          }).whenComplete((ignored, error) -> {
+            if (error != null || !saveValid(meta)) { stopSave(meta, "promotion_failed").whenComplete((done, failure) -> discardSave(key, meta)); call.reject("The save could not stay connected", "unavailable"); return; }
+            JSObject result = new JSObject(); result.put("saveId", key); call.resolve(result);
+          });
+        });
+      } catch (IOException | RuntimeException error) {
+        if (started != null) { stopSave(started, "unavailable"); if (staged != null) discardSave(staged, started); }
+        call.reject("The download could not be started", "unavailable");
+      }
     });
+  }
+  @PluginMethod public void ackSaveHeartbeat(PluginCall call) {
+    try {
+      String heartbeatId = id(call, "heartbeatId"), challenge = id(call, "challenge"); Object alive = call.getData().opt("alive"); Meta meta = saving.get();
+      if (!(alive instanceof Boolean) || meta == null || meta.cancelled.get() || meta.lifetime == null) throw new IOException("Save closed");
+      boolean accepted = meta.lifetime.acknowledge(heartbeatId, challenge, generation.get(), (Boolean) alive, SystemClock.elapsedRealtime());
+      if (!meta.lifetime.active(SystemClock.elapsedRealtime())) stopSave(meta, "connection_closed");
+      if (!accepted) throw new IOException("Save heartbeat is stale or closed"); call.resolve();
+    } catch (IOException error) { call.reject("Save heartbeat is stale or closed", "unavailable"); }
   }
   @PluginMethod public void appendSave(PluginCall call) { io.execute(() -> {
     try {
       String key = id(call, "saveId"); Meta meta = saves.get(key); Object value = call.getData().opt("offset");
-      if (meta == null || meta.generation != generation.get() || !(value instanceof Number) || ((Number) value).doubleValue() != Math.floor(((Number) value).doubleValue())) throw new IOException("Download closed or invalid offset");
+      if (meta == null || !saveValid(meta) || meta.lifetime.phase() != AttachmentSaveLifetime.Phase.STAGING || !(value instanceof Number) || ((Number) value).doubleValue() != Math.floor(((Number) value).doubleValue())) throw new IOException("Download closed or invalid offset");
       store.append(key, ((Number) value).longValue(), decode(call.getString("bytes"))); call.resolve();
     } catch (IOException error) { call.reject(error.getMessage(), "corrupt"); }
   }); }
@@ -129,18 +180,21 @@ public class TjommieAttachmentPlugin extends Plugin {
     try {
       String key = id(call, "saveId"); Meta meta = saves.get(key);
       // The copy owns the IO executor; cancellation must reach it before queued cleanup.
-      if (meta != null) meta.cancelled.set(true);
-      io.execute(() -> { try { saves.remove(key); if (store != null) store.cancel(key); call.resolve(); } catch (IOException error) { call.reject("Download cleanup failed", "cleanup_failed"); } });
+      CompletableFuture<Void> stopped = meta == null ? CompletableFuture.completedFuture(null) : stopSave(meta, "cancelled");
+      stopped.whenComplete((ignored, failure) -> {
+        try { io.execute(() -> { try { saves.remove(key); if (store != null) store.cancel(key); call.resolve(); } catch (IOException error) { call.reject("Download cleanup failed", "cleanup_failed"); } }); }
+        catch (RejectedExecutionException error) { call.reject("Download cleanup failed", "cleanup_failed"); }
+      });
     } catch (IOException error) { call.reject("Invalid file handle", "bad_params"); }
   }
   @PluginMethod public void finishSave(PluginCall call) { io.execute(() -> {
     try {
       String key = id(call, "saveId"); Meta meta = saves.get(key);
-      if (meta == null || meta.cancelled.get() || meta.generation != generation.get()) throw new IOException("Download closed");
-      store.verify(key); if (!picking.compareAndSet(false, true)) throw new IOException("Another save picker is open");
+      if (meta == null || !saveValid(meta)) throw new IOException("Download closed");
+      store.verify(key); if (!meta.lifetime.picker(generation.get(), SystemClock.elapsedRealtime()) || !picking.compareAndSet(false, true)) throw new IOException("Another save picker is open or download closed");
       getActivity().runOnUiThread(() -> {
-        try { Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType(meta.mime).putExtra(Intent.EXTRA_TITLE, meta.name).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION); startActivityForResult(call, intent, "saveChosen"); }
-        catch (RuntimeException error) { picking.set(false); call.reject("The system save picker is unavailable", "unavailable"); }
+        try { if (!saveValid(meta)) throw new IllegalStateException("Save closed"); Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType(meta.mime).putExtra(Intent.EXTRA_TITLE, meta.name).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION); startActivityForResult(call, intent, "saveChosen"); }
+        catch (RuntimeException error) { picking.set(false); stopSave(meta, "unavailable").whenComplete((ignored, failure) -> discardSave(key, meta)); call.reject("The system save picker is unavailable", "unavailable"); }
       });
     } catch (IOException error) { call.reject(error.getMessage(), "corrupt"); }
   }); }
@@ -151,23 +205,23 @@ public class TjommieAttachmentPlugin extends Plugin {
       try {
         Meta meta = key == null ? null : saves.get(key);
         if (result.getResultCode() != Activity.RESULT_OK || uri == null) { if (call != null) { JSObject out = new JSObject(); out.put("status", "cancelled"); call.resolve(out); } return; }
-        if (meta == null || meta.cancelled.get() || meta.generation != generation.get()) throw new IOException("Download closed");
+        if (meta == null || !saveValid(meta) || !meta.lifetime.copy(generation.get(), SystemClock.elapsedRealtime())) throw new IOException("Download closed");
         File staged = store.verify(key); byte[] buffer = new byte[64 * 1024];
         try (InputStream input = new FileInputStream(staged); OutputStream output = getContext().getContentResolver().openOutputStream(uri, "w")) {
           if (output == null) throw new IOException("The destination could not be opened");
-          AttachmentFileStore.copy(input, output, buffer, () -> meta.cancelled.get() || meta.generation != generation.get());
+          AttachmentFileStore.copy(input, output, buffer, () -> !saveValid(meta));
         }
         MessageDigest digest = AttachmentFileStore.sha256();
-        try (InputStream saved = getContext().getContentResolver().openInputStream(uri)) { if (saved == null) throw new IOException("Saved content could not be checked"); for (int count; (count = saved.read(buffer)) >= 0;) { if (meta.cancelled.get() || meta.generation != generation.get()) throw new IOException("Download cancelled"); if (count > 0) digest.update(buffer, 0, count); } }
+        try (InputStream saved = getContext().getContentResolver().openInputStream(uri)) { if (saved == null) throw new IOException("Saved content could not be checked"); for (int count; (count = saved.read(buffer)) >= 0;) { if (!saveValid(meta)) throw new IOException("Download cancelled"); if (count > 0) digest.update(buffer, 0, count); } }
         if (!AttachmentFileStore.hex(digest.digest()).equals(store.digest(key))) throw new IOException("Saved content check failed");
-        if (meta.cancelled.get() || meta.generation != generation.get()) throw new IOException("Download cancelled");
+        if (!saveValid(meta)) throw new IOException("Download cancelled");
         JSObject out = new JSObject(); out.put("status", "saved"); call.resolve(out);
       } catch (Exception error) {
         boolean removed = uri == null;
         if (uri != null) try { removed = DocumentsContract.deleteDocument(getContext().getContentResolver(), uri); } catch (Exception ignored) { removed = false; }
         if (!removed) getContext().getSharedPreferences("attachment-recovery", 0).edit().putString(UUID.randomUUID().toString(), uri.toString()).apply();
         if (call != null) call.reject(removed ? "The file could not be saved" : "The provider kept an incomplete file. Remove it from the selected destination.", removed ? "unavailable" : "cleanup_failed");
-      } finally { if (key != null) { saves.remove(key); try { store.cancel(key); } catch (IOException ignored) { /* Retried from private staging on startup. */ } } }
+      } finally { if (key != null) { Meta meta = saves.get(key); if (meta != null) stopSave(meta, "finished").whenComplete((ignored, failure) -> discardSave(key, meta)); else { try { if (store != null) store.cancel(key); } catch (IOException ignored) { /* Retried from private staging on startup. */ } } } }
     });
   }
   @PluginMethod public void preview(PluginCall call) {

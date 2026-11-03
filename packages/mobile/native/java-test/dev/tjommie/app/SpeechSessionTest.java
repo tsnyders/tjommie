@@ -4,6 +4,16 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 
 public class SpeechSessionTest {
+  @Test public void permissionStatusNeverQueriesSupportBeforeGrant() {
+    assertEquals("permission_required", SpeechSession.permissionProblem(false, false));
+    assertEquals("permission_denied", SpeechSession.permissionProblem(false, true));
+    assertNull(SpeechSession.permissionProblem(true, false));
+    assertFalse(SpeechSession.canQuerySupport(true, true, false, true));
+    assertFalse(SpeechSession.canQuerySupport(false, true, true, true));
+    assertFalse(SpeechSession.canQuerySupport(true, false, true, true));
+    assertFalse(SpeechSession.canQuerySupport(true, true, true, false));
+    assertTrue(SpeechSession.canQuerySupport(true, true, true, true));
+  }
   @Test public void cancellationFencesPermissionAndRecognitionCallbacks() {
     SpeechSession session = new SpeechSession();
     SpeechSession.Ticket old = session.begin("old", "en-US");

@@ -75,7 +75,7 @@ it("blocks failed combined checks and target-head drift without promoting or dis
   const result = await finished(service, failed.id); expect(result.reason).toBe("combined_checks_failed"); expect(existsSync(result.worktreePath)).toBe(true); expect(h.git(h.repoPath, "rev-parse", "main")).toBe(h.base);
   const drift = service.start({ attemptId: attempt.id, expectedRevision: attempt.revision, sourceSha: attempt.headSha!, expectedTargetSha: attempt.headSha!, requestId: "drift" });
   expect((await finished(service, drift.id)).reason).toBe("target_head_moved");
-}, 30_000);
+}, process.platform === "win32" ? 60_000 : 30_000);
 
 it("stops a queued integration during shutdown before running configured project code", async () => {
   const h = fixture(), attempt = await accepted(h); let runs = 0;

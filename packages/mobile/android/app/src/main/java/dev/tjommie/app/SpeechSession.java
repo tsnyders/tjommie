@@ -27,6 +27,9 @@ final class SpeechSession {
   boolean finish(Ticket ticket) { if (!owns(ticket)) return false; active = null; generation++; return true; }
   Ticket cancel(String id) { Ticket ticket = active; if (ticket == null || !ticket.id.equals(id)) return null; finish(ticket); return ticket; }
 
+  static String permissionProblem(boolean granted, boolean denied) { return granted ? null : denied ? "permission_denied" : "permission_required"; }
+  static boolean canQuerySupport(boolean trusted, boolean onDevice, boolean granted, boolean idle) { return trusted && onDevice && granted && idle; }
+
   static boolean trustedOrigin(String value) {
     try {
       URI uri = new URI(value);

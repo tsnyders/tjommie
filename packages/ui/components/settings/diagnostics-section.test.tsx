@@ -3,14 +3,18 @@ import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DesktopApi } from "@/lib/desktop";
+import type { AttachmentNativeApi } from "../../../protocol/src/attachments";
+import { webcrypto } from "node:crypto";
 import { initialState } from "@/lib/state";
 import { update } from "@/lib/store";
 import { AboutSection, DiagnosticsSection } from "./diagnostics-section";
 
 const call = vi.hoisted(() => vi.fn());
+const localExport = vi.hoisted(() => vi.fn());
+const device = vi.hoisted(() => ({ present: false }));
 vi.mock("@/lib/connection", () => ({ request: call }));
 vi.mock("@/lib/local-speech", () => ({ localSpeech: () => null }));
-vi.mock("@/lib/attachment-device", () => ({ attachmentDevice: () => null }));
+vi.mock("@/lib/attachment-device", () => ({ attachmentDevice: () => device.present ? {} : null, attachmentDeviceForLocalExport: localExport }));
 vi.mock("@/lib/remote-hosts", () => ({ isAndroidApp: () => false, remoteHosts: () => [{ id: "host-a", name: "Private host name" }, { id: "host-b", name: "Other private name" }] }));
 Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
 const roots: Root[] = [];
@@ -30,13 +34,27 @@ async function mount(node: ReactNode): Promise<void> {
 beforeEach(() => {
   update(() => ({ ...initialState, host: "host-a", connection: { status: "ready" } }));
   call.mockReset(); call.mockResolvedValue(hostInfo());
+  localExport.mockReset(); localExport.mockReturnValue(null);
+  device.present = false;
 });
 afterEach(async () => {
   for (const root of roots.splice(0)) await act(async () => root.unmount());
-  document.body.replaceChildren(); delete window.tjommie; vi.restoreAllMocks();
+  document.body.replaceChildren(); delete window.tjommie; vi.restoreAllMocks(); vi.unstubAllGlobals();
 });
 
 describe("diagnostic preview and About", () => {
+  it("binds local report saving to this mounted page and invalidates it on navigation", async () => {
+    vi.stubGlobal("crypto", webcrypto);
+    device.present = true;
+    const invalidate = vi.fn(async () => {}), finishSave = vi.fn(() => new Promise<{ status: "saved" }>(() => {}));
+    localExport.mockReturnValue({ startSave: async () => ({ saveId: "report" }), appendSave: async () => {}, finishSave, invalidate } as unknown as AttachmentNativeApi);
+    await mount(<DiagnosticsSection />);
+    await act(async () => button("Save report").click()); await settle();
+    const current = localExport.mock.calls[0][0] as () => boolean; expect(current()).toBe(true);
+    expect(finishSave).toHaveBeenCalledWith("report");
+    const root = roots.pop()!; await act(async () => root.unmount());
+    expect(current()).toBe(false); expect(invalidate).toHaveBeenCalledOnce();
+  });
   it("opens bundled notices inside the app without a blocked new window", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("Bundled license <script> is plain text"));
     await mount(<AboutSection />);

@@ -60,9 +60,10 @@ patch(join(app, "src", "main", "AndroidManifest.xml"), (xml) => {
   if (!/android:allowBackup="false"/.test(out)) out = /android:allowBackup="[^"]*"/.test(out) ? out.replace(/android:allowBackup="[^"]*"/, 'android:allowBackup="false"') : out.replace("<application", '<application\n        android:allowBackup="false"');
   if (!/android:usesCleartextTraffic=/.test(out)) out = out.replace("<application", '<application\n        android:usesCleartextTraffic="false"');
   if (!/android:windowSoftInputMode=/.test(out)) out = out.replace("<activity", '<activity\n            android:windowSoftInputMode="adjustResize"');
-  for (const permission of ["android.permission.ACCESS_NETWORK_STATE", "android.permission.POST_NOTIFICATIONS", "android.permission.RECORD_AUDIO"]) {
+  for (const permission of ["android.permission.ACCESS_NETWORK_STATE", "android.permission.POST_NOTIFICATIONS", "android.permission.RECORD_AUDIO", "android.permission.FOREGROUND_SERVICE", "android.permission.FOREGROUND_SERVICE_DATA_SYNC"]) {
     if (!out.includes(permission)) out = out.replace("</manifest>", `    <uses-permission android:name="${permission}" />\n</manifest>`);
   }
+  if (!out.includes('android:name=".AttachmentSaveService"')) out = out.replace("</application>", '    <service android:name=".AttachmentSaveService" android:exported="false" android:foregroundServiceType="dataSync" android:stopWithTask="true" />\n    </application>');
   if (!out.includes("android.speech.RecognitionService")) {
     const intent = '        <intent><action android:name="android.speech.RecognitionService" /></intent>\n';
     out = out.includes("</queries>") ? out.replace("</queries>", `${intent}    </queries>`) : out.replace("<application", `    <queries>\n${intent}    </queries>\n    <application`);

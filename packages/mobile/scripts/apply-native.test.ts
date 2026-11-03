@@ -19,7 +19,7 @@ it("rejects a release version without a versionCode", () => {
   expect(result.stderr).toContain("Android versionCode needs a release-version rule for 0.3.99.");
 });
 
-it.each(["", '<queries><intent><action android:name="android.intent.action.VIEW" /></intent></queries>'])("applies speech permissions, service visibility and source copies idempotently with queries %s", (queries) => {
+it.each(["", '<queries><intent><action android:name="android.intent.action.VIEW" /></intent></queries>'])("applies native speech and save service declarations and source copies idempotently with queries %s", (queries) => {
   const scratch = mkdtempSync(join(tmpdir(), "tjommie-native-apply-"));
   const mobile = join(scratch, "packages", "mobile"), source = resolve(dirname(script), "..");
   const main = join(mobile, "android", "app", "src", "main");
@@ -43,17 +43,22 @@ it.each(["", '<queries><intent><action android:name="android.intent.action.VIEW"
     const manifest = readFileSync(join(main, "AndroidManifest.xml"), "utf8");
     expect(manifest.match(/android\.permission\.RECORD_AUDIO/g)).toHaveLength(1);
     expect(manifest.match(/android\.speech\.RecognitionService/g)).toHaveLength(1);
+    expect(manifest.match(/android\.permission\.FOREGROUND_SERVICE"/g)).toHaveLength(1);
+    expect(manifest.match(/android\.permission\.FOREGROUND_SERVICE_DATA_SYNC"/g)).toHaveLength(1);
+    expect(manifest.match(/<service android:name="\.AttachmentSaveService" android:exported="false" android:foregroundServiceType="dataSync" android:stopWithTask="true"/g)).toHaveLength(1);
     expect(manifest.match(/<queries>/g)).toHaveLength(1);
     const gradle = readFileSync(join(mobile, "android", "app", "build.gradle"), "utf8");
     expect(gradle.match(/applicationIdSuffix "\.phase4test"/g)).toHaveLength(1);
     expect(gradle.match(/manifestPlaceholders = \[appLabel: "Tjommie"\]/g)).toHaveLength(1);
     if (queries) expect(manifest).toContain('android:name="android.intent.action.VIEW"');
-    for (const name of ["MainActivity", "StaticWebViewClient", "TjommieAttachmentPlugin", "TjommieSpeechPlugin"]) {
+    for (const name of ["MainActivity", "StaticWebViewClient", "TjommieAttachmentPlugin", "AttachmentSaveService", "AttachmentSaveLifetime", "TjommieSpeechPlugin"]) {
       const file = join("java", "dev", "tjommie", "app", `${name}.java`);
       expect(readFileSync(join(main, file), "utf8")).toBe(readFileSync(join(source, "native", file), "utf8"));
     }
-    const test = join("java", "dev", "tjommie", "app", "AttachmentCoreTest.java");
-    expect(readFileSync(join(mobile, "android", "app", "src", "test", test), "utf8")).toBe(readFileSync(join(source, "native", "java-test", "dev", "tjommie", "app", "AttachmentCoreTest.java"), "utf8"));
+    for (const name of ["AttachmentCoreTest", "AttachmentSaveLifetimeTest"]) {
+      const test = join("java", "dev", "tjommie", "app", `${name}.java`);
+      expect(readFileSync(join(mobile, "android", "app", "src", "test", test), "utf8")).toBe(readFileSync(join(source, "native", "java-test", "dev", "tjommie", "app", `${name}.java`), "utf8"));
+    }
   } finally {
     expect(dirname(resolve(scratch))).toBe(resolve(tmpdir()));
     expect(scratch).toContain("tjommie-native-apply-"); rmSync(scratch, { recursive: true, force: true });

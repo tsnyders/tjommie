@@ -50,6 +50,12 @@ public class TjommieSpeechPlugin extends Plugin {
   private boolean trusted() { return foreground && getActivity() != null && getBridge() != null && getBridge().getWebView() != null && SpeechSession.trustedOrigin(getBridge().getWebView().getUrl()); }
   private boolean onDevice() { if (Build.VERSION.SDK_INT < 33) return false; try { return SpeechRecognizer.isOnDeviceRecognitionAvailable(getContext()); } catch (Exception ignored) { return false; } }
   static boolean supportedLanguage(String language, List<String> installed) { return language != null && language.matches("en(?:-[A-Za-z0-9]{2,8})*") && installed.contains(language); }
+  static String permissionProblem(PermissionState permission) { return SpeechSession.permissionProblem(permission == PermissionState.GRANTED, permission == PermissionState.DENIED); }
+  static List<String> confirmedEnglishLanguages(List<String> languages) {
+    List<String> verified = new ArrayList<>();
+    if (languages != null) for (String tag : languages) if (tag != null && tag.matches("en(?:-[A-Za-z0-9]{2,8})*") && !verified.contains(tag) && verified.size() < 100) verified.add(tag);
+    return verified;
+  }
 
   private Intent intent(String language) {
     Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
@@ -64,21 +70,26 @@ public class TjommieSpeechPlugin extends Plugin {
   private JSObject statusValue() {
     JSObject value = new JSObject();
     boolean supported = trusted() && onDevice();
-    value.put("engine", "android-on-device"); value.put("capture", "native"); value.put("available", supported && !installed.isEmpty() && !cleanupFailed);
-    value.put("permission", getPermissionState("microphone") == PermissionState.GRANTED ? "granted" : getPermissionState("microphone") == PermissionState.DENIED ? "denied" : "prompt");
+    PermissionState permission = getPermissionState("microphone");
+    boolean granted = permission == PermissionState.GRANTED;
+    String permissionCode = permissionProblem(permission);
+    value.put("engine", "android-on-device"); value.put("capture", "native"); value.put("available", supported && granted && !installed.isEmpty() && !cleanupFailed);
+    value.put("permission", granted ? "granted" : permission == PermissionState.DENIED ? "denied" : "prompt");
     JSArray languages = new JSArray();
-    for (String tag : installed) { JSObject item = new JSObject(); item.put("tag", tag); item.put("label", java.util.Locale.forLanguageTag(tag).getDisplayName()); languages.put(item); }
+    if (supported && granted) for (String tag : installed) { JSObject item = new JSObject(); item.put("tag", tag); item.put("label", java.util.Locale.forLanguageTag(tag).getDisplayName()); languages.put(item); }
     value.put("languages", languages);
     JSObject model = new JSObject(); model.put("state", "system-managed"); model.put("bytes", 0); model.put("received", 0); value.put("model", model);
     if (cleanupFailed) value.put("problem", problem("cleanup_failed", "The previous local speech session could not be released. Close and reopen the app before dictating again."));
     else if (!supported) value.put("problem", problem("on_device_unavailable", "Local dictation needs Android 13 or later and an explicit on-device speech service. You can keep typing."));
+    else if (permissionCode != null) value.put("problem", problem(permissionCode, permission == PermissionState.DENIED ? "Microphone access is denied. Allow it in Android app settings before dictating again." : "Start dictation to request microphone access. Your draft will stay editable."));
     else if (installed.isEmpty()) value.put("problem", problem("language_unverified", "No supported English on-device language could be confirmed. Check Android speech language settings or refresh, then try again."));
     return value;
   }
 
   @PluginMethod public void status(PluginCall call) {
     getActivity().runOnUiThread(() -> {
-      if (!trusted() || Build.VERSION.SDK_INT < 33 || !onDevice() || sessions.current() != null) { call.resolve(statusValue()); return; }
+      boolean granted = getPermissionState("microphone") == PermissionState.GRANTED;
+      if (!SpeechSession.canQuerySupport(trusted(), onDevice(), granted, sessions.current() == null)) { if (!granted) installed.clear(); call.resolve(statusValue()); return; }
       if (statusCalls.size() >= 8) { call.reject("Speech status is busy. Try again.", "busy"); return; }
       statusCalls.add(call);
       if (query != null) return;
@@ -90,9 +101,9 @@ public class TjommieSpeechPlugin extends Plugin {
         handler.postDelayed(deadline, 5000);
         query.checkRecognitionSupport(intent("en-US"), getContext().getMainExecutor(), new RecognitionSupportCallback() {
           @Override public void onSupportResult(RecognitionSupport support) {
-            if (query != expected || !trusted()) return;
-            installed = new ArrayList<>();
-            if (support != null) for (String tag : support.getInstalledOnDeviceLanguages()) if (tag != null && tag.matches("en(?:-[A-Za-z0-9]{2,8})*") && !installed.contains(tag) && installed.size() < 100) installed.add(tag);
+            if (query != expected) return;
+            if (!trusted() || getPermissionState("microphone") != PermissionState.GRANTED) { installed.clear(); closeQuery(); return; }
+            installed = confirmedEnglishLanguages(support == null ? null : support.getInstalledOnDeviceLanguages());
             closeQuery();
           }
           @Override public void onError(int error) { if (query == expected) { installed.clear(); closeQuery(); } }
@@ -131,6 +142,7 @@ public class TjommieSpeechPlugin extends Plugin {
 
   private void beginRecognition(SpeechSession.Ticket ticket) {
     if (!sessions.owns(ticket) || !trusted()) return;
+    if (getPermissionState("microphone") != PermissionState.GRANTED) { fail(ticket, "permission_denied", "Microphone permission was not granted. Your draft is unchanged."); return; }
     if (Build.VERSION.SDK_INT < 33 || !onDevice()) { fail(ticket, "unavailable", "The explicit on-device speech service is unavailable."); return; }
     closeQuery();
     try {
@@ -141,7 +153,9 @@ public class TjommieSpeechPlugin extends Plugin {
       recognizer.checkRecognitionSupport(intent(ticket.language), getContext().getMainExecutor(), new RecognitionSupportCallback() {
         @Override public void onSupportResult(RecognitionSupport support) {
           if (!sessions.owns(ticket) || !trusted()) return;
-          if (support == null || !supportedLanguage(ticket.language, support.getInstalledOnDeviceLanguages())) { fail(ticket, "language_missing", "The selected local English language is not installed. Manage Android speech language data, then try again."); return; }
+          if (getPermissionState("microphone") != PermissionState.GRANTED) { fail(ticket, "permission_denied", "Microphone permission was not granted. Your draft is unchanged."); return; }
+          installed = confirmedEnglishLanguages(support == null ? null : support.getInstalledOnDeviceLanguages());
+          if (!supportedLanguage(ticket.language, installed)) { fail(ticket, "language_missing", "The selected local English language is not installed. Manage Android speech language data, then try again."); return; }
           handler.removeCallbacks(deadline);
           try {
             if (!sessions.listening(ticket)) return;

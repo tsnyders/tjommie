@@ -37,6 +37,11 @@ export function useDictation(kind: "chat" | "room" | "exchange", target: string,
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [optionsOpen, setOptionsOpen] = useState(false);
 
+  function showStatus(value: SpeechStatus): void {
+    setStatus(value);
+    selectLanguage((current) => value.languages.some((item) => item.tag === current) ? current : value.languages.find((item) => item.tag === preference("language"))?.tag ?? value.languages[0]?.tag ?? "");
+  }
+
   const owns = (session: Active): boolean => mounted.current && active.current === session && latest.current.scope === session.scope && getState().host === session.host;
 
   async function cancelActive(): Promise<void> {
@@ -84,10 +89,6 @@ export function useDictation(kind: "chat" | "room" | "exchange", target: string,
     mounted.current = true;
     const bridge = localSpeech();
     api.current = bridge;
-    const showStatus = (value: SpeechStatus): void => {
-      setStatus(value);
-      selectLanguage((current) => value.languages.some((item) => item.tag === current) ? current : value.languages.find((item) => item.tag === preference("language"))?.tag ?? value.languages[0]?.tag ?? "");
-    };
     const remove = bridge?.onEvent((input) => {
       const parsed = SpeechEvent.safeParse(input);
       if (!mounted.current || !parsed.success) return;
@@ -151,14 +152,21 @@ export function useDictation(kind: "chat" | "room" | "exchange", target: string,
     if (!mounted.current || intent.current !== request || latest.current.scope !== initiatingScope || getState().host !== initiatingHost) return;
     const session: Active = { id: crypto.randomUUID(), scope: initiatingScope, host: initiatingHost, phase: "permission", range: draftRevision.current === initiatingRevision && latest.current.text === initiatingText ? range : null };
     active.current = session; setSessionScope(session.scope); setPhase("permission");
+    let attemptedNative = false;
     try {
       session.release = await claimSpeech(async () => { if (active.current === session) await cancel(); else await session.cleanup; });
       if (!owns(session)) { session.release(); return; }
       const available = SpeechStatus.parse(await bridge.status());
       if (!owns(session)) return;
-      setStatus(available);
-      const selected = available.languages.find((item) => item.tag === language)?.tag ?? available.languages[0]?.tag;
-      if (!available.available || !selected) { await cancel(); setMessage(available.problem?.message ?? "No installed local language is available. Check system speech settings."); return; }
+      showStatus(available);
+      const permissionRequired = available.engine === "android-on-device" && available.capture === "native" && available.model.state === "system-managed"
+        && !available.available && available.languages.length === 0 && available.problem?.code === "permission_required" && (available.permission === "prompt" || available.permission === "unknown");
+      const saved = preference("language");
+      const desired = saved.length <= 40 && /^en(?:-[A-Za-z0-9]{2,8})*$/.test(saved) ? saved : "en-US";
+      // This intent only opens the native permission path; native support must confirm it before capture.
+      const selected = available.languages.find((item) => item.tag === language)?.tag ?? available.languages[0]?.tag ?? (permissionRequired ? desired : undefined);
+      if ((!available.available && !permissionRequired) || !selected) { await cancel(); setMessage(available.problem?.message ?? "No installed local language is available. Check system speech settings."); return; }
+      attemptedNative = available.engine === "android-on-device" && available.capture === "native";
       await bridge.start({ sessionId: session.id, language: selected });
       if (!owns(session) || session.phase !== "permission") return;
       if (available.capture === "pcm") {
@@ -175,7 +183,14 @@ export function useDictation(kind: "chat" | "room" | "exchange", target: string,
       session.phase = "listening"; setPhase("listening"); setMessage("Listening on this device. Tap Stop when finished.");
       session.timer = setTimeout(() => { if (owns(session)) void stop(); }, 59750);
     } catch {
-      if (owns(session)) { await cancel(); setMessage("Couldn’t start local dictation. Check microphone permission and installed speech support, then try again."); }
+      if (owns(session)) { await cancelActive(); setMessage("Couldn’t start local dictation. Check microphone permission and installed speech support, then try again."); }
+    } finally {
+      if (attemptedNative && mounted.current && intent.current === request && latest.current.scope === initiatingScope && getState().host === initiatingHost) {
+        try {
+          const current = SpeechStatus.parse(await bridge.status());
+          if (mounted.current && intent.current === request && latest.current.scope === initiatingScope && getState().host === initiatingHost) showStatus(current);
+        } catch { /* Start/cancellation retains its own result if status refresh is unavailable. */ }
+      }
     }
   }
 
