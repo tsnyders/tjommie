@@ -1,14 +1,14 @@
 import { spawn } from "node:child_process";
 import { beforeEach, expect, it, vi } from "vitest";
-import { launchCli, waitForCliExit, workerAccountsRoot, WorkerLaunchTerminationError } from "./cli.ts";
+import { launchCli, observeWorkerPolicy, waitForCliExit, workerAccountsRoot, WorkerLaunchTerminationError } from "./cli.ts";
 import { runReviewCli, type ReviewCliOptions } from "./project-review-cli.ts";
 import { CheckTerminationError } from "./project-checks.ts";
 import { tempRoot } from "./testing.ts";
 import type { ProviderEvent } from "./providers/types.ts";
 import { reviewMachinePolicyHash } from "./project-review-policy.ts";
 
-vi.mock("./cli.ts", async (original) => ({ ...await original<typeof import("./cli.ts")>(), launchCli: vi.fn(), waitForCliExit: vi.fn(), workerAccountsRoot: vi.fn() }));
-beforeEach(() => { vi.mocked(launchCli).mockReset(); vi.mocked(waitForCliExit).mockReset().mockResolvedValue(); vi.mocked(workerAccountsRoot).mockReset().mockReturnValue(null); });
+vi.mock("./cli.ts", async (original) => ({ ...await original<typeof import("./cli.ts")>(), launchCli: vi.fn(), waitForCliExit: vi.fn(), workerAccountsRoot: vi.fn(), observeWorkerPolicy: vi.fn() }));
+beforeEach(() => { vi.mocked(launchCli).mockReset(); vi.mocked(waitForCliExit).mockReset().mockResolvedValue(); vi.mocked(workerAccountsRoot).mockReset().mockReturnValue(null); vi.mocked(observeWorkerPolicy).mockReset().mockResolvedValue(null); });
 const options = (events: ProviderEvent[]): ReviewCliOptions => ({ command: { file: process.execPath, args: [] }, args: [], cwd: tempRoot(), env: {}, input: "owned fixture", model: "test", signal: new AbortController().signal, onEvent: (event) => events.push(event) });
 
 it("records unknown spending and retains the lease when a paid worker launch cannot prove retirement", async () => {
@@ -31,7 +31,7 @@ it("waits for worker job proof, and records unknown spending when output has no 
   expect(waitForCliExit).toHaveBeenCalledTimes(1); expect(events).toMatchObject([{ type: "usage", costUsd: null }]);
 });
 
-it.skipIf(process.platform !== "win32")("does not reuse owner policy evidence for a different worker SID", () => {
+it.skipIf(process.platform !== "win32")("does not reuse owner policy evidence for a different worker SID", async () => {
   vi.mocked(workerAccountsRoot).mockReturnValue("C:\\synthetic-worker\\accounts");
-  expect(() => reviewMachinePolicyHash()).toThrow("review_worker_policy_observer_unavailable");
+  await expect(reviewMachinePolicyHash()).rejects.toThrow("review_worker_policy_observer_unavailable");
 });

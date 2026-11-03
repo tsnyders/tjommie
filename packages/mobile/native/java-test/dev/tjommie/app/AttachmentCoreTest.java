@@ -48,6 +48,42 @@ public class AttachmentCoreTest {
     assertThrows(IOException.class, () -> stream.read(new byte[4], 0, 0)); stream.close();
     assertEquals(1, cancelled.get());
   }
+  @Test public void webViewSeesTheSourceExtentThenReadsOnlyTheSelectedRangeWithoutFetchingItsPrefix() throws Exception {
+    long size = AttachmentFileStore.MAX_BYTES;
+    for (String header : new String[] { "bytes=0-215", "bytes=64-127", "bytes=" + (size - 32768) + "-", "bytes=-9", "bytes=" + (size - 7) + "-999999999" }) {
+      long[] selected = AttachmentRanges.parse(header, size); List<Long> offsets = new ArrayList<>(); List<Integer> lengths = new ArrayList<>();
+      AttachmentInputStream stream = new AttachmentInputStream(size, selected[0], selected[1], (offset, length) -> {
+        offsets.add(offset); lengths.add(length); byte[] bytes = new byte[length];
+        for (int index = 0; index < length; index++) bytes[index] = (byte) ((offset + index) * 31 + 7); return bytes;
+      });
+      // Chromium derives its one Content-Length from available(), then independently applies Range.
+      assertEquals(size, stream.available()); assertTrue(offsets.isEmpty());
+      long[] negotiated = AttachmentRanges.parse(header, stream.available()); assertArrayEquals(selected, negotiated);
+      assertEquals(selected[0], stream.skip(selected[0])); assertTrue(offsets.isEmpty());
+      int expectedLength = (int) (selected[1] - selected[0] + 1); byte[] received = stream.readAllBytes();
+      assertEquals(expectedLength, received.length); assertEquals(java.util.Collections.singletonList(selected[0]), offsets);
+      assertEquals(java.util.Collections.singletonList(expectedLength), lengths);
+      for (int index = 0; index < received.length; index++) assertEquals((byte) ((selected[0] + index) * 31 + 7), received[index]);
+      assertEquals(0, stream.available()); assertEquals(-1, stream.read()); stream.close(); assertThrows(IOException.class, stream::available);
+    }
+    AttachmentInputStream small = new AttachmentInputStream(0, 215, (offset, length) -> new byte[length]);
+    assertEquals(216, small.available()); assertEquals(0, small.read()); assertEquals(215, small.available()); small.close();
+    AttachmentInputStream empty = new AttachmentInputStream(0, -1, (offset, length) -> { throw new AssertionError("Empty previews must not fetch"); });
+    assertEquals(0, empty.available()); assertEquals(-1, empty.read()); empty.close();
+    java.io.InputStream head = AttachmentInputStream.headerOnly(216); assertEquals(216, head.available()); assertEquals(-1, head.read()); head.close();
+  }
+  @Test public void webViewRangeMetadataCannotBypassRevocationOrReadAnUnselectedPrefix() throws Exception {
+    java.util.concurrent.atomic.AtomicBoolean valid = new java.util.concurrent.atomic.AtomicBoolean(true);
+    java.util.concurrent.atomic.AtomicInteger reads = new java.util.concurrent.atomic.AtomicInteger();
+    AttachmentInputStream stream = new AttachmentInputStream(216, 64, 127, new AttachmentInputStream.Reader() {
+      public byte[] read(long offset, int length) { reads.incrementAndGet(); return new byte[length]; }
+      public boolean valid() { return valid.get(); }
+    });
+    assertEquals(216, stream.available()); assertEquals(32, stream.skip(32)); valid.set(false);
+    assertThrows(IOException.class, () -> stream.skip(32)); assertThrows(IOException.class, stream::available); assertThrows(IOException.class, stream::read); assertEquals(0, reads.get());
+    AttachmentInputStream unselected = new AttachmentInputStream(216, 64, 127, (offset, length) -> { throw new AssertionError("Range must be selected first"); });
+    assertThrows(IOException.class, unselected::read);
+  }
   @Test public void failedTemporaryDeletionRemainsPendingForTheNextClear() throws Exception {
     File root = temporary.newFolder(); AttachmentFileStore store = new AttachmentFileStore(root);
     File staged = store.verify(store.start(0, digest(new byte[0])));

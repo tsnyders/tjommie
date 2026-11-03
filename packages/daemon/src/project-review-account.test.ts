@@ -34,7 +34,8 @@ async function fixture(api = true) {
   const bot = createBot(db, paths.bots, { name: "Reviewer", provider: "claude", model: "claude-sonnet-4-6", instructions: "Review", color: "blue", shape: "circle" });
   if (api) updateBot(db, bot.id, { accountId: "review-api" });
   const broadcast = vi.fn();
-  const context = { botId: bot.id, projectId: "project", taskId: "task", attemptId: "attempt", evaluationId: "evaluation", revision: 1 };
+  const context = { botId: bot.id, projectId: "project", taskId: "task", attemptId: "attempt", evaluationId: "evaluation", revision: 1,
+    projectRevision: 1, taskRevision: 1, instructions: { reviewer: "Review", role: "Review source", title: "Task", task: "Check the change", acceptance: [] } };
   return { db, accounts, read, broadcast, context, resolve: reviewAccountResolver(db, accounts, broadcast) };
 }
 

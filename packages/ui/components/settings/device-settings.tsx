@@ -45,7 +45,7 @@ export function FilesSection() {
       <SettingsRow title="Download location" note="Ask where to save each file, using Save As or Android's system document picker. No folder permission is needed in advance."><span className="text-[13px] text-secondary">Ask each time</span></SettingsRow>
       <SettingsRow title="Native file support" note="Bridge presence is not a successful preview or save check."><span className="text-[13px] text-secondary">{native ? "Available to request" : "Unavailable in this app"}</span></SettingsRow>
       <SettingsRow title="Transfer limits" note={`Files up to ${MAX_ATTACHMENT_BYTES / 1048576} MiB; ${ATTACHMENT_CHUNK_BYTES / 1024} KiB chunks. The host limits concurrent transfers.`} />
-      <SettingsRow title="Preview limits" note="Markdown currently has a 2 MiB preview limit. PDF reads are bounded to 2 MiB per requested range. Large or unsupported previews still offer Download. Codec support depends on this device." />
+      <SettingsRow title="Preview limits" note="Markdown opens in 32 KiB sections. PDF reads use ranges up to 256 KiB. Unsupported previews still offer Download. Codec support depends on this device." />
       <SettingsRow title="Temporary file data" note="Closes previews and cancels unfinished downloads on this device. Saved downloads, delivered host files, chats, accounts and worktrees are kept."><Pill className="min-h-11" disabled={!native || clearing} onClick={() => void clear()}>{clearing ? "Clearing…" : "Clear temporary data"}</Pill></SettingsRow>
     </SettingsCard>
     {notice && <p role="status" className="mt-3 text-[13px] text-secondary">{notice}</p>}

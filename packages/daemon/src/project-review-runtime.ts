@@ -5,11 +5,12 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { Provider } from "@tjommie/protocol";
 import { TaskFinding } from "../../protocol/src/projects.ts";
-import { resolveCli, workerAccountsRoot, WorkerLaunchTerminationError, type CliCommand } from "./cli.ts";
+import { resolveCli, withWorkerPolicy, workerAccountsRoot, WorkerLaunchTerminationError, type CliCommand } from "./cli.ts";
 import { CheckTerminationError } from "./project-checks.ts";
-import { frozenReviewInput, reviewHash, type ReviewContext, type ReviewResult, type ReviewRuntime, type ReviewSnapshot } from "./project-review.ts";
+import { frozenReviewContext, frozenReviewInput, reviewHash, reviewInstructionsHash, type ReviewContext, type ReviewResult, type ReviewRuntime, type ReviewSnapshot } from "./project-review.ts";
 import { reviewCliVersion, runReviewCli, type ReviewCliResult } from "./project-review-cli.ts";
-import { canonicalReviewCommand, REVIEW_POLICY, REVIEW_SETTINGS, reviewCliArgs, reviewCommandHash, reviewEnvironment, reviewMachinePolicyHash, reviewSourceHash, type ReviewEffectivePolicy } from "./project-review-policy.ts";
+import { canonicalReviewCommand, REVIEW_POLICY, REVIEW_SETTINGS, reviewCliArgs, reviewCommandHash, reviewEnvironment, reviewMachinePolicyHash, reviewSourceHash, reviewWorkerPolicyHash, type ReviewEffectivePolicy } from "./project-review-policy.ts";
+import { WorkerPolicyBusyError, type WorkerPolicyReceipt } from "./windows-worker.ts";
 import type { ProviderAuthentication, ProviderEvent } from "./providers/types.ts";
 
 export type ReviewAccount = { provider: Provider; model: string; kind: "api_key" | "subscription";
@@ -18,13 +19,13 @@ export type ReviewAccount = { provider: Provider; model: string; kind: "api_key"
 export type ReviewAccountSelection = ReviewAccount | { unavailable: string };
 export type ProjectReviewOptions = { root: string; resolve(context: ReviewContext, signal: AbortSignal): Promise<ReviewAccountSelection>;
   // Trusted host seams for source fixtures; neither is a renderer/RPC option.
-  cli?: () => CliCommand | null; machinePolicyHash?: () => string };
-type PolicyIdentity = { policy: string; platform: string; arch: string; version: string; cliSha256: string; sourceSha256: string; machinePolicySha256: string; workerRoot: string | null; model: string };
+  cli?: () => CliCommand | null; machinePolicyHash?: () => string | Promise<string> };
+type PolicyIdentity = { policy: string; platform: string; arch: string; version: string; cliSha256: string; sourceSha256: string; machinePolicySha256: string; workerRoot: string | null; workerPolicy: WorkerPolicyReceipt | null; model: string };
 type Receipt = { id: string; createdAt: string; identity: PolicyIdentity; effectivePolicySha256: string; fixtureSha256: string;
   effectivePolicy: ReviewEffectivePolicy; attempts: readonly string[]; costUsd: number; resolvedModel: string };
 const CASES = ["file_edit", "shell_process", "repository_hook", "repository_settings", "ordinary_mcp", "browser_mutation"] as const;
 const AcceptanceReply = z.strictObject({ nonce: z.string(), attempts: z.array(z.strictObject({ id: z.enum(CASES), result: z.literal("unavailable") })).length(CASES.length) });
-const ReviewReply = z.strictObject({ sourceSha: z.string(), snapshotSha256: z.string(), complete: z.boolean(),
+const ReviewReply = z.strictObject({ sourceSha: z.string(), snapshotSha256: z.string(), instructionsSha256: z.string().regex(/^[a-f0-9]{64}$/), complete: z.boolean(),
   reviewedFiles: z.array(z.string()).max(2048), state: z.enum(["passed", "findings"]), reason: z.string().max(2000).nullable(), findings: z.array(TaskFinding).max(100) });
 const unavailable = (reason: string): ReviewResult => ({ state: "unavailable", reason: `review_isolation_unavailable: ${reason}`, findings: [], coverage: null });
 
@@ -96,11 +97,12 @@ function resolveCliGit(): string {
   throw new Error("review_acceptance_fixture_git_unavailable");
 }
 
-export function validateReviewReply(text: string, snapshot: ReviewSnapshot): ReviewResult {
+export function validateReviewReply(text: string, snapshot: ReviewSnapshot, instructionsSha256: string): ReviewResult {
   const { coverage } = frozenReviewInput(snapshot), reply = ReviewReply.parse(JSON.parse(text) as unknown);
   const expected = [...snapshot.files].sort(), actual = [...reply.reviewedFiles].sort();
   if (!reply.complete || reply.sourceSha !== snapshot.sourceSha || reply.snapshotSha256 !== coverage.snapshotSha256
     || JSON.stringify(actual) !== JSON.stringify(expected)) throw new Error("review_coverage_incomplete");
+  if (reply.instructionsSha256 !== instructionsSha256) throw new Error("review_instruction_context_changed");
   for (const finding of reply.findings) {
     if (!snapshot.files.includes(finding.path) || finding.line !== null && finding.line > snapshot.read(finding.path).split("\n").length) throw new Error("review_finding_outside_snapshot");
   }
@@ -114,9 +116,14 @@ export function createProjectReviewRuntime(options: ProjectReviewOptions): Revie
   const receipts = new Map<string, Receipt>();
   const pendingCleanup = new Map<string, string>();
   return { async review(snapshot, signal, context) {
+    context = frozenReviewContext(context); const instructionsSha256 = reviewInstructionsHash(context);
     const input = frozenReviewInput(snapshot);
-    let account: ReviewAccount | null = null, scratch: string | null = null, scratchParent = root, terminationUnknown = false, identityKey: string | null = null;
+    let account: ReviewAccount | null = null, scratch: string | null = null, scratchParent = root, terminationUnknown = false, identityKey: string | null = null, retainedFailure: CheckTerminationError | null = null;
+    const releaseAccount = async (): Promise<void> => { await account?.release(); };
+    let audit: Record<string, unknown> | undefined;
     try {
+      const result = await withWorkerPolicy(async (workerPolicy) => {
+      try {
       if (signal.aborted) return unavailable("review_cancelled");
       for (const [path, parent] of pendingCleanup) { try { safeRemove(parent, path); pendingCleanup.delete(path); } catch { return unavailable("review_temporary_cleanup_failed"); } }
       const selected = await options.resolve(context, signal);
@@ -134,32 +141,36 @@ export function createProjectReviewRuntime(options: ProjectReviewOptions): Revie
       scratch = mkdtempSync(join(scratchParent, ".review-"));
       const env = reviewEnvironment(join(scratch, "version-profile")), version = await reviewCliVersion(command, scratch, env, signal);
       const machinePolicy = options.machinePolicyHash ?? reviewMachinePolicyHash;
+      const machinePolicySha256 = await machinePolicy();
+      if (workerPolicy && reviewWorkerPolicyHash(workerPolicy) !== machinePolicySha256 || workerRoot && !workerPolicy) throw new Error("review_worker_policy_changed");
       const identity: PolicyIdentity = { policy: REVIEW_POLICY, platform: process.platform, arch: process.arch, version,
-        cliSha256: reviewCommandHash(command), sourceSha256: reviewSourceHash(), machinePolicySha256: machinePolicy(), workerRoot, model: account.model };
+        cliSha256: reviewCommandHash(command), sourceSha256: reviewSourceHash(), machinePolicySha256, workerRoot, workerPolicy, model: account.model };
       const key = reviewHash(JSON.stringify(identity)); identityKey = key;
-      const current = (): void => {
+      const current = async (): Promise<void> => {
         if (signal.aborted) throw new Error("review_cancelled"); account!.assertCurrent();
-        if (reviewCommandHash(command) !== identity.cliSha256 || reviewSourceHash() !== identity.sourceSha256 || machinePolicy() !== identity.machinePolicySha256 || workerAccountsRoot() !== identity.workerRoot) throw new Error("review_policy_changed");
+        const observed = await machinePolicy();
+        if (signal.aborted) throw new Error("review_cancelled"); account!.assertCurrent();
+        if (reviewCommandHash(command) !== identity.cliSha256 || reviewSourceHash() !== identity.sourceSha256 || observed !== identity.machinePolicySha256 || workerAccountsRoot() !== identity.workerRoot) throw new Error("review_policy_changed");
       };
       const run = async (text: string): Promise<ReviewCliResult> => {
-        current(); const allowance = account!.getMaxBudgetUsd();
+        await current(); const allowance = account!.getMaxBudgetUsd();
         const runRoot = mkdtempSync(join(scratch!, "turn-")), cwd = join(runRoot, "cwd"); mkdirSync(cwd);
         const profile = reviewEnvironment(join(runRoot, "profile")), settings = join(runRoot, "settings.json");
         writeFileSync(settings, REVIEW_SETTINGS, { mode: 0o600 });
         const result = await runReviewCli({ command, args: reviewCliArgs(account!.model, settings, allowance), cwd, env: profile, input: text, signal,
           model: account!.model, apiKey: account!.authentication!.key, onEvent: (event) => account!.onEvent(event) });
-        current(); return result;
+        await current(); return result;
       };
       let receipt = receipts.get(key);
       if (!receipt) {
         const acceptanceRoot = join(scratch, "acceptance"); mkdirSync(acceptanceRoot);
         const cwd = join(acceptanceRoot, "cwd"); mkdirSync(cwd);
         const fixture = acceptanceFixture(acceptanceRoot, cwd);
-        const allowance = account.getMaxBudgetUsd(); current();
+        await current(); const allowance = account.getMaxBudgetUsd();
         const settings = join(acceptanceRoot, "settings.json"); writeFileSync(settings, REVIEW_SETTINGS, { mode: 0o600 });
         const accepted = await runReviewCli({ command, args: reviewCliArgs(account.model, settings, allowance), cwd,
           env: reviewEnvironment(join(acceptanceRoot, "profile")), input: fixture.prompt, signal, model: account.model, apiKey: account.authentication.key, onEvent: (event) => account!.onEvent(event) });
-        const fixtureSha256 = fixture.verify(); current();
+        const fixtureSha256 = fixture.verify(); await current();
         const reply = AcceptanceReply.parse(JSON.parse(accepted.text) as unknown), expectedNonce = (JSON.parse(fixture.prompt) as { nonce: string }).nonce;
         if (reply.nonce !== expectedNonce || new Set(reply.attempts.map((attempt) => attempt.id)).size !== CASES.length) throw new Error("review_acceptance_incomplete");
         receipt = { id: randomUUID(), createdAt: new Date().toISOString(), identity, effectivePolicySha256: reviewHash(JSON.stringify(accepted.policy)),
@@ -168,24 +179,32 @@ export function createProjectReviewRuntime(options: ProjectReviewOptions): Revie
         writeFileSync(join(root, "receipts", `${receipt.id}.json`), JSON.stringify(receipt), { flag: "wx", mode: 0o600 });
         receipts.set(key, receipt);
       }
-      const prompt = JSON.stringify({ coverage: input.coverage, snapshot: JSON.parse(input.text) as unknown,
-        output: { sourceSha: snapshot.sourceSha, snapshotSha256: input.coverage.snapshotSha256, complete: true,
+      const prompt = JSON.stringify({ criteria: context.instructions, criteriaRevision: { project: context.projectRevision, task: context.taskRevision, attempt: context.revision }, instructionsSha256,
+        coverage: input.coverage, snapshot: JSON.parse(input.text) as unknown,
+        output: { sourceSha: snapshot.sourceSha, snapshotSha256: input.coverage.snapshotSha256, instructionsSha256, complete: true,
           reviewedFiles: snapshot.files, state: "passed or findings", reason: null, findings: [{ severity: "critical|high|medium|low", path: "exact supplied file", line: "positive integer or null", message: "concrete finding" }] } });
       if (Buffer.byteLength(prompt) > 4_194_304) throw new Error("review_coverage_incomplete");
       const result = await run(prompt);
       if (reviewHash(JSON.stringify(result.policy)) !== receipt.effectivePolicySha256 || result.model !== receipt.resolvedModel) { receipts.delete(key); throw new Error("review_policy_changed"); }
       const text = result.text.split(account.authentication.key).join("[redacted]");
-      const reviewed = validateReviewReply(text, snapshot);
-      mkdirSync(join(root, "evaluations"), { recursive: true });
-      writeFileSync(join(root, "evaluations", `${randomUUID()}.json`), JSON.stringify({ context, receiptId: receipt.id, coverage: reviewed.coverage, costUsd: result.costUsd, state: reviewed.state, createdAt: new Date().toISOString() }), { flag: "wx", mode: 0o600 });
+      const reviewed = validateReviewReply(text, snapshot, instructionsSha256);
+      audit = { context, instructionsSha256, receiptId: receipt.id, coverage: reviewed.coverage, costUsd: result.costUsd, state: reviewed.state, createdAt: new Date().toISOString() };
       return reviewed;
+      } catch (error) {
+        if (workerPolicy && error instanceof CheckTerminationError) { retainedFailure = error; throw new WorkerLaunchTerminationError(); }
+        throw error;
+      }
+      });
+      if (audit) { mkdirSync(join(root, "evaluations"), { recursive: true }); writeFileSync(join(root, "evaluations", `${randomUUID()}.json`), JSON.stringify(audit), { flag: "wx", mode: 0o600 }); }
+      return result;
     } catch (error) {
       if (identityKey) receipts.delete(identityKey);
-      if (error instanceof CheckTerminationError || error instanceof WorkerLaunchTerminationError) { terminationUnknown = true; throw error instanceof CheckTerminationError ? error : new CheckTerminationError("Reviewer startup retirement is unconfirmed; its account and scratch profile are retained."); }
+      if (error instanceof CheckTerminationError || error instanceof WorkerLaunchTerminationError) { terminationUnknown = true; throw retainedFailure ?? (error instanceof CheckTerminationError ? error : new CheckTerminationError("Reviewer startup retirement is unconfirmed; its account and scratch profile are retained.")); }
+      if (error instanceof WorkerPolicyBusyError) return unavailable("review_worker_busy");
       const reason = error instanceof Error && /^review_[a-z_]+$/.test(error.message) ? error.message : "review_acceptance_or_output_incomplete";
       return unavailable(reason);
     } finally {
-      if (!terminationUnknown) { try { if (scratch) { pendingCleanup.set(scratch, scratchParent); safeRemove(scratchParent, scratch); pendingCleanup.delete(scratch); } } finally { await account?.release(); } }
+      if (!terminationUnknown) { try { if (scratch) { pendingCleanup.set(scratch, scratchParent); safeRemove(scratchParent, scratch); pendingCleanup.delete(scratch); } } finally { await releaseAccount(); } }
     }
   } };
 }

@@ -16,6 +16,15 @@ public class TjommieAttachmentPluginTest {
     @Override public void resolve() { resolved = true; }
     @Override public void reject(String message, String code) { error = code; }
   }
+  @Test public void webViewOwnsLengthWhileThePluginSuppliesOneRangeAndAdvertisesRangeSupport() {
+    java.util.Map<String, String> headers = TjommieAttachmentPlugin.previewHeaders(216, 0, 215, true);
+    assertEquals("bytes", headers.get("Accept-Ranges")); assertEquals("bytes 0-215/216", headers.get("Content-Range")); assertEquals(2, headers.size());
+    for (String name : headers.keySet()) assertFalse("Content-Length".equalsIgnoreCase(name));
+    java.util.Map<String, String> complete = TjommieAttachmentPlugin.previewHeaders(216, 0, 215, false);
+    assertEquals(java.util.Collections.singletonMap("Accept-Ranges", "bytes"), complete);
+    java.util.Map<String, String> late = TjommieAttachmentPlugin.previewHeaders(209715200, 209682432, 209715199, true);
+    assertEquals("bytes 209682432-209715199/209715200", late.get("Content-Range")); assertEquals(2, late.size());
+  }
   @Test public void explicitCleanupRejectsFailureAndOnlyResolvesAfterDeletion() throws Exception {
     File root = temporary.newFolder(); AttachmentFileStore store = new AttachmentFileStore(root);
     String digest = AttachmentFileStore.hex(AttachmentFileStore.sha256().digest(new byte[0]));

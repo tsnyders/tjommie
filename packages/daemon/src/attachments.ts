@@ -76,7 +76,7 @@ export class Attachments {
     const bots = this.#db.prepare("SELECT home_folder FROM bots").all() as { home_folder: string }[];
     for (const bot of bots) {
       const inbox = resolve(bot.home_folder, "inbox"), file = this.#safeFile(inbox, candidate);
-      if (file && dirname(file) === inbox) return file;
+      if (file && dirname(file) === realpathSync.native(inbox)) return file;
     }
     return null;
   }

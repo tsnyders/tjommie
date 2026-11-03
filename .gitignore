@@ -10,6 +10,7 @@ next-env.d.ts
 /packages/ui/public/third-party-notices.txt
 /.cache/speech-runtime/
 /.cache/phase4-acceptance/
+/output/playwright/
 .env*
 *.pem
 /packages/mobile/android/app/google-services.json

@@ -127,7 +127,12 @@ async function prepare(ctx: Context): Promise<void> {
   }
   ctx.page = page;
   const state = page;
-  state.ready ??= (async () => { await cdp(contents, "Runtime.enable"); await cdp(contents, "DOM.enable"); await cdp(contents, "Network.enable", { maxTotalBufferSize: IMAGE_LIMIT, maxResourceBufferSize: TEXT_LIMIT, maxPostDataSize: 0 }); })().catch((error: unknown) => { state.ready = undefined; throw error; });
+  state.ready ??= (async () => {
+    // Chromium replays retained console calls when Runtime is enabled again after private mode.
+    await cdp(contents, "Runtime.discardConsoleEntries");
+    await cdp(contents, "Runtime.enable"); await cdp(contents, "DOM.enable");
+    await cdp(contents, "Network.enable", { maxTotalBufferSize: IMAGE_LIMIT, maxResourceBufferSize: TEXT_LIMIT, maxPostDataSize: 0 });
+  })().catch((error: unknown) => { state.ready = undefined; throw error; });
   await page.ready;
   // Bot-opened choosers may be delayed by page JavaScript. Keep them intercepted throughout bot
   // control; the main-only handover event restores the native picker for the person.

@@ -7,7 +7,7 @@ import { enqueue, getWorkItem, setStatus, type WorkItem } from "./queue.ts";
 import type { TurnResult } from "./runner.ts";
 import { RpcError } from "./server.ts";
 import { executionKey, type TaskExecutionContext } from "./task-execution.ts";
-import { reviewCoverage, reviewSnapshot, type ReviewRuntime } from "./project-review.ts";
+import { frozenReviewContext, reviewCoverage, reviewSnapshot, type ReviewRuntime } from "./project-review.ts";
 import { CheckTerminationError, HostCheckRuntime, type CheckRuntime } from "./project-checks.ts";
 import { TaskIntegration as IntegrationSchema } from "../../protocol/src/projects.ts";
 import type { ManagedWorktree } from "./worktrees.ts";
@@ -319,11 +319,15 @@ export class Tasks {
     try {
       if (kind === "review") {
         const snapshot = reviewSnapshot(this.projects.worktrees, this.repository(attempt), attempt.baseSha, sha);
-        const result = await this.#review!.review(snapshot, controller.signal, { botId: botId!, projectId: project.id, taskId: task.id, attemptId: attempt.id, evaluationId: evaluation.id, revision });
+        const context = frozenReviewContext({ botId: botId!, projectId: project.id, taskId: task.id, attemptId: attempt.id, evaluationId: evaluation.id, revision,
+          projectRevision: project.revision, taskRevision: task.revision,
+          instructions: { reviewer: bot.instructions, role: project.members.find((member) => member.botId === botId && member.roles.includes("reviewer"))?.instructions ?? "", title: task.title, task: task.instructions, acceptance: task.acceptance } });
+        const result = await this.#review!.review(snapshot, controller.signal, context);
         evaluation = TaskEvaluation.parse({ ...evaluation, state: result.state, reason: result.reason, findings: result.findings, reviewCoverage: result.coverage ?? null });
         if (["passed", "findings"].includes(evaluation.state) && JSON.stringify(evaluation.reviewCoverage) !== JSON.stringify(reviewCoverage(snapshot))) throw new Error("review_coverage_incomplete");
         if (evaluation.state === "passed" && evaluation.findings.length) evaluation.state = "findings";
         if (!["passed", "findings", "failed", "unavailable"].includes(evaluation.state)) throw new Error("Invalid review result.");
+        if (this.task(task.id).revision !== task.revision || this.projects.get(project.id).revision !== project.revision || getStoredBot(this.db, botId!).instructions !== bot.instructions) evaluation = { ...evaluation, state: "stale", reason: "The review criteria changed during evaluation." };
       } else {
         const repo = this.repository(attempt), work = this.projects.worktrees.describe(`test-${evaluation.id}`, sha);
         this.projects.worktrees.create(repo, work); evaluation.worktreePath = work.path;

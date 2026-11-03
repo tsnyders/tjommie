@@ -68,6 +68,18 @@ describe("native browser automation", () => {
     const f = fixture(); f.state.control = "human";
     expect((await f.tool("browser_snapshot")).isError).toBe(true); expect(f.sendCommand).not.toHaveBeenCalled();
   });
+  it("discards Chromium's cached private console messages before re-enabling bot observations", async () => {
+    let cached = "", f: ReturnType<typeof fixture>;
+    f = fixture((method) => {
+      if (method === "Runtime.discardConsoleEntries") cached = "";
+      if (method === "Runtime.enable" && cached) f.debuggerEvents.emit("message", {}, "Runtime.consoleAPICalled", { type: "log", args: [{ value: cached }] });
+    });
+    await f.tool("browser_console_messages");
+    f.state.control = "human"; f.events.emit("tjommie-browser-control", "human");
+    cached = "synthetic private Chromium backlog";
+    f.state.control = "bot"; f.events.emit("tjommie-browser-control", "bot");
+    expect(words(await f.tool("browser_console_messages", { all: true }))).not.toContain("synthetic private Chromium backlog");
+  });
   it.each(["control", "viewport"])("stops pending actions after %s changes, without sending input", async (change) => {
     let f: ReturnType<typeof fixture>;
     f = fixture((method) => { if (method === "DOM.getBoxModel") { if (change === "control") f.state.control = "human"; else f.state.viewportRevision = (f.state.viewportRevision ?? 0) + 1; } });

@@ -194,7 +194,7 @@ public class TjommieAttachmentPlugin extends Plugin {
   private final class PreviewReader implements AttachmentInputStream.Reader {
     private final String key; private final Meta meta; private final AtomicBoolean cancelled = new AtomicBoolean(); private final AtomicReference<String> current = new AtomicReference<>();
     final AttachmentInputStream stream;
-    PreviewReader(String key, Meta meta, long start, long end) { this.key = key; this.meta = meta; stream = new AttachmentInputStream(start, end, this); meta.streams.add(stream); if (!valid()) stream.close(); }
+    PreviewReader(String key, Meta meta, long start, long end) { this.key = key; this.meta = meta; stream = new AttachmentInputStream(meta.size, start, end, this); meta.streams.add(stream); if (!valid()) stream.close(); }
     public boolean valid() { return !cancelled.get() && !meta.cancelled.get() && previews.get(key) == meta && meta.generation == generation.get(); }
     public byte[] read(long offset, int length) throws IOException { return TjommieAttachmentPlugin.this.read(key, meta, offset, length, cancelled, current); }
     public void cancel() { cancelled.set(true); meta.streams.remove(stream); String id = current.get(); Pending request = id == null ? null : pending.remove(id); if (request != null) request.answer.completeExceptionally(new IOException("Preview closed")); }
@@ -224,9 +224,14 @@ public class TjommieAttachmentPlugin extends Plugin {
     try { range = "HEAD".equals(request.getMethod()) ? null : AttachmentRanges.parse(rangeHeader, meta.size); }
     catch (IllegalArgumentException error) { headers.put("Content-Range", "bytes */" + meta.size); return response(416, "Range Not Satisfiable", meta.mime, headers, new ByteArrayInputStream(new byte[0])); }
     long start = range == null ? 0 : range[0], end = range == null ? meta.size - 1 : range[1];
-    headers.put("Accept-Ranges", "bytes"); headers.put("Content-Length", String.valueOf(Math.max(0, end - start + 1))); if (range != null) headers.put("Content-Range", "bytes " + start + "-" + end + "/" + meta.size);
-    InputStream input = "HEAD".equals(request.getMethod()) ? new ByteArrayInputStream(new byte[0]) : plugin.new PreviewReader(key, meta, start, end).stream;
+    headers.putAll(previewHeaders(meta.size, start, end, range != null));
+    InputStream input = "HEAD".equals(request.getMethod()) ? AttachmentInputStream.headerOnly(meta.size) : plugin.new PreviewReader(key, meta, start, end).stream;
     return response(range == null ? 200 : 206, range == null ? "OK" : "Partial Content", meta.mime, headers, input);
+  }
+  static Map<String, String> previewHeaders(long size, long start, long end, boolean partial) {
+    Map<String, String> headers = new HashMap<>(); headers.put("Accept-Ranges", "bytes");
+    // Chromium supplies Content-Length from the stream; appending it here creates duplicate values.
+    if (partial) headers.put("Content-Range", "bytes " + start + "-" + end + "/" + size); return headers;
   }
   private static WebResourceResponse response(int status, String reason, String mime, Map<String, String> headers, InputStream input) { return new WebResourceResponse(mime, null, status, reason, headers, input); }
 }

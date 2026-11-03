@@ -4,6 +4,44 @@ $ErrorActionPreference = 'Stop'
 $workerProcess = $null
 $jobHandle = [IntPtr]::Zero
 $workerInput = [Console]::OpenStandardInput()
+$globalProcessSource = @'
+using System;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Security.Principal;
+using System.Collections.Generic;
+public static class TjWorkerProcessSet {
+  [StructLayout(LayoutKind.Sequential)] struct Row { public uint Session,Pid; public IntPtr Name,Sid; }
+  [DllImport("wtsapi32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern bool WTSEnumerateProcessesW(IntPtr server,uint reserved,uint version,out IntPtr rows,out uint count);
+  [DllImport("wtsapi32.dll")] static extern void WTSFreeMemory(IntPtr rows);
+  public static void Validate(string workerSid,int[] pids,string[] sids) {
+    if(pids.Length!=sids.Length) throw new Exception();
+    for(int i=0;i<pids.Length;i++) {
+      // PID 0 is Idle and PID 4 is the Windows kernel; neither can be a worker user process.
+      if(pids[i]==0 || pids[i]==4) continue;
+      if(String.IsNullOrEmpty(sids[i]) || sids[i]==workerSid) throw new Exception();
+    }
+  }
+  public static void AssertQuiescent(string workerSid) {
+    IntPtr rows; uint count;
+    if(!WTSEnumerateProcessesW(IntPtr.Zero,0,1,out rows,out count)) throw new Exception();
+    try {
+      var pids=new List<int>(); var sids=new List<string>(); var seen=new HashSet<int>(); int size=Marshal.SizeOf(typeof(Row));
+      for(int i=0;i<count;i++) {
+        var row=(Row)Marshal.PtrToStructure(IntPtr.Add(rows,i*size),typeof(Row)); int pid=checked((int)row.Pid);
+        if(!seen.Add(pid)) throw new Exception(); pids.Add(pid); sids.Add(row.Sid==IntPtr.Zero ? null : new SecurityIdentifier(row.Sid).Value);
+      }
+      Validate(workerSid,pids.ToArray(),sids.ToArray());
+      // WTS can omit other users without sufficient query rights. Never accept a partial result.
+      foreach(var process in Process.GetProcesses()) using(process) {
+        if(seen.Contains(process.Id)) continue;
+        try { using(var live=Process.GetProcessById(process.Id)) { if(!live.HasExited) throw new InvalidOperationException(); } }
+        catch(ArgumentException) { /* Process exited between snapshots. */ }
+      }
+    } finally { WTSFreeMemory(rows); }
+  }
+}
+'@
 function Read-PrivateLine([IO.Stream]$pipe) {
   $bytes = New-Object 'Collections.Generic.List[byte]'
   while ($true) { $next = $pipe.ReadByte(); if ($next -lt 0) { throw 'input closed' }; if ($next -eq 10) { break }; if ($bytes.Count -ge 1048576) { throw 'input limit' }; $bytes.Add([byte]$next) }
@@ -17,11 +55,14 @@ try {
   if ($account.SID.Value -ne $config.workerSid -or -not $account.Enabled) { throw 'boundary' }
   $boot = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime()
   if ($boot -le [DateTime]::Parse($config.provisionedAt).ToUniversalTime()) { throw 'Restart Windows after provisioning before accepting this boundary.' }
-  foreach ($candidate in Get-CimInstance Win32_Process) {
+  if ($launch.quiescent) { Add-Type -TypeDefinition $globalProcessSource; [TjWorkerProcessSet]::AssertQuiescent([string]$config.workerSid) }
+  foreach ($candidate in Get-CimInstance Win32_Process -Filter "Name='claude.exe' OR Name='codex.exe' OR Name='node.exe'") {
+    if ($candidate.Name -match '^node(\.exe)?$' -and [String]::IsNullOrWhiteSpace($candidate.CommandLine)) { throw 'An existing Node process could not be identified safely.' }
     $provider = $candidate.Name -match '^(claude|codex)\.exe$' -or ($candidate.Name -match '^node(\.exe)?$' -and $candidate.CommandLine -match '([\\/]@anthropic-ai[\\/]claude-code[\\/]|[\\/]@openai[\\/]codex[\\/])')
     if (-not $provider) { continue }
     $owner = Invoke-CimMethod -InputObject $candidate -MethodName GetOwnerSid
     if ($owner.ReturnValue -ne 0 -or $owner.Sid -eq $config.ownerSid) { throw 'An owner-level provider is still running. Close older Tjommie/provider apps before enabling Logins.' }
+    if ($owner.Sid -eq $config.workerSid -and @($launch.allowedWorkerPids) -notcontains $candidate.ProcessId) { throw 'An untracked worker provider is running. Reconcile older hosts before enabling Logins.' }
   }
   foreach ($protected in @($config.ownerDataRoot,$config.runtimeRoot)) {
     $acl = Get-Acl -LiteralPath $protected
@@ -71,7 +112,8 @@ public static class TjWorkerSecurity {
       try {
         if(!GetTokenInformation(token,3,privileges,needed,out needed)) throw new Exception();
         int count=Marshal.ReadInt32(privileges);
-        for(int i=0;i<count;i++) { int low=Marshal.ReadInt32(privileges,4+i*12); int high=Marshal.ReadInt32(privileges,8+i*12); if(high!=0 || low==2 || low==3 || low==7 || low==9 || low==17 || low==18 || low==20 || low==29) throw new Exception(); }
+        // Only ordinary user shutdown, traverse, undock, working-set and time-zone rights are permitted.
+        for(int i=0;i<count;i++) { int low=Marshal.ReadInt32(privileges,4+i*12); int high=Marshal.ReadInt32(privileges,8+i*12); if(high!=0 || (low!=19 && low!=23 && low!=25 && low!=33 && low!=34)) throw new Exception(); }
       } finally { Marshal.FreeHGlobal(privileges); }
     } finally { CloseHandle(token); }
   }
@@ -156,6 +198,8 @@ public sealed class TjNativeWorker : IDisposable {
   foreach ($property in $launch.env.PSObject.Properties) { $environment[$property.Name] = [string]$property.Value }
   $environment['SystemRoot'] = $env:SystemRoot
   $environment['WINDIR'] = $env:SystemRoot
+  $environment['ProgramFiles'] = [Environment]::GetFolderPath('ProgramFiles')
+  $environment['ProgramData'] = [Environment]::GetFolderPath('CommonApplicationData')
   $environment['USERPROFILE'] = $config.workerRoot
   $environment['HOME'] = $config.workerRoot
   $environment['APPDATA'] = [IO.Path]::Combine($config.workerRoot,'AppData','Roaming')
@@ -177,6 +221,7 @@ public sealed class TjNativeWorker : IDisposable {
   $inputCopy = [TjWorkerSecurity]::CopyInput($workerInput,$workerProcess.Input)
   $workerProcess.Resume()
   $workerExit = $workerProcess.Wait()
+  if (-not [TjWorkerSecurity]::StopJob($jobHandle)) { throw 'worker children did not stop' }
   [Threading.Tasks.Task]::WaitAll(@($output,$errors))
   exit $workerExit
 } catch {

@@ -1,10 +1,12 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync, realpathSync, rmSync, mkdirSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { windowsCredentialTransport, type CredentialTransport } from "./account-credentials.ts";
+import { WORKER_POLICY_OBSERVER } from "./worker-policy-observer.ts";
 
 const Sid = z.string().regex(/^S-1-5-21-\d+-\d+-\d+-\d+$/);
 export const WindowsWorkerConfiguration = z.object({
@@ -15,7 +17,7 @@ export const WindowsWorkerConfiguration = z.object({
 }).strict();
 export type WindowsWorkerConfiguration = z.infer<typeof WindowsWorkerConfiguration>;
 const Receipt = z.object({ version: z.literal(1), ownerSid: Sid, workerSid: Sid, wrapperPid: z.number().int().positive(), workerPid: z.number().int().positive(), elevated: z.literal(false), privileged: z.literal(false), jobBound: z.literal(true) }).strict();
-const Acceptance = z.object({ version: z.literal(1), configurationHash: z.string().regex(/^[a-f0-9]{64}$/), ownerFileDenied: z.literal(true), ownerCredentialDenied: z.literal(true), ownerProcessDenied: z.literal(true), ownerDesktopDenied: z.literal(true), workerWriteAllowed: z.literal(true), codexStarted: z.literal(true), claudeStarted: z.literal(true) }).strict();
+const Acceptance = z.object({ version: z.literal(1), configurationHash: z.string().regex(/^[a-f0-9]{64}$/), ownerFileDenied: z.literal(true), ownerCredentialDenied: z.literal(true), ownerProcessDenied: z.literal(true), ownerDesktopDenied: z.literal(true), workerWriteAllowed: z.literal(true), codexStarted: z.literal(true), claudeStarted: z.literal(true), reviewPolicyVerified: z.literal(true) }).strict();
 const unavailable = "Logins needs the verified Windows worker account. Set up and verify provider isolation on the host before saving or filling logins.";
 const failure = (): Error => new Error("The isolated Windows provider could not start. No owner credential was sent to it.");
 export class WorkerLaunchTerminationError extends Error {
@@ -23,6 +25,8 @@ export class WorkerLaunchTerminationError extends Error {
 }
 const exitProofs = new WeakMap<ChildProcessWithoutNullStreams, Promise<void>>();
 export function workerProcessRetired(child: ChildProcessWithoutNullStreams): Promise<void> | undefined { return exitProofs.get(child); }
+export type WorkerPolicyReceipt = Readonly<{ workerSid: string; observerSha256: string; policySha256: string }>;
+export class WorkerPolicyBusyError extends Error { constructor() { super("Other worker jobs are running. Review can start after they finish."); } }
 export function workerConfigurationHash(config: WindowsWorkerConfiguration): string { return createHash("sha256").update(JSON.stringify(WindowsWorkerConfiguration.parse(config))).digest("hex"); }
 function inside(root: string, path: string): boolean {
   const part = relative(realpathSync(root), realpathSync(path)); return part === "" || !part.startsWith("..") && !isAbsolute(part);
@@ -36,6 +40,10 @@ export class WindowsWorkerBoundary {
   #leases = 0;
   #closed = false;
   readonly #children = new Map<number, z.infer<typeof Receipt>>();
+  readonly #reviewScope = new AsyncLocalStorage<string>();
+  #reviewLease: string | null = null;
+  #launches = 0;
+  #terminationUnknown = false;
   constructor(options: Options) { this.#options = options; }
   get configured(): boolean { return existsSync(this.#options.configurationPath); }
   get required(): boolean { return this.configured || existsSync(join(dirname(this.#options.configurationPath), "vault-protection-required")); }
@@ -49,6 +57,7 @@ export class WindowsWorkerBoundary {
   }
   async unavailableReason(): Promise<string | null> {
     try {
+      if (this.#terminationUnknown) throw failure();
       const config = this.configuration();
       const accepted = Acceptance.parse(JSON.parse(readFileSync(join(config.ownerDataRoot, "worker-acceptance.json"), "utf8")));
       if (accepted.configurationHash !== workerConfigurationHash(config) || !this.#options.exclusive()) throw failure();
@@ -61,7 +70,7 @@ export class WindowsWorkerBoundary {
     const generation = this.#generation; this.#leases++;
     let released = false;
     return {
-      assert: () => { if (released || this.#closed || generation !== this.#generation || !this.#options.exclusive()) throw failure(); },
+      assert: () => { if (released || this.#closed || this.#terminationUnknown || generation !== this.#generation || !this.#options.exclusive()) throw failure(); },
       release: () => { if (!released) { released = true; this.#leases--; } },
     };
   }
@@ -90,10 +99,15 @@ export class WindowsWorkerBoundary {
       child.once("error", () => { clearTimeout(timer); reject(failure()); });
       child.stdout.on("data", (chunk: Buffer) => { if (output.length + chunk.length > 100) { child.kill(); reject(failure()); } else output += chunk.toString("utf8"); });
       child.once("close", (code) => { clearTimeout(timer); if (code === 0 && output === "verified") done(); else reject(failure()); });
-      child.stdin.on("error", () => reject(failure())); child.stdin.end(JSON.stringify({ mode: "verify", config }) + "\n");
+      child.stdin.on("error", () => reject(failure())); child.stdin.end(JSON.stringify({ mode: "verify", config, quiescent: this.#reviewLease !== null, allowedWorkerPids: [...this.#children.values()].map((receipt) => receipt.workerPid) }) + "\n");
     });
   }
   async spawn(file: string, args: string[], options: { cwd: string; env: Record<string, string> }): Promise<ChildProcessWithoutNullStreams> {
+    if (this.#reviewLease !== null && this.#reviewScope.getStore() !== this.#reviewLease) throw new WorkerPolicyBusyError();
+    if (this.#reviewLease !== null && (this.#children.size || this.#launches)) throw new WorkerPolicyBusyError();
+    if (this.#terminationUnknown) throw new WorkerLaunchTerminationError();
+    this.#launches++;
+    try {
     const config = this.configuration();
     if (!this.#options.exclusive() || !inside(config.runtimeRoot, file) || !/\.exe$/i.test(file)) throw failure();
     for (const name of ["CODEX_HOME", "CLAUDE_CONFIG_DIR"]) if (options.env[name] && !inside(config.workerRoot, options.env[name])) throw failure();
@@ -120,7 +134,7 @@ export class WindowsWorkerBoundary {
         env: { SystemRoot: systemRoot, WINDIR: systemRoot, TEMP: process.env.TEMP ?? join(systemRoot, "Temp"), TMP: process.env.TMP ?? join(systemRoot, "Temp") },
         stdio: ["pipe", "pipe", "pipe"], windowsHide: true,
       });
-      child.stdin.write(JSON.stringify({ config, password, file, args, cwd: options.cwd, env: options.env, receiptPath }) + "\n");
+      child.stdin.write(JSON.stringify({ config, password, file, args, cwd: options.cwd, env: options.env, receiptPath, quiescent: this.#reviewLease !== null, allowedWorkerPids: [...this.#children.values()].map((receipt) => receipt.workerPid) }) + "\n");
       password = "";
       const retired = new Promise<void>((done, reject) => {
         const closed = (): void => {
@@ -128,10 +142,10 @@ export class WindowsWorkerBoundary {
             const proof: unknown = JSON.parse(readFileSync(receiptPath + ".closed", "utf8"));
             if (!proof || typeof proof !== "object" || !("wrapperPid" in proof) || proof.wrapperPid !== child.pid || !("stopped" in proof) || proof.stopped !== true) throw failure();
             done();
-          } catch { reject(new WorkerLaunchTerminationError()); }
+          } catch { this.#terminationUnknown = true; this.invalidate(); reject(new WorkerLaunchTerminationError()); }
           finally { rmSync(receiptPath + ".closed", { force: true }); }
         };
-        child.once("close", closed); child.once("error", () => reject(new WorkerLaunchTerminationError()));
+        child.once("close", closed); child.once("error", () => { this.#terminationUnknown = true; this.invalidate(); reject(new WorkerLaunchTerminationError()); });
       });
       void retired.catch(() => {}); exitProofs.set(child, retired);
       try {
@@ -154,8 +168,50 @@ export class WindowsWorkerBoundary {
         throw failure();
       }
       finally { rmSync(receiptPath, { force: true }); }
-    } catch (error) { if (error instanceof WorkerLaunchTerminationError) throw error; throw failure(); }
+    } catch (error) { if (error instanceof WorkerLaunchTerminationError) { this.#terminationUnknown = true; throw error; } throw failure(); }
     finally { password = ""; }
+    } catch (error) {
+      if (error instanceof WorkerLaunchTerminationError) { this.#terminationUnknown = true; this.invalidate(); throw error; }
+      throw failure();
+    } finally { this.#launches--; }
+  }
+  async observeReviewPolicy(): Promise<WorkerPolicyReceipt> {
+    if (!this.#reviewLease || this.#reviewScope.getStore() !== this.#reviewLease || this.#children.size || this.#launches) throw new WorkerPolicyBusyError();
+    const config = this.configuration(), scratch = join(config.workerRoot, "policy-observer"); mkdirSync(scratch, { recursive: true });
+    const child = await this.spawn(join(config.runtimeRoot, "node.exe"), ["-e", WORKER_POLICY_OBSERVER], { cwd: scratch, env: {} });
+    let output = ""; child.stdin.end();
+    const code = await new Promise<number | null>((done, reject) => {
+      const timer = setTimeout(() => { child.kill(); reject(new WorkerLaunchTerminationError()); }, 20_000); timer.unref();
+      child.stdout.on("data", (bytes: Buffer) => { if (output.length + bytes.length > 4096) { child.kill(); reject(failure()); } else output += bytes.toString("utf8"); });
+      child.stderr.resume(); child.once("error", () => { clearTimeout(timer); reject(failure()); }); child.once("close", (status) => { clearTimeout(timer); done(status); });
+    });
+    await workerProcessRetired(child);
+    const value = z.object({ version: z.literal(1), registryAbsent: z.literal(true), files: z.array(z.tuple([z.enum(["managed-settings.json", "managed-mcp.json"]), z.string().regex(/^[a-f0-9]{64}$/).nullable()])).length(2) }).strict().parse(JSON.parse(output));
+    if (code !== 0) throw failure();
+    return Object.freeze({ workerSid: config.workerSid, observerSha256: createHash("sha256").update(WORKER_POLICY_OBSERVER).digest("hex"), policySha256: createHash("sha256").update(JSON.stringify(value)).digest("hex") });
+  }
+  async withReviewPolicy<T>(action: (receipt: WorkerPolicyReceipt) => Promise<T>): Promise<T> {
+    if (this.#reviewLease || this.#children.size || this.#launches) throw new WorkerPolicyBusyError();
+    const lease = randomUUID(); this.#reviewLease = lease;
+    return this.#reviewScope.run(lease, async () => {
+      let caught: unknown;
+      try {
+        const before = await this.observeReviewPolicy();
+        const result = await action(before);
+        const after = await this.observeReviewPolicy();
+        if (JSON.stringify(before) !== JSON.stringify(after)) throw new Error("review_worker_policy_changed");
+        return result;
+      } catch (error) {
+        caught = error;
+        if (error instanceof WorkerLaunchTerminationError) { this.#terminationUnknown = true; this.invalidate(); }
+        throw error;
+      } finally {
+        if (this.#children.size || this.#launches) { this.#terminationUnknown = true; this.invalidate(); }
+        if (this.#terminationUnknown) {
+          if (!(caught instanceof WorkerLaunchTerminationError)) throw new WorkerLaunchTerminationError();
+        } else if (this.#reviewLease === lease) this.#reviewLease = null;
+      }
+    });
   }
   receipts(): readonly z.infer<typeof Receipt>[] { return [...this.#children.values()]; }
   close(): void { this.#closed = true; this.invalidate(); }

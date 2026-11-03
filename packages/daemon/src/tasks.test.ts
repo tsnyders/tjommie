@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import type { CheckRuntime } from "./project-checks.ts";
 import { projectFixture } from "./project-test-support.ts";
-import { reviewCoverage, type ReviewRuntime } from "./project-review.ts";
+import { reviewCoverage, type ReviewContext, type ReviewRuntime } from "./project-review.ts";
 import { enqueue, getWorkItem, setStatus } from "./queue.ts";
 
 const open: ReturnType<typeof projectFixture>[] = [];
@@ -53,6 +53,29 @@ it("refuses a passing review without complete coverage, and hydrates legacy cove
   expect(result.state).toBe("unavailable"); expect(h.tasks.accepted(attempt)).toBe(false);
   h.db.prepare("UPDATE task_evaluations SET data=json_remove(data,'$.reviewCoverage') WHERE id=?").run(result.id);
   expect(h.tasks.detail(task.id).evaluations[0].reviewCoverage).toBeNull();
+});
+
+it("supplies frozen server-owned reviewer, role, task and checklist criteria with their revisions", async () => {
+  let observed: ReviewContext | undefined;
+  const h = fixture({ review: { async review(snapshot, _signal, context) { observed = context; return { state: "passed", reason: null, findings: [], coverage: reviewCoverage(snapshot) }; } } });
+  h.db.prepare("UPDATE bots SET instructions=? WHERE id=?").run("Check error handling", h.bots[2].id);
+  const project = h.projects.update(h.project.id, h.project.revision, { members: h.project.members.map((member) => ({ ...member, instructions: member.botId === h.bots[2].id ? "Review compatibility" : member.instructions })) });
+  const task = h.newTask(), attempt = await h.complete(h.tasks.start(task.id, task.revision, "criteria"), "src/a.txt", "A1\n"), currentTask = h.tasks.task(task.id);
+  expect((await h.tasks.evaluate(attempt.id, attempt.revision, attempt.headSha!, "review")).state).toBe("passed");
+  expect(observed).toMatchObject({ botId: h.bots[2].id, projectRevision: project.revision, taskRevision: currentTask.revision, revision: attempt.revision,
+    instructions: { reviewer: "Check error handling", role: "Review compatibility", title: task.title, task: task.instructions, acceptance: task.acceptance } });
+  expect(Object.isFrozen(observed)).toBe(true); expect(Object.isFrozen(observed!.instructions)).toBe(true); expect(Object.isFrozen(observed!.instructions.acceptance)).toBe(true);
+});
+
+it("keeps a completed model reply stale if trusted reviewer instructions changed during review", async () => {
+  let release: (() => void) | undefined, started: (() => void) | undefined;
+  const ready = new Promise<void>((resolve) => { started = resolve; }), waiting = new Promise<void>((resolve) => { release = resolve; });
+  const h = fixture({ review: { async review(snapshot) { started!(); await waiting; return { state: "passed", reason: null, findings: [], coverage: reviewCoverage(snapshot) }; } } }), task = h.newTask();
+  const attempt = await h.complete(h.tasks.start(task.id, task.revision, "criteria-drift"), "src/a.txt", "A1\n");
+  const operation = h.tasks.evaluate(attempt.id, attempt.revision, attempt.headSha!, "review"); await ready;
+  h.db.prepare("UPDATE bots SET instructions=? WHERE id=?").run("New acceptance requirements", h.bots[2].id); release!();
+  expect(await operation).toMatchObject({ state: "stale", reason: "The review criteria changed during evaluation." });
+  expect(h.tasks.detail(task.id).evaluations[0].state).toBe("stale"); expect(h.tasks.accepted(attempt)).toBe(false); expect(h.tasks.botBusy(h.bots[2].id)).toBe(false);
 });
 
 it("binds review and isolated checks to exact commit/revision and invalidates them when code changes", async () => {

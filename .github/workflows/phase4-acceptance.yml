@@ -24,6 +24,8 @@ jobs:
       - run: npm test
         env:
           TJOMMIE_CI_HOSTED: '1'
+      - name: Verify private native login boundary
+        run: node scripts/phase4-spikes/vault/run.mjs
       - name: Build pinned local speech runtime
         shell: pwsh
         run: ./packages/desktop/scripts/build-speech-runtime.ps1
@@ -86,6 +88,9 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or $package[0] -notmatch "^package: name='dev\.tjommie\.app\.phase4test'") { throw 'Unexpected Android package identity.' }
           & (Join-Path $tools 'apksigner.bat') verify $apk
           if ($LASTEXITCODE -ne 0) { throw 'Test APK signature verification failed.' }
+      - name: Verify native Android unit tests
+        working-directory: packages/mobile/android
+        run: ./gradlew.bat testDebugUnitTest --no-daemon
       - uses: actions/upload-artifact@v7
         with:
           name: phase4-android-test

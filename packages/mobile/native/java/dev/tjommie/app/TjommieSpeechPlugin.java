@@ -72,7 +72,7 @@ public class TjommieSpeechPlugin extends Plugin {
     JSObject model = new JSObject(); model.put("state", "system-managed"); model.put("bytes", 0); model.put("received", 0); value.put("model", model);
     if (cleanupFailed) value.put("problem", problem("cleanup_failed", "The previous local speech session could not be released. Close and reopen the app before dictating again."));
     else if (!supported) value.put("problem", problem("on_device_unavailable", "Local dictation needs Android 13 or later and an explicit on-device speech service. You can keep typing."));
-    else if (installed.isEmpty()) value.put("problem", problem("language_missing", "No supported English on-device language is installed. Manage language data in Android speech settings, then try again."));
+    else if (installed.isEmpty()) value.put("problem", problem("language_unverified", "No supported English on-device language could be confirmed. Check Android speech language settings or refresh, then try again."));
     return value;
   }
 

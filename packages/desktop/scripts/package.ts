@@ -74,6 +74,7 @@ writeFileSync(
 await bundle(join(repo, "packages", "daemon", "src", "main.ts"), join(resources, "daemon"), ["@playwright/mcp", "bufferutil", "utf-8-validate"]);
 cpSync(join(repo, "packages", "daemon", "src", "windows-worker.ps1"), join(resources, "daemon", "windows-worker.ps1"));
 cpSync(join(repo, "scripts", "vault"), join(resources, "vault"), { recursive: true });
+await bundle(join(repo, "scripts", "vault", "accept-worker.ts"), join(resources, "vault", "acceptance"), []);
 writeFileSync(join(resources, "daemon", "build-info.json"), JSON.stringify({ appVersion: version, daemonVersion: (require(join(repo, "packages", "daemon", "package.json")) as { version: string }).version }));
 copyPlaywrightMcp(join(resources, "daemon"));
 cpSync(join(repo, "packages", "transport", "wasm", "tjommie_noise_bg.wasm"), join(resources, "daemon", "tjommie_noise_bg.wasm"));

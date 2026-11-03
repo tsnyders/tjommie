@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, ftruncateSync, mkdirSync, openSync, closeSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, relative } from "node:path";
+import { execFileSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ATTACHMENT_CHUNK_BYTES, MAX_ATTACHMENT_BYTES, type AttachmentRef } from "../../protocol/src/attachments.ts";
 import { attachmentHandlers } from "./attachment-handlers.ts";
@@ -39,6 +40,19 @@ function publish(bytes: string | Buffer = "immutable snapshot", name = "answer.m
 }
 
 describe("durable message-owned attachments", () => {
+  it.skipIf(process.platform !== "win32")("accepts a Windows short-path alias without relaxing linked-path rejection", ({ skip }) => {
+    const alias = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", "$folder=New-Object -ComObject Scripting.FileSystemObject; [Console]::Out.Write($folder.GetFolder($env:TJOMMIE_PATH_FIXTURE).ShortPath)"], {
+      env: { ...process.env, TJOMMIE_PATH_FIXTURE: root }, encoding: "utf8", windowsHide: true,
+    });
+    if (alias === root) { skip(); return; }
+    const { info } = publish("Short path snapshot");
+    expect(service.registerSnapshot(join(alias, "shared-files", "share-fixture", "answer.md"), "answer.md")).toMatchObject({ sha256: info.sha256, size: info.size });
+    const aliasedHome = join(alias, relative(root, bot.homeFolder));
+    db.prepare("UPDATE bots SET home_folder=? WHERE id=?").run(aliasedHome, bot.id);
+    const inbox = join(aliasedHome, "inbox", "legacy.md"); writeFileSync(inbox, "legacy");
+    addMessage(db, { conversationId: bot.id, author: bot.id, kind: "file", body: "legacy", data: { path: inbox, name: "legacy.md", size: 6 }, status: "done" });
+    expect(service.backfillLegacy()).toEqual({ registered: 1, unavailable: 0 });
+  });
   it("serves the registered copy after the source is changed/deleted and returns bounded exact bytes", async () => {
     const { source, info, ref } = publish(Buffer.alloc(ATTACHMENT_CHUNK_BYTES + 3, 97)); writeFileSync(source, "replacement"); rmSync(source);
     expect(service.metadata(ref, context)).toEqual(info);

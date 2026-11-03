@@ -24,7 +24,9 @@ export class HostCheckRuntime implements CheckRuntime {
     };
     child.stdout.on("data", append); child.stderr.on("data", append);
     let stopped: Promise<void> | null = null;
-    const stop = (): void => { stopped ??= killTreeAndWait(child.pid); void stopped.catch(() => {}); };
+    let failedStop: (error: CheckTerminationError) => void = () => {};
+    const stopFailure = new Promise<never>((_resolve, reject) => { failedStop = reject; }); void stopFailure.catch(() => {});
+    const stop = (): void => { stopped ??= killTreeAndWait(child.pid); void stopped.catch(() => failedStop(new CheckTerminationError("Could not confirm that the owned check process tree stopped."))); };
     const timer = setTimeout(() => { timedOut = true; stop(); }, check.timeoutMs);
     signal.addEventListener("abort", stop, { once: true });
     try {
@@ -36,8 +38,13 @@ export class HostCheckRuntime implements CheckRuntime {
       child.stdin.on("error", () => {}); child.stdin.end();
       if (signal.aborted) stop();
       let exitCode: number | null;
-      try { exitCode = await closed; }
-      finally { try { await retired; } catch { throw new CheckTerminationError("Could not confirm that the owned check process tree stopped."); } }
+      try { exitCode = await Promise.race([closed, stopFailure]); }
+      catch (error) {
+        if (error instanceof CheckTerminationError) throw error;
+        try { await retired; } catch { throw new CheckTerminationError("Could not confirm that the owned check process tree stopped."); }
+        throw error;
+      }
+      try { await retired; } catch { throw new CheckTerminationError("Could not confirm that the owned check process tree stopped."); }
       if (stopped) { try { await stopped; } catch { throw new CheckTerminationError("Could not confirm that the owned check process tree stopped."); } }
       return { checkId: check.id, command: check.command, args: check.args, exitCode: timedOut || signal.aborted ? null : exitCode,
         output: output.toString("utf8").slice(0, 262_000) + (timedOut ? "\nCheck timed out." : signal.aborted ? "\nCheck cancelled." : ""), truncated };

@@ -4,10 +4,20 @@ import { ReviewCoverage, type TaskEvaluation } from "../../protocol/src/projects
 import { Worktrees, type Repository } from "./worktrees.ts";
 
 export type ReviewSnapshot = Readonly<{ sourceSha: string; files: readonly string[]; diff: string; read(path: string): string }>;
-export type ReviewContext = Readonly<{ botId: string; projectId: string; taskId: string; attemptId: string; evaluationId: string; revision: number }>;
+export type ReviewContext = Readonly<{ botId: string; projectId: string; taskId: string; attemptId: string; evaluationId: string; revision: number;
+  projectRevision: number; taskRevision: number;
+  instructions: Readonly<{ reviewer: string; role: string; title: string; task: string; acceptance: readonly string[] }> }>;
 export type ReviewResult = Pick<TaskEvaluation, "state" | "reason" | "findings"> & { coverage?: ReviewCoverage | null };
 export type ReviewRuntime = { review(snapshot: ReviewSnapshot, signal: AbortSignal, context: ReviewContext): Promise<ReviewResult> };
 export const reviewHash = (bytes: string | Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
+export function frozenReviewContext(context: ReviewContext): ReviewContext {
+  if (![context.projectRevision, context.taskRevision, context.revision].every((value) => Number.isSafeInteger(value) && value > 0)
+    || !context.instructions || ![context.instructions.reviewer, context.instructions.role, context.instructions.title, context.instructions.task].every((value) => typeof value === "string")
+    || !Array.isArray(context.instructions.acceptance) || context.instructions.acceptance.length > 50 || !context.instructions.acceptance.every((value) => typeof value === "string")) throw new Error("review_instruction_context_missing");
+  if (Buffer.byteLength(JSON.stringify(context.instructions)) > 1_048_576) throw new Error("review_instruction_context_limit");
+  return Object.freeze({ ...context, instructions: Object.freeze({ ...context.instructions, acceptance: Object.freeze([...context.instructions.acceptance]) }) });
+}
+export const reviewInstructionsHash = (context: ReviewContext): string => reviewHash(JSON.stringify({ projectRevision: context.projectRevision, taskRevision: context.taskRevision, revision: context.revision, instructions: context.instructions }));
 
 export function frozenReviewInput(snapshot: ReviewSnapshot): { text: string; coverage: ReviewCoverage } {
   if (snapshot.files.length > 2048 || new Set(snapshot.files).size !== snapshot.files.length) throw new Error("review_coverage_incomplete: file count");

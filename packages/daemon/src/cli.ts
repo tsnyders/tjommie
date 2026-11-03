@@ -4,11 +4,11 @@ import { createHash } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import { delimiter, dirname, join, relative, resolve, isAbsolute } from "node:path";
-import type { WindowsWorkerBoundary } from "./windows-worker.ts";
-import { workerProcessRetired } from "./windows-worker.ts";
+import type { WindowsWorkerBoundary, WorkerPolicyReceipt } from "./windows-worker.ts";
+import { workerProcessRetired, WorkerLaunchTerminationError } from "./windows-worker.ts";
 export { WorkerLaunchTerminationError, workerProcessRetired } from "./windows-worker.ts";
 
-type WorkerBoundary = Pick<WindowsWorkerBoundary, "required" | "configuration" | "spawn" | "grantDirectory">;
+type WorkerBoundary = Pick<WindowsWorkerBoundary, "required" | "configuration" | "spawn" | "grantDirectory" | "withReviewPolicy" | "observeReviewPolicy">;
 const workerScope = new AsyncLocalStorage<WorkerBoundary>();
 let installedWorker: WorkerBoundary | undefined, legacyUsed = false;
 const accountMappings = new WeakMap<WorkerBoundary, Map<string, string>>();
@@ -20,6 +20,10 @@ export function installWindowsWorker(worker: WorkerBoundary): () => void {
   return () => { if (installedWorker === worker) installedWorker = undefined; };
 }
 export function workerCliExclusive(worker: WorkerBoundary): boolean { return installedWorker === worker && !legacyUsed; }
+export async function withWorkerPolicy<T>(action: (receipt: WorkerPolicyReceipt | null) => Promise<T>): Promise<T> {
+  const worker = boundary(); return worker?.required ? worker.withReviewPolicy(action) : action(null);
+}
+export async function observeWorkerPolicy(): Promise<WorkerPolicyReceipt | null> { const worker = boundary(); return worker?.required ? worker.observeReviewPolicy() : null; }
 export function workerAccountsRoot(): string | null {
   const worker = boundary(); return worker?.required ? join(worker.configuration().workerRoot, "accounts") : null;
 }
@@ -179,8 +183,7 @@ export function runCli(
   timeoutMs = 20_000,
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
   const cwd = env.CODEX_HOME ?? env.CLAUDE_CONFIG_DIR ?? process.cwd();
-  return new Promise((resolve) => { void launchCli(cmd, args, { cwd, env }).then((child) => {
-    child.stdin.end();
+  const collect = (child: Pick<ChildProcess, "pid" | "on"> & { stdout: NonNullable<ChildProcess["stdout"]>; stderr: NonNullable<ChildProcess["stderr"]> }, proof?: Promise<void>): Promise<{ code: number | null; stdout: string; stderr: string }> => new Promise((resolve, reject) => {
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (chunk) => (stdout += chunk));
@@ -188,13 +191,21 @@ export function runCli(
     const timer = setTimeout(() => killTree(child.pid), timeoutMs);
     child.on("error", (error) => {
       clearTimeout(timer);
-      resolve({ code: null, stdout, stderr: String(error) });
+      const result = { code: null, stdout, stderr: String(error) };
+      if (proof) void proof.then(() => resolve(result)).catch(reject); else resolve(result);
     });
     child.on("close", (code) => {
       clearTimeout(timer);
-      resolve({ code, stdout, stderr });
+      if (proof) void proof.then(() => resolve({ code, stdout, stderr })).catch(reject);
+      else resolve({ code, stdout, stderr });
     });
-  }).catch(() => resolve({ code: null, stdout: "", stderr: "The provider could not start in its required execution boundary." })); });
+  });
+  if (!boundary()?.required) {
+    legacyUsed = true;
+    return collect(spawn(cmd.file, [...cmd.args, ...args], { env: nodeEnv(cmd, env), stdio: ["ignore", "pipe", "pipe"], windowsHide: true }));
+  }
+  return launchCli(cmd, args, { cwd, env }).then((child) => { const result = collect(child, workerProcessRetired(child)); child.stdin.end(); return result; })
+    .catch((error: unknown) => { if (error instanceof WorkerLaunchTerminationError) throw error; return { code: null, stdout: "", stderr: "The provider could not start in its required execution boundary." }; });
 }
 
 // The CLIs start their own children (shells, MCP servers), so stopping one means stopping its whole tree.
