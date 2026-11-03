@@ -28,6 +28,8 @@ it("opens only an explicitly associated image using its parent message/index and
   await mount(); expect(document.querySelector("img")).toBeNull(); expect(document.body.textContent).toContain("remote");
   const region = document.querySelector<HTMLElement>('[role="region"][aria-label="Markdown document; scroll to read this section"]');
   expect(region?.tabIndex).toBe(0); region?.focus(); expect(document.activeElement).toBe(region);
+  const search = document.querySelector<HTMLInputElement>('[aria-label="Search Markdown"]'), section = document.querySelector<HTMLInputElement>('[aria-label="Markdown section"]');
+  expect(search?.labels?.[0].textContent).toBe("Search Markdown"); expect(section?.labels?.[0].textContent).toBe("Section");
   await act(async () => button("Show Chart").click()); await settle();
   expect(preview).toHaveBeenCalledWith({}, { messageId: "parent", attachmentIndex: 2, attachmentId: companions[0].attachmentId }, native, expect.any(AbortSignal), expect.any(Function));
   expect(document.querySelector("img")?.src).toContain("/_attachments/"); expect(document.querySelector('img[src^="https:"]')).toBeNull();

@@ -11,6 +11,7 @@ import { pauseThumbnailWork } from "@/lib/file-thumbnails";
 import { fileSize } from "@/lib/format";
 import { localFileActions, useLocalFileActions } from "@/lib/native-capability";
 import { useApp } from "@/lib/store";
+import { IconButton } from "../icon-button";
 import { FileViewer, previewKind } from "./file-viewer";
 import { FileThumbnail } from "./file-thumbnail";
 
@@ -50,29 +51,21 @@ export function FileCard({ file, messageId, attachmentIndex = 0 }: { file: Pick<
       .finally(() => { context?.close(); thumbnails.release(); if (active.current === abort) { active.current = null; transferring.current = false; setSaving(false); if (abort.signal.aborted && !cleanupFailed) setStatus("Download cancelled."); } });
   };
   return (
-    <div data-slot="file-card" className="w-[320px] max-w-full overflow-hidden rounded-[12px] border border-card-stroke bg-card">
-    <div className="relative">
-      <button type="button" aria-label={`Preview ${file.name}`} title={!connected ? "The file host is offline" : native && reference ? "Open file preview" : "Preview is unavailable on this device"} disabled={!native || !reference || !connected || saving} onClick={() => setPreview({ host })} className="group block min-h-11 w-full cursor-pointer rounded-[11px] text-left outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-inset disabled:cursor-default">
+    <div data-slot="file-card" className="w-[264px] max-w-full rounded-[12px] bg-bubble p-3">
+      <button type="button" aria-label={`Preview ${file.name}`} title={!connected ? "The file host is offline" : native && reference ? "Open file preview" : "Preview is unavailable on this device"} disabled={!native || !reference || !connected || saving} onClick={() => setPreview({ host })} className="press block min-h-11 w-full rounded-[8px] text-left disabled:opacity-50">
         <FileThumbnail reference={reference} native={native} type={file.contentType ?? ""} size={file.size} active={connected && !saving && !preview} host={host} />
-        <span className={`block min-h-[72px] py-3 pl-3 ${files ? "pr-[108px]" : "pr-[60px]"}`}>
-          <span title={file.name} className="line-clamp-2 break-words text-[13px] font-semibold leading-[18px] text-title group-enabled:group-hover:underline">{file.name}</span>
-          <span className="mt-1 block text-[12px] leading-4 text-caption">{type}{file.size !== undefined ? ` · ${fileSize(file.size)}` : ""}</span>
-        </span>
       </button>
-      <div className="absolute right-1 bottom-3 flex items-center">
-      <button type="button" aria-label={saving ? `Cancel download of ${file.name}` : `Download ${file.name}`} title={saving ? "Cancel download" : "Download on this device"} disabled={!native || !reference} onClick={download} className="press flex size-11 shrink-0 items-center justify-center rounded-[8px] text-icon outline-none hover:bg-pill focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-40">{saving ? <X className="size-4" aria-hidden /> : <Download className="size-4" aria-hidden />}</button>
-      {files && <button
-        type="button"
-        aria-label={`Show ${file.name} in its folder`}
-        title="Show in folder"
-        onClick={() => localFileActions()?.showFile(file.path)}
-        className="press flex size-11 shrink-0 items-center justify-center rounded-[8px] text-icon outline-none hover:bg-pill focus-visible:ring-2 focus-visible:ring-accent"
-      >
-        <FolderOpen className="size-4" aria-hidden />
-      </button>}
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <span className="min-w-0 grow basis-1/2">
+          <span title={file.name} className="line-clamp-2 break-words text-[13px] font-semibold leading-[18px] text-title">{file.name}</span>
+          <span className="block text-[12px] leading-[18px] text-caption">{type}{file.size !== undefined ? ` · ${fileSize(file.size)}` : ""}</span>
+        </span>
+        <div className="ml-auto flex shrink-0 items-center">
+          <IconButton label={saving ? `Cancel download of ${file.name}` : `Download ${file.name}`} disabled={!native || !reference} onClick={download} className="max-sm:size-11 disabled:opacity-40">{saving ? <X aria-hidden /> : <Download aria-hidden />}</IconButton>
+          {files && <IconButton label={`Show ${file.name} in its folder`} onClick={() => localFileActions()?.showFile(file.path)} className="max-sm:size-11"><FolderOpen aria-hidden /></IconButton>}
+        </div>
       </div>
-    </div>
-      {status && <p role="status" className="border-t border-divider px-3 py-2 text-xs leading-4 text-secondary">{status}</p>}
+      {status && <p role="status" className="mt-2 text-[12px] leading-[18px] text-secondary">{status}</p>}
       {preview?.host === host && connected && native && reference && <FileViewer key={`${messageId}-${attachmentIndex}-${file.attachmentId ?? "legacy"}`} reference={reference} name={file.name} companions={file.companions} native={native} onClose={() => setPreview(null)} onDownload={download} />}
     </div>
   );

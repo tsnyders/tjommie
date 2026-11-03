@@ -4,7 +4,10 @@ import { createContext, useContext, useEffect, useState, type ReactNode } from "
 import Link from "next/link";
 import { Toast } from "@base-ui/react/toast";
 import { Plug, X } from "lucide-react";
+import { IconButton } from "@/components/icon-button";
+import { MENU_POPUP } from "@/components/menu";
 import { useApp } from "@/lib/store";
+import { cn } from "@/lib/utils";
 
 const ShownNotices = createContext<Set<string> | null>(null);
 const noticeKey = (host: string | null, subject: string): string => JSON.stringify([host, subject]);
@@ -64,14 +67,13 @@ function SignInViewport() {
     <Toast.Viewport aria-label="Account notifications" className="pointer-events-none fixed left-4 right-4 top-[calc(max(env(safe-area-inset-top,0px),var(--safe-area-inset-top,0px))+4rem)] z-30 flex flex-col gap-2 outline-none sm:left-auto sm:w-[360px]">
       {toasts.map((toast) => <Toast.Root key={toast.id} toast={toast} swipeDirection={["up", "right"]}
         data-slot="sign-in-toast"
-        className="pointer-events-auto rounded-2xl border border-divider bg-popover p-2 shadow-lg data-[limited]:hidden data-[ending-style]:opacity-0">
+        className={cn(MENU_POPUP, "pointer-events-auto min-w-0 p-2 data-[limited]:hidden data-[ending-style]:opacity-0")}>
         <Toast.Content className="flex items-center gap-2">
           <Plug className="ml-2 size-4 shrink-0 text-icon" aria-hidden />
           <Toast.Title className="min-w-0 flex-1 text-[13px] leading-[18px] text-text [overflow-wrap:anywhere]" />
           {toast.data && <Toast.Action render={<Link href={toast.data.href} />} nativeButton={false}
-            className="press flex min-h-11 shrink-0 items-center justify-center rounded-xl px-3 text-[13px] font-medium text-accent hover:bg-pill">{toast.data.action}</Toast.Action>}
-          <Toast.Close aria-label="Dismiss account notification" title="Dismiss"
-            className="press flex size-11 shrink-0 items-center justify-center rounded-xl text-icon hover:bg-pill hover:text-text">
+            className="press flex min-h-8 shrink-0 items-center justify-center rounded-[10px] px-3 text-[13px] text-accent hover:bg-pill max-sm:min-h-11">{toast.data.action}</Toast.Action>}
+          <Toast.Close render={<IconButton label="Dismiss account notification" title="Dismiss" className="max-sm:size-11" />}>
             <X className="size-4" aria-hidden />
           </Toast.Close>
         </Toast.Content>

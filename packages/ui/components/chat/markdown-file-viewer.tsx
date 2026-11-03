@@ -1,13 +1,16 @@
 "use client";
 
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useId, useRef, useState, type FormEvent } from "react";
+import { ChevronLeft, ChevronRight } from "lucide-react";
 import { attachmentCompanionName, type AttachmentCompanion, type AttachmentNativeApi, type AttachmentRef } from "../../../protocol/src/attachments";
 import { attachmentError, previewAttachment } from "@/lib/attachment-transfer";
 import { daemon } from "@/lib/connection";
 import { findMarkdownText, MARKDOWN_SECTION_BYTES, markdownSection } from "@/lib/markdown-document";
+import { FIELD, Label } from "../controls";
+import { IconButton } from "../icon-button";
+import { Pill } from "../pill";
 import { MarkdownText } from "./markdown";
 
-const BUTTON = "min-h-11 rounded-lg bg-pill px-3 text-sm text-text disabled:opacity-50";
 const NO_COMPANIONS: AttachmentCompanion[] = [];
 type Selection = { section: number; name: string };
 function CompanionRaster({ url, alt, onError }: { url: string; alt: string; onError: () => void }) {
@@ -15,6 +18,7 @@ function CompanionRaster({ url, alt, onError }: { url: string; alt: string; onEr
   return <img src={url} alt={alt} className="max-w-full" onError={onError} />;
 }
 export function MarkdownFileViewer({ url, size, reference, companions = NO_COMPANIONS, native, closeImageRef }: { url: string; size: number; reference: AttachmentRef; companions?: AttachmentCompanion[]; native: AttachmentNativeApi; closeImageRef?: { current: () => Promise<void> } }) {
+  const sectionId = useId(), searchId = useId();
   const [section, setSection] = useState(0), [content, setContent] = useState<{ section: number; text: string } | null>(null), [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState(""), [searchNote, setSearchNote] = useState(""), [searching, setSearching] = useState(false), [match, setMatch] = useState<{ query: string; offset: number } | null>(null);
   const [selected, setSelected] = useState<Selection | null>(null), [image, setImage] = useState<{ selection: Selection; url: string } | null>(null), [imageError, setImageError] = useState<{ selection: Selection; text: string } | null>(null);
@@ -50,14 +54,23 @@ export function MarkdownFileViewer({ url, size, reference, companions = NO_COMPA
     finally { if (searchAbort.current === abort) { searchAbort.current = null; setSearching(false); } }
   }
   return <div className="flex h-full min-h-0 flex-col gap-2">
-    <div className="flex flex-wrap items-center gap-2"><button type="button" className={BUTTON} disabled={section === 0} onClick={() => setSection(section - 1)}>Previous section</button><label className="text-sm">Section <input aria-label="Markdown section" type="number" min={1} max={sections} value={section + 1} onChange={(event) => { const value = Number(event.target.value); if (Number.isInteger(value) && value >= 1 && value <= sections) setSection(value - 1); }} className="min-h-11 w-20 rounded border border-divider px-2" /> / {sections}</label><button type="button" className={BUTTON} disabled={section + 1 >= sections} onClick={() => setSection(section + 1)}>Next section</button></div>
-    {sections > 1 && <p className="text-xs text-secondary">Large Markdown is read in sections. A block may continue in the next section. Search reads through the complete file.</p>}
-    <form onSubmit={(event) => { void search(event); }} className="flex flex-wrap gap-2"><input aria-label="Search Markdown" maxLength={256} value={query} onChange={(event) => setQuery(event.target.value)} className="min-h-11 min-w-0 flex-1 rounded border border-divider px-2" /><button type="submit" className={BUTTON} disabled={searching}>{match?.query === query ? "Find next" : "Search"}</button>{searching && <button type="button" className={BUTTON} onClick={() => searchAbort.current?.abort()}>Cancel search</button>}<span role="status" className="self-center text-xs text-secondary">{searching ? "Searching…" : searchNote}</span></form>
+    <div className="flex flex-wrap items-center gap-2">
+      <IconButton label="Previous section" className="max-sm:size-11 disabled:opacity-40" disabled={section === 0} onClick={() => setSection(section - 1)}><ChevronLeft aria-hidden /></IconButton>
+      <Label htmlFor={sectionId}>Section</Label><span className="w-20"><input id={sectionId} aria-label="Markdown section" type="number" min={1} max={sections} value={section + 1} onChange={(event) => { const value = Number(event.target.value); if (Number.isInteger(value) && value >= 1 && value <= sections) setSection(value - 1); }} className={`${FIELD} h-11`} /></span><span className="text-[13px] leading-[18px] text-secondary">/ {sections}</span>
+      <IconButton label="Next section" className="max-sm:size-11 disabled:opacity-40" disabled={section + 1 >= sections} onClick={() => setSection(section + 1)}><ChevronRight aria-hidden /></IconButton>
+    </div>
+    {sections > 1 && <p className="text-[12px] leading-[18px] text-secondary">Large Markdown is read in sections. A block may continue in the next section. Search reads through the complete file.</p>}
+    <form onSubmit={(event) => { void search(event); }} className="flex flex-wrap items-end gap-2">
+      <div className="w-full min-w-0 sm:flex-1"><Label htmlFor={searchId}>Search Markdown</Label><input id={searchId} aria-label="Search Markdown" maxLength={256} value={query} onChange={(event) => setQuery(event.target.value)} className={`${FIELD} mt-1 h-11`} /></div>
+      <Pill type="submit" className="max-sm:min-h-11" disabled={searching}>{match?.query === query ? "Find next" : "Search"}</Pill>
+      {searching && <Pill className="max-sm:min-h-11" onClick={() => searchAbort.current?.abort()}>Cancel search</Pill>}
+      <span role="status" className="w-full text-[12px] leading-[18px] text-secondary">{searching ? "Searching…" : searchNote}</span>
+    </form>
     <div ref={scroll} className="min-h-0 flex-1 overflow-auto" role="region" tabIndex={0} aria-label="Markdown document; scroll to read this section" aria-busy={content?.section !== section && !error}>
       {error ? <p role="alert" className="text-sm text-danger">{error}</p> : content?.section !== section ? <p role="status">Reading section…</p> : <MarkdownText text={content.text} fileImages={(source, alt) => {
         const name = attachmentCompanionName(source), companion = companions.find((item) => item.name === name);
         if (!companion) return alt;
-        return <span className="inline-block max-w-full"><button type="button" className={BUTTON} onClick={() => setSelected(selectedName === companion.name ? null : { section, name: companion.name })}>{selectedName === companion.name ? "Hide" : "Show"} {alt || companion.name}</button>{selectedName === companion.name && (imageError?.selection === selected ? <span role="alert">{imageError.text}</span> : image?.selection === selected ? <CompanionRaster url={image.url} alt={alt} onError={() => { if (selected) setImageError({ selection: selected, text: "The shared image is corrupt or unsupported." }); }} /> : <span role="status">Opening image…</span>)}</span>;
+        return <span className="inline-block max-w-full"><Pill className="h-auto! min-h-8 max-w-full whitespace-normal! [overflow-wrap:anywhere] max-sm:min-h-11" onClick={() => setSelected(selectedName === companion.name ? null : { section, name: companion.name })}>{selectedName === companion.name ? "Hide" : "Show"} {alt || companion.name}</Pill>{selectedName === companion.name && (imageError?.selection === selected ? <span role="alert">{imageError.text}</span> : image?.selection === selected ? <CompanionRaster url={image.url} alt={alt} onError={() => { if (selected) setImageError({ selection: selected, text: "The shared image is corrupt or unsupported." }); }} /> : <span role="status">Opening image…</span>)}</span>;
       }} />}
     </div>
   </div>;

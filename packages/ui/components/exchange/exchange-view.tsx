@@ -170,7 +170,7 @@ export function ExchangeComposer({ bots, exchangeId }: { bots: Bot[]; exchangeId
         </p>
       )}
       <DictationStatus voice={voice} />
-      <div data-slot="composer" className="flex min-w-0 flex-col rounded-[24px] border border-composer-stroke bg-composer p-1 shadow-composer focus-within:border-accent">
+      <div data-slot="composer" className="flex min-w-0 flex-col rounded-[22px] border border-composer-stroke bg-composer p-[5px] shadow-composer focus-within:border-accent">
         {/* Recipients keep their own wrapping row, leaving the full field width for the reply. */}
         <div aria-label="Reply recipients" className="flex min-w-0 flex-wrap gap-2 px-3 pt-2">
           {bots.map((bot) => (
@@ -190,16 +190,16 @@ export function ExchangeComposer({ bots, exchangeId }: { bots: Bot[]; exchangeId
           }}
           aria-label="Reply in Everyone"
           placeholder={asked}
-          className="block min-h-11 w-full min-w-0 bg-transparent px-3 py-2.5 text-[16px] leading-6 text-text outline-none placeholder:text-placeholder sm:text-[14px]"
+          className="block min-h-8 w-full min-w-0 bg-transparent px-3 py-2 text-[14px] leading-[21px] text-text outline-none placeholder:text-placeholder max-sm:min-h-11"
         />
-        <div role="group" aria-label="Message actions" className="flex min-h-11 min-w-0 flex-wrap items-center gap-1">
+        <div role="group" aria-label="Message actions" className="flex min-h-8 min-w-0 flex-wrap items-center gap-1 max-sm:min-h-11">
           <DictationButton voice={voice} />
           <DictationOptions voice={voice} />
           <button
             type="submit"
             aria-label="Send"
             disabled={busy || !canSend}
-            className={cn("ml-auto flex size-11 shrink-0 touch-manipulation select-none items-center justify-center rounded-full enabled:active:opacity-80 disabled:opacity-50", canSend ? "bg-user-bubble text-user-text" : "bg-disabled text-placeholder")}
+            className={cn("ml-auto flex size-8 shrink-0 touch-manipulation select-none items-center justify-center rounded-full enabled:active:opacity-80 disabled:opacity-50 max-sm:size-11", canSend ? "bg-user-bubble text-user-text" : "bg-disabled text-placeholder")}
           >
             <ArrowUp className="size-5" aria-hidden />
           </button>

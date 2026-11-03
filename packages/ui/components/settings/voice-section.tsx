@@ -1,13 +1,15 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { Menu } from "@base-ui/react/menu";
+import { Check, ChevronDown } from "lucide-react";
 import { SpeechEvent, SpeechStatus } from "../../../protocol/src/speech";
 import { Pill } from "@/components/pill";
+import { MENU_ITEM, MENU_POPUP } from "@/components/menu";
 import { localSpeech } from "@/lib/local-speech";
 import { SettingsCard, SettingsProblem, SettingsRow, SettingsSection } from "./section";
 
 function preference(key: string): string { try { return localStorage.getItem(`tjommie.voice.${key}`) ?? ""; } catch { return ""; } }
-const SELECT = "min-h-11 max-w-full rounded-[10px] border border-input-stroke bg-canvas px-3 text-[13px] text-text";
 
 export function VoiceSection() {
   const api = localSpeech();
@@ -86,21 +88,33 @@ export function VoiceSection() {
 
   const downloading = status?.model.state === "downloading" || status?.model.state === "verifying";
   const selectedLanguage = status?.languages.some((item) => item.tag === language) ? language : status?.languages[0]?.tag ?? "";
+  const languageLabel = status?.languages.find((item) => item.tag === selectedLanguage)?.label ?? "No supported language available";
+  const deviceLabel = device ? devices.find((item) => item.deviceId === device)?.label ?? "Previously selected microphone" : "System default";
   return <SettingsSection title="Voice" note="Dictation runs locally on the device capturing your voice, even when the host PC is offline. Transcripts stay editable until you choose Send.">
     <SettingsCard>
       <SettingsRow title="Local engine"><span className="text-[13px] text-secondary">{status ? status.engine === "whisper.cpp" ? "whisper.cpp on this device" : "Android on-device recognition" : "Unavailable or not checked"}</span></SettingsRow>
       <SettingsRow title="Dictation availability"><span role="status" className="text-[13px] text-secondary">{status ? status.model.confirmation ? "Prepared · Start confirms before recording" : status.available ? "Ready" : "Unavailable" : "Unknown"}</span></SettingsRow>
       <SettingsRow title="Microphone permission" note="Permission is requested only when you start dictation in a conversation."><span className="text-[13px] text-secondary">{status?.permission ?? "Unknown"}</span></SettingsRow>
-      <SettingsRow title="Language" note="Only languages reported by the local engine are listed."><select aria-label="Dictation language" className={SELECT} value={selectedLanguage} disabled={!status?.languages.length} onChange={(event) => savePreference("language", event.target.value)}>
-        {!status?.languages.length && <option value="">No supported language available</option>}
-        {status?.languages.map((item) => <option key={item.tag} value={item.tag}>{item.label}</option>)}
-      </select></SettingsRow>
+      <SettingsRow title="Language" note="Only languages reported by the local engine are listed.">
+        <Menu.Root><Menu.Trigger aria-label="Dictation language" title={languageLabel} disabled={!status?.languages.length} render={<Pill className="max-w-full max-sm:min-h-11" />}><span className="truncate">{languageLabel}</span><ChevronDown className="size-3.5 shrink-0" aria-hidden /></Menu.Trigger>
+          <Menu.Portal><Menu.Positioner side="bottom" align="end" sideOffset={6}><Menu.Popup className={`${MENU_POPUP} z-50 max-h-[min(320px,60dvh)] max-w-[calc(100vw-32px)] overflow-y-auto`}>
+            <Menu.RadioGroup value={selectedLanguage} onValueChange={(value: unknown) => { if (typeof value === "string") savePreference("language", value); }}>
+              {status?.languages.map((item) => <Menu.RadioItem key={item.tag} value={item.tag} closeOnClick className={MENU_ITEM}><span className="min-w-0 flex-1 truncate">{item.label}</span><Menu.RadioItemIndicator><Check aria-hidden /></Menu.RadioItemIndicator></Menu.RadioItem>)}
+            </Menu.RadioGroup>
+          </Menu.Popup></Menu.Positioner></Menu.Portal>
+        </Menu.Root>
+      </SettingsRow>
       {status?.capture === "pcm" && <SettingsRow title="Input device" note="Microphone names appear only after access was granted. This list never requests microphone access.">
-        <div className="flex max-w-full flex-wrap gap-2"><select aria-label="Dictation microphone" className={SELECT} value={device} onChange={(event) => savePreference("inputDevice", event.target.value)}>
-          <option value="">System default</option>
-          {device && !devices.some((entry) => entry.deviceId === device) && <option value={device}>Previously selected microphone</option>}
-          {devices.map((entry) => <option key={entry.deviceId} value={entry.deviceId}>{entry.label}</option>)}
-        </select><Pill className="min-h-11" onClick={() => void microphones()}>Refresh microphones</Pill></div>
+        <div className="flex max-w-full flex-wrap gap-2">
+          <Menu.Root><Menu.Trigger aria-label="Dictation microphone" title={deviceLabel} render={<Pill className="max-w-full max-sm:min-h-11" />}><span className="truncate">{deviceLabel}</span><ChevronDown className="size-3.5 shrink-0" aria-hidden /></Menu.Trigger>
+            <Menu.Portal><Menu.Positioner side="bottom" align="end" sideOffset={6}><Menu.Popup className={`${MENU_POPUP} z-50 max-h-[min(320px,60dvh)] max-w-[calc(100vw-32px)] overflow-y-auto`}>
+              <Menu.RadioGroup value={device} onValueChange={(value: unknown) => { if (typeof value === "string") savePreference("inputDevice", value); }}>
+                {[{ deviceId: "", label: "System default" }, ...(device && !devices.some((entry) => entry.deviceId === device) ? [{ deviceId: device, label: "Previously selected microphone" }] : []), ...devices].map((entry) => <Menu.RadioItem key={entry.deviceId} value={entry.deviceId} closeOnClick className={MENU_ITEM}><span className="min-w-0 flex-1 truncate">{entry.label}</span><Menu.RadioItemIndicator><Check aria-hidden /></Menu.RadioItemIndicator></Menu.RadioItem>)}
+              </Menu.RadioGroup>
+            </Menu.Popup></Menu.Positioner></Menu.Portal>
+          </Menu.Root>
+          <Pill className="max-sm:min-h-11" onClick={() => void microphones()}>Refresh microphones</Pill>
+        </div>
       </SettingsRow>}
       {status?.capture === "native" && <SettingsRow title="Input device" note="Android selects the microphone and manages offline language data. An explicit download request never starts recording. Tjommie cannot cancel a system download or remove its data." />}
       <SettingsRow title="Local model" note={status?.model.state === "system-managed" ? "Request English (United States) through Android's on-device speech service. Scheduled does not mean downloaded; leaving these controls detaches observation and the system download may continue." : status?.model.bytes ? `${Math.ceil(status.model.bytes / 1048576)} MiB on this device. Downloading a model does not start recording.` : "No local model information is available."}>
@@ -110,11 +124,11 @@ export function VoiceSection() {
       {status?.problem && <SettingsRow title="On-device status"><span role="status" className="text-[13px] text-secondary">{status.problem.message}</span></SettingsRow>}
     </SettingsCard>
     <div className="mt-4 flex flex-wrap gap-2">
-      <Pill className="min-h-11" disabled={!api || working !== null} onClick={() => void run("refresh")}>Refresh voice status</Pill>
-      {status?.engine === "android-on-device" && status.capture === "native" && <Pill className="min-h-11" disabled={!api || working !== null || status.permission !== "granted" || status.problem?.code === "on_device_unavailable"} onClick={() => void run("downloadModel")}>{working === "downloadModel" ? "Waiting for Android preparation…" : "Request English (United States) download"}</Pill>}
-      {downloading && <Pill className="min-h-11" disabled={working === "cancelModelDownload"} onClick={() => void run("cancelModelDownload")}>Cancel model download</Pill>}
-      {status?.capture === "pcm" && !downloading && status.problem?.code !== "runtime_unavailable" && status.model.state !== "ready" && <Pill className="min-h-11" disabled={working !== null} onClick={() => void run("downloadModel")}>Download English model</Pill>}
-      {status?.capture === "pcm" && status.model.state === "ready" && <Pill className="min-h-11" disabled={working !== null} onClick={() => void run("removeModel")}>Remove downloaded model</Pill>}
+      <Pill className="max-sm:min-h-11" disabled={!api || working !== null} onClick={() => void run("refresh")}>Refresh voice status</Pill>
+      {status?.engine === "android-on-device" && status.capture === "native" && <Pill className="h-auto! min-h-8 max-w-full whitespace-normal! max-sm:min-h-11" disabled={!api || working !== null || status.permission !== "granted" || status.problem?.code === "on_device_unavailable"} onClick={() => void run("downloadModel")}>{working === "downloadModel" ? "Waiting for Android preparation…" : "Request English (United States) download"}</Pill>}
+      {downloading && <Pill className="max-sm:min-h-11" disabled={working === "cancelModelDownload"} onClick={() => void run("cancelModelDownload")}>Cancel model download</Pill>}
+      {status?.capture === "pcm" && !downloading && status.problem?.code !== "runtime_unavailable" && status.model.state !== "ready" && <Pill className="max-sm:min-h-11" disabled={working !== null} onClick={() => void run("downloadModel")}>Download English model</Pill>}
+      {status?.capture === "pcm" && status.model.state === "ready" && <Pill className="max-sm:min-h-11" disabled={working !== null} onClick={() => void run("removeModel")}>Remove downloaded model</Pill>}
     </div>
     {!api && <p className="mt-4 text-[13px] leading-[20px] text-secondary">Local dictation is unavailable in this app. Typing remains available; there is no cloud fallback.</p>}
     {status && !status.available && <p className="mt-3 text-[13px] leading-[20px] text-secondary">A supported local engine, verified or installed model, and microphone permission are needed. No online recognizer is substituted.</p>}

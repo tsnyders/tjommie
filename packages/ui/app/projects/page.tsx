@@ -2,12 +2,16 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
+import { FolderGit2, Plus } from "lucide-react";
 import type { Project, ProjectRepository, ProjectTask, TaskDetail, TaskDiff } from "../../../protocol/src/projects";
 import { ProjectEditor } from "@/components/projects/project-editor";
 import { TaskEditor } from "@/components/projects/task-editor";
 import { TaskDetailView } from "@/components/projects/task-detail";
 import { Pill } from "@/components/pill";
 import { ConfirmDialog } from "@/components/dialog";
+import { BotAvatar } from "@/components/bot-avatar";
+import { ROW_BUTTON, RowHeader } from "@/components/bot-form/rows";
+import { cn } from "@/lib/utils";
 import { daemon, request } from "@/lib/connection";
 import { errorText } from "@/lib/labels";
 import { phoneCaptionClear } from "@/lib/native-capability";
@@ -82,15 +86,23 @@ function ProjectWorkspace() {
     finally { ifAlive(alive, () => setPending((value) => value - 1)); }
   }
   return <div className="flex min-h-0 flex-1 flex-col">
-    <header className="drag shrink-0 px-6 pb-5 pt-12 max-sm:px-4 max-sm:pt-4"><div className={`flex flex-wrap items-center justify-between gap-3 ${phoneCaptionClear()}`}><div><h1 className="text-xl font-semibold text-title">Developer teams</h1><p className="mt-1 text-sm text-secondary">Project tasks, isolated workspaces and exact-commit integration.</p></div><Pill primary className="no-drag min-h-11" disabled={!ready || busy} onClick={() => setProjectForm("new")}>New project</Pill></div></header>
+    <header className="drag shrink-0 px-6 pb-7 pt-12 max-sm:px-4 max-sm:pb-3 max-sm:pt-4">
+      <div className="flex items-center justify-between gap-6 max-sm:flex-wrap max-sm:gap-x-2 max-sm:gap-y-3">
+        <div className="min-w-0 flex-1 max-sm:order-last max-sm:basis-full"><h1 className="text-[20px] font-semibold leading-[26px] text-title">Developer teams</h1><p className="mt-1 text-[13px] leading-[18px] text-secondary">Project tasks, isolated workspaces and exact-commit integration.</p></div>
+        <div className={cn("shrink-0 max-sm:ml-auto", phoneCaptionClear())}><Pill primary aria-label="New project" title="New project" className="max-sm:size-11 max-sm:justify-center max-sm:px-0" disabled={!ready || busy} onClick={() => setProjectForm("new")}><Plus className="size-3.5 max-sm:size-5" aria-hidden /><span className="max-sm:sr-only">New project</span></Pill></div>
+      </div>
+    </header>
     <main data-nav-clear className="min-h-0 flex-1 overflow-y-auto px-6 pb-6 max-sm:px-4">
-      {!ready && <p role="status" className="text-sm text-secondary">Connect to the host PC to view and run project work.</p>}
-      {problem && <div role="alert" className="mb-4 rounded-xl border border-divider p-3 text-sm text-text">{problem}<Pill className="ml-2 min-h-11" onClick={() => reload((value) => value + 1)}>Refresh</Pill></div>}
-      {loading && <p role="status" className="mb-3 text-xs text-secondary">Refreshing project state…</p>}
-      <div className="grid min-w-0 gap-5 xl:grid-cols-[240px_minmax(0,1fr)]"><nav aria-label="Project teams" className="min-w-0"><ul className="space-y-2">{projects.map((item) => <li key={item.id}><button type="button" aria-current={item.id === projectId ? "page" : undefined} className={`min-h-11 w-full rounded-xl border px-3 py-3 text-left text-sm [overflow-wrap:anywhere] ${item.id === projectId ? "border-accent bg-selected text-text" : "border-divider text-secondary"}`} onClick={() => selectProject(item.id)}>{item.name}{item.state === "archived" && " · Archived"}</button></li>)}</ul>{ready && !projects.length && !loading && <p className="text-sm text-secondary">Create a project team to assign existing bots and prepare task drafts.</p>}</nav>
-        <div className="min-w-0 space-y-4">{project && <><div className="flex flex-wrap items-start justify-between gap-3"><div className="min-w-0"><h2 className="break-words text-lg font-semibold text-title">{project.name}</h2><p className="break-all text-xs text-secondary">{project.baseRef} → {project.targetRef}</p>{project.roomId && <Link className="mt-2 inline-flex min-h-11 items-center text-sm text-accent" href={`/room/?id=${encodeURIComponent(project.roomId)}`}>Open team room</Link>}</div><div className="flex flex-wrap gap-2"><Pill className="min-h-11" disabled={busy || project.state !== "active"} onClick={() => setProjectForm("edit")}>Edit team</Pill><Pill className="min-h-11" disabled={busy || project.state !== "active"} onClick={() => setArchiving(project)}>Archive team</Pill><Pill primary className="min-h-11" disabled={busy || project.state !== "active"} onClick={() => setTaskForm("new")}>New task</Pill></div></div>
-          <ul aria-label="Project tasks" className="grid gap-2 sm:grid-cols-2">{tasks.map((task) => <li key={task.id}><button type="button" aria-pressed={taskId === task.id} className={`min-h-16 w-full rounded-xl border p-3 text-left ${taskId === task.id ? "border-accent bg-selected" : "border-divider bg-card"}`} onClick={() => selectTask(task.id)}><span className="block break-words text-sm text-text">{task.title}</span><span className="text-xs capitalize text-secondary">{task.state}</span></button></li>)}</ul>
-          {!tasks.length && <p className="text-sm text-secondary">No tasks yet. Saving a task does not start provider work.</p>}
+      {!ready && <p role="status" className="text-[13px] leading-[18px] text-secondary">Connect to the host PC to view and run project work.</p>}
+      {problem && <div className="mb-4 flex flex-wrap items-center gap-2"><p role="alert" className="text-[12px] leading-[18px] text-danger">{problem}</p><Pill className="max-sm:min-h-11" onClick={() => reload((value) => value + 1)}>Refresh</Pill></div>}
+      {loading && <p role="status" className="mb-3 text-[12px] leading-[18px] text-secondary">Refreshing project state…</p>}
+      <div className="grid min-w-0 gap-4 xl:grid-cols-[240px_minmax(0,1fr)]">
+        <nav aria-label="Project teams" className="min-w-0"><ul className="space-y-2">{projects.map((item) => <li key={item.id}>
+          <button type="button" title={item.name} aria-current={item.id === projectId ? "page" : undefined} className={cn(ROW_BUTTON, "h-auto! min-h-14 border border-card-stroke py-3 [&>span]:truncate", item.id === projectId ? "bg-selected text-text" : "bg-card text-secondary hover:bg-pill")} onClick={() => selectProject(item.id)}><RowHeader icon={FolderGit2} title={item.name} value={item.state === "archived" ? "Archived" : undefined} /></button>
+        </li>)}</ul>{ready && !projects.length && !loading && <p className="text-[13px] leading-[18px] text-secondary">Create a project team to assign existing bots and prepare task drafts.</p>}</nav>
+        <div className="min-w-0 space-y-4">{project && <><div className="flex flex-wrap items-start justify-between gap-4"><div className="min-w-0"><h2 className="break-words text-[17px] font-semibold leading-[22px] text-title">{project.name}</h2><p className="mt-1 break-all text-[12px] leading-[18px] text-secondary">{project.baseRef} → {project.targetRef}</p>{project.roomId && <Link className="mt-2 inline-flex min-h-8 items-center text-[13px] text-accent hover:underline max-sm:min-h-11" href={`/room/?id=${encodeURIComponent(project.roomId)}`}>Open team room</Link>}</div><div className="flex flex-wrap gap-2"><Pill className="max-sm:min-h-11" disabled={busy || project.state !== "active"} onClick={() => setProjectForm("edit")}>Edit team</Pill><Pill className="max-sm:min-h-11" disabled={busy || project.state !== "active"} onClick={() => setArchiving(project)}>Archive team</Pill><Pill primary className="max-sm:min-h-11" disabled={busy || project.state !== "active"} onClick={() => setTaskForm("new")}>New task</Pill></div></div>
+          <ul aria-label="Project tasks" className="grid gap-4 sm:grid-cols-2 max-sm:gap-2">{tasks.map((task) => { const developer = bots.find((bot) => bot.id === task.assigneeId); return <li key={task.id}><button type="button" aria-pressed={taskId === task.id} className={cn("min-h-14 w-full rounded-[14px] border border-card-stroke p-4 text-left", taskId === task.id ? "bg-selected" : "bg-card hover:bg-pill")} onClick={() => selectTask(task.id)}><span className="block break-words text-[14px] font-medium leading-[21px] text-text">{task.title}</span><span className="mt-2 flex min-w-0 items-center gap-2">{developer && <BotAvatar color={developer.color} shape={developer.shape} size={18} className="shrink-0" />}<span className="text-[12px] capitalize leading-[18px] text-secondary">{task.state}</span></span></button></li>; })}</ul>
+          {!tasks.length && <p className="text-[13px] leading-[18px] text-secondary">No tasks yet. Saving a task does not start provider work.</p>}
           {detail && detail.task.projectId === project.id && <TaskDetailView key={detail.task.id} focusRef={detailPanel} project={project} detail={detail} diff={diff} targetSha={targetSha} busy={busy} connected={ready} onAction={(operation, concurrent) => void action(operation, concurrent)} onEdit={() => setTaskForm("edit")} />}
         </>}</div>
       </div>

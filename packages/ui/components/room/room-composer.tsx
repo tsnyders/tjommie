@@ -12,6 +12,7 @@ import { scrollToShow, useRevision, useSendGuard } from "@/lib/use-draft";
 import { usePhone } from "@/lib/use-phone";
 import { cn } from "@/lib/utils";
 import { BotAvatar } from "../bot-avatar";
+import { IconButton } from "../icon-button";
 import { useDictation } from "@/lib/use-dictation";
 import { DictationButton, DictationOptions, DictationStatus } from "../chat/dictation-button";
 
@@ -180,7 +181,7 @@ export function RoomComposer({ room }: { room: Room }) {
           void send();
         }}
         data-slot="composer"
-        className="flex min-w-0 flex-col rounded-[24px] border border-composer-stroke bg-composer p-1 shadow-composer focus-within:border-accent"
+        className="flex min-w-0 flex-col rounded-[22px] border border-composer-stroke bg-composer p-[5px] shadow-composer focus-within:border-accent"
       >
         <textarea
           ref={field}
@@ -196,19 +197,19 @@ export function RoomComposer({ room }: { room: Room }) {
           onChange={(event) => { voice.changed(event.target.value); edit(event.target.value, event.target.selectionStart); }}
           onSelect={(event) => setCaret(event.currentTarget.selectionStart)}
           onKeyDown={onKeyDown}
-          className="block max-h-[200px] min-h-11 w-full min-w-0 resize-none bg-transparent px-3 py-2.5 text-[16px] leading-6 text-text outline-none [field-sizing:content] placeholder:text-placeholder max-sm:max-h-[min(200px,25dvh)] sm:text-[14px]"
+          className="block max-h-[200px] min-h-8 w-full min-w-0 resize-none bg-transparent px-3 py-2 text-[14px] leading-[21px] text-text outline-none [field-sizing:content] placeholder:text-placeholder max-sm:max-h-[min(200px,25dvh)] max-sm:min-h-11"
         />
-        <div role="group" aria-label="Message actions" className="flex min-h-11 min-w-0 flex-wrap items-center gap-1">
-          <button type="button" aria-label="Mention" title="Mention a bot" onClick={mention} className="flex size-11 shrink-0 touch-manipulation select-none items-center justify-center rounded-full text-icon hover:bg-highlight hover:text-text active:bg-highlight">
+        <div role="group" aria-label="Message actions" className="flex min-h-8 min-w-0 flex-wrap items-center gap-1 max-sm:min-h-11">
+          <IconButton label="Mention" title="Mention a bot" onClick={mention} className="rounded-full max-sm:size-11">
             <AtSign className="size-[18px]" aria-hidden />
-          </button>
+          </IconButton>
           <DictationButton voice={voice} />
           <DictationOptions voice={voice} />
           <button
             type="submit"
             aria-label="Send"
             disabled={busy || !text.trim()}
-            className={cn("ml-auto flex size-11 shrink-0 touch-manipulation select-none items-center justify-center rounded-full enabled:active:opacity-80 disabled:opacity-50", text.trim() ? "bg-user-bubble text-user-text" : "bg-disabled text-placeholder")}
+            className={cn("ml-auto flex size-8 shrink-0 touch-manipulation select-none items-center justify-center rounded-full enabled:active:opacity-80 disabled:opacity-50 max-sm:size-11", text.trim() ? "bg-user-bubble text-user-text" : "bg-disabled text-placeholder")}
           >
             <ArrowUp className="size-5" aria-hidden />
           </button>
