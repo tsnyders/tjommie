@@ -3,77 +3,113 @@ $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 $workerProcess = $null
 $jobHandle = [IntPtr]::Zero
+$reviewLease = $null
+$reviewMarkerWritten = $false
 $workerInput = [Console]::OpenStandardInput()
-$globalProcessSource = @'
-using System;
-using System.Diagnostics;
-using System.Runtime.InteropServices;
-using System.Security.Principal;
-using System.Collections.Generic;
-public static class TjWorkerProcessSet {
-  [StructLayout(LayoutKind.Sequential)] struct Row { public uint Session,Pid; public IntPtr Name,Sid; }
-  [DllImport("wtsapi32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern bool WTSEnumerateProcessesW(IntPtr server,uint reserved,uint version,out IntPtr rows,out uint count);
-  [DllImport("wtsapi32.dll")] static extern void WTSFreeMemory(IntPtr rows);
-  public static void Validate(string workerSid,int[] pids,string[] sids) {
-    if(pids.Length!=sids.Length) throw new Exception();
-    for(int i=0;i<pids.Length;i++) {
-      // PID 0 is Idle and PID 4 is the Windows kernel; neither can be a worker user process.
-      if(pids[i]==0 || pids[i]==4) continue;
-      if(String.IsNullOrEmpty(sids[i]) || sids[i]==workerSid) throw new Exception();
-    }
-  }
-  public static void AssertQuiescent(string workerSid) {
-    IntPtr rows; uint count;
-    if(!WTSEnumerateProcessesW(IntPtr.Zero,0,1,out rows,out count)) throw new Exception();
-    try {
-      var pids=new List<int>(); var sids=new List<string>(); var seen=new HashSet<int>(); int size=Marshal.SizeOf(typeof(Row));
-      for(int i=0;i<count;i++) {
-        var row=(Row)Marshal.PtrToStructure(IntPtr.Add(rows,i*size),typeof(Row)); int pid=checked((int)row.Pid);
-        if(!seen.Add(pid)) throw new Exception(); pids.Add(pid); sids.Add(row.Sid==IntPtr.Zero ? null : new SecurityIdentifier(row.Sid).Value);
-      }
-      Validate(workerSid,pids.ToArray(),sids.ToArray());
-      // WTS can omit other users without sufficient query rights. Never accept a partial result.
-      foreach(var process in Process.GetProcesses()) using(process) {
-        if(seen.Contains(process.Id)) continue;
-        try { using(var live=Process.GetProcessById(process.Id)) { if(!live.HasExited) throw new InvalidOperationException(); } }
-        catch(ArgumentException) { /* Process exited between snapshots. */ }
-      }
-    } finally { WTSFreeMemory(rows); }
-  }
-}
-'@
 function Read-PrivateLine([IO.Stream]$pipe) {
   $bytes = New-Object 'Collections.Generic.List[byte]'
   while ($true) { $next = $pipe.ReadByte(); if ($next -lt 0) { throw 'input closed' }; if ($next -eq 10) { break }; if ($bytes.Count -ge 1048576) { throw 'input limit' }; $bytes.Add([byte]$next) }
   return [Text.Encoding]::UTF8.GetString($bytes.ToArray())
 }
+function Assert-TrustedRuntimeDescriptor($acl,[string]$ownerSid) {
+  $trusted=@($ownerSid,'S-1-5-18','S-1-5-32-544')
+  if ($trusted -notcontains $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value) { throw 'untrusted runtime owner' }
+  $raw=New-Object Security.AccessControl.RawSecurityDescriptor($acl.GetSecurityDescriptorBinaryForm(),0)
+  if ($null -eq $raw.DiscretionaryAcl) { throw 'null runtime DACL' }
+  $readOnly=[int64]([Security.AccessControl.FileSystemRights]::ReadAndExecute -bor [Security.AccessControl.FileSystemRights]::Synchronize)
+  foreach ($rule in $acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])) {
+    if ($rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or $trusted -contains $rule.IdentityReference.Value) { continue }
+    if (([int64]$rule.FileSystemRights -band (-bnot $readOnly)) -ne 0) { throw 'writable runtime descendant' }
+  }
+}
+function Assert-TrustedRuntimeTree([string]$root,[string]$ownerSid) {
+  $pending=New-Object 'Collections.Generic.Stack[string]';$pending.Push($root)
+  $timer=[Diagnostics.Stopwatch]::StartNew();$count=0
+  while ($pending.Count) {
+    if (++$count -gt 100000 -or $timer.ElapsedMilliseconds -gt 20000) { throw 'runtime verification limit' }
+    $path=$pending.Pop();$item=Get-Item -LiteralPath $path -Force
+    if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'runtime reparse target' }
+    Assert-TrustedRuntimeDescriptor (Get-Acl -LiteralPath $path) $ownerSid
+    if ($item.PSIsContainer) { foreach ($child in Get-ChildItem -LiteralPath $path -Force) { $pending.Push($child.FullName) } }
+  }
+}
+function Assert-TrustedReviewMutexDescriptor($acl,[string]$ownerSid) {
+  $trusted=@($ownerSid,'S-1-5-18','S-1-5-32-544')
+  if ($trusted -notcontains $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value) { throw 'untrusted review mutex owner' }
+  $raw=New-Object Security.AccessControl.RawSecurityDescriptor($acl.GetSecurityDescriptorBinaryForm(),0)
+  if ($null -eq $raw.DiscretionaryAcl) { throw 'null review mutex DACL' }
+  foreach ($rule in $acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])) { if ($trusted -notcontains $rule.IdentityReference.Value) { throw 'untrusted review mutex access' } }
+}
+function New-ReviewMarker([string]$path,$config) {
+  $bytes=[Text.Encoding]::UTF8.GetBytes((@{version=2;purpose='review';workerSid=$config.workerSid;wrapperPid=$PID}|ConvertTo-Json -Compress))
+  $file=[IO.File]::Open($path,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
+  try { $file.Write($bytes,0,$bytes.Length);$file.Flush($true) } finally { $file.Dispose() }
+}
+function Enter-TrustedReviewMutex($mutex,[string]$marker,$config) {
+  $held=$false
+  try {
+    try { $held=$mutex.WaitOne(0) } catch {
+      if ($_.Exception.GetBaseException() -isnot [Threading.AbandonedMutexException]) { throw }
+      $held=$true
+      if (-not (Test-Path -LiteralPath $marker)) { New-ReviewMarker $marker $config }
+      throw 'Abandoned review ownership requires native job reconciliation.'
+    }
+    if (-not $held) { throw 'Another host owns the review identity.' }
+    if (Test-Path -LiteralPath $marker) { throw 'Review process-tree retirement was not confirmed.' }
+  } catch { if ($held) { $mutex.ReleaseMutex() };throw }
+}
+function Open-TrustedReviewLease($config) {
+  $hash=[Security.Cryptography.SHA256]::Create()
+  try { $key=([BitConverter]::ToString($hash.ComputeHash([Text.Encoding]::UTF8.GetBytes($config.workerSid)))).Replace('-','') } finally { $hash.Dispose() }
+  $security=New-Object Security.AccessControl.MutexSecurity
+  $security.SetOwner((New-Object Security.Principal.SecurityIdentifier($config.ownerSid)));$security.SetAccessRuleProtection($true,$false)
+  foreach ($sid in @($config.ownerSid,'S-1-5-18','S-1-5-32-544')) { $security.AddAccessRule((New-Object Security.AccessControl.MutexAccessRule((New-Object Security.Principal.SecurityIdentifier($sid)),'FullControl','Allow'))) }
+  $created=$false;$mutex=New-Object Threading.Mutex($false,('Global\TjommieReview-'+$key),[ref]$created,$security)
+  try {
+    Assert-TrustedReviewMutexDescriptor $mutex.GetAccessControl() $config.ownerSid
+    $marker=Join-Path $config.ownerDataRoot ('review-worker-active-'+$key+'.json')
+    Enter-TrustedReviewMutex $mutex $marker $config
+    return [pscustomobject]@{Mutex=$mutex;Marker=$marker}
+  } catch { $mutex.Dispose();throw }
+}
+function Test-UnreceiptedProviderCandidate($candidate,$allowedWorkerPids) {
+  # Native SID/job receipts remain authoritative when WMI redacts another SID's argv.
+  if (@($allowedWorkerPids) -contains $candidate.ProcessId) { return $false }
+  if ($candidate.Name -match '^node(\.exe)?$' -and [String]::IsNullOrWhiteSpace($candidate.CommandLine)) { throw 'An existing Node process could not be identified safely.' }
+  return ($candidate.Name -match '^(claude|codex)\.exe$' -or ($candidate.Name -match '^node(\.exe)?$' -and $candidate.CommandLine -match '([\\/]@anthropic-ai[\\/]claude-code[\\/]|[\\/]@openai[\\/]codex[\\/])'))
+}
 try {
   $launch = (Read-PrivateLine $workerInput) | ConvertFrom-Json
   $config = $launch.config
+  if ($config.version -ne 2 -or @('provider','review') -notcontains $config.purpose -or $config.workerSid -eq $config.peerSid) { throw 'purpose' }
+  if (($config.purpose -eq 'provider' -and $config.workerName -notmatch '^TjWorker-[a-f0-9]{8}$') -or ($config.purpose -eq 'review' -and $config.workerName -notmatch '^TjReview-[a-f0-9]{8}$')) { throw 'purpose' }
   if ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value -ne $config.ownerSid -or $config.ownerSid -eq $config.workerSid) { throw 'boundary' }
   $account = Get-LocalUser -Name $config.workerName
   if ($account.SID.Value -ne $config.workerSid -or -not $account.Enabled) { throw 'boundary' }
   $boot = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime()
   if ($boot -le [DateTime]::Parse($config.provisionedAt).ToUniversalTime()) { throw 'Restart Windows after provisioning before accepting this boundary.' }
-  if ($launch.quiescent) { Add-Type -TypeDefinition $globalProcessSource; [TjWorkerProcessSet]::AssertQuiescent([string]$config.workerSid) }
   foreach ($candidate in Get-CimInstance Win32_Process -Filter "Name='claude.exe' OR Name='codex.exe' OR Name='node.exe'") {
-    if ($candidate.Name -match '^node(\.exe)?$' -and [String]::IsNullOrWhiteSpace($candidate.CommandLine)) { throw 'An existing Node process could not be identified safely.' }
-    $provider = $candidate.Name -match '^(claude|codex)\.exe$' -or ($candidate.Name -match '^node(\.exe)?$' -and $candidate.CommandLine -match '([\\/]@anthropic-ai[\\/]claude-code[\\/]|[\\/]@openai[\\/]codex[\\/])')
-    if (-not $provider) { continue }
+    if (-not (Test-UnreceiptedProviderCandidate $candidate $launch.allowedWorkerPids)) { continue }
     $owner = Invoke-CimMethod -InputObject $candidate -MethodName GetOwnerSid
     if ($owner.ReturnValue -ne 0 -or $owner.Sid -eq $config.ownerSid) { throw 'An owner-level provider is still running. Close older Tjommie/provider apps before enabling Logins.' }
     if ($owner.Sid -eq $config.workerSid -and @($launch.allowedWorkerPids) -notcontains $candidate.ProcessId) { throw 'An untracked worker provider is running. Reconcile older hosts before enabling Logins.' }
   }
-  foreach ($protected in @($config.ownerDataRoot,$config.runtimeRoot)) {
+  foreach ($protected in @($config.ownerDataRoot,$config.runtimeRoot,$config.workerRoot,$config.peerRoot)) {
     $acl = Get-Acl -LiteralPath $protected
     foreach ($rule in $acl.Access) {
       if ($rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow) { continue }
       $sid = $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
       if (@($config.ownerSid,'S-1-5-18','S-1-5-32-544') -contains $sid) { continue }
-      if ($protected -eq $config.runtimeRoot -and $sid -eq $config.workerSid -and (($rule.FileSystemRights -band [Security.AccessControl.FileSystemRights]::Write) -eq 0) -and (($rule.FileSystemRights -band [Security.AccessControl.FileSystemRights]::ChangePermissions) -eq 0) -and (($rule.FileSystemRights -band [Security.AccessControl.FileSystemRights]::TakeOwnership) -eq 0)) { continue }
+      $ownWork = ($protected -eq $config.workerRoot -and $sid -eq $config.workerSid) -or ($protected -eq $config.peerRoot -and $sid -eq $config.peerSid)
+      if ($ownWork -and (($rule.FileSystemRights -band [Security.AccessControl.FileSystemRights]::ChangePermissions) -eq 0) -and (($rule.FileSystemRights -band [Security.AccessControl.FileSystemRights]::TakeOwnership) -eq 0)) { continue }
+      if ($protected -eq $config.runtimeRoot -and @($config.workerSid,$config.peerSid) -contains $sid -and (($rule.FileSystemRights -band [Security.AccessControl.FileSystemRights]::Write) -eq 0) -and (($rule.FileSystemRights -band [Security.AccessControl.FileSystemRights]::ChangePermissions) -eq 0) -and (($rule.FileSystemRights -band [Security.AccessControl.FileSystemRights]::TakeOwnership) -eq 0)) { continue }
       throw 'protected ACL'
     }
   }
+  # The root ACL cannot override an explicit writable child ACE or worker-owned file.
+  # Reject links instead of following them out of this complete trusted code closure.
+  Assert-TrustedRuntimeTree $config.runtimeRoot $config.ownerSid
+  if ($config.purpose -eq 'review') { $reviewLease=Open-TrustedReviewLease $config }
   if ($launch.mode -eq 'verify') { [Console]::Out.Write('verified'); exit 0 }
   Add-Type -TypeDefinition @'
 using System;
@@ -208,11 +244,12 @@ public sealed class TjNativeWorker : IDisposable {
   $environment['TMP'] = $environment['TEMP']
   $block = (($environment.Keys | Sort-Object | ForEach-Object { $_ + '=' + $environment[$_] }) -join [char]0) + [char]0 + [char]0
   $arguments = (($launch.args | ForEach-Object { [TjWorkerSecurity]::Quote([string]$_) }) -join ' ')
+  if ($null -ne $reviewLease) { New-ReviewMarker $reviewLease.Marker $config;$reviewMarkerWritten=$true }
   $workerProcess = [TjNativeWorker]::Start([string]$config.workerName,[string]$launch.password,[string]$launch.file,$arguments,[string]$launch.cwd,$block,[string]$config.ownerSid,[string]$config.workerSid)
   $launch.password = $null
   [TjWorkerSecurity]::Verify($workerProcess.Handle,[string]$config.workerSid)
   $jobHandle = [TjWorkerSecurity]::BindJob($workerProcess.Handle)
-  $receipt = @{ version=1; ownerSid=$config.ownerSid; workerSid=$config.workerSid; wrapperPid=$PID; workerPid=$workerProcess.Id; elevated=$false; privileged=$false; jobBound=$true } | ConvertTo-Json -Compress
+  $receipt = @{ version=2; purpose=$config.purpose; ownerSid=$config.ownerSid; workerSid=$config.workerSid; wrapperPid=$PID; workerPid=$workerProcess.Id; elevated=$false; privileged=$false; jobBound=$true } | ConvertTo-Json -Compress
   [IO.File]::WriteAllText(($launch.receiptPath + '.pending'),$receipt,(New-Object Text.UTF8Encoding($false)))
   [IO.File]::Move(($launch.receiptPath + '.pending'),$launch.receiptPath)
   if ((Read-PrivateLine $workerInput) -ne 'continue') { throw 'launch cancelled' }
@@ -229,13 +266,16 @@ public sealed class TjNativeWorker : IDisposable {
   [Console]::Error.WriteLine('Tjommie could not start the verified Windows worker.')
   exit 71
 } finally {
+  try {
   $stopped = $true
   if ('TjNativeWorker' -as [type]) { if ([TjNativeWorker]::UnconfirmedChild) { $stopped=$false } }
-  if ($jobHandle -ne [IntPtr]::Zero) { $stopped = [TjWorkerSecurity]::StopJob($jobHandle); [void][TjWorkerSecurity]::CloseHandle($jobHandle) }
+  if ($jobHandle -ne [IntPtr]::Zero) { $stopped = [TjWorkerSecurity]::StopJob($jobHandle) -and $stopped; [void][TjWorkerSecurity]::CloseHandle($jobHandle) }
   elseif ($null -ne $workerProcess) { try { $workerProcess.Kill(); [void]$workerProcess.Wait() } catch { $stopped=$false } }
   if ($null -ne $workerProcess) { $workerProcess.Dispose() }
+  if ($reviewMarkerWritten -and $stopped) { try { Remove-Item -LiteralPath $reviewLease.Marker -ErrorAction Stop } catch { $stopped=$false } }
   if ($null -ne $launch -and $launch.receiptPath) {
     $closed = @{ version=1; wrapperPid=$PID; stopped=$stopped } | ConvertTo-Json -Compress
     [IO.File]::WriteAllText(($launch.receiptPath + '.closed'),$closed,(New-Object Text.UTF8Encoding($false)))
   }
+  } finally { if ($null -ne $reviewLease) { $reviewLease.Mutex.ReleaseMutex();$reviewLease.Mutex.Dispose() } }
 }

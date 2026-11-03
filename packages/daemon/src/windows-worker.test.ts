@@ -8,10 +8,10 @@ import { WindowsWorkerBoundary, WorkerLaunchTerminationError, WorkerPolicyBusyEr
 vi.mock("node:child_process", () => ({ spawn: vi.fn(() => { throw new Error("No native process is permitted in this synthetic fixture."); }) }));
 afterEach(() => vi.restoreAllMocks());
 
-const receipt: WorkerPolicyReceipt = Object.freeze({ workerSid: "S-1-5-21-1-2-3-1002", observerSha256: "a".repeat(64), policySha256: "b".repeat(64) });
+const receipt: WorkerPolicyReceipt = Object.freeze({ purpose: "review", workerSid: "S-1-5-21-1-2-3-1002", providerSid: "S-1-5-21-1-2-3-1003", configurationSha256: "d".repeat(64), observerSha256: "a".repeat(64), policySha256: "b".repeat(64) });
 function fixture() {
-  const root = tempRoot(), configurationPath = join(root, "worker.json");
-  return { root, configurationPath, worker: new WindowsWorkerBoundary({ configurationPath, exclusive: () => false }) };
+  const root = tempRoot(), configurationPath = join(root, "review-worker.json");
+  return { root, configurationPath, worker: new WindowsWorkerBoundary({ configurationPath, expectedPurpose: "review", exclusive: () => false }) };
 }
 
 describe("Windows worker review lease", () => {
@@ -81,10 +81,10 @@ describe("Windows worker startup gate", () => {
 
   it("rejects an acceptance receipt that does not match the exact protected configuration", async () => {
     const { root, configurationPath } = fixture();
-    const worker = new WindowsWorkerBoundary({ configurationPath, exclusive: () => true });
+    const worker = new WindowsWorkerBoundary({ configurationPath, expectedPurpose: "review", exclusive: () => true });
     const workerRoot = join(root, "worker"), runtimeRoot = join(root, "runtime"), ownerDataRoot = root;
     for (const folder of [workerRoot, runtimeRoot]) mkdirSync(folder);
-    writeFileSync(configurationPath, JSON.stringify({ version: 1, ownerSid: "S-1-5-21-1-2-3-1001", workerSid: receipt.workerSid, workerName: "TjWorker-12345678", workerRoot, runtimeRoot, ownerDataRoot, provisionedAt: new Date().toISOString(), credentialTarget: `Tjommie/${"a".repeat(24)}/isolated-worker` }));
+    writeFileSync(configurationPath, JSON.stringify({ version: 2, purpose: "review", ownerSid: "S-1-5-21-1-2-3-1001", workerSid: receipt.workerSid, peerSid: receipt.providerSid, workerName: "TjReview-12345678", workerRoot, peerRoot: join(root, "provider"), runtimeRoot, ownerDataRoot, provisionedAt: new Date().toISOString(), credentialTarget: `Tjommie/${"a".repeat(24)}/isolated-review` }));
     writeFileSync(join(root, "worker-acceptance.json"), JSON.stringify({ version: 1, configurationHash: "0".repeat(64), ownerFileDenied: true, ownerCredentialDenied: true, ownerProcessDenied: true, ownerDesktopDenied: true, workerWriteAllowed: true, codexStarted: true, claudeStarted: true, reviewPolicyVerified: true }));
     expect(worker.required).toBe(true);
     expect(await worker.unavailableReason()).not.toBeNull();

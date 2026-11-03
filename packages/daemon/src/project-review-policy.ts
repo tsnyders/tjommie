@@ -54,8 +54,8 @@ export function reviewSourceHash(moduleUrl = import.meta.url): string {
 }
 
 export function reviewWorkerPolicyHash(receipt: WorkerPolicyReceipt): string {
-  if (!/^S-1-5-21-\d+-\d+-\d+-\d+$/.test(receipt.workerSid) || ![receipt.observerSha256, receipt.policySha256].every((value) => /^[a-f0-9]{64}$/.test(value))) throw new Error("review_worker_policy_observer_unavailable");
-  return reviewHash(JSON.stringify([receipt.workerSid, receipt.observerSha256, receipt.policySha256]));
+  if (receipt.purpose !== "review" || ![receipt.workerSid, receipt.providerSid].every((sid) => /^S-1-5-21-\d+-\d+-\d+-\d+$/.test(sid)) || receipt.workerSid === receipt.providerSid || ![receipt.configurationSha256, receipt.observerSha256, receipt.policySha256].every((value) => /^[a-f0-9]{64}$/.test(value))) throw new Error("review_worker_policy_observer_unavailable");
+  return reviewHash(JSON.stringify([receipt.purpose, receipt.workerSid, receipt.providerSid, receipt.configurationSha256, receipt.observerSha256, receipt.policySha256]));
 }
 
 // Observe the actual CLI SID while the worker is quiescent; an owner registry result cannot substitute.

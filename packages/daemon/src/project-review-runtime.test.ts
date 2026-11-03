@@ -44,10 +44,10 @@ console.log(JSON.stringify({type:'result',subtype:'success',is_error:false,resul
 
 function syntheticWorker(root: string) {
   const state = { held: false, observations: 0, failPaidStart: false, failAfter: false,
-    receipt: { workerSid: "S-1-5-21-1-2-3-1001", observerSha256: "a".repeat(64), policySha256: "b".repeat(64) } as WorkerPolicyReceipt };
-  const config = { version: 1 as const, ownerSid: "S-1-5-21-1-2-3-1000", workerSid: state.receipt.workerSid, workerName: "TjWorker-12345678", workerRoot: join(root, "worker"), runtimeRoot: join(root, "runtime"), ownerDataRoot: join(root, "owner"), provisionedAt: "2026-11-03T00:00:00.000Z", credentialTarget: `Tjommie/${"a".repeat(24)}/isolated-worker` };
+    receipt: { purpose: "review", workerSid: "S-1-5-21-1-2-3-1001", providerSid: "S-1-5-21-1-2-3-1002", configurationSha256: "c".repeat(64), observerSha256: "a".repeat(64), policySha256: "b".repeat(64) } as WorkerPolicyReceipt };
+  const config = { version: 2 as const, purpose: "review" as const, ownerSid: "S-1-5-21-1-2-3-1000", workerSid: state.receipt.workerSid, peerSid: state.receipt.providerSid, workerName: "TjReview-12345678", workerRoot: join(root, "worker"), peerRoot: join(root, "provider"), runtimeRoot: join(root, "runtime"), ownerDataRoot: join(root, "owner"), provisionedAt: "2026-11-03T00:00:00.000Z", credentialTarget: `Tjommie/${"a".repeat(24)}/isolated-review` };
   const boundary: Parameters<typeof withWindowsWorker>[0] = {
-    required: true, configuration: () => config, async grantDirectory() {},
+    purpose: "review", required: true, configuration: () => config, async grantDirectory() {}, pairWith() {}, receipts: () => [],
     async spawn(file, args, options) {
       if (!state.held) throw new WorkerPolicyBusyError();
       if (state.failPaidStart && args.includes("--output-format")) throw new WorkerLaunchTerminationError();

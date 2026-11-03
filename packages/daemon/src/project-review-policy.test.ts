@@ -18,7 +18,7 @@ it("binds packaged acceptance to the actual bundle and external worker launcher 
 });
 
 it("binds worker evidence to its SID, observer and effective machine policy", () => {
-  const receipt = { workerSid: "S-1-5-21-1-2-3-1001", observerSha256: "a".repeat(64), policySha256: "b".repeat(64) };
+  const receipt = { purpose: "review" as const, workerSid: "S-1-5-21-1-2-3-1001", providerSid: "S-1-5-21-1-2-3-1003", configurationSha256: "e".repeat(64), observerSha256: "a".repeat(64), policySha256: "b".repeat(64) };
   const original = reviewWorkerPolicyHash(receipt);
   for (const patch of [{ workerSid: "S-1-5-21-1-2-3-1002" }, { observerSha256: "c".repeat(64) }, { policySha256: "d".repeat(64) }]) expect(reviewWorkerPolicyHash({ ...receipt, ...patch })).not.toBe(original);
   for (const patch of [{ workerSid: "owner" }, { observerSha256: "missing" }, { policySha256: "B".repeat(64) }]) expect(() => reviewWorkerPolicyHash({ ...receipt, ...patch })).toThrow("review_worker_policy_observer_unavailable");

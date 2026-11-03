@@ -128,6 +128,22 @@ it("keeps authorized native save data when returning from a picker after two min
   expect(getState().connection).toEqual({ status: "ready" });
 });
 
+it("does not cancel a staged native save when a foreground ping expires while the picker is hidden", async () => {
+  const { pc, getState, start } = await boot();
+  await start(); device.invalidations = 0;
+  pc.hold.add("remote.ping"); await vi.advanceTimersByTimeAsync(20_000);
+  expect(pc.calls.filter((method) => method === "remote.ping")).toHaveLength(1);
+  show(false); await vi.advanceTimersByTimeAsync(21_000); await settle();
+  expect(device.invalidations).toBe(0);
+  expect(pc.wires[0].closed).toBe(false);
+  expect(getState().connection).toEqual({ status: "ready" });
+  pc.hold.delete("remote.ping"); show(true); await settle();
+  expect(pc.calls.filter((method) => method === "remote.ping")).toHaveLength(2);
+  expect(pc.opens).toHaveLength(1);
+  expect(device.invalidations).toBe(0);
+  expect(getState().connection).toEqual({ status: "ready" });
+});
+
 it("does not let an older unanswered ping replace a link verified after returning", async () => {
   const { pc, getState, start } = await boot();
   await start(); device.invalidations = 0;
@@ -189,12 +205,13 @@ it("can't reach the PC: a saved PC that stops answering shows unreachable over t
 
 it("revoked: the PC's authenticated refusal is terminal: removed, and nothing reopens", async () => {
   const { pc, getState, start } = await boot({ relay });
-  await start();
+  await start(); device.invalidations = 0;
 
   pc.refuse = "revoked";
   pc.wires[0].drop();
   await settle();
   expect(getState().connection).toEqual({ status: "removed" });
+  expect(device.invalidations).toBeGreaterThan(0);
   const opens = pc.opens.length;
   await vi.advanceTimersByTimeAsync(60_000);
   show(false);
@@ -244,12 +261,14 @@ it("says why a first connect failed, and tries again on return without taking th
 
 it("stops retrying while hidden without keep-alive, and tries again the moment the app is back", async () => {
   const { pc, getState, start } = await boot();
-  await start();
+  await start(); device.invalidations = 0;
 
   const lanKey = endpointKey({ kind: "lan", ...lan });
   pc.legs.set(lanKey, "refused");
   show(false);
   pc.wires[0].drop();
+  await settle();
+  expect(device.invalidations).toBeGreaterThan(0);
   await vi.advanceTimersByTimeAsync(10 * 60_000);
   expect(pc.opens).toHaveLength(1);
   expect(getState().connection).toEqual({ status: "reconnecting" });

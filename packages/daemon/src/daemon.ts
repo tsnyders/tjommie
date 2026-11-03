@@ -89,19 +89,22 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     (!/^[A-Za-z0-9_-]{43,}$/.test(options.auth.desktopHostToken) || options.auth.desktopHostToken === options.auth.token)) {
     throw new PlainStartupError("The native browser host requires an independent private capability.");
   }
-  const worker: WindowsWorkerBoundary | null = !options.createSession
-    ? new WindowsWorkerBoundary({ configurationPath: join(dataPaths(options.root).root, "worker.json"), exclusive: () => workerCliExclusive(worker!) }) : null;
-  const uninstallWorker = worker?.required ? installWindowsWorker(worker) : undefined;
+  const workerRoot = !options.createSession ? dataPaths(options.root).root : null;
+  const worker: WindowsWorkerBoundary | null = workerRoot
+    ? new WindowsWorkerBoundary({ configurationPath: join(workerRoot, "worker.json"), expectedPurpose: "provider", exclusive: () => workerCliExclusive(worker!) }) : null;
+  const reviewWorker: WindowsWorkerBoundary | null = workerRoot
+    ? new WindowsWorkerBoundary({ configurationPath: join(workerRoot, "review-worker.json"), expectedPurpose: "review", exclusive: () => workerCliExclusive(reviewWorker!) }) : null;
+  const uninstallWorker = worker?.required && reviewWorker ? installWindowsWorker(worker, reviewWorker) : undefined;
   // The listening port is the lock. A duplicate launch must not even open the database.
   let server: Server;
   try { server = await startServer({ port: options.port ?? DEFAULT_PORT, token: "", handlers: {}, allowedOrigins: allowedOrigins(options.auth.mode), deferRequests: true }); }
-  catch (error) { worker?.close(); uninstallWorker?.(); throw error; }
+  catch (error) { worker?.close(); reviewWorker?.close(); uninstallWorker?.(); throw error; }
   let cleanup: () => void | Promise<void> = () => {};
   try {
     const daemon = await initializeDaemon(options, server, (next) => { cleanup = next; }, worker);
-    return { ...daemon, close: async () => { await daemon.close(); worker?.close(); uninstallWorker?.(); } };
+    return { ...daemon, close: async () => { await daemon.close(); worker?.close(); reviewWorker?.close(); uninstallWorker?.(); } };
   } catch (error) {
-    try { await cleanup(); } finally { await server.close(); worker?.close(); uninstallWorker?.(); }
+    try { await cleanup(); } finally { await server.close(); worker?.close(); reviewWorker?.close(); uninstallWorker?.(); }
     throw error;
   }
 }

@@ -5,23 +5,31 @@ import { existsSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import { delimiter, dirname, join, relative, resolve, isAbsolute } from "node:path";
 import type { WindowsWorkerBoundary, WorkerPolicyReceipt } from "./windows-worker.ts";
-import { workerProcessRetired, WorkerLaunchTerminationError } from "./windows-worker.ts";
+import { workerProcessRetired, WorkerLaunchTerminationError, validateWorkerPair } from "./windows-worker.ts";
 export { WorkerLaunchTerminationError, workerProcessRetired } from "./windows-worker.ts";
 
-type WorkerBoundary = Pick<WindowsWorkerBoundary, "required" | "configuration" | "spawn" | "grantDirectory" | "withReviewPolicy" | "observeReviewPolicy">;
+type WorkerBoundary = Pick<WindowsWorkerBoundary, "purpose" | "required" | "configuration" | "spawn" | "grantDirectory" | "withReviewPolicy" | "observeReviewPolicy" | "pairWith" | "receipts">;
 const workerScope = new AsyncLocalStorage<WorkerBoundary>();
 let installedWorker: WorkerBoundary | undefined, legacyUsed = false;
+let installedReviewWorker: WorkerBoundary | undefined;
 const accountMappings = new WeakMap<WorkerBoundary, Map<string, string>>();
 const boundary = (): WorkerBoundary | undefined => workerScope.getStore() ?? installedWorker;
 export function withWindowsWorker<T>(worker: WorkerBoundary, action: () => T): T { return workerScope.run(worker, action); }
-export function installWindowsWorker(worker: WorkerBoundary): () => void {
-  if (installedWorker && installedWorker !== worker) throw new Error("A different Windows worker boundary is already installed.");
-  installedWorker = worker;
-  return () => { if (installedWorker === worker) installedWorker = undefined; };
+export function installWindowsWorker(worker: WorkerBoundary, review: WorkerBoundary): () => void {
+  if (installedWorker || installedReviewWorker) throw new Error("A different Windows worker boundary is already installed.");
+  const config = worker.configuration(), reviewing = review.configuration();
+  validateWorkerPair(config, reviewing); validateWorkerPair(reviewing, config);
+  if (worker.purpose !== "provider" || review.purpose !== "review" || config.workerSid === reviewing.workerSid || config.peerSid !== reviewing.workerSid || reviewing.peerSid !== config.workerSid) throw new Error("review_isolated_identity_unavailable");
+  worker.pairWith(review); review.pairWith(worker);
+  installedWorker = worker; installedReviewWorker = review;
+  return () => { if (installedWorker === worker && installedReviewWorker === review) { installedWorker = undefined; installedReviewWorker = undefined; } };
 }
-export function workerCliExclusive(worker: WorkerBoundary): boolean { return installedWorker === worker && !legacyUsed; }
+export function workerCliExclusive(worker: WorkerBoundary): boolean { return (installedWorker === worker || installedReviewWorker === worker) && !legacyUsed; }
 export async function withWorkerPolicy<T>(action: (receipt: WorkerPolicyReceipt | null) => Promise<T>): Promise<T> {
-  const worker = boundary(); return worker?.required ? worker.withReviewPolicy(action) : action(null);
+  const worker = boundary(); if (!worker?.required) return action(null);
+  const review = worker.purpose === "review" ? worker : installedWorker === worker ? installedReviewWorker : undefined;
+  if (!review?.required || review.purpose !== "review") throw new Error("review_isolated_identity_unavailable");
+  return withWindowsWorker(review, () => review.withReviewPolicy(action));
 }
 export async function observeWorkerPolicy(): Promise<WorkerPolicyReceipt | null> { const worker = boundary(); return worker?.required ? worker.observeReviewPolicy() : null; }
 export function workerAccountsRoot(): string | null {

@@ -45,7 +45,7 @@ export function dialogHeader(full: boolean, inApp: boolean): { bar: string; titl
   };
 }
 
-const FULL = "max-sm:inset-0 max-sm:left-0 max-sm:top-0 max-sm:h-dvh max-sm:max-h-none max-sm:w-auto max-sm:max-w-none max-sm:translate-x-0 max-sm:translate-y-0 max-sm:rounded-none max-sm:border-0 max-sm:px-4 max-sm:pt-0";
+const FULL = "max-sm:inset-0 max-sm:left-0 max-sm:top-0 max-sm:h-dvh max-sm:max-h-none max-sm:w-auto max-sm:max-w-none max-sm:translate-x-0 max-sm:translate-y-0 max-sm:rounded-none max-sm:border-0 max-sm:px-4 max-sm:pt-[max(env(safe-area-inset-top,0px),var(--safe-area-inset-top,0px))] max-sm:pb-[max(1.25rem,env(safe-area-inset-bottom,0px),var(--safe-area-inset-bottom,0px))]";
 
 type DialogProps = {
   open: boolean;

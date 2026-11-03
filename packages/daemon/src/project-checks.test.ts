@@ -22,6 +22,7 @@ it.each([false, true])("never falls back to owner execution when the worker laun
   const root = tempRoot(), marker = join(root, "owner-process-must-not-write");
   const spawn = vi.fn(async () => { throw unknown ? new WorkerLaunchTerminationError() : new Error("synthetic worker refusal"); });
   const worker = {
+    purpose: "provider" as const, receipts: () => [], pairWith() {},
     required: true, spawn, configuration: () => { throw new Error("unused"); }, grantDirectory: async () => {},
     withReviewPolicy: async () => { throw new Error("unused"); }, observeReviewPolicy: async () => { throw new Error("unused"); },
   };

@@ -212,6 +212,7 @@ function reconnectNow(): void {
 function onVisibility(): void {
   if (!isRemote(latest)) return;
   if (!visible()) {
+    pingGeneration++; // Background suspension can delay a foreground ping's reply past its deadline.
     beat(); // slower with keep-alive, or none
     return;
   }
