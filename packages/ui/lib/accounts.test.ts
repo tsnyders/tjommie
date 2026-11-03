@@ -214,6 +214,18 @@ describe("spending and the picker", () => {
 });
 
 describe("bannerFor", () => {
+  it("notifies for a checked signed-out subscription using the account runtime reason", () => {
+    const waiting = bot({ state: "needs_setup", setupReason: "Check or sign in to this account in Accounts." });
+    const signedOut = account({ setup: { provider: "claude", installed: true, version: null, signedIn: false, account: null, plan: null, error: null } });
+    expect(bannerFor(waiting, [signedOut], NOW)).toMatchObject({ kind: "signIn", account: { id: "a1" } });
+    expect(bannerFor(waiting, [account({ setup: null })], NOW)).toBeNull();
+    expect(bannerFor(waiting, [account()], NOW)).toBeNull();
+    expect(bannerFor(waiting, [account({ ...signedOut, signIn: { attempt: "pending", state: "waiting" } })], NOW)).toBeNull();
+    expect(bannerFor(waiting, [account({ setup: { ...signedOut.setup!, error: "This account could not be checked. Try again in Accounts." } })], NOW)).toMatchObject({ kind: "setup", signIn: false });
+    expect(bannerFor(waiting, [account({ setup: { ...signedOut.setup!, installed: false } })], NOW)).toMatchObject({ kind: "setup", signIn: false });
+    expect(bannerFor({ ...waiting, accountId: "k1" }, [key()], NOW)).toMatchObject({ kind: "setup", signIn: false });
+  });
+
   const signedOut = account({ setup: { provider: "claude", installed: true, version: null, signedIn: false, account: null, plan: null, error: null } });
 
   it("asks to sign in the account a setup bot is on, and keeps the sandbox banner", () => {

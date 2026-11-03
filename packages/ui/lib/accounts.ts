@@ -261,6 +261,10 @@ export function bannerFor(bot: Bot, accounts: AccountInfo[] | null, now: Date): 
   const account = accounts ? accountFor(bot, accounts) : undefined;
   if (bot.state === "needs_setup") {
     const reason = bot.setupReason ?? "";
+    if (account?.kind === "subscription" && reason === "Check or sign in to this account in Accounts.") {
+      if (!account.setup || account.setup.signedIn || account.signIn?.state === "waiting") return null;
+      if (account.setup.installed && !account.setup.error) return { kind: "signIn", account };
+    }
     if (reason === SETUP_CODEX_SANDBOX_REASON) return { kind: "setup", text: "Codex's sandbox isn't set up yet. Windows asks for admin permission once.", sandbox: true, signIn: false };
     if (reason.startsWith(SETUP_SIGN_IN_PREFIX) && account) return { kind: "signIn", account };
     return { kind: "setup", text: reason.startsWith(SETUP_SIGN_IN_PREFIX) ? `${PROVIDER_NAME[bot.provider]} isn't signed in for Tjommie yet.` : reason, sandbox: false, signIn: reason.startsWith(SETUP_SIGN_IN_PREFIX) };
