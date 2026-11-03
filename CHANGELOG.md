@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Shared file cards now put real image, video, PDF and Markdown thumbnails above readable filenames, with download actions kept separate.
+- Desktop file previews recover normally when you leave a chat and return.
 - Chat, room and exchange inputs use aligned touch controls; voice settings open on demand and idle dictation guidance no longer fills the space below the input.
 - Provider sign-in and account-check reminders are dismissible toasts with an account-settings shortcut instead of a permanent chat banner.
 - Dark input hints are easier to read, and long file and project titles wrap inside dialogs.

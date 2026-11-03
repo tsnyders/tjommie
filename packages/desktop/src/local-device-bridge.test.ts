@@ -9,20 +9,59 @@ import { DesktopDeviceBridge, attachmentSaveName } from "./local-device-bridge.t
 
 function fixture(destination: string | null = null) {
   const frame = { url: "app://tjommie/chat/" }, send = vi.fn<(channel: string, value: unknown) => void>();
-  let visible = true;
+  let visible = true, ready = true;
   const contents = { id: 17, mainFrame: frame, getURL: () => frame.url, isDestroyed: () => false, send };
   const window = { webContents: contents, isDestroyed: () => false, isVisible: () => visible, isFocused: () => true };
   const event = { sender: contents, senderFrame: frame };
   const status: SpeechStatus = { engine: "whisper.cpp", capture: "pcm", available: false, permission: "unknown", languages: [], model: { state: "missing", bytes: 1, received: 0 } };
   const speech = { status: vi.fn(async () => status), isCapturing: vi.fn(() => true), cancelAll: vi.fn(async () => {}), start: vi.fn(async (_input: unknown) => {}), stop: vi.fn(async (_input: unknown) => {}), cancel: vi.fn(async (_input: unknown) => {}), appendPcm: vi.fn(async (_input: unknown) => {}), downloadModel: vi.fn(async () => {}), cancelModelDownload: vi.fn(async () => {}), removeModel: vi.fn(async () => {}) };
   const chooseSave = vi.fn(async () => destination);
-  const bridge = new DesktopDeviceBridge({ window: () => window, ready: () => true, production: true, speech, chooseSave });
+  const bridge = new DesktopDeviceBridge({ window: () => window, ready: () => ready, production: true, speech, chooseSave });
   const bytes = Buffer.from("synthetic shared file");
   const info = { id: randomUUID(), hostId: "host", name: "shared.txt", size: bytes.length, contentType: "text/markdown", sha256: createHash("sha256").update(bytes).digest("hex") };
-  return { bridge, event, window, contents, frame, send, speech, chooseSave, bytes, info, hide: () => { visible = false; } };
+  return { bridge, event, window, contents, frame, send, speech, chooseSave, bytes, info, hide: () => { visible = false; }, setReady: (value: boolean) => { ready = value; } };
 }
 
 describe("trusted current-device bridge", () => {
+  it("retires a preview during navigation without blocking fresh thumbnails or closing their handles", async () => {
+    const test = fixture(), previous = await test.bridge.preview(test.event, test.info);
+    let finish: (() => void) | undefined;
+    test.speech.cancelAll.mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve; }));
+    test.setReady(false);
+    const cleanup = test.bridge.invalidate();
+    expect(() => test.bridge.closePreview(test.event, previous.previewId)).not.toThrow();
+    expect(() => test.bridge.closePreview(test.event, previous.previewId)).not.toThrow();
+    expect((await test.bridge.serve(new Request(previous.url))).status).toBe(404);
+    await expect(test.bridge.preview(test.event, test.info)).rejects.toThrow("Untrusted");
+    expect(() => test.bridge.status(test.event)).toThrow("Untrusted");
+    expect(() => test.bridge.respond(test.event, previous.previewId, randomUUID(), null)).toThrow("Untrusted");
+    await expect(test.bridge.startSpeech(test.event, { sessionId: "during-navigation", language: "en" })).rejects.toThrow("Untrusted");
+    await expect(test.bridge.startSave(test.event, test.info)).rejects.toThrow("Untrusted");
+    test.setReady(true);
+    let opened = false;
+    const next = test.bridge.preview(test.event, test.info).then((preview) => { opened = true; return preview; });
+    await Promise.resolve(); expect(opened).toBe(false);
+    finish?.(); await cleanup; const fresh = await next;
+    test.bridge.closePreview(test.event, previous.previewId);
+    expect((await test.bridge.serve(new Request(fresh.url, { method: "HEAD" }))).status).toBe(200);
+    test.bridge.closePreview(test.event, fresh.previewId);
+    expect((await test.bridge.serve(new Request(fresh.url))).status).toBe(404);
+    await test.bridge.invalidate();
+  });
+  it("still validates the current app frame, origin and UUID when retiring a revoked preview", async () => {
+    const test = fixture(), preview = await test.bridge.preview(test.event, test.info);
+    await test.bridge.invalidate(); test.setReady(false);
+    for (const event of [{ ...test.event, sender: { ...test.contents } }, { ...test.event, senderFrame: { url: test.frame.url } }, { ...test.event, senderFrame: null }]) {
+      expect(() => test.bridge.closePreview(event, preview.previewId)).toThrow("Untrusted");
+    }
+    expect(() => test.bridge.closePreview(test.event, "not-a-preview-id")).toThrow();
+    expect(() => test.bridge.closePreview(test.event, preview.previewId)).not.toThrow();
+    test.contents.isDestroyed = () => true;
+    expect(() => test.bridge.closePreview(test.event, preview.previewId)).toThrow("Untrusted");
+    test.contents.isDestroyed = () => false;
+    test.frame.url = "https://attacker.invalid/";
+    expect(() => test.bridge.closePreview(test.event, preview.previewId)).toThrow("Untrusted");
+  });
   it("rejects other windows, subframes and foreign origins before touching native services", async () => {
     const test = fixture();
     for (const event of [{ ...test.event, sender: { ...test.contents } }, { ...test.event, senderFrame: { url: test.frame.url } }, { ...test.event, senderFrame: null }]) {
@@ -77,10 +116,11 @@ describe("trusted current-device bridge", () => {
     await test.bridge.invalidate(); await failed;
   });
   it("keeps repeated clear requests failed while a native cleanup remains unresolved", async () => {
-    const test = fixture(); let blocked = true;
+    const test = fixture(), preview = await test.bridge.preview(test.event, test.info); let blocked = true;
     test.speech.cancelAll.mockImplementation(async () => { if (blocked) throw new Error("Synthetic retained raw audio"); });
     await expect(test.bridge.invalidate()).rejects.toThrow("could not be cleared");
     await expect(test.bridge.invalidate()).rejects.toThrow("could not be cleared");
+    expect(() => test.bridge.closePreview(test.event, preview.previewId)).not.toThrow();
     await expect(test.bridge.preview(test.event, test.info)).rejects.toThrow("could not be cleared");
     blocked = false; await test.bridge.invalidate(); await test.bridge.preview(test.event, test.info); await test.bridge.invalidate();
   });

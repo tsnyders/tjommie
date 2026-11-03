@@ -30,10 +30,14 @@ export class DesktopDeviceBridge {
   private generation = 0;
 
   constructor(options: Options) { this.options = options; }
-  private trusted(event: Event): Window {
+  private trustedFrame(event: Event): Window {
     const window = this.options.window();
-    if (!this.options.ready() || !window || window.isDestroyed() || event.sender !== window.webContents || event.sender.isDestroyed() || !event.senderFrame || event.senderFrame !== window.webContents.mainFrame || !speechOrigin(event.senderFrame.url, this.options.production) || !speechOrigin(event.sender.getURL(), this.options.production)) throw new Error("Untrusted local device request.");
+    if (!window || window.isDestroyed() || event.sender !== window.webContents || event.sender.isDestroyed() || !event.senderFrame || event.senderFrame !== window.webContents.mainFrame || !speechOrigin(event.senderFrame.url, this.options.production) || !speechOrigin(event.sender.getURL(), this.options.production)) throw new Error("Untrusted local device request.");
     return window;
+  }
+  private trusted(event: Event): Window {
+    if (!this.options.ready()) throw new Error("Untrusted local device request.");
+    return this.trustedFrame(event);
   }
   private valid(lease: Lease): boolean {
     const window = this.options.window();
@@ -92,7 +96,13 @@ export class DesktopDeviceBridge {
     previewId = preview.handle; return { previewId, url: preview.url };
   }
   respond(event: Event, previewId: unknown, requestId: unknown, bytes: unknown): void { const lease = this.current(event); this.reads.respond(lease.owner, AttachmentInfo.shape.id.parse(previewId), AttachmentInfo.shape.id.parse(requestId), bytes); }
-  closePreview(event: Event, value: unknown): void { const lease = this.current(event), id = AttachmentInfo.shape.id.parse(value); this.protocol.close(lease.owner, id); this.reads.cancel(lease.owner, id); }
+  closePreview(event: Event, value: unknown): void {
+    this.trustedFrame(event);
+    const id = AttachmentInfo.shape.id.parse(value), lease = this.lease;
+    // Revocation already closes every preview before asynchronous cleanup.
+    if (!lease) return;
+    this.protocol.close(lease.owner, id); this.reads.cancel(lease.owner, id);
+  }
   permitsAttachmentRequest(request: { webContentsId?: number; frame?: Frame | null; resourceType: string }): boolean {
     const lease = this.lease;
     return !!lease && this.valid(lease) && request.webContentsId === lease.window.webContents.id && request.frame === lease.frame && ["xhr", "image", "media", "other"].includes(request.resourceType);
