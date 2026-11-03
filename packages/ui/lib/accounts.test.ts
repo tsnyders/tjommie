@@ -221,8 +221,8 @@ describe("bannerFor", () => {
     expect(bannerFor(waiting, [account({ setup: null })], NOW)).toBeNull();
     expect(bannerFor(waiting, [account()], NOW)).toBeNull();
     expect(bannerFor(waiting, [account({ ...signedOut, signIn: { attempt: "pending", state: "waiting" } })], NOW)).toBeNull();
-    expect(bannerFor(waiting, [account({ setup: { ...signedOut.setup!, error: "This account could not be checked. Try again in Accounts." } })], NOW)).toMatchObject({ kind: "setup", signIn: false });
-    expect(bannerFor(waiting, [account({ setup: { ...signedOut.setup!, installed: false } })], NOW)).toMatchObject({ kind: "setup", signIn: false });
+    expect(bannerFor(waiting, [account({ setup: { ...signedOut.setup!, error: "This account could not be checked. Try again in Accounts." } })], NOW)).toMatchObject({ kind: "accountCheck", text: `${signedOut.label} could not be checked.` });
+    expect(bannerFor(waiting, [account({ setup: { ...signedOut.setup!, installed: false } })], NOW)).toMatchObject({ kind: "accountCheck", text: `${signedOut.label} needs setup.` });
     expect(bannerFor({ ...waiting, accountId: "k1" }, [key()], NOW)).toMatchObject({ kind: "setup", signIn: false });
   });
 

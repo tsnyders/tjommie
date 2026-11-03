@@ -8,7 +8,7 @@ import { useApp } from "@/lib/store";
 
 const ShownNotices = createContext<Set<string> | null>(null);
 const noticeKey = (host: string | null, subject: string): string => JSON.stringify([host, subject]);
-type NoticeData = { href: string };
+type NoticeData = { href: string; action: "Sign in" | "Settings" };
 
 export function SignInNotifications({ children }: { children: ReactNode }) {
   const [shown] = useState(() => new Set<string>());
@@ -34,7 +34,7 @@ export function SignInNotifications({ children }: { children: ReactNode }) {
   </ShownNotices.Provider>;
 }
 
-export function SignInToast({ subject, title, href }: { subject: string; title: string; href: string }) {
+export function SignInToast({ subject, title, href, action = "Sign in" }: { subject: string; title: string; href: string; action?: NoticeData["action"] }) {
   const shown = useContext(ShownNotices);
   const host = useApp((state) => state.host);
   const { add, close } = Toast.useToastManager<NoticeData>();
@@ -47,13 +47,13 @@ export function SignInToast({ subject, title, href }: { subject: string; title: 
     queueMicrotask(() => {
       if (cancelled || !shown || shown.has(key)) return;
       shown.add(key);
-      id = add({ id: `sign-in:${key}`, title, data: { href } });
+      id = add({ id: `sign-in:${key}`, title, data: { href, action } });
     });
     return () => {
       cancelled = true;
       if (id) close(id);
     };
-  }, [add, close, shown, key, title, href]);
+  }, [add, close, shown, key, title, href, action]);
 
   return null;
 }
@@ -69,8 +69,8 @@ function SignInViewport() {
           <Plug className="ml-2 size-4 shrink-0 text-icon" aria-hidden />
           <Toast.Title className="min-w-0 flex-1 text-[13px] leading-[18px] text-text [overflow-wrap:anywhere]" />
           {toast.data && <Toast.Action render={<Link href={toast.data.href} />} nativeButton={false}
-            className="press flex min-h-11 shrink-0 items-center justify-center rounded-xl px-3 text-[13px] font-medium text-accent hover:bg-pill">Sign in</Toast.Action>}
-          <Toast.Close aria-label="Dismiss sign-in notification" title="Dismiss"
+            className="press flex min-h-11 shrink-0 items-center justify-center rounded-xl px-3 text-[13px] font-medium text-accent hover:bg-pill">{toast.data.action}</Toast.Action>}
+          <Toast.Close aria-label="Dismiss account notification" title="Dismiss"
             className="press flex size-11 shrink-0 items-center justify-center rounded-xl text-icon hover:bg-pill hover:text-text">
             <X className="size-4" aria-hidden />
           </Toast.Close>

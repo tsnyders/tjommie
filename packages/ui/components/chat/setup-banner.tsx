@@ -17,7 +17,7 @@ import { SignInToast } from "./sign-in-toast";
 const PILL_LINK = "press inline-flex h-8 shrink-0 items-center rounded-full bg-user-bubble px-3.5 text-[14px] font-medium whitespace-nowrap text-user-text";
 const accountsLink = (id: string, action: "signin" | "cap" | "retry"): string => `/settings/?section=accounts&account=${encodeURIComponent(id)}&action=${action}`;
 
-// Sign-in is a dismissible toast; spending limits and host setup stay beside the affected chat.
+// Account reminders are dismissible toasts; spending limits and host setup stay beside the affected chat.
 export function SetupBanner({ bot }: { bot: Bot }) {
   const accounts = useApp((state) => state.accounts);
   const banner = bannerFor(bot, accounts, new Date());
@@ -32,6 +32,8 @@ export function BannerView({ bot, banner }: { bot: Bot; banner: Banner }) {
         : <ProviderSetupBanner banner={banner} />;
     case "signIn":
       return <SignInToast subject={`account:${banner.account.id}`} title={`${banner.account.label} isn't signed in.`} href={accountsLink(banner.account.id, "signin")} />;
+    case "accountCheck":
+      return <SignInToast subject={`account:${banner.account.id}`} title={banner.text} href={`/settings/?section=accounts&account=${encodeURIComponent(banner.account.id)}`} action="Settings" />;
     case "cap":
       return banner.unknownPrices > 0 ? (
         <Frame icon={<Plug className="size-4 shrink-0 text-accent" aria-hidden />}>

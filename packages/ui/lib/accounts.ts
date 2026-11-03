@@ -251,6 +251,7 @@ const canTakeWork = (account: AccountInfo, now: Date): boolean =>
 export type Banner =
   | { kind: "setup"; text: string; sandbox: boolean; signIn: boolean }
   | { kind: "signIn"; account: AccountInfo }
+  | { kind: "accountCheck"; account: AccountInfo; text: string }
   | { kind: "cap"; account: AccountInfo; unknownPrices: number }
   | { kind: "limited"; account: AccountInfo; window: string; until: string | null; alternatives: AccountInfo[] } // until: null when the reset is unknown
   | { kind: "fallback"; pinned: AccountInfo; using: AccountInfo; until: string | null };
@@ -264,6 +265,7 @@ export function bannerFor(bot: Bot, accounts: AccountInfo[] | null, now: Date): 
     if (account?.kind === "subscription" && reason === "Check or sign in to this account in Accounts.") {
       if (!account.setup || account.setup.signedIn || account.signIn?.state === "waiting") return null;
       if (account.setup.installed && !account.setup.error) return { kind: "signIn", account };
+      return { kind: "accountCheck", account, text: account.setup.installed ? `${account.label} could not be checked.` : `${account.label} needs setup.` };
     }
     if (reason === SETUP_CODEX_SANDBOX_REASON) return { kind: "setup", text: "Codex's sandbox isn't set up yet. Windows asks for admin permission once.", sandbox: true, signIn: false };
     if (reason.startsWith(SETUP_SIGN_IN_PREFIX) && account) return { kind: "signIn", account };

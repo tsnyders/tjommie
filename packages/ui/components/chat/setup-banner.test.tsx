@@ -20,6 +20,12 @@ describe("BannerView", () => {
     expect(out).not.toContain("bg-waiting-fill");
   });
 
+  it("reserves no chat space for an account-check notification", () => {
+    const out = html({ kind: "accountCheck", account: account(), text: "Claude needs setup." });
+    expect(out).not.toContain("needs setup");
+    expect(out).not.toContain("bg-waiting-fill");
+  });
+
   it("raises a cap through the account's card, and has no button when the cap can't be checked", () => {
     const capped = html({ kind: "cap", account: account({ kind: "api_key", spending: { knownUsd: 20, unknownRows: 0, capUsd: 20, blocked: true } }), unknownPrices: 0 });
     expect(capped).toContain("reached its $20.00 cap.");

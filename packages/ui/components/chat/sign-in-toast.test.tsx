@@ -41,12 +41,12 @@ describe("sign-in notifications", () => {
     expect(container.textContent).not.toContain("isn't signed in");
     expect(document.body.textContent).toContain("Claude isn't signed in.");
     expect(document.querySelector<HTMLAnchorElement>('[data-slot="sign-in-toast"] a')?.getAttribute("href")).toContain("section=accounts&account=personal&action=signin");
-    expect(document.querySelector('[aria-label="Dismiss sign-in notification"]')).not.toBeNull();
+    expect(document.querySelector('[aria-label="Dismiss account notification"]')).not.toBeNull();
   });
 
   it("keeps a dismissed notice closed across status refreshes and revisiting the same account", async () => {
     await render();
-    await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Dismiss sign-in notification"]')!.click());
+    await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Dismiss account notification"]')!.click());
     await settle();
     banner = null; await render();
     banner = { kind: "signIn", account: { ...account } }; await render();
@@ -72,5 +72,20 @@ describe("sign-in notifications", () => {
     expect(container.textContent).not.toContain("isn't signed in");
     expect(document.querySelector('[data-slot="sign-in-toast"]')?.textContent).toContain("Claude isn't signed in for Tjommie yet.");
     expect(document.querySelector<HTMLAnchorElement>('[data-slot="sign-in-toast"] a')?.getAttribute("href")).toContain("section=accounts");
+  });
+
+  it("offers Settings for an uncheckable account without claiming it is signed out", async () => {
+    banner = { kind: "accountCheck", account, text: "Claude could not be checked." };
+    await render();
+    expect(container.textContent).not.toContain("could not be checked");
+    const toast = document.querySelector('[data-slot="sign-in-toast"]');
+    expect(toast?.textContent).toContain("Claude could not be checked.");
+    expect(toast?.textContent).not.toContain("isn't signed in");
+    expect(toast?.querySelector("a")?.textContent).toBe("Settings");
+    expect(toast?.querySelector("a")?.getAttribute("href")).toBe("/settings?section=accounts&account=personal");
+    await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Dismiss account notification"]')!.click());
+    await settle();
+    banner = { kind: "signIn", account }; await render();
+    expect(document.querySelector('[data-slot="sign-in-toast"]')).toBeNull();
   });
 });
