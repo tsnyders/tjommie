@@ -1,45 +1,33 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { saveDiagnosticReport } from "../components/settings/save-report";
 import type { AttachmentInfo } from "../../protocol/src/attachments";
-
-const native = vi.hoisted(() => ({
-  capture: vi.fn(), startSave: vi.fn(async (options: { heartbeatId: string }) => { expect(options.heartbeatId).toMatch(/^[0-9a-f-]{36}$/); return { saveId: "save" }; }),
-  callbacks: new Map<string, (value: unknown) => void>(),
-  addListener: vi.fn(), ackSaveHeartbeat: vi.fn(async () => {}), invalidate: vi.fn(async () => {}),
-}));
+const native = vi.hoisted(() => ({ capture: vi.fn(), startSave: vi.fn(async ({ requestId }: { requestId: string }) => ({ saveId: requestId })), activateSave: vi.fn(async () => {}), appendSave: vi.fn(async () => {}), finishSave: vi.fn(async () => ({ status: "saved" as const })), cancelSave: vi.fn(async () => {}), invalidate: vi.fn(async () => {}) }));
 vi.mock("@capacitor/core", () => ({ Capacitor: { isNativePlatform: () => true }, registerPlugin: () => native }));
-vi.mock("./connection", () => ({ captureAttachmentSaveHeartbeat: native.capture }));
+vi.mock("./connection", () => ({ captureAttachmentSave: native.capture }));
 vi.mock("./desktop", () => ({ desktop: () => null }));
 const info: AttachmentInfo = { id: "a2a10531-c884-4178-889a-b4f7af49edab", hostId: "diagnostics", name: "forged.md", size: 0, contentType: "text/markdown", sha256: "a".repeat(64) };
-beforeEach(() => {
-  vi.resetModules(); native.capture.mockReset(); native.capture.mockReturnValue(null); native.startSave.mockClear(); native.callbacks.clear(); native.ackSaveHeartbeat.mockClear();
-  native.addListener.mockImplementation(async (event: string, listener: (value: unknown) => void) => { native.callbacks.set(event, listener); return { remove: async () => {} }; });
-});
+beforeEach(() => { vi.resetModules(); native.capture.mockReset(); native.capture.mockReturnValue(null); native.startSave.mockClear(); native.activateSave.mockClear(); native.cancelSave.mockClear(); });
 afterEach(() => vi.unstubAllGlobals());
-
-it("requires the current authenticated link even if shared metadata claims to be diagnostics", async () => {
-  const { attachmentDevice } = await import("./attachment-device");
-  await expect(attachmentDevice()!.startSave(info)).rejects.toThrow(/connection/i);
-  expect(native.capture).toHaveBeenCalledWith("diagnostics"); expect(native.startSave).not.toHaveBeenCalled();
+it("requires trusted current selection even if remote metadata claims diagnostics", async () => {
+  const { attachmentDevice } = await import("./attachment-device"); await expect(attachmentDevice()!.startSave(info)).rejects.toThrow(/connection/); expect(native.capture).toHaveBeenCalledOnce(); expect(native.startSave).not.toHaveBeenCalled();
 });
-it("allows a trusted local report export without selecting a remote host", async () => {
-  const { attachmentDeviceForLocalExport } = await import("./attachment-device");
-  const api = attachmentDeviceForLocalExport(() => true)!; await expect(api.startSave(info)).resolves.toEqual({ saveId: "save" });
-  expect(native.capture).not.toHaveBeenCalled(); expect(native.startSave).toHaveBeenCalledOnce(); await api.invalidate();
+it("allows only the trusted local-export factory without a remote host", async () => {
+  const { attachmentDeviceForLocalExport } = await import("./attachment-device"); const api = attachmentDeviceForLocalExport(() => true)!; const save = (await api.startSave(info))!;
+  await api.activateSave!(save.saveId); expect(native.capture).not.toHaveBeenCalled(); expect(native.activateSave).toHaveBeenCalledWith(save); await api.invalidate();
 });
-it("does not renew a local export after its trusted page lifecycle ends", async () => {
+it("rejects activation when the local report unmounts while its picker is open", async () => {
   const { attachmentDeviceForLocalExport } = await import("./attachment-device"); let current = true;
-  const api = attachmentDeviceForLocalExport(() => current)!; await api.startSave(info); current = false;
-  const heartbeatId = native.startSave.mock.calls[0][0].heartbeatId;
-  native.callbacks.get("saveHeartbeat")?.({ heartbeatId, challenge: "a2a10531-c884-4178-889a-b4f7af49edab" });
-  for (let turn = 0; turn < 8; turn++) await Promise.resolve();
-  expect(native.ackSaveHeartbeat).toHaveBeenCalledWith({ heartbeatId, challenge: "a2a10531-c884-4178-889a-b4f7af49edab", alive: false }); await api.invalidate();
+  const api = attachmentDeviceForLocalExport(() => current)!, save = (await api.startSave(info))!; current = false;
+  await expect(api.activateSave!(save.saveId)).rejects.toThrow(/closed/); expect(native.activateSave).not.toHaveBeenCalled(); expect(native.cancelSave).toHaveBeenCalledWith(save);
 });
 it("cannot start a local save after navigation overtakes the report digest", async () => {
   let digest: (value: ArrayBuffer) => void = () => {};
   vi.stubGlobal("crypto", { randomUUID: () => info.id, subtle: { digest: () => new Promise<ArrayBuffer>((resolve) => { digest = resolve; }) } });
   const { attachmentDeviceForLocalExport } = await import("./attachment-device"); let current = true;
   const api = attachmentDeviceForLocalExport(() => current)!, pending = saveDiagnosticReport("{}", api);
-  const failed = expect(pending).rejects.toThrow(/connection/i); current = false; await api.invalidate(); digest(new ArrayBuffer(32)); await failed;
-  expect(native.startSave).not.toHaveBeenCalled();
+  const failed = expect(pending).rejects.toThrow(/connection/); current = false; await api.invalidate(); digest(new ArrayBuffer(32)); await failed; expect(native.startSave).not.toHaveBeenCalled();
+});
+it("uses the fresh authenticated activation guard without comparing unrelated host UUIDs", async () => {
+  const { attachmentDevice } = await import("./attachment-device"); native.capture.mockReturnValue({ current: () => true, activate: () => () => true });
+  const api = attachmentDevice()!, save = (await api.startSave({ ...info, hostId: "distinct-storage-uuid" }))!; await api.activateSave!(save.saveId); expect(native.activateSave).toHaveBeenCalledWith(save); await api.invalidate();
 });

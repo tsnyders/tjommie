@@ -1,105 +1,59 @@
 import { describe, expect, it, vi } from "vitest";
-import { attachmentApi, type AttachmentPlugin } from "./attachments.ts";
 import type { AttachmentInfo } from "../../protocol/src/attachments.ts";
-
-const info: AttachmentInfo = { id: "b410d5e0-556d-4b93-b7e4-6b85d26b835d", hostId: "host", name: "file.md", size: 0, contentType: "text/markdown", sha256: "a".repeat(64) };
-const challenge = "d9bf348d-a28c-4eb8-bbd1-1bf4515d26bd";
-const settle = async () => { for (let turn = 0; turn < 8; turn++) await Promise.resolve(); };
-function savingPlugin() {
-  const listeners = new Map<string, (value: unknown) => void>(), order: string[] = [];
-  const remove = vi.fn(async () => {});
-  const plugin = {
-    addListener: vi.fn(async (event: string, listener: (value: unknown) => void): Promise<{ remove(): Promise<void> }> => { order.push("listen"); listeners.set(event, listener); return { remove }; }),
-    startSave: vi.fn(async (_options: { info: AttachmentInfo; heartbeatId?: string }) => { order.push("start"); return { saveId: "save" }; }),
-    ackSaveHeartbeat: vi.fn(async (_options: { heartbeatId: string; challenge: string; alive: boolean }) => {}),
-    finishSave: vi.fn(async (_options: { saveId: string }): Promise<{ status: "saved" | "cancelled" }> => ({ status: "saved" })),
-    cancelSave: vi.fn(async () => {}), invalidate: vi.fn(async () => {}),
-  };
-  return { plugin, native: plugin as unknown as AttachmentPlugin, order, remove, emit: (value: unknown) => listeners.get("saveHeartbeat")?.(value) };
+import { attachmentApi, type AttachmentPlugin, type AttachmentSaveGuard } from "./attachments.ts";
+const info: AttachmentInfo = { id: "a2a10531-c884-4178-889a-b4f7af49edab", hostId: "storage-host", name: "test.md", size: 0, contentType: "text/markdown", sha256: "a".repeat(64) };
+function fixture() {
+  const plugin: AttachmentPlugin = { startSave: vi.fn(async ({ requestId }) => ({ saveId: requestId })), activateSave: vi.fn(async () => {}), appendSave: vi.fn(async () => {}), finishSave: vi.fn(async () => ({ status: "saved" as const })), cancelSave: vi.fn(async () => {}), preview: vi.fn(async () => ({ previewId: "p", url: "https://localhost/_attachments/p" })), respond: vi.fn(async () => {}), closePreview: vi.fn(async () => {}), invalidate: vi.fn(async () => {}), addListener: vi.fn(async () => ({ remove: async () => {} })) };
+  let selected = true, connected = true; const guard: AttachmentSaveGuard = { current: () => selected, activate: () => connected ? () => selected && connected : null };
+  return { plugin, api: attachmentApi(plugin, () => guard), select: (value: boolean) => { selected = value; }, connect: (value: boolean) => { connected = value; } };
 }
-
-describe("native attachment wrapper", () => {
-  it("removes a native read subscription even when disposal precedes listener registration", async () => {
-    let registered: (value: { remove(): Promise<void> }) => void = () => {};
-    const remove = vi.fn(async () => {}), plugin = { addListener: vi.fn(() => new Promise((accept) => { registered = accept as typeof registered; })) } as unknown as AttachmentPlugin;
-    const close = attachmentApi(plugin).onRead(() => {}); close(); registered({ remove }); await Promise.resolve(); expect(remove).toHaveBeenCalledTimes(1);
+describe("Android destination-first bridge", () => {
+  it("awaits the first provider cleanup failure instead of hiding it behind a second cancellation", async () => {
+    const { api, plugin } = fixture(), save = (await api.startSave(info))!; await api.activateSave!(save.saveId);
+    let fail: (error: Error) => void = () => {};
+    vi.mocked(plugin.cancelSave).mockImplementationOnce(() => new Promise<void>((_resolve, reject) => { fail = reject; }));
+    vi.mocked(plugin.finishSave).mockRejectedValueOnce(new Error("Copy unavailable"));
+    const finishing = api.finishSave(save.saveId), first = expect(finishing).rejects.toMatchObject({ code: "cleanup_failed" });
+    await Promise.resolve(); await Promise.resolve(); const cancelling = api.cancelSave(save.saveId), second = expect(cancelling).rejects.toMatchObject({ code: "cleanup_failed" });
+    fail(Object.assign(new Error("Provider retained document"), { code: "cleanup_failed" })); await first; await second; expect(plugin.cancelSave).toHaveBeenCalledOnce();
   });
-  it("rejects oversized download chunks before crossing the native bridge", async () => {
-    const appendSave = vi.fn(), api = attachmentApi({ appendSave } as unknown as AttachmentPlugin);
-    await expect(api.appendSave("save", 0, "A".repeat(349532))).rejects.toThrow(/Invalid/); expect(appendSave).not.toHaveBeenCalled();
+  it("requires trusted selection even when metadata claims diagnostics", async () => {
+    const { plugin } = fixture(); await expect(attachmentApi(plugin).startSave({ ...info, hostId: "diagnostics" })).rejects.toThrow(/connection/); expect(plugin.startSave).not.toHaveBeenCalled();
   });
-  it("registers heartbeat handling before starting and acknowledges only the save's authenticated challenge", async () => {
-    const { native, plugin, order, emit } = savingPlugin(), health = vi.fn(async () => true);
-    const api = attachmentApi(native, () => health);
-    await api.startSave(info);
-    health.mockClear();
-    expect(order).toEqual(["listen", "start"]);
-    const heartbeatId = plugin.startSave.mock.calls[0][0].heartbeatId;
-    expect(heartbeatId).toMatch(/^[0-9a-f-]{36}$/);
-    emit({ heartbeatId: "another-save", challenge }); emit({ heartbeatId, challenge: "invalid" }); await settle();
-    expect(health).not.toHaveBeenCalled();
-    emit({ heartbeatId, challenge }); await settle();
-    expect(health).toHaveBeenCalledOnce();
-    expect(plugin.ackSaveHeartbeat).toHaveBeenCalledExactlyOnceWith({ heartbeatId, challenge, alive: true });
+  it("preserves a byte-free picker through transport loss and activates only after fresh readiness", async () => {
+    const { api, plugin, connect } = fixture(); let choose: (value: { saveId: string }) => void = () => {}; let id = "";
+    vi.mocked(plugin.startSave).mockImplementationOnce(({ requestId }) => { id = requestId; return new Promise((resolve) => { choose = resolve; }); });
+    const pending = api.startSave(info); connect(false); await api.invalidate({ scope: "transfers" });
+    expect(plugin.cancelSave).not.toHaveBeenCalled(); expect(plugin.activateSave).not.toHaveBeenCalled(); expect(plugin.appendSave).not.toHaveBeenCalled();
+    choose({ saveId: id }); expect(await pending).toEqual({ saveId: id }); connect(true); await api.activateSave!(id);
+    expect(plugin.activateSave).toHaveBeenCalledExactlyOnceWith({ saveId: id }); await api.cancelSave(id);
   });
-  it("reports failed authentication to native without keeping the lease alive", async () => {
-    const { native, plugin, emit } = savingPlugin(); let checks = 0; const api = attachmentApi(native, () => async () => ++checks === 1);
-    await api.startSave(info); const heartbeatId = plugin.startSave.mock.calls[0][0].heartbeatId;
-    emit({ heartbeatId, challenge }); await settle();
-    expect(plugin.ackSaveHeartbeat).toHaveBeenCalledWith({ heartbeatId, challenge, alive: false });
+  it("cancels active staging on real disconnect and never rebinds it", async () => {
+    const { api, plugin, connect } = fixture(), save = (await api.startSave(info))!; await api.activateSave!(save.saveId);
+    connect(false); await api.invalidate({ scope: "transfers" }); connect(true);
+    await expect(api.appendSave(save.saveId, 0, "YQ==")).rejects.toThrow(/closed/); expect(plugin.appendSave).not.toHaveBeenCalled(); expect(plugin.cancelSave).toHaveBeenCalledWith(save);
   });
-  it("fences an authenticated reply arriving after invalidation and removes its listener", async () => {
-    const { native, plugin, remove, emit } = savingPlugin(); let answer: (alive: boolean) => void = () => {};
-    let checks = 0; const api = attachmentApi(native, () => () => ++checks === 1 ? Promise.resolve(true) : new Promise<boolean>((resolve) => { answer = resolve; }));
-    await api.startSave(info); const heartbeatId = plugin.startSave.mock.calls[0][0].heartbeatId;
-    emit({ heartbeatId, challenge }); await settle(); await api.invalidate(); answer(true); await settle();
-    expect(plugin.ackSaveHeartbeat).not.toHaveBeenCalled(); expect(remove).toHaveBeenCalledOnce();
+  it("hard invalidation settles an open picker and cancels its late result", async () => {
+    const { api, plugin } = fixture(); let choose: (value: { saveId: string }) => void = () => {}; let id = "";
+    vi.mocked(plugin.startSave).mockImplementationOnce(({ requestId }) => { id = requestId; return new Promise((resolve) => { choose = resolve; }); });
+    const pending = api.startSave(info); await api.invalidate(); expect(await pending).toBeNull(); choose({ saveId: id }); await Promise.resolve(); expect(plugin.cancelSave).toHaveBeenCalledWith({ saveId: id }); expect(plugin.activateSave).not.toHaveBeenCalled();
   });
-  it("refuses shared saves without the current host even when metadata claims to be diagnostics", async () => {
-    const { native, plugin, emit } = savingPlugin(); const api = attachmentApi(native, () => null);
-    await expect(api.startSave(info)).rejects.toThrow(/connection/i); expect(plugin.startSave).not.toHaveBeenCalled();
-    const localInfo = { ...info, hostId: "diagnostics", name: "tjommie-diagnostics.json", contentType: "application/json" };
-    await expect(api.startSave(localInfo)).rejects.toThrow(/connection/i); expect(plugin.startSave).not.toHaveBeenCalled();
-    const local = attachmentApi(native, () => async () => true); await local.startSave(localInfo);
-    const heartbeatId = plugin.startSave.mock.calls[0][0].heartbeatId; emit({ heartbeatId, challenge }); await settle();
-    expect(plugin.ackSaveHeartbeat).toHaveBeenCalledWith({ heartbeatId, challenge, alive: true });
+  it("rejects stale selection after the picker and checks again at activation", async () => {
+    const { api, plugin, select } = fixture(), save = (await api.startSave(info))!; select(false);
+    await expect(api.activateSave!(save.saveId)).rejects.toThrow(/closed/); expect(plugin.activateSave).not.toHaveBeenCalled();
   });
-  it("removes heartbeat subscriptions on picker completion, failure and cancellation", async () => {
-    for (const outcome of ["saved", "failed", "cancel"] as const) {
-      const { native, plugin, remove, emit } = savingPlugin(); const health = vi.fn(async () => true), api = attachmentApi(native, () => health);
-      await api.startSave(info); const heartbeatId = plugin.startSave.mock.calls[0][0].heartbeatId;
-      health.mockClear();
-      if (outcome === "failed") { plugin.finishSave.mockRejectedValueOnce(new Error("provider failed")); await expect(api.finishSave("save")).rejects.toThrow("provider failed"); }
-      else if (outcome === "cancel") await api.cancelSave("save");
-      else await api.finishSave("save");
-      emit({ heartbeatId, challenge }); await settle(); expect(health).not.toHaveBeenCalled(); expect(remove).toHaveBeenCalledOnce();
-    }
+  it("never accepts append or finish before explicit activation", async () => {
+    const { api, plugin } = fixture(), save = (await api.startSave(info))!;
+    await expect(api.appendSave(save.saveId, 0, "YQ==")).rejects.toThrow(/closed/); expect(plugin.appendSave).not.toHaveBeenCalled(); expect(plugin.finishSave).not.toHaveBeenCalled();
   });
-  it("does not start native work if invalidation overtakes listener registration", async () => {
-    const { native, plugin, remove } = savingPlugin(); let registered: (value: { remove(): Promise<void> }) => void = () => {};
-    plugin.addListener.mockImplementationOnce(() => new Promise((resolve) => { registered = resolve; }));
-    const api = attachmentApi(native, () => async () => true), pending = api.startSave(info);
-    const failed = expect(pending).rejects.toThrow(/closed/i); await api.invalidate(); registered({ remove }); await failed; await settle();
-    expect(plugin.startSave).not.toHaveBeenCalled(); expect(remove).toHaveBeenCalledOnce();
+  it("cancels a late activation result and bounds every chunk", async () => {
+    const { api, plugin } = fixture(), save = (await api.startSave(info))!; let release = () => {};
+    vi.mocked(plugin.activateSave).mockImplementationOnce(() => new Promise<void>((resolve) => { release = resolve; }));
+    const activating = api.activateSave!(save.saveId), failed = expect(activating).rejects.toThrow(/closed/); await api.invalidate({ scope: "transfers" }); release(); await failed;
+    await expect(api.appendSave(save.saveId, 0, "A".repeat(349532))).rejects.toThrow(/Invalid/); expect(plugin.appendSave).not.toHaveBeenCalled();
   });
-  it("settles an open picker when the native Cancel action or watchdog ends its lease", async () => {
-    const { native, plugin, remove, emit } = savingPlugin(); plugin.finishSave.mockImplementationOnce(() => new Promise(() => {}));
-    const api = attachmentApi(native, () => async () => true); await api.startSave(info);
-    const pending = api.finishSave("save"), heartbeatId = plugin.startSave.mock.calls[0][0].heartbeatId;
-    emit({ heartbeatId, challenge: null }); expect(await pending).toEqual({ status: "cancelled" }); expect(remove).toHaveBeenCalledOnce();
-  });
-  it("rechecks the captured page/connection after listener registration before starting native work", async () => {
-    const { native, plugin, remove } = savingPlugin(); let current = true, registered: (value: { remove(): Promise<void> }) => void = () => {};
-    plugin.addListener.mockImplementationOnce(() => new Promise((resolve) => { registered = resolve; }));
-    const pending = attachmentApi(native, () => async () => current).startSave(info);
-    const failed = expect(pending).rejects.toThrow(/closed/i); current = false; registered({ remove }); await failed;
-    expect(plugin.startSave).not.toHaveBeenCalled(); expect(remove).toHaveBeenCalledOnce();
-  });
-  it("answers a challenge emitted before native promotion has returned the save handle", async () => {
-    const { native, plugin, emit } = savingPlugin(); let promoted: (value: { saveId: string }) => void = () => {};
-    plugin.startSave.mockImplementationOnce(() => new Promise((resolve) => { promoted = resolve; }));
-    const api = attachmentApi(native, () => async () => true), pending = api.startSave(info); await settle();
-    const heartbeatId = plugin.startSave.mock.calls[0][0].heartbeatId; emit({ heartbeatId, challenge }); await settle();
-    expect(plugin.ackSaveHeartbeat).toHaveBeenCalledWith({ heartbeatId, challenge, alive: true }); promoted({ saveId: "save" }); await pending;
+  it("preserves native cancellation and provider errors without reporting saved", async () => {
+    const { api, plugin } = fixture(), save = (await api.startSave(info))!; await api.activateSave!(save.saveId); vi.mocked(plugin.finishSave).mockResolvedValueOnce({ status: "cancelled" });
+    expect(await api.finishSave(save.saveId)).toEqual({ status: "cancelled" }); expect(plugin.cancelSave).toHaveBeenCalled();
   });
 });

@@ -7,6 +7,7 @@ function bridge(result: "saved" | "cancelled" = "saved", pick = true) {
   let info: AttachmentInfo | null = null, content = "";
   const native: AttachmentNativeApi = {
     startSave: vi.fn(async (value) => { info = value; return pick ? { saveId: "save" } : null; }),
+    activateSave: vi.fn(async () => {}),
     appendSave: vi.fn(async (_id, _offset, bytes) => { content += Buffer.from(bytes, "base64").toString("utf8"); }),
     finishSave: vi.fn(async () => ({ status: result })), cancelSave: vi.fn(async () => {}),
     preview: async () => { throw new Error("unused"); }, onRead: () => () => {}, respond: async () => {}, closePreview: async () => {}, invalidate: async () => {},
@@ -22,6 +23,7 @@ describe("current-device diagnostic save", () => {
     const report = '{"message":"device ✓"}';
     expect(await saveDiagnosticReport(report, native)).toBe("saved");
     expect(content()).toBe(report);
+    expect(native.activateSave).toHaveBeenCalledWith("save");
     expect(info()).toMatchObject({ name: "tjommie-diagnostics.json", contentType: "application/json", size: Buffer.byteLength(report), sha256: createHash("sha256").update(report).digest("hex") });
     expect(native.cancelSave).toHaveBeenCalledWith("save");
   });
@@ -40,5 +42,9 @@ describe("current-device diagnostic save", () => {
     vi.mocked(native.appendSave).mockRejectedValueOnce(new Error("interrupted"));
     await expect(saveDiagnosticReport("{}", native)).rejects.toThrow("interrupted");
     expect(native.finishSave).not.toHaveBeenCalled(); expect(native.cancelSave).toHaveBeenCalledOnce();
+  });
+  it("cancels the selected destination if mounted-liveness activation fails", async () => {
+    const { native } = bridge(); vi.mocked(native.activateSave!).mockRejectedValueOnce(new Error("Download closed."));
+    await expect(saveDiagnosticReport("{}", native)).rejects.toThrow(/closed/); expect(native.appendSave).not.toHaveBeenCalled(); expect(native.finishSave).not.toHaveBeenCalled(); expect(native.cancelSave).toHaveBeenCalledWith("save");
   });
 });

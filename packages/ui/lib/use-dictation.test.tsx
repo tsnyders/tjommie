@@ -39,6 +39,47 @@ beforeEach(() => {
 afterEach(async () => { if (root) await act(async () => root!.unmount()); root = undefined; document.body.replaceChildren(); });
 
 describe("dictation composer hook", () => {
+  it("uses SDK preparation separately from the installed list on each explicit Start without automatic capture", async () => {
+    const prepared: SpeechStatus = { ...ready, permission: "granted", languages: [], model: { ...ready.model, confirmation: { language: "en-US", source: "android-download-success" } }, problem: { code: "support_uncheckable", message: "The service does not allow support queries (14)." } };
+    vi.mocked(fixture.api!.status).mockResolvedValue(prepared);
+    let finish: () => void = () => {};
+    vi.mocked(fixture.api!.start).mockImplementation(() => new Promise((done) => { finish = done; }));
+    await mount();
+    expect(fixture.api!.start).not.toHaveBeenCalled();
+    await click("Start");
+    expect(fixture.api!.start).toHaveBeenCalledWith({ sessionId: expect.any(String), language: "en-US" });
+    expect(voice.phase).toBe("permission"); expect(voice.status?.languages).toEqual([]);
+    await act(async () => finish()); await click("Cancel"); await click("Start");
+    expect(fixture.api!.start).toHaveBeenCalledTimes(2);
+    expect(fixture.capture).not.toHaveBeenCalled();
+    await click("Cancel"); await act(async () => finish());
+    expect(voice.phase).toBe("idle");
+  });
+  it("does not carry a model action's delayed status into another host or conversation", async () => {
+    let finish: () => void = () => {};
+    vi.mocked(fixture.api!.downloadModel).mockReturnValue(new Promise((done) => { finish = done; }));
+    await mount();
+    let requested: Promise<void> = Promise.resolve();
+    await act(async () => { requested = voice.download(); });
+    await act(async () => root!.render(<Harness target="two" />));
+    vi.mocked(fixture.api!.status).mockResolvedValue({ ...ready, available: false, languages: [], problem: { code: "download_scheduled", message: "Old scope scheduled." } });
+    await act(async () => { finish(); await requested; });
+    expect(voice.message).not.toContain("Old scope");
+    expect(voice.status?.available).toBe(true);
+    expect(fixture.api!.start).not.toHaveBeenCalled();
+  });
+  it("releases the old conversation's preparation ID without cancelling a newer conversation's request", async () => {
+    fixture.api!.releaseModelRequest = vi.fn(async () => {});
+    await mount(); await act(async () => voice.download());
+    const first = vi.mocked(fixture.api!.downloadModel).mock.calls[0][0];
+    await act(async () => root!.render(<Harness target="two" />));
+    expect(fixture.api!.releaseModelRequest).toHaveBeenCalledExactlyOnceWith(first);
+    await act(async () => voice.download());
+    const second = vi.mocked(fixture.api!.downloadModel).mock.calls[1][0];
+    expect(first?.requestId).not.toBe(second?.requestId);
+    expect(fixture.api!.releaseModelRequest).not.toHaveBeenCalledWith(second);
+    expect(fixture.api!.start).not.toHaveBeenCalled();
+  });
   it("requests Android permission with the saved English intent without advertising it as installed", async () => {
     localStorage.setItem("tjommie.voice.language", "en-GB");
     vi.mocked(fixture.api!.status).mockResolvedValue(permissionRequired);

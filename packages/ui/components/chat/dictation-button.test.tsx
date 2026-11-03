@@ -5,7 +5,7 @@ import { DictationButton, DictationStatus } from "./dictation-button";
 
 function voice(change: Partial<Dictation> = {}): Dictation {
   const action = vi.fn(async () => {});
-  return { status: null, phase: "idle", message: "", transcript: "", language: "en", deviceId: "", devices: [], optionsOpen: false,
+  return { status: null, phase: "idle", message: "", transcript: "", language: "en", deviceId: "", devices: [], optionsOpen: false, modelWorking: false,
     start: action, stop: action, cancel: action, changed: vi.fn(), setLanguage: vi.fn(), setDevice: vi.fn(), download: action, cancelDownload: action, removeModel: action, insert: vi.fn(), discard: vi.fn(), ...change };
 }
 describe("dictation controls", () => {
@@ -18,8 +18,10 @@ describe("dictation controls", () => {
     expect(html).toContain("&lt;synthetic transcript&gt;"); expect(html).toContain("Insert transcript");
     expect(html).not.toContain('type="submit"');
   });
-  it("makes Android language management explicit without suggesting app-controlled downloads", () => {
+  it("offers an explicit Android download request without claiming app-controlled cancellation or installed data", () => {
     const html = renderToStaticMarkup(<DictationStatus voice={voice({ optionsOpen: true, status: { engine: "android-on-device", capture: "native", available: false, languages: [], permission: "prompt", model: { state: "system-managed", bytes: 0, received: 0 } } })} />);
-    expect(html).toContain("Android speech settings"); expect(html).not.toContain("Download English model");
+    expect(html).toContain("Android speech settings"); expect(html).toContain("Request English (United States) download"); expect(html).not.toContain("Download English model");
+    expect(html).not.toContain("Cancel download"); expect(html).not.toContain("Remove downloaded model");
+    expect(html).toContain("No query-confirmed language");
   });
 });

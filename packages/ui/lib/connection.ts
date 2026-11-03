@@ -13,6 +13,7 @@ import { failedSetup } from "./setup";
 import { LINK, addOlder, applyEvent, catchUp, connected, finishLoading, forgetConversation, initialState, startLoading, type MessageEvent } from "./state";
 import { getState, update } from "./store";
 import { atMost } from "./utils";
+import type { AttachmentSaveGuard } from "../../mobile/src/attachments";
 
 const PAGE = 50;
 const STARTING_TRIES = 3; // failed tries before "Starting Tjommie" says why it can't connect
@@ -29,8 +30,16 @@ let pingGeneration = 0;
 let failures = 0; // the latest connection's failed tries in a row
 let started = false;
 let filesClosed: Promise<void> = Promise.resolve();
-function invalidateFiles(): Promise<void> {
-  filesClosed = filesClosed.then(() => attachmentDevice()?.invalidate()).catch(() => {});
+let selectionEpoch = 0;
+const downloads = new Set<{ abort: AbortController; transferring: boolean }>();
+function invalidateFiles(scope: "all" | "transfers" = "all"): Promise<void> {
+  if (scope === "all") selectionEpoch++;
+  for (const intent of downloads) if (scope === "all" || intent.transferring) intent.abort.abort();
+  // Revoke inline; native cleanup reserves its own IO ordering before a later activation.
+  let closing: Promise<void> | undefined;
+  try { closing = attachmentDevice()?.invalidate(scope === "transfers" ? { scope } : undefined); }
+  catch { closing = Promise.reject(new Error("Native file cleanup is unavailable.")); }
+  filesClosed = Promise.all([filesClosed, closing]).then(() => {}).catch(() => {});
   return filesClosed;
 }
 const fetchers = new Map<string, (before?: string) => Promise<Page>>(); // each loaded conversation's pages, to catch up after a reconnect
@@ -85,6 +94,8 @@ function openLocal(): void {
 
 // The desktop app couldn't start the daemon. Stop retrying the old connection; "Try again" asks for a new one.
 function failed(reason: string): void {
+  void invalidateFiles("transfers");
+  client = null; link = null;
   clearTimeout(retry);
   stopSendingPush();
   latest = null;
@@ -204,7 +215,7 @@ function reconnectNow(): void {
   client = null;
   link = null;
   stopSendingPush();
-  void invalidateFiles();
+  void invalidateFiles("transfers");
   void previous?.close().catch(() => {});
   update((state) => (state.connection.status === "ready" ? { ...state, connection: { status: "reconnecting" } } : state));
 }
@@ -240,18 +251,62 @@ async function ping(current: Client): Promise<void> {
   beat();
 }
 
-// The native save service supplies the clock while its picker hides the WebView. Storage hostId is a
-// different identity from RemoteHost.id: only the captured selected target and authenticated link authorize renewal.
-export function captureAttachmentSaveHeartbeat(attachmentHostId: string): ((signal?: AbortSignal) => Promise<boolean>) | null {
-  const current = link, target = latest, ready = client;
-  const matches = () => current !== null && ready !== null && link === current && client === ready && latest === target && getState().connection.status === "ready";
-  if (!attachmentHostId || !isRemote(target) || !matches()) return null;
-  return async (signal) => {
-    if (signal?.aborted || !matches()) return false;
-    const answered = await probeLink(current!, signal);
-    if (signal?.aborted || !matches()) return false;
-    if (!answered) reconnectNow();
-    return answered;
+// The selected PC epoch survives an ordinary reconnect, but never a switch away and back.
+export function captureAttachmentSave(): AttachmentSaveGuard | null {
+  if (!client || getState().connection.status !== "ready") return null;
+  const epoch = selectionEpoch, page = typeof document === "undefined" ? null : document;
+  const current = () => epoch === selectionEpoch && (page === null || page === document) && getState().connection.status !== "removed";
+  return { current, activate: () => {
+    const ready = client, raw = link;
+    if (!current() || !ready || getState().connection.status !== "ready") return null;
+    return () => current() && client === ready && link === raw && getState().connection.status === "ready";
+  } };
+}
+
+export function captureAttachmentDownload(abort: AbortController) {
+  const guard = captureAttachmentSave(), initial = client;
+  if (!guard || !initial) throw new Error("The file host is offline. Reconnect to download it.");
+  const intent = { abort, transferring: false }; downloads.add(intent);
+  return {
+    client: initial,
+    reacquire: (signal: AbortSignal): Promise<Client> => new Promise((resolve, reject) => {
+      let timer: ReturnType<typeof setTimeout> | undefined, remaining = 30_000, previous = Date.now(), wasVisible = visible(), checking = false, done = false;
+      const finish = (error: Error | null, ready?: Client) => {
+        if (done) return; done = true; clearTimeout(timer); signal.removeEventListener("abort", cancelled);
+        if (typeof document !== "undefined") document.removeEventListener("visibilitychange", check);
+        if (error) reject(error); else resolve(ready!);
+      };
+      const cancelled = () => finish(new DOMException("Cancelled", "AbortError"));
+      const check = () => {
+        if (done) return; clearTimeout(timer);
+        const now = Date.now(); if (wasVisible) remaining -= now - previous; previous = now; wasVisible = visible();
+        if (signal.aborted || !guard.current()) { cancelled(); return; }
+        if (remaining <= 0) { finish(new Error("The file host did not reconnect. Try downloading again.")); return; }
+        if (!visible()) return;
+        const ready = client, raw = link;
+        if (!checking && ready && getState().connection.status === "ready") {
+          checking = true;
+          void (async () => {
+            const answered = !isRemote(latest) || raw !== null && await probeLink(raw, signal);
+            checking = false;
+            if (done) return;
+            if (!signal.aborted && guard.current() && answered && client === ready && link === raw && visible()) { finish(null, ready); return; }
+            if (!answered && client === ready) reconnectNow();
+            check();
+          })().catch((error: unknown) => finish(error instanceof Error ? error : new Error("The file host could not reconnect.")));
+        }
+        timer = setTimeout(check, Math.min(100, remaining));
+      };
+      signal.addEventListener("abort", cancelled, { once: true });
+      if (typeof document !== "undefined") document.addEventListener("visibilitychange", check);
+      check();
+    }),
+    transferring: (ready: Pick<Client, "call">) => {
+      if (abort.signal.aborted || !guard.current() || ready !== client || getState().connection.status !== "ready") { abort.abort(); throw new DOMException("Cancelled", "AbortError"); }
+      intent.transferring = true;
+      void client.disconnected.then(() => { if (downloads.has(intent)) abort.abort(); });
+    },
+    close: () => { downloads.delete(intent); },
   };
 }
 
@@ -278,7 +333,7 @@ async function attempt(connection: ConnectionTarget): Promise<void> {
   // they do while reconnecting, so the pill says so.
   if (previous) update((state) => (state.connection.status === "ready" ? { ...state, connection: { status: "reconnecting" } } : state));
   await previous?.close().catch(() => {});
-  await invalidateFiles();
+  await invalidateFiles("transfers");
   if (latest !== connection) return; // replaced while the old one closed
   let raw: Client;
   try {
@@ -385,7 +440,7 @@ function limitCalls(client: Client): Client {
 // A connection attempt failed, or the desktop's daemon connection dropped.
 function lost(connection: ConnectionTarget, error: unknown): void {
   if (latest !== connection) return;
-  void invalidateFiles();
+  void invalidateFiles("transfers");
   client = null;
   link = null;
   stopSendingPush();
@@ -417,6 +472,7 @@ function lost(connection: ConnectionTarget, error: unknown): void {
 // tries go on with backoff while the app can run. Only a first connect with nothing cached says why in full. The PC refusing this device is final.
 function remoteFailed(target: RemoteTarget, error: unknown): void {
   if (error instanceof RemoteRefusedError) {
+    void invalidateFiles();
     clearTimeout(retry);
     update((state) => ({ ...state, connection: { status: "removed" } }));
     syncKeepAlive("removed");

@@ -1,6 +1,6 @@
 // Copies the native plugins into the generated Android project and makes the few settings changes this app needs. Safe to run again.
 // Run after `cap add android` or `cap sync android`:  node scripts/apply-native.mjs
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { patchFirebaseDependency, patchFirebaseVersion } from "./firebase-dependency.ts";
@@ -39,6 +39,8 @@ for (const name of ["ic_launcher.xml", "ic_launcher_round.xml"]) {
 writeFileSync(join(res, "values", "ic_launcher_background.xml"), '<?xml version="1.0" encoding="utf-8"?><resources><color name="ic_launcher_background">#111111</color></resources>');
 const javaDir = join(app, "src", "main", "java", "dev", "tjommie", "app");
 cpSync(join(mobile, "native", "java", "dev", "tjommie", "app"), javaDir, { recursive: true, force: true });
+// Remove only the retired app-owned save service; ordinary generated files are preserved.
+rmSync(join(javaDir, "AttachmentSaveService.java"), { force: true });
 cpSync(join(mobile, "native", "java-test", "dev", "tjommie", "app"), join(app, "src", "test", "java", "dev", "tjommie", "app"), { recursive: true, force: true });
 
 function patch(file, change) {
@@ -60,10 +62,11 @@ patch(join(app, "src", "main", "AndroidManifest.xml"), (xml) => {
   if (!/android:allowBackup="false"/.test(out)) out = /android:allowBackup="[^"]*"/.test(out) ? out.replace(/android:allowBackup="[^"]*"/, 'android:allowBackup="false"') : out.replace("<application", '<application\n        android:allowBackup="false"');
   if (!/android:usesCleartextTraffic=/.test(out)) out = out.replace("<application", '<application\n        android:usesCleartextTraffic="false"');
   if (!/android:windowSoftInputMode=/.test(out)) out = out.replace("<activity", '<activity\n            android:windowSoftInputMode="adjustResize"');
-  for (const permission of ["android.permission.ACCESS_NETWORK_STATE", "android.permission.POST_NOTIFICATIONS", "android.permission.RECORD_AUDIO", "android.permission.FOREGROUND_SERVICE", "android.permission.FOREGROUND_SERVICE_DATA_SYNC"]) {
+  out = out.replace(/\s*<service\b[^>]*android:name="\.AttachmentSaveService"[^>]*\/\s*>/g, "");
+  out = out.replace(/\s*<uses-permission\b[^>]*android:name="android\.permission\.FOREGROUND_SERVICE(?:_DATA_SYNC)?"[^>]*\/\s*>/g, "");
+  for (const permission of ["android.permission.ACCESS_NETWORK_STATE", "android.permission.POST_NOTIFICATIONS", "android.permission.RECORD_AUDIO"]) {
     if (!out.includes(permission)) out = out.replace("</manifest>", `    <uses-permission android:name="${permission}" />\n</manifest>`);
   }
-  if (!out.includes('android:name=".AttachmentSaveService"')) out = out.replace("</application>", '    <service android:name=".AttachmentSaveService" android:exported="false" android:foregroundServiceType="dataSync" android:stopWithTask="true" />\n    </application>');
   if (!out.includes("android.speech.RecognitionService")) {
     const intent = '        <intent><action android:name="android.speech.RecognitionService" /></intent>\n';
     out = out.includes("</queries>") ? out.replace("</queries>", `${intent}    </queries>`) : out.replace("<application", `    <queries>\n${intent}    </queries>\n    <application`);

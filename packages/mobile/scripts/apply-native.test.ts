@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,7 +19,7 @@ it("rejects a release version without a versionCode", () => {
   expect(result.stderr).toContain("Android versionCode needs a release-version rule for 0.3.99.");
 });
 
-it.each(["", '<queries><intent><action android:name="android.intent.action.VIEW" /></intent></queries>'])("applies native speech and save service declarations and source copies idempotently with queries %s", (queries) => {
+it.each(["", '<queries><intent><action android:name="android.intent.action.VIEW" /></intent></queries>'])("applies native speech and removes retired save-service declarations idempotently with queries %s", (queries) => {
   const scratch = mkdtempSync(join(tmpdir(), "tjommie-native-apply-"));
   const mobile = join(scratch, "packages", "mobile"), source = resolve(dirname(script), "..");
   const main = join(mobile, "android", "app", "src", "main");
@@ -33,7 +33,9 @@ it.each(["", '<queries><intent><action android:name="android.intent.action.VIEW"
     write(join(scratch, "packages", "desktop", "assets", "icon-256.png"), "synthetic icon");
     mkdirSync(join(main, "res", "mipmap-anydpi-v26"), { recursive: true });
     write(join(main, "res", "values", "styles.xml"), '<resources><style><item name="windowNoTitle">true</item></style></resources>');
-    write(join(main, "AndroidManifest.xml"), `<manifest xmlns:android="http://schemas.android.com/apk/res/android">${queries}<application><activity /></application></manifest>`);
+    write(join(main, "AndroidManifest.xml"), `<manifest xmlns:android="http://schemas.android.com/apk/res/android">${queries}<uses-permission android:name="android.permission.FOREGROUND_SERVICE" /><uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" /><application><activity /><service android:name=".AttachmentSaveService" android:exported="false" android:foregroundServiceType="dataSync" android:stopWithTask="true" /></application></manifest>`);
+    write(join(main, "java", "dev", "tjommie", "app", "AttachmentSaveService.java"), "obsolete owned service");
+    write(join(main, "java", "dev", "tjommie", "app", "Unrelated.java"), "preserved");
     write(join(mobile, "android", "variables.gradle"), "ext { firebaseMessagingVersion = '25.0.1' }");
     write(join(mobile, "android", "app", "build.gradle"), 'android {\n    defaultConfig { versionCode 1\n versionName "1.0" }\n    buildTypes { release {} }\n}\ndependencies {\n}');
     for (let run = 0; run < 2; run++) {
@@ -43,15 +45,16 @@ it.each(["", '<queries><intent><action android:name="android.intent.action.VIEW"
     const manifest = readFileSync(join(main, "AndroidManifest.xml"), "utf8");
     expect(manifest.match(/android\.permission\.RECORD_AUDIO/g)).toHaveLength(1);
     expect(manifest.match(/android\.speech\.RecognitionService/g)).toHaveLength(1);
-    expect(manifest.match(/android\.permission\.FOREGROUND_SERVICE"/g)).toHaveLength(1);
-    expect(manifest.match(/android\.permission\.FOREGROUND_SERVICE_DATA_SYNC"/g)).toHaveLength(1);
-    expect(manifest.match(/<service android:name="\.AttachmentSaveService" android:exported="false" android:foregroundServiceType="dataSync" android:stopWithTask="true"/g)).toHaveLength(1);
+    expect(manifest).not.toContain("android.permission.FOREGROUND_SERVICE");
+    expect(manifest).not.toContain("AttachmentSaveService");
+    expect(existsSync(join(main, "java", "dev", "tjommie", "app", "AttachmentSaveService.java"))).toBe(false);
+    expect(readFileSync(join(main, "java", "dev", "tjommie", "app", "Unrelated.java"), "utf8")).toBe("preserved");
     expect(manifest.match(/<queries>/g)).toHaveLength(1);
     const gradle = readFileSync(join(mobile, "android", "app", "build.gradle"), "utf8");
     expect(gradle.match(/applicationIdSuffix "\.phase4test"/g)).toHaveLength(1);
     expect(gradle.match(/manifestPlaceholders = \[appLabel: "Tjommie"\]/g)).toHaveLength(1);
     if (queries) expect(manifest).toContain('android:name="android.intent.action.VIEW"');
-    for (const name of ["MainActivity", "StaticWebViewClient", "TjommieAttachmentPlugin", "AttachmentSaveService", "AttachmentSaveLifetime", "TjommieSpeechPlugin"]) {
+    for (const name of ["MainActivity", "StaticWebViewClient", "TjommieAttachmentPlugin", "AttachmentSaveLifetime", "TjommieSpeechPlugin"]) {
       const file = join("java", "dev", "tjommie", "app", `${name}.java`);
       expect(readFileSync(join(main, file), "utf8")).toBe(readFileSync(join(source, "native", file), "utf8"));
     }

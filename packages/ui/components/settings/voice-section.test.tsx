@@ -78,7 +78,7 @@ describe("local voice settings", () => {
     expect(fake.api.cancelModelDownload).toHaveBeenCalledOnce();
     expect(text()).toContain("Model download cancelled."); expect(document.querySelector('[role="alert"]')).toBeNull();
   });
-  it("removes only the downloaded device model and does not offer Android system model mutations", async () => {
+  it("removes only the downloaded device model and offers Android preparation without cancellation/removal", async () => {
     const fake = speech({ ...initial, available: true, model: { ...initial.model, state: "ready" } });
     vi.mocked(fake.api.removeModel).mockImplementation(async () => fake.set(initial));
     await mount();
@@ -86,7 +86,35 @@ describe("local voice settings", () => {
     expect(fake.api.removeModel).toHaveBeenCalledOnce();
     expect(text()).toContain("Downloaded model removed from this device.");
     await act(async () => fake.set({ ...initial, engine: "android-on-device", capture: "native", model: { state: "system-managed", received: 0, bytes: 0 } }));
-    expect(text()).toContain("Tjommie does not start, cancel or remove system language downloads");
+    expect(text()).toContain("Tjommie cannot cancel a system download or remove its data");
+    expect(button("Request English (United States) download").disabled).toBe(true);
     expect([...document.querySelectorAll("button")].some((item) => /Download English model|Remove downloaded model|Cancel model download/.test(item.textContent ?? ""))).toBe(false);
+  });
+  it("shows fixed query diagnostics and SDK preparation separately without advertising an installed language or starting audio", async () => {
+    const native: SpeechStatus = { engine: "android-on-device", capture: "native", available: false, permission: "granted", languages: [], model: { state: "system-managed", bytes: 0, received: 0 }, problem: { code: "support_uncheckable", message: "This service does not allow support queries (14)." } };
+    const fake = speech(native);
+    vi.mocked(fake.api.downloadModel).mockImplementation(async () => fake.set({ ...native, available: true, model: { ...native.model, confirmation: { language: "en-US", source: "android-download-success" } } }));
+    await mount();
+    expect(text()).toContain("does not allow support queries (14)");
+    expect(fake.api.downloadModel).not.toHaveBeenCalled();
+    await act(async () => button("Request English (United States) download").click());
+    expect(fake.api.downloadModel).toHaveBeenCalledOnce(); expect(fake.api.start).not.toHaveBeenCalled();
+    expect(text()).toContain("Each Start confirms it again before recording");
+    expect(text()).toContain("SDK preparation");
+    expect(document.querySelectorAll("select[aria-label='Dictation language'] option")).toHaveLength(1);
+    expect(document.querySelector("select[aria-label='Dictation language']")?.textContent).toBe("No supported language available");
+  });
+  it("does not label a scheduled system download as completed and releases only its own request when unmounted", async () => {
+    const native: SpeechStatus = { engine: "android-on-device", capture: "native", available: false, permission: "granted", languages: [], model: { state: "system-managed", bytes: 0, received: 0 } };
+    const fake = speech(native);
+    fake.api.releaseModelRequest = vi.fn(async () => {});
+    vi.mocked(fake.api.downloadModel).mockImplementation(async () => fake.set({ ...native, problem: { code: "download_scheduled", message: "Android scheduled the download. Completion was not confirmed." } }));
+    await mount(); await act(async () => button("Request English (United States) download").click());
+    const owner = vi.mocked(fake.api.downloadModel).mock.calls[0][0];
+    expect(owner?.requestId).toMatch(/^[A-Za-z0-9_-]{1,80}$/);
+    expect(text()).toContain("Completion was not confirmed"); expect(text()).not.toContain("SDK preparation");
+    expect(fake.api.start).not.toHaveBeenCalled();
+    await act(async () => roots.pop()!.unmount());
+    expect(fake.api.releaseModelRequest).toHaveBeenCalledExactlyOnceWith(owner);
   });
 });

@@ -44,6 +44,8 @@ export const attachmentMethods = {
 export type AttachmentNativeRead = { previewId: string; requestId: string; offset: number; length: number };
 export type AttachmentNativeApi = {
   startSave(info: AttachmentInfo): Promise<{ saveId: string } | null>;
+  // Android reserves a destination first, then activates staging after fresh authorization.
+  activateSave?(saveId: string): Promise<void>;
   appendSave(saveId: string, offset: number, bytes: string): Promise<void>;
   finishSave(saveId: string): Promise<{ status: "saved" | "cancelled" }>;
   cancelSave(saveId: string): Promise<void>;
@@ -51,5 +53,5 @@ export type AttachmentNativeApi = {
   onRead(listener: (request: AttachmentNativeRead) => void): () => void;
   respond(previewId: string, requestId: string, bytes: string | null): Promise<void>;
   closePreview(previewId: string): Promise<void>;
-  invalidate(): Promise<void>;
+  invalidate(options?: { scope: "transfers" }): Promise<void>;
 };

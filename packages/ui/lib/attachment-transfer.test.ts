@@ -8,6 +8,7 @@ const transfer: AttachmentOpen = { transferId: "41f8bac7-358c-48cf-9f48-a3a35880
 afterEach(() => vi.useRealTimers());
 function fixture() {
   const call = vi.fn(async (method: string, params: { offset?: number; length?: number }) => {
+    if (method === "attachments.metadata") return transfer.attachment;
     if (method === "attachments.open") return transfer;
     if (method === "attachments.close") return {};
     const offset = params.offset!, size = Math.min(params.length!, transfer.attachment.size - offset);
@@ -17,6 +18,46 @@ function fixture() {
   return { client: { call } as unknown as Pick<Client, "call">, call, native };
 }
 describe("bounded attachment client", () => {
+  it.each(["reauth", "revision", "activation"] as const)("reports failed URI cleanup after %s fails and still closes its transfer", async (phase) => {
+    const { client, native, call } = fixture(), failure = Object.assign(new Error("Synthetic provider retained document"), { code: "cleanup_failed" });
+    native.cancelSave = vi.fn(async () => { throw failure; });
+    native.activateSave = vi.fn(async () => { if (phase === "activation") throw new Error("Activation refused"); });
+    if (phase === "revision") call.mockImplementationOnce(async () => transfer.attachment).mockImplementationOnce(async () => ({ ...transfer, attachment: { ...transfer.attachment, sha256: "b".repeat(64) } }));
+    const options = phase === "reauth" ? { reacquire: async (): Promise<typeof client> => { throw new Error("Authorization refused"); } } : {};
+    await expect(downloadAttachment(client, ref, native, new AbortController().signal, () => {}, options)).rejects.toMatchObject({ code: "cleanup_failed" });
+    expect(native.appendSave).not.toHaveBeenCalled(); if (phase !== "reauth") expect(call).toHaveBeenLastCalledWith("attachments.close", { transferId: transfer.transferId });
+  });
+  it("holds no transfer while a ten-minute picker waits, then opens on the reacquired client", async () => {
+    vi.useFakeTimers(); const first = fixture(), fresh = fixture();
+    let choose: (value: { saveId: string }) => void = () => {};
+    first.native.startSave = vi.fn(() => new Promise<{ saveId: string }>((resolve) => { choose = resolve; }));
+    first.native.activateSave = vi.fn(async () => {});
+    const phase = vi.fn(), reacquire = vi.fn(async () => fresh.client);
+    const pending = downloadAttachment(first.client, ref, first.native, new AbortController().signal, () => {}, { reacquire, transferring: phase });
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(first.call.mock.calls.map(([method]) => method)).toEqual(["attachments.metadata"]);
+    expect(first.native.appendSave).not.toHaveBeenCalled(); expect(first.native.activateSave).not.toHaveBeenCalled();
+    choose({ saveId: "chosen" }); expect(await pending).toBe("saved");
+    expect(reacquire).toHaveBeenCalledOnce(); expect(phase).toHaveBeenCalledWith(fresh.client);
+    expect(fresh.call).toHaveBeenCalledWith("attachments.open", ref); expect(first.native.activateSave).toHaveBeenCalledWith("chosen");
+  });
+  it.each(["id", "hostId", "name", "size", "contentType", "sha256"] as const)("refuses changed %s after the picker before activating or reading", async (field) => {
+    const first = fixture(), fresh = fixture(); first.native.activateSave = vi.fn(async () => {});
+    const changed = { ...transfer.attachment, [field]: field === "size" ? 12 : field === "id" ? transfer.transferId : field === "sha256" ? "b".repeat(64) : "changed" };
+    fresh.call.mockImplementationOnce(async () => ({ ...transfer, attachment: changed }));
+    await expect(downloadAttachment(first.client, ref, first.native, new AbortController().signal, () => {}, { reacquire: async () => fresh.client })).rejects.toThrow(/changed/);
+    expect(first.native.activateSave).not.toHaveBeenCalled(); expect(first.native.appendSave).not.toHaveBeenCalled();
+    expect(fresh.call).toHaveBeenLastCalledWith("attachments.close", { transferId: transfer.transferId }); expect(first.native.cancelSave).toHaveBeenCalled();
+  });
+  it("enters transfer cancellation before open and closes a late open after genuine loss", async () => {
+    const { client, native, call } = fixture(), abort = new AbortController(); let opened: (value: AttachmentOpen) => void = () => {};
+    call.mockImplementation(async (method) => method === "attachments.metadata" ? transfer.attachment : method === "attachments.open" ? new Promise((resolve) => { opened = resolve; }) : {});
+    const phases: string[] = [];
+    const pending = downloadAttachment(client, ref, native, abort.signal, () => {}, { transferring: () => { phases.push("transferring"); } });
+    await vi.waitFor(() => expect(call).toHaveBeenCalledWith("attachments.open", ref)); expect(phases).toEqual(["transferring"]);
+    abort.abort(); await expect(pending).rejects.toMatchObject({ name: "AbortError" }); opened(transfer); await Promise.resolve(); await Promise.resolve();
+    expect(native.appendSave).not.toHaveBeenCalled(); expect(native.cancelSave).toHaveBeenCalledWith("native-save"); expect(call).toHaveBeenCalledWith("attachments.close", { transferId: transfer.transferId });
+  });
   it.each(["start", "finish"] as const)("lets a native %s picker wait beyond the host RPC deadline", async (phase) => {
     vi.useFakeTimers();
     const { client, native } = fixture();

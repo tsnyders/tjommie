@@ -6,7 +6,7 @@ import type { FileData } from "@tjommie/protocol";
 import type { AttachmentRef } from "../../../protocol/src/attachments";
 import { attachmentDevice } from "@/lib/attachment-device";
 import { attachmentError, downloadAttachment } from "@/lib/attachment-transfer";
-import { daemon } from "@/lib/connection";
+import { captureAttachmentDownload } from "@/lib/connection";
 import { fileSize } from "@/lib/format";
 import { localFileActions, useLocalFileActions } from "@/lib/native-capability";
 import { useApp } from "@/lib/store";
@@ -17,23 +17,33 @@ export function FileCard({ file, messageId, attachmentIndex = 0 }: { file: Pick<
   const files = useLocalFileActions();
   const host = useApp((state) => state.host), connected = useApp((state) => state.connection.status === "ready");
   const [preview, setPreview] = useState<{ host: string | null } | null>(null), [status, setStatus] = useState<string | null>(null), [saving, setSaving] = useState(false), active = useRef<AbortController | null>(null);
+  const transferring = useRef(false);
   const native = attachmentDevice();
   const type = { markdown: "Markdown", image: "Image", pdf: "PDF", audio: "Audio", video: "Video", unsupported: "File" }[previewKind(file.contentType ?? "")];
   useEffect(() => {
     const hidden = () => { if (document.visibilityState === "hidden") setPreview(null); };
     document.addEventListener("visibilitychange", hidden);
     return () => { active.current?.abort(); document.removeEventListener("visibilitychange", hidden); };
-  }, [host, connected]);
+  }, [host]);
+  useEffect(() => { if (!connected && transferring.current) active.current?.abort(); }, [connected]);
   const reference: AttachmentRef | null = messageId ? { messageId, attachmentIndex, ...(file.attachmentId ? { attachmentId: file.attachmentId } : {}) } : null;
   const download = () => {
     if (saving) { active.current?.abort(); return; }
     if (!native || !reference) return;
     if (!connected) { setStatus("The file host is offline. Reconnect to download it."); return; }
-    const abort = new AbortController(); active.current = abort; setSaving(true); setStatus("Preparing download…");
-    void Promise.resolve().then(() => downloadAttachment(daemon(), reference, native, abort.signal, (done, total) => setStatus(`Downloading ${total ? Math.round(done * 100 / total) : 100}%`)))
+    const abort = new AbortController(); active.current = abort; transferring.current = false; setSaving(true); setStatus("Choose where to save…");
+    let context: ReturnType<typeof captureAttachmentDownload> | undefined;
+    let cleanupFailed = false;
+    void Promise.resolve().then(() => {
+      context = captureAttachmentDownload(abort);
+      return downloadAttachment(context.client, reference, native, abort.signal, (done, total) => setStatus(`Downloading ${total ? Math.round(done * 100 / total) : 100}%`), {
+        reacquire: context.reacquire,
+        transferring: (client) => { transferring.current = true; context!.transferring(client); },
+      });
+    })
       .then((result) => { if (!abort.signal.aborted) setStatus(result === "saved" ? "Saved on this device." : "Download cancelled."); })
-      .catch((error: unknown) => { if (!abort.signal.aborted) setStatus(attachmentError(error)); })
-      .finally(() => { if (active.current === abort) { active.current = null; setSaving(false); if (abort.signal.aborted) setStatus("Download cancelled."); } });
+      .catch((error: unknown) => { cleanupFailed = typeof error === "object" && error !== null && "code" in error && error.code === "cleanup_failed"; if (!abort.signal.aborted || cleanupFailed) setStatus(attachmentError(error)); })
+      .finally(() => { context?.close(); if (active.current === abort) { active.current = null; transferring.current = false; setSaving(false); if (abort.signal.aborted && !cleanupFailed) setStatus("Download cancelled."); } });
   };
   return (
     <div data-slot="file-card" className="w-[340px] max-w-full rounded-[12px] bg-bubble p-3">

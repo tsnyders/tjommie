@@ -25,6 +25,9 @@ export function useDictation(kind: "chat" | "room" | "exchange", target: string,
   const draftRevision = useRef(0);
   const intent = useRef(0);
   const cancelling = useRef<Promise<void> | null>(null);
+  const modelOperation = useRef(0);
+  const modelPending = useRef(false);
+  const modelOwner = useRef<{ requestId?: string }>({});
   const [status, setStatus] = useState<SpeechStatus | null>(null);
   const [phase, setPhase] = useState<Phase>("idle");
   const [sessionScope, setSessionScope] = useState("");
@@ -36,6 +39,8 @@ export function useDictation(kind: "chat" | "room" | "exchange", target: string,
   const [deviceId, selectDevice] = useState(() => preference("inputDevice"));
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [optionsOpen, setOptionsOpen] = useState(false);
+  const [modelState, setModelState] = useState({ scope: "", busy: false });
+  const modelWorking = modelState.scope === scope && modelState.busy;
 
   function showStatus(value: SpeechStatus): void {
     setStatus(value);
@@ -86,12 +91,15 @@ export function useDictation(kind: "chat" | "room" | "exchange", target: string,
   }
 
   useEffect(() => {
+    let disposed = false;
     mounted.current = true;
+    modelPending.current = false; modelOperation.current++;
     const bridge = localSpeech();
+    const owner: { requestId?: string } = {}; modelOwner.current = owner;
     api.current = bridge;
     const remove = bridge?.onEvent((input) => {
       const parsed = SpeechEvent.safeParse(input);
-      if (!mounted.current || !parsed.success) return;
+      if (disposed || !mounted.current || !parsed.success) return;
       const event = parsed.data;
       if (event.kind === "status") { showStatus(event.status); return; }
       const session = active.current;
@@ -110,7 +118,7 @@ export function useDictation(kind: "chat" | "room" | "exchange", target: string,
         void cancel(); setMessage(event.problem?.message ?? "Dictation cancelled.");
       }
     });
-    void bridge?.status().then((input) => { if (mounted.current) showStatus(SpeechStatus.parse(input)); }).catch(() => { if (mounted.current) setMessage("Local speech is unavailable in this app build. You can keep typing."); });
+    void bridge?.status().then((input) => { if (!disposed && mounted.current) showStatus(SpeechStatus.parse(input)); }).catch(() => { if (!disposed && mounted.current) setMessage("Local speech is unavailable in this app build. You can keep typing."); });
     const hidden = (): void => { if (document.visibilityState === "hidden") void cancel(); };
     const page = (): void => { void cancel(); };
     const blur = (): void => { if (active.current?.phase !== "permission") void cancel(); };
@@ -128,6 +136,8 @@ export function useDictation(kind: "chat" | "room" | "exchange", target: string,
     window.addEventListener("blur", blur);
     return () => {
       mounted.current = false;
+      disposed = true;
+      if (owner.requestId) void bridge?.releaseModelRequest?.({ requestId: owner.requestId }).catch(() => {});
       void cancel(); remove?.();
       document.removeEventListener("visibilitychange", hidden);
       window.removeEventListener("pagehide", page); window.removeEventListener("blur", blur);
@@ -138,6 +148,7 @@ export function useDictation(kind: "chat" | "room" | "exchange", target: string,
   }, [scope]);
 
   async function start(): Promise<void> {
+    if (modelPending.current) return;
     setOptionsOpen(true); setMessage(""); setTranscript("");
     const bridge = api.current;
     if (!bridge) { setMessage("Local dictation is available in supported desktop and Android app builds. You can keep typing here."); return; }
@@ -163,8 +174,11 @@ export function useDictation(kind: "chat" | "room" | "exchange", target: string,
         && !available.available && available.languages.length === 0 && available.problem?.code === "permission_required" && (available.permission === "prompt" || available.permission === "unknown");
       const saved = preference("language");
       const desired = saved.length <= 40 && /^en(?:-[A-Za-z0-9]{2,8})*$/.test(saved) ? saved : "en-US";
+      const prepared = available.available && available.engine === "android-on-device" && available.capture === "native"
+        && available.permission === "granted" && available.model.state === "system-managed" && available.model.confirmation?.source === "android-download-success"
+        && available.model.confirmation.language === "en-US";
       // This intent only opens the native permission path; native support must confirm it before capture.
-      const selected = available.languages.find((item) => item.tag === language)?.tag ?? available.languages[0]?.tag ?? (permissionRequired ? desired : undefined);
+      const selected = available.languages.find((item) => item.tag === language)?.tag ?? available.languages[0]?.tag ?? (prepared ? "en-US" : permissionRequired ? desired : undefined);
       if ((!available.available && !permissionRequired) || !selected) { await cancel(); setMessage(available.problem?.message ?? "No installed local language is available. Check system speech settings."); return; }
       attemptedNative = available.engine === "android-on-device" && available.capture === "native";
       await bridge.start({ sessionId: session.id, language: selected });
@@ -203,14 +217,34 @@ export function useDictation(kind: "chat" | "room" | "exchange", target: string,
   }
 
   async function model(action: "downloadModel" | "cancelModelDownload" | "removeModel"): Promise<void> {
+    const bridge = api.current;
+    if (!bridge || active.current || modelPending.current && action !== "cancelModelDownload") return;
+    const request = ++modelOperation.current, initiatingScope = latest.current.scope, initiatingHost = getState().host;
+    const current = (): boolean => mounted.current && modelOperation.current === request && latest.current.scope === initiatingScope && getState().host === initiatingHost;
+    const owner = modelOwner.current;
+    modelPending.current = true; setModelState({ scope: initiatingScope, busy: true }); setMessage("");
     try {
-      await api.current?.[action]();
-      if (api.current && mounted.current) setStatus(SpeechStatus.parse(await api.current.status()));
-    } catch { if (mounted.current) setMessage("Couldn’t complete the speech model action. Check storage and network, then try again."); }
+      if (action === "downloadModel" && bridge.releaseModelRequest) {
+        owner.requestId = crypto.randomUUID();
+        await bridge.downloadModel({ requestId: owner.requestId });
+      } else await bridge[action]();
+      if (!current()) return;
+      const next = SpeechStatus.parse(await bridge.status());
+      if (current()) {
+        showStatus(next);
+        setMessage(next.model.confirmation ? "Android prepared English (United States) for this foreground session. Start dictation checks it again before recording."
+          : next.problem?.message ?? (action === "cancelModelDownload" ? "Model download cancelled." : "Speech model status refreshed."));
+      }
+    } catch {
+      if (current()) {
+        try { const next = SpeechStatus.parse(await bridge.status()); if (current()) { showStatus(next); setMessage(next.problem?.message ?? "Couldn’t complete the speech model action. Check storage and network, then try again."); } }
+        catch { if (current()) setMessage("Couldn’t complete the speech model action. Check storage and network, then try again."); }
+      }
+    } finally { if (current()) { modelPending.current = false; setModelState({ scope: initiatingScope, busy: false }); } }
   }
 
   return {
-    status, phase: sessionScope === scope ? phase : "idle" as Phase, message, transcript, language, deviceId, devices, optionsOpen,
+    status, phase: sessionScope === scope ? phase : "idle" as Phase, message, transcript, language, deviceId, devices, optionsOpen, modelWorking,
     start, stop, cancel, changed,
     setLanguage: (value: string): void => { selectLanguage(value); savePreference("language", value); },
     setDevice: (value: string): void => { selectDevice(value); savePreference("inputDevice", value); },

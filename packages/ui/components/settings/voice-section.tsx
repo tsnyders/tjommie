@@ -19,9 +19,13 @@ export function VoiceSection() {
   const [problem, setProblem] = useState("");
   const [notice, setNotice] = useState("");
   const alive = useRef(true), operation = useRef(0);
+  const modelOwner = useRef<{ requestId?: string }>({});
+  const running = useRef<string | null>(null);
   useEffect(() => {
     let cancelled = false;
     alive.current = true;
+    running.current = null;
+    const owner: { requestId?: string } = {}; modelOwner.current = owner;
     operation.current++;
     const show = (value: unknown): void => {
       const checked = SpeechStatus.safeParse(value);
@@ -32,7 +36,7 @@ export function VoiceSection() {
       const checked = SpeechEvent.safeParse(value);
       if (checked.success && checked.data.kind === "status") show(checked.data.status);
     });
-    return () => { cancelled = true; alive.current = false; remove?.(); };
+    return () => { cancelled = true; alive.current = false; if (owner.requestId) void api?.releaseModelRequest?.({ requestId: owner.requestId }).catch(() => {}); remove?.(); };
   }, [api]);
 
   function savePreference(key: "language" | "inputDevice", value: string): void {
@@ -53,15 +57,31 @@ export function VoiceSection() {
   }
 
   async function run(action: "downloadModel" | "cancelModelDownload" | "removeModel" | "refresh"): Promise<void> {
-    if (!api) return;
+    if (!api || running.current !== null && action !== "cancelModelDownload") return;
     const current = ++operation.current;
+    running.current = action;
     setWorking(action); setProblem(""); setNotice("");
     try {
-      if (action !== "refresh") await api[action]();
+      if (action === "downloadModel" && api.releaseModelRequest) {
+        modelOwner.current.requestId = crypto.randomUUID();
+        await api.downloadModel({ requestId: modelOwner.current.requestId });
+      } else if (action !== "refresh") await api[action]();
+      if (!alive.current || operation.current !== current) return;
       const next = SpeechStatus.parse(await api.status());
-      if (alive.current && operation.current === current) { setStatus(next); setNotice(action === "cancelModelDownload" ? "Model download cancelled." : action === "removeModel" ? "Downloaded model removed from this device." : "Local speech status refreshed."); }
-    } catch { if (alive.current && operation.current === current) setProblem("The local speech action could not finish. Check this device's storage and network, then try again."); }
-    finally { if (alive.current && operation.current === current) setWorking(null); }
+      if (alive.current && operation.current === current) {
+        setStatus(next);
+        setNotice(action === "downloadModel" && next.capture === "native" ? next.model.confirmation ? "Android prepared English (United States) for this foreground session. Each Start confirms it again before recording." : next.problem?.message ?? "Android preparation request ended without a readiness confirmation."
+          : action === "cancelModelDownload" ? "Model download cancelled." : action === "removeModel" ? "Downloaded model removed from this device." : "Local speech status refreshed.");
+      }
+    } catch {
+      if (alive.current && operation.current === current) {
+        try {
+          const next = SpeechStatus.parse(await api.status());
+          if (alive.current && operation.current === current) { setStatus(next); setProblem(next.problem?.message ?? "The local speech action could not finish. Check this device's storage and network, then try again."); }
+        } catch { if (alive.current && operation.current === current) setProblem("The local speech action could not finish. Check this device's storage and network, then try again."); }
+      }
+    }
+    finally { if (alive.current && operation.current === current) { running.current = null; setWorking(null); } }
   }
 
   const downloading = status?.model.state === "downloading" || status?.model.state === "verifying";
@@ -69,7 +89,7 @@ export function VoiceSection() {
   return <SettingsSection title="Voice" note="Dictation runs locally on the device capturing your voice, even when the host PC is offline. Transcripts stay editable until you choose Send.">
     <SettingsCard>
       <SettingsRow title="Local engine"><span className="text-[13px] text-secondary">{status ? status.engine === "whisper.cpp" ? "whisper.cpp on this device" : "Android on-device recognition" : "Unavailable or not checked"}</span></SettingsRow>
-      <SettingsRow title="Dictation availability"><span role="status" className="text-[13px] text-secondary">{status ? status.available ? "Ready" : "Unavailable" : "Unknown"}</span></SettingsRow>
+      <SettingsRow title="Dictation availability"><span role="status" className="text-[13px] text-secondary">{status ? status.model.confirmation ? "Prepared · Start confirms before recording" : status.available ? "Ready" : "Unavailable" : "Unknown"}</span></SettingsRow>
       <SettingsRow title="Microphone permission" note="Permission is requested only when you start dictation in a conversation."><span className="text-[13px] text-secondary">{status?.permission ?? "Unknown"}</span></SettingsRow>
       <SettingsRow title="Language" note="Only languages reported by the local engine are listed."><select aria-label="Dictation language" className={SELECT} value={selectedLanguage} disabled={!status?.languages.length} onChange={(event) => savePreference("language", event.target.value)}>
         {!status?.languages.length && <option value="">No supported language available</option>}
@@ -82,13 +102,16 @@ export function VoiceSection() {
           {devices.map((entry) => <option key={entry.deviceId} value={entry.deviceId}>{entry.label}</option>)}
         </select><Pill className="min-h-11" onClick={() => void microphones()}>Refresh microphones</Pill></div>
       </SettingsRow>}
-      {status?.capture === "native" && <SettingsRow title="Input device" note="Android selects the microphone. Language data is managed by Android speech settings; Tjommie does not start, cancel or remove system language downloads." />}
-      <SettingsRow title="Local model" note={status?.model.state === "system-managed" ? "Managed by Android. Install a supported offline language in system speech settings, then refresh." : status?.model.bytes ? `${Math.ceil(status.model.bytes / 1048576)} MiB on this device. Downloading a model does not start recording.` : "No local model information is available."}>
+      {status?.capture === "native" && <SettingsRow title="Input device" note="Android selects the microphone and manages offline language data. An explicit download request never starts recording. Tjommie cannot cancel a system download or remove its data." />}
+      <SettingsRow title="Local model" note={status?.model.state === "system-managed" ? "Request English (United States) through Android's on-device speech service. Scheduled does not mean downloaded; leaving these controls detaches observation and the system download may continue." : status?.model.bytes ? `${Math.ceil(status.model.bytes / 1048576)} MiB on this device. Downloading a model does not start recording.` : "No local model information is available."}>
         <span className="text-[13px] text-secondary">{status?.model.state ?? "Unknown"}{downloading && status && ` · ${Math.min(100, Math.floor(status.model.received / Math.max(1, status.model.bytes) * 100))}%`}</span>
       </SettingsRow>
+      {status?.model.confirmation && <SettingsRow title="SDK preparation" note="Android confirmed English (United States) for this foreground page. This is separate from the installed-language query; every explicit Start obtains fresh confirmation on its own recognizer."><span className="text-[13px] text-secondary">English (United States)</span></SettingsRow>}
+      {status?.problem && <SettingsRow title="On-device status"><span role="status" className="text-[13px] text-secondary">{status.problem.message}</span></SettingsRow>}
     </SettingsCard>
     <div className="mt-4 flex flex-wrap gap-2">
       <Pill className="min-h-11" disabled={!api || working !== null} onClick={() => void run("refresh")}>Refresh voice status</Pill>
+      {status?.engine === "android-on-device" && status.capture === "native" && <Pill className="min-h-11" disabled={!api || working !== null || status.permission !== "granted" || status.problem?.code === "on_device_unavailable"} onClick={() => void run("downloadModel")}>{working === "downloadModel" ? "Waiting for Android preparation…" : "Request English (United States) download"}</Pill>}
       {downloading && <Pill className="min-h-11" disabled={working === "cancelModelDownload"} onClick={() => void run("cancelModelDownload")}>Cancel model download</Pill>}
       {status?.capture === "pcm" && !downloading && status.problem?.code !== "runtime_unavailable" && status.model.state !== "ready" && <Pill className="min-h-11" disabled={working !== null} onClick={() => void run("downloadModel")}>Download English model</Pill>}
       {status?.capture === "pcm" && status.model.state === "ready" && <Pill className="min-h-11" disabled={working !== null} onClick={() => void run("removeModel")}>Remove downloaded model</Pill>}

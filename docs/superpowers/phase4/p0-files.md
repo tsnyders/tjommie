@@ -92,7 +92,7 @@ Desktop Save As: trusted main process picks the destination; the renderer receiv
 
 Android: an app-owned path intercepted by `StaticWebViewClient`, with opaque per-page handles and `WebResourceResponse` 200/206/416 semantics. A bounded InputStream requests <=256 KiB through the native/JS bridge; native waits on a background thread with cancellation/timeouts, not the WebView UI thread. JS still obtains bytes over Noise; no public HTTP listener or arbitrary native file reader. Invalidate handles on page generation/background/host switch/revoke, abort queued reads, and retain at most the explicit small stream buffer. Actual WebView range/seek remains a required device gate.
 
-Android download stages and validates the file in app-private temporary storage before opening `ACTION_CREATE_DOCUMENT`, then copies with a bounded buffer to the user-selected URI. Picker cancellation removes staging and reports cancelled. Failure after document creation attempts `DocumentsContract.deleteDocument`, retaining a recovery reference if cleanup fails. Arbitrary document providers do not promise atomic commit/rename/delete: do not claim that every provider can guarantee removal after crash or write failure. This is an explicit P0 contract limitation requiring native/provider acceptance, not a reason to silently report success or add broad storage permission. System providers may represent cloud destinations; saving there is the user's picker action, not automatic upload by Tjommie.
+Android first fetches metadata, then opens `ACTION_CREATE_DOCUMENT` before acquiring a transfer or staging bytes. The pending picker is a local destination intent. After it returns, the app must obtain a current authenticated client for the same selected-host epoch, reopen the original message reference and compare every metadata field before activating native staging. From the fresh open onward, disconnect/revoke/host switch cancels the transfer; it cannot rebind to another client. Ordinary transport loss while choosing a destination may preserve only that byte-free local intent. Host change (including A to B to A), navigation, unmount, refusal/revocation and cancel invalidate it. The app stages and verifies bounded chunks while visible, then copies to the selected URI and reads it back to verify its digest. Picker cancellation reports cancelled. Failure after document creation attempts `DocumentsContract.deleteDocument`, retaining a recovery reference if cleanup fails. Arbitrary document providers do not promise atomic commit/rename/delete: do not claim that every provider can guarantee removal after crash or write failure. This is an explicit P0 contract limitation requiring native/provider acceptance, not a reason to silently report success or add broad storage permission. System providers may represent cloud destinations; saving there is the user's picker action, not automatic upload by Tjommie.
 
 ## Preview formats and PDF dependency
 
@@ -156,6 +156,7 @@ Current native API in `protocol/src/attachments.ts`:
 ```ts
 type AttachmentNativeApi = {
   startSave(info: AttachmentInfo): Promise<{ saveId: string } | null>;
+  activateSave?(saveId: string): Promise<void>;
   appendSave(saveId: string, offset: number, bytes: string): Promise<void>;
   finishSave(saveId: string): Promise<{ status: "saved" | "cancelled" }>;
   cancelSave(saveId: string): Promise<void>;
@@ -163,7 +164,7 @@ type AttachmentNativeApi = {
   onRead(listener: (request: AttachmentNativeRead) => void): () => void;
   respond(previewId: string, requestId: string, bytes: string | null): Promise<void>;
   closePreview(previewId: string): Promise<void>;
-  invalidate(): Promise<void>;
+  invalidate(options?: { scope: "transfers" }): Promise<void>;
 };
 ```
 
@@ -202,6 +203,8 @@ Final affected regression run: **109/109 across 17 files passed**, 30.32 seconds
 
 ## Physical Android Save continuation
 
+The foreground-service design below records an intermediate attempt and is superseded by the destination-first correction at the end of this section.
+
 The `5899f8c` phone run exposed an actual native socket failure during the system picker. The existing disconnect fence then cancelled and removed staging as required; no successful saved copy was reported by acceptance. The scoped native trace records an IOException category about 5.5 seconds after `finishSave`; the exact test PID's later freezer event occurs about 70 seconds after picker entry. That later freeze is not evidence for the earlier failure's cause.
 
 A long picker also has a separate definite lifetime problem: the normal hidden-app heartbeat is disabled while the server expires idle peers after 150 seconds. Retaining the accepted disconnect/revoke cancellation contract therefore requires an active, user-initiated save component rather than an offline-finalization exception.
@@ -211,3 +214,9 @@ The follow-up uses one non-exported, save-scoped `dataSync` foreground service c
 Native tick challenges drive only the existing authenticated heartbeat through the captured current JS connection. Acknowledgments bind the save/page generation and the selected host/link; they expose no keys to native code and never rebind an old lease to a new connection. The attachment-host UUID and paired remote-host UUID are different namespaces and must not be compared as equal identities. Shared-file saves still cancel on an actual disconnect or revoke. A generated local diagnostics export uses a separately named trusted local-export factory; a remote metadata `hostId` string cannot select that exception.
 
 The implementation is frozen and independent read-only review has no remaining findings. Focused tests cover promotion, challenge/page binding, the nine-minute picker and absolute limit, irrevocable cancellation, cleanup ordering through destruction, stale notification dispatch and diagnostics unmount/delayed digest. Root verified all 29 generated native source/test copies match their authoritative files. Exact-candidate CI and physical acceptance remain pending. A foreground service is not a guarantee against real network loss. The required physical checks cover the long picker, exact copied hash, cancel/revoke/host-switch and retirement of its service/notification.
+
+### Destination-first correction
+
+The `3a11cf6` service starts correctly and a quick actual Save passes with the exact 216-byte hash. A delayed picker still fails: native challenges at zero, 30 and 60 seconds receive authenticated acknowledgments, while the 90-second challenge produces no native send. The watchdog expires at 105 seconds. A foreground native process does not establish that hidden WebView bridge/crypto work will continue. No supported queue exemption has been established, and global Chromium flags, fake visibility and audio keep-alives are excluded.
+
+The corrected order above removes that dependency. No transfer, FD or file bytes exist while the user chooses a destination. Fresh authentication after selection rechecks device/message/ref authorization; it is not offline finalization. A separate explicit activation prevents stale operations from writing after invalidation. Once fresh open begins, all real disconnect cancellation rules apply. Empty provider-created documents must be removed if authentication, metadata revision, activation or copying fails, retaining the existing truthful cleanup-failure/recovery behavior. Local diagnostics exports follow the same picker/activation ordering with their own mounted-document liveness proof. The unused service, heartbeat machinery and its added foreground-service permissions are removed. If a late picker or detached cancellation cannot delete its created URI, common native cleanup retains recovery and queues a fixed generic warning until the Activity resumes; it exposes no URI, filename or host detail. Independent read-only review reports no blockers. Exact-candidate CI and physical acceptance remain required.

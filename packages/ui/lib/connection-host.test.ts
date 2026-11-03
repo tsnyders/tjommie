@@ -40,6 +40,14 @@ beforeEach(() => {
 });
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
+it.each(["forget", "refused"] as const)("hard-cancels a byte-free picker on %s instead of rebinding after reconnect", async (reason) => {
+  const connection = await import("./connection"); connection.startConnection(); await settle(); connection.connectRemote(HOME); await settle();
+  const abort = new AbortController(), context = connection.captureAttachmentDownload(abort), guard = connection.captureAttachmentSave()!;
+  if (reason === "forget") await connection.forgetRemote(HOME);
+  else { const { RemoteRefusedError } = await import("../../client/src/remote-peer.ts"); saved.refusal = new RemoteRefusedError("revoked"); connection.connectRemote(HOME); }
+  await settle(); expect(abort.signal.aborted).toBe(true); expect(guard.current()).toBe(false); expect(saved.invalidate).toHaveBeenCalledWith(undefined); context.close();
+});
+
 it("closes previous host file handles before a new host becomes ready", async () => {
   const { startConnection, connectRemote } = await import("./connection");
   const { getState } = await import("./store");

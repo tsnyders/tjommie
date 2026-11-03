@@ -1,5 +1,5 @@
 import { ClientConnectionError, ClientRpcError, type Client } from "@tjommie/client";
-import { ATTACHMENT_CHUNK_BYTES, AttachmentChunk, AttachmentOpen, type AttachmentInfo, type AttachmentNativeApi, type AttachmentRef } from "../../protocol/src/attachments";
+import { ATTACHMENT_CHUNK_BYTES, AttachmentChunk, AttachmentInfo, AttachmentOpen, type AttachmentNativeApi, type AttachmentRef } from "../../protocol/src/attachments";
 
 export function attachmentError(error: unknown): string {
   if (error instanceof ClientConnectionError) return "The file host is offline. Reconnect and try again.";
@@ -59,23 +59,40 @@ export class AttachmentTransfer {
   async close(): Promise<void> { if (this.#closed) return; this.#closed = true; await this.#client.call("attachments.close", { transferId: this.transfer.transferId }).catch(() => {}); }
 }
 
-export async function downloadAttachment(client: Pick<Client, "call">, ref: AttachmentRef, native: AttachmentNativeApi, signal: AbortSignal, progress: (written: number, total: number) => void): Promise<"saved" | "cancelled"> {
-  const transfer = await AttachmentTransfer.open(client, ref, signal); let saveId: string | null = null;
-  const abort = () => { if (saveId) void native.cancelSave(saveId).catch(() => {}); void transfer.close(); };
+export type AttachmentDownloadOptions = {
+  reacquire?(signal: AbortSignal): Promise<Pick<Client, "call">>;
+  transferring?(client: Pick<Client, "call">): void;
+};
+export async function downloadAttachment(client: Pick<Client, "call">, ref: AttachmentRef, native: AttachmentNativeApi, signal: AbortSignal, progress: (written: number, total: number) => void, options: AttachmentDownloadOptions = {}): Promise<"saved" | "cancelled"> {
+  const info = AttachmentInfo.parse(await untilAbort(client.call("attachments.metadata", ref), signal));
+  let transfer: AttachmentTransfer | null = null, saveId: string | null = null, published = false;
+  const abort = () => { if (saveId) void native.cancelSave(saveId).catch(() => {}); void transfer?.close(); };
   signal.addEventListener("abort", abort, { once: true });
   try {
-    const starting = native.startSave(transfer.info);
+    const starting = native.startSave(info);
     const save = await untilAbort(starting, signal, false).catch((error: unknown) => { void starting.then((late) => { if (late) return native.cancelSave(late.saveId); }).catch(() => {}); throw error; });
     if (!save) return "cancelled"; saveId = save.saveId;
     if (signal.aborted) throw new DOMException("Cancelled", "AbortError");
+    const current = options.reacquire ? await untilAbort(options.reacquire(signal), signal, false) : client;
+    if (signal.aborted) throw new DOMException("Cancelled", "AbortError");
+    options.transferring?.(current); // A disconnect from this point must never rebind an active transfer.
+    if (signal.aborted) throw new DOMException("Cancelled", "AbortError");
+    transfer = await AttachmentTransfer.open(current, ref, signal);
+    if ((["id", "hostId", "name", "size", "contentType", "sha256"] as const).some((key) => info[key] !== transfer!.info[key])) throw new Error("The shared file changed while choosing a destination.");
+    if (signal.aborted) throw new DOMException("Cancelled", "AbortError");
+    if (native.activateSave) await untilAbort(native.activateSave(saveId), signal);
     for (let offset = 0; offset < transfer.info.size;) {
       const chunk = await transfer.read(offset, ATTACHMENT_CHUNK_BYTES);
       if (signal.aborted) throw new DOMException("Cancelled", "AbortError");
       await untilAbort(native.appendSave(saveId, offset, chunk.bytes), signal); offset += Math.min(ATTACHMENT_CHUNK_BYTES, transfer.info.size - offset); progress(offset, transfer.info.size);
     }
     if (signal.aborted) throw new DOMException("Cancelled", "AbortError");
-    return (await untilAbort(native.finishSave(saveId), signal, false)).status;
-  } finally { signal.removeEventListener("abort", abort); if (saveId) await native.cancelSave(saveId).catch(() => {}); await transfer.close(); }
+    const result = await untilAbort(native.finishSave(saveId), signal, false); published = result.status === "saved"; return result.status;
+  } finally {
+    signal.removeEventListener("abort", abort);
+    let cleanup: unknown; try { if (saveId) await native.cancelSave(saveId); } catch (error) { cleanup = error; }
+    await transfer?.close(); if (cleanup && !published) throw cleanup;
+  }
 }
 
 export async function previewAttachment(client: Pick<Client, "call">, ref: AttachmentRef, native: AttachmentNativeApi, signal: AbortSignal, onError?: (error: unknown) => void): Promise<{ attachment: AttachmentInfo; url: string; close: () => Promise<void> }> {

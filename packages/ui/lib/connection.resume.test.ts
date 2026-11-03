@@ -128,41 +128,32 @@ it("keeps authorized native save data when returning from a picker after two min
   expect(getState().connection).toEqual({ status: "ready" });
 });
 
-it("authenticates native save ticks for over 150 seconds hidden with a distinct attachment storage identity", async () => {
-  const { pc, connection, getState, start } = await boot(); await start(); device.invalidations = 0;
-  const attachmentHostId = "28cb1225-bf0d-44ca-9bfe-f38d6ef31f9a";
-  expect(attachmentHostId).not.toBe(hostId);
-  const health = connection.captureAttachmentSaveHeartbeat(attachmentHostId); expect(health).not.toBeNull();
-  show(false);
-  for (let tick = 0; tick < 7; tick++) { await vi.advanceTimersByTimeAsync(30_000); expect(await health!()).toBe(true); }
-  expect(pc.calls.filter((method) => method === "remote.ping")).toHaveLength(7);
-  expect(pc.opens).toHaveLength(1); expect(device.invalidations).toBe(0); expect(getState().connection.status).toBe("ready");
+it("keeps only a byte-free pending picker through a ten-minute hidden disconnect and reacquires a fresh client", async () => {
+  const { pc, connection, start } = await boot(); await start(); const abort = new AbortController(), context = connection.captureAttachmentDownload(abort), original = context.client;
+  show(false); pc.wires[0].drop(); await settle(); await vi.advanceTimersByTimeAsync(600_000);
+  expect(abort.signal.aborted).toBe(false); expect(pc.calls.filter((method) => method === "remote.ping")).toHaveLength(0);
+  show(true); await settle(); const ready = context.reacquire(abort.signal); await settle(); const current = await ready;
+  expect(current).not.toBe(original); expect(current).toBe(connection.daemon()); context.transferring(current);
+  pc.wires.at(-1)!.drop(); await settle(); expect(abort.signal.aborted).toBe(true); context.close();
 });
-
-it("never renews a save on a replacement link or after explicit host switching", async () => {
-  const { pc, connection, start } = await boot(); await start();
-  const health = connection.captureAttachmentSaveHeartbeat("attachment-storage"); expect(health).not.toBeNull();
-  pc.wires[0].drop(); await settle(); expect(await health!()).toBe(false);
-  const fresh = connection.captureAttachmentSaveHeartbeat("attachment-storage"); expect(fresh).not.toBeNull();
-  connection.connectRemote("another-pc"); expect(await fresh!()).toBe(false); expect(device.invalidations).toBeGreaterThan(0);
+it("fences selection A to B to A while allowing a same-selection reconnect", async () => {
+  const { pc, connection, start } = await boot(); await start(); const guard = connection.captureAttachmentSave()!, active = guard.activate()!;
+  const abort = new AbortController(), context = connection.captureAttachmentDownload(abort);
+  pc.wires[0].drop(); await settle(); expect(guard.current()).toBe(true); expect(active()).toBe(false); expect(abort.signal.aborted).toBe(false);
+  connection.connectRemote("another-pc"); connection.connectRemote(hostId); await settle();
+  expect(guard.current()).toBe(false); expect(abort.signal.aborted).toBe(true); context.close();
 });
-
-it("a hidden native save ping deadline still closes the old link and invalidates its files", async () => {
-  const { pc, connection, getState, start } = await boot(); await start(); device.invalidations = 0;
-  const health = connection.captureAttachmentSaveHeartbeat("attachment-storage")!; show(false); pc.hold.add("remote.ping");
-  const answered = health(); await settle(); await vi.advanceTimersByTimeAsync(10_000); expect(await answered).toBe(false); await settle();
-  expect(device.invalidations).toBeGreaterThan(0); expect(pc.wires[0].closed).toBe(true);
-  expect(pc.opens).toHaveLength(1); expect(getState().connection.status).toBe("reconnecting");
+it("bounds fresh authorization to thirty visible seconds and leaves no active transfer", async () => {
+  const { pc, connection, start } = await boot(); await start(); const abort = new AbortController(), context = connection.captureAttachmentDownload(abort);
+  pc.hold.add("remote.ping"); const pending = context.reacquire(abort.signal); const failed = expect(pending).rejects.toThrow(/reconnect/);
+  await vi.advanceTimersByTimeAsync(30_001); await failed; expect(abort.signal.aborted).toBe(false); context.close();
 });
-
-it("does not let a cancelled native lease's delayed ping close a healthy link", async () => {
+it("cancels a pending authorization promptly without a late ping closing a healthy link", async () => {
   const { pc, connection, start } = await boot(); await start(); device.invalidations = 0;
-  const health = connection.captureAttachmentSaveHeartbeat("attachment-storage")!, cancelled = new AbortController();
-  show(false); pc.hold.add("remote.ping"); const answered = health(cancelled.signal); await settle(); cancelled.abort();
-  expect(await answered).toBe(false); await vi.advanceTimersByTimeAsync(11_000);
-  expect(device.invalidations).toBe(0); expect(pc.wires[0].closed).toBe(false);
+  const abort = new AbortController(), context = connection.captureAttachmentDownload(abort); pc.hold.add("remote.ping");
+  const pending = context.reacquire(abort.signal), failed = expect(pending).rejects.toMatchObject({ name: "AbortError" }); await settle(); abort.abort(); await failed;
+  await vi.advanceTimersByTimeAsync(11_000); expect(pc.wires[0].closed).toBe(false); expect(device.invalidations).toBe(0); context.close();
 });
-
 it("does not cancel a staged native save when a foreground ping expires while the picker is hidden", async () => {
   const { pc, getState, start } = await boot();
   await start(); device.invalidations = 0;

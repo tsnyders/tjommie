@@ -7,9 +7,11 @@ export async function saveDiagnosticReport(report: string, native: AttachmentNat
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
   const save = await native.startSave({ id: crypto.randomUUID(), hostId: "diagnostics", name: "tjommie-diagnostics.json", size: bytes.length, contentType: "application/json", sha256: [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("") });
   if (!save) return "cancelled";
+  let published = false;
   try {
+    await native.activateSave?.(save.saveId);
     const encoded = btoa(String.fromCharCode(...bytes));
     await native.appendSave(save.saveId, 0, encoded);
-    return (await native.finishSave(save.saveId)).status;
-  } finally { await native.cancelSave(save.saveId); }
+    const result = await native.finishSave(save.saveId); published = result.status === "saved"; return result.status;
+  } finally { if (published) await native.cancelSave(save.saveId).catch(() => {}); else await native.cancelSave(save.saveId); }
 }

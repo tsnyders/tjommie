@@ -14,6 +14,8 @@ export const SpeechStatus = z.object({
   model: z.object({
     state: z.enum(["missing", "downloading", "verifying", "ready", "error", "system-managed"]),
     bytes: z.number().int().nonnegative(), received: z.number().int().nonnegative(),
+    // Preparation history for this foreground page; each Start still needs a fresh SDK confirmation.
+    confirmation: z.object({ language: z.literal("en-US"), source: z.literal("android-download-success") }).strict().optional(),
   }).strict(),
   problem: SpeechProblem.optional(),
 }).strict();
@@ -34,7 +36,9 @@ export const SpeechEvent = z.discriminatedUnion("kind", [
 export type SpeechEvent = z.infer<typeof SpeechEvent>;
 export type SpeechApi = {
   status(): Promise<SpeechStatus>;
-  downloadModel(): Promise<void>;
+  downloadModel(options?: { requestId: string }): Promise<void>;
+  // Optional current-device observer cleanup. It never cancels Android's system download.
+  releaseModelRequest?(options: { requestId: string }): Promise<void>;
   cancelModelDownload(): Promise<void>;
   removeModel(): Promise<void>;
   start(options: SpeechStart): Promise<void>;
