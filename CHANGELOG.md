@@ -21,6 +21,7 @@
 - View a bot's computer from a paired device, take control and return it to the bot with private-mode safeguards.
 - Manage saved website logins on the host, with exact-site confirmation and private browser filling after Windows worker isolation is verified. Bots can ask you for a named login without reading its secret.
 - Configured project checks use the same Windows worker isolation as bots when it is enabled.
+- Isolated Windows launches support longer provider and review arguments while keeping their input private and their process trees tracked.
 - Pending login operations are cancelled safely when the app closes or reconnects.
 - Private sign-in console output stays hidden after browser control returns to a bot.
 - Update paired devices together for the new connection protocol.

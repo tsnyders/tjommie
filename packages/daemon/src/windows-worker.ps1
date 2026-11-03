@@ -78,6 +78,15 @@ function Test-UnreceiptedProviderCandidate($candidate,$allowedWorkerPids) {
   if ($candidate.Name -match '^node(\.exe)?$' -and [String]::IsNullOrWhiteSpace($candidate.CommandLine)) { throw 'An existing Node process could not be identified safely.' }
   return ($candidate.Name -match '^(claude|codex)\.exe$' -or ($candidate.Name -match '^node(\.exe)?$' -and $candidate.CommandLine -match '([\\/]@anthropic-ai[\\/]claude-code[\\/]|[\\/]@openai[\\/]codex[\\/])'))
 }
+function Add-TrustedWorkerJobs($jobs,$receipts,$config) {
+  $known=New-Object 'Collections.Generic.HashSet[string]'
+  foreach ($receipt in @($receipts)) {
+    if ($null -eq $receipt -or $receipt.version -ne 3 -or @('provider','review') -notcontains $receipt.purpose -or $receipt.ownerSid -ne $config.ownerSid -or -not $receipt.jobBound -or $receipt.elevated -or $receipt.privileged -or $receipt.wrapperPid -le 0 -or $receipt.workerPid -le 0) { throw 'Invalid owned job receipt.' }
+    $expectedSid=if($receipt.purpose -eq $config.purpose){$config.workerSid}else{$config.peerSid}
+    if ($receipt.workerSid -ne $expectedSid -or $receipt.jobName -notmatch ('^Global\\TjommieWorkerJob-'+$receipt.purpose+'-[a-f0-9-]{36}$') -or -not $known.Add($receipt.jobName)) { throw 'Owned job identity mismatch.' }
+    $jobs.Add([string]$receipt.jobName,[uint32]$receipt.workerPid)
+  }
+}
 try {
   $launch = (Read-PrivateLine $workerInput) | ConvertFrom-Json
   $config = $launch.config
@@ -88,29 +97,6 @@ try {
   if ($account.SID.Value -ne $config.workerSid -or -not $account.Enabled) { throw 'boundary' }
   $boot = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime()
   if ($boot -le [DateTime]::Parse($config.provisionedAt).ToUniversalTime()) { throw 'Restart Windows after provisioning before accepting this boundary.' }
-  foreach ($candidate in Get-CimInstance Win32_Process -Filter "Name='claude.exe' OR Name='codex.exe' OR Name='node.exe'") {
-    if (-not (Test-UnreceiptedProviderCandidate $candidate $launch.allowedWorkerPids)) { continue }
-    $owner = Invoke-CimMethod -InputObject $candidate -MethodName GetOwnerSid
-    if ($owner.ReturnValue -ne 0 -or $owner.Sid -eq $config.ownerSid) { throw 'An owner-level provider is still running. Close older Tjommie/provider apps before enabling Logins.' }
-    if ($owner.Sid -eq $config.workerSid -and @($launch.allowedWorkerPids) -notcontains $candidate.ProcessId) { throw 'An untracked worker provider is running. Reconcile older hosts before enabling Logins.' }
-  }
-  foreach ($protected in @($config.ownerDataRoot,$config.runtimeRoot,$config.workerRoot,$config.peerRoot)) {
-    $acl = Get-Acl -LiteralPath $protected
-    foreach ($rule in $acl.Access) {
-      if ($rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow) { continue }
-      $sid = $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
-      if (@($config.ownerSid,'S-1-5-18','S-1-5-32-544') -contains $sid) { continue }
-      $ownWork = ($protected -eq $config.workerRoot -and $sid -eq $config.workerSid) -or ($protected -eq $config.peerRoot -and $sid -eq $config.peerSid)
-      if ($ownWork -and (($rule.FileSystemRights -band [Security.AccessControl.FileSystemRights]::ChangePermissions) -eq 0) -and (($rule.FileSystemRights -band [Security.AccessControl.FileSystemRights]::TakeOwnership) -eq 0)) { continue }
-      if ($protected -eq $config.runtimeRoot -and @($config.workerSid,$config.peerSid) -contains $sid -and (($rule.FileSystemRights -band [Security.AccessControl.FileSystemRights]::Write) -eq 0) -and (($rule.FileSystemRights -band [Security.AccessControl.FileSystemRights]::ChangePermissions) -eq 0) -and (($rule.FileSystemRights -band [Security.AccessControl.FileSystemRights]::TakeOwnership) -eq 0)) { continue }
-      throw 'protected ACL'
-    }
-  }
-  # The root ACL cannot override an explicit writable child ACE or worker-owned file.
-  # Reject links instead of following them out of this complete trusted code closure.
-  Assert-TrustedRuntimeTree $config.runtimeRoot $config.ownerSid
-  if ($config.purpose -eq 'review') { $reviewLease=Open-TrustedReviewLease $config }
-  if ($launch.mode -eq 'verify') { [Console]::Out.Write('verified'); exit 0 }
   Add-Type -TypeDefinition @'
 using System;
 using System.ComponentModel;
@@ -119,12 +105,22 @@ using System.Runtime.InteropServices;
 using System.Security.Principal;
 using System.IO;
 using System.Text;
+using System.Collections.Generic;
+using System.Security.AccessControl;
 using Microsoft.Win32.SafeHandles;
 public static class TjWorkerSecurity {
   [DllImport("advapi32.dll", SetLastError=true)] static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
   [DllImport("advapi32.dll", SetLastError=true)] static extern bool GetTokenInformation(IntPtr token,int kind,IntPtr value,int size,out int needed);
   [DllImport("kernel32.dll", SetLastError=true)] public static extern bool CloseHandle(IntPtr handle);
-  [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern IntPtr CreateJobObject(IntPtr attributes,string name);
+  [StructLayout(LayoutKind.Sequential)] struct SA { public int Length; public IntPtr Security; [MarshalAs(UnmanagedType.Bool)] public bool Inherit; }
+  [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern IntPtr CreateJobObject(ref SA attributes,string name);
+  [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern IntPtr OpenJobObject(uint access,bool inherit,string name);
+  [DllImport("kernel32.dll", SetLastError=true)] static extern IntPtr OpenProcess(uint access,bool inherit,uint pid);
+  [DllImport("kernel32.dll", SetLastError=true)] static extern bool GetExitCodeProcess(IntPtr process,out uint code);
+  [DllImport("kernel32.dll", SetLastError=true)] static extern bool IsProcessInJob(IntPtr process,IntPtr job,out bool member);
+  [DllImport("advapi32.dll", SetLastError=true)] static extern bool GetKernelObjectSecurity(IntPtr handle,uint info,byte[] descriptor,uint length,out uint needed);
+  [DllImport("advapi32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern bool ConvertStringSecurityDescriptorToSecurityDescriptor(string text,uint revision,out IntPtr descriptor,out uint size);
+  [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr value);
   [DllImport("kernel32.dll", SetLastError=true)] static extern bool SetInformationJobObject(IntPtr job,int kind,IntPtr value,uint size);
   [DllImport("kernel32.dll", SetLastError=true)] static extern bool AssignProcessToJobObject(IntPtr job,IntPtr process);
   [DllImport("kernel32.dll", SetLastError=true)] static extern bool TerminateJobObject(IntPtr job,uint code);
@@ -153,12 +149,69 @@ public static class TjWorkerSecurity {
       } finally { Marshal.FreeHGlobal(privileges); }
     } finally { CloseHandle(token); }
   }
-  public static IntPtr BindJob(IntPtr process) {
-    var job=CreateJobObject(IntPtr.Zero,null); if(job==IntPtr.Zero) throw new Exception();
+  public static void AssertJobDescriptor(byte[] bytes,string ownerSid) {
+    var descriptor=new RawSecurityDescriptor(bytes,0);
+    if(descriptor.Owner==null || descriptor.Owner.Value!=ownerSid || descriptor.DiscretionaryAcl==null) throw new Exception("Untrusted job descriptor.");
+    var trusted=new HashSet<string>(new[]{ownerSid,"S-1-5-18","S-1-5-32-544"});
+    foreach(GenericAce raw in descriptor.DiscretionaryAcl) {
+      var ace=raw as CommonAce;
+      if(ace==null || ace.AceQualifier!=AceQualifier.AccessAllowed || ace.AceFlags!=AceFlags.None || !trusted.Contains(ace.SecurityIdentifier.Value)) throw new Exception("Untrusted job descriptor.");
+    }
+  }
+  static void VerifyJobDescriptor(IntPtr job,string ownerSid) {
+    uint needed;
+    if(GetKernelObjectSecurity(job,5,null,0,out needed) || Marshal.GetLastWin32Error()!=122 || needed==0 || needed>65536) throw new Exception();
+    var bytes=new byte[needed]; if(!GetKernelObjectSecurity(job,5,bytes,needed,out needed)) throw new Exception();
+    AssertJobDescriptor(bytes,ownerSid);
+  }
+  public static IntPtr BindJob(IntPtr process,string name,string ownerSid) {
+    IntPtr descriptor=IntPtr.Zero;uint required;
+    if(!ConvertStringSecurityDescriptorToSecurityDescriptor("O:"+ownerSid+"D:P(A;;GA;;;"+ownerSid+")(A;;GA;;;SY)(A;;GA;;;BA)",1,out descriptor,out required)) throw new Exception();
+    IntPtr job;int createdError;
+    try { var attributes=new SA {Length=Marshal.SizeOf(typeof(SA)),Security=descriptor,Inherit=false};job=CreateJobObject(ref attributes,name);createdError=Marshal.GetLastWin32Error(); }
+    finally { LocalFree(descriptor); }
+    if(job==IntPtr.Zero) throw new Exception();
+    if(createdError==183) { CloseHandle(job);throw new Exception("A job name already exists."); }
     var limits=new Limits(); limits.Basic.Flags=0x2000;
     int size=Marshal.SizeOf(limits); var pointer=Marshal.AllocHGlobal(size);
-    try { Marshal.StructureToPtr(limits,pointer,false); if(!SetInformationJobObject(job,9,pointer,(uint)size) || !AssignProcessToJobObject(job,process)) throw new Exception(); return job; }
+    try { VerifyJobDescriptor(job,ownerSid);Marshal.StructureToPtr(limits,pointer,false); if(!SetInformationJobObject(job,9,pointer,(uint)size) || !AssignProcessToJobObject(job,process)) throw new Exception(); return job; }
     catch { CloseHandle(job); throw; } finally { Marshal.FreeHGlobal(pointer); }
+  }
+  static uint[] JobMembers(IntPtr job) {
+    for(int count=32;count<=4096;count*=2) {
+      uint length=(uint)(8+IntPtr.Size*count),returned;var pointer=Marshal.AllocHGlobal((int)length);
+      try {
+        if(!QueryInformationJobObject(job,3,pointer,length,out returned)) { if(Marshal.GetLastWin32Error()==234) continue;throw new Exception(); }
+        int found=Marshal.ReadInt32(pointer,4);if(found<0 || found>count) throw new Exception();
+        var pids=new uint[found];for(int i=0;i<found;i++){long pid=Marshal.ReadIntPtr(pointer,8+i*IntPtr.Size).ToInt64();if(pid<1||pid>UInt32.MaxValue)throw new Exception();pids[i]=(uint)pid;}return pids;
+      } finally { Marshal.FreeHGlobal(pointer); }
+    }
+    throw new Exception("Job process limit.");
+  }
+  static IntPtr PinLiveProcess(uint pid) {
+    var process=OpenProcess(0x1000,false,pid);if(process==IntPtr.Zero) throw new Exception("Process identity unavailable.");
+    uint code;if(!GetExitCodeProcess(process,out code)||code!=259){CloseHandle(process);throw new Exception("Process is no longer live.");}return process;
+  }
+  public sealed class OwnedJobs : IDisposable {
+    sealed class Held { public IntPtr Job,Root; }
+    readonly List<Held> jobs=new List<Held>();readonly string owner;
+    public OwnedJobs(string ownerSid){owner=ownerSid;}
+    public void Add(string name,uint rootPid) {
+      if(jobs.Count>=128)throw new Exception("Job count limit.");
+      var job=OpenJobObject(0x20004,false,name);if(job==IntPtr.Zero)throw new Exception("Owned job unavailable.");var root=IntPtr.Zero;
+      try { VerifyJobDescriptor(job,owner);root=PinLiveProcess(rootPid);bool member;if(!IsProcessInJob(root,job,out member)||!member)throw new Exception("Receipt root is outside its job.");jobs.Add(new Held{Job=job,Root=root}); }
+      catch { if(root!=IntPtr.Zero)CloseHandle(root);CloseHandle(job);throw; }
+    }
+    public bool Contains(uint pid) {
+      bool possible=false;foreach(var job in jobs){foreach(uint member in JobMembers(job.Job)){if(member==pid){possible=true;break;}}if(possible)break;}
+      if(!possible)return false;
+      // The snapshot is only a filter. Pin this exact process and ask the kernel
+      // while both process and protected job handles remain open; no PID-only exemption.
+      var process=PinLiveProcess(pid);
+      try { foreach(var job in jobs){bool member;if(!IsProcessInJob(process,job.Job,out member))throw new Exception();if(member)return true;}throw new Exception("Job membership changed."); }
+      finally { CloseHandle(process); }
+    }
+    public void Dispose(){foreach(var job in jobs){CloseHandle(job.Root);CloseHandle(job.Job);}jobs.Clear();}
   }
   public static bool StopJob(IntPtr job) {
     if(!TerminateJobObject(job,71)) return false;
@@ -172,8 +225,8 @@ public static class TjWorkerSecurity {
     foreach(char c in value) { if(c=='\\') { slash++; continue; } if(c=='"') { result.Append('\\',slash*2+1); result.Append('"'); } else { result.Append('\\',slash); result.Append(c); } slash=0; }
     result.Append('\\',slash*2); result.Append('"'); return result.ToString();
   }
-  public static System.Threading.Tasks.Task CopyInput(Stream source,Stream target) {
-    return System.Threading.Tasks.Task.Run(async delegate { try { await source.CopyToAsync(target); } finally { target.Dispose(); } });
+  public static System.Threading.Tasks.Task CopyInput(Stream source,Stream target,byte[] prefix) {
+    return System.Threading.Tasks.Task.Run(async delegate { try { await target.WriteAsync(prefix,0,prefix.Length);await source.CopyToAsync(target); } finally { Array.Clear(prefix,0,prefix.Length);target.Dispose(); } });
   }
 }
 public sealed class TjNativeWorker : IDisposable {
@@ -230,8 +283,41 @@ public sealed class TjNativeWorker : IDisposable {
   public void Dispose() { if(Input!=null) Input.Dispose(); if(Output!=null) Output.Dispose(); if(Error!=null) Error.Dispose(); if(Thread!=IntPtr.Zero) TjWorkerSecurity.CloseHandle(Thread); if(Handle!=IntPtr.Zero) TjWorkerSecurity.CloseHandle(Handle); if(Desktop!=IntPtr.Zero) CloseDesktop(Desktop); if(Station!=IntPtr.Zero) CloseWindowStation(Station); }
 }
 '@
+
+  $ownedJobs=New-Object TjWorkerSecurity+OwnedJobs([string]$config.ownerSid)
+  try {
+    Add-TrustedWorkerJobs $ownedJobs $launch.allowedJobs $config
+    foreach ($candidate in Get-CimInstance Win32_Process -Filter "Name='claude.exe' OR Name='codex.exe' OR Name='node.exe'") {
+      if ($ownedJobs.Contains([uint32]$candidate.ProcessId)) { continue }
+      if (-not (Test-UnreceiptedProviderCandidate $candidate @())) { continue }
+      $owner = Invoke-CimMethod -InputObject $candidate -MethodName GetOwnerSid
+      if ($owner.ReturnValue -ne 0 -or $owner.Sid -eq $config.ownerSid) { throw 'An owner-level provider is still running. Close older Tjommie/provider apps before enabling Logins.' }
+      if ($owner.Sid -eq $config.workerSid -or $owner.Sid -eq $config.peerSid) { throw 'An untracked worker provider is running. Reconcile older hosts before enabling Logins.' }
+    }
+  } finally { $ownedJobs.Dispose() }
+  foreach ($protected in @($config.ownerDataRoot,$config.runtimeRoot,$config.workerRoot,$config.peerRoot)) {
+    $acl = Get-Acl -LiteralPath $protected
+    foreach ($rule in $acl.Access) {
+      if ($rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow) { continue }
+      $sid = $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
+      if (@($config.ownerSid,'S-1-5-18','S-1-5-32-544') -contains $sid) { continue }
+      $ownWork = ($protected -eq $config.workerRoot -and $sid -eq $config.workerSid) -or ($protected -eq $config.peerRoot -and $sid -eq $config.peerSid)
+      if ($ownWork -and (($rule.FileSystemRights -band [Security.AccessControl.FileSystemRights]::ChangePermissions) -eq 0) -and (($rule.FileSystemRights -band [Security.AccessControl.FileSystemRights]::TakeOwnership) -eq 0)) { continue }
+      if ($protected -eq $config.runtimeRoot -and @($config.workerSid,$config.peerSid) -contains $sid -and (($rule.FileSystemRights -band [Security.AccessControl.FileSystemRights]::Write) -eq 0) -and (($rule.FileSystemRights -band [Security.AccessControl.FileSystemRights]::ChangePermissions) -eq 0) -and (($rule.FileSystemRights -band [Security.AccessControl.FileSystemRights]::TakeOwnership) -eq 0)) { continue }
+      throw 'protected ACL'
+    }
+  }
+  # The root ACL cannot override an explicit writable child ACE or worker-owned file.
+  # Reject links instead of following them out of this complete trusted code closure.
+  Assert-TrustedRuntimeTree $config.runtimeRoot $config.ownerSid
+  if ($config.purpose -eq 'review') { $reviewLease=Open-TrustedReviewLease $config }
+  if ($launch.mode -eq 'verify') { [Console]::Out.Write('verified'); exit 0 }
   $environment = @{}
-  foreach ($property in $launch.env.PSObject.Properties) { $environment[$property.Name] = [string]$property.Value }
+  foreach ($property in $launch.env.PSObject.Properties) {
+    $value=[string]$property.Value
+    if ([String]::IsNullOrEmpty($property.Name) -or $property.Name.IndexOfAny([char[]]@([char]0,[char]'=')) -ge 0 -or $value.IndexOf([char]0) -ge 0) { throw 'Invalid launch environment.' }
+    if ($property.Name -notmatch '^(NODE_|ELECTRON_RUN_AS_NODE$)') { $environment[$property.Name] = $value }
+  }
   $environment['SystemRoot'] = $env:SystemRoot
   $environment['WINDIR'] = $env:SystemRoot
   $environment['ProgramFiles'] = [Environment]::GetFolderPath('ProgramFiles')
@@ -243,19 +329,24 @@ public sealed class TjNativeWorker : IDisposable {
   $environment['TEMP'] = [IO.Path]::Combine($config.workerRoot,'tmp')
   $environment['TMP'] = $environment['TEMP']
   $block = (($environment.Keys | Sort-Object | ForEach-Object { $_ + '=' + $environment[$_] }) -join [char]0) + [char]0 + [char]0
-  $arguments = (($launch.args | ForEach-Object { [TjWorkerSecurity]::Quote([string]$_) }) -join ' ')
+  $arguments = '-e ' + [TjWorkerSecurity]::Quote([string]$launch.bootstrap)
+  if (([TjWorkerSecurity]::Quote([string]$launch.bootstrapFile)+' '+$arguments).Length+1 -gt 1024) { throw 'Bootstrap command limit.' }
+  if ([IO.Path]::GetFullPath($launch.bootstrapFile) -ne [IO.Path]::Combine($config.runtimeRoot,'node.exe')) { throw 'Bootstrap runtime.' }
+  if ($launch.jobName -notmatch ('^Global\\TjommieWorkerJob-'+$config.purpose+'-[a-f0-9-]{36}$')) { throw 'Job identity.' }
+  $prefix=[Convert]::FromBase64String($launch.inputPrefix)
+  if ($prefix.Length -lt 5 -or $prefix.Length -gt 262148 -or [BitConverter]::ToUInt32($prefix,0) -ne $prefix.Length-4) { throw 'Launch frame.' }
   if ($null -ne $reviewLease) { New-ReviewMarker $reviewLease.Marker $config;$reviewMarkerWritten=$true }
-  $workerProcess = [TjNativeWorker]::Start([string]$config.workerName,[string]$launch.password,[string]$launch.file,$arguments,[string]$launch.cwd,$block,[string]$config.ownerSid,[string]$config.workerSid)
+  $workerProcess = [TjNativeWorker]::Start([string]$config.workerName,[string]$launch.password,[string]$launch.bootstrapFile,$arguments,[string]$launch.cwd,$block,[string]$config.ownerSid,[string]$config.workerSid)
   $launch.password = $null
   [TjWorkerSecurity]::Verify($workerProcess.Handle,[string]$config.workerSid)
-  $jobHandle = [TjWorkerSecurity]::BindJob($workerProcess.Handle)
-  $receipt = @{ version=2; purpose=$config.purpose; ownerSid=$config.ownerSid; workerSid=$config.workerSid; wrapperPid=$PID; workerPid=$workerProcess.Id; elevated=$false; privileged=$false; jobBound=$true } | ConvertTo-Json -Compress
+  $jobHandle = [TjWorkerSecurity]::BindJob($workerProcess.Handle,[string]$launch.jobName,[string]$config.ownerSid)
+  $receipt = @{ version=3; purpose=$config.purpose; ownerSid=$config.ownerSid; workerSid=$config.workerSid; wrapperPid=$PID; workerPid=$workerProcess.Id; jobName=$launch.jobName; elevated=$false; privileged=$false; jobBound=$true } | ConvertTo-Json -Compress
   [IO.File]::WriteAllText(($launch.receiptPath + '.pending'),$receipt,(New-Object Text.UTF8Encoding($false)))
   [IO.File]::Move(($launch.receiptPath + '.pending'),$launch.receiptPath)
   if ((Read-PrivateLine $workerInput) -ne 'continue') { throw 'launch cancelled' }
   $output = $workerProcess.Output.CopyToAsync([Console]::OpenStandardOutput())
   $errors = $workerProcess.Error.CopyToAsync([Console]::OpenStandardError())
-  $inputCopy = [TjWorkerSecurity]::CopyInput($workerInput,$workerProcess.Input)
+  $inputCopy = [TjWorkerSecurity]::CopyInput($workerInput,$workerProcess.Input,$prefix)
   $workerProcess.Resume()
   $workerExit = $workerProcess.Wait()
   if (-not [TjWorkerSecurity]::StopJob($jobHandle)) { throw 'worker children did not stop' }

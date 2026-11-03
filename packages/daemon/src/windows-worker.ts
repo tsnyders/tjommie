@@ -16,12 +16,77 @@ export const WindowsWorkerConfiguration = z.object({
   credentialTarget: z.string().regex(/^Tjommie\/[a-f0-9]{24}\/isolated-(?:worker|review)$/),
 }).strict();
 export type WindowsWorkerConfiguration = z.infer<typeof WindowsWorkerConfiguration>;
-const Receipt = z.object({ version: z.literal(2), purpose: z.enum(["provider", "review"]), ownerSid: Sid, workerSid: Sid, wrapperPid: z.number().int().positive(), workerPid: z.number().int().positive(), elevated: z.literal(false), privileged: z.literal(false), jobBound: z.literal(true) }).strict();
+const Receipt = z.object({ version: z.literal(3), purpose: z.enum(["provider", "review"]), ownerSid: Sid, workerSid: Sid, wrapperPid: z.number().int().positive(), workerPid: z.number().int().positive(), jobName: z.string().regex(/^Global\\TjommieWorkerJob-(?:provider|review)-[a-f0-9-]{36}$/), elevated: z.literal(false), privileged: z.literal(false), jobBound: z.literal(true) }).strict();
 const Acceptance = z.object({ version: z.literal(2), purpose: z.enum(["provider", "review"]), workerSid: Sid, peerSid: Sid, configurationHash: z.string().regex(/^[a-f0-9]{64}$/), peerConfigurationHash: z.string().regex(/^[a-f0-9]{64}$/), ownerFileDenied: z.literal(true), ownerCredentialDenied: z.literal(true), ownerProcessDenied: z.literal(true), ownerDesktopDenied: z.literal(true), workerWriteAllowed: z.literal(true), peerFileDenied: z.literal(true), peerWriteDenied: z.literal(true), peerRegistryDenied: z.literal(true), peerProcessDenied: z.literal(true), codexStarted: z.literal(true), claudeStarted: z.literal(true), reviewPolicyVerified: z.literal(true) }).strict();
 const unavailable = "Logins needs the verified Windows worker account. Set up and verify provider isolation on the host before saving or filling logins.";
 const failure = (): Error => new Error("The isolated Windows provider could not start. No owner credential was sent to it.");
+// A fixed, short logon command consumes one private frame, then leaves stdin at the
+// provider protocol's first byte. No target arguments or credentials enter its argv.
+export const WINDOWS_WORKER_BOOTSTRAP = String.raw`try{const f=require('node:fs'),r=n=>{if(n<1||n>262144)throw 0;const b=Buffer.alloc(n);for(let i=0;i<n;){const k=f.readSync(0,b,i,n-i,null);if(!k)throw 0;i+=k}return b},p=JSON.parse(r(r(4).readUInt32LE())),v=require('node:child_process').spawnSync(p.file,p.args,{stdio:'inherit',windowsHide:true});process.exitCode=v.status??71}catch{process.exitCode=71}`;
+const invalidInput = (): Error => new Error("Invalid Windows worker launch input.");
+function quoteWorkerArgument(value: string): string {
+  if (typeof value !== "string" || value.includes("\0")) throw invalidInput();
+  // Match libuv's non-verbatim Windows argv quoting, used by spawnSync below.
+  if (value.length && !/[ \t"]/.test(value)) return value;
+  let result = '"', slashes = 0;
+  for (const character of value) {
+    if (character === "\\") { slashes++; continue; }
+    if (character === '"') result += "\\".repeat(slashes * 2 + 1) + '"';
+    else result += "\\".repeat(slashes) + character;
+    slashes = 0;
+  }
+  return result + "\\".repeat(slashes * 2) + '"';
+}
+export function windowsWorkerCommandLine(file: string, args: readonly string[]): string {
+  if (!file || !Array.isArray(args) || args.length > 32766) throw invalidInput();
+  const parts = [quoteWorkerArgument(file)]; let length = parts[0]!.length;
+  for (const arg of args) {
+    const value = quoteWorkerArgument(arg); length += value.length + 1;
+    if (length + 1 > 32767) throw new Error("The Windows worker command exceeds its supported launch limit.");
+    parts.push(value);
+  }
+  if (length + 1 > 32767) throw new Error("The Windows worker command exceeds its supported launch limit.");
+  return parts.join(" ");
+}
+export function workerLaunchFrame(file: string, args: readonly string[]): Buffer {
+  windowsWorkerCommandLine(file, args);
+  const body = Buffer.from(JSON.stringify({ file, args }), "utf8");
+  if (!body.length || body.length > 262144) throw invalidInput();
+  const frame = Buffer.alloc(body.length + 4); frame.writeUInt32LE(body.length); body.copy(frame, 4); return frame;
+}
+export function workerLaunchEnvironment(input: Record<string, string>): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const [key, value] of Object.entries(input)) {
+    if (!key || /[=\0]/.test(key) || typeof value !== "string" || value.includes("\0")) throw invalidInput();
+    // These are active before a fixed Node bootstrap can validate its private frame.
+    // Do not restore them for the target, including fixed observer/acceptance Node programs.
+    if (!/^(?:NODE_|ELECTRON_RUN_AS_NODE$)/i.test(key)) result[key] = value;
+  }
+  return result;
+}
 export class WorkerLaunchTerminationError extends Error {
   constructor() { super("The Windows worker launch could not confirm process-tree termination. Keep its account and working folders reserved."); }
+}
+class RetiredJobDuringPreparationError extends Error {}
+/** Shared by the paired identities, including native status checks. */
+export class WorkerPreparation {
+  #tail: Promise<void> = Promise.resolve();
+  #reject!: (error: Error) => void;
+  readonly #stopped = new Promise<never>((_done, reject) => { this.#reject = reject; });
+  failed = false;
+  retirements = 0;
+  constructor() { void this.#stopped.catch(() => {}); }
+  poison(): void { if (!this.failed) { this.failed = true; this.#reject(new WorkerLaunchTerminationError()); } }
+  async run<T>(action: () => Promise<T>): Promise<T> {
+    if (this.failed) throw new WorkerLaunchTerminationError();
+    const previous = this.#tail; let release!: () => void;
+    this.#tail = new Promise<void>((done) => { release = done; });
+    try {
+      await Promise.race([previous, this.#stopped]);
+      if (this.failed) throw new WorkerLaunchTerminationError();
+      return await action();
+    } finally { release(); }
+  }
 }
 const exitProofs = new WeakMap<ChildProcessWithoutNullStreams, Promise<void>>();
 export function workerProcessRetired(child: ChildProcessWithoutNullStreams): Promise<void> | undefined { return exitProofs.get(child); }
@@ -117,13 +182,21 @@ export class WindowsWorkerBoundary {
   #reviewLease: string | null = null;
   #launches = 0;
   #terminationUnknown = false;
+  #preparation = new WorkerPreparation();
   constructor(options: Options) { this.#options = options; }
   get purpose(): "provider" | "review" { return this.#options.expectedPurpose ?? "provider"; }
   pairWith(peer: Pick<WindowsWorkerBoundary, "configuration" | "receipts">): void {
     if (this.#peer && this.#peer !== peer || this.#children.size || this.#launches) throw failure();
-    validateWorkerPair(this.configuration(), peer.configuration()); this.#peer = peer;
+    validateWorkerPair(this.configuration(), peer.configuration());
+    if (peer instanceof WindowsWorkerBoundary) {
+      if (peer.#children.size || peer.#launches) throw failure();
+      this.#preparation = peer.#preparation;
+    }
+    this.#peer = peer;
   }
-  #knownWorkerPids(): number[] { return [...this.#children.values(), ...(this.#peer?.receipts() ?? [])].map((receipt) => receipt.workerPid); }
+  #unknownTermination(): void { this.#terminationUnknown = true; this.invalidate(); this.#preparation.poison(); }
+  #assertPreparation(): void { if (this.#terminationUnknown || this.#preparation.failed) throw new WorkerLaunchTerminationError(); }
+  #knownWorkerJobs(): z.infer<typeof Receipt>[] { return [...this.#children.values(), ...(this.#peer?.receipts() ?? [])]; }
   get configured(): boolean { return existsSync(this.#options.configurationPath); }
   get required(): boolean { return this.configured || existsSync(join(dirname(this.#options.configurationPath), "vault-protection-required")); }
   configuration(): WindowsWorkerConfiguration {
@@ -138,6 +211,7 @@ export class WindowsWorkerBoundary {
   }
   async unavailableReason(): Promise<string | null> {
     try {
+      return await this.#preparation.run(async () => {
       if (this.#terminationUnknown) throw failure();
       const config = this.configuration();
       const peer = WindowsWorkerConfiguration.parse(JSON.parse(readFileSync(join(config.ownerDataRoot, configName(this.purpose === "provider" ? "review" : "provider")), "utf8")));
@@ -145,16 +219,18 @@ export class WindowsWorkerBoundary {
         validateWorkerAcceptance(current, current === config ? peer : config, JSON.parse(readFileSync(join(config.ownerDataRoot, acceptanceName(current.purpose)), "utf8")));
       }
       if (!this.#options.exclusive()) throw failure();
-      await this.#verify(config);
+      await this.#verifyHeld(config);
       return null;
+      });
     } catch { return unavailable; }
   }
   async acquire(): Promise<{ assert(): void; release(): void }> {
     if (await this.unavailableReason()) throw failure();
+    this.#assertPreparation();
     const generation = this.#generation; this.#leases++;
     let released = false;
     return {
-      assert: () => { if (released || this.#closed || this.#terminationUnknown || generation !== this.#generation || !this.#options.exclusive()) throw failure(); },
+      assert: () => { if (released || this.#closed || this.#terminationUnknown || this.#preparation.failed || generation !== this.#generation || !this.#options.exclusive()) throw failure(); },
       release: () => { if (!released) { released = true; this.#leases--; } },
     };
   }
@@ -172,32 +248,53 @@ export class WindowsWorkerBoundary {
   }
   /** Call before any legacy launch or boundary change; active private operations fail closed. */
   invalidate(): void { this.#generation++; }
-  async #verify(config: WindowsWorkerConfiguration): Promise<void> {
+  async #verifyHeld(config: WindowsWorkerConfiguration): Promise<void> {
     const systemRoot = process.env.SystemRoot ?? "C:\\Windows";
     const helper = this.#options.helperPath ?? fileURLToPath(new URL("./windows-worker.ps1", import.meta.url));
-    await new Promise<void>((done, reject) => {
+    for (let attempt = 0; attempt < 2; attempt++) {
+    this.#assertPreparation();
+    const retirement = this.#preparation.retirements, jobs = this.#knownWorkerJobs();
+    try { await new Promise<void>((done, reject) => {
       const child = spawn(join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", helper], { stdio: ["pipe", "pipe", "ignore"], windowsHide: true });
       let output = "";
       const timer = setTimeout(() => { child.kill(); reject(failure()); }, 30_000); timer.unref();
       child.once("error", () => { clearTimeout(timer); reject(failure()); });
       child.stdout.on("data", (chunk: Buffer) => { if (output.length + chunk.length > 100) { child.kill(); reject(failure()); } else output += chunk.toString("utf8"); });
       child.once("close", (code) => { clearTimeout(timer); if (code === 0 && output === "verified") done(); else reject(failure()); });
-      child.stdin.on("error", () => reject(failure())); child.stdin.end(JSON.stringify({ mode: "verify", config, allowedWorkerPids: this.#knownWorkerPids() }) + "\n");
-    });
+      child.stdin.on("error", () => reject(failure())); child.stdin.end(JSON.stringify({ mode: "verify", config, allowedJobs: jobs }) + "\n");
+    }); this.#assertPreparation(); return; }
+    catch (error) { if (attempt || this.#preparation.failed || retirement === this.#preparation.retirements) throw error; }
+    }
   }
   async spawn(file: string, args: string[], options: { cwd: string; env: Record<string, string> }): Promise<ChildProcessWithoutNullStreams> {
     if (this.purpose === "review" && !this.#reviewLease) throw new Error("review_isolated_identity_unavailable");
     if (this.#reviewLease !== null && this.#reviewScope.getStore() !== this.#reviewLease) throw new WorkerPolicyBusyError();
     if (this.#reviewLease !== null && (this.#children.size || this.#launches)) throw new WorkerPolicyBusyError();
     if (this.#terminationUnknown) throw new WorkerLaunchTerminationError();
+    const inputPrefix = workerLaunchFrame(file, args), environment = workerLaunchEnvironment(options.env);
     this.#launches++;
+    try {
+      return await this.#preparation.run(async () => {
+        for (let attempt = 0; attempt < 2; attempt++) {
+          try { return await this.#spawnHeld(file, args, options, inputPrefix, environment); }
+          catch (error) { if (!(error instanceof RetiredJobDuringPreparationError)) throw error; if (attempt || this.#preparation.failed) throw failure(); }
+        }
+        throw failure();
+      });
+    } finally { this.#launches--; }
+  }
+  async #spawnHeld(file: string, args: string[], options: { cwd: string; env: Record<string, string> }, inputPrefix: Buffer, environment: Record<string, string>): Promise<ChildProcessWithoutNullStreams> {
     try {
     const config = this.configuration();
     if (!this.#options.exclusive() || !inside(config.runtimeRoot, file) || !/\.exe$/i.test(file)) throw failure();
+    const bootstrapFile = join(config.runtimeRoot, "node.exe");
+    if (!inside(config.runtimeRoot, bootstrapFile) || windowsWorkerCommandLine(bootstrapFile, ["-e", WINDOWS_WORKER_BOOTSTRAP]).length + 1 > 1024) throw failure();
     for (const name of ["CODEX_HOME", "CLAUDE_CONFIG_DIR"]) if (options.env[name] && !inside(config.workerRoot, options.env[name])) throw failure();
-    await this.#verify(config);
+    await this.#verifyHeld(config);
+    this.#assertPreparation();
     await this.grantDirectory(options.cwd);
-    for (const name of ["CODEX_HOME", "CLAUDE_CONFIG_DIR"]) if (options.env[name]) await this.grantDirectory(options.env[name]);
+    this.#assertPreparation();
+    for (const name of ["CODEX_HOME", "CLAUDE_CONFIG_DIR"]) if (options.env[name]) { await this.grantDirectory(options.env[name]); this.#assertPreparation(); }
     if (!inside(config.workerRoot, options.cwd)) {
       // External worktrees are provisioned explicitly; the helper verifies their worker ACL.
       if (inside(config.ownerDataRoot, options.cwd) && resolve(options.cwd).toLowerCase() === resolve(config.ownerDataRoot).toLowerCase()) throw failure();
@@ -206,58 +303,70 @@ export class WindowsWorkerBoundary {
     let password = "";
     try {
       const saved = await transport({ operation: "read", target: config.credentialTarget });
+      this.#assertPreparation();
       if (!saved) throw failure();
       const value: unknown = JSON.parse(saved);
       if (!value || typeof value !== "object" || !("username" in value) || value.username !== config.workerName || !("password" in value) || typeof value.password !== "string" || !value.password) throw failure();
       password = value.password;
       const receiptRoot = join(config.ownerDataRoot, "worker-receipts"); mkdirSync(receiptRoot, { recursive: true });
-      const receiptPath = join(receiptRoot, `${randomUUID()}.json`);
+        const launchId = randomUUID(), receiptPath = join(receiptRoot, `${launchId}.json`), jobName = `Global\\TjommieWorkerJob-${config.purpose}-${launchId}`;
       const systemRoot = process.env.SystemRoot ?? "C:\\Windows";
       const helper = this.#options.helperPath ?? fileURLToPath(new URL("./windows-worker.ps1", import.meta.url));
+      const launchGeneration = this.#preparation.retirements, allowedJobs = this.#knownWorkerJobs();
+      this.#assertPreparation();
       const child = spawn(join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", helper], {
         env: { SystemRoot: systemRoot, WINDIR: systemRoot, TEMP: process.env.TEMP ?? join(systemRoot, "Temp"), TMP: process.env.TMP ?? join(systemRoot, "Temp") },
         stdio: ["pipe", "pipe", "pipe"], windowsHide: true,
       });
-      child.stdin.write(JSON.stringify({ config, password, file, args, cwd: options.cwd, env: options.env, receiptPath, allowedWorkerPids: this.#knownWorkerPids() }) + "\n");
-      password = "";
+      let inputFailed = false; child.stdin.on("error", () => { inputFailed = true; });
       const retired = new Promise<void>((done, reject) => {
         const closed = (): void => {
           try {
             const proof: unknown = JSON.parse(readFileSync(receiptPath + ".closed", "utf8"));
             if (!proof || typeof proof !== "object" || !("wrapperPid" in proof) || proof.wrapperPid !== child.pid || !("stopped" in proof) || proof.stopped !== true) throw failure();
             done();
-          } catch { this.#terminationUnknown = true; this.invalidate(); reject(new WorkerLaunchTerminationError()); }
+          } catch { this.#unknownTermination(); reject(new WorkerLaunchTerminationError()); }
           finally { rmSync(receiptPath + ".closed", { force: true }); }
         };
-        child.once("close", closed); child.once("error", () => { this.#terminationUnknown = true; this.invalidate(); reject(new WorkerLaunchTerminationError()); });
+        child.once("close", closed); child.once("error", () => { this.#unknownTermination(); reject(new WorkerLaunchTerminationError()); });
       });
       void retired.catch(() => {}); exitProofs.set(child, retired);
+      let continued = false;
       try {
         let failed = false; child.once("error", () => { failed = true; });
+        child.stdin.write(JSON.stringify({ config, password, bootstrapFile, bootstrap: WINDOWS_WORKER_BOOTSTRAP, inputPrefix: inputPrefix.toString("base64"), cwd: options.cwd, env: environment, receiptPath, jobName, allowedJobs }) + "\n");
+        password = "";
         const deadline = Date.now() + 40_000;
         while (!existsSync(receiptPath)) {
-          if (failed || child.exitCode !== null || Date.now() >= deadline) throw failure();
+          this.#assertPreparation();
+          if (failed || inputFailed || child.exitCode !== null || Date.now() >= deadline) throw failure();
           await new Promise<void>((done) => setTimeout(done, 20));
         }
         const receipt = Receipt.parse(JSON.parse(readFileSync(receiptPath, "utf8")));
-        if (receipt.purpose !== config.purpose || receipt.ownerSid !== config.ownerSid || receipt.workerSid !== config.workerSid || receipt.wrapperPid !== child.pid) throw failure();
-        this.#children.set(child.pid!, receipt); child.once("exit", () => this.#children.delete(child.pid!));
-        child.stdin.write("continue\n");
+        if (inputFailed) throw failure();
+        if (receipt.purpose !== config.purpose || receipt.ownerSid !== config.ownerSid || receipt.workerSid !== config.workerSid || receipt.wrapperPid !== child.pid || receipt.jobName !== jobName) throw failure();
+        this.#children.set(child.pid!, receipt);
+        void retired.then(() => { this.#children.delete(child.pid!); this.#preparation.retirements++; }).catch(() => {});
+        this.#assertPreparation();
+        continued = true; child.stdin.write("continue\n");
         return child;
-      } catch {
+      } catch (error) {
         child.stdin.end();
         let timer: NodeJS.Timeout | undefined;
         try { await Promise.race([retired, new Promise<never>((_done, reject) => { timer = setTimeout(() => { child.kill(); reject(new WorkerLaunchTerminationError()); }, 7000); timer.unref(); })]); }
         finally { clearTimeout(timer); }
+        if (error instanceof WorkerLaunchTerminationError) throw error;
+        if (!continued && !this.#preparation.failed && launchGeneration !== this.#preparation.retirements) throw new RetiredJobDuringPreparationError();
         throw failure();
       }
       finally { rmSync(receiptPath, { force: true }); }
-    } catch (error) { if (error instanceof WorkerLaunchTerminationError) { this.#terminationUnknown = true; throw error; } throw failure(); }
+    } catch (error) { if (error instanceof WorkerLaunchTerminationError) { this.#unknownTermination(); throw error; } if (error instanceof RetiredJobDuringPreparationError) throw error; throw failure(); }
     finally { password = ""; }
     } catch (error) {
-      if (error instanceof WorkerLaunchTerminationError) { this.#terminationUnknown = true; this.invalidate(); throw error; }
+      if (error instanceof WorkerLaunchTerminationError) { this.#unknownTermination(); throw error; }
+      if (error instanceof RetiredJobDuringPreparationError) throw error;
       throw failure();
-    } finally { this.#launches--; }
+    }
   }
   async observeReviewPolicy(): Promise<WorkerPolicyReceipt> {
     if (!this.#reviewLease || this.#reviewScope.getStore() !== this.#reviewLease || this.#children.size || this.#launches) throw new WorkerPolicyBusyError();
@@ -288,10 +397,10 @@ export class WindowsWorkerBoundary {
         return result;
       } catch (error) {
         caught = error;
-        if (error instanceof WorkerLaunchTerminationError) { this.#terminationUnknown = true; this.invalidate(); }
+        if (error instanceof WorkerLaunchTerminationError) this.#unknownTermination();
         throw error;
       } finally {
-        if (this.#children.size || this.#launches) { this.#terminationUnknown = true; this.invalidate(); }
+        if (this.#children.size || this.#launches) this.#unknownTermination();
         if (this.#terminationUnknown) {
           if (!(caught instanceof WorkerLaunchTerminationError)) throw new WorkerLaunchTerminationError();
         } else if (this.#reviewLease === lease) this.#reviewLease = null;
