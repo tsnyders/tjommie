@@ -6,6 +6,7 @@ import type { Bot, BrowserState } from "@tjommie/protocol";
 import { BrowserLogins, browserLoginTarget } from "../chat/browser-logins";
 import { initialState } from "@/lib/state";
 import { update } from "@/lib/store";
+import { APP_OVERLAY } from "@/lib/native-overlay";
 import { LoginsSection } from "./logins-section";
 
 const call = vi.hoisted(() => vi.fn()), transport = { call };
@@ -19,10 +20,10 @@ const settle = () => act(async () => { await new Promise(resolve => setTimeout(r
 async function mount(node: ReactNode) { root = createRoot(document.body.appendChild(document.createElement("div"))); await act(async () => root!.render(node)); await settle(); }
 const button = (label: string): HTMLButtonElement => { const found = [...document.querySelectorAll("button")].find(value => value.textContent === label || value.getAttribute("aria-label") === label); if (!found) throw new Error(`Missing ${label}`); return found; };
 async function chooseSavedLogin(): Promise<void> {
-  await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Saved login for this origin"]')!.click());
-  const choice = [...document.querySelectorAll<HTMLElement>('[role="menuitemradio"]')].find(item => item.textContent?.includes(entry.name));
+  const choice = [...document.querySelectorAll<HTMLElement>('[role="radio"]')].find(item => item.textContent?.includes(entry.name));
   if (!choice) throw new Error("Missing synthetic saved login");
   await act(async () => choice.click());
+  expect(document.querySelector(APP_OVERLAY)).toBeNull();
   expect(document.querySelector("button button")).toBeNull();
 }
 beforeEach(() => {
@@ -59,15 +60,18 @@ it("cancels a pending fill on generation change and discards its late result", a
   await act(async () => root!.render(<BrowserLogins state={{ ...state, generation: "generation-two" }} onRefresh={refreshed} />));
   expect(call).toHaveBeenCalledWith("vault.cancel", {}); await act(async () => finish({ status: "filled", privateEpoch: 9 })); await settle(); expect(refreshed).not.toHaveBeenCalled(); expect(document.body.textContent).not.toContain("Login filled privately");
 });
-it("opens saved logins from the toolbar and cancels a pending fill when the popup closes", async () => {
+it("keeps saved logins inline so choosing a login does not hide the native page, and cancels on close", async () => {
   let finish!: (value: unknown) => void; const refreshed = vi.fn();
   const regular = call.getMockImplementation()!; call.mockImplementation((method, params) => method === "vault.fill" ? new Promise(resolve => { finish = resolve; }) : regular(method, params));
   await mount(<BrowserLogins state={state} onRefresh={refreshed} />);
   expect(document.querySelector('[role="dialog"]')).toBeNull();
   await act(async () => button("Saved logins").click()); await settle();
-  expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+  expect(document.querySelector(APP_OVERLAY)).toBeNull();
+  expect(button("Saved logins").getAttribute("aria-expanded")).toBe("true");
   await chooseSavedLogin(); await act(async () => button("Fill on host").click());
   await act(async () => button("Close saved logins").click()); await settle();
+  expect(button("Saved logins").getAttribute("aria-expanded")).toBe("false");
+  expect(document.activeElement).toBe(button("Saved logins"));
   expect(call).toHaveBeenCalledWith("vault.cancel", {});
   await act(async () => finish({ status: "filled", privateEpoch: 9 })); await settle();
   expect(refreshed).not.toHaveBeenCalled();

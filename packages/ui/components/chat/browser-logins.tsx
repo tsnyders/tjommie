@@ -1,18 +1,17 @@
 "use client";
 
 import Link from "next/link";
-import { Menu } from "@base-ui/react/menu";
-import { Popover } from "@base-ui/react/popover";
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Check, ChevronDown, KeyRound, X } from "lucide-react";
+import { Radio } from "@base-ui/react/radio";
+import { RadioGroup } from "@base-ui/react/radio-group";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { Check, KeyRound, X } from "lucide-react";
 import type { BrowserState } from "@tjommie/protocol";
 import { LoginEntry, VaultStatus, type VaultFillTarget, type VaultHostAction } from "../../../protocol/src/vault";
 import { IconButton } from "@/components/icon-button";
-import { MENU_ITEM, MENU_POPUP } from "@/components/menu";
+import { MENU_ITEM } from "@/components/menu";
 import { Pill } from "@/components/pill";
 import { createLoginsClient, LOGINS_PROBLEM } from "@/lib/logins";
 import { useApp } from "@/lib/store";
-import { cn } from "@/lib/utils";
 
 export function browserLoginTarget(state: BrowserState): VaultFillTarget | null {
   if (state.control !== "human" || state.canControl !== true || state.privateActive || !state.activePageId || state.controlEpoch === undefined) return null;
@@ -23,6 +22,7 @@ export function BrowserLogins({ state, onRefresh }: { state: BrowserState; onRef
   return <BrowserLoginScope key={`${host}:${connection}:${state.botId}:${state.generation}`} state={state} onRefresh={onRefresh} />;
 }
 function BrowserLoginScope({ state, onRefresh }: { state: BrowserState; onRefresh: () => void }) {
+  const panelId = useId(), trigger = useRef<HTMLButtonElement>(null);
   const [client] = useState(createLoginsClient), [open, setOpen] = useState(false), [status, setStatus] = useState<VaultStatus | null>(null), [entries, setEntries] = useState<LoginEntry[]>([]), [selected, setSelected] = useState("");
   const [busy, setBusy] = useState(false), [notice, setNotice] = useState(""), [error, setError] = useState(false), revision = useRef(0), alive = useRef(false), reads = useRef(0);
   const refresh = useCallback(async () => {
@@ -52,39 +52,32 @@ function BrowserLoginScope({ state, onRefresh }: { state: BrowserState; onRefres
   }
   const cancel = () => { revision.current++; setBusy(false); setNotice("Cancelled."); void client.cancel(); };
   const feedback = <>{busy && <Pill className="mt-2 max-sm:min-h-11" onClick={cancel}>Cancel host interaction</Pill>}{notice && <p role="status" className="mt-2 text-[12px] leading-[18px] text-secondary">{notice}</p>}{error && <p role="alert" className="mt-2 text-[12px] leading-[18px] text-danger">{LOGINS_PROBLEM}</p>}</>;
-  return <div className={cn("min-w-0 shrink-0 text-[14px] leading-[21px]", state.privateActive && "order-last basis-full")}>
-    {state.privateActive ? <div className="flex flex-wrap items-center gap-2 rounded-[12px] bg-card p-4">
+  const close = () => { cancel(); setOpen(false); trigger.current?.focus(); };
+  return <>
+    {state.privateActive ? <div className="order-last min-w-0 basis-full text-[14px] leading-[21px]"><div className="flex flex-wrap items-center gap-2 rounded-[12px] bg-card p-4">
       <p className="basis-full text-[13px] leading-[18px] text-secondary">Private interaction. Remote fields and pictures are hidden. Clearing fields or closing this browser requires host confirmation and keeps automation paused.</p>
       <Pill className="h-auto! min-h-8 max-w-full whitespace-normal! py-2 max-sm:min-h-11" disabled={busy || state.privateEpoch === undefined} onClick={() => { if (state.privateEpoch !== undefined) void run({ kind: "finish", botId: state.botId, generation: state.generation, privateEpoch: state.privateEpoch, mode: "clear" }); }}>Clear private fields on host</Pill>
       <Pill className="h-auto! min-h-8 max-w-full whitespace-normal! py-2 max-sm:min-h-11" disabled={busy || state.privateEpoch === undefined} onClick={() => { if (state.privateEpoch !== undefined) void run({ kind: "finish", botId: state.botId, generation: state.generation, privateEpoch: state.privateEpoch, mode: "close" }); }}>Close private browser on host</Pill>
-    </div> : <Popover.Root open={open} onOpenChange={value => { if (!value && open) cancel(); setOpen(value); }}>
-      <Popover.Trigger render={<IconButton label="Saved logins" className="max-sm:size-11" />}><KeyRound aria-hidden /></Popover.Trigger>
-      <Popover.Portal><Popover.Positioner side="bottom" align="end" sideOffset={8} className="z-50"><Popover.Popup className={cn(MENU_POPUP, "max-h-[min(var(--available-height,70dvh),70dvh)] w-[min(360px,calc(100vw-32px))] min-w-0 overflow-y-auto overscroll-contain p-4")}>
-      <div className="mb-3 flex items-center gap-2">
-        <Popover.Title className="min-w-0 flex-1 text-[15px] font-semibold text-title">Saved logins</Popover.Title>
-        <Popover.Close render={<IconButton label="Close saved logins" className="max-sm:size-11" />}><X aria-hidden /></Popover.Close>
+    </div>{feedback}</div> : <>
+      <IconButton ref={trigger} label="Saved logins" aria-expanded={open} aria-controls={panelId} className="max-sm:size-11" onClick={() => { if (open) close(); else setOpen(true); }}><KeyRound aria-hidden /></IconButton>
+      {/* Inline controls keep the native page visible; opening an overlay hands control back to the bot. */}
+      {open && <section id={panelId} aria-label="Saved logins" className="order-last min-w-0 basis-full rounded-[12px] bg-card p-3 text-[14px] leading-[21px]">
+      <div className="mb-2 flex items-center gap-2">
+        <h3 className="min-w-0 flex-1 text-[14px] font-semibold text-title">Saved logins</h3>
+        <IconButton label="Close saved logins" className="max-sm:size-11" onClick={close}><X aria-hidden /></IconButton>
       </div>
       <div className="flex min-w-0 flex-wrap items-center gap-2 pb-2">
         <p className="basis-full text-[12px] leading-[18px] text-secondary [overflow-wrap:anywhere]">Only metadata is shown here. The host confirms its exact HTTPS destination before filling. {status ? `Logins ${status.state}.` : error ? "Logins unavailable." : "Checking host…"} {status?.reason}</p>
-        <Menu.Root>
-          <Menu.Trigger aria-label="Saved login for this origin" render={<Pill className="max-w-full max-sm:min-h-11" />}>
-            <span className="min-w-0 truncate">{entry?.name ?? `Choose login for ${origin || "an HTTPS page"}`}</span><ChevronDown className="size-4 shrink-0" aria-hidden />
-          </Menu.Trigger>
-          <Menu.Portal><Menu.Positioner sideOffset={6} align="start" className="z-50"><Menu.Popup className={cn(MENU_POPUP, "max-h-[var(--available-height)] max-w-[calc(100vw-32px)] overflow-y-auto")}>
-            <Menu.RadioGroup value={entry?.id ?? ""} onValueChange={(value: unknown) => { if (typeof value === "string") setSelected(value); }}>
-              <Menu.RadioItem value="" closeOnClick className={MENU_ITEM}><span className="min-w-0 flex-1 truncate">Choose login</span><Menu.RadioItemIndicator><Check aria-hidden /></Menu.RadioItemIndicator></Menu.RadioItem>
-              {choices.map(value => <Menu.RadioItem key={value.id} value={value.id} closeOnClick className={MENU_ITEM}><span className="min-w-0 flex-1 truncate">{value.name}</span><Menu.RadioItemIndicator><Check aria-hidden /></Menu.RadioItemIndicator></Menu.RadioItem>)}
-            </Menu.RadioGroup>
-          </Menu.Popup></Menu.Positioner></Menu.Portal>
-        </Menu.Root>
+        {choices.length > 0 ? <RadioGroup aria-label="Saved login for this origin" value={entry?.id ?? ""} onValueChange={(value: unknown) => { if (typeof value === "string") setSelected(value); }} className="max-h-36 w-full overflow-y-auto overscroll-contain">
+          {choices.map(value => <Radio.Root key={value.id} value={value.id} className={`${MENU_ITEM} w-full hover:bg-highlight focus-visible:bg-highlight data-[checked]:bg-selected max-sm:min-h-11`}><span className="min-w-0 flex-1 truncate">{value.name}</span><Radio.Indicator><Check className="size-4" aria-hidden /></Radio.Indicator></Radio.Root>)}
+        </RadioGroup> : <p className="basis-full text-[12px] leading-[18px] text-secondary [overflow-wrap:anywhere]">No saved logins for {origin || "this page"}.</p>}
         <Pill className="max-sm:min-h-11" disabled={busy || !target || !entry || status?.state !== "unlocked"} onClick={() => { if (target && entry) void run({ kind: "fill", ...target, id: entry.id, revision: entry.revision }); }}>Fill on host</Pill>
         <Pill className="max-sm:min-h-11" disabled={busy || status?.state !== "locked"} onClick={() => void run({ kind: "unlock" })}>Unlock on host</Pill>
         <Link href="/settings/?section=logins" className="inline-flex items-center text-[13px] text-accent hover:underline max-sm:min-h-11">Manage Logins</Link>
         {!target && <p className="basis-full text-[12px] leading-[18px] text-secondary">Take control of the current browser page before filling a login.</p>}
       </div>
       {feedback}
-      </Popover.Popup></Popover.Positioner></Popover.Portal>
-    </Popover.Root>}
-    {state.privateActive && feedback}
-  </div>;
+      </section>}
+    </>}
+  </>;
 }
