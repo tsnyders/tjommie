@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Markdown tables keep readable columns and scroll sideways in chats and file previews; short files have simpler search controls.
+- Aurora phone dialogs use solid backgrounds so the chat no longer shows through file previews and forms.
+
 ## 0.4.1 — 2026-11-03
 
 - File cards and previews reuse the original compact styling and shared controls while keeping real content thumbnails.

@@ -300,16 +300,25 @@ html[data-density="compact"] [data-slot="bot-list"] { gap: 0.5rem; }
   padding-left: 12px;
   color: var(--body);
 }
-.markdown table {
-  display: block;
+.markdown-table {
+  max-width: 100%;
   overflow-x: auto;
+}
+.markdown table {
+  width: max-content;
+  min-width: 100%;
   border-collapse: collapse;
+  overflow-wrap: normal;
 }
 .markdown th,
 .markdown td {
+  min-width: 8rem;
+  max-width: 22rem;
   border: 1px solid var(--divider);
-  padding: 4px 8px;
+  padding: 8px 12px;
   text-align: left;
+  vertical-align: top;
+  overflow-wrap: break-word;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -810,6 +819,9 @@ html[data-density="compact"] [data-slot="bot-list"] { gap: 0.5rem; }
     --tabbar-fg: rgb(222 230 246 / 0.8);
     --tabbar-selected-fg: #f5f7fc;
     --tabbar-shadow: 0 14px 40px rgb(0 0 0 / 0.5);
+  }
+  html[data-mobile-style="aurora"] .mobile-motion-dialog {
+    background-color: var(--glass-solid);
   }
   /* The drifting light: three blobs behind everything, in the working and waiting colours; transforms only. */
   html[data-mobile-style="aurora"] body::before,

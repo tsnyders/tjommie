@@ -54,14 +54,14 @@ export function MarkdownFileViewer({ url, size, reference, companions = NO_COMPA
     finally { if (searchAbort.current === abort) { searchAbort.current = null; setSearching(false); } }
   }
   return <div className="flex h-full min-h-0 flex-col gap-2">
-    <div className="flex flex-wrap items-center gap-2">
+    {sections > 1 && <div className="flex flex-wrap items-center gap-2">
       <IconButton label="Previous section" className="max-sm:size-11 disabled:opacity-40" disabled={section === 0} onClick={() => setSection(section - 1)}><ChevronLeft aria-hidden /></IconButton>
       <Label htmlFor={sectionId}>Section</Label><span className="w-20"><input id={sectionId} aria-label="Markdown section" type="number" min={1} max={sections} value={section + 1} onChange={(event) => { const value = Number(event.target.value); if (Number.isInteger(value) && value >= 1 && value <= sections) setSection(value - 1); }} className={`${FIELD} h-11`} /></span><span className="text-[13px] leading-[18px] text-secondary">/ {sections}</span>
       <IconButton label="Next section" className="max-sm:size-11 disabled:opacity-40" disabled={section + 1 >= sections} onClick={() => setSection(section + 1)}><ChevronRight aria-hidden /></IconButton>
-    </div>
+    </div>}
     {sections > 1 && <p className="text-[12px] leading-[18px] text-secondary">Large Markdown is read in sections. A block may continue in the next section. Search reads through the complete file.</p>}
     <form onSubmit={(event) => { void search(event); }} className="flex flex-wrap items-end gap-2">
-      <div className="w-full min-w-0 sm:flex-1"><Label htmlFor={searchId}>Search Markdown</Label><input id={searchId} aria-label="Search Markdown" maxLength={256} value={query} onChange={(event) => setQuery(event.target.value)} className={`${FIELD} mt-1 h-11`} /></div>
+      <div className="min-w-0 flex-1"><Label htmlFor={searchId}>Search Markdown</Label><input id={searchId} aria-label="Search Markdown" maxLength={256} value={query} onChange={(event) => setQuery(event.target.value)} className={`${FIELD} mt-1 h-11`} /></div>
       <Pill type="submit" className="max-sm:min-h-11" disabled={searching}>{match?.query === query ? "Find next" : "Search"}</Pill>
       {searching && <Pill className="max-sm:min-h-11" onClick={() => searchAbort.current?.abort()}>Cancel search</Pill>}
       <span role="status" className="w-full text-[12px] leading-[18px] text-secondary">{searching ? "Searching…" : searchNote}</span>
