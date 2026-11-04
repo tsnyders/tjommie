@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+export const BROWSER_START_URL = "https://duckduckgo.com/";
+
 export const BrowserControl = z.enum(["human", "bot"]);
 export const BrowserState = z.object({
   botId: z.string(),

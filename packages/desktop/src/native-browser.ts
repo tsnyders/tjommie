@@ -2,7 +2,7 @@ import { BrowserWindow, WebContentsView, session, nativeImage, type DownloadItem
 import { randomUUID } from "node:crypto";
 import { lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { basename, join, relative, resolve } from "node:path";
-import type { BrowserFrame, BrowserState } from "../../protocol/src/browser.ts";
+import { BROWSER_START_URL, type BrowserFrame, type BrowserState } from "../../protocol/src/browser.ts";
 import { NativeBrowserCommand, NativeBrowserMount, type NativeBrowserUiCommand, type NativeBrowserToolCommand, type NativeBrowserRemoteCommand } from "../../protocol/src/native-browser.ts";
 import { NativeBrowserAccess } from "./native-browser-access.ts";
 import { captureNativeBrowserFrame } from "./native-browser-frame.ts";
@@ -433,6 +433,13 @@ export class NativeBrowserEngine {
 
   setOccluded(value: boolean): void { this.#occluded = value; this.#present(); }
 
+  occludeBot(botId: string): void {
+    const browser = this.#browsers.get(botId);
+    if (!browser || browser.closing || !browser.mount) return;
+    browser.mount = { ...browser.mount, occluded: true };
+    this.#present();
+  }
+
   hideBot(botId: string): void {
     const browser = this.#browsers.get(botId);
     if (!browser || browser.closing) return;
@@ -578,6 +585,8 @@ export class NativeBrowserEngine {
       if (!inherited) await tab.contents.loadURL("about:blank");
       tab.contents.debugger.attach("1.3");
       await tab.contents.debugger.sendCommand("Page.enable");
+      // A slow, failed or superseded start-page request must not block browser controls.
+      if (!inherited) void tab.contents.loadURL(BROWSER_START_URL).catch(() => {});
     })();
     void tab.ready.catch((error: unknown) => this.#notice(browser, `Browser initialization failed: ${String(error)}`));
     this.#changed(browser); this.#present();
@@ -642,7 +651,7 @@ export class NativeBrowserEngine {
   }
 
   #interactive(browser: Browser, tab: Tab): boolean {
-    return browser.access.owner === "local" && browser.handover === 0 && browser.active === tab.id && this.#mounted === browser.bot.id && !this.#occluded && !!browser.mount?.visible && this.#options.window.isVisible();
+    return browser.access.owner === "local" && browser.handover === 0 && browser.active === tab.id && this.#mounted === browser.bot.id && !this.#occluded && !!browser.mount?.visible && !browser.mount.occluded && this.#options.window.isVisible();
   }
   async #resizeTab(tab: Tab, width: number, height: number): Promise<void> {
     await tab.ready;
@@ -679,8 +688,8 @@ export class NativeBrowserEngine {
     this.#shield?.setVisible(false);
     for (const browser of this.#browsers.values()) {
       const mount = browser.mount;
-      const bounds = mount ? nativeBrowserBounds(mount.bounds, width, height) : null;
-      const visible = !this.#occluded && owner.isVisible() && this.#mounted === browser.bot.id && !!mount?.visible && !!bounds?.width && !!bounds.height;
+      const bounds = mount ? nativeBrowserBounds(mount.bounds, width, height, owner.webContents.getZoomFactor()) : null;
+      const visible = !this.#occluded && !mount?.occluded && owner.isVisible() && this.#mounted === browser.bot.id && !!mount?.visible && !!bounds?.width && !!bounds.height;
       for (const tab of browser.tabs.values()) {
         if (tab.contents.isDestroyed()) continue;
         const show = visible && browser.active === tab.id;

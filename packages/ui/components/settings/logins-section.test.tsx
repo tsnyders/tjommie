@@ -17,12 +17,18 @@ const state: BrowserState = { botId: "one", generation: "generation-one", contro
 let root: Root | undefined;
 const settle = () => act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
 async function mount(node: ReactNode) { root = createRoot(document.body.appendChild(document.createElement("div"))); await act(async () => root!.render(node)); await settle(); }
-const button = (label: string): HTMLButtonElement => { const found = [...document.querySelectorAll("button")].find(value => value.textContent === label); if (!found) throw new Error(`Missing ${label}`); return found; };
+const button = (label: string): HTMLButtonElement => { const found = [...document.querySelectorAll("button")].find(value => value.textContent === label || value.getAttribute("aria-label") === label); if (!found) throw new Error(`Missing ${label}`); return found; };
+async function openSavedLogins(): Promise<void> {
+  await act(async () => button("Browser menu").click()); await settle();
+  const item = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(value => value.textContent === "Saved logins");
+  if (!item) throw new Error("Missing Saved logins menu item");
+  await act(async () => item.click()); await settle();
+}
 async function chooseSavedLogin(): Promise<void> {
-  await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Saved login for this origin"]')!.click());
-  const choice = [...document.querySelectorAll<HTMLElement>('[role="menuitemradio"]')].find(item => item.textContent?.includes(entry.name));
+  const choice = [...document.querySelectorAll<HTMLElement>('[role="radio"]')].find(item => item.textContent?.includes(entry.name));
   if (!choice) throw new Error("Missing synthetic saved login");
   await act(async () => choice.click());
+  expect(document.querySelector('[role="dialog"]')).not.toBeNull();
   expect(document.querySelector("button button")).toBeNull();
 }
 beforeEach(() => {
@@ -41,7 +47,7 @@ it("shows metadata and invokes native host entry without ordinary secret inputs"
   await act(async () => button("Edit on host").click()); await settle(); expect(call).toHaveBeenCalledWith("vault.entry", { botId: "one", id: entry.id, revision: 3 });
 });
 it("requires current control/page/epoch, exact-origin metadata, and keeps Finish separate from Resume", async () => {
-  const refreshed = vi.fn(); await mount(<BrowserLogins state={state} onRefresh={refreshed} />); await act(async () => button("Saved logins").click()); await settle();
+  const refreshed = vi.fn(); await mount(<BrowserLogins state={state} onRefresh={refreshed} />); await openSavedLogins();
   await chooseSavedLogin();
   await act(async () => button("Fill on host").click()); await settle();
   expect(call).toHaveBeenCalledWith("vault.fill", { botId: "one", generation: "generation-one", pageId: "page-one", controlEpoch: 7, id: entry.id, revision: 3 });
@@ -54,8 +60,24 @@ it("requires current control/page/epoch, exact-origin metadata, and keeps Finish
 it("cancels a pending fill on generation change and discards its late result", async () => {
   let finish!: (value: unknown) => void; const refreshed = vi.fn();
   const regular = call.getMockImplementation()!; call.mockImplementation((method, params) => method === "vault.fill" ? new Promise(resolve => { finish = resolve; }) : regular(method, params));
-  await mount(<BrowserLogins state={state} onRefresh={refreshed} />); await act(async () => button("Saved logins").click()); await settle();
+  await mount(<BrowserLogins state={state} onRefresh={refreshed} />); await openSavedLogins();
   await chooseSavedLogin(); await act(async () => button("Fill on host").click());
   await act(async () => root!.render(<BrowserLogins state={{ ...state, generation: "generation-two" }} onRefresh={refreshed} />));
   expect(call).toHaveBeenCalledWith("vault.cancel", {}); await act(async () => finish({ status: "filled", privateEpoch: 9 })); await settle(); expect(refreshed).not.toHaveBeenCalled(); expect(document.body.textContent).not.toContain("Login filled privately");
+});
+it("puts saved logins in the browser menu, and cancels a pending fill when the dialog closes", async () => {
+  let finish!: (value: unknown) => void; const refreshed = vi.fn();
+  const regular = call.getMockImplementation()!; call.mockImplementation((method, params) => method === "vault.fill" ? new Promise(resolve => { finish = resolve; }) : regular(method, params));
+  await mount(<BrowserLogins state={state} onRefresh={refreshed} />);
+  expect(document.querySelector('[role="dialog"]')).toBeNull();
+  expect(document.querySelector('button[aria-label="Saved logins"]')).toBeNull();
+  await openSavedLogins();
+  expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+  await chooseSavedLogin(); await act(async () => button("Fill on host").click());
+  await act(async () => button("Close").click()); await settle();
+  expect(document.querySelector('[role="dialog"]')).toBeNull();
+  expect(document.activeElement).toBe(button("Browser menu"));
+  expect(call).toHaveBeenCalledWith("vault.cancel", {});
+  await act(async () => finish({ status: "filled", privateEpoch: 9 })); await settle();
+  expect(refreshed).not.toHaveBeenCalled();
 });

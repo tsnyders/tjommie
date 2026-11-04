@@ -522,9 +522,10 @@ function registerIpc(): void {
   ipcMain.handle("native-browser:mount", async (event, botId: unknown, mount: unknown) => {
     if (event.sender !== win?.webContents || event.senderFrame !== win.webContents.mainFrame) throw new Error("Untrusted browser host.");
     const value = NativeBrowserMount.parse(mount);
-    if (!value.visible && typeof botId === "string" && botId.length > 0 && botId.length <= 256 && nativeEngine) {
+    if ((!value.visible || value.occluded) && typeof botId === "string" && botId.length > 0 && botId.length <= 256 && nativeEngine) {
       // Concealment must not depend on a live daemon or wait behind page navigation.
-      nativeEngine.hideBot(botId);
+      if (value.visible) nativeEngine.occludeBot(botId);
+      else nativeEngine.hideBot(botId);
       try { return nativeEngine.state(botId); } catch { /* A first mount has not opened a guest yet. */ }
     }
     const bot = await resolveNativeBot(botId);

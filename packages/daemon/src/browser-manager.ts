@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import { join } from "node:path";
 import type { BrowserContext, CDPSession, Dialog, Page } from "playwright-core";
 import { z } from "zod";
-import type { BrowserFrame, BrowserInput, BrowserState } from "@tjommie/protocol";
+import { BROWSER_START_URL, type BrowserFrame, type BrowserInput, type BrowserState } from "@tjommie/protocol";
 import type { StoredBot } from "./bots.ts";
 import { cliEnv } from "./cli.ts";
 import { settleCleanup } from "./cleanup.ts";
@@ -12,6 +12,11 @@ import { RpcError } from "./server.ts";
 
 const require = createRequire(import.meta.url);
 export const browserProfile = (bot: StoredBot): string => join(bot.homeFolder, "chrome-profile");
+
+function openStartPage(page: Page): void {
+  // Navigation can fail offline or be superseded by the user's next address.
+  void page.goto(BROWSER_START_URL, { waitUntil: "commit" }).catch(() => {});
+}
 
 export function findBrowser(exists: (path: string) => boolean = existsSync, env: NodeJS.ProcessEnv = process.env): { channel: "chrome" | "msedge"; path: string } {
   const roots = [env.ProgramFiles ?? "C:\\Program Files", env["ProgramFiles(x86)"] ?? "C:\\Program Files (x86)", env.LOCALAPPDATA].filter((root): root is string => !!root);
@@ -115,7 +120,8 @@ export class BrowserManager {
     context.on("close", () => { void this.#stopStream(session); void this.#sessions.get(bot.id)?.then((current) => { if (current === session) this.#sessions.delete(bot.id); }).catch(() => {}); });
     for (const page of context.pages()) this.#addPage(session, page);
     try {
-      if (!session.tabs.length) await context.newPage();
+      if (!session.tabs.length) openStartPage(await context.newPage());
+      else if (session.tabs.length === 1 && session.tabs[0].page.url() === "about:blank") openStartPage(session.tabs[0].page);
       await Promise.all(session.tabs.map((tab) => tab.observer));
     }
     catch (error) { await context.close().catch(() => {}); throw error; }
@@ -309,13 +315,13 @@ export class BrowserManager {
   }
   async tab(bot: StoredBot, generation: string, action: "new" | "select" | "close", pageId?: string): Promise<BrowserState> {
     return this.#human(bot, generation, pageId, async (session, tab) => {
-      if (action === "new") await session.context.newPage();
+      if (action === "new") openStartPage(await session.context.newPage());
       else {
         if (!tab) throw new RpcError("bad_params", "Choose a browser tab.");
         if (action === "close") await tab.page.close();
         else { session.activePageId = tab.id; session.revision++; await tab.page.bringToFront(); }
       }
-      if (!session.tabs.length) await session.context.newPage();
+      if (!session.tabs.length) openStartPage(await session.context.newPage());
       return this.#state(session);
     }, (session) => this.#state(session));
   }

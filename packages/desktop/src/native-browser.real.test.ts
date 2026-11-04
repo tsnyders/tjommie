@@ -8,6 +8,7 @@ import type { NativeBrowserFixture } from "./native-browser-fixture.ts";
 import type { NativeBrowserBot } from "./native-browser.ts";
 import type { NativeBrowserToolResult } from "./native-browser-automation.ts";
 import { nativeBrowserVideo } from "./native-browser-media-fixture.ts";
+import { BROWSER_START_URL } from "../../protocol/src/browser.ts";
 
 let root: string, origin: string, server: Server, electron: ElectronApplication | undefined;
 let postBody = "";
@@ -17,6 +18,7 @@ async function launch(): Promise<ElectronApplication> {
   const env: Record<string, string> = Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
   env.TJOMMIE_NATIVE_FIXTURE = root; delete env.ELECTRON_RUN_AS_NODE;
   const app = await _electron.launch({ args: [join(import.meta.dirname, "native-browser-fixture.ts")], env });
+  await app.context().route(BROWSER_START_URL, (route) => route.fulfill({ contentType: "text/html", body: "<title>Start page fixture</title><p>Search the web</p>" }));
   // The engine owns dialog decisions. Playwright otherwise auto-dismisses dialogs on its
   // automatically attached guest pages, which would invalidate the native dialog assertion.
   app.context().on("page", (page) => page.on("dialog", () => {}));
@@ -59,6 +61,104 @@ beforeAll(async () => {
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address(); if (!address || typeof address === "string") throw new Error("Fixture server has no port.");
   origin = `http://127.0.0.1:${address.port}`;
+});
+
+it("keeps the native page and input shield aligned with the UI at different app zoom levels", async () => {
+  await electron?.close(); electron = await launch();
+  const app = electron, bot: NativeBrowserBot = { id: "native-layout", homeFolder: join(root, "bot-layout") };
+  mkdirSync(bot.homeFolder);
+  try { for (const zoom of [0.75, 1, 1.25]) {
+    const surfaces = await app.evaluate(async ({ WebContentsView }, { bot, zoom }) => {
+      const { engine, owner } = (globalThis as unknown as FixtureGlobal).nativeBrowserFixture;
+      owner.webContents.setZoomFactor(zoom);
+      const bounds = { x: 240, y: 160, width: 480, height: 360 };
+      await engine.open(bot);
+      await engine.mount(bot, { visible: true, bounds });
+      return owner.contentView.children.filter(view => view instanceof WebContentsView && view.webContents !== owner.webContents && view.getVisible()).map(view => view.getBounds());
+    }, { bot, zoom });
+    expect(surfaces).toHaveLength(2);
+    for (const bounds of surfaces) expect(bounds).toEqual({ x: 240 * zoom, y: 160 * zoom, width: 480 * zoom, height: 360 * zoom });
+  } } finally {
+    await app.evaluate(async () => {
+      const { engine, owner } = (globalThis as unknown as FixtureGlobal).nativeBrowserFixture;
+      owner.webContents.setZoomFactor(1); await engine.closeAll();
+    });
+  }
+});
+
+it("covers the native page for menus without giving up control, but still releases it when the panel closes", async () => {
+  await electron?.close(); electron = await launch();
+  const bot: NativeBrowserBot = { id: "native-menu", homeFolder: join(root, "bot-menu") };
+  mkdirSync(bot.homeFolder);
+  const result = await electron.evaluate(async ({ WebContentsView }, bot) => {
+    const { engine, owner } = (globalThis as unknown as FixtureGlobal).nativeBrowserFixture;
+    const bounds = { x: 240, y: 160, width: 480, height: 360 };
+    const visible = () => owner.contentView.children.filter(view => view instanceof WebContentsView && view.webContents !== owner.webContents && view.getVisible()).length;
+    try {
+      await engine.mount(bot, { visible: true, bounds });
+      const botVisible = visible();
+      await engine.mount(bot, { visible: true, bounds, occluded: true });
+      const botCovered = visible();
+      await engine.mount(bot, { visible: true, bounds });
+      const taken = await engine.control(bot, "human");
+      const page = owner.contentView.children.find(view => view instanceof WebContentsView && view.webContents !== owner.webContents && view.getVisible());
+      if (!(page instanceof WebContentsView)) throw new Error("The human-controlled page is missing.");
+      const inputBlocked = () => {
+        let keyboard = false, mouse = false;
+        page.webContents.emit("before-input-event", { preventDefault() { keyboard = true; } }, { type: "keyUp", key: "a", shift: false });
+        page.webContents.emit("before-mouse-event", { preventDefault() { mouse = true; } }, { type: "mouseMove", x: 20, y: 20 });
+        return { keyboard, mouse };
+      };
+      engine.occludeBot(bot.id);
+      const humanCovered = { visible: visible(), state: engine.state(bot.id) };
+      const coveredInputBlocked = inputBlocked();
+      const restored = await engine.mount(bot, { visible: true, bounds });
+      const humanVisible = visible();
+      const restoredInputBlocked = inputBlocked();
+      const closed = await engine.mount(bot, { visible: false, bounds });
+      return { botVisible, botCovered, taken, humanCovered, coveredInputBlocked, restored, humanVisible, restoredInputBlocked, closed, closedVisible: visible() };
+    } finally { await engine.closeAll(); }
+  }, bot);
+  expect(result.botVisible).toBe(2); expect(result.botCovered).toBe(0);
+  expect(result.humanCovered.visible).toBe(0);
+  expect(result.coveredInputBlocked).toEqual({ keyboard: true, mouse: true });
+  for (const state of [result.humanCovered.state, result.restored]) expect(state).toMatchObject({ control: "human", canControl: true, controlEpoch: result.taken.controlEpoch });
+  expect(result.humanVisible).toBe(1);
+  expect(result.restoredInputBlocked).toEqual({ keyboard: false, mouse: false });
+  expect(result.closed.control).toBe("bot"); expect(result.closedVisible).toBe(0);
+});
+
+it("opens a default page for new native tabs without replacing existing pages or waiting for the network", async () => {
+  await electron?.close(); electron = await launch();
+  const app = electron, bot: NativeBrowserBot = { id: "native-start-page", homeFolder: join(root, "bot-start-page") };
+  mkdirSync(bot.homeFolder);
+  const state = () => app.evaluate((_electron, id) => (globalThis as unknown as FixtureGlobal).nativeBrowserFixture.engine.state(id), bot.id);
+  await app.evaluate(async (_electron, bot) => (globalThis as unknown as FixtureGlobal).nativeBrowserFixture.engine.open(bot), bot);
+  await expect.poll(async () => (await state()).tabs[0].title).toBe("Start page fixture");
+  expect((await state()).tabs[0].url).toBe(BROWSER_START_URL);
+  await app.evaluate(async (_electron, { bot, origin }) => {
+    const { engine } = (globalThis as unknown as FixtureGlobal).nativeBrowserFixture;
+    await engine.withAutomation(bot, {}, (contents) => contents.loadURL(origin));
+    await engine.open(bot);
+  }, { bot, origin });
+  expect((await state()).tabs[0].url).toBe(`${origin}/`);
+  const newTab = () => app.evaluate(async (_electron, bot) => {
+    const { engine } = (globalThis as unknown as FixtureGlobal).nativeBrowserFixture;
+    const state = await engine.control(bot, "human");
+    return engine.act(bot, { kind: "tab", generation: state.generation, action: "new" }, "human");
+  }, bot);
+  await newTab();
+  await expect.poll(async () => (await state()).tabs[1].title).toBe("Start page fixture");
+  await app.context().unroute(BROWSER_START_URL);
+  const network = Promise.withResolvers<void>();
+  await app.context().route(BROWSER_START_URL, async (route) => { await network.promise; await route.abort("internetdisconnected"); });
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const opened = await Promise.race([newTab(), new Promise<never>((_resolve, reject) => { timeout = setTimeout(() => reject(new Error("The start page blocked browser controls")), 5000); })]);
+    expect(opened.tabs).toHaveLength(3);
+  } finally { clearTimeout(timeout); network.resolve(); }
+  expect((await state()).control).toBe("human");
+  await app.evaluate(async () => (globalThis as unknown as FixtureGlobal).nativeBrowserFixture.engine.closeAll());
 });
 
 it("shares native automation refs, uploads, dialogs and downloads while enforcing human control and immediate concealment", async () => {

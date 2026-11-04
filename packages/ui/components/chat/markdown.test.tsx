@@ -9,6 +9,15 @@ describe("MarkdownText (markdown safety)", () => {
     expect(html).toContain("<li>Sabenza IT</li>");
   });
 
+  it("keeps table semantics and links inside a keyboard-accessible horizontal scroll region", () => {
+    const html = renderToStaticMarkup(<MarkdownText text={"| Business | Website |\n| --- | ---: |\n| Example company | https://example.com |"} />);
+    expect(html).toContain('<div class="markdown-table" role="region" aria-label="Table; scroll horizontally to read all columns" tabindex="0"><table>');
+    expect(html).toContain("<thead><tr><th>Business</th>");
+    expect(html).toContain('<th style="text-align:right">Website</th>');
+    expect(html).toContain("<tbody><tr><td>Example company</td>");
+    expect(html).toContain('<a href="https://example.com" target="_blank" rel="noreferrer">');
+  });
+
   it("never renders HTML from a reply, and drops script links", () => {
     const html = renderToStaticMarkup(
       <MarkdownText text={'<img src=x onerror="alert(1)"> ![x](https://example.com/a.png) [click](javascript:alert(1)) [page](data:text/html,hi) [box](vbscript:msgbox(1)) <script>alert(2)</script>'} />,

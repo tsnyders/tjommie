@@ -18,9 +18,9 @@ export function nativeBrowserFrameUrl(value: string, isMainFrame: boolean): stri
   if (!isMainFrame && (url.href === "about:srcdoc" || url.protocol === "blob:" || url.protocol === "data:")) return url.href;
   return nativeBrowserUrl(value);
 }
-// Rectangles belong to the owning window's content coordinates. Preserve its caption/toolbar band.
-export function nativeBrowserBounds(bounds: NativeBrowserBounds, width: number, height: number): NativeBrowserBounds {
-  const left = Math.min(width, Math.max(0, Math.ceil(bounds.x)));
-  const top = Math.min(height, Math.max(44, Math.ceil(bounds.y)));
-  return { x: left, y: top, width: Math.max(0, Math.min(width, Math.floor(bounds.x + bounds.width)) - left), height: Math.max(0, Math.min(height, Math.floor(bounds.y + bounds.height)) - top) };
+// Renderer CSS pixels become native window coordinates at the app's zoom; keep the caption band protected.
+export function nativeBrowserBounds(bounds: NativeBrowserBounds, width: number, height: number, zoom = 1): NativeBrowserBounds {
+  const left = Math.min(width, Math.max(0, Math.ceil(bounds.x * zoom)));
+  const top = Math.min(height, Math.max(44, Math.ceil(bounds.y * zoom)));
+  return { x: left, y: top, width: Math.max(0, Math.min(width, Math.floor((bounds.x + bounds.width) * zoom)) - left), height: Math.max(0, Math.min(height, Math.floor((bounds.y + bounds.height) * zoom)) - top) };
 }

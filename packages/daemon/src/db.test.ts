@@ -2,18 +2,24 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
-import { migrations, openDb } from "./db.ts";
+import { migrations, openDb, transaction } from "./db.ts";
 import { dataPaths, readOrCreateToken } from "./paths.ts";
 import { tempRoot } from "./testing.ts";
 
 // A root with a space and an accented letter, like a real Windows profile path.
 const root = tempRoot;
 
+function legacyDb(file: string, version: number): DatabaseSync {
+  const db = new DatabaseSync(file);
+  // Batch fixture creation so hosted Windows disks do not flush every DDL statement. The upgrade still runs through openDb.
+  transaction(db, () => { for (const migration of migrations.slice(0, version)) db.exec(migration); });
+  return db;
+}
+
 describe("openDb", () => {
   it("upgrades a version 6 database with Everyone and empty room memberships", () => {
     const file = join(root(), "v6.db");
-    const old = new DatabaseSync(file);
-    for (const migration of migrations.slice(0, 6)) old.exec(migration);
+    const old = legacyDb(file, 6);
     old.exec("PRAGMA user_version = 6");
     old.close();
     const db = openDb(file);
@@ -25,8 +31,7 @@ describe("openDb", () => {
 
   it("adds a nullable push token to the previous device schema without changing devices", () => {
     const file = join(root(), "v7.db");
-    const old = new DatabaseSync(file);
-    for (const migration of migrations.slice(0, 7)) old.exec(migration);
+    const old = legacyDb(file, 7);
     old.exec(`INSERT INTO devices(id,name,public_key,paired_at) VALUES('phone','Phone','key','2026-10-25T00:00:00.000Z'); PRAGMA user_version = 7;`);
     old.close();
     const db = openDb(file);
@@ -37,8 +42,7 @@ describe("openDb", () => {
 
   it("upgrades a version 8 device schema with nullable push kinds", () => {
     const file = join(root(), "v8.db");
-    const old = new DatabaseSync(file);
-    for (const migration of migrations.slice(0, 8)) old.exec(migration);
+    const old = legacyDb(file, 8);
     old.exec("INSERT INTO devices(id,name,public_key,paired_at,push_token) VALUES('phone','Phone','key','now','existing-token'); PRAGMA user_version = 8;");
     old.close();
     const db = openDb(file);
@@ -49,8 +53,7 @@ describe("openDb", () => {
 
   it("migrates version 4 accounts, pins, sessions and historical usage without moving identities", () => {
     const file = join(root(), "v4.db");
-    const old = new DatabaseSync(file);
-    for (const migration of migrations.slice(0, 4)) old.exec(migration);
+    const old = legacyDb(file, 4);
     old.exec(`INSERT INTO accounts VALUES ('claude-main', 'claude', 'Original', 'subscription', 'unchanged/main', '2026-01-01');
       INSERT INTO accounts VALUES ('claude-second', 'claude', 'Second', 'subscription', 'unchanged/second', '2026-02-01');
       INSERT INTO bots (id, name, color, shape, instructions, provider, model, autonomy, home_folder, created_at)
@@ -87,8 +90,7 @@ describe("openDb", () => {
 
   it("upgrades version 3 without replaying historical failures", () => {
     const file = join(root(), "v3.db");
-    const old = new DatabaseSync(file);
-    for (const migration of migrations.slice(0, 3)) old.exec(migration);
+    const old = legacyDb(file, 3);
     old.exec(`INSERT INTO bots (id, name, color, shape, instructions, provider, model, autonomy, home_folder, created_at)
       VALUES ('bot', 'Writer', 'blue', 'circle', '', 'claude', 'haiku', 'folder', 'x', 'then');
       INSERT INTO routines (id, bot_id, name, prompt, days, times, time_zone, created_at)
@@ -134,8 +136,7 @@ describe("openDb", () => {
 
   it("upgrades saved sessions with an unknown cost baseline", () => {
     const file = join(root(), "t.db");
-    const old = new DatabaseSync(file);
-    for (const migration of migrations.slice(0, 2)) old.exec(migration);
+    const old = legacyDb(file, 2);
     old.exec(`
       PRAGMA foreign_keys = ON;
       INSERT INTO bots (id, name, color, shape, instructions, provider, model, autonomy, home_folder, created_at)

@@ -62,6 +62,10 @@ function MarkdownImage({ src, alt }: ComponentProps<"img">) {
   return web(src) ? <WebLink href={src}>{alt || src}</WebLink> : <>{alt}</>;
 }
 
+function MarkdownTable({ children }: { children?: ReactNode }) {
+  return <div className="markdown-table" role="region" aria-label="Table; scroll horizontally to read all columns" tabIndex={0}><table>{children}</table></div>;
+}
+
 // Bot replies are Markdown. Raw HTML never renders, unsafe link targets are dropped, and links open in the
 // default browser (the desktop app sends every new window there).
 export function MarkdownText({ text, fileResources, fileImages }: { text: string; fileResources?: (source: string) => string | null; fileImages?: (source: string, alt: string) => ReactNode }) {
@@ -69,7 +73,7 @@ export function MarkdownText({ text, fileResources, fileImages }: { text: string
     <FileResources value={fileResources ?? null}>
     <FileImages value={fileImages ?? null}>
     <div className="markdown">
-      <Markdown remarkPlugins={fileResources || fileImages ? [remarkGfm, fileAnchors] : [remarkGfm]} components={{ a: WebLink, img: MarkdownImage }}>
+      <Markdown remarkPlugins={fileResources || fileImages ? [remarkGfm, fileAnchors] : [remarkGfm]} components={{ a: WebLink, img: MarkdownImage, table: MarkdownTable }}>
         {text}
       </Markdown>
     </div>
