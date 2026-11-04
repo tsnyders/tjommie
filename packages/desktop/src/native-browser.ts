@@ -2,7 +2,7 @@ import { BrowserWindow, WebContentsView, session, nativeImage, type DownloadItem
 import { randomUUID } from "node:crypto";
 import { lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { basename, join, relative, resolve } from "node:path";
-import type { BrowserFrame, BrowserState } from "../../protocol/src/browser.ts";
+import { BROWSER_START_URL, type BrowserFrame, type BrowserState } from "../../protocol/src/browser.ts";
 import { NativeBrowserCommand, NativeBrowserMount, type NativeBrowserUiCommand, type NativeBrowserToolCommand, type NativeBrowserRemoteCommand } from "../../protocol/src/native-browser.ts";
 import { NativeBrowserAccess } from "./native-browser-access.ts";
 import { captureNativeBrowserFrame } from "./native-browser-frame.ts";
@@ -578,6 +578,8 @@ export class NativeBrowserEngine {
       if (!inherited) await tab.contents.loadURL("about:blank");
       tab.contents.debugger.attach("1.3");
       await tab.contents.debugger.sendCommand("Page.enable");
+      // A slow, failed or superseded start-page request must not block browser controls.
+      if (!inherited) void tab.contents.loadURL(BROWSER_START_URL).catch(() => {});
     })();
     void tab.ready.catch((error: unknown) => this.#notice(browser, `Browser initialization failed: ${String(error)}`));
     this.#changed(browser); this.#present();

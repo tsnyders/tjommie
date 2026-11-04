@@ -4,6 +4,7 @@
 
 - Markdown tables keep readable columns and scroll sideways in chats and file previews; short files have simpler search controls.
 - Aurora phone dialogs use solid backgrounds so the chat no longer shows through file previews and forms.
+- New browsers and tabs open DuckDuckGo, matching address-bar searches, while existing pages stay open.
 
 ## 0.4.1 — 2026-11-03
 

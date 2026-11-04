@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import { join } from "node:path";
 import type { BrowserContext, Page } from "playwright-core";
 import { describe, expect, it, vi } from "vitest";
+import { BROWSER_START_URL } from "@tjommie/protocol";
 import type { StoredBot } from "./bots.ts";
 import { BrowserManager, browserProfile, findBrowser, jpegDimensions, navigationUrl } from "./browser-manager.ts";
 import { browserServer, sharedBrowserServer } from "./browser.ts";
@@ -26,11 +27,44 @@ function fakeContext() {
   const close = vi.fn(async () => { events.emit("close"); });
   const cdp = () => Object.assign(new EventEmitter(), { send: vi.fn(async (method: string): Promise<unknown> => method === "Browser.getWindowForTarget" ? { windowId: 7 } : undefined), detach: vi.fn(async () => {}) });
   const observers: ReturnType<typeof cdp>[] = [];
-  const context = Object.assign(events, { pages: () => [page], setDefaultTimeout: vi.fn(), setDefaultNavigationTimeout: vi.fn(), newCDPSession: vi.fn(async () => { const observer = cdp(); observers.push(observer); return observer; }), close }) as unknown as BrowserContext;
+  const newPage = vi.fn(async () => { const next = fakeContext().page; events.emit("page", next); return next; });
+  const context = Object.assign(events, { pages: () => [page], newPage, setDefaultTimeout: vi.fn(), setDefaultNavigationTimeout: vi.fn(), newCDPSession: vi.fn(async () => { const observer = cdp(); observers.push(observer); return observer; }), close }) as unknown as BrowserContext;
   return { context, page, pageEvents, keyboard, mouse, close, observers };
 }
 
 describe("owned embedded browser", () => {
+  it("opens the start page without waiting for its network request, and preserves existing tabs", async () => {
+    const fake = fakeContext(), manager = new BrowserManager(async () => fake.context);
+    vi.mocked(fake.page.goto).mockImplementation(() => new Promise(() => {}));
+    const state = await manager.open(bot);
+    expect(fake.page.goto).toHaveBeenCalledWith(BROWSER_START_URL, { waitUntil: "commit" });
+    await manager.open(bot); expect(fake.page.goto).toHaveBeenCalledOnce();
+    await manager.control(bot, "human");
+    await manager.tab(bot, state.generation, "new");
+    const added = await vi.mocked(fake.context.newPage).mock.results[0].value;
+    expect(added.goto).toHaveBeenCalledWith(BROWSER_START_URL, { waitUntil: "commit" });
+    await manager.closeAll();
+  });
+
+  it("preserves a restored web page and initializes the replacement after closing the last tab", async () => {
+    const fake = fakeContext(), manager = new BrowserManager(async () => fake.context);
+    vi.spyOn(fake.page, "url").mockReturnValue("https://example.com/existing");
+    const state = await manager.control(bot, "human");
+    expect(fake.page.goto).not.toHaveBeenCalled();
+    await manager.tab(bot, state.generation, "close", state.activePageId!);
+    const replacement = await vi.mocked(fake.context.newPage).mock.results[0].value;
+    expect(replacement.goto).toHaveBeenCalledWith(BROWSER_START_URL, { waitUntil: "commit" });
+    await manager.closeAll();
+  });
+
+  it("keeps browser controls available if the start page is offline", async () => {
+    const fake = fakeContext(), manager = new BrowserManager(async () => fake.context);
+    vi.mocked(fake.page.goto).mockRejectedValueOnce(new Error("Network unavailable"));
+    await manager.open(bot);
+    expect((await manager.control(bot, "human")).control).toBe("human");
+    await manager.closeAll();
+  });
+
   it("reads JPEG pixel dimensions and rejects malformed or truncated headers", () => {
     expect(jpegDimensions(jpeg("", 1280, 800))).toEqual({ width: 1280, height: 800 });
     for (const data of ["not-an-image", "", Buffer.from([255, 216, 255, 192, 0, 30, 8]).toString("base64")]) expect(jpegDimensions(data)).toBeNull();
