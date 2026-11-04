@@ -12,7 +12,7 @@ export type NativeBrowserCommand = NativeBrowserUiCommand;
 export type NativeBrowserApi = {
   command(botId: string, command: NativeBrowserCommand): Promise<BrowserState>;
   // Puts the active tab's view at these bounds and shows it (visible), or hides it, keeping the context. The desktop app hides
-  // every view while an app dialog's scrim is up (setDialogScrim), and the renderer hides it for a menu or list.
+  // every view while an app dialog's scrim is up; occluded covers a menu or dialog without giving up browser control.
   mount(botId: string, mount: NativeBrowserMount): Promise<BrowserState>;
   onState(listener: (state: BrowserState) => void): () => void; // every change, for any bot
   onFocusReturn?(listener: (botId: string) => void): () => void; // the page let go of the keyboard (Shift+Tab), if the app reports it

@@ -1,14 +1,16 @@
 "use client";
 
 import Link from "next/link";
+import { Menu } from "@base-ui/react/menu";
 import { Radio } from "@base-ui/react/radio";
 import { RadioGroup } from "@base-ui/react/radio-group";
-import { useCallback, useEffect, useId, useRef, useState } from "react";
-import { Check, KeyRound, X } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Check, Ellipsis, KeyRound } from "lucide-react";
 import type { BrowserState } from "@tjommie/protocol";
 import { LoginEntry, VaultStatus, type VaultFillTarget, type VaultHostAction } from "../../../protocol/src/vault";
 import { IconButton } from "@/components/icon-button";
-import { MENU_ITEM } from "@/components/menu";
+import { Dialog } from "@/components/dialog";
+import { MENU_ITEM, MENU_POPUP } from "@/components/menu";
 import { Pill } from "@/components/pill";
 import { createLoginsClient, LOGINS_PROBLEM } from "@/lib/logins";
 import { useApp } from "@/lib/store";
@@ -22,7 +24,7 @@ export function BrowserLogins({ state, onRefresh }: { state: BrowserState; onRef
   return <BrowserLoginScope key={`${host}:${connection}:${state.botId}:${state.generation}`} state={state} onRefresh={onRefresh} />;
 }
 function BrowserLoginScope({ state, onRefresh }: { state: BrowserState; onRefresh: () => void }) {
-  const panelId = useId(), trigger = useRef<HTMLButtonElement>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
   const [client] = useState(createLoginsClient), [open, setOpen] = useState(false), [status, setStatus] = useState<VaultStatus | null>(null), [entries, setEntries] = useState<LoginEntry[]>([]), [selected, setSelected] = useState("");
   const [busy, setBusy] = useState(false), [notice, setNotice] = useState(""), [error, setError] = useState(false), revision = useRef(0), alive = useRef(false), reads = useRef(0);
   const refresh = useCallback(async () => {
@@ -59,14 +61,14 @@ function BrowserLoginScope({ state, onRefresh }: { state: BrowserState; onRefres
       <Pill className="h-auto! min-h-8 max-w-full whitespace-normal! py-2 max-sm:min-h-11" disabled={busy || state.privateEpoch === undefined} onClick={() => { if (state.privateEpoch !== undefined) void run({ kind: "finish", botId: state.botId, generation: state.generation, privateEpoch: state.privateEpoch, mode: "clear" }); }}>Clear private fields on host</Pill>
       <Pill className="h-auto! min-h-8 max-w-full whitespace-normal! py-2 max-sm:min-h-11" disabled={busy || state.privateEpoch === undefined} onClick={() => { if (state.privateEpoch !== undefined) void run({ kind: "finish", botId: state.botId, generation: state.generation, privateEpoch: state.privateEpoch, mode: "close" }); }}>Close private browser on host</Pill>
     </div>{feedback}</div> : <>
-      <IconButton ref={trigger} label="Saved logins" aria-expanded={open} aria-controls={panelId} className="max-sm:size-11" onClick={() => { if (open) close(); else setOpen(true); }}><KeyRound aria-hidden /></IconButton>
-      {/* Inline controls keep the native page visible; opening an overlay hands control back to the bot. */}
-      {open && <section id={panelId} aria-label="Saved logins" className="order-last min-w-0 basis-full rounded-[12px] bg-card p-3 text-[14px] leading-[21px]">
-      <div className="mb-2 flex items-center gap-2">
-        <h3 className="min-w-0 flex-1 text-[14px] font-semibold text-title">Saved logins</h3>
-        <IconButton label="Close saved logins" className="max-sm:size-11" onClick={close}><X aria-hidden /></IconButton>
-      </div>
-      <div className="flex min-w-0 flex-wrap items-center gap-2 pb-2">
+      <Menu.Root>
+        <Menu.Trigger render={<IconButton ref={trigger} label="Browser menu" className="size-9 data-[popup-open]:bg-selected max-sm:size-11" />}><Ellipsis aria-hidden /></Menu.Trigger>
+        <Menu.Portal><Menu.Positioner side="bottom" align="end" sideOffset={6} className="z-50"><Menu.Popup className={MENU_POPUP}>
+          <Menu.Item className={MENU_ITEM} onClick={() => setOpen(true)}><KeyRound aria-hidden />Saved logins</Menu.Item>
+        </Menu.Popup></Menu.Positioner></Menu.Portal>
+      </Menu.Root>
+      <Dialog open={open} onOpenChange={value => { if (value) setOpen(true); else close(); }} title="Saved logins" width={400} closable>
+      <div className="mt-4 flex min-w-0 flex-wrap items-center gap-2 pb-2">
         <p className="basis-full text-[12px] leading-[18px] text-secondary [overflow-wrap:anywhere]">Only metadata is shown here. The host confirms its exact HTTPS destination before filling. {status ? `Logins ${status.state}.` : error ? "Logins unavailable." : "Checking host…"} {status?.reason}</p>
         {choices.length > 0 ? <RadioGroup aria-label="Saved login for this origin" value={entry?.id ?? ""} onValueChange={(value: unknown) => { if (typeof value === "string") setSelected(value); }} className="max-h-36 w-full overflow-y-auto overscroll-contain">
           {choices.map(value => <Radio.Root key={value.id} value={value.id} className={`${MENU_ITEM} w-full hover:bg-highlight focus-visible:bg-highlight data-[checked]:bg-selected max-sm:min-h-11`}><span className="min-w-0 flex-1 truncate">{value.name}</span><Radio.Indicator><Check className="size-4" aria-hidden /></Radio.Indicator></Radio.Root>)}
@@ -77,7 +79,7 @@ function BrowserLoginScope({ state, onRefresh }: { state: BrowserState; onRefres
         {!target && <p className="basis-full text-[12px] leading-[18px] text-secondary">Take control of the current browser page before filling a login.</p>}
       </div>
       {feedback}
-      </section>}
+      </Dialog>
     </>}
   </>;
 }

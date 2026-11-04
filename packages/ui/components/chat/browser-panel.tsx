@@ -112,7 +112,7 @@ function NativePane({ bot, api, active, expanded, canExpand, onToggleExpanded }:
 
 // The place the native page sits. The page is a view over the window, so this reports where the slot is, every frame while it
 // is shown (the panel moves with a drag, a resize, an expand or a scroll, and none of those is an event of the slot), and
-// reports it hidden when the pane isn't shown, the window is, or an app menu, list or dialog is open.
+// leaves it when the pane or window is hidden, and temporarily covers it for app menus and dialogs without handing control back.
 function NativeViewport({ session, active }: { session: NativeBrowserSession; active: boolean }) {
   const slot = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -123,7 +123,7 @@ function NativeViewport({ session, active }: { session: NativeBrowserSession; ac
     // Every frame the slot is read, but the desktop app is only told when the bounds differ from the last ones sent.
     let frame = 0;
     const follow = (): void => {
-      session.setBounds(slotBounds(slot.current?.getBoundingClientRect(), coveredByAppOverlay(document)));
+      session.setBounds(slotBounds(slot.current?.getBoundingClientRect(), document.visibilityState !== "visible"), coveredByAppOverlay(document));
       frame = requestAnimationFrame(follow);
     };
     follow();
@@ -164,7 +164,7 @@ export function BrowserChrome({
     <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2 overflow-y-auto px-4 pb-4">
       {state && (
         <>
-          <div className="flex min-w-0 shrink-0 items-center gap-1">
+          <div className="flex min-w-0 shrink-0 flex-wrap items-center gap-1">
           <div role="tablist" aria-label="Browser tabs" className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
             {state.tabs.map((each) => {
               const title = each.title || each.url || "New tab";
@@ -195,6 +195,7 @@ export function BrowserChrome({
             {canExpand && <IconButton label={expanded ? "Restore browser" : "Expand browser"} className="size-9 max-sm:size-11" data-focus-return="expand" onClick={onToggleExpanded}>
               {expanded ? <Minimize2 aria-hidden /> : <Maximize2 aria-hidden />}
             </IconButton>}
+            {active && <BrowserLogins state={state} onRefresh={onRetry} />}
           </div>
           <form
             className="flex min-w-0 shrink-0 items-center gap-1"
@@ -235,7 +236,6 @@ export function BrowserChrome({
             <span className="min-w-0 flex-1" title={human ? "Shift+Tab leaves the page. Closing this panel, or opening Details, hands the browser back to the bot." : undefined}>
               {state.privateActive ? "Private interaction. Browser automation and pictures are paused." : human ? <>{"You're in control."}<span className="sr-only"> Shift+Tab leaves the page.</span></> : state.control === "human" ? "Another device is controlling this browser. You can watch." : `${botName} is using this browser. You can watch.`}
             </span>
-            {active && <BrowserLogins state={state} onRefresh={onRetry} />}
             <Pill disabled={state.privateActive} data-focus-return="control" onClick={() => controls.setControl(human ? "bot" : "human")} className="text-[13px] max-sm:min-h-11">
               {human ? "Resume bot" : "Take control"}
             </Pill>

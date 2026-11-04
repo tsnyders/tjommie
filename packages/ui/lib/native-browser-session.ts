@@ -34,6 +34,8 @@ export class NativeBrowserSession {
   #off: (() => void)[] = [];
   #opened = false; // the desktop app has the bot's browser, so it can be mounted
   #rect: NativeBrowserRect | null = null; // where the view should be, as last asked
+  #occluded = false;
+  #sentOccluded = false;
   #sent: NativeBrowserRect | null | undefined; // where it was last mounted successfully (undefined: never)
   #last: NativeBrowserRect = { x: 0, y: 0, width: 1, height: 1 }; // the last place it was shown, kept for hiding it
   #mounting: Promise<void> | null = null;
@@ -82,8 +84,9 @@ export class NativeBrowserSession {
 
   // Where the page goes: the viewport's rectangle in the window, or null to hide it. It is sent on a lane of its own, only when it
   // differs from what the desktop app last accepted, and only the newest is sent.
-  setBounds(rect: NativeBrowserRect | null): void {
+  setBounds(rect: NativeBrowserRect | null, occluded = false): void {
     this.#rect = rect;
+    this.#occluded = rect !== null && occluded;
     if (this.#opened) void this.#syncMount();
   }
 
@@ -143,6 +146,7 @@ export class NativeBrowserSession {
     this.#retryTimer = undefined;
     this.#closing = true;
     this.#rect = null;
+    this.#occluded = false;
     if (this.#opened) void this.#syncMount(); // hiding doesn't wait for the hand-back
     void this.#push({
       release: true,
@@ -177,14 +181,16 @@ export class NativeBrowserSession {
     const loop = async (): Promise<void> => {
       await Promise.resolve(); // so the lane is registered before any early return clears it
       try {
-        while (this.#sent === undefined || !sameRect(this.#rect, this.#sent)) {
+        while (this.#sent === undefined || !sameRect(this.#rect, this.#sent) || this.#occluded !== this.#sentOccluded) {
           if (!this.#closing && Date.now() < this.#retryAt) return;
           const want = this.#rect;
+          const occluded = this.#occluded;
           if (want) this.#last = want;
           const seen = this.#events;
           try {
-            this.#accept(await this.api.mount(this.botId, { visible: want !== null, bounds: want ?? this.#last }), seen, false);
+            this.#accept(await this.api.mount(this.botId, { visible: want !== null, bounds: want ?? this.#last, ...(occluded ? { occluded: true } : {}) }), seen, false);
             this.#sent = want;
+            this.#sentOccluded = occluded;
             this.#failures = 0;
           } catch (error) {
             this.#failures += 1;

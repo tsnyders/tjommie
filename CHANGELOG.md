@@ -5,7 +5,8 @@
 - Markdown tables keep readable columns and scroll sideways in chats and file previews; short files have simpler search controls.
 - Aurora phone dialogs use solid backgrounds so the chat no longer shows through file previews and forms.
 - New browsers and tabs open DuckDuckGo, matching address-bar searches, while existing pages stay open.
-- Browser pages stay aligned when the app is zoomed; the toolbar has roomier tabs, aligned navigation, and compact saved-login controls that keep you in control of the page.
+- Browser pages stay aligned when the app is zoomed; the toolbar has roomier tabs and aligned navigation.
+- Saved logins lives in the browser's three-dot menu; menus and login dialogs keep browser control with you until you close the browser panel or resume the bot.
 
 ## 0.4.1 — 2026-11-03
 

@@ -7,7 +7,7 @@ export const NativeBrowserBounds = z.object({
   width: z.number().finite().min(0).max(32768), height: z.number().finite().min(0).max(32768),
 }).strict();
 export type NativeBrowserBounds = z.infer<typeof NativeBrowserBounds>;
-export const NativeBrowserMount = z.object({ visible: z.boolean(), bounds: NativeBrowserBounds }).strict();
+export const NativeBrowserMount = z.object({ visible: z.boolean(), bounds: NativeBrowserBounds, occluded: z.boolean().optional() }).strict();
 export type NativeBrowserMount = z.infer<typeof NativeBrowserMount>;
 
 // Renderer IPC accepts ONLY this subset. Tool commands belong to the private desktop-host bridge.

@@ -433,6 +433,13 @@ export class NativeBrowserEngine {
 
   setOccluded(value: boolean): void { this.#occluded = value; this.#present(); }
 
+  occludeBot(botId: string): void {
+    const browser = this.#browsers.get(botId);
+    if (!browser || browser.closing || !browser.mount) return;
+    browser.mount = { ...browser.mount, occluded: true };
+    this.#present();
+  }
+
   hideBot(botId: string): void {
     const browser = this.#browsers.get(botId);
     if (!browser || browser.closing) return;
@@ -644,7 +651,7 @@ export class NativeBrowserEngine {
   }
 
   #interactive(browser: Browser, tab: Tab): boolean {
-    return browser.access.owner === "local" && browser.handover === 0 && browser.active === tab.id && this.#mounted === browser.bot.id && !this.#occluded && !!browser.mount?.visible && this.#options.window.isVisible();
+    return browser.access.owner === "local" && browser.handover === 0 && browser.active === tab.id && this.#mounted === browser.bot.id && !this.#occluded && !!browser.mount?.visible && !browser.mount.occluded && this.#options.window.isVisible();
   }
   async #resizeTab(tab: Tab, width: number, height: number): Promise<void> {
     await tab.ready;
@@ -682,7 +689,7 @@ export class NativeBrowserEngine {
     for (const browser of this.#browsers.values()) {
       const mount = browser.mount;
       const bounds = mount ? nativeBrowserBounds(mount.bounds, width, height, owner.webContents.getZoomFactor()) : null;
-      const visible = !this.#occluded && owner.isVisible() && this.#mounted === browser.bot.id && !!mount?.visible && !!bounds?.width && !!bounds.height;
+      const visible = !this.#occluded && !mount?.occluded && owner.isVisible() && this.#mounted === browser.bot.id && !!mount?.visible && !!bounds?.width && !!bounds.height;
       for (const tab of browser.tabs.values()) {
         if (tab.contents.isDestroyed()) continue;
         const show = visible && browser.active === tab.id;

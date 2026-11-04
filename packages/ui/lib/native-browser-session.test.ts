@@ -58,7 +58,7 @@ function fake(initial = state()) {
     mount: async (_bot, at) => {
       await wait("mount");
       if (failing.has("mount")) throw new Error("failed: mount");
-      note(at.visible ? `bounds:${at.bounds.x}` : "bounds:null");
+      note(at.visible ? at.occluded ? "occluded" : `bounds:${at.bounds.x}` : "bounds:null");
       return current;
     },
     onState: (listener) => (stateListeners.add(listener), () => void stateListeners.delete(listener)),
@@ -157,6 +157,19 @@ describe("NativeBrowserSession", () => {
     }
   });
 
+  it("temporarily covers the page without releasing control, then restores it at the same bounds", async () => {
+    const t = fake(state({ control: "human", canControl: true, controlEpoch: 7 }));
+    t.session.open(); await settle();
+    t.session.setBounds(rect(5)); await settle(); t.log.length = 0;
+    t.session.setBounds(rect(5), true); await settle();
+    t.session.setBounds(rect(5), false); await settle();
+    expect(t.log).toEqual(["occluded", "bounds:5"]);
+    expect(t.session.view.state).toMatchObject({ control: "human", controlEpoch: 7 });
+    await t.session.close();
+    expect(t.log).toContain("control:bot");
+    expect(t.log).toContain("bounds:null");
+  });
+
   it("hides the view at once, not behind a slow navigation, and mounts the latest bounds when shown again", async () => {
     const t = fake();
     t.session.open();
@@ -166,7 +179,7 @@ describe("NativeBrowserSession", () => {
     t.log.length = 0;
     const slow = await t.hold("navigate");
     t.session.navigate("https://slow.test/"); // in flight, held
-    t.session.setBounds(null); // a menu opened
+    t.session.setBounds(null); // the pane was hidden
     await settle();
     expect(t.log).toEqual(["bounds:null"]); // hidden while the navigation is still pending
     t.session.setBounds(rect(8));

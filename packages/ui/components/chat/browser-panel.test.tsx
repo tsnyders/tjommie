@@ -21,7 +21,8 @@ const shown = (patch: Partial<BrowserState> = {}): BrowserView => ({ state: stat
 describe("BrowserChrome", () => {
   it("labels its parts and offers Take control while the bot drives", () => {
     const out = html(shown());
-    for (const label of ["Expand browser", "Browser address", "Browser viewport", "Browser tab Example", "Back", "Forward", "Reload"]) expect(out).toContain(`aria-label="${label}"`);
+    for (const label of ["Expand browser", "Browser address", "Browser viewport", "Browser tab Example", "Back", "Forward", "Reload", "Browser menu"]) expect(out).toContain(`aria-label="${label}"`);
+    expect(out).not.toContain('aria-label="Saved logins"');
     expect(out).toContain("Go");
     expect(out).toContain("Take control");
     expect(out).not.toContain("Resume bot");

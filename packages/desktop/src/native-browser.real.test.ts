@@ -86,6 +86,48 @@ it("keeps the native page and input shield aligned with the UI at different app 
   }
 });
 
+it("covers the native page for menus without giving up control, but still releases it when the panel closes", async () => {
+  await electron?.close(); electron = await launch();
+  const bot: NativeBrowserBot = { id: "native-menu", homeFolder: join(root, "bot-menu") };
+  mkdirSync(bot.homeFolder);
+  const result = await electron.evaluate(async ({ WebContentsView }, bot) => {
+    const { engine, owner } = (globalThis as unknown as FixtureGlobal).nativeBrowserFixture;
+    const bounds = { x: 240, y: 160, width: 480, height: 360 };
+    const visible = () => owner.contentView.children.filter(view => view instanceof WebContentsView && view.webContents !== owner.webContents && view.getVisible()).length;
+    try {
+      await engine.mount(bot, { visible: true, bounds });
+      const botVisible = visible();
+      await engine.mount(bot, { visible: true, bounds, occluded: true });
+      const botCovered = visible();
+      await engine.mount(bot, { visible: true, bounds });
+      const taken = await engine.control(bot, "human");
+      const page = owner.contentView.children.find(view => view instanceof WebContentsView && view.webContents !== owner.webContents && view.getVisible());
+      if (!(page instanceof WebContentsView)) throw new Error("The human-controlled page is missing.");
+      const inputBlocked = () => {
+        let keyboard = false, mouse = false;
+        page.webContents.emit("before-input-event", { preventDefault() { keyboard = true; } }, { type: "keyUp", key: "a", shift: false });
+        page.webContents.emit("before-mouse-event", { preventDefault() { mouse = true; } }, { type: "mouseMove", x: 20, y: 20 });
+        return { keyboard, mouse };
+      };
+      engine.occludeBot(bot.id);
+      const humanCovered = { visible: visible(), state: engine.state(bot.id) };
+      const coveredInputBlocked = inputBlocked();
+      const restored = await engine.mount(bot, { visible: true, bounds });
+      const humanVisible = visible();
+      const restoredInputBlocked = inputBlocked();
+      const closed = await engine.mount(bot, { visible: false, bounds });
+      return { botVisible, botCovered, taken, humanCovered, coveredInputBlocked, restored, humanVisible, restoredInputBlocked, closed, closedVisible: visible() };
+    } finally { await engine.closeAll(); }
+  }, bot);
+  expect(result.botVisible).toBe(2); expect(result.botCovered).toBe(0);
+  expect(result.humanCovered.visible).toBe(0);
+  expect(result.coveredInputBlocked).toEqual({ keyboard: true, mouse: true });
+  for (const state of [result.humanCovered.state, result.restored]) expect(state).toMatchObject({ control: "human", canControl: true, controlEpoch: result.taken.controlEpoch });
+  expect(result.humanVisible).toBe(1);
+  expect(result.restoredInputBlocked).toEqual({ keyboard: false, mouse: false });
+  expect(result.closed.control).toBe("bot"); expect(result.closedVisible).toBe(0);
+});
+
 it("opens a default page for new native tabs without replacing existing pages or waiting for the network", async () => {
   await electron?.close(); electron = await launch();
   const app = electron, bot: NativeBrowserBot = { id: "native-start-page", homeFolder: join(root, "bot-start-page") };
