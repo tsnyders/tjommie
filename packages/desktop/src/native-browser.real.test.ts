@@ -63,6 +63,29 @@ beforeAll(async () => {
   origin = `http://127.0.0.1:${address.port}`;
 });
 
+it("keeps the native page and input shield aligned with the UI at different app zoom levels", async () => {
+  await electron?.close(); electron = await launch();
+  const app = electron, bot: NativeBrowserBot = { id: "native-layout", homeFolder: join(root, "bot-layout") };
+  mkdirSync(bot.homeFolder);
+  try { for (const zoom of [0.75, 1, 1.25]) {
+    const surfaces = await app.evaluate(async ({ WebContentsView }, { bot, zoom }) => {
+      const { engine, owner } = (globalThis as unknown as FixtureGlobal).nativeBrowserFixture;
+      owner.webContents.setZoomFactor(zoom);
+      const bounds = { x: 240, y: 160, width: 480, height: 360 };
+      await engine.open(bot);
+      await engine.mount(bot, { visible: true, bounds });
+      return owner.contentView.children.filter(view => view instanceof WebContentsView && view.webContents !== owner.webContents && view.getVisible()).map(view => view.getBounds());
+    }, { bot, zoom });
+    expect(surfaces).toHaveLength(2);
+    for (const bounds of surfaces) expect(bounds).toEqual({ x: 240 * zoom, y: 160 * zoom, width: 480 * zoom, height: 360 * zoom });
+  } } finally {
+    await app.evaluate(async () => {
+      const { engine, owner } = (globalThis as unknown as FixtureGlobal).nativeBrowserFixture;
+      owner.webContents.setZoomFactor(1); await engine.closeAll();
+    });
+  }
+});
+
 it("opens a default page for new native tabs without replacing existing pages or waiting for the network", async () => {
   await electron?.close(); electron = await launch();
   const app = electron, bot: NativeBrowserBot = { id: "native-start-page", homeFolder: join(root, "bot-start-page") };

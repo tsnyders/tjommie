@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, type ClipboardEvent, type KeyboardEvent, type PointerEvent, type ReactNode } from "react";
-import { ArrowLeft, ArrowRight, Loader, Maximize2, Minimize2, Plus, RotateCw, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, CornerDownLeft, Loader, Maximize2, Minimize2, Plus, RotateCw, X } from "lucide-react";
 import type { Bot, BrowserInput } from "@tjommie/protocol";
 import { BrowserSession, type BrowserView } from "@/lib/browser-session";
 import { request } from "@/lib/connection";
@@ -161,14 +161,15 @@ export function BrowserChrome({
   const tab = state?.tabs.find((each) => each.id === state.activePageId);
   const [draft, setDraft] = useState<string | null>(null);
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-4 pb-4">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2 overflow-y-auto px-4 pb-4">
       {state && (
         <>
-          <div role="tablist" aria-label="Browser tabs" className="flex items-center gap-1 overflow-x-auto">
+          <div className="flex min-w-0 shrink-0 items-center gap-1">
+          <div role="tablist" aria-label="Browser tabs" className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
             {state.tabs.map((each) => {
               const title = each.title || each.url || "New tab";
               return (
-                <div key={each.id} className={cn("flex h-8 min-w-0 max-w-[160px] shrink-0 items-center rounded-[10px]", each.id === state.activePageId ? "bg-selected" : "bg-card")}>
+                <div key={each.id} className={cn("flex h-9 w-48 shrink-0 items-center rounded-[10px] max-sm:h-11", each.id === state.activePageId ? "bg-selected" : "bg-card")}>
                   <button
                     type="button"
                     role="tab"
@@ -177,22 +178,26 @@ export function BrowserChrome({
                     title={title}
                     disabled={!human}
                     onClick={() => controls.tab("select", each.id)}
-                    className="min-w-0 flex-1 truncate pl-3 pr-1 text-left text-[13px] leading-[18px] text-text disabled:opacity-70"
+                    className="h-full min-w-0 flex-1 truncate pl-3 pr-1 text-left text-[13px] leading-[18px] text-text disabled:opacity-70"
                   >
                     {title}
                   </button>
-                  <button type="button" aria-label={`Close tab ${title}`} disabled={!human} onClick={() => controls.tab("close", each.id)} className="press mr-1 flex size-6 shrink-0 items-center justify-center rounded-[8px] text-icon hover:bg-pill disabled:opacity-50">
+                  <button type="button" aria-label={`Close tab ${title}`} disabled={!human} onClick={() => controls.tab("close", each.id)} className="press mr-1 flex size-7 shrink-0 items-center justify-center rounded-[8px] text-icon hover:bg-pill disabled:opacity-50 max-sm:size-11 max-sm:mr-0">
                     <X className="size-3.5" aria-hidden />
                   </button>
                 </div>
               );
             })}
-            <IconButton label="New tab" disabled={!human} onClick={() => controls.tab("new")}>
+          </div>
+            <IconButton label="New tab" className="size-9 max-sm:size-11" disabled={!human} onClick={() => controls.tab("new")}>
               <Plus aria-hidden />
             </IconButton>
+            {canExpand && <IconButton label={expanded ? "Restore browser" : "Expand browser"} className="size-9 max-sm:size-11" data-focus-return="expand" onClick={onToggleExpanded}>
+              {expanded ? <Minimize2 aria-hidden /> : <Maximize2 aria-hidden />}
+            </IconButton>}
           </div>
           <form
-            className="flex flex-wrap items-center gap-1"
+            className="flex min-w-0 shrink-0 items-center gap-1"
             onSubmit={(event) => {
               event.preventDefault();
               // The form's own value, so a blur that cleared the draft just before this click can't lose the address.
@@ -201,13 +206,13 @@ export function BrowserChrome({
               setDraft(null);
             }}
           >
-            <IconButton label="Back" disabled={!human} onClick={() => controls.history("back")}>
+            <IconButton label="Back" className="size-9 max-sm:size-11" disabled={!human} onClick={() => controls.history("back")}>
               <ArrowLeft aria-hidden />
             </IconButton>
-            <IconButton label="Forward" disabled={!human} onClick={() => controls.history("forward")}>
+            <IconButton label="Forward" className="size-9 max-sm:size-11" disabled={!human} onClick={() => controls.history("forward")}>
               <ArrowRight aria-hidden />
             </IconButton>
-            <IconButton label="Reload" disabled={!human} onClick={() => controls.history("reload")}>
+            <IconButton label="Reload" className="size-9 max-sm:size-11" disabled={!human} onClick={() => controls.history("reload")}>
               <RotateCw aria-hidden />
             </IconButton>
             <input
@@ -219,30 +224,24 @@ export function BrowserChrome({
               readOnly={!human}
               spellCheck={false}
               autoComplete="off"
+              placeholder="Search or enter an address"
               onChange={(event) => setDraft(event.target.value)}
               onKeyDown={(event) => event.key === "Escape" && setDraft(null)}
-              className="h-8 min-w-[8rem] flex-1 rounded-[10px] bg-card px-3 text-[13px] leading-[18px] text-text placeholder:text-caption max-sm:h-11"
+              className={cn(FIELD, "h-9 min-w-0 flex-1 px-3 text-[13px] max-sm:h-11")}
             />
-            <button type="submit" disabled={!human} onMouseDown={(event) => event.preventDefault()} className={BUTTON}>
-              Go
-            </button>
-            {canExpand && (
-              <IconButton label={expanded ? "Restore browser" : "Expand browser"} data-focus-return="expand" onClick={onToggleExpanded}>
-                {expanded ? <Minimize2 aria-hidden /> : <Maximize2 aria-hidden />}
-              </IconButton>
-            )}
+            <IconButton type="submit" label="Go" className="size-9 max-sm:size-11" disabled={!human} onMouseDown={(event) => event.preventDefault()}><CornerDownLeft aria-hidden /></IconButton>
           </form>
-          <div className="flex items-center justify-between gap-3 text-[12px] leading-[18px] text-secondary">
-            <span title={human ? "Closing this panel, or opening Details, hands the browser back to the bot." : undefined}>
-              {state.privateActive ? "Private interaction. Browser automation and pictures are paused." : human ? "You're in control. Shift+Tab leaves the page." : state.control === "human" ? "Another device is controlling this browser. You can watch." : `${botName} is using this browser. You can watch.`}
+          <div className="flex min-w-0 shrink-0 flex-wrap items-center gap-2 text-[12px] leading-[18px] text-secondary">
+            <span className="min-w-0 flex-1" title={human ? "Shift+Tab leaves the page. Closing this panel, or opening Details, hands the browser back to the bot." : undefined}>
+              {state.privateActive ? "Private interaction. Browser automation and pictures are paused." : human ? <>{"You're in control."}<span className="sr-only"> Shift+Tab leaves the page.</span></> : state.control === "human" ? "Another device is controlling this browser. You can watch." : `${botName} is using this browser. You can watch.`}
             </span>
-            <button type="button" disabled={state.privateActive} data-focus-return="control" onClick={() => controls.setControl(human ? "bot" : "human")} className="shrink-0 text-[13px] text-accent hover:underline disabled:opacity-50">
+            {active && <BrowserLogins state={state} onRefresh={onRetry} />}
+            <Pill disabled={state.privateActive} data-focus-return="control" onClick={() => controls.setControl(human ? "bot" : "human")} className="text-[13px] max-sm:min-h-11">
               {human ? "Resume bot" : "Take control"}
-            </button>
+            </Pill>
           </div>
           {tab && googleSignInRejected(tab.url) && <p className="text-[12px] leading-[18px] text-secondary">Google may block sign-in in automated browsers.</p>}
           {state.dialog && <PageDialog key={state.dialog.pageId + state.dialog.message} dialog={state.dialog} human={human} controls={controls} />}
-          {active && <BrowserLogins state={state} onRefresh={onRetry} />}
         </>
       )}
       {viewport ?? <Viewport view={view} human={human} controls={controls} />}

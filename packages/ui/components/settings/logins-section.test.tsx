@@ -17,7 +17,7 @@ const state: BrowserState = { botId: "one", generation: "generation-one", contro
 let root: Root | undefined;
 const settle = () => act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
 async function mount(node: ReactNode) { root = createRoot(document.body.appendChild(document.createElement("div"))); await act(async () => root!.render(node)); await settle(); }
-const button = (label: string): HTMLButtonElement => { const found = [...document.querySelectorAll("button")].find(value => value.textContent === label); if (!found) throw new Error(`Missing ${label}`); return found; };
+const button = (label: string): HTMLButtonElement => { const found = [...document.querySelectorAll("button")].find(value => value.textContent === label || value.getAttribute("aria-label") === label); if (!found) throw new Error(`Missing ${label}`); return found; };
 async function chooseSavedLogin(): Promise<void> {
   await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Saved login for this origin"]')!.click());
   const choice = [...document.querySelectorAll<HTMLElement>('[role="menuitemradio"]')].find(item => item.textContent?.includes(entry.name));
@@ -58,4 +58,17 @@ it("cancels a pending fill on generation change and discards its late result", a
   await chooseSavedLogin(); await act(async () => button("Fill on host").click());
   await act(async () => root!.render(<BrowserLogins state={{ ...state, generation: "generation-two" }} onRefresh={refreshed} />));
   expect(call).toHaveBeenCalledWith("vault.cancel", {}); await act(async () => finish({ status: "filled", privateEpoch: 9 })); await settle(); expect(refreshed).not.toHaveBeenCalled(); expect(document.body.textContent).not.toContain("Login filled privately");
+});
+it("opens saved logins from the toolbar and cancels a pending fill when the popup closes", async () => {
+  let finish!: (value: unknown) => void; const refreshed = vi.fn();
+  const regular = call.getMockImplementation()!; call.mockImplementation((method, params) => method === "vault.fill" ? new Promise(resolve => { finish = resolve; }) : regular(method, params));
+  await mount(<BrowserLogins state={state} onRefresh={refreshed} />);
+  expect(document.querySelector('[role="dialog"]')).toBeNull();
+  await act(async () => button("Saved logins").click()); await settle();
+  expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+  await chooseSavedLogin(); await act(async () => button("Fill on host").click());
+  await act(async () => button("Close saved logins").click()); await settle();
+  expect(call).toHaveBeenCalledWith("vault.cancel", {});
+  await act(async () => finish({ status: "filled", privateEpoch: 9 })); await settle();
+  expect(refreshed).not.toHaveBeenCalled();
 });

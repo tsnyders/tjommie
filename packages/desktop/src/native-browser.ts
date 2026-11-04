@@ -681,7 +681,7 @@ export class NativeBrowserEngine {
     this.#shield?.setVisible(false);
     for (const browser of this.#browsers.values()) {
       const mount = browser.mount;
-      const bounds = mount ? nativeBrowserBounds(mount.bounds, width, height) : null;
+      const bounds = mount ? nativeBrowserBounds(mount.bounds, width, height, owner.webContents.getZoomFactor()) : null;
       const visible = !this.#occluded && owner.isVisible() && this.#mounted === browser.bot.id && !!mount?.visible && !!bounds?.width && !!bounds.height;
       for (const tab of browser.tabs.values()) {
         if (tab.contents.isDestroyed()) continue;

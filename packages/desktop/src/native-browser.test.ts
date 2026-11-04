@@ -21,6 +21,10 @@ describe("native browser policy", () => {
     expect(nativeBrowserBounds({ x: 900, y: 0, width: 400, height: 800 }, 1000, 700)).toEqual({ x: 900, y: 44, width: 100, height: 656 });
     expect(nativeBrowserBounds({ x: 1200, y: 1000, width: 100, height: 100 }, 1000, 700)).toEqual({ x: 1000, y: 700, width: 0, height: 0 });
   });
+  it("scales CSS bounds once, before clipping the native surface", () => {
+    expect(nativeBrowserBounds({ x: 240, y: 160, width: 480, height: 360 }, 1000, 700, 0.75)).toEqual({ x: 180, y: 120, width: 360, height: 270 });
+    expect(nativeBrowserBounds({ x: 640, y: 20, width: 480, height: 600 }, 1000, 700, 1.25)).toEqual({ x: 800, y: 44, width: 200, height: 656 });
+  });
   it("allows web-created child frames without relaxing main-frame or privileged navigation", () => {
     for (const url of ["about:srcdoc", "blob:https://example.test/fixture", "data:text/html,child"]) {
       expect(nativeBrowserFrameUrl(url, false)).toBe(url);
