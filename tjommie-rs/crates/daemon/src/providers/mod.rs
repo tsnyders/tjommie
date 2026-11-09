@@ -17,6 +17,7 @@ use std::fmt;
 use std::sync::Mutex;
 
 use protocol::model::Autonomy;
+use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::sync::mpsc;
 
 use crate::cli::BoxFuture;
@@ -258,5 +259,23 @@ impl Subscribers {
 
     fn emit(&self, event: ProviderEvent) {
         self.0.lock().expect("subscribers lock").retain(|sender| sender.send(event.clone()).is_ok());
+    }
+}
+
+/// Calls `on_line` for each line of a CLI's output, like Node's readline: a `\r\n` ending counts as one, the last
+/// line needs no ending, and invalid UTF-8 is replaced rather than ending the stream.
+async fn read_lines(output: Box<dyn AsyncRead + Send + Unpin>, mut on_line: impl FnMut(String) + Send + 'static) {
+    let mut reader = BufReader::new(output);
+    let mut buffer = Vec::new();
+    loop {
+        buffer.clear();
+        match reader.read_until(b'\n', &mut buffer).await {
+            Ok(0) | Err(_) => return,
+            Ok(_) => {
+                let line = buffer.strip_suffix(b"\n").unwrap_or(&buffer);
+                let line = line.strip_suffix(b"\r").unwrap_or(line);
+                on_line(String::from_utf8_lossy(line).into_owned());
+            }
+        }
     }
 }
