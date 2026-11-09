@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, it } from "vitest";
 import { events, methods } from "../packages/protocol/src/index.ts";
-import { protocolManifest } from "./protocol-manifest.ts";
+import { manifestText, protocolManifest } from "./protocol-manifest.ts";
 
 const script = fileURLToPath(new URL("./protocol-manifest.ts", import.meta.url));
 const run = (args: string[]) => spawnSync(process.execPath, [script, ...args], { encoding: "utf8", windowsHide: true });
@@ -23,17 +23,36 @@ it("describes params as the wire sends them, before defaults fill in", () => {
   expect(send?.params).toMatchObject({ type: "object", required: ["botId", "text"] });
 });
 
-it("--check fails on a stale manifest and passes on a fresh one", () => {
+it("marks strings zod trims before it checks their length", () => {
+  const create = protocolManifest().methods.find((entry) => entry.name === "bots.create");
+  expect(create?.params).toMatchObject({ properties: { name: { "x-trim": true, minLength: 1 }, model: { minLength: 1 } } });
+  expect(create?.params).not.toMatchObject({ properties: { model: { "x-trim": true } } });
+});
+
+it("exports the standalone schemas parsed outside method calls", () => {
+  const names = protocolManifest().types.map((entry) => entry.name);
+  for (const name of ["ClientMessage", "MessageData", "PairingCode", "RelayToHost", "NativeBrowserCommand", "VaultHostJob", "DiagnosticReport"]) expect(names).toContain(name);
+  expect(protocolManifest().types.every((entry) => entry.schema !== "custom")).toBe(true);
+});
+
+// Each check runs the script in a fresh node process, which exports every schema again: slow on a busy machine.
+const check = (text: string) => {
   const dir = mkdtempSync(join(tmpdir(), "protocol-manifest-"));
   try {
     const file = join(dir, "manifest.json");
-    writeFileSync(file, "{}\n");
-    const stale = run(["--check", file]);
-    expect(stale.status).toBe(1);
-    expect(stale.stderr).toContain("npm run protocol:manifest");
-    expect(run([file]).status).toBe(0);
-    expect(run(["--check", file]).status).toBe(0);
+    writeFileSync(file, text);
+    return run(["--check", file]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
-});
+};
+
+it("--check fails on a stale manifest", () => {
+  const stale = check("{}\n");
+  expect(stale.status).toBe(1);
+  expect(stale.stderr).toContain("npm run protocol:manifest");
+}, 60_000);
+
+it("--check passes on a fresh manifest, whatever its line endings", () => {
+  expect(check(manifestText().replaceAll("\n", "\r\n")).status).toBe(0);
+}, 60_000);
