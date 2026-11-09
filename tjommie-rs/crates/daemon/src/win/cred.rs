@@ -4,7 +4,8 @@
 //! Credential Manager; every target is derived from the data root.
 
 use sha2::{Digest, Sha256};
-use std::{fmt, io, path::Path, ptr, slice};
+use std::path::{Component, Path};
+use std::{fmt, io, ptr, slice};
 use windows::Win32::Foundation::ERROR_NOT_FOUND;
 use windows::Win32::Security::Credentials::{
     CRED_PERSIST_LOCAL_MACHINE, CRED_TYPE_GENERIC, CREDENTIALW, CredDeleteW, CredFree, CredReadW,
@@ -206,15 +207,26 @@ impl Namespace {
 }
 
 /// Node's `path.resolve()` on Windows: absolute, `\` separators, no `.` or `..`, and no trailing separator except
-/// at a drive root. ponytail: GetFullPathNameW also drops trailing dots and spaces and Node doesn't; such a root
-/// would get a different namespace. Port Node's algorithm if a real root ever ends that way.
+/// after a bare drive or share. GetFullPathNameW drops a trailing dot or space from the last name and Node keeps
+/// it, so such a root is refused: it would silently get a different namespace than the TypeScript daemon gives it.
 fn resolve(root: &Path) -> io::Result<String> {
+    if let Some(Component::Normal(name)) = root.components().next_back()
+        && name.to_str().is_some_and(|name| name.ends_with(['.', ' ']))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Tjommie can't use a data folder whose name ends in a dot or a space.",
+        ));
+    }
     let absolute = std::path::absolute(root)?;
     let text = absolute
         .to_str()
         .ok_or(io::ErrorKind::InvalidInput)?
         .trim_end_matches('\\');
-    Ok(if text.ends_with(':') {
+    let bare = Path::new(text)
+        .components()
+        .all(|part| matches!(part, Component::Prefix(_) | Component::RootDir));
+    Ok(if bare {
         format!("{text}\\")
     } else {
         text.to_owned()
