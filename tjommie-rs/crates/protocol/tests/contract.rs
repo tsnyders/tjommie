@@ -61,34 +61,59 @@ fn event_names_equal_the_manifest() {
     assert_eq!(EVENTS.len(), 26);
 }
 
+macro_rules! wire_types {
+    ($($wire:ty),* $(,)?) => {
+        /// Each standalone type's manifest name, with a call that builds its validator.
+        fn wire_types() -> Vec<(&'static str, fn())> {
+            vec![$((<$wire as Wire>::NAME, || drop(protocol::parse::<$wire>(serde_json::Value::Null)))),*]
+        }
+    };
+}
+
+wire_types!(
+    ClientMessage,
+    MessageData,
+    PairingCode,
+    RemotePreface,
+    RemoteConfirm,
+    RemoteReady,
+    RemoteRefused,
+    RelayToHost,
+    HostToRelay,
+    PushData,
+    NativeBrowserCommand,
+    NativeBrowserUiCommand,
+    NativeBrowserMount,
+    VaultHostCommand,
+    VaultHostJob,
+    VaultHostReply,
+    DiagnosticReport,
+    SpeechStatus,
+    SpeechEvent,
+    SpeechStart,
+);
+
 #[test]
 fn every_manifest_type_has_a_rust_type() {
-    let rust = [
-        ClientMessage::NAME,
-        MessageData::NAME,
-        PairingCode::NAME,
-        RemotePreface::NAME,
-        RemoteConfirm::NAME,
-        RemoteReady::NAME,
-        RemoteRefused::NAME,
-        RelayToHost::NAME,
-        HostToRelay::NAME,
-        PushData::NAME,
-        NativeBrowserCommand::NAME,
-        NativeBrowserUiCommand::NAME,
-        NativeBrowserMount::NAME,
-        VaultHostCommand::NAME,
-        VaultHostJob::NAME,
-        VaultHostReply::NAME,
-        DiagnosticReport::NAME,
-        SpeechStatus::NAME,
-        SpeechEvent::NAME,
-        SpeechStart::NAME,
-    ];
     assert_eq!(
-        sorted(rust),
+        sorted(wire_types().into_iter().map(|(name, _)| name)),
         sorted(manifest().types.iter().map(|entry| entry.name.as_str()))
     );
+}
+
+#[test]
+fn every_manifest_schema_compiles() {
+    // Validators are built on first use, behind an expect. Building them all here makes a bad pattern fail CI instead
+    // of panicking in the daemon on the first request that needs it.
+    for name in METHODS.iter().chain(EVENTS) {
+        let _ = validate(name, &serde_json::Value::Null);
+    }
+    for method in METHODS {
+        let _ = Request::decode(method, serde_json::Value::Null);
+    }
+    for (_, compile) in wire_types() {
+        compile();
+    }
 }
 
 #[test]
