@@ -226,7 +226,7 @@ That is seven lanes at most, matching the agent limit.
 - **Test:** a broker-level vitest with a fake debugger.
 
 **T8.3 Daemon fan-out.**
-- **What:** send frames only to subscribed connections. Keep at most 2 unacknowledged and replace older unsent frames. Private mode stops the stream.
+- **What:** send frames only to subscribed connections. Keep at most 2 unacknowledged and replace older unsent frames. Private mode stops the stream. Also replace T3.1's unbounded per-connection event queue (`server.rs` broadcast; parity with `ws` today) with a bounded one that disconnects a client that stops reading (T3.1 review, item 5).
 - **Test:** a Rust test with a slow fake client. Memory stays flat, and the frames it gets are always the newest.
 
 **T8.4 UI: draw the stream.**

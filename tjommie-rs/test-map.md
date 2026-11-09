@@ -39,7 +39,7 @@ The 13 `*.real.test.ts` files in this table also appear in section 2. Rust paths
 | `packages/daemon/src/client.test.ts` | M3 T3.1 | `tjommie-rs/crates/daemon/tests/server_client.rs` | imports only server.ts; becomes a WebSocket client test against the Rust server |
 | `packages/daemon/src/daemon.real.test.ts` | M3 T3.5 | `tjommie-rs/crates/daemon/tests/real_daemon.rs` | real test, `#[ignore]` by default; see section 2 |
 | `packages/daemon/src/daemon.test.ts` | M3 T3.1 | `tjommie-rs/crates/daemon/tests/daemon_wiring.rs` | start-up wiring; slices land with T3.2 and T3.5 |
-| `packages/daemon/src/database-upgrade.test.ts` | M1 T1.2 | `tjommie-rs/crates/daemon/tests/db_fixture.rs` | fixture.db and schema.json from make-fixture-db.ts |
+| `packages/daemon/src/database-upgrade.test.ts` | M1 T1.2 | `tjommie-rs/crates/daemon/tests/db_fixture.rs` | fixture.db and schema.json from make-fixture-db.ts. The runner-recovery part of the first case is ported with the runner (M3 T3.5) |
 | `packages/daemon/src/db.test.ts` | M1 T1.2 | `tjommie-rs/crates/daemon/tests/db.rs` |  |
 | `packages/daemon/src/devices-store.test.ts` | M7 | `tjommie-rs/crates/daemon/tests/devices_store.rs` |  |
 | `packages/daemon/src/diagnostics.test.ts` | M3 T3.2 | `tjommie-rs/crates/daemon/tests/diagnostics.rs` |  |
