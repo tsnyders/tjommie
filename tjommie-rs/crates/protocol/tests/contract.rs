@@ -177,6 +177,20 @@ fn bad_params_messages_never_echo_what_was_sent() {
 }
 
 #[test]
+fn string_lengths_count_code_points_like_zod() {
+    // zod 4.6.5 measures .min/.max in code points (checks.js:271-322, util.codePointLength), and so does JSON Schema.
+    // Probed against zod: rooms.create accepts a 60-emoji name (120 UTF-16 units) and rejects 61 emoji.
+    let face = "\u{1F600}";
+    let room = |name: String| json!({ "name": name, "botIds": ["b"] });
+    assert!(Request::decode("rooms.create", room(face.repeat(60))).is_ok());
+    assert!(Request::decode("rooms.create", room(face.repeat(31))).is_ok());
+    assert!(matches!(
+        Request::decode("rooms.create", room(face.repeat(61))),
+        Err(DecodeError::BadParams(_))
+    ));
+}
+
+#[test]
 fn remote_frames_serialize_with_their_type_tag() {
     let host = "99cf98ba-2638-4b16-8a6e-1691c1673b45";
     for frame in [
