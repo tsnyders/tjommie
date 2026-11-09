@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { connect } from "@tjommie/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { daemonEnv, daemonLaunchEnv, listeningPort, newToken, startDaemonProcess, stopWithin, type DaemonLaunch, type RunningDaemon } from "./daemon-process.ts";
+import { daemonCommand, daemonEnv, daemonLaunchEnv, listeningPort, newToken, startDaemonProcess, stopWithin, type DaemonLaunch, type RunningDaemon } from "./daemon-process.ts";
 
 const entry = fileURLToPath(new URL("../../daemon/src/main.ts", import.meta.url));
 const roots: string[] = [];
@@ -58,6 +58,31 @@ describe("daemon process", () => {
       vi.useRealTimers();
     }
   });
+
+  it("starts the exe named by TJOMMIE_DAEMON_EXE in unpackaged runs, with no Node arguments", () => {
+    const exe = "C:\\tjommie-rs\\tjommie-daemon.exe";
+    const node = { execPath: "C:\\node.exe", args: ["--disable-warning=ExperimentalWarning", "C:\\daemon\\main.ts"] };
+    const command = (env: NodeJS.ProcessEnv, packaged: boolean) => daemonCommand(env, packaged, node.execPath, "C:\\daemon\\main.ts");
+    expect(command({}, false)).toEqual(node);
+    expect(command({ TJOMMIE_DAEMON_EXE: exe }, false)).toEqual({ execPath: exe, args: [] });
+    expect(command({ TJOMMIE_DAEMON_EXE: "" }, false)).toEqual(node);
+    expect(command({ TJOMMIE_DAEMON_EXE: exe }, true)).toEqual(node); // The packaged switch is T9.1's.
+  });
+
+  // Build the Rust daemon and set TJOMMIE_DAEMON_EXE to run this against it.
+  it.runIf(process.env.TJOMMIE_DAEMON_EXE)("runs the TJOMMIE_DAEMON_EXE daemon with the same token-stdin contract", async () => {
+    let output = "";
+    const daemon = await startDaemonProcess({ ...launch(), ...daemonCommand(process.env, false, process.execPath, entry) }, (text) => { output += text; });
+    running.push(daemon);
+    const { port, token } = daemon.connection;
+    const client = await connect(port, token);
+    expect(output).toContain(`listening on http://127.0.0.1:${port}`);
+    expect(output).not.toContain(token);
+    expect(output).not.toContain(daemon.desktopHostToken);
+    await daemon.stop();
+    expect((await daemon.exited).code).toBe(0);
+    await client.disconnected;
+  }, 60_000);
 
   it("does not forward an inherited accounts-folder hook", () => {
     const parentEnv = { ...process.env, TJOMMIE_ACCOUNTS_DIR: "C:\\private-accounts" };

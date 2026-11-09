@@ -286,12 +286,36 @@ macro_rules! methods {
             $(#[serde(rename = $name)] $variant($params),)*
         }
 
-        /// What each method answers, named like its [`Request`] variant.
-        pub mod results {
-            use super::*;
-            $(pub type $variant = $result;)*
+        /// One marker type per method, named like its [`Request`] variant, for typed handlers.
+        pub mod method {
+            $(pub struct $variant;)*
         }
+
+        $(
+            impl Method for method::$variant {
+                const NAME: &'static str = $name;
+                type Params = $params;
+                type Result = $result;
+
+                fn take(request: Request) -> Option<$params> {
+                    match request {
+                        Request::$variant(params) => Some(params),
+                        _ => None,
+                    }
+                }
+            }
+        )*
     };
+}
+
+/// A method: its wire name, its params and what it answers.
+pub trait Method {
+    const NAME: &'static str;
+    type Params: Send + 'static;
+    type Result: Serialize + Send + 'static;
+
+    /// The params, if `request` is this method's.
+    fn take(request: Request) -> Option<Self::Params>;
 }
 
 methods! {
@@ -509,7 +533,7 @@ pub struct ResponseError {
 pub struct Response {
     pub id: i64,
     pub ok: bool,
-    /// The method's result, serialized from its [`results`] type.
+    /// The method's result, serialized from its [`Method::Result`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
