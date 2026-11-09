@@ -17,17 +17,24 @@ pub struct NoWindowCommand {
 
 pub fn command(program: impl AsRef<OsStr>) -> NoWindowCommand {
     #[allow(clippy::disallowed_methods)] // The one allowed call site.
-    let mut command = Command::new(program);
-    command.creation_flags(CREATE_NO_WINDOW);
-    NoWindowCommand {
-        command,
-        flags: CREATE_NO_WINDOW,
-    }
+    let command = Command::new(program);
+    let mut command = NoWindowCommand { command, flags: 0 };
+    command.creation_flags(0);
+    command
 }
 
 impl NoWindowCommand {
     pub fn flags(&self) -> u32 {
         self.flags
+    }
+
+    /// Sets process creation flags. `CREATE_NO_WINDOW` always stays set. This method, not std's
+    /// `CommandExt::creation_flags` (which would replace it), is the way to add flags; `clippy.toml` bans std's.
+    pub fn creation_flags(&mut self, flags: u32) -> &mut Self {
+        self.flags = CREATE_NO_WINDOW | flags;
+        #[allow(clippy::disallowed_methods)] // The one place creation flags reach std.
+        self.command.creation_flags(self.flags);
+        self
     }
 }
 
@@ -53,5 +60,12 @@ mod tests {
         let command = command("x");
         assert_eq!(command.flags(), 0x0800_0000);
         assert_eq!(command.get_program(), "x");
+    }
+
+    #[test]
+    fn added_creation_flags_keep_create_no_window() {
+        let mut command = command("x");
+        command.creation_flags(0x200);
+        assert_eq!(command.flags(), 0x0800_0200);
     }
 }
