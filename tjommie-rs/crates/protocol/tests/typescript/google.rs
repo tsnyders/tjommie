@@ -1,7 +1,7 @@
 //! `google.test.ts`
 
 use super::{invalid, params, rejects, round_trip, with};
-use protocol::google::GoogleStatus;
+use protocol::google::{GoogleAuthorization, GoogleStatus};
 use serde_json::json;
 
 #[test]
@@ -32,6 +32,16 @@ fn keeps_credentials_and_authorization_urls_out_of_status() {
             with(status.clone(), json!({ key: "synthetic" })),
         );
     }
+}
+
+// Not in google.test.ts: the authorization URL is checked like zod's z.string().url(), which JSON Schema doesn't do.
+#[test]
+fn checks_the_authorization_url_and_stores_it_trimmed() {
+    let authorization = |url: &str| json!({ "attempt": "a", "url": url });
+    assert!(serde_json::from_value::<GoogleAuthorization>(authorization("nope")).is_err());
+    let parsed: GoogleAuthorization =
+        serde_json::from_value(authorization(" https://accounts.google.com/auth?x=1\t")).unwrap();
+    assert_eq!(parsed.url.as_str(), "https://accounts.google.com/auth?x=1");
 }
 
 #[test]

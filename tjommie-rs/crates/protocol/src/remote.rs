@@ -35,12 +35,19 @@ refined_string!(
     RemoteKey, remote_key, "Invalid public key."
 );
 
-/// `z.url({ protocol: /^https$/ })`: trims, parses as a WHATWG URL, requires https, and stores the trimmed text without
-/// tabs or newlines.
-fn relay_url(value: &str) -> Option<String> {
+/// zod's URL check (`$ZodURL` in zod 4.6.5): trims with `String.prototype.trim`, parses as a WHATWG URL, and keeps the
+/// trimmed text without tabs or newlines. Returns the parsed URL and the text to store.
+pub(crate) fn zod_url(value: &str) -> Option<(url::Url, String)> {
     let trimmed = js_trim(value);
     let url = url::Url::parse(trimmed).ok()?;
-    (url.scheme() == "https").then(|| trimmed.replace(['\t', '\n', '\r'], ""))
+    Some((url, trimmed.replace(['\t', '\n', '\r'], "")))
+}
+
+/// `z.url({ protocol: /^https$/ })`
+fn relay_url(value: &str) -> Option<String> {
+    zod_url(value)
+        .filter(|(url, _)| url.scheme() == "https")
+        .map(|(_, text)| text)
 }
 
 refined_string!(

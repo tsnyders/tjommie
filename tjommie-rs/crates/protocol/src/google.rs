@@ -77,8 +77,18 @@ pub struct GoogleStatus {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GoogleAuthorization {
     pub attempt: String,
-    pub url: String,
+    pub url: WebUrl,
 }
+
+/// `z.string().url()`: any URL a browser can parse.
+fn web_url(value: &str) -> Option<String> {
+    crate::remote::zod_url(value).map(|(_, text)| text)
+}
+
+refined_string!(
+    /// A URL, stored trimmed and without tabs or newlines.
+    WebUrl, web_url, "Invalid URL"
+);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GoogleBegin {
