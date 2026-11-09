@@ -1,0 +1,74 @@
+<!-- @dsCard group="Files" -->
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="shot" content="1280x950">
+<title>Mission Control: file card and preview</title>
+<link rel="stylesheet" href="../tokens.css">
+<link rel="stylesheet" href="../kit.css">
+</head>
+<body>
+<!--sprite--><svg width="0" height="0" style="position:absolute" aria-hidden="true"><symbol id="i-database" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5V19A9 3 0 0 0 21 19V5"/><path d="M3 12A9 3 0 0 0 21 12"/></symbol><symbol id="i-download" viewBox="0 0 24 24"><path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/></symbol><symbol id="i-file-text" viewBox="0 0 24 24"><path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></symbol><symbol id="i-folder-open" viewBox="0 0 24 24"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/></symbol><symbol id="i-image" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></symbol><symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></symbol></svg><!--/sprite-->
+<div class="sheet" style="width:1280px">
+  <header>
+    <h1>File card and preview</h1>
+    <p>Files a bot hands you: Markdown, images, PDF, audio, video, up to 200 MiB. The card names the type and size in mono and offers download and, on the PC that holds the file, Show in folder. Preview opens in a frame over the chat.</p>
+  </header>
+
+  <section class="spec">
+    <h2>Cards</h2>
+    <div class="row">
+      <div class="cell">
+        <div class="file">
+          <div class="file-th"><div class="md"><b>Migration notes</b>All 12 migrations from db.ts now run in order, one transaction each. user_version ends at 12.</div></div>
+          <div class="file-b"><div class="grow"><div class="nm trunc">migration-notes.md</div><div class="ty">Markdown, 6 KB</div></div><button class="ibtn" title="Download migration-notes.md"><svg class="ic"><use href="#i-download"/></svg></button><button class="ibtn" title="Show migration-notes.md in its folder"><svg class="ic"><use href="#i-folder-open"/></svg></button></div>
+        </div>
+        <span class="lab">Markdown, with its first lines</span>
+      </div>
+      <div class="cell">
+        <div class="file">
+          <div class="file-th"><div class="meta"><svg class="ic s24"><use href="#i-file-text"/></svg>3 pages</div></div>
+          <div class="file-b"><div class="grow"><div class="nm trunc">schema-v12.pdf</div><div class="ty">PDF, 412 KB</div></div><button class="ibtn"><svg class="ic"><use href="#i-download"/></svg></button><button class="ibtn"><svg class="ic"><use href="#i-folder-open"/></svg></button></div>
+        </div>
+        <span class="lab">PDF</span>
+      </div>
+      <div class="cell">
+        <div class="file">
+          <div class="file-th"><div class="meta"><svg class="ic s24"><use href="#i-database"/></svg>No preview for this type</div></div>
+          <div class="file-b"><div class="grow"><div class="nm trunc">tjommie-v0.4.2.db</div><div class="ty">File, 2.1 MB</div></div><button class="ibtn" title="Cancel download"><svg class="ic"><use href="#i-x"/></svg></button><button class="ibtn"><svg class="ic"><use href="#i-folder-open"/></svg></button></div>
+          <div class="st-line"><span>Downloading</span><div class="meter"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div><span class="mono-sm">42%</span></div>
+        </div>
+        <span class="lab">Downloading, with cancel</span>
+      </div>
+      <div class="cell">
+        <div class="file">
+          <div class="file-th"><div class="meta"><svg class="ic s24"><use href="#i-image"/></svg>1280 x 720</div></div>
+          <div class="file-b"><div class="grow"><div class="nm trunc">dock-layout.png</div><div class="ty">Image, 88 KB</div></div><button class="ibtn off" disabled style="color:var(--text-off)"><svg class="ic"><use href="#i-download"/></svg></button></div>
+          <div class="st-line g-danger">The file host is offline. Reconnect to download it.</div>
+        </div>
+        <span class="lab">Host offline</span>
+      </div>
+    </div>
+  </section>
+
+  <section class="spec">
+    <h2>Preview frame</h2>
+    <div class="preview">
+      <div class="preview-h"><svg class="ic c2"><use href="#i-file-text"/></svg><span class="nm">migration-notes.md</span><span class="ty">Markdown, 6 KB</span><span class="grow"></span><button class="btn btn-ghost btn-sm"><svg class="ic"><use href="#i-download"/></svg>Download</button><button class="ibtn" title="Close preview (Esc)"><svg class="ic"><use href="#i-x"/></svg></button></div>
+      <div class="preview-b">
+        <h3>Migration notes</h3>
+        <p>All 12 migrations from packages/daemon/src/db.ts now run in order in the Rust daemon, one transaction each. The SQL is byte-identical.</p>
+        <h4>Checks</h4>
+        <ul>
+          <li>A fresh database ends at user_version 12.</li>
+          <li>The v0.4.2 fixture opens with the same row counts.</li>
+          <li>sqlite_master matches the TypeScript build, both on SQLite 3.50.</li>
+        </ul>
+      </div>
+    </div>
+    <span class="lab">Esc closes. On the phone the same frame fills the screen with a 48 dp close button.</span>
+  </section>
+</div>
+</body>
+</html>

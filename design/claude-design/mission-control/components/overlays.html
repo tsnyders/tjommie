@@ -1,0 +1,93 @@
+<!-- @dsCard group="Overlays" -->
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="shot" content="1280x1230">
+<title>Mission Control: dialog, menu, phone sheet, toast</title>
+<link rel="stylesheet" href="../tokens.css">
+<link rel="stylesheet" href="../kit.css">
+<style>
+  .stage { position: relative; width: 600px; height: 420px; border: 1px solid var(--line); border-radius: var(--r-md); overflow: hidden; background: var(--bg); }
+  .stage .scrim { position: absolute; inset: 0; display: grid; place-items: center; }
+  .phone-stage { position: relative; width: 412px; height: 520px; border: 1px solid var(--line); border-radius: var(--r-md); overflow: hidden; background: var(--bg); }
+  .phone-stage .scrim { position: absolute; inset: 0; }
+  .phone-stage .psheet { position: absolute; left: 0; right: 0; bottom: 0; }
+  .toasts { display: flex; flex-direction: column; gap: var(--space-3); }
+  .ghost-log { padding: var(--space-4); display: flex; flex-direction: column; gap: var(--space-3); }
+  .ghost-log .t-prose { color: var(--text-2); }
+</style>
+</head>
+<body>
+<!--sprite--><svg width="0" height="0" style="position:absolute" aria-hidden="true"><symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol><symbol id="i-chevron-right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol><symbol id="i-folder-open" viewBox="0 0 24 24"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/></symbol><symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></symbol><symbol id="i-key-round" viewBox="0 0 24 24"><path d="M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4z"/><circle cx="16.5" cy="7.5" r=".5" fill="currentColor"/></symbol><symbol id="i-message-square" viewBox="0 0 24 24"><path d="M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z"/></symbol><symbol id="i-pause" viewBox="0 0 24 24"><rect x="14" y="3" width="5" height="18" rx="1"/><rect x="5" y="3" width="5" height="18" rx="1"/></symbol><symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5v14"/></symbol><symbol id="i-settings" viewBox="0 0 24 24"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/></symbol><symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></symbol><symbol id="a-blob" viewBox="0 0 40 40"><path d="M4 22 C4 12 11.5 6 21 6 C30.5 6 37 12.5 37 21 C37 29.5 30.5 35 21 35 C11 35 4 30.5 4 22 Z" style="fill:currentColor"/><path d="M18 15 L17 21 M25.5 15 L24.5 21" style="fill:none;stroke:var(--bot-eye);stroke-width:3;stroke-linecap:round"/></symbol><symbol id="a-cloud" viewBox="0 0 40 40"><path d="M11 34 C5 34 2 29.5 3.5 25 C2 19 7.5 15 12.5 16.5 C14 10 21 7 26 11 C32 9.5 37 14 35.5 20 C39 23.5 37 32 30.5 34 Z" style="fill:currentColor"/><path d="M17.5 19 L16.7 25 M24.5 19 L23.7 25" style="fill:none;stroke:var(--bot-eye);stroke-width:3;stroke-linecap:round"/></symbol><symbol id="a-droplet" viewBox="0 0 40 40"><path d="M20 3 C20 3 33 16 33 25 C33 32.2 27.2 37 20 37 C12.8 37 7 32.2 7 25 C7 16 20 3 20 3 Z" style="fill:currentColor"/><path d="M17.5 21 L16.8 27 M24 21 L23.3 27" style="fill:none;stroke:var(--bot-eye);stroke-width:3;stroke-linecap:round"/></symbol><symbol id="a-hexagon" viewBox="0 0 40 40"><path d="M17 3.2 C18.9 2.1 21.1 2.1 23 3.2 L33.5 9.3 C35.4 10.4 36.5 12.4 36.5 14.6 V25.4 C36.5 27.6 35.4 29.6 33.5 30.7 L23 36.8 C21.1 37.9 18.9 37.9 17 36.8 L6.5 30.7 C4.6 29.6 3.5 27.6 3.5 25.4 V14.6 C3.5 12.4 4.6 10.4 6.5 9.3 Z" style="fill:currentColor"/><path d="M17 15 L16 21 M24.5 15 L23.5 21" style="fill:none;stroke:var(--bot-eye);stroke-width:3;stroke-linecap:round"/></symbol><symbol id="a-rounded-square" viewBox="0 0 40 40"><path d="M11 4 H29 C32.9 4 36 7.1 36 11 V29 C36 32.9 32.9 36 29 36 H11 C7.1 36 4 32.9 4 29 V11 C4 7.1 7.1 4 11 4 Z" style="fill:currentColor"/><path d="M17 14 L16 20 M24.5 14 L23.5 20" style="fill:none;stroke:var(--bot-eye);stroke-width:3;stroke-linecap:round"/></symbol></svg><!--/sprite-->
+<div class="sheet" style="width:1280px">
+  <header>
+    <h1>Dialog, menu, phone sheet, toast</h1>
+    <p>The only layers with shadows. A dialog dims the window behind it; a menu does not. On the phone, choices come up as a bottom sheet with 56 dp rows. Toasts are short, name the bot, and offer the one useful action.</p>
+  </header>
+
+  <div class="row">
+    <section class="spec">
+      <h2>Dialog</h2>
+      <div class="stage">
+        <div class="ghost-log"><p class="t-prose">Forge is using this browser.</p></div>
+        <div class="scrim">
+          <div class="dialog" role="dialog" aria-label="Saved logins">
+            <div class="dialog-h">Saved logins<button class="ibtn" title="Close (Esc)"><svg class="ic"><use href="#i-x"/></svg></button></div>
+            <div class="dialog-b">
+              <p>Only metadata is shown here. The host confirms its exact HTTPS address before filling. Logins unlocked.</p>
+              <div class="opt sel"><svg class="ic s14 c2"><use href="#i-key-round"/></svg>tsnyders<span class="end">github.com</span></div>
+              <div class="opt"><svg class="ic s14 c2"><use href="#i-key-round"/></svg>tjommie-ci<span class="end">github.com</span></div>
+            </div>
+            <div class="dialog-f"><button class="btn btn-ghost">Manage logins</button><span class="grow"></span><button class="btn btn-secondary">Cancel<span class="kbd">Esc</span></button><button class="btn btn-primary">Fill on host<span class="kbd">Enter</span></button></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="spec">
+      <h2>Menu</h2>
+      <div class="menu" role="menu">
+        <div class="mi hl"><svg class="ic"><use href="#i-message-square"/></svg>Open chat<span class="kbd">Enter</span></div>
+        <div class="mi"><svg class="ic"><use href="#i-pause"/></svg>Pause bot<span class="kbd">P</span></div>
+        <div class="mi"><svg class="ic"><use href="#i-globe"/></svg>Open browser<span class="kbd">Ctrl+B</span></div>
+        <div class="mi"><svg class="ic"><use href="#i-folder-open"/></svg>Open home folder</div>
+        <div class="msep"></div>
+        <div class="mi"><svg class="ic"><use href="#i-settings"/></svg>Bot settings</div>
+      </div>
+      <span class="lab">A bot's More menu. Keys show on the right; the highlighted row follows the keyboard.</span>
+    </section>
+  </div>
+
+  <div class="row">
+    <section class="spec">
+      <h2>Phone bottom sheet</h2>
+      <div class="phone-stage ph" style="height:520px">
+        <div class="ghost-log"><p class="t-prose">Agents</p></div>
+        <div class="scrim"></div>
+        <div class="psheet" role="dialog" aria-label="Switch PC">
+          <div class="grab"></div>
+          <div class="psheet-h">Switch PC<button class="tbtn push" title="Close"><svg class="ic"><use href="#i-x"/></svg></button></div>
+          <div class="prow2"><span class="lamp lamp-working"></span><span class="grow">This PC<br><span class="sub">LAN, connected</span></span><span class="end"><svg class="ic s20"><use href="#i-check"/></svg></span></div>
+          <div class="prow2"><span class="lamp lamp-working"></span><span class="grow">Studio PC<br><span class="sub">Relay, online</span></span></div>
+          <div class="prow2"><svg class="ic s20 c2"><use href="#i-plus"/></svg><span class="grow">Connect to another computer</span><svg class="ic s20 c3"><use href="#i-chevron-right"/></svg></div>
+          <div class="gesture"><i></i></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="spec">
+      <h2>Toasts</h2>
+      <div class="toasts">
+        <div class="toast"><span class="av av-28"><svg width="28" height="28" style="color:var(--bot-teal)"><use href="#a-blob"/></svg></span><div class="tx"><div class="t">Scout is done</div><div class="d">Researching GPUI docks</div><div class="acts"><button class="btn btn-secondary btn-sm">Open chat</button></div></div><button class="ibtn" title="Dismiss"><svg class="ic s14"><use href="#i-x"/></svg></button></div>
+        <div class="toast fail"><span class="av av-28"><svg width="28" height="28" style="color:var(--bot-purple)"><use href="#a-droplet"/></svg></span><div class="tx"><div class="t">Quill failed</div><div class="d"><span class="g-danger">Reviewing task 14</span> stopped with an error.</div><div class="acts"><button class="btn btn-secondary btn-sm">Open chat</button><button class="btn btn-ghost btn-sm">Retry</button></div></div><button class="ibtn"><svg class="ic s14"><use href="#i-x"/></svg></button></div>
+        <div class="toast needs"><span class="av av-28"><svg width="28" height="28" style="color:var(--bot-blue)"><use href="#a-hexagon"/></svg><span class="bd bd-needs"></span></span><div class="tx"><div class="t">Forge needs you</div><div class="d">Wants to run <span class="mono-sm c1">git push origin rust-rewrite</span></div><div class="acts"><button class="btn btn-secondary btn-sm">Deny<span class="kbd">Alt+D</span></button><button class="btn btn-primary btn-sm">Approve<span class="kbd">Alt+A</span></button></div></div><button class="ibtn"><svg class="ic s14"><use href="#i-x"/></svg></button></div>
+        <div class="toast"><span class="av av-28"><svg width="28" height="28" style="color:var(--bot-pink)"><use href="#a-cloud"/></svg><span class="bd bd-limited"></span></span><div class="tx"><div class="t">Pixel hit a limit</div><div class="d"><span class="g-limited">5-hour limit, resets 23:40</span></div></div><button class="ibtn"><svg class="ic s14"><use href="#i-x"/></svg></button></div>
+        <div class="toast fail"><span class="av av-28"><svg width="28" height="28" style="color:var(--bot-amber)"><use href="#a-rounded-square"/></svg></span><div class="tx"><div class="t">A routine failed</div><div class="d">Ledger's routine stopped before it finished.</div><div class="acts"><button class="btn btn-secondary btn-sm">Open routines</button></div></div><button class="ibtn"><svg class="ic s14"><use href="#i-x"/></svg></button></div>
+      </div>
+      <span class="lab">One per push kind: done, failed, approval, limit, routine_failed. The PC shows done and failed; the phone gets all five as pushes.</span>
+    </section>
+  </div>
+</div>
+</body>
+</html>

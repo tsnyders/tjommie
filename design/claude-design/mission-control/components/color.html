@@ -1,0 +1,132 @@
+<!-- @dsCard group="Foundations" -->
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="shot" content="1280x1220">
+<title>Mission Control: colour</title>
+<link rel="stylesheet" href="../tokens.css">
+<link rel="stylesheet" href="../kit.css">
+<style>
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; column-gap: var(--space-5); row-gap: var(--space-1); }
+  .sw { display: grid; grid-template-columns: 40px minmax(0, 1fr) auto; align-items: center; column-gap: var(--space-3); height: 36px; }
+  .sw i { width: 40px; height: 28px; border-radius: var(--r-sm); border: 1px solid var(--line); }
+  .sw span { font: var(--t-body); color: var(--text); }
+  .sw code { font: var(--t-mono-xs); color: var(--text-3); }
+  .stx { display: grid; grid-template-columns: 96px 112px minmax(0, 1fr) auto; align-items: center; column-gap: var(--space-3); height: 32px; }
+  .stx .samp { font: var(--t-body); }
+  .bots { display: grid; grid-template-columns: repeat(5, 1fr); row-gap: var(--space-3); }
+  .bots .cell { align-items: center; }
+  h3 { font: var(--t-label); color: var(--text-3); }
+</style>
+</head>
+<body>
+<!--sprite--><svg width="0" height="0" style="position:absolute" aria-hidden="true"><symbol id="i-circle-alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/></symbol><symbol id="i-circle-dashed" viewBox="0 0 24 24"><path d="M10.1 2.182a10 10 0 0 1 3.8 0"/><path d="M13.9 21.818a10 10 0 0 1-3.8 0"/><path d="M17.609 3.721a10 10 0 0 1 2.69 2.7"/><path d="M2.182 13.9a10 10 0 0 1 0-3.8"/><path d="M20.279 17.609a10 10 0 0 1-2.7 2.69"/><path d="M21.818 10.1a10 10 0 0 1 0 3.8"/><path d="M3.721 6.391a10 10 0 0 1 2.7-2.69"/><path d="M6.391 20.279a10 10 0 0 1-2.69-2.7"/></symbol><symbol id="i-hourglass" viewBox="0 0 24 24"><path d="M5 22h14"/><path d="M5 2h14"/><path d="M17 22v-4.172a2 2 0 0 0-.586-1.414L12 12l-4.414 4.414A2 2 0 0 0 7 17.828V22"/><path d="M7 2v4.172a2 2 0 0 0 .586 1.414L12 12l4.414-4.414A2 2 0 0 0 17 6.172V2"/></symbol><symbol id="i-loader-circle" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></symbol><symbol id="i-pause" viewBox="0 0 24 24"><rect x="14" y="3" width="5" height="18" rx="1"/><rect x="5" y="3" width="5" height="18" rx="1"/></symbol><symbol id="i-plug" viewBox="0 0 24 24"><path d="M12 22v-5"/><path d="M15 8V2"/><path d="M17 8a1 1 0 0 1 1 1v4a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V9a1 1 0 0 1 1-1z"/><path d="M9 8V2"/></symbol><symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></symbol><symbol id="a-circle" viewBox="0 0 40 40"><path d="M20 2 C29.94 2 38 10.06 38 20 C38 29.94 29.94 38 20 38 C10.06 38 2 29.94 2 20 C2 10.06 10.06 2 20 2 Z" style="fill:currentColor"/><path d="M17 14 L16 20 M24.5 14 L23.5 20" style="fill:none;stroke:var(--bot-eye);stroke-width:3;stroke-linecap:round"/></symbol></svg><!--/sprite-->
+<div class="sheet" style="width:1280px">
+  <header>
+    <h1>Colour</h1>
+    <p>Chrome is graphite and stays quiet. Colour is reserved for two jobs: identity (the ten bot colours) and state (six status hues, each paired with its own glyph). Nothing else is coloured.</p>
+  </header>
+  <div class="duo">
+    <div data-theme="dark">
+      <span class="lab">Dark, primary theme</span>
+      <h3>Surfaces</h3>
+      <div class="grid2">
+        <div class="sw"><i style="background:var(--chrome)"></i><span>chrome</span><code data-token="--chrome"></code></div>
+        <div class="sw"><i style="background:var(--bg)"></i><span>bg</span><code data-token="--bg"></code></div>
+        <div class="sw"><i style="background:var(--surface)"></i><span>surface</span><code data-token="--surface"></code></div>
+        <div class="sw"><i style="background:var(--raised)"></i><span>raised</span><code data-token="--raised"></code></div>
+        <div class="sw"><i style="background:var(--select)"></i><span>select</span><code data-token="--select"></code></div>
+        <div class="sw"><i style="background:var(--sunken)"></i><span>sunken</span><code data-token="--sunken"></code></div>
+        <div class="sw"><i style="background:var(--line)"></i><span>line</span><code data-token="--line"></code></div>
+        <div class="sw"><i style="background:var(--line-strong)"></i><span>line-strong</span><code data-token="--line-strong"></code></div>
+      </div>
+      <h3>Text and action</h3>
+      <div class="grid2">
+        <div class="sw"><i style="background:var(--text)"></i><span>text</span><code data-token="--text"></code></div>
+        <div class="sw"><i style="background:var(--text-2)"></i><span>text-2</span><code data-token="--text-2"></code></div>
+        <div class="sw"><i style="background:var(--text-3)"></i><span>text-3</span><code data-token="--text-3"></code></div>
+        <div class="sw"><i style="background:var(--text-off)"></i><span>text-off</span><code data-token="--text-off"></code></div>
+        <div class="sw"><i style="background:var(--primary)"></i><span>primary</span><code data-token="--primary"></code></div>
+        <div class="sw"><i style="background:var(--focus)"></i><span>focus</span><code data-token="--focus"></code></div>
+      </div>
+      <h3>State</h3>
+      <div>
+        <div class="stx"><span class="st st-needs"><svg class="ic"><use href="#i-circle-alert"/></svg>Needs you</span><span class="hstack"><span class="lamp lamp-needs"></span><code class="mono-xs c3" data-token="--needs-solid"></code></span><span class="samp g-needs">Wants to run git push</span></div>
+        <div class="stx"><span class="st st-working"><svg class="ic"><use href="#i-loader-circle"/></svg>Working</span><span class="hstack"><span class="lamp lamp-working"></span><code class="mono-xs c3" data-token="--working-solid"></code></span><span class="samp g-working">Researching GPUI docks</span></div>
+        <div class="stx"><span class="st st-limited"><svg class="ic"><use href="#i-hourglass"/></svg>Limited</span><span class="hstack"><span class="lamp lamp-limited"></span><code class="mono-xs c3" data-token="--limited-solid"></code></span><span class="samp g-limited">5-hour limit, resets 23:40</span></div>
+        <div class="stx"><span class="st st-paused"><svg class="ic"><use href="#i-pause"/></svg>Paused</span><span class="hstack"><span class="lamp lamp-paused"></span><code class="mono-xs c3" data-token="--paused-solid"></code></span><span class="samp g-paused">Paused by you</span></div>
+        <div class="stx"><span class="st st-setup"><svg class="ic"><use href="#i-plug"/></svg>Needs setup</span><span class="hstack"><span class="lamp lamp-setup"></span><code class="mono-xs c3" data-token="--setup-solid"></code></span><span class="samp g-setup">Sign in to finish setup</span></div>
+        <div class="stx"><span class="st st-idle"><svg class="ic"><use href="#i-circle-dashed"/></svg>Idle</span><span class="hstack"><span class="lamp lamp-idle"></span><code class="mono-xs c3" data-token="--idle"></code></span><span class="samp g-idle">Last active 18 min ago</span></div>
+        <div class="stx"><span class="st st-fail"><svg class="ic"><use href="#i-x"/></svg>Failed</span><span class="hstack"><span class="lamp lamp-live"></span><code class="mono-xs c3" data-token="--live"></code></span><span class="samp g-danger">Live lamp, failures, recording</span></div>
+      </div>
+      <h3>Bots</h3>
+      <div class="bots">
+        <div class="cell"><svg width="40" height="40" style="color:var(--bot-brown)"><use href="#a-circle"/></svg><span class="lab">brown</span><code class="mono-xs c3" data-token="--bot-brown"></code></div>
+        <div class="cell"><svg width="40" height="40" style="color:var(--bot-red)"><use href="#a-circle"/></svg><span class="lab">red</span><code class="mono-xs c3" data-token="--bot-red"></code></div>
+        <div class="cell"><svg width="40" height="40" style="color:var(--bot-orange)"><use href="#a-circle"/></svg><span class="lab">orange</span><code class="mono-xs c3" data-token="--bot-orange"></code></div>
+        <div class="cell"><svg width="40" height="40" style="color:var(--bot-amber)"><use href="#a-circle"/></svg><span class="lab">amber</span><code class="mono-xs c3" data-token="--bot-amber"></code></div>
+        <div class="cell"><svg width="40" height="40" style="color:var(--bot-green)"><use href="#a-circle"/></svg><span class="lab">green</span><code class="mono-xs c3" data-token="--bot-green"></code></div>
+        <div class="cell"><svg width="40" height="40" style="color:var(--bot-teal)"><use href="#a-circle"/></svg><span class="lab">teal</span><code class="mono-xs c3" data-token="--bot-teal"></code></div>
+        <div class="cell"><svg width="40" height="40" style="color:var(--bot-blue)"><use href="#a-circle"/></svg><span class="lab">blue</span><code class="mono-xs c3" data-token="--bot-blue"></code></div>
+        <div class="cell"><svg width="40" height="40" style="color:var(--bot-purple)"><use href="#a-circle"/></svg><span class="lab">purple</span><code class="mono-xs c3" data-token="--bot-purple"></code></div>
+        <div class="cell"><svg width="40" height="40" style="color:var(--bot-pink)"><use href="#a-circle"/></svg><span class="lab">pink</span><code class="mono-xs c3" data-token="--bot-pink"></code></div>
+        <div class="cell"><svg width="40" height="40" style="color:var(--bot-gray)"><use href="#a-circle"/></svg><span class="lab">gray</span><code class="mono-xs c3" data-token="--bot-gray"></code></div>
+      </div>
+      <h3>Code</h3>
+      <div class="code"><pre><span class="l"><span class="k">let</span> tx = conn.<span class="f">transaction</span>()?; <span style="color:var(--code-comment)">// user_version</span></span><span class="l">tx.<span class="f">pragma_update</span>(None, <span class="s">"user_version"</span>, i + <span class="s">1</span>)?;</span></pre></div>
+    </div>
+
+    <div data-theme="light">
+      <span class="lab">Light, cool paper</span>
+      <h3>Surfaces</h3>
+      <div class="grid2">
+        <div class="sw"><i style="background:var(--chrome)"></i><span>chrome</span><code data-token="--chrome"></code></div>
+        <div class="sw"><i style="background:var(--bg)"></i><span>bg</span><code data-token="--bg"></code></div>
+        <div class="sw"><i style="background:var(--surface)"></i><span>surface</span><code data-token="--surface"></code></div>
+        <div class="sw"><i style="background:var(--raised)"></i><span>raised</span><code data-token="--raised"></code></div>
+        <div class="sw"><i style="background:var(--select)"></i><span>select</span><code data-token="--select"></code></div>
+        <div class="sw"><i style="background:var(--sunken)"></i><span>sunken</span><code data-token="--sunken"></code></div>
+        <div class="sw"><i style="background:var(--line)"></i><span>line</span><code data-token="--line"></code></div>
+        <div class="sw"><i style="background:var(--line-strong)"></i><span>line-strong</span><code data-token="--line-strong"></code></div>
+      </div>
+      <h3>Text and action</h3>
+      <div class="grid2">
+        <div class="sw"><i style="background:var(--text)"></i><span>text</span><code data-token="--text"></code></div>
+        <div class="sw"><i style="background:var(--text-2)"></i><span>text-2</span><code data-token="--text-2"></code></div>
+        <div class="sw"><i style="background:var(--text-3)"></i><span>text-3</span><code data-token="--text-3"></code></div>
+        <div class="sw"><i style="background:var(--text-off)"></i><span>text-off</span><code data-token="--text-off"></code></div>
+        <div class="sw"><i style="background:var(--primary)"></i><span>primary</span><code data-token="--primary"></code></div>
+        <div class="sw"><i style="background:var(--focus)"></i><span>focus</span><code data-token="--focus"></code></div>
+      </div>
+      <h3>State</h3>
+      <div>
+        <div class="stx"><span class="st st-needs"><svg class="ic"><use href="#i-circle-alert"/></svg>Needs you</span><span class="hstack"><span class="lamp lamp-needs"></span><code class="mono-xs c3" data-token="--needs-solid"></code></span><span class="samp g-needs">Wants to run git push</span></div>
+        <div class="stx"><span class="st st-working"><svg class="ic"><use href="#i-loader-circle"/></svg>Working</span><span class="hstack"><span class="lamp lamp-working"></span><code class="mono-xs c3" data-token="--working-solid"></code></span><span class="samp g-working">Researching GPUI docks</span></div>
+        <div class="stx"><span class="st st-limited"><svg class="ic"><use href="#i-hourglass"/></svg>Limited</span><span class="hstack"><span class="lamp lamp-limited"></span><code class="mono-xs c3" data-token="--limited-solid"></code></span><span class="samp g-limited">5-hour limit, resets 23:40</span></div>
+        <div class="stx"><span class="st st-paused"><svg class="ic"><use href="#i-pause"/></svg>Paused</span><span class="hstack"><span class="lamp lamp-paused"></span><code class="mono-xs c3" data-token="--paused-solid"></code></span><span class="samp g-paused">Paused by you</span></div>
+        <div class="stx"><span class="st st-setup"><svg class="ic"><use href="#i-plug"/></svg>Needs setup</span><span class="hstack"><span class="lamp lamp-setup"></span><code class="mono-xs c3" data-token="--setup-solid"></code></span><span class="samp g-setup">Sign in to finish setup</span></div>
+        <div class="stx"><span class="st st-idle"><svg class="ic"><use href="#i-circle-dashed"/></svg>Idle</span><span class="hstack"><span class="lamp lamp-idle"></span><code class="mono-xs c3" data-token="--idle"></code></span><span class="samp g-idle">Last active 18 min ago</span></div>
+        <div class="stx"><span class="st st-fail"><svg class="ic"><use href="#i-x"/></svg>Failed</span><span class="hstack"><span class="lamp lamp-live"></span><code class="mono-xs c3" data-token="--live"></code></span><span class="samp g-danger">Live lamp, failures, recording</span></div>
+      </div>
+      <h3>Bots</h3>
+      <div class="bots">
+        <div class="cell"><svg width="40" height="40" style="color:var(--bot-brown)"><use href="#a-circle"/></svg><span class="lab">brown</span><code class="mono-xs c3" data-token="--bot-brown"></code></div>
+        <div class="cell"><svg width="40" height="40" style="color:var(--bot-red)"><use href="#a-circle"/></svg><span class="lab">red</span><code class="mono-xs c3" data-token="--bot-red"></code></div>
+        <div class="cell"><svg width="40" height="40" style="color:var(--bot-orange)"><use href="#a-circle"/></svg><span class="lab">orange</span><code class="mono-xs c3" data-token="--bot-orange"></code></div>
+        <div class="cell"><svg width="40" height="40" style="color:var(--bot-amber)"><use href="#a-circle"/></svg><span class="lab">amber</span><code class="mono-xs c3" data-token="--bot-amber"></code></div>
+        <div class="cell"><svg width="40" height="40" style="color:var(--bot-green)"><use href="#a-circle"/></svg><span class="lab">green</span><code class="mono-xs c3" data-token="--bot-green"></code></div>
+        <div class="cell"><svg width="40" height="40" style="color:var(--bot-teal)"><use href="#a-circle"/></svg><span class="lab">teal</span><code class="mono-xs c3" data-token="--bot-teal"></code></div>
+        <div class="cell"><svg width="40" height="40" style="color:var(--bot-blue)"><use href="#a-circle"/></svg><span class="lab">blue</span><code class="mono-xs c3" data-token="--bot-blue"></code></div>
+        <div class="cell"><svg width="40" height="40" style="color:var(--bot-purple)"><use href="#a-circle"/></svg><span class="lab">purple</span><code class="mono-xs c3" data-token="--bot-purple"></code></div>
+        <div class="cell"><svg width="40" height="40" style="color:var(--bot-pink)"><use href="#a-circle"/></svg><span class="lab">pink</span><code class="mono-xs c3" data-token="--bot-pink"></code></div>
+        <div class="cell"><svg width="40" height="40" style="color:var(--bot-gray)"><use href="#a-circle"/></svg><span class="lab">gray</span><code class="mono-xs c3" data-token="--bot-gray"></code></div>
+      </div>
+      <h3>Code</h3>
+      <div class="code"><pre><span class="l"><span class="k">let</span> tx = conn.<span class="f">transaction</span>()?; <span style="color:var(--code-comment)">// user_version</span></span><span class="l">tx.<span class="f">pragma_update</span>(None, <span class="s">"user_version"</span>, i + <span class="s">1</span>)?;</span></pre></div>
+    </div>
+  </div>
+</div>
+<script>for (const el of document.querySelectorAll("[data-token]")) el.textContent = getComputedStyle(el).getPropertyValue(el.dataset.token).trim().toUpperCase();</script>
+</body>
+</html>
