@@ -21,3 +21,4 @@ design/_smoke.fig
 
 # Grok Bot screenshots and scraped tokens: xAI's material, kept on this PC only
 docs/reference/
+/tjommie-rs/target/

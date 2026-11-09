@@ -1,0 +1,4 @@
+# Applies when cargo runs with its working directory inside tjommie-rs (CI does).
+[toolchain]
+channel = "1.97.1"
+components = ["clippy", "rustfmt"]

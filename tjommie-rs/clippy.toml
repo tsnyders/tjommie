@@ -1,0 +1,5 @@
+# No console windows: processes are created only by daemon::spawn::command(), which sets CREATE_NO_WINDOW.
+disallowed-methods = [
+  { path = "std::process::Command::new", reason = "use spawn::command() so the child gets CREATE_NO_WINDOW" },
+  { path = "tokio::process::Command::new", reason = "use spawn::command() so the child gets CREATE_NO_WINDOW", allow-invalid = true },
+]

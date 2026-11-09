@@ -31,3 +31,17 @@ jobs:
       - name: Build and verify pinned local speech runtime
         shell: pwsh
         run: ./packages/desktop/scripts/build-speech-runtime.ps1
+
+  rust:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        # Inside tjommie-rs so rustup applies rust-toolchain.toml.
+        working-directory: tjommie-rs
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
