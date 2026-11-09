@@ -77,7 +77,7 @@ Split further only when a crate needs it.
    - The method and event name sets equal the manifest.
    - Every response and event that the Rust integration tests emit validates against the manifest schema.
 4. CI regenerates the manifest and fails on a diff.
-5. Schemas that zod cannot export get a `custom` entry and a hand-written test.
+5. Schemas that zod cannot export get a `custom` entry and a hand-written test. Zod's JSON Schema export also silently drops refinements (`.refine`, `.superRefine`, `.check`, `z.url()` trimming), so each refinement is ported by hand as a Rust newtype with a test. Examples are IANA time zones, https-only relay URLs, API-key byte limits, unique names and date ranges. String trimming that zod does before length checks is marked `x-trim` in the manifest.
 
 ### 3.2 Chat semantics and limits
 - **Chat:** `chat.send` takes `{botId, text, files}` (`wire.ts:71-74`). There is also `chat.stop` (`:75`).

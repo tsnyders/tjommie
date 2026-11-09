@@ -8,10 +8,14 @@
 ## Rules for every task
 - **The code wins.** Read the spec section and the cited TypeScript files before writing. If they disagree, follow the code and report it so the spec gets fixed.
 - **Tests first.** Write the named test, run it and see it **fail**, then implement and see it pass. Port the TypeScript test cases one for one, and use the same fixture data.
-- **Where to run commands:** from the repo root in PowerShell.
-  - Rust: `cargo test --manifest-path tjommie-rs/Cargo.toml -p <crate> <filter>`
-  - TypeScript: `npx vitest run <file>`
-  - Before handing in: `cargo clippy --manifest-path tjommie-rs/Cargo.toml --all-targets -- -D warnings` and `npm run typecheck`
+- **Where to run commands:** in PowerShell.
+  - Rust: run cargo from inside `tjommie-rs/` so `rust-toolchain.toml` applies: `cargo test -p <crate> <filter>`. Run from the repo root, the pin is ignored.
+  - TypeScript, from the repo root: `npx vitest run <file>`
+  - Before handing in:
+    - inside `tjommie-rs/`: `cargo clippy --workspace --all-targets --locked -- -D warnings`
+    - from the root: `npm run typecheck`
+  - On this shared PC, run focused tests while working and the full vitest suite once at the end. Failures that pass in isolation are load, not regressions; report them as such.
+- **Schema checks** use `protocol::assert_valid` (in the library). Use `Request::decode` for calls and `protocol::parse::<T>()` for frames (see the M0 notes in the Core report).
 - **No new migrations, and secrets stay byte-compatible.** Rollback to 0.4.2 must keep working (spec §5).
 - **The production root is never touched.** Tests use temp roots. Anything that creates Windows accounts, ACLs or jobs needs `TJOMMIE_RS_ADMIN_TESTS=1`, refuses a root that resolves to `%LOCALAPPDATA%\Tjommie`, and runs first on a GitHub runner.
 - **No console windows.** Spawn only through `spawn::command()`. Clippy `disallowed-methods` bans `std::process::Command::new` and `tokio::process::Command::new` everywhere else.
@@ -145,6 +149,8 @@ That is seven lanes at most, matching the agent limit.
   - `--token-stdin` reads `{token, desktopHostToken}`. The daemon exits when stdin closes.
   - `--dev`.
   - The LAN port comes from new `TJOMMIE_LAN_PORT` (default 47101).
+  - On start it prints exactly `Tjommie daemon listening on http://127.0.0.1:<port>` to stdout (`daemon/src/main.ts:49`). `updater.real` and the desktop's log reading match this text.
+- **Desktop override (moved here from T9.1):** in unpackaged runs, `desktop/src/main.ts` starts the exe named by `TJOMMIE_DAEMON_EXE` when that variable is set, so the black-box real tests in `tjommie-rs/test-map.md` can target the Rust daemon from here on. The packaged switch stays in T9.1. Test it in `daemon-process.test.ts`.
 - **Tests:** port `server.test.ts` and `main.test.ts`. Every response goes through `assert_valid`.
 
 **T3.2 Settings, bots and small domains** (Core).
@@ -195,7 +201,7 @@ That is seven lanes at most, matching the agent limit.
 
   Every broker route is authenticated with `desktopHostToken`. The Playwright fallback is not ported: in `--dev` without a desktop host, browser tools answer `unavailable`.
 - **Tests:** port the matching tests.
-- **Done when:** desktop `native-browser.real` and `accounts.real` pass with `TJOMMIE_DAEMON_EXE` pointing at the Rust daemon.
+- **Done when:** desktop `embedded-browser.real` and `desktop.real` pass with `TJOMMIE_DAEMON_EXE` pointing at the Rust daemon. Two tests can't prove the Rust daemon, per `tjommie-rs/test-map.md`: `native-browser.real` never starts a daemon, and `accounts.real` imports daemon code to seed its data.
 
 ## M7 Remote (Lane D)
 - **Covers:**
@@ -237,10 +243,11 @@ That is seven lanes at most, matching the agent limit.
 **T9.1 Switch.**
 - **`desktop/src/main.ts:49`, `:292-300`:**
   - Packaged builds run `resources/daemon/tjommie-daemon.exe` with no Node arguments.
-  - Unpackaged builds use `TJOMMIE_DAEMON_EXE` if it is set, otherwise the Node daemon.
+  - Unpackaged builds keep the `TJOMMIE_DAEMON_EXE` override from T3.1, and otherwise run the Node daemon.
 - **`desktop/scripts/package.ts:74-80`:** copy the cargo-built exe, and stop bundling `main.ts`, Playwright MCP and the wasm.
 - **`scripts/verify-packaged.ts`:** expects the exe.
-- **Tests:** `daemon-process.test.ts` and `verify-packaged`.
+- **`packages/desktop/src/packaged.real.test.ts:20`:** assert `resources/daemon/tjommie-daemon.exe` instead of the Playwright MCP `cli.js`.
+- **Tests:** `daemon-process.test.ts`, `verify-packaged` and `packaged.real`.
 - **CHANGELOG:** "The background service that runs your bots was rebuilt; bots, chats, settings and logins carry over, and a backup of your data is made the first time it starts."
 
 **T9.2 CI and release workflow.**
