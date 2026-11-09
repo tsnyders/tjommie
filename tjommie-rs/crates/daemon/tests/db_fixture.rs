@@ -137,3 +137,52 @@ fn creates_the_pending_routine_approval_index_on_an_existing_version_3_database(
     );
     assert_eq!(user_version(&db), 12);
 }
+
+// T1.3 first-open backup (spec §5, release R1): `data\backup\tjommie-<version>.db`, once per daemon version.
+const BACKUP: &str = concat!("tjommie-", env!("CARGO_PKG_VERSION"), ".db");
+
+fn backups(dir: &TempDir) -> Vec<String> {
+    fs::read_dir(dir.path().join("backup"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect()
+}
+
+#[test]
+fn backs_up_the_database_once_per_version() {
+    let dir = temp();
+    let file = fixture_copy(&dir);
+    let rows = row_counts(&Connection::open(&file).unwrap());
+
+    drop(db::open(&file).unwrap());
+    drop(db::open(&file).unwrap());
+
+    assert_eq!(backups(&dir), [BACKUP]);
+    let backup = Connection::open(dir.path().join("backup").join(BACKUP)).unwrap();
+    assert_eq!(row_counts(&backup), rows);
+}
+
+#[test]
+fn backs_up_before_the_migrations_run() {
+    let dir = temp();
+    let file = dir.path().join("tjommie.db");
+    {
+        let existing = Connection::open(&file).unwrap();
+        for migration in &MIGRATIONS[..3] {
+            existing.execute_batch(migration).unwrap();
+        }
+        existing.execute_batch("PRAGMA user_version = 3;").unwrap();
+    }
+
+    drop(db::open(&file).unwrap());
+
+    let backup = Connection::open(dir.path().join("backup").join(BACKUP)).unwrap();
+    assert_eq!(user_version(&backup), 3);
+}
+
+#[test]
+fn a_new_database_has_nothing_to_back_up() {
+    let dir = temp();
+    drop(db::open(&dir.path().join("tjommie.db")).unwrap());
+    assert!(!dir.path().join("backup").exists());
+}
