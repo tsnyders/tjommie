@@ -156,6 +156,27 @@ fn decode_tells_unknown_methods_from_bad_params() {
 }
 
 #[test]
+fn bad_params_messages_never_echo_what_was_sent() {
+    let secret = "SECRETKEY".repeat(10);
+    for (method, params) in [
+        (
+            "accounts.create",
+            json!({ "provider": "codex", "label": "API", "kind": "api_key", "apiKey": secret, "spendingCapUsd": -1 }),
+        ),
+        (
+            "google.configure",
+            json!({ "clientId": "https://evil.test", "clientSecret": secret }),
+        ),
+        ("device.registerPush", json!({ "token": secret.repeat(50) })),
+    ] {
+        let Err(DecodeError::BadParams(message)) = Request::decode(method, params) else {
+            panic!("{method} accepted bad params");
+        };
+        assert!(!message.contains("SECRETKEY"), "{method}: {message}");
+    }
+}
+
+#[test]
 fn remote_frames_serialize_with_their_type_tag() {
     let host = "99cf98ba-2638-4b16-8a6e-1691c1673b45";
     for frame in [

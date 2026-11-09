@@ -90,11 +90,16 @@ impl Schema {
             Value::String(custom) if custom == "custom" => None,
             json => Some(jsonschema::validator_for(json).expect("every manifest schema compiles")),
         });
+        // Masked: the message names the problem and where, never the value, which can be an API key or a token.
         match validator
             .as_ref()
             .and_then(|validator| validator.iter_errors(value).next())
         {
-            Some(error) => Err(Invalid(format!("{} at {}", error, error.instance_path()))),
+            Some(error) => Err(Invalid(format!(
+                "{} at {}",
+                error.masked(),
+                error.instance_path()
+            ))),
             None => Ok(()),
         }
     }
