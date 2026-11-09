@@ -92,6 +92,24 @@ fn accepts_a_null_relay_url_in_settings() {
     );
 }
 
+// Not in remote.test.ts. Probed against zod 4.6.5: its URL check trims with String.prototype.trim (so NBSP too), stores
+// the trimmed text, and checks .max(512) after trimming.
+#[test]
+fn trims_a_relay_url_like_zod_before_checking_its_length() {
+    let set = |url: String| json!({ "relayUrl": url });
+    let url = "https://r.example.workers.dev";
+    assert_eq!(
+        params("settings.set", set(format!("\u{a0}{url}\u{a0}")))["relayUrl"],
+        url
+    );
+    let long = format!("https://r.example/{}", "a".repeat(512 - 18));
+    assert_eq!(
+        params("settings.set", set(format!("\u{a0}{long}\u{a0}")))["relayUrl"],
+        long
+    );
+    rejects("settings.set", set(format!("{long}a")));
+}
+
 #[test]
 fn accepts_optional_push_kinds_when_registering_a_device() {
     for registration in [

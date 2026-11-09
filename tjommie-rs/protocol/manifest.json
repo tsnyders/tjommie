@@ -5154,7 +5154,8 @@
                   {
                     "type": "string",
                     "maxLength": 512,
-                    "format": "uri"
+                    "format": "uri",
+                    "x-trim": true
                   },
                   {
                     "type": "null"
@@ -12358,7 +12359,8 @@
           },
           "url": {
             "type": "string",
-            "format": "uri"
+            "format": "uri",
+            "x-trim": true
           }
         },
         "required": [
@@ -15360,7 +15362,8 @@
               {
                 "type": "string",
                 "maxLength": 512,
-                "format": "uri"
+                "format": "uri",
+                "x-trim": true
               },
               {
                 "type": "null"
@@ -15391,7 +15394,8 @@
               {
                 "type": "string",
                 "maxLength": 512,
-                "format": "uri"
+                "format": "uri",
+                "x-trim": true
               },
               {
                 "type": "null"
@@ -15414,7 +15418,8 @@
               {
                 "type": "string",
                 "maxLength": 512,
-                "format": "uri"
+                "format": "uri",
+                "x-trim": true
               },
               {
                 "type": "null"
@@ -18035,7 +18040,8 @@
               {
                 "type": "string",
                 "maxLength": 512,
-                "format": "uri"
+                "format": "uri",
+                "x-trim": true
               },
               {
                 "type": "null"
@@ -18647,7 +18653,8 @@
               {
                 "type": "string",
                 "maxLength": 512,
-                "format": "uri"
+                "format": "uri",
+                "x-trim": true
               },
               {
                 "type": "null"
@@ -18854,7 +18861,8 @@
               {
                 "type": "string",
                 "maxLength": 512,
-                "format": "uri"
+                "format": "uri",
+                "x-trim": true
               },
               {
                 "type": "null"

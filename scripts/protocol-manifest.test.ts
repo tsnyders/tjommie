@@ -27,6 +27,9 @@ it("marks strings zod trims before it checks their length", () => {
   const create = protocolManifest().methods.find((entry) => entry.name === "bots.create");
   expect(create?.params).toMatchObject({ properties: { name: { "x-trim": true, minLength: 1 }, model: { minLength: 1 } } });
   expect(create?.params).not.toMatchObject({ properties: { model: { "x-trim": true } } });
+  // zod's URL check trims too, before .max applies.
+  const settings = protocolManifest().methods.find((entry) => entry.name === "settings.set");
+  expect(JSON.stringify(settings?.params)).toContain('"x-trim":true');
 });
 
 it("exports the standalone schemas parsed outside method calls", () => {

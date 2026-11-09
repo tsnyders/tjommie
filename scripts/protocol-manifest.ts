@@ -21,13 +21,15 @@ const types = {
   SpeechStatus, SpeechEvent, SpeechStart,
 };
 
-// Zod trims a string before it checks its length. JSON Schema can't say that, so trimmed strings carry "x-trim" and Rust
-// trims them before it validates.
+// Zod trims a string before it checks its length: with .trim(), and inside its URL check. JSON Schema can't say that, so
+// trimmed strings carry "x-trim" and Rust trims them before it validates.
 function markTrim(ctx: { zodSchema: z.core.$ZodTypes; jsonSchema: z.core.JSONSchema.BaseSchema }): void {
-  if (ctx.zodSchema._zod.def.type !== "string") return;
-  const trims = (ctx.zodSchema._zod.def.checks ?? []).some((check) => {
-    const def = (check as z.core.$ZodCheckOverwrite<string>)._zod.def;
-    return def.check === "overwrite" && def.tx(" x ") === "x";
+  const def = ctx.zodSchema._zod.def;
+  if (def.type !== "string") return;
+  const isUrl = (value: object): boolean => "format" in value && value.format === "url";
+  const trims = isUrl(def) || (def.checks ?? []).some((check) => {
+    const checkDef = (check as z.core.$ZodCheckOverwrite<string>)._zod.def;
+    return isUrl(checkDef) || (checkDef.check === "overwrite" && checkDef.tx(" x ") === "x");
   });
   if (trims) ctx.jsonSchema["x-trim"] = true;
 }
