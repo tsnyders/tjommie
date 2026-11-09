@@ -98,6 +98,11 @@ fn parses_hello_and_request_messages_and_rejects_anything_else() {
         Ok(ClientMessage::Req { .. })
     ));
     assert!(parse::<ClientMessage>(json!({ "type": "nope" })).is_err());
+    // Not in wire.test.ts. Probed against zod 4.6.5: a request without a params key fails ClientMessage
+    // ("expected nonoptional"), so the server treats it as a malformed frame.
+    assert!(
+        parse::<ClientMessage>(json!({ "type": "req", "id": 1, "method": "bots.list" })).is_err()
+    );
 }
 
 #[test]

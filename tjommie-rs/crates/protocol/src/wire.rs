@@ -484,7 +484,9 @@ pub enum ClientMessage {
         protocol: i64,
         token: String,
     },
-    /// `params` stays raw until [`Request::decode`] checks it against the method.
+    /// `params` stays raw until [`Request::decode`] checks it against the method. The key is required, even for methods
+    /// without params: zod 4.6.5 rejects a missing `z.unknown()` key ("expected nonoptional"), so `server.ts` closes such
+    /// a frame with 4400 rather than answering `bad_params`.
     Req {
         id: i64,
         method: String,
