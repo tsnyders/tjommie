@@ -8,7 +8,7 @@ import { NativeBrowserMount, NativeBrowserUiCommand, type EventData } from "@tjo
 import updater from "electron-updater";
 import { navigationFor, uiFile } from "./app-protocol.ts";
 import { notesFile } from "./bot-files.ts";
-import { daemonLaunchEnv, startDaemonProcess, stopDaemonBeforeQuit, type DaemonConnection, type RunningDaemon } from "./daemon-process.ts";
+import { daemonCommand, daemonLaunchEnv, startDaemonProcess, stopDaemonBeforeQuit, type DaemonConnection, type RunningDaemon } from "./daemon-process.ts";
 import { notificationDelivery, notificationRoute } from "./notification-delivery.ts";
 import { beginGoogleConsent } from "./google-consent.ts";
 import { NativeBrowserEngine } from "./native-browser.ts";
@@ -292,8 +292,7 @@ function developmentConnection(): DaemonConnection {
 async function launchDaemon(): Promise<DaemonConnection> {
   const running = await startDaemonProcess(
     {
-      execPath: process.execPath,
-      args: ["--disable-warning=ExperimentalWarning", daemonEntry],
+      ...daemonCommand(process.env, packaged, process.execPath, daemonEntry),
       env: daemonLaunchEnv(process.env, dataRoot, !!packageIdentity.testDataRoot),
       // Only an isolated desktop test may redirect the daemon's account folders.
       testAccountsDir: packageIdentity.testDataRoot
