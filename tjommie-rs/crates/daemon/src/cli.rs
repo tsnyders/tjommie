@@ -260,6 +260,8 @@ pub fn is_worker_termination(error: &io::Error) -> bool {
 pub trait WorkerBoundary: Send + Sync {
     fn required(&self) -> bool;
     fn purpose(&self) -> WorkerPurpose;
+    /// `configuration()`'s `(workerSid, peerSid)`, or `None` when the configuration can't be read.
+    fn sids(&self) -> Option<(String, String)>;
     /// `configuration().workerRoot`: account folders live under its `accounts` folder.
     fn worker_root(&self) -> PathBuf;
     /// `configuration().runtimeRoot`: the only place a worker's CLIs are found.
@@ -306,8 +308,9 @@ impl WorkerInstall {
             .unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Makes this pair the daemon's CLI launch path. Pair the boundaries both ways first: pairing validates their
-    /// configurations against each other (`validateWorkerPair`) and lets each see the other's receipts.
+    /// Makes this pair the daemon's CLI launch path: a provider and a review worker under two different accounts, each
+    /// the other's peer. Pair the boundaries both ways first: pairing runs the rest of `validateWorkerPair` (owner,
+    /// roots, names, credential targets, provisioning) and lets each see the other's receipts.
     pub fn install(
         self: &Arc<Self>,
         worker: Arc<dyn WorkerBoundary>,
@@ -317,7 +320,15 @@ impl WorkerInstall {
         if installed.is_some() {
             return Err("A different Windows worker boundary is already installed.".into());
         }
-        if worker.purpose() != WorkerPurpose::Provider || review.purpose() != WorkerPurpose::Review
+        let peers = match (worker.sids(), review.sids()) {
+            (Some((worker_sid, worker_peer)), Some((review_sid, review_peer))) => {
+                worker_sid != review_sid && worker_peer == review_sid && review_peer == worker_sid
+            }
+            _ => false,
+        };
+        if worker.purpose() != WorkerPurpose::Provider
+            || review.purpose() != WorkerPurpose::Review
+            || !peers
         {
             return Err("review_isolated_identity_unavailable".into());
         }

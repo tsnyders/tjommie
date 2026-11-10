@@ -21,6 +21,8 @@ type Spawn = (String, Vec<String>, String, Env);
 
 struct FakeWorker {
     purpose: WorkerPurpose,
+    /// `(workerSid, peerSid)`.
+    sids: Option<(String, String)>,
     worker_root: PathBuf,
     runtime_root: PathBuf,
     spawns: Mutex<Vec<Spawn>>,
@@ -35,6 +37,10 @@ impl WorkerBoundary for FakeWorker {
 
     fn purpose(&self) -> WorkerPurpose {
         self.purpose
+    }
+
+    fn sids(&self) -> Option<(String, String)> {
+        self.sids.clone()
     }
 
     fn worker_root(&self) -> PathBuf {
@@ -84,8 +90,13 @@ impl WorkerBoundary for FakeWorker {
 
 impl FakeWorker {
     fn new(purpose: WorkerPurpose, worker_root: PathBuf, runtime_root: PathBuf) -> Self {
+        let (provider, review) = ("S-1-5-21-1-1001".to_string(), "S-1-5-21-1-1002".to_string());
         FakeWorker {
             purpose,
+            sids: Some(match purpose {
+                WorkerPurpose::Provider => (provider, review),
+                WorkerPurpose::Review => (review, provider),
+            }),
             worker_root,
             runtime_root,
             spawns: Mutex::default(),
@@ -345,4 +356,35 @@ async fn installs_one_provider_and_review_pair_whose_exclusivity_ends_with_unins
     assert!(
         !install.exclusive(WorkerPurpose::Provider) && !install.exclusive(WorkerPurpose::Review)
     );
+}
+
+// `installWindowsWorker`'s identity checks: two different worker accounts, each the other's peer.
+#[test]
+fn refuses_a_pair_whose_worker_identities_are_not_each_others_peers() {
+    let f = Fixture::new();
+    let review = |sids: Option<(&str, &str)>| -> Arc<dyn WorkerBoundary> {
+        let mut review =
+            FakeWorker::new(WorkerPurpose::Review, f.path("review"), f.path("runtime"));
+        review.sids = sids.map(|(sid, peer)| (sid.to_string(), peer.to_string()));
+        Arc::new(review)
+    };
+    let worker: Arc<dyn WorkerBoundary> = f.worker.clone();
+    let install = Arc::new(WorkerInstall::default());
+    for wrong in [
+        Some(("S-1-5-21-1-1001", "S-1-5-21-1-1001")), // the provider's own account
+        Some(("S-1-5-21-1-1003", "S-1-5-21-1-1001")), // not the provider's peer
+        Some(("S-1-5-21-1-1002", "S-1-5-21-1-1003")), // its peer is not the provider
+        None,                                         // configuration unreadable
+    ] {
+        let refused = install
+            .install(worker.clone(), review(wrong))
+            .err()
+            .unwrap();
+        assert_eq!(refused, "review_isolated_identity_unavailable", "{wrong:?}");
+        assert!(!install.exclusive(WorkerPurpose::Provider));
+    }
+    let _installed = install
+        .install(worker, review(Some(("S-1-5-21-1-1002", "S-1-5-21-1-1001"))))
+        .unwrap();
+    assert!(install.exclusive(WorkerPurpose::Review));
 }
