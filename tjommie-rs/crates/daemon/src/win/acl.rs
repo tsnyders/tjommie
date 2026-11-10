@@ -533,7 +533,7 @@ fn present(root: &Path, path: &Path, folder: bool) -> Result<bool, String> {
 
 /// The parts of `path` below `root`, compared without case like Node's `path.relative` on Windows. `None` when the
 /// path is the root itself or outside it.
-fn below(root: &Path, path: &Path) -> Option<Vec<PathBuf>> {
+pub(crate) fn below(root: &Path, path: &Path) -> Option<Vec<PathBuf>> {
     let (root, path) = (parts(root)?, parts(path)?);
     let inside = path.len() > root.len()
         && root
@@ -552,7 +552,7 @@ fn parts(path: &Path) -> Option<Vec<String>> {
 }
 
 /// `resolve(a).toLowerCase() === resolve(b).toLowerCase()`.
-fn same_path(a: &Path, b: &Path) -> bool {
+pub(crate) fn same_path(a: &Path, b: &Path) -> bool {
     match (parts(a), parts(b)) {
         (Some(a), Some(b)) => {
             a.len() == b.len()

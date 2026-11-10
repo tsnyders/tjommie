@@ -73,11 +73,16 @@ pub fn read(target: &str) -> io::Result<Option<String>> {
 
 /// Writes a generic, local-machine credential with user name `Tjommie`, exactly as the TypeScript daemon does.
 pub fn write(target: &str, value: &str) -> io::Result<()> {
+    write_as(target, value, USER_NAME)
+}
+
+/// `write` with another user name: worker passwords use `Tjommie isolated worker` (`worker-credential.ps1`).
+pub fn write_as(target: &str, value: &str, user_name: &str) -> io::Result<()> {
     if value.is_empty() || value.len() > MAX_BLOB {
         return Err(io::ErrorKind::InvalidInput.into());
     }
     let target = HSTRING::from(target);
-    let user = HSTRING::from(USER_NAME);
+    let user = HSTRING::from(user_name);
     let credential = CREDENTIALW {
         Type: CRED_TYPE_GENERIC,
         TargetName: PWSTR(target.as_ptr().cast_mut()),
@@ -173,6 +178,16 @@ impl Namespace {
                 .bytes()
                 .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f' | b'-'));
         valid.then(|| format!("Tjommie/{}/login/{reference}", self.short()))
+    }
+
+    /// `provision-worker.ps1:14`: the provider worker's password.
+    pub fn isolated_worker_target(&self) -> String {
+        format!("Tjommie/{}/isolated-worker", self.short())
+    }
+
+    /// `provision-worker.ps1:15`: the review worker's password.
+    pub fn isolated_review_target(&self) -> String {
+        format!("Tjommie/{}/isolated-review", self.short())
     }
 
     /// `remote-identity.ts:17-20`.
