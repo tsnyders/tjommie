@@ -566,6 +566,9 @@ impl WorkerBoundary {
             self.grant_directory(Path::new(home)).await?;
             self.assert_preparation()?;
         }
+        // What actually refuses the owner data root is the `grant_directory(cwd)` above: `grant_target` never grants
+        // it, or anything containing it, so a launch there has already failed. This repeats `windows-worker.ts:300`
+        // as a second line of defence, by file identity.
         if !inside(&config.worker_root, cwd)
             && crate::fsid::same_location(cwd, &config.owner_data_root).unwrap_or(true)
         {
@@ -782,6 +785,10 @@ impl WorkerBoundary {
 
     /// `withReviewPolicy`: runs `action` as the only review, between two matching policy observations. If a tree's
     /// stop can't be confirmed, the lease is kept, so nothing else runs as either identity.
+    ///
+    /// The review scope (`REVIEW_SCOPE`) is a tokio task-local, the counterpart of TypeScript's `AsyncLocalStorage`:
+    /// it covers `action`'s own future only. Review launches must be made from that future (awaited in it, not
+    /// `tokio::spawn`ed). A launch from a spawned task has no scope and gets `Busy`, which fails closed.
     pub async fn with_review_policy<T, F>(
         &self,
         action: impl FnOnce(PolicyReceipt) -> F,
