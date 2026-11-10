@@ -1,6 +1,6 @@
 //! What the method handlers share, and the handler table.
 //!
-//! Storage is a `rusqlite::Connection`: lane A's `db::open` (T1.2) returns one, and these modules run the same SQL as
+//! Storage is the `rusqlite::Connection` from [`crate::db::open`], and these modules run the same SQL as
 //! their TypeScript originals against it.
 
 use std::path::PathBuf;

@@ -402,17 +402,9 @@ pub fn token() -> String {
     daemon::paths::new_token()
 }
 
-/// A database file in `dir` with the tables T3.2 uses.
-/// TODO(lane A merge): open it with daemon::db::open instead, and delete schema.sql.
+/// `openDb(join(root, "t.db"))`: a migrated database file in `dir`, as the TypeScript tests open theirs.
 pub fn test_db(dir: &std::path::Path) -> rusqlite::Connection {
-    let connection = rusqlite::Connection::open(dir.join("t.db")).unwrap();
-    connection
-        .execute_batch("PRAGMA foreign_keys = ON;")
-        .unwrap();
-    connection
-        .execute_batch(include_str!("schema.sql"))
-        .unwrap();
-    connection
+    daemon::db::open(&dir.join("t.db")).unwrap()
 }
 
 /// An account row as accounts-store.ts writes it. The first account of a provider is its default.
