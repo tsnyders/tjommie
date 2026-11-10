@@ -12,6 +12,7 @@ pub mod google;
 pub mod host_poll;
 pub mod ids;
 pub mod import;
+pub mod m6;
 pub mod models;
 pub mod native_browser_broker;
 pub mod native_browser_handlers;

@@ -55,7 +55,7 @@ impl From<&crate::bots::StoredBot> for BotIdentity {
 pub struct BrowserError(pub String);
 
 impl BrowserError {
-    fn unavailable() -> Self {
+    pub fn unavailable() -> Self {
         BrowserError("The native browser needs the Tjommie desktop app. Open or restart Tjommie and try again.".into())
     }
 }
