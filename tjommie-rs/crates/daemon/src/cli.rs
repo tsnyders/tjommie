@@ -11,7 +11,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process::Stdio;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use std::time::Duration;
 
 use futures_util::future::Shared;
@@ -258,6 +259,7 @@ pub fn is_worker_termination(error: &io::Error) -> bool {
 /// routes launches, folder grants and CLI lookup through it when it is required.
 pub trait WorkerBoundary: Send + Sync {
     fn required(&self) -> bool;
+    fn purpose(&self) -> WorkerPurpose;
     /// `configuration().workerRoot`: account folders live under its `accounts` folder.
     fn worker_root(&self) -> PathBuf;
     /// `configuration().runtimeRoot`: the only place a worker's CLIs are found.
@@ -271,6 +273,87 @@ pub trait WorkerBoundary: Send + Sync {
         cwd: &'a str,
         env: Env,
     ) -> BoxFuture<'a, io::Result<CliChild>>;
+}
+
+/// A worker's half of the provider/review pair.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkerPurpose {
+    Provider,
+    Review,
+}
+
+type WorkerPair = (Arc<dyn WorkerBoundary>, Arc<dyn WorkerBoundary>);
+
+/// `installWindowsWorker` and `workerCliExclusive` (`cli.ts:12-27`): the daemon's installed provider and review workers,
+/// and whether any CLI has run outside them. One per daemon, shared with its `SystemCli`s (`reporting_to`) and its
+/// boundaries' `exclusive` checks, instead of TypeScript's module globals.
+#[derive(Default)]
+pub struct WorkerInstall {
+    installed: Mutex<Option<WorkerPair>>,
+    legacy_used: AtomicBool,
+}
+
+/// An installed pair. Dropping it uninstalls the pair.
+pub struct InstalledWorkers {
+    install: Arc<WorkerInstall>,
+    pair: WorkerPair,
+}
+
+impl WorkerInstall {
+    fn installed(&self) -> std::sync::MutexGuard<'_, Option<WorkerPair>> {
+        self.installed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Makes this pair the daemon's CLI launch path. Pair the boundaries both ways first: pairing validates their
+    /// configurations against each other (`validateWorkerPair`) and lets each see the other's receipts.
+    pub fn install(
+        self: &Arc<Self>,
+        worker: Arc<dyn WorkerBoundary>,
+        review: Arc<dyn WorkerBoundary>,
+    ) -> Result<InstalledWorkers, String> {
+        let mut installed = self.installed();
+        if installed.is_some() {
+            return Err("A different Windows worker boundary is already installed.".into());
+        }
+        if worker.purpose() != WorkerPurpose::Provider || review.purpose() != WorkerPurpose::Review
+        {
+            return Err("review_isolated_identity_unavailable".into());
+        }
+        *installed = Some((Arc::clone(&worker), Arc::clone(&review)));
+        Ok(InstalledWorkers {
+            install: Arc::clone(self),
+            pair: (worker, review),
+        })
+    }
+
+    /// `workerCliExclusive`: a worker of this purpose is installed and no CLI has run outside the pair. A boundary's
+    /// `exclusive` option is `move || install.exclusive(purpose)`. ponytail: identity by purpose, since one daemon
+    /// builds one pair; compare boundaries if a daemon ever holds two.
+    pub fn exclusive(&self, purpose: WorkerPurpose) -> bool {
+        let installed = self.installed();
+        let present = installed.as_ref().is_some_and(|(worker, review)| {
+            worker.purpose() == purpose || review.purpose() == purpose
+        });
+        present && !self.legacy_used.load(Ordering::SeqCst)
+    }
+
+    fn legacy_launch(&self) {
+        self.legacy_used.store(true, Ordering::SeqCst);
+    }
+}
+
+impl Drop for InstalledWorkers {
+    fn drop(&mut self) {
+        let mut installed = self.install.installed();
+        let ours = installed.as_ref().is_some_and(|(worker, review)| {
+            Arc::ptr_eq(worker, &self.pair.0) && Arc::ptr_eq(review, &self.pair.1)
+        });
+        if ours {
+            *installed = None;
+        }
+    }
 }
 
 const STRIPPED_ENV: [&str; 20] = [
@@ -495,6 +578,8 @@ fn npm_codex(entry: &Path, runtime: Runtime) -> Option<CliCommand> {
 /// Runs and stops the provider CLIs on this PC, inside the worker boundary when one is required.
 pub struct SystemCli {
     worker: Option<Arc<dyn WorkerBoundary>>,
+    /// Told about every launch outside a required worker (`legacyUsed`).
+    install: Option<Arc<WorkerInstall>>,
     /// Owner account folders already mapped into the worker, by lower-cased resolved path.
     account_folders: Mutex<HashMap<String, String>>,
 }
@@ -516,6 +601,7 @@ impl SystemCli {
     pub fn new() -> Self {
         SystemCli {
             worker: None,
+            install: None,
             account_folders: Mutex::default(),
         }
     }
@@ -523,7 +609,20 @@ impl SystemCli {
     pub fn with_worker(worker: Arc<dyn WorkerBoundary>) -> Self {
         SystemCli {
             worker: Some(worker),
+            install: None,
             account_folders: Mutex::default(),
+        }
+    }
+
+    /// Reports launches outside a required worker to the daemon's worker install, which then stops being exclusive.
+    pub fn reporting_to(mut self, install: Arc<WorkerInstall>) -> Self {
+        self.install = Some(install);
+        self
+    }
+
+    fn legacy_launch(&self) {
+        if let Some(install) = &self.install {
+            install.legacy_launch();
         }
     }
 
@@ -647,6 +746,7 @@ impl SystemCli {
         timeout: Duration,
     ) -> io::Result<CliOutput> {
         if self.boundary().is_none() {
+            self.legacy_launch();
             let mut command = crate::spawn::command(&cmd.file);
             command
                 .args(&cmd.args)
@@ -718,6 +818,7 @@ impl CliHost for SystemCli {
                 let cwd = mapped.unwrap_or(options.cwd);
                 return worker.spawn(&cmd.file, all, &cwd, env).await;
             }
+            self.legacy_launch();
             // This is a new pipe for the CLI protocol. It never shares the daemon's token input pipe.
             let mut command = crate::spawn::command(&cmd.file);
             command

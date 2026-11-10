@@ -1,9 +1,9 @@
 //! Port of `packages/daemon/src/cli-worker.test.ts`: provider launches through a Windows worker boundary. The
 //! boundary here is a synthetic fake; T2.3 implements the real one.
 //!
-//! Not ported until M5 and T2.3: "keeps normal work on the provider SID and selects only the registered review SID
-//! inside policy". It drives the review-policy pairing (`installWindowsWorker`, `withWorkerPolicy`), which only project
-//! review uses.
+//! "keeps normal work on the provider SID and selects only the registered review SID inside policy" is ported only as
+//! far as `installWindowsWorker` and `workerCliExclusive` go. Its review-policy scope (`withWorkerPolicy`) comes with
+//! M5's project review and T2.3.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use daemon::cli::{
     BoxFuture, ChildExit, CliChild, CliCommand, CliHost, Env, LaunchOptions, Runtime, SystemCli,
-    WorkerBoundary, WorkerTermination,
+    WorkerBoundary, WorkerInstall, WorkerPurpose, WorkerTermination,
 };
 use daemon::providers::ApiKey;
 use protocol::model::Provider;
@@ -20,6 +20,7 @@ use protocol::model::Provider;
 type Spawn = (String, Vec<String>, String, Env);
 
 struct FakeWorker {
+    purpose: WorkerPurpose,
     worker_root: PathBuf,
     runtime_root: PathBuf,
     spawns: Mutex<Vec<Spawn>>,
@@ -30,6 +31,10 @@ struct FakeWorker {
 impl WorkerBoundary for FakeWorker {
     fn required(&self) -> bool {
         true
+    }
+
+    fn purpose(&self) -> WorkerPurpose {
+        self.purpose
     }
 
     fn worker_root(&self) -> PathBuf {
@@ -77,6 +82,19 @@ impl WorkerBoundary for FakeWorker {
     }
 }
 
+impl FakeWorker {
+    fn new(purpose: WorkerPurpose, worker_root: PathBuf, runtime_root: PathBuf) -> Self {
+        FakeWorker {
+            purpose,
+            worker_root,
+            runtime_root,
+            spawns: Mutex::default(),
+            grants: Mutex::default(),
+            terminate_next: Mutex::new(false),
+        }
+    }
+}
+
 struct Fixture {
     root: tempfile::TempDir,
     worker: Arc<FakeWorker>,
@@ -91,13 +109,11 @@ impl Fixture {
         for folder in ["worker", "review", "runtime", "owner"] {
             std::fs::create_dir(root.path().join(folder)).unwrap();
         }
-        let worker = Arc::new(FakeWorker {
-            worker_root: root.path().join("worker"),
-            runtime_root: root.path().join("runtime"),
-            spawns: Mutex::default(),
-            grants: Mutex::default(),
-            terminate_next: Mutex::new(false),
-        });
+        let worker = Arc::new(FakeWorker::new(
+            WorkerPurpose::Provider,
+            root.path().join("worker"),
+            root.path().join("runtime"),
+        ));
         Fixture { root, worker }
     }
 
@@ -268,4 +284,65 @@ async fn does_not_turn_unknown_worker_termination_into_an_ordinary_failed_status
         .await
         .unwrap_err();
     assert!(daemon::cli::is_worker_termination(&error), "{error}");
+}
+
+// `installWindowsWorker` and `workerCliExclusive`.
+#[tokio::test]
+async fn installs_one_provider_and_review_pair_whose_exclusivity_ends_with_uninstall_or_a_direct_launch()
+ {
+    let f = Fixture::new();
+    let worker: Arc<dyn WorkerBoundary> = f.worker.clone();
+    let review: Arc<dyn WorkerBoundary> = Arc::new(FakeWorker::new(
+        WorkerPurpose::Review,
+        f.path("review"),
+        f.path("runtime"),
+    ));
+    let install = Arc::new(WorkerInstall::default());
+    let swapped = install
+        .install(review.clone(), worker.clone())
+        .err()
+        .unwrap();
+    assert!(
+        swapped.contains("review_isolated_identity_unavailable"),
+        "{swapped}"
+    );
+    let installed = install.install(worker.clone(), review.clone()).unwrap();
+    assert!(install.exclusive(WorkerPurpose::Provider) && install.exclusive(WorkerPurpose::Review));
+    let other = install
+        .install(worker.clone(), review.clone())
+        .err()
+        .unwrap();
+    assert!(
+        other.contains("different Windows worker boundary"),
+        "{other}"
+    );
+    // Launches through the worker keep the pair exclusive.
+    let options = LaunchOptions {
+        cwd: text(&f.path("worker")),
+        env: Env::new(),
+        claude_api_key: None,
+    };
+    f.cli()
+        .reporting_to(install.clone())
+        .launch(&command("protected.exe"), vec![], options)
+        .await
+        .unwrap();
+    assert!(install.exclusive(WorkerPurpose::Provider));
+    drop(installed);
+    assert!(
+        !install.exclusive(WorkerPurpose::Provider) && !install.exclusive(WorkerPurpose::Review)
+    );
+    let _again = install.install(worker, review).unwrap();
+    assert!(install.exclusive(WorkerPurpose::Provider));
+    // A CLI started outside the workers ends exclusivity for good, even one that never starts.
+    let missing = command(&text(&f.path("missing\no-such-cli.exe")));
+    let direct = SystemCli::new().reporting_to(install.clone());
+    let output = direct
+        .run_cli(&missing, &[], &Env::new(), Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert_eq!(output.code, None);
+    assert!(
+        !install.exclusive(WorkerPurpose::Provider) && !install.exclusive(WorkerPurpose::Review)
+    );
 }
