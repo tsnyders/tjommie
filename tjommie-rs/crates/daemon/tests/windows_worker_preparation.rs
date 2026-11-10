@@ -398,10 +398,11 @@ async fn rejects_every_queued_waiter_on_poisoning_without_waiting_for_a_blocked_
     };
     tokio::time::sleep(Duration::from_millis(20)).await;
     gate.poison();
-    assert_eq!(
-        queued.await.unwrap(),
-        Err::<(), _>(BoundaryError::Termination)
-    );
+    // Promptly: a waiter left queued behind the blocked preparation would be the bug.
+    let rejected = tokio::time::timeout(Duration::from_secs(5), queued)
+        .await
+        .expect("the queued waiter was not rejected");
+    assert_eq!(rejected.unwrap(), Err::<(), _>(BoundaryError::Termination));
     assert_eq!(
         gate.run(async { Ok(()) }).await,
         Err(BoundaryError::Termination)
