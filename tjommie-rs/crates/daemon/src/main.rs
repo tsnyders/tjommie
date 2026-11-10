@@ -1,5 +1,6 @@
 //! `tjommie-daemon.exe`: started by the desktop app with `--token-stdin`, or by a developer with `--dev`.
 
+use std::path::Path;
 use std::process::ExitCode;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::Duration;
@@ -22,6 +23,9 @@ fn main() -> ExitCode {
 }
 
 fn run(args: &[String]) -> Result<(), StartupError> {
+    if args.first().is_some_and(|arg| arg == "import") {
+        return import(&args[1..]);
+    }
     let launch = startup::parse_launch(args, |key| std::env::var(key).ok())?;
     let (auth, stdin) = match launch.mode {
         Mode::Development => (Auth::Development, None),
@@ -63,6 +67,37 @@ fn run(args: &[String]) -> Result<(), StartupError> {
         daemon.close().await;
         Ok(())
     })
+}
+
+/// `import --from <root> [--replace]`: copies another install into this build's data root (spec §4).
+fn import(args: &[String]) -> Result<(), StartupError> {
+    let usage = || {
+        StartupError::Plain("Usage: tjommie-daemon import --from <data root> [--replace]".into())
+    };
+    let (mut from, mut replace) = (None, false);
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--from" => from = Some(args.next().ok_or_else(usage)?),
+            "--replace" => replace = true,
+            _ => return Err(usage()),
+        }
+    }
+    let from = from.ok_or_else(usage)?;
+    let to = daemon::paths::data_root();
+    let secrets = daemon::import::run(Path::new(from), &to, replace)
+        .map_err(|error| StartupError::Plain(error.to_string()))?;
+    println!("Imported {from} into {}.", to.display());
+    println!(
+        "Re-wrote {} account keys and {} logins in this install's Credential Manager namespace.",
+        secrets.account_keys, secrets.logins
+    );
+    println!("Project teams weren't imported: their tasks and worktrees stay with {from}.");
+    println!(
+        "Routines are paused and queued or running work was marked failed, so nothing runs in both installs."
+    );
+    println!("Bots' browser profiles weren't copied, so this install's browser starts signed out.");
+    Ok(())
 }
 
 /// Ctrl+C. If no handler can be installed, the daemon waits for stdin instead.

@@ -1,0 +1,1 @@
+ALTER TABLE sessions ADD COLUMN total_cost_usd REAL;
