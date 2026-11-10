@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
+use daemon::relay_client::{Connector, default_connector};
 use daemon::remote::{Remote, RemoteOptions};
 use daemon::remote_host::{Dispatch, RemoteHostOptions};
 use daemon::server::{Handlers, RequestContext, RpcError, Server, ServerOptions};
@@ -25,6 +26,9 @@ pub struct Setup {
     pub relay_url: Arc<dyn Fn() -> Option<String> + Send + Sync>,
     /// Handlers beyond the remote methods.
     pub extra: fn(Handlers) -> Handlers,
+    pub relay_connect: Connector,
+    /// The LAN port; 0 picks a free one.
+    pub port: u16,
 }
 
 impl Default for Setup {
@@ -34,6 +38,8 @@ impl Default for Setup {
             vault: Arc::default(),
             relay_url: Arc::new(|| None),
             extra: |handlers| handlers,
+            relay_connect: default_connector(),
+            port: 0,
         }
     }
 }
@@ -59,7 +65,7 @@ impl Harness {
             dispatch,
         );
         // Never the production 0.0.0.0:47101 bind on this PC: loopback on an ephemeral port.
-        host.port = 0;
+        host.port = setup.port;
         host.bind = [127, 0, 0, 1].into();
         host.addresses = Some(Arc::new(|| vec!["127.0.0.1".into()]));
         host.vault = setup.vault;
@@ -68,6 +74,7 @@ impl Harness {
         let remote = Remote::new(RemoteOptions {
             host,
             relay_url: setup.relay_url,
+            relay_connect: setup.relay_connect,
             broadcast: Arc::new(move |event: Event| seen.lock().unwrap().push(event)),
         });
         let server = Arc::new(

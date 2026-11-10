@@ -51,6 +51,11 @@ impl fmt::Display for RelayError {
 
 impl std::error::Error for RelayError {}
 
+/// Opens real WebSockets (`wss:` with the Windows TLS stack).
+pub fn default_connector() -> Connector {
+    Arc::new(|url: String| Box::pin(async move { Socket::connect(&url).await }))
+}
+
 pub struct RelayClientOptions {
     /// The relay base URL from settings, read at every connect.
     pub url: Arc<dyn Fn() -> Option<String> + Send + Sync>,
@@ -78,7 +83,7 @@ impl RelayClientOptions {
             identity,
             on_channel,
             on_state,
-            connect: Arc::new(|url: String| Box::pin(async move { Socket::connect(&url).await })),
+            connect: default_connector(),
             clock: Arc::new(|| jiff::Timestamp::now().as_millisecond()),
         }
     }
