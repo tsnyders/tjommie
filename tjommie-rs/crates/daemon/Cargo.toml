@@ -14,7 +14,7 @@ getrandom = "0.4.3"
 jiff = "0.2.41"
 protocol = { version = "0.4.2", path = "../protocol" }
 regex = "1.13.1"
-rusqlite = { version = "0.41.1", features = ["bundled"] }
+rusqlite = { version = "0.41.1", features = ["bundled", "backup"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.154", features = ["preserve_order"] }
 sha2 = "0.10.9"
@@ -41,10 +41,16 @@ windows = { version = "0.62.2", features = [
   "Win32_System_Threading",
 ] }
 
+[build-dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+
 [dev-dependencies]
 tokio = { version = "1.54.1", features = ["process", "io-util", "macros", "test-util"] }
 tokio-tungstenite = "0.29"
 uuid = { version = "1.26.0", features = ["v4"] }
+# Tests spell roots with 8.3 short names.
+windows = { version = "0.62.2", features = ["Win32_Storage_FileSystem"] }
 
 [[bin]]
 name = "tjommie-daemon"
