@@ -39,9 +39,10 @@ use transport::{Session, generate_keypair};
 use zeroize::Zeroizing;
 
 use crate::devices_store::{
-    self, PushTarget, add_device, device_for_key, get_device, iso, list_devices, new_id, now_iso,
-    revoke_device, set_push_token, touch_device,
+    self, PushTarget, add_device, device_for_key, get_device, list_devices, revoke_device,
+    set_push_token, touch_device,
 };
+use crate::ids::{new_id, now_iso};
 use crate::peer_wire::{PeerWire, WireKind, WireWriter};
 use crate::remote_identity::{
     CredentialManager, HostIdentity, IdentityError, Vault, host_name, key_text,
@@ -398,7 +399,10 @@ impl RemoteHost {
         let id = new_id();
         let mut secret = Zeroizing::new([0u8; 32]);
         getrandom::fill(secret.as_mut()).map_err(|_| unavailable())?;
-        let expires = iso(jiff::Timestamp::now() + INVITE_LIFETIME);
+        // `toISOString`, as `ids::now_iso` writes it.
+        let expires = (jiff::Timestamp::now() + INVITE_LIFETIME)
+            .strftime("%Y-%m-%dT%H:%M:%S%.3fZ")
+            .to_string();
         self.db()
             .execute(
                 "INSERT INTO pairing_codes(id,secret_hash,expires_at,created_at) VALUES(?,?,?,?)",

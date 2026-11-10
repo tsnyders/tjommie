@@ -5,6 +5,7 @@ use protocol::ErrorCode;
 use protocol::remote::{Device, PushKind, RemoteKey, RemoteName};
 use rusqlite::{Connection, OptionalExtension, Row, params};
 
+use crate::ids::{new_id, now_iso};
 use crate::server::RpcError;
 
 const COLUMNS: &str = "id, name, public_key AS publicKey, paired_at AS pairedAt, last_seen_at AS lastSeenAt, revoked_at AS revokedAt";
@@ -16,21 +17,6 @@ pub struct PushTarget {
     pub device_id: String,
     pub token: String,
     pub kinds: Option<Vec<PushKind>>,
-}
-
-/// `db.ts` `newId`.
-pub fn new_id() -> String {
-    uuid::Uuid::new_v4().to_string()
-}
-
-/// `db.ts` `nowIso`: `Date.prototype.toISOString`, so stored times sort and compare as text.
-pub fn now_iso() -> String {
-    iso(jiff::Timestamp::now())
-}
-
-/// `Date.prototype.toISOString` of a moment: UTC with milliseconds.
-pub fn iso(timestamp: jiff::Timestamp) -> String {
-    timestamp.strftime("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()
 }
 
 pub(crate) fn database(_: rusqlite::Error) -> RpcError {

@@ -3,6 +3,7 @@
 //! and something needs it: a paired device (revoked ones count), a pairing being created, or a live invite. The daemon
 //! publishes every event through [`Remote::publish`], so devices get them and `notify` becomes a push.
 
+use std::future::ready;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
@@ -353,40 +354,39 @@ impl Remote {
     }
 
     /// Answers the remote methods. `device.registerPush` is refused here: only the remote host takes it, from a device.
+    /// Handlers run on the blocking pool, so database work happens before the returned future; only pairing, which
+    /// waits on the listener and the relay, does its work in the future.
     pub fn handlers(self: &Arc<Self>, handlers: Handlers) -> Handlers {
         handlers
-            .on::<method::RemoteStatus, _>(with(
-                self,
-                |remote, _| async move { Ok(remote.status()) },
-            ))
-            .on::<method::RemotePing, _>(with(self, |_, _| async { Ok(Empty {}) }))
-            .on::<method::DeviceRegisterPush, _>(with(self, |_, _| async {
-                Err(RpcError::new(
+            .on::<method::RemoteStatus, _>(with(self, |remote, _| ready(Ok(remote.status()))))
+            .on::<method::RemotePing, _>(with(self, |_, _| ready(Ok(Empty {}))))
+            .on::<method::DeviceRegisterPush, _>(with(self, |_, _| {
+                ready(Err(RpcError::new(
                     ErrorCode::BadState,
                     "Push registration is available only to paired devices.",
-                ))
+                )))
             }))
-            .on::<method::DevicesList, _>(with(self, |remote, _| async move {
-                list_devices(&remote.db())
-            }))
+            .on::<method::DevicesList, _>(with(self, |remote, _| ready(list_devices(&remote.db()))))
             .on::<method::DevicesRename, _>(with(
                 self,
-                |remote, params: protocol::remote::DevicesRename| async move {
-                    let device = rename_device(&remote.db(), &params.id, params.name.as_str())?;
-                    remote.send(devices_changed());
-                    Ok(device)
+                |remote, params: protocol::remote::DevicesRename| {
+                    let renamed = rename_device(&remote.db(), &params.id, params.name.as_str());
+                    if renamed.is_ok() {
+                        remote.send(devices_changed());
+                    }
+                    ready(renamed)
                 },
             ))
-            .on::<method::DevicesRevoke, _>(with(self, |remote, Id { id }| async move {
-                remote.host.revoke(&id)
+            .on::<method::DevicesRevoke, _>(with(self, |remote, Id { id }| {
+                ready(remote.host.revoke(&id))
             }))
             .on::<method::PairingCreate, _>(with(self, |remote, _| async move {
                 remote.create_pairing().await
             }))
-            .on::<method::PairingCancel, _>(with(self, |remote, Id { id }| async move {
+            .on::<method::PairingCancel, _>(with(self, |remote, Id { id }| {
                 remote.host.cancel_pairing(&id);
                 remote.clear_invite(Some(&id));
-                Ok(Empty {})
+                ready(Ok(Empty {}))
             }))
     }
 }

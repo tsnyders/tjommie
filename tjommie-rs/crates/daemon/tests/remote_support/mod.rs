@@ -12,29 +12,9 @@ use std::sync::{Arc, Mutex};
 use daemon::remote_identity::Vault;
 use rusqlite::Connection;
 
-/// The remote tables, exactly as `db.ts` migrations 8, 10 and 11 create them.
-/// ponytail: lane A's `db::open` isn't merged yet; switch this to `db::open(":memory:")` at merge.
+/// A fresh database with every migration, like `openDb(":memory:")`.
 pub fn remote_db() -> Connection {
-    let db = Connection::open_in_memory().unwrap();
-    db.execute_batch(
-        "PRAGMA foreign_keys = ON;
-  CREATE TABLE devices (
-    id TEXT PRIMARY KEY, name TEXT NOT NULL, public_key TEXT NOT NULL UNIQUE,
-    paired_at TEXT NOT NULL, last_seen_at TEXT, revoked_at TEXT
-  );
-  CREATE TABLE remote_host (
-    singleton INTEGER PRIMARY KEY CHECK(singleton = 1), id TEXT NOT NULL UNIQUE,
-    name TEXT NOT NULL, public_key TEXT NOT NULL, created_at TEXT NOT NULL
-  );
-  CREATE TABLE pairing_codes (
-    id TEXT PRIMARY KEY, secret_hash TEXT NOT NULL, expires_at TEXT NOT NULL,
-    created_at TEXT NOT NULL, used_at TEXT
-  );
-  ALTER TABLE devices ADD COLUMN push_token TEXT;
-  ALTER TABLE devices ADD COLUMN push_kinds TEXT;",
-    )
-    .unwrap();
-    db
+    daemon::db::open(std::path::Path::new(":memory:")).unwrap()
 }
 
 pub fn shared_db() -> Arc<Mutex<Connection>> {

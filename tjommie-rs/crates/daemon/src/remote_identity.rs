@@ -14,7 +14,8 @@ use serde::{Deserialize, Serialize};
 use transport::{Failed, Keypair};
 use zeroize::Zeroizing;
 
-use crate::devices_store::{new_id, now_iso, remote_name};
+use crate::devices_store::remote_name;
+use crate::ids::{new_id, now_iso};
 use crate::win::cred::{self, Namespace};
 
 /// Where the remote and relay keys are kept: Credential Manager in the daemon, a map in tests.

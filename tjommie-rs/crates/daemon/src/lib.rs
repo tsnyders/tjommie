@@ -1,8 +1,19 @@
 //! The Tjommie daemon: a port of `packages/daemon`.
 
+pub mod account_pricing;
+pub mod bots;
+pub mod cli;
+pub mod context;
+pub mod db;
 pub mod devices_store;
+pub mod diagnostics;
+pub mod google;
+pub mod ids;
+pub mod import;
+pub mod models;
 pub mod paths;
 pub mod peer_wire;
+pub mod providers;
 pub mod push;
 pub mod relay_client;
 pub mod relay_identity;
@@ -10,6 +21,7 @@ pub mod remote;
 pub mod remote_host;
 pub mod remote_identity;
 pub mod server;
+pub mod settings;
 pub mod spawn;
 pub mod startup;
 pub mod win;

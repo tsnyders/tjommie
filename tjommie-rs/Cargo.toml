@@ -8,3 +8,12 @@ edition = "2024"
 rust-version = "1.97"
 license = "Apache-2.0"
 publish = false
+
+# Keep debug builds small. The build PC runs several worktrees at once, and
+# full debug info filled the disk (about 8 GB per worktree). Line tables keep
+# file:line in backtraces for our own crates; dependencies get none.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
