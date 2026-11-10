@@ -875,3 +875,40 @@ fn lists_this_pcs_ipv4_addresses_without_loopback() {
         assert!(!ip.is_loopback(), "{address}");
     }
 }
+
+/// Review follow-up: `close()` landing anywhere in a start, on the multi-thread runtime production uses, must never
+/// leave a closed host reporting a listener. Each round lands the close at a different point in the first 2 ms of a
+/// start, while another thread keeps taking the state lock with `status()`. Before the fix (a closed check under the
+/// state lock) this failed in 8 of 10 runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_close_racing_a_start_never_leaves_the_host_listening() {
+    for round in 0..300u32 {
+        let db = shared_db();
+        let host = RemoteHost::new(options(&db, Arc::default(), Arc::default()));
+        let hammering = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let hammer = {
+            let (host, hammering) = (host.clone(), hammering.clone());
+            tokio::task::spawn_blocking(move || {
+                while hammering.load(std::sync::atomic::Ordering::Relaxed) {
+                    let _ = host.status();
+                }
+            })
+        };
+        let starting = {
+            let host = host.clone();
+            tokio::spawn(async move { host.ensure_listening().await })
+        };
+        // Sweep where the close lands, 0 to 2 ms in: from before the identity loads to after the listener is up.
+        let delay = Duration::from_micros(u64::from(round % 100) * 20);
+        let begun = std::time::Instant::now();
+        while begun.elapsed() < delay {
+            std::hint::spin_loop();
+        }
+        host.close().await;
+        let _ = starting.await;
+        hammering.store(false, std::sync::atomic::Ordering::Relaxed);
+        hammer.await.unwrap();
+        assert!(!host.status().listening, "round {round}");
+        assert_eq!(host.status().port, None, "round {round}");
+    }
+}

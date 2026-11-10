@@ -339,6 +339,12 @@ impl RemoteHost {
             }
         });
         let mut state = self.state();
+        // `close()` cancels before it takes this lock, so a close is either seen here or clears the state after us.
+        if self.0.closed.is_cancelled() {
+            drop(state);
+            accepting.abort();
+            return Err(StartError::Closed);
+        }
         state.port = Some(port);
         state.listener = Some(accepting);
         Ok(())
