@@ -59,7 +59,7 @@ impl std::error::Error for RelayIdentityError {}
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct StoredKey {
     v: u8,
-    private_key: String,
+    private_key: Zeroizing<String>,
     public_key: RemoteKey,
 }
 
@@ -78,7 +78,7 @@ pub fn load_relay_identity(
                 let der = Zeroizing::new([&PKCS8_PREFIX[..], &seed[..]].concat());
                 let record = StoredKey {
                     v: 1,
-                    private_key: URL_SAFE_NO_PAD.encode(&der),
+                    private_key: Zeroizing::new(URL_SAFE_NO_PAD.encode(&der)),
                     public_key: RemoteKey::new(
                         URL_SAFE_NO_PAD.encode(key.verifying_key().as_bytes()),
                     )
@@ -99,7 +99,7 @@ pub fn load_relay_identity(
             return None;
         }
         // ponytail: only Node's 48-byte v1 encoding is read; a v2 (with public key) export would need a DER parser.
-        let der = Zeroizing::new(URL_SAFE_NO_PAD.decode(&record.private_key).ok()?);
+        let der = Zeroizing::new(URL_SAFE_NO_PAD.decode(record.private_key.as_bytes()).ok()?);
         let seed: &[u8; 32] = der.strip_prefix(&PKCS8_PREFIX[..])?.try_into().ok()?;
         let key = SigningKey::from_bytes(seed);
         let public_key = key.verifying_key().to_bytes();

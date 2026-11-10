@@ -675,3 +675,42 @@ async fn refuses_an_invalid_push_request() {
     assert_eq!(s.fakes.sent(0).len(), 1, "nothing but the login was sent");
     s.client.stop();
 }
+
+/// Review follow-up: zod caps `ready.kinds` at 16 strings of at most 32 characters and `pushed.results` at 16. The
+/// manifest schema carries those caps, and every relay message is decoded through it, so a larger one is refused.
+#[tokio::test(start_paused = true)]
+async fn refuses_relay_messages_over_the_zod_caps() {
+    let s = setup();
+    for ready in [
+        json!({ "t": "ready", "push": true, "kinds": vec!["done"; 17] }),
+        json!({ "t": "ready", "push": true, "kinds": ["k".repeat(33)] }),
+    ] {
+        s.client.start();
+        settle().await;
+        online(&s, s.fakes.last(), ready.clone()).await;
+        assert!(s.fakes.is_closed(s.fakes.last()), "{ready}");
+        assert_ne!(s.client.state(), RelayState::Online);
+        s.client.stop();
+    }
+    s.client.start();
+    settle().await;
+    let index = s.fakes.last();
+    online(&s, index, json!({ "t": "ready", "push": true })).await;
+    let client = s.client.clone();
+    let pending = tokio::spawn(async move {
+        client
+            .push(vec!["synthetic-token".into()], PushKind::Done, "bot", None)
+            .await
+    });
+    settle().await;
+    let id = serde_json::from_str::<Value>(&s.fakes.sent(index)[1]).unwrap()["id"].clone();
+    let results = vec![json!({ "ok": true, "unregistered": false }); 17];
+    s.fakes.receive(
+        index,
+        json!({ "t": "pushed", "id": id, "results": results }),
+    );
+    settle().await;
+    assert!(s.fakes.is_closed(index));
+    assert_eq!(pending.await.unwrap(), Err(RelayError::Unavailable));
+    s.client.stop();
+}

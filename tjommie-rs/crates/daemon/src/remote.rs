@@ -268,8 +268,13 @@ impl Remote {
         if let Some(relay) = self.relay() {
             return Ok(relay);
         }
+        // Credential Manager I/O: off the async workers.
+        let (root, vault) = (self.root.clone(), self.vault.clone());
         let identity =
-            load_relay_identity(&self.root, self.vault.as_ref()).map_err(relay_failed)?;
+            tokio::task::spawn_blocking(move || load_relay_identity(&root, vault.as_ref()))
+                .await
+                .map_err(relay_failed)?
+                .map_err(relay_failed)?;
         let host_id = self.host.status().host_id.ok_or_else(|| {
             RpcError::new(ErrorCode::BadState, "The phone connection is unavailable.")
         })?;

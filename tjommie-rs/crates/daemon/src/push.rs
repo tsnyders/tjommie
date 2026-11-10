@@ -88,6 +88,8 @@ pub struct Push {
     relay: Arc<dyn PushRelay>,
     history: Arc<Mutex<History>>,
     failures: Arc<AtomicU64>,
+    /// So a notification published from any thread still sends.
+    runtime: tokio::runtime::Handle,
 }
 
 /// The routing fields of a notification; its title and body never leave the PC.
@@ -106,12 +108,14 @@ fn route(notify: &Notify) -> (PushKind, &str, Option<&str>) {
 }
 
 impl Push {
+    /// Call inside the daemon's runtime: results are handled there, whichever thread later calls [`Push::send`].
     pub fn new(host: Arc<dyn PushHost>, relay: Arc<dyn PushRelay>) -> Push {
         Push {
             host,
             relay,
             history: Arc::default(),
             failures: Arc::default(),
+            runtime: tokio::runtime::Handle::current(),
         }
     }
 
@@ -180,7 +184,7 @@ impl Push {
                 self.relay
                     .push(tokens, kind, bot_id.to_owned(), room_id.map(str::to_owned));
             let push = self.clone();
-            tokio::spawn(async move {
+            self.runtime.spawn(async move {
                 match sending.await {
                     Ok(results) if results.len() == batch.len() => {
                         for (result, (target, _)) in results.iter().zip(&batch) {

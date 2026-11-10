@@ -298,3 +298,18 @@ async fn keeps_every_push_target_available_when_stored_kinds_are_malformed_or_ne
     sent.sort();
     assert_eq!(sent, ["token-Malformed", "token-Mixed", "token-Valid"]);
 }
+
+/// Review follow-up: a producer on a plain thread can publish; the push goes out and its result is handled on the
+/// runtime the sender was made in.
+#[tokio::test]
+async fn sends_when_published_from_a_thread_outside_the_runtime() {
+    let (sender, _, relay) = setup(1);
+    relay.reject.store(true, Ordering::Relaxed);
+    let publisher = sender.clone();
+    std::thread::spawn(move || publisher.send(&notice()))
+        .join()
+        .expect("publishing from a std thread doesn't panic");
+    settle().await;
+    assert_eq!(relay.calls.lock().unwrap().len(), 1);
+    assert_eq!(sender.failures(), 1, "the rejected push was handled");
+}

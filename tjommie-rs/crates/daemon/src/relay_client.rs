@@ -276,8 +276,9 @@ impl RelayClient {
                 return;
             }
             shared.state = state;
+            // Under the lock, so a stopping task can't publish its state after `stop()` published `Off`.
+            self.0.states.send_replace(state);
         }
-        self.0.states.send_replace(state);
         let _ = catch_unwind(AssertUnwindSafe(|| (self.0.options.on_state)()));
     }
 
