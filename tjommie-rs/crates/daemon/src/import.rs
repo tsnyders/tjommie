@@ -64,29 +64,46 @@ pub fn copy_data(from: &Path, to: &Path, replace: bool) -> io::Result<()> {
             source_db.display()
         )));
     }
-    if target.join("data").join("tjommie.db").exists() {
-        if !replace {
-            return Err(io::Error::other(format!(
-                "{} already has a Tjommie database. Import again with --replace to overwrite it.",
-                target.display()
-            )));
-        }
-        remove_imported(target)?;
+    if target.join("data").join("tjommie.db").exists() && !replace {
+        return Err(io::Error::other(format!(
+            "{} already has a Tjommie database. Import again with --replace to overwrite it.",
+            target.display()
+        )));
     }
 
+    // Everything is staged under `.partial` names first, so a failed import leaves an earlier one as it was.
     let paths = data_paths(target)?;
-    back_up(&source_db, &paths.db)?;
+    let logins = paths.data.join("logins.sqlite");
+    let staged = |path: &Path| {
+        let mut name = path.as_os_str().to_owned();
+        name.push(".partial");
+        PathBuf::from(name)
+    };
+    let (staged_db, staged_logins, staged_bots) =
+        (staged(&paths.db), staged(&logins), staged(&paths.bots));
+    remove_files(&[&staged_db, &staged_logins])?;
+    ignore_missing(fs::remove_dir_all(&staged_bots))?;
+    back_up(&source_db, &staged_db)?;
     let source_logins = source.join("data").join("logins.sqlite");
     if source_logins.is_file() {
-        back_up(&source_logins, &paths.data.join("logins.sqlite"))?;
+        back_up(&source_logins, &staged_logins)?;
     }
-    copy_tree(&source.join("bots"), &paths.bots)?;
+    copy_tree(&source.join("bots"), &staged_bots)?;
     detach(
-        &paths.db,
+        &staged_db,
         &source.to_string_lossy(),
         &target.to_string_lossy(),
     )
-    .map_err(io::Error::other)
+    .map_err(io::Error::other)?;
+
+    // The swap. A database's old -wal must go with it, or SQLite would replay it into the new one.
+    remove_files(&[&paths.db, &logins])?;
+    fs::rename(&staged_db, &paths.db)?;
+    if source_logins.is_file() {
+        fs::rename(&staged_logins, &logins)?;
+    }
+    ignore_missing(fs::remove_dir_all(&paths.bots))?;
+    fs::rename(&staged_bots, &paths.bots)
 }
 
 /// Re-writes the source's `account/` and `login/` secrets under this root's namespace. The `remote-host` and
@@ -134,20 +151,23 @@ fn is_within(path: &str, root: &str) -> bool {
     path == root || path.starts_with(&format!("{root}\\"))
 }
 
-/// Whatever an earlier import left, so `--replace` starts clean.
-fn remove_imported(root: &Path) -> io::Result<()> {
-    let ignore_missing = |result: io::Result<()>| match result {
+fn ignore_missing(result: io::Result<()>) -> io::Result<()> {
+    match result {
         Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
         _ => Ok(()),
-    };
-    for name in ["tjommie.db", "logins.sqlite"] {
+    }
+}
+
+/// SQLite databases with their sidecar files.
+fn remove_files(databases: &[&Path]) -> io::Result<()> {
+    for database in databases {
         for suffix in ["", "-wal", "-shm", "-journal"] {
-            ignore_missing(fs::remove_file(
-                root.join("data").join(format!("{name}{suffix}")),
-            ))?;
+            let mut file = database.as_os_str().to_owned();
+            file.push(suffix);
+            ignore_missing(fs::remove_file(file))?;
         }
     }
-    ignore_missing(fs::remove_dir_all(root.join("bots")))
+    Ok(())
 }
 
 /// A read-write connection that never writes. A read-only one would leave behind the `-wal` and `-shm` it creates;
@@ -168,10 +188,10 @@ fn back_up(source: &Path, target: &Path) -> io::Result<()> {
 
 /// Folders and regular files, without the Claude sign-in. Links are skipped: they could reach outside the root.
 fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
+    fs::create_dir_all(to)?;
     if !from.is_dir() {
         return Ok(());
     }
-    fs::create_dir_all(to)?;
     for entry in fs::read_dir(from)? {
         let entry = entry?;
         let kind = entry.file_type()?;

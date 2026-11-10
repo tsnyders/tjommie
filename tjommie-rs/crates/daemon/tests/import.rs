@@ -382,6 +382,64 @@ fn refuses_an_existing_target_unless_replace_is_given() {
     assert_eq!(count(&db, "SELECT COUNT(*) FROM messages"), 4);
 }
 
+/// Nothing of the previous import is removed until the new copy is complete, so a failed `--replace` keeps it.
+#[cfg(windows)]
+#[test]
+fn a_failed_replace_keeps_the_previous_import() {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    let source = source();
+    let target = temp("tjommie target ñ-");
+    import::copy_data(source.path(), target.path(), false).unwrap();
+    let db = target.path().join("data").join("tjommie.db");
+    Connection::open(&db)
+        .unwrap()
+        .execute(
+            "INSERT INTO settings (key, value) VALUES ('dev-only', 'kept')",
+            [],
+        )
+        .unwrap();
+    let notes = source
+        .path()
+        .join("bots")
+        .join("legacy-bot")
+        .join("notes.md");
+    let locked = fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(&notes)
+        .unwrap();
+
+    assert!(import::copy_data(source.path(), target.path(), true).is_err());
+    drop(locked);
+
+    assert_eq!(
+        count(&db, "SELECT COUNT(*) FROM settings WHERE key = 'dev-only'"),
+        1
+    );
+    assert!(
+        target
+            .path()
+            .join("bots")
+            .join("legacy-bot")
+            .join("notes.md")
+            .is_file()
+    );
+    import::copy_data(source.path(), target.path(), true).unwrap();
+    assert_eq!(
+        count(&db, "SELECT COUNT(*) FROM settings WHERE key = 'dev-only'"),
+        0
+    );
+    let mut left: Vec<String> = fs::read_dir(target.path().join("data"))
+        .unwrap()
+        .chain(fs::read_dir(target.path()).unwrap())
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name.contains("partial"))
+        .collect();
+    left.sort();
+    assert_eq!(left, Vec::<String>::new());
+}
+
 /// `--replace` would delete a database, so the production root (`%LOCALAPPDATA%\Tjommie`, faked here) is never a target.
 #[test]
 fn refuses_the_production_root() {
