@@ -38,6 +38,13 @@ impl NoWindowCommand {
     }
 }
 
+/// For `tokio::process::Command::from`. The flags stay set on the command.
+impl From<NoWindowCommand> for Command {
+    fn from(command: NoWindowCommand) -> Command {
+        command.command
+    }
+}
+
 impl Deref for NoWindowCommand {
     type Target = Command;
     fn deref(&self) -> &Command {

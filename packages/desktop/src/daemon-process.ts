@@ -39,6 +39,13 @@ export function daemonEnv(base: NodeJS.ProcessEnv, testAccountsDir?: string): No
   return env;
 }
 
+// Unpackaged runs can host the Rust daemon: TJOMMIE_DAEMON_EXE names its exe, started with the same --token-stdin
+// contract and no Node arguments. Packaged builds always run the bundled daemon (switching them is T9.1's job).
+export function daemonCommand(env: NodeJS.ProcessEnv, packaged: boolean, nodePath: string, entry: string): Pick<DaemonLaunch, "execPath" | "args"> {
+  const exe = packaged ? undefined : env.TJOMMIE_DAEMON_EXE;
+  return exe ? { execPath: exe, args: [] } : { execPath: nodePath, args: ["--disable-warning=ExperimentalWarning", entry] };
+}
+
 export function daemonLaunchEnv(base: NodeJS.ProcessEnv, dataRoot: string, testRoot = false): NodeJS.ProcessEnv {
   return { ...base, TJOMMIE_HOME: dataRoot, ...(testRoot ? { TJOMMIE_PORT: "0" } : {}) };
 }

@@ -216,6 +216,18 @@ fn string_lengths_count_code_points_like_zod() {
 }
 
 #[test]
+fn method_markers_pair_each_name_with_its_params() {
+    use protocol::wire::{Method, method};
+    assert_eq!(method::ChatSend::NAME, "chat.send");
+    let request = Request::decode("bots.delete", json!({ "id": "b" })).unwrap();
+    assert_eq!(
+        method::BotsDelete::take(request.clone()),
+        Some(Id { id: "b".into() })
+    );
+    assert_eq!(method::BotsList::take(request), None);
+}
+
+#[test]
 fn remote_frames_serialize_with_their_type_tag() {
     let host = "99cf98ba-2638-4b16-8a6e-1691c1673b45";
     for frame in [
