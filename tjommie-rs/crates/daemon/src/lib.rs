@@ -1,7 +1,9 @@
 //! The Tjommie daemon: a port of `packages/daemon`.
 
 pub mod account_pricing;
+pub mod approvals;
 pub mod bots;
+pub mod chat;
 pub mod cli;
 pub mod context;
 pub mod diagnostics;
@@ -10,8 +12,10 @@ pub mod ids;
 pub mod models;
 pub mod paths;
 pub mod providers;
+pub mod queue;
 pub mod server;
 pub mod settings;
 pub mod spawn;
 pub mod startup;
+pub mod turn_notices;
 pub mod win;

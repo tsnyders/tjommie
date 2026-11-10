@@ -103,7 +103,7 @@ fn bad_params(message: &str) -> RpcError {
 }
 
 /// An enum's wire name, as stored.
-fn text<T: Serialize>(value: &T) -> String {
+pub(crate) fn text<T: Serialize>(value: &T) -> String {
     serde_json::to_value(value)
         .expect("enums serialize")
         .as_str()
@@ -111,7 +111,7 @@ fn text<T: Serialize>(value: &T) -> String {
         .to_owned()
 }
 
-fn from_text<T: DeserializeOwned>(row: &Row<'_>, column: usize) -> rusqlite::Result<T> {
+pub(crate) fn from_text<T: DeserializeOwned>(row: &Row<'_>, column: usize) -> rusqlite::Result<T> {
     let value: String = row.get(column)?;
     serde_json::from_value(serde_json::Value::String(value)).map_err(|error| {
         rusqlite::Error::FromSqlConversionFailure(

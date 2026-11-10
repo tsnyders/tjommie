@@ -545,3 +545,19 @@ impl Drop for DenyDelete {
         }
     }
 }
+
+/// `createBot` with the fields the store tests don't care about: blue, a circle, no instructions.
+pub fn new_bot(
+    db: &rusqlite::Connection,
+    bots_dir: &std::path::Path,
+    name: &str,
+    provider: &str,
+) -> daemon::bots::StoredBot {
+    let model = if provider == "codex" {
+        "gpt-5.6-sol"
+    } else {
+        "sonnet"
+    };
+    let input = json!({ "name": name, "color": "blue", "shape": "circle", "instructions": "", "provider": provider, "model": model });
+    daemon::bots::create_bot(db, bots_dir, &serde_json::from_value(input).unwrap()).unwrap()
+}
