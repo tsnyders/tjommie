@@ -343,6 +343,11 @@ impl Socket {
         }
     }
 
+    /// What has already arrived, without waiting.
+    pub fn try_recv(&mut self) -> Option<Message> {
+        self.rx.try_recv().ok()
+    }
+
     pub fn close(&self) {
         self.closed.cancel();
     }
