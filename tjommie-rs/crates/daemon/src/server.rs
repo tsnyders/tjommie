@@ -10,11 +10,12 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use axum::Router;
-use axum::extract::State;
 use axum::extract::ws::rejection::WebSocketUpgradeRejection;
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
-use axum::http::{HeaderMap, StatusCode, Uri, header};
+use axum::extract::{FromRequestParts, State};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use futures_util::future::BoxFuture;
 use futures_util::{SinkExt, StreamExt};
 use protocol::wire::Method;
 use protocol::{ClientMessage, ErrorCode, Event, PROTOCOL_VERSION, Request, ServerMessage};
@@ -134,6 +135,21 @@ impl Handlers {
     }
 }
 
+/// An extra HTTP endpoint, such as the app's MCP server at `/mcp` or a desktop host route. It gets the whole request.
+pub type Route = Arc<dyn Fn(axum::extract::Request) -> BoxFuture<'static, Response> + Send + Sync>;
+
+/// Routes by exact path, the query ignored. Only programs on this machine reach them: a local Host and no Origin header,
+/// since browsers always send one (`server.ts`).
+#[derive(Clone, Default)]
+pub struct Routes(HashMap<&'static str, Route>);
+
+impl Routes {
+    pub fn route(mut self, path: &'static str, route: Route) -> Self {
+        self.0.insert(path, route);
+        self
+    }
+}
+
 pub struct ServerOptions {
     /// 0 picks a free port.
     pub port: u16,
@@ -148,6 +164,7 @@ pub struct ServerOptions {
 struct Config {
     token: String,
     handlers: Handlers,
+    routes: Routes,
 }
 
 struct Gate {
@@ -185,6 +202,7 @@ impl Server {
                 config: Arc::new(Config {
                     token: options.token,
                     handlers: options.handlers,
+                    routes: Routes::default(),
                 }),
             }),
             clients: Mutex::default(),
@@ -217,6 +235,16 @@ impl Server {
 
     /// Starts answering with this token and these handlers.
     pub fn activate(&self, token: impl Into<String>, handlers: Handlers) -> Result<(), RpcError> {
+        self.activate_with(token, handlers, Routes::default())
+    }
+
+    /// [`Server::activate`] with extra HTTP routes.
+    pub fn activate_with(
+        &self,
+        token: impl Into<String>,
+        handlers: Handlers,
+        routes: Routes,
+    ) -> Result<(), RpcError> {
         let mut gate = self.shared.gate.write().unwrap();
         if gate.stopping {
             return Err(RpcError::new(ErrorCode::BadState, "Tjommie is stopping."));
@@ -224,6 +252,7 @@ impl Server {
         gate.config = Arc::new(Config {
             token: token.into(),
             handlers,
+            routes,
         });
         gate.ready = true;
         Ok(())
@@ -335,15 +364,18 @@ fn same_token(given: &str, expected: &str) -> bool {
             == 0
 }
 
-async fn serve(
-    State(shared): State<Arc<Shared>>,
-    headers: HeaderMap,
-    uri: Uri,
-    upgrade: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
-) -> Response {
-    if !shared.gate.read().unwrap().ready {
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
-    }
+async fn serve(State(shared): State<Arc<Shared>>, request: axum::extract::Request) -> Response {
+    let config = {
+        let gate = shared.gate.read().unwrap();
+        if !gate.ready {
+            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        }
+        gate.config.clone()
+    };
+    let (mut parts, body) = request.into_parts();
+    let upgrade: Result<WebSocketUpgrade, WebSocketUpgradeRejection> =
+        WebSocketUpgrade::from_request_parts(&mut parts, &shared).await;
+    let (headers, uri) = (parts.headers.clone(), parts.uri.clone());
     let Ok(upgrade) = upgrade else {
         if uri
             .path_and_query()
@@ -351,6 +383,12 @@ async fn serve(
         {
             let health = json!({ "ok": true, "protocol": PROTOCOL_VERSION }).to_string();
             return ([(header::CONTENT_TYPE, "application/json")], health).into_response();
+        }
+        if let Some(route) = config.routes.0.get(uri.path()) {
+            if !shared.local_host(&headers) || headers.contains_key(header::ORIGIN) {
+                return StatusCode::FORBIDDEN.into_response();
+            }
+            return route(axum::extract::Request::from_parts(parts, body)).await;
         }
         return StatusCode::NOT_FOUND.into_response();
     };
