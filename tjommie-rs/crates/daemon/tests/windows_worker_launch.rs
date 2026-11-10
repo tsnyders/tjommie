@@ -4,7 +4,7 @@
 #![cfg(windows)]
 
 use daemon::spawn;
-use daemon::win::cred::Namespace;
+use daemon::win::cred::{self, Namespace};
 use daemon::win::logon::{self, Job, NativeWorker};
 use daemon::win::worker::{BOOTSTRAP, command_line, launch_environment, launch_frame};
 use serde_json::{Value, json};
@@ -229,13 +229,11 @@ fn admin_worker_launch_runs_inside_a_global_job_and_dies_with_it() {
     }
     let root =
         std::env::temp_dir().join(format!("tjommie-rs-worker-test-{}", uuid::Uuid::new_v4()));
-    let production = PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap()).join("Tjommie");
-    let ns = Namespace::new(&root).unwrap();
-    assert_ne!(
-        ns.short(),
-        Namespace::new(&production).unwrap().short(),
+    assert!(
+        !cred::is_production_root(&root),
         "refusing the production root"
     );
+    let ns = Namespace::new(&root).unwrap();
     let name = format!("TjWorker-{}", &ns.short()[..8]);
     assert!(
         logon::account_sid(&name).unwrap().is_none(),

@@ -8,6 +8,7 @@ use daemon::win::cred::{self, CredentialError, Namespace, validate_api_key};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::io::Write;
+use std::os::windows::ffi::OsStrExt;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -15,6 +16,7 @@ use windows::Win32::Foundation::ERROR_NOT_FOUND;
 use windows::Win32::Security::Credentials::{
     CRED_TYPE_GENERIC, CREDENTIALW, CredEnumerateW, CredFree, CredReadW,
 };
+use windows::Win32::Storage::FileSystem::GetShortPathNameW;
 use windows::core::{HSTRING, PWSTR};
 
 // ---- Pure checks (no Credential Manager access; these run in CI too) ----
@@ -82,6 +84,64 @@ fn roots_whose_last_name_ends_in_a_dot_or_space_are_refused() {
         dotted.short(),
         Namespace::new(Path::new("C:/Tjommie/two")).unwrap().short()
     );
+}
+
+/// The harness guard judges what a root is on disk, not how it is spelled: `\\?\`, case, slashes, junctions and
+/// 8.3 names all reach production. It only looks the production root up; it never opens anything inside it.
+#[test]
+fn production_roots_are_recognised_by_what_they_resolve_to() {
+    let local = PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap());
+    let production = local.join("Tjommie");
+    let spelled = production.to_str().unwrap();
+    for alias in [
+        production.clone(),
+        PathBuf::from(format!(r"\\?\{spelled}")),
+        PathBuf::from(spelled.to_uppercase().replace('\\', "/")),
+        production.join("data"),
+        local.clone(),
+    ] {
+        assert!(cred::is_production_root(&alias), "{}", alias.display());
+    }
+    let dir = tempfile::TempDir::new().unwrap();
+    assert!(!cred::is_production_root(dir.path()));
+    assert!(!cred::is_production_root(
+        &dir.path().join("not-yet-created")
+    ));
+
+    // A junction to %LOCALAPPDATA% makes <junction>\Tjommie the production root.
+    let link = dir.path().join("link");
+    let made = spawn::command("cmd")
+        .arg("/c")
+        .arg("mklink")
+        .arg("/J")
+        .arg(&link)
+        .arg(&local)
+        .output()
+        .unwrap();
+    assert!(made.status.success());
+    let through_link = cred::is_production_root(&link.join("Tjommie"));
+    std::fs::remove_dir(&link).unwrap(); // removes only the link
+    assert!(through_link, "junction alias");
+
+    // An 8.3 name, where the volume has them.
+    if let Some(short) = short_name(&local) {
+        assert!(
+            cred::is_production_root(&short.join("Tjommie")),
+            "{}",
+            short.display()
+        );
+    }
+}
+
+fn short_name(path: &Path) -> Option<PathBuf> {
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+    let mut buffer = vec![0u16; 1024];
+    // SAFETY: both buffers are local and sized.
+    let length =
+        unsafe { GetShortPathNameW(windows::core::PCWSTR(wide.as_ptr()), Some(&mut buffer)) }
+            as usize;
+    let short = PathBuf::from(String::from_utf16_lossy(buffer.get(..length)?));
+    (length > 0 && short != path).then_some(short)
 }
 
 #[test]
@@ -163,6 +223,11 @@ fn credential_manager_round_trips_with_typescript() {
         return;
     }
     let root = std::env::temp_dir().join(format!("tjommie-rs-cred-test-{}", uuid::Uuid::new_v4()));
+    // Refused by what the root resolves to on disk, and (below) by namespace, which is what targets are keyed by.
+    assert!(
+        !cred::is_production_root(&root),
+        "refusing the production root"
+    );
     let ns = Namespace::new(&root).unwrap();
     let local = std::env::var_os("LOCALAPPDATA").expect("LOCALAPPDATA");
     let production = Namespace::new(&PathBuf::from(local).join("Tjommie")).unwrap();

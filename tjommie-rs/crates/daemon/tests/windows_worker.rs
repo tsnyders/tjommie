@@ -89,13 +89,11 @@ fn admin_provisions_both_identities_for_a_disposable_root() {
     }
     let root = TempDir::new().unwrap();
     let owner_root = root.path().join("owner");
-    let production = PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap()).join("Tjommie");
-    let ns = Namespace::new(&owner_root).unwrap();
-    assert_ne!(
-        ns.short(),
-        Namespace::new(&production).unwrap().short(),
+    assert!(
+        !cred::is_production_root(&owner_root),
         "refusing the production root"
     );
+    let ns = Namespace::new(&owner_root).unwrap();
     let names = [
         worker_name(&ns, Purpose::Provider),
         worker_name(&ns, Purpose::Review),
