@@ -986,7 +986,9 @@ impl Setup {
         let (exit, kill_tree) = (child.exit.clone(), child.kill_tree.clone());
         tokio::spawn(drain(child.stdout));
         tokio::spawn(drain(child.stderr));
-        drop(child.stdin);
+        // Claude's login reads stdin ("Paste code here if prompted") and end-of-input would abort it, so the pipe stays
+        // open, unwritten, until the process exits.
+        let stdin = child.stdin;
         let cancelling = Arc::new(AtomicBool::new(false));
         let deadline = tokio::spawn({
             let attempt = Arc::downgrade(attempt);
@@ -1026,6 +1028,7 @@ impl Setup {
         exit.on_exit({
             let attempt = Arc::clone(attempt);
             move |exit| {
+                drop(stdin);
                 let ok = matches!(exit, CliExit::Exited { code: Some(0), .. })
                     && !cancelling.load(Ordering::SeqCst);
                 attempt.finish(ok);

@@ -24,7 +24,7 @@ use protocol::ErrorCode;
 use protocol::model::{CodexSandboxReadiness, Provider, ProviderSetup, SetupFields};
 use rusqlite::Connection;
 use serde_json::{Value, json};
-use tokio::io::{AsyncWriteExt, DuplexStream, duplex};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream, duplex};
 
 type Run = Arc<dyn Fn(&CliCommand, &[String]) -> BoxFuture<'static, CliOutput> + Send + Sync>;
 type StartServer = BoxFuture<'static, Result<CodexServer, ProviderError>>;
@@ -130,10 +130,22 @@ impl CliHost for Host {
             if std::mem::take(&mut *self.fail_launch.lock().unwrap()) {
                 return Err(io::Error::other("Hidden launcher unavailable"));
             }
-            let (stdin, _stdin_test) = duplex(1 << 16);
+            let (stdin, mut stdin_test) = duplex(1 << 16);
             let (stdout, stdout_test) = duplex(1 << 16);
             let (stderr, stderr_test) = duplex(1 << 16);
             let exit = ChildExit::new();
+            // Like Claude's login ("Paste code here if prompted"), the child aborts when its stdin reaches end-of-input.
+            tokio::spawn({
+                let exit = exit.clone();
+                async move {
+                    let mut buffer = [0u8; 64];
+                    while matches!(stdin_test.read(&mut buffer).await, Ok(read) if read > 0) {}
+                    exit.fire(CliExit::Exited {
+                        code: Some(1),
+                        signal: None,
+                    });
+                }
+            });
             let kill_tree: KillTree = {
                 let (exit, fail, kills) = (
                     exit.clone(),
@@ -1214,6 +1226,26 @@ async fn runs_hidden_native_claude_callback_login_and_accepts_successful_re_auth
     );
     assert_eq!(attempt.url, None);
     assert!(calls.lock().unwrap().is_empty());
+    f.host.end_child(0, 0);
+    assert_eq!(*calls.lock().unwrap(), vec![(true, attempt.attempt)]);
+}
+
+#[tokio::test]
+async fn keeps_the_hidden_claude_login_stdin_open_until_the_login_ends() {
+    let f = Fixture::new();
+    f.ensure();
+    use_claude_status(&f.host, Some("same@example.invalid"));
+    let (calls, on_done) = done();
+    let attempt = f
+        .setup
+        .sign_in(&f.db, Provider::Claude, on_done)
+        .await
+        .unwrap();
+    providers_settle().await;
+    assert!(
+        calls.lock().unwrap().is_empty(),
+        "the login saw end-of-input"
+    );
     f.host.end_child(0, 0);
     assert_eq!(*calls.lock().unwrap(), vec![(true, attempt.attempt)]);
 }
