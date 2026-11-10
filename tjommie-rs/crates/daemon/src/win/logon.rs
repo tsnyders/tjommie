@@ -521,6 +521,7 @@ static STATION: Mutex<()> = Mutex::new(());
 /// standard handles piped to the daemon (`TjNativeWorker`, `windows-worker.ps1:232-284`).
 pub struct NativeWorker {
     process: Owned,
+    pid: u32,
     thread: Mutex<Option<Owned>>,
     station: HWINSTA,
     desktop: HDESK,
@@ -558,6 +559,7 @@ impl NativeWorker {
         let station_name = format!("TjommieWorker-{}", random_hex(16)?);
         let mut worker = Self {
             process: Owned(HANDLE::default()),
+            pid: 0,
             thread: Mutex::new(None),
             station: HWINSTA::default(),
             desktop: HDESK::default(),
@@ -645,6 +647,7 @@ impl NativeWorker {
         secret.fill(0);
         started.map_err(text)?;
         worker.process = Owned(info.hProcess);
+        worker.pid = info.dwProcessId;
         *worker
             .thread
             .get_mut()
@@ -664,6 +667,10 @@ impl NativeWorker {
 
     pub fn process(&self) -> HANDLE {
         self.process.0
+    }
+
+    pub fn pid(&self) -> u32 {
+        self.pid
     }
 
     /// Lets the suspended main thread run.
@@ -765,7 +772,7 @@ fn random_hex(count: usize) -> Result<String, String> {
 }
 
 /// A random lowercase UUID, for job names (`[a-f0-9-]{36}`).
-fn random_uuid() -> Result<String, String> {
+pub(crate) fn random_uuid() -> Result<String, String> {
     let hex = random_hex(16)?;
     Ok(format!(
         "{}-{}-{}-{}-{}",
@@ -1195,8 +1202,10 @@ pub fn verify(config: &WorkerConfiguration, jobs: &[&Job]) -> Result<(), String>
 
 /// The review identity's cross-host lease (`Open-TrustedReviewLease`, `windows-worker.ps1:61-74`): a `Global\`
 /// mutex only the owner, SYSTEM and Administrators can open, and a marker file while a review tree may be alive.
+/// A Windows mutex belongs to the thread that took it, so one dedicated thread takes it and later releases it; if
+/// the daemon dies first, Windows marks it abandoned and the next host finds the marker.
 pub struct ReviewLease {
-    mutex: Owned,
+    release: std::sync::mpsc::Sender<()>,
     marker: PathBuf,
     marked: bool,
 }
@@ -1205,43 +1214,63 @@ impl ReviewLease {
     pub fn open(config: &WorkerConfiguration) -> Result<Self, String> {
         use sha2::{Digest, Sha256};
         let key = format!("{:X}", Sha256::digest(config.worker_sid.as_bytes()));
-        let owner = &config.owner_sid;
-        let descriptor = Descriptor::from_sddl(&format!(
-            "O:{owner}D:P(A;;GA;;;{owner})(A;;GA;;;SY)(A;;GA;;;BA)"
-        ))?;
-        let attributes = SECURITY_ATTRIBUTES {
-            nLength: mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
-            lpSecurityDescriptor: descriptor.0.0,
-            bInheritHandle: false.into(),
-        };
-        // SAFETY: the attributes outlive the call; the handle is owned by the guard.
-        let mutex = Owned(
-            unsafe {
-                CreateMutexW(
-                    Some(&attributes),
-                    false,
-                    &HSTRING::from(format!(r"Global\TjommieReview-{key}")),
-                )
-            }
-            .map_err(text)?,
-        );
-        assert_mutex_descriptor(&Descriptor::of_object(mutex.0)?, owner)?;
+        let (owner, worker_sid) = (config.owner_sid.clone(), config.worker_sid.clone());
         let marker = config
             .owner_data_root
             .join(format!("review-worker-active-{key}.json"));
-        // SAFETY: the mutex handle is valid.
-        let wait = match unsafe { WaitForSingleObject(mutex.0, 0) } {
-            WAIT_OBJECT_0 => MutexWait::Acquired,
-            WAIT_ABANDONED => MutexWait::Abandoned,
-            WAIT_TIMEOUT => MutexWait::Busy,
-            _ => return Err(FAILURE.into()),
-        };
-        // SAFETY: released only when this thread holds it.
-        enter_review_mutex(wait, &marker, &config.worker_sid, || unsafe {
-            let _ = ReleaseMutex(mutex.0);
-        })?;
+        let (opened, result) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let held_marker = marker.clone();
+        std::thread::spawn(move || {
+            let held = (|| -> Result<Owned, String> {
+                let descriptor = Descriptor::from_sddl(&format!(
+                    "O:{owner}D:P(A;;GA;;;{owner})(A;;GA;;;SY)(A;;GA;;;BA)"
+                ))?;
+                let attributes = SECURITY_ATTRIBUTES {
+                    nLength: mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+                    lpSecurityDescriptor: descriptor.0.0,
+                    bInheritHandle: false.into(),
+                };
+                // SAFETY: the attributes outlive the call; the handle is owned by the guard.
+                let mutex = Owned(
+                    unsafe {
+                        CreateMutexW(
+                            Some(&attributes),
+                            false,
+                            &HSTRING::from(format!(r"Global\TjommieReview-{key}")),
+                        )
+                    }
+                    .map_err(text)?,
+                );
+                assert_mutex_descriptor(&Descriptor::of_object(mutex.0)?, &owner)?;
+                // SAFETY: the mutex handle is valid.
+                let wait = match unsafe { WaitForSingleObject(mutex.0, 0) } {
+                    WAIT_OBJECT_0 => MutexWait::Acquired,
+                    WAIT_ABANDONED => MutexWait::Abandoned,
+                    WAIT_TIMEOUT => MutexWait::Busy,
+                    _ => return Err(FAILURE.into()),
+                };
+                // SAFETY: released only by this thread, which holds it.
+                enter_review_mutex(wait, &held_marker, &worker_sid, || unsafe {
+                    let _ = ReleaseMutex(mutex.0);
+                })?;
+                Ok(mutex)
+            })();
+            match held {
+                Ok(mutex) => {
+                    let _ = opened.send(Ok(()));
+                    let _ = released.recv(); // a message or a dropped lease
+                    // SAFETY: this thread acquired the mutex above.
+                    let _ = unsafe { ReleaseMutex(mutex.0) };
+                }
+                Err(error) => {
+                    let _ = opened.send(Err(error));
+                }
+            }
+        });
+        result.recv().map_err(|_| FAILURE.to_string())??;
         Ok(Self {
-            mutex,
+            release,
             marker,
             marked: false,
         })
@@ -1254,7 +1283,8 @@ impl ReviewLease {
         Ok(())
     }
 
-    /// Removes the marker once the tree is confirmed stopped; otherwise it stays and fences later reviews.
+    /// Removes the marker once the tree is confirmed stopped; otherwise it stays and fences later reviews. Then the
+    /// mutex is released. Returns whether everything was settled.
     pub fn finish(mut self, stopped: bool) -> bool {
         if self.marked && stopped {
             self.marked = fs::remove_file(&self.marker).is_err();
@@ -1265,26 +1295,32 @@ impl ReviewLease {
 
 impl Drop for ReviewLease {
     fn drop(&mut self) {
-        // SAFETY: this thread acquired the mutex in `open`.
-        let _ = unsafe { ReleaseMutex(self.mutex.0) };
+        let _ = self.release.send(());
     }
 }
 
-/// A launched worker: its process, the job holding its tree, and for review the lease.
+// SAFETY: the job handle is a kernel handle usable from any thread; it is closed once, in Drop.
+unsafe impl Send for Job {}
+unsafe impl Sync for Job {}
+
+/// A launched worker: its process, the job holding its tree, and for review the lease. Shared between the task
+/// that waits for it and the one that retires it.
 pub struct WorkerProcess {
     pub worker: NativeWorker,
     pub job: Job,
-    lease: Option<ReviewLease>,
+    lease: Mutex<Option<ReviewLease>>,
 }
 
 impl WorkerProcess {
     /// Stops the tree and settles the review lease. `false` means the tree could not be confirmed stopped, and the
     /// caller must treat the identity as unsafe (`WorkerLaunchTerminationError`).
-    pub fn retire(self) -> bool {
+    pub fn retire(&self) -> bool {
         let stopped = self.job.stop();
-        let WorkerProcess { worker, job, lease } = self;
-        drop(worker);
-        drop(job);
+        let lease = self
+            .lease
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
         lease.map_or(stopped, |lease| lease.finish(stopped))
     }
 }
@@ -1292,27 +1328,31 @@ impl WorkerProcess {
 /// The helper's launch mode (`windows-worker.ps1:315-346`) for a verified identity: runs the fixed bootstrap in
 /// `runtime\node.exe` under the worker account, suspended, checks its token, binds it to a new
 /// `Global\TjommieWorkerJob-<purpose>-<uuid>` job and returns it. The caller writes `launch_frame` to stdin, then
-/// resumes it.
-pub fn launch(
+/// resumes it. On failure, `Err((message, stopped))` says whether anything that started was confirmed gone.
+pub(crate) fn launch(
     config: &WorkerConfiguration,
     password: &str,
     cwd: &Path,
     environment: &[(String, String)],
-) -> Result<WorkerProcess, String> {
+) -> Result<WorkerProcess, (String, bool)> {
     let bootstrap = config.runtime_root.join("node.exe");
-    let file = bootstrap.to_str().ok_or(FAILURE)?;
-    let line = command_line(file, &["-e".into(), BOOTSTRAP.into()])?;
+    let file = bootstrap.to_str().ok_or((FAILURE.to_string(), true))?;
+    let line =
+        command_line(file, &["-e".into(), BOOTSTRAP.into()]).map_err(|error| (error, true))?;
     if line.encode_utf16().count() + 1 > 1024 {
-        return Err("Bootstrap command limit.".into());
+        return Err(("Bootstrap command limit.".into(), true));
     }
-    let block = environment_block(&worker_environment(config, environment)?);
+    let block =
+        environment_block(&worker_environment(config, environment).map_err(|error| (error, true))?);
     let mut lease = if config.purpose == Purpose::Review {
-        Some(ReviewLease::open(config)?)
+        Some(ReviewLease::open(config).map_err(|error| (error, true))?)
     } else {
         None
     };
     if let Some(lease) = lease.as_mut() {
-        lease.mark(&config.worker_sid)?;
+        lease
+            .mark(&config.worker_sid)
+            .map_err(|error| (error, true))?;
     }
     let worker = match NativeWorker::start(
         &config.worker_name,
@@ -1327,10 +1367,8 @@ pub fn launch(
         Ok(worker) => worker,
         Err(error) => {
             // Nothing started, so the marker can go.
-            if let Some(lease) = lease {
-                lease.finish(true);
-            }
-            return Err(error);
+            let settled = lease.is_none_or(|lease| lease.finish(true));
+            return Err((error, settled));
         }
     };
     let bound = verify_token(worker.process(), &config.worker_sid).and_then(|()| {
@@ -1342,15 +1380,17 @@ pub fn launch(
         Job::bind(worker.process(), Some(&name), &config.owner_sid)
     });
     match bound {
-        Ok(job) => Ok(WorkerProcess { worker, job, lease }),
+        Ok(job) => Ok(WorkerProcess {
+            worker,
+            job,
+            lease: Mutex::new(lease),
+        }),
         Err(error) => {
             // Still suspended and in no job: kill it and wait, so the marker is only removed for a dead process.
             let stopped = worker.kill().is_ok() && worker.wait().is_ok();
             drop(worker);
-            if let Some(lease) = lease {
-                lease.finish(stopped);
-            }
-            Err(error)
+            let settled = lease.map_or(stopped, |lease| lease.finish(stopped));
+            Err((error, settled))
         }
     }
 }

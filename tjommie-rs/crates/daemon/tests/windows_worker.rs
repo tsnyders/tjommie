@@ -1,5 +1,5 @@
 //! T2.3 port of `windows-worker.test.ts` (the startup gate) plus worker identities and provisioning.
-//! Not ported yet: the review-lease cases, which test the launch orchestration's scheduling (see the T2.3 notes).
+//! The review-lease cases of that file are in `windows_worker_boundary.rs`.
 #![cfg(windows)]
 
 use daemon::win::cred::{self, Namespace};
