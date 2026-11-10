@@ -12,6 +12,7 @@ mod hooks;
 mod launch;
 mod queueing;
 mod settlement;
+mod upgrade;
 
 use std::fs;
 use std::path::PathBuf;
