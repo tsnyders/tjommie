@@ -46,3 +46,6 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
+        env:
+          # Hosted service logons can't reliably reach Credential Manager; those tests run on real PCs.
+          TJOMMIE_CI_HOSTED: '1'
