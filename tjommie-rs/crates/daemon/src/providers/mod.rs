@@ -12,7 +12,7 @@ pub mod claude_parse;
 pub mod codex;
 pub mod codex_parse;
 pub mod codex_rpc;
-mod js;
+pub(crate) mod js;
 
 use std::collections::BTreeMap;
 use std::fmt;
