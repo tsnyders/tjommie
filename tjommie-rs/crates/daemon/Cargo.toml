@@ -11,18 +11,23 @@ axum = { version = "0.8.9", features = ["ws"] }
 base64 = "0.23.1"
 futures-util = "0.3.34"
 getrandom = "0.4.3"
+jiff = "0.2.41"
 protocol = { version = "0.4.2", path = "../protocol" }
+rusqlite = { version = "0.41.1", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sha2 = "0.10.9"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal"] }
 tokio-util = "0.7.20"
-windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Security_Credentials"] }
+transport = { version = "0.4.2", path = "../transport" }
+uuid = { version = "1.26.0", features = ["v4"] }
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Security_Credentials", "Win32_System_SystemInformation"] }
+zeroize = "1.8"
 
 [dev-dependencies]
+regex = "1.13.1"
 tokio = { version = "1.54.1", features = ["process", "io-util"] }
 tokio-tungstenite = "0.29"
-uuid = { version = "1.26.0", features = ["v4"] }
 
 [[bin]]
 name = "tjommie-daemon"
