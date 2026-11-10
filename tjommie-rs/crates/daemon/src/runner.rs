@@ -47,8 +47,11 @@ use crate::bots::{
 use crate::chat::{
     MessagePatch, NewMessage, add_message, build_recap, get_message, history, update_message,
 };
+use crate::cli::{BoxFuture as CliFuture, CliChild, CliCommand, CliHost, LaunchOptions};
 use crate::context::{BotView, Db};
 use crate::ids::{new_id, now_iso};
+use crate::providers::claude::ClaudeSession;
+use crate::providers::codex::CodexSession;
 use crate::providers::{
     ApiKey, Approval as ProviderApproval, ApprovalAnswer, Limit, LimitState, McpServer,
     ProviderError, ProviderEvent, ProviderSession, StartOptions, TurnResult as ProviderTurn, Usage,
@@ -175,6 +178,60 @@ pub type SessionFactory =
     Arc<dyn Fn(&StoredBot, StartOptions) -> Result<Arc<dyn ProviderSession>, String> + Send + Sync>;
 /// `console.error(context, error)`.
 pub type Log = Arc<dyn Fn(&str, &str) + Send + Sync>;
+/// `resolveCli(provider)`: the installed CLI, if any.
+pub type ResolveCli = Arc<dyn Fn(Provider) -> Option<CliCommand> + Send + Sync>;
+
+/// `cliSessionFactory`: a Claude or Codex session whose CLI launches through `host`.
+pub fn cli_session_factory(host: Arc<dyn CliHost>, resolve: ResolveCli) -> SessionFactory {
+    Arc::new(move |bot: &StoredBot, options: StartOptions| {
+        let claude = bot.provider == Provider::Claude;
+        let Some(cmd) = resolve(bot.provider) else {
+            return Err(format!(
+                "{} is not installed",
+                if claude { "Claude Code" } else { "Codex" }
+            ));
+        };
+        Ok(if claude {
+            Arc::new(ClaudeSession::new(host.clone(), cmd, options)) as Arc<dyn ProviderSession>
+        } else {
+            Arc::new(CodexSession::new(host.clone(), cmd, options))
+        })
+    })
+}
+
+/// Lane B's `WindowsWorkerBoundary` as the CLIs see it: while Windows worker isolation is on, bot CLIs launch through
+/// it under the isolated worker accounts.
+pub trait WorkerBoundary: Send + Sync {
+    /// `boundary()?.required`.
+    fn required(&self) -> bool;
+    fn launch<'a>(
+        &'a self,
+        cmd: &'a CliCommand,
+        args: Vec<String>,
+        options: LaunchOptions,
+    ) -> CliFuture<'a, io::Result<CliChild>>;
+}
+
+/// `launchCli`'s choice (`cli.ts:153-154`): through the worker boundary when isolation requires it, otherwise a
+/// direct launch. Codex's app-server goes the same way: `start_codex_server` launches through this host.
+pub struct BoundaryHost {
+    pub direct: Arc<dyn CliHost>,
+    pub boundary: Option<Arc<dyn WorkerBoundary>>,
+}
+
+impl CliHost for BoundaryHost {
+    fn launch<'a>(
+        &'a self,
+        cmd: &'a CliCommand,
+        args: Vec<String>,
+        options: LaunchOptions,
+    ) -> CliFuture<'a, io::Result<CliChild>> {
+        match &self.boundary {
+            Some(boundary) if boundary.required() => boundary.launch(cmd, args, options),
+            _ => self.direct.launch(cmd, args, options),
+        }
+    }
+}
 
 pub type ItemHook = Arc<dyn Fn(&mut Core<'_>, &WorkItem) -> Result<(), String> + Send + Sync>;
 pub type McpServersHook = Arc<
