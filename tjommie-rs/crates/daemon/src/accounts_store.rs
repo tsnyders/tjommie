@@ -120,10 +120,9 @@ fn account(row: &Row) -> rusqlite::Result<StoredAccount> {
     })
 }
 
-/// `new Date(text).toISOString()` for an ISO instant.
+/// `new Date(text).toISOString()`, read as `Date.parse` does.
 pub(crate) fn iso(text: &str) -> Option<String> {
-    let instant = text.parse::<jiff::Timestamp>().ok()?;
-    Some(instant.strftime("%Y-%m-%dT%H:%M:%S%.3fZ").to_string())
+    crate::providers::js::iso_from_millis(crate::providers::js::date_parse(text)?)
 }
 
 pub fn list_accounts(

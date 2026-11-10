@@ -250,17 +250,20 @@ pub enum ProviderError {
     Remote { code: i64, message: String },
     /// Anything else: a transport failure, a timeout or the session's state.
     Failed(String),
+    /// A worker launch or exit whose process tree may still run (`WorkerLaunchTerminationError`). Never an ordinary
+    /// failure: the account and its folders stay reserved.
+    WorkerTermination,
 }
 
 impl ProviderError {
-    /// A worker launch or exit whose process tree may still run (`WorkerLaunchTerminationError`).
     pub fn is_worker_termination(&self) -> bool {
-        self.message() == crate::cli::WorkerTermination.to_string()
+        matches!(self, ProviderError::WorkerTermination)
     }
 
     pub fn message(&self) -> &str {
         match self {
             ProviderError::Remote { message, .. } | ProviderError::Failed(message) => message,
+            ProviderError::WorkerTermination => crate::cli::WORKER_TERMINATION,
         }
     }
 }
@@ -275,7 +278,11 @@ impl std::error::Error for ProviderError {}
 
 impl From<std::io::Error> for ProviderError {
     fn from(error: std::io::Error) -> Self {
-        ProviderError::Failed(error.to_string())
+        if crate::cli::is_worker_termination(&error) {
+            ProviderError::WorkerTermination
+        } else {
+            ProviderError::Failed(error.to_string())
+        }
     }
 }
 

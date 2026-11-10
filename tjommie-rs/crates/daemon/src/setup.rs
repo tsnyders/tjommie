@@ -650,7 +650,8 @@ impl Setup {
             Ok::<_, ProviderError>((read?, sandbox))
         };
         match checked.await {
-            Ok((read, sandbox)) => {
+            // TypeScript reads `account.type`, so a read without `account` throws into the failed check.
+            Ok((read, sandbox)) if read.get("account").is_some() => {
                 let signed_in = read.get("account").filter(|account| account.is_object());
                 let fields = SetupFields {
                     installed: true,
@@ -673,7 +674,7 @@ impl Setup {
                     sandbox,
                 })
             }
-            Err(_) => failed_check(Provider::Codex, version, "Codex account check failed."),
+            _ => failed_check(Provider::Codex, version, "Codex account check failed."),
         }
     }
 

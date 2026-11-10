@@ -685,3 +685,31 @@ async fn rejects_redirects_oversized_or_invalid_bodies_and_echoed_credentials_wi
         assert!(!format!("{result:?}").contains(TOKEN));
     }
 }
+
+#[tokio::test]
+async fn omits_an_empty_rate_tier_instead_of_leaving_a_trailing_space() {
+    let h = fixture(&[("rateLimitTier", Some(json!("default_claude_max_")))]);
+    let result = h.read(&h.account).await;
+    let (usage, _, _) = available(&result);
+    assert_eq!(usage.plan_label.as_deref(), Some("Max"));
+}
+
+#[tokio::test]
+async fn reads_a_blank_429_retry_delay_as_zero_seconds_so_the_cooldown_is_one_second() {
+    let h = fixture(&[]);
+    let start = now();
+    h.fetch.then(Ok(UsageResponse {
+        status: 429,
+        retry_after: Some(" ".into()),
+        body: b"private body".to_vec(),
+        ..ok(&quota())
+    }));
+    let early = move || start;
+    h.read_at(&h.account, h.root.path(), &early).await;
+    let later = move || start + 1_001.0;
+    assert!(matches!(
+        h.read_at(&h.account, h.root.path(), &later).await,
+        AccountUsageRead::Available { .. }
+    ));
+    assert_eq!(h.fetch.calls(), 2);
+}

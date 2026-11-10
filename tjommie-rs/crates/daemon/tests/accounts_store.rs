@@ -453,3 +453,38 @@ fn rejects_invalid_quota_replacements_without_losing_the_last_valid_account_stat
     );
     assert!(list_account_limits(&db, "other").unwrap().is_empty());
 }
+
+// `Date.parse`: a date-time without an offset is local time, and a date alone is UTC midnight.
+#[test]
+fn reads_offset_less_resets_as_javascript_does() {
+    let (_dir, db) = db();
+    subscription(&db, "main");
+    let window = |key: &str, reset: &str| LimitWindow {
+        window_key: key.into(),
+        duration_minutes: None,
+        used_percent: Some(100.0),
+        resets_at: Some(reset.into()),
+        state: LimitState::Reached,
+    };
+    let windows = [
+        window("local", "2026-11-10T12:30:00"),
+        window("utc", "2026-11-11"),
+    ];
+    replace_account_limits(&db, "main", "codex", "2026-10-22T12:00:00.000Z", &windows).unwrap();
+    let local = jiff::civil::date(2026, 11, 10)
+        .at(12, 30, 0, 0)
+        .to_zoned(jiff::tz::TimeZone::system())
+        .unwrap()
+        .timestamp()
+        .strftime("%Y-%m-%dT%H:%M:%S%.3fZ")
+        .to_string();
+    let limits = list_account_limits(&db, "main").unwrap();
+    let reset = |key: &str| {
+        limits
+            .iter()
+            .find(|limit| limit.window_key == key)
+            .and_then(|limit| limit.resets_at.clone())
+    };
+    assert_eq!(reset("local"), Some(local));
+    assert_eq!(reset("utc").as_deref(), Some("2026-11-11T00:00:00.000Z"));
+}

@@ -1063,6 +1063,30 @@ async fn reports_garbage_status_output_and_a_non_zero_version_exit() {
     assert!(f.host.server_starts.lock().unwrap().is_empty());
 }
 
+// TypeScript reads `account.type` from the destructured result, so a missing `account` throws into the failed check.
+#[tokio::test]
+async fn fails_the_codex_check_when_its_account_read_has_no_account() {
+    let f = Fixture::new();
+    f.ensure();
+    let (codex, _, _, _) = server(|_, _| Ok(json!({})));
+    f.host.push_server(codex);
+    let ProviderSetup::Codex(codex) = &f.setup.check_setup(&f.db).await[1] else {
+        panic!()
+    };
+    assert_eq!(
+        (
+            codex.setup.signed_in,
+            codex.setup.error.as_deref(),
+            codex.sandbox
+        ),
+        (
+            false,
+            Some("Codex account check failed."),
+            CodexSandboxReadiness::Unavailable
+        )
+    );
+}
+
 // describe("Codex sandbox setup action")
 
 #[tokio::test]

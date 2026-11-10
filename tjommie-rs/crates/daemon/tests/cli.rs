@@ -807,3 +807,15 @@ async fn injects_only_an_explicitly_selected_claude_api_key_and_requests_child_t
         serde_json::json!({ "key": "synthetic-explicit-key", "scrub": "1", "managed": "1" })
     );
 }
+
+#[test]
+fn recognizes_a_worker_termination_by_type_never_by_its_message() {
+    use daemon::cli::WorkerTermination;
+    use daemon::providers::ProviderError;
+    let marked = ProviderError::from(std::io::Error::other(WorkerTermination));
+    assert!(marked.is_worker_termination());
+    assert_eq!(marked.to_string(), WorkerTermination.to_string());
+    let text = WorkerTermination.to_string();
+    assert!(!ProviderError::Failed(text.clone()).is_worker_termination());
+    assert!(!ProviderError::from(std::io::Error::other(text)).is_worker_termination());
+}

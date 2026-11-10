@@ -22,7 +22,7 @@ use super::{
 };
 use crate::cli::{
     BoxFuture, CliChild, CliCommand, CliExit, CliHost, Env, KillTree, LaunchOptions, Retirement,
-    WorkerTermination, cli_env, process_env,
+    cli_env, process_env,
 };
 
 const INTERRUPT_GRACE: Duration = Duration::from_secs(10);
@@ -343,9 +343,7 @@ impl ProviderSession for ClaudeSession {
                 .await
                 .map(|state| *state);
             match settled {
-                Ok(Lifecycle::Unconfirmed) => {
-                    Err(ProviderError::Failed(WorkerTermination.to_string()))
-                }
+                Ok(Lifecycle::Unconfirmed) => Err(ProviderError::WorkerTermination),
                 _ => Ok(()),
             }
         })

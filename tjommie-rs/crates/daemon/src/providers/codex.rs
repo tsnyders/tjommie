@@ -18,8 +18,7 @@ use super::{
 };
 use crate::account_pricing::has_pricing;
 use crate::cli::{
-    BoxFuture, ChildExit, CliCommand, CliExit, CliHost, Retirement, WorkerTermination,
-    wait_for_cli_exit,
+    BoxFuture, ChildExit, CliCommand, CliExit, CliHost, Retirement, wait_for_cli_exit,
 };
 
 const EXITED_BEFORE_STOP: &str = "Codex exited before its process tree could be stopped.";
@@ -132,7 +131,7 @@ impl ServerExit {
             ServerExit::Server(exit, retirement) => {
                 wait_for_cli_exit(&exit, retirement.as_ref()).await
             }
-            ServerExit::Unconfirmed => Err(failed(&WorkerTermination.to_string())),
+            ServerExit::Unconfirmed => Err(ProviderError::WorkerTermination),
         }
     }
 }

@@ -673,7 +673,8 @@ fn read_claude_credential(account: &Account, root: &Path) -> io::Result<ClaudeCr
     }
     let subscription = label(oauth.get("subscriptionType"), 120);
     let tier = label(oauth.get("rateLimitTier"), 120)
-        .and_then(|tier| tier.split('_').next_back().map(str::to_string));
+        .and_then(|tier| tier.split('_').next_back().map(str::to_string))
+        .filter(|tier| !tier.is_empty());
     let plan = subscription.map(|subscription| {
         let mut chars = subscription.chars();
         let first: String = chars
@@ -757,10 +758,11 @@ pub async fn read_claude_account_usage(
         };
     }
     if response.status == 429 {
+        // `Number(retry)`: a blank header is 0 seconds.
         let seconds = response
             .retry_after
             .as_deref()
-            .and_then(|retry| retry.trim().parse::<f64>().ok())
+            .map(js::number)
             .filter(|seconds| seconds.is_finite());
         let until = match (seconds, response.retry_after.as_deref()) {
             (Some(seconds), _) => Some(now() + seconds.max(0.0) * 1000.0),

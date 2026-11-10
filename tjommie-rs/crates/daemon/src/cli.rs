@@ -239,11 +239,11 @@ pub struct CliOutput {
 #[derive(Debug)]
 pub struct WorkerTermination;
 
+pub const WORKER_TERMINATION: &str = "The Windows worker launch could not confirm process-tree termination. Keep its account and working folders reserved.";
+
 impl fmt::Display for WorkerTermination {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(
-            "The Windows worker launch could not confirm process-tree termination. Keep its account and working folders reserved.",
-        )
+        f.write_str(WORKER_TERMINATION)
     }
 }
 
@@ -1253,7 +1253,7 @@ pub async fn wait_for_cli_exit(
         Some(proof) => proof
             .clone()
             .await
-            .map_err(|_| ProviderError::Failed(WorkerTermination.to_string())),
+            .map_err(|_| ProviderError::WorkerTermination),
         None => {
             exit.wait().await;
             Ok(())

@@ -364,35 +364,19 @@ fn present(text: Option<&str>) -> Option<&str> {
     text.filter(|text| !text.is_empty())
 }
 
-/// `Date.parse` of a stored ISO instant. `None` is `NaN`, which compares false.
+/// `Date.parse` of a stored instant. `None` is `NaN`, which compares false.
 fn parse_ms(text: &str) -> Option<f64> {
-    text.parse::<jiff::Timestamp>()
-        .ok()
-        .map(|instant| instant.as_millisecond() as f64)
-}
-
-/// `Number(part)` for a version part. ponytail: decimal only; JavaScript also reads `0x`/`0o`/`0b` prefixes, which
-/// `parse_version` never produces.
-fn js_number(text: &str) -> f64 {
-    let text = crate::providers::js::trim(text);
-    if text.is_empty() {
-        return 0.0;
-    }
-    let numeric = text
-        .bytes()
-        .all(|b| b.is_ascii_digit() || matches!(b, b'.' | b'e' | b'E' | b'+' | b'-'));
-    if numeric {
-        text.parse().unwrap_or(f64::NAN)
-    } else {
-        f64::NAN
-    }
+    crate::providers::js::date_parse(text)
 }
 
 fn version_at_least(version: Option<&str>, expected: [f64; 3]) -> bool {
     let Some(version) = version else {
         return false;
     };
-    let parts: Vec<f64> = version.split('.').map(js_number).collect();
+    let parts: Vec<f64> = version
+        .split('.')
+        .map(crate::providers::js::number)
+        .collect();
     let safe = |part: &f64| part.fract() == 0.0 && *part >= 0.0 && *part <= 9_007_199_254_740_991.0;
     if parts.len() < 3 || !parts[..3].iter().all(safe) {
         return false;
