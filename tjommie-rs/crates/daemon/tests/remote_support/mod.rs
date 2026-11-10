@@ -2,6 +2,7 @@
 #![allow(dead_code)] // Each test binary uses part of this.
 
 pub mod device;
+pub mod harness;
 
 use std::collections::BTreeMap;
 use std::io;

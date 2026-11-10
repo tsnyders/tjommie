@@ -3,102 +3,31 @@
 
 mod remote_support;
 
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use daemon::devices_store::add_device;
-use daemon::remote::{Remote, RemoteOptions};
-use daemon::remote_host::{Dispatch, RemoteHostOptions};
-use daemon::server::{Handlers, RequestContext, RpcError, Server, ServerOptions};
+use protocol::ErrorCode;
 use protocol::remote::{RemotePreface, parse_pairing_code};
-use protocol::{ErrorCode, Event};
 use remote_support::device::{Pairing, authenticate};
+use remote_support::harness::{Harness, Setup};
 use remote_support::{MemoryVault, key_of, shared_db};
 use serde_json::{Value, json};
 use tokio::net::TcpStream;
 use transport::generate_keypair;
 
-struct Harness {
-    server: Arc<Server>,
-    remote: Arc<Remote>,
-    db: Arc<Mutex<rusqlite::Connection>>,
-    events: Arc<Mutex<Vec<Event>>>,
-}
-
 async fn harness_with(db: Arc<Mutex<rusqlite::Connection>>, vault: Arc<MemoryVault>) -> Harness {
-    let slot: Arc<OnceLock<Arc<Server>>> = Arc::default();
-    let to_server = slot.clone();
-    let dispatch: Dispatch = Arc::new(
-        move |method: String, params: Value, context: RequestContext| {
-            let slot = to_server.clone();
-            Box::pin(async move {
-                slot.get()
-                    .unwrap()
-                    .dispatch(&method, params, Some(context))
-                    .await
-            })
-        },
-    );
-    let mut host = RemoteHostOptions::new(
-        db.clone(),
-        PathBuf::from("synthetic-handlers-root"),
-        dispatch,
-    );
-    host.port = 0;
-    host.bind = [127, 0, 0, 1].into();
-    host.addresses = Some(Arc::new(|| vec!["127.0.0.1".into()]));
-    host.vault = vault;
-    let events: Arc<Mutex<Vec<Event>>> = Arc::default();
-    let seen = events.clone();
-    let remote = Remote::new(RemoteOptions {
-        host,
-        relay_url: Arc::new(|| None),
-        broadcast: Arc::new(move |event: Event| seen.lock().unwrap().push(event)),
-    });
-    let server = Arc::new(
-        Server::start(ServerOptions {
-            port: 0,
-            token: "synthetic-token".into(),
-            handlers: remote.handlers(Handlers::default()),
-            allowed_origins: Vec::new(),
-            defer_requests: false,
-        })
-        .await
-        .unwrap(),
-    );
-    assert!(slot.set(server.clone()).is_ok());
-    Harness {
-        server,
-        remote,
+    Harness::start(Setup {
         db,
-        events,
-    }
+        vault,
+        ..Setup::default()
+    })
+    .await
 }
 
 async fn harness() -> Harness {
-    harness_with(shared_db(), Arc::default()).await
-}
-
-impl Harness {
-    /// A local client's call. Results are checked against the manifest.
-    async fn call(&self, method: &str, params: Value) -> Result<Value, RpcError> {
-        let result = self.server.dispatch(method, params, None).await;
-        if let Ok(value) = &result {
-            protocol::assert_valid(method, value);
-        }
-        result
-    }
-
-    fn changes(&self) -> usize {
-        self.events
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|event| matches!(event, Event::DevicesChanged(_)))
-            .count()
-    }
+    Harness::start(Setup::default()).await
 }
 
 #[tokio::test]
