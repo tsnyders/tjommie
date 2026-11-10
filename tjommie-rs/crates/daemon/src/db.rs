@@ -3,6 +3,7 @@
 use std::fs;
 use std::io;
 use std::path::Path;
+use std::time::Duration;
 
 use rusqlite::backup::NO_PROGRESS;
 use rusqlite::{Connection, MAIN_DB};
@@ -28,6 +29,10 @@ pub const MIGRATIONS: [&str; 12] = [
 pub fn open(file: &Path) -> io::Result<Connection> {
     let existed = file.exists();
     let db = Connection::open(file).map_err(io::Error::other)?;
+    // The copy runs before the PRAGMAs, so wait out a brief lock here too. rusqlite already defaults to 5 s; this
+    // keeps the wait if that default changes. It sets a connection handler and doesn't touch the file.
+    db.busy_timeout(Duration::from_secs(5))
+        .map_err(io::Error::other)?;
     if existed {
         back_up_once(&db, file)?;
     }
@@ -38,7 +43,7 @@ pub fn open(file: &Path) -> io::Result<Connection> {
 /// Before a daemon version first opens the database, the SQLite backup API copies it to `backup\tjommie-<version>.db`
 /// beside it, so rolling back to the previous release keeps its data (spec §5, release R1).
 fn back_up_once(db: &Connection, file: &Path) -> io::Result<()> {
-    let version = env!("CARGO_PKG_VERSION");
+    let version = env!("TJOMMIE_VERSION");
     let dir = file.with_file_name("backup");
     let backup = dir.join(format!("tjommie-{version}.db"));
     if backup.exists() {
