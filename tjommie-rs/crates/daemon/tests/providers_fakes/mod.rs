@@ -139,3 +139,13 @@ pub async fn settle() {
         tokio::task::yield_now().await;
     }
 }
+
+/// Every event received so far.
+pub fn drain(events: &mut tokio::sync::mpsc::UnboundedReceiver<daemon::providers::ProviderEvent>) -> Vec<daemon::providers::ProviderEvent> {
+    std::iter::from_fn(|| events.try_recv().ok()).collect()
+}
+
+/// A fresh folder whose path has a space and an accented letter, like many Windows profile paths.
+pub fn temp_root() -> tempfile::TempDir {
+    tempfile::Builder::new().prefix("tjommie test ñ-").tempdir().unwrap()
+}

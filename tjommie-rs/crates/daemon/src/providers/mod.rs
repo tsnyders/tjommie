@@ -6,6 +6,8 @@
 //! back to the CLI unread.
 
 pub mod activity_labels;
+pub mod claude;
+pub mod claude_files;
 pub mod claude_parse;
 pub mod codex;
 pub mod codex_parse;
