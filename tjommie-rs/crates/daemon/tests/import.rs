@@ -699,6 +699,41 @@ fn rebases_folders_when_the_source_is_spelled_with_short_names() {
     );
 }
 
+/// A bot folder that is a junction inside the source names a folder elsewhere, but the copy must still not open it
+/// through the source: it moves by its spelling and, since links aren't copied, points at a folder that isn't there.
+#[cfg(windows)]
+#[test]
+fn rebases_a_bot_folder_that_is_a_junction_inside_the_source() {
+    let source = source();
+    let elsewhere = temp("tjommie elsewhere-");
+    let link = source.path().join("bots").join("linked-bot");
+    junction(&link, elsewhere.path());
+    Connection::open(source.path().join("data").join("tjommie.db"))
+        .unwrap()
+        .execute(
+            "INSERT INTO bots (id, name, color, shape, instructions, provider, model, autonomy, home_folder, created_at)
+             VALUES ('linked-bot', 'Linked', 'red', 'circle', '', 'claude', 'haiku', 'folder', ?1, 'now')",
+            [text(&link)],
+        )
+        .unwrap();
+    let target = temp("tjommie target ñ-");
+
+    import::copy_data(source.path(), target.path(), false).unwrap();
+    fs::remove_dir(&link).unwrap();
+
+    let moved = target.path().join("bots").join("linked-bot");
+    let home: String = Connection::open(target.path().join("data").join("tjommie.db"))
+        .unwrap()
+        .query_row(
+            "SELECT home_folder FROM bots WHERE id = 'linked-bot'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(home, text(&moved));
+    assert!(!moved.exists());
+}
+
 #[test]
 fn never_imports_into_the_source_root() {
     let source = source();

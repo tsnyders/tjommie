@@ -106,12 +106,12 @@ pub fn copy_data(from: &Path, to: &Path, replace: bool) -> io::Result<()> {
         back_up(&source_logins, &staged_logins)?;
     }
     copy_tree(&source.join("bots"), &staged_bots)?;
-    detach(
-        &staged_db,
-        &source.to_string_lossy(),
-        &target.to_string_lossy(),
-    )
-    .map_err(io::Error::other)?;
+    let roots = Roots {
+        source: &source.to_string_lossy(),
+        spelled: &plain(&std::path::absolute(from)?),
+        target: &target.to_string_lossy(),
+    };
+    detach(&staged_db, &roots).map_err(io::Error::other)?;
 
     // The swap. A database's old -wal must go with it, or SQLite would replay it into the new one.
     remove_files(&[&paths.db, &logins])?;
@@ -289,7 +289,14 @@ fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn detach(db: &Path, from: &str, to: &str) -> rusqlite::Result<()> {
+/// The source root as it really is (its identity) and as it was given, and the target as this install spells it.
+struct Roots<'a> {
+    source: &'a str,
+    spelled: &'a str,
+    target: &'a str,
+}
+
+fn detach(db: &Path, roots: &Roots) -> rusqlite::Result<()> {
     let mut db = Connection::open(db)?;
     let tx = db.transaction()?;
     tx.execute_batch("DELETE FROM devices; DELETE FROM remote_host; DELETE FROM pairing_codes;")?;
@@ -306,20 +313,25 @@ fn detach(db: &Path, from: &str, to: &str) -> rusqlite::Result<()> {
            WHERE task_attempt_id IS NOT NULL AND status = 'waiting';
          UPDATE routines SET enabled = 0;"
     ))?;
-    // The daemon uses these folders as stored, so copies left pointing into the source would write there. They are
-    // matched by what they name, so any spelling of the source root (`from` is its identity) moves.
+    // The daemon uses these folders as stored, so copies left pointing into the source would write there. A folder
+    // moves if what it names is in the source (any spelling of the root), or if it is spelled inside the source (a
+    // junction there to somewhere else: links aren't copied, so the moved path finds nothing instead of sharing it).
+    let io = |error: io::Error| rusqlite::Error::ToSqlConversionFailure(error.into());
     for (table, folder) in [("bots", "home_folder"), ("accounts", "folder")] {
         let rows: Vec<(String, String)> = tx
             .prepare(&format!("SELECT id, {folder} FROM {table}"))?
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
             .collect::<Result<_, _>>()?;
         for (id, path) in rows {
-            let named = identity(Path::new(&path))
-                .map_err(|error| rusqlite::Error::ToSqlConversionFailure(error.into()))?;
-            if let Some(rest) = inside(&named, from) {
+            let named = identity(Path::new(&path)).map_err(io)?;
+            let spelled = plain(&std::path::absolute(&path).map_err(io)?);
+            let rest = inside(&named, roots.source)
+                .or_else(|| inside(&spelled, roots.source))
+                .or_else(|| inside(&spelled, roots.spelled));
+            if let Some(rest) = rest {
                 tx.execute(
                     &format!("UPDATE {table} SET {folder} = ?1 WHERE id = ?2"),
-                    [format!("{to}{rest}"), id],
+                    [format!("{}{rest}", roots.target), id],
                 )?;
             }
         }
