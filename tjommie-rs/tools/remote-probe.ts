@@ -18,6 +18,7 @@ import { relayConnectUrl, webSocketFrames, type FrameTransport } from "../../pac
 import { authenticateRemote, RemoteRefusedError } from "../../packages/client/src/remote-peer.ts";
 import { generateKeypair, initNoise } from "../../packages/transport/src/index.ts";
 import { startLocalRelay, stopLocalRelay } from "../../packages/relay/src/local-relay.test-helper.ts";
+import { loadRelayIdentity } from "../../packages/daemon/src/relay-identity.ts";
 
 initNoise(readFileSync(new URL("../../packages/transport/wasm/tjommie_noise_bg.wasm", import.meta.url)));
 
@@ -29,7 +30,9 @@ type Command =
   | { op: "event"; name: string }
   | { op: "close" }
   | { op: "relay-start" }
-  | { op: "relay-stop" };
+  | { op: "relay-stop" }
+  // 0.4.2's relay login key in a one-entry in-memory vault (never Credential Manager): what it stores, and its signature.
+  | { op: "relay-identity"; saved: string | null; message: string };
 
 const device = generateKeypair();
 let code: PairingCode | null = null;
@@ -113,6 +116,15 @@ async function run(command: Command): Promise<unknown> {
       const started = await startLocalRelay(dir);
       relay = { ...started, dir };
       return { ok: true, base: started.base };
+    }
+    case "relay-identity": {
+      let saved = command.saved;
+      const identity = await loadRelayIdentity({ root: "remote-probe-root", credentials: async ({ operation, key }) => {
+        if (operation === "write" && key) saved = key;
+        return operation === "read" ? saved : null;
+      } });
+      return { ok: true, saved, publicKey: Buffer.from(identity.publicKey).toString("base64url"),
+        signature: Buffer.from(identity.sign(Buffer.from(command.message, "base64url"))).toString("base64url") };
     }
     case "relay-stop": {
       if (relay) { await stopLocalRelay(relay.child); await rm(relay.dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 }); relay = null; }

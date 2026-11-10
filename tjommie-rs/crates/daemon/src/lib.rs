@@ -3,6 +3,7 @@
 pub mod devices_store;
 pub mod paths;
 pub mod peer_wire;
+pub mod relay_identity;
 pub mod remote;
 pub mod remote_host;
 pub mod remote_identity;

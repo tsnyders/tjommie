@@ -3,6 +3,7 @@
 
 pub mod device;
 pub mod harness;
+pub mod probe;
 
 use std::collections::BTreeMap;
 use std::io;

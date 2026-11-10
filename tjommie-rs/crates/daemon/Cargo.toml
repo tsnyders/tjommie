@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 axum = { version = "0.8.9", features = ["ws"] }
 base64 = "0.23.1"
+ed25519-dalek = "2.2"
 futures-util = "0.3.34"
 getrandom = "0.4.3"
 jiff = "0.2.41"
