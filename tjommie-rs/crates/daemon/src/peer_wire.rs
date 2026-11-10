@@ -85,6 +85,11 @@ impl WireWriter {
     pub async fn closed(&self) {
         self.closed.cancelled().await;
     }
+
+    /// Cancelled when the wire closes, for work that belongs to this connection.
+    pub fn signal(&self) -> CancellationToken {
+        self.closed.clone()
+    }
 }
 
 pub struct PeerWire {
@@ -219,12 +224,13 @@ impl PeerWire {
         }
     }
 
-    /// A wire whose far end is in this process: the TypeScript tests' `relayWire`, and in-process peers.
-    pub fn memory(kind: WireKind, address: &str) -> (PeerWire, MemoryEnd) {
-        let (to_wire, incoming) = mpsc::unbounded_channel();
-        let (sink, from_wire) = mpsc::unbounded_channel();
+    /// Two wires joined in this process: what one writes the other reads, and closing either closes both. The
+    /// TypeScript tests' `relayWire`, with the host on the first wire and a device on the second.
+    pub fn memory(kind: WireKind, address: &str) -> (PeerWire, PeerWire) {
+        let (to_host, from_device) = mpsc::unbounded_channel();
+        let (to_device, from_host) = mpsc::unbounded_channel();
         let closed = CancellationToken::new();
-        let wire = PeerWire {
+        let wire = |incoming, sink| PeerWire {
             kind,
             address: address.into(),
             incoming,
@@ -234,54 +240,7 @@ impl PeerWire {
                 closed: closed.clone(),
             },
         };
-        let end = MemoryEnd {
-            tx: to_wire,
-            rx: from_wire,
-            closed,
-        };
-        (wire, end)
-    }
-}
-
-/// The far end of [`PeerWire::memory`].
-pub struct MemoryEnd {
-    tx: mpsc::UnboundedSender<Vec<u8>>,
-    rx: mpsc::UnboundedReceiver<Vec<u8>>,
-    closed: CancellationToken,
-}
-
-impl MemoryEnd {
-    pub fn send(&self, frame: Vec<u8>) -> Result<(), Closed> {
-        if self.closed.is_cancelled() {
-            return Err(Closed);
-        }
-        self.tx.send(frame).map_err(|_| Closed)
-    }
-
-    /// Frames the wire wrote, then `None` once it closed.
-    pub async fn recv(&mut self) -> Option<Vec<u8>> {
-        tokio::select! {
-            biased;
-            frame = self.rx.recv() => frame,
-            () = self.closed.cancelled() => None,
-        }
-    }
-
-    pub fn close(&self) {
-        self.closed.cancel();
-    }
-
-    pub fn is_closed(&self) -> bool {
-        self.closed.is_cancelled()
-    }
-
-    pub async fn closed(&self) {
-        self.closed.cancelled().await;
-    }
-
-    /// A handle that can close this end from elsewhere.
-    pub fn closer(&self) -> CancellationToken {
-        self.closed.clone()
+        (wire(from_device, to_device), wire(from_host, to_host))
     }
 }
 

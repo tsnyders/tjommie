@@ -25,9 +25,12 @@ pub fn new_id() -> String {
 
 /// `db.ts` `nowIso`: `Date.prototype.toISOString`, so stored times sort and compare as text.
 pub fn now_iso() -> String {
-    jiff::Timestamp::now()
-        .strftime("%Y-%m-%dT%H:%M:%S%.3fZ")
-        .to_string()
+    iso(jiff::Timestamp::now())
+}
+
+/// `Date.prototype.toISOString` of a moment: UTC with milliseconds.
+pub fn iso(timestamp: jiff::Timestamp) -> String {
+    timestamp.strftime("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()
 }
 
 pub(crate) fn database(_: rusqlite::Error) -> RpcError {

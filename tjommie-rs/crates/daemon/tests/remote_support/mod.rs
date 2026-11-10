@@ -1,6 +1,8 @@
 //! Shared by the M7 remote tests: a database holding the remote tables and an in-memory credential vault.
 #![allow(dead_code)] // Each test binary uses part of this.
 
+pub mod device;
+
 use std::collections::BTreeMap;
 use std::io;
 use std::sync::{Arc, Mutex};

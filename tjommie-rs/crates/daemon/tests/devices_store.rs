@@ -256,3 +256,14 @@ fn refuses_a_65th_device() {
     assert_eq!(full.code, ErrorCode::Busy);
     assert_eq!(full.message, "The device list is full.");
 }
+
+#[test]
+fn stores_times_like_date_to_iso_string() {
+    let db = remote_db();
+    let device = add_device(&db, &key(), "Phone").unwrap();
+    touch_device(&db, &device.id, None).unwrap();
+    let pattern = regex::Regex::new(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$").unwrap();
+    let seen = get_device(&db, &device.id).unwrap();
+    assert!(pattern.is_match(&seen.paired_at), "{}", seen.paired_at);
+    assert!(pattern.is_match(seen.last_seen_at.as_deref().unwrap()));
+}

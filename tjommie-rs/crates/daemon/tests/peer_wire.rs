@@ -189,14 +189,18 @@ async fn rejects_an_oversized_or_closing_websocket_wire_write() {
 
 #[tokio::test]
 async fn an_in_memory_wire_carries_frames_both_ways_and_closes_from_either_end() {
-    let (mut wire, mut end) = PeerWire::memory(WireKind::Lan, "192.0.2.1");
-    assert_eq!(wire.address, "192.0.2.1");
-    end.send(vec![1]).unwrap();
-    assert_eq!(wire.next_frame().await, Some(vec![1]));
-    wire.writer().write(vec![2]).unwrap();
-    assert_eq!(end.recv().await, Some(vec![2]));
-    end.close();
-    assert_eq!(wire.next_frame().await, None);
-    assert!(wire.writer().is_closed());
-    assert_eq!(end.recv().await, None);
+    let (mut host, mut device) = PeerWire::memory(WireKind::Lan, "192.0.2.1");
+    assert_eq!(
+        (host.kind, host.address.as_str()),
+        (WireKind::Lan, "192.0.2.1")
+    );
+    device.writer().write(vec![1]).unwrap();
+    assert_eq!(host.next_frame().await, Some(vec![1]));
+    host.writer().write(vec![2]).unwrap();
+    assert_eq!(device.next_frame().await, Some(vec![2]));
+    device.writer().destroy();
+    assert_eq!(host.next_frame().await, None);
+    assert!(host.writer().is_closed());
+    assert!(host.writer().signal().is_cancelled());
+    assert_eq!(device.next_frame().await, None);
 }
