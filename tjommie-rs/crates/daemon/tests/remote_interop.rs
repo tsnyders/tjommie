@@ -154,6 +154,10 @@ async fn a_typescript_device_pairs_resumes_and_is_refused_over_lan() {
         "{}",
         &refused.to_string()[..200]
     );
+    assert_eq!(
+        refused["message"],
+        "bad_params: This request could not be completed on the PC."
+    );
 
     // Resume with the same key, then revoke: the live client drops and a new resume is refused.
     assert_eq!(probe.send(json!({ "op": "close" })).await["ok"], true);

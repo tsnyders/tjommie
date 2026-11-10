@@ -22,7 +22,8 @@ use protocol::remote::{
     RemoteReady, RemoteRefused, RemoteStatus, encode_pairing_code, remote_prologue,
 };
 use protocol::{
-    ClientMessage, ErrorCode, Event, PROTOCOL_VERSION, Request, Response, ServerMessage,
+    ClientMessage, DecodeError, ErrorCode, Event, PROTOCOL_VERSION, Request, Response,
+    ServerMessage,
 };
 use rusqlite::Connection;
 use serde::Serialize;
@@ -874,31 +875,35 @@ impl RemoteHost {
     ) {
         let usable = || !peer.writer.is_closed() && !is_revoked(&self.db(), &device_id);
         if usable() {
-            let result = match method.as_str() {
-                "remote.ping" => Request::decode(&method, params)
-                    .map(|_| json!({}))
-                    .map_err(|error| RpcError::new(error.code(), error.to_string())),
-                "device.registerPush" => match Request::decode(&method, params) {
-                    Ok(Request::DeviceRegisterPush(registration)) => {
-                        // Unknown kinds are dropped here; the device keeps asking for them on newer hosts.
-                        let kinds: Option<Vec<PushKind>> = registration.kinds.map(|kinds| {
-                            kinds
-                                .into_iter()
-                                .filter_map(|kind| serde_json::from_value(Value::String(kind)).ok())
-                                .collect()
-                        });
-                        set_push_token(
-                            &self.db(),
-                            &device_id,
-                            registration.token.as_deref(),
-                            kinds.as_deref(),
-                        )
-                        .map(|()| json!({}))
-                    }
-                    Ok(_) => Err(RpcError::new(ErrorCode::BadParams, UNAVAILABLE)),
-                    Err(error) => Err(RpcError::new(error.code(), error.to_string())),
-                },
-                _ => (self.0.options.dispatch)(method, params, context).await,
+            // `params.parse` as zod runs it. A device learns only that its request failed its schema, never why;
+            // an unknown method falls through so the daemon answers `unknown_method` as usual.
+            let decoded = match Request::decode(&method, params.clone()) {
+                Err(DecodeError::BadParams(_)) => {
+                    Err(RpcError::new(ErrorCode::BadParams, UNAVAILABLE))
+                }
+                Err(DecodeError::UnknownMethod) => Ok(None),
+                Ok(request) => Ok(Some(request)),
+            };
+            let result = match decoded {
+                Err(error) => Err(error),
+                Ok(Some(Request::RemotePing(_))) => Ok(json!({})),
+                Ok(Some(Request::DeviceRegisterPush(registration))) => {
+                    // Unknown kinds are dropped here; the device keeps asking for them on newer hosts.
+                    let kinds: Option<Vec<PushKind>> = registration.kinds.map(|kinds| {
+                        kinds
+                            .into_iter()
+                            .filter_map(|kind| serde_json::from_value(Value::String(kind)).ok())
+                            .collect()
+                    });
+                    set_push_token(
+                        &self.db(),
+                        &device_id,
+                        registration.token.as_deref(),
+                        kinds.as_deref(),
+                    )
+                    .map(|()| json!({}))
+                }
+                Ok(_) => (self.0.options.dispatch)(method, params, context).await,
             };
             let response = match result {
                 Ok(result) => usable().then(|| Response::ok(id, result)),

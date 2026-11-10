@@ -796,11 +796,58 @@ async fn hides_internal_error_detail_from_devices() {
     .connect()
     .await;
     assert_eq!(
-        client.call("bots.get", json!({ "id": "synthetic" })).await,
+        client.call("settings.get", json!({})).await,
         Err((
             "internal".into(),
             "This request could not be completed on the PC.".into()
         ))
+    );
+    client.close();
+    host.close().await;
+}
+
+/// TypeScript hides zod's detail from devices: a schema failure is `bad_params` with the generic text.
+#[tokio::test]
+async fn hides_schema_failure_detail_from_devices() {
+    let Fixture {
+        host,
+        code,
+        mutations,
+        ..
+    } = fixture().await;
+    let client = pair(
+        &code,
+        &generate_keypair().unwrap().private_key[..],
+        &secret(&code),
+        relay_wire(&host),
+    )
+    .await
+    .unwrap()
+    .connect()
+    .await;
+    let generic = Err((
+        "bad_params".to_owned(),
+        "This request could not be completed on the PC.".to_owned(),
+    ));
+    assert_eq!(client.call("chat.stop", json!({})).await, generic);
+    assert_eq!(
+        client
+            .call("remote.ping", json!({ "extra": 1 }))
+            .await
+            .map(|_| ())
+            .map_err(|e| e.0),
+        Ok(())
+    );
+    assert_eq!(
+        client
+            .call("device.registerPush", json!({ "token": "" }))
+            .await,
+        generic
+    );
+    assert_eq!(
+        *mutations.lock().unwrap(),
+        0,
+        "a request that fails its schema never reaches a handler"
     );
     client.close();
     host.close().await;

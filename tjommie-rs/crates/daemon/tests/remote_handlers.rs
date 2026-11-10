@@ -145,6 +145,14 @@ async fn lists_renames_and_revokes_devices_and_announces_changes() {
             .code,
         ErrorCode::NotFound
     );
+    let local = h
+        .call("devices.rename", json!({ "id": device.id, "name": " " }))
+        .await
+        .unwrap_err();
+    assert_ne!(
+        local.message, "This request could not be completed on the PC.",
+        "local callers keep the detail"
+    );
     assert_eq!(
         h.call("devices.rename", json!({ "id": device.id, "name": " " }))
             .await
