@@ -133,7 +133,11 @@ Split further only when a crate needs it.
   - `turn/started`, `turn/completed`, `thread/tokenUsage/updated`
   - `item/agentMessage/delta`, `item/started`, `item/completed`
   - `account/rateLimits/updated`, `account/login/completed`
-- Server requests it answers: `item/commandExecution/requestApproval`, `item/fileChange/requestApproval`, `mcpServer/elicitation/request` (`codex-parse.ts`, `codex.ts:184`).
+- Server requests it answers: `item/commandExecution/requestApproval`, `item/fileChange/requestApproval`, `mcpServer/elicitation/request` (`codex-parse.ts`, `codex.ts:184`). Any other server request gets JSON-RPC error `-32601`.
+- For API-key accounts, `codex app-server` also gets an ephemeral `-c` config flag (see `codex.ts`).
+- A lost app-server process (not only a normal exit) ends the session with an error. The Rust port goes beyond TypeScript here, which listened only for `exit`.
+
+**Project folders:** Rust rejects a drive-less rooted path such as `\projects\x`, which Node's `isAbsolute` accepts. That's stricter and intentional.
 
 **Quota:** `account-quota.ts`. Codex uses `rateLimits` (`:24`). Claude uses the OAuth usage endpoint (`:113-172`).
 
