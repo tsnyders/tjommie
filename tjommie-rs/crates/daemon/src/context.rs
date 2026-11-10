@@ -9,10 +9,11 @@ use std::sync::{Arc, Mutex, PoisonError};
 use protocol::model::Bot;
 use rusqlite::{Connection, OptionalExtension};
 
+use crate::account_handlers::{self, Accounts};
 use crate::bots::{BotStatus, StoredBot, bot_state_of};
 use crate::ids::now_iso;
 use crate::server::{Broadcaster, Handlers, RpcError};
-use crate::{bots, diagnostics, google, models, settings};
+use crate::{bots, diagnostics, google, settings};
 
 /// The daemon's database. One connection: SQLite runs one write at a time anyway.
 pub type Db = Arc<Mutex<Connection>>;
@@ -54,6 +55,7 @@ pub struct Context {
     pub bot_view: Arc<dyn BotView>,
     /// The desktop app's version, from the packaged `build-info.json`.
     pub app_version: Option<String>,
+    pub accounts: Accounts,
 }
 
 impl Context {
@@ -71,6 +73,6 @@ pub fn handlers(context: &Context) -> Handlers {
     let handlers = settings::register(Handlers::default(), context);
     let handlers = bots::register(handlers, context);
     let handlers = diagnostics::register(handlers, context);
-    let handlers = models::register(handlers);
+    let handlers = account_handlers::register(handlers, context);
     google::register(handlers)
 }

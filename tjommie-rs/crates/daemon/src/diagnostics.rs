@@ -5,7 +5,7 @@ use std::path::Path;
 use std::sync::LazyLock;
 
 use protocol::diagnostics::{HostDiagnostics, ProviderVersion, StorageState};
-use protocol::model::Provider;
+use protocol::model::{Provider, ProviderSetup};
 use protocol::remote::RelayState;
 use protocol::wire::method;
 use regex::Regex;
@@ -75,11 +75,20 @@ pub fn read_app_version(directory: &Path) -> Option<String> {
 pub fn register(handlers: Handlers, context: &Context) -> Handlers {
     let context = context.clone();
     handlers.on::<method::DiagnosticsGet, _>(move |_, _| {
-        // T3.4 passes the cached provider versions and M7 the relay state (daemon.ts:382).
+        // M7 passes the relay state (daemon.ts:382).
+        let setup: Vec<(Provider, Option<String>)> = context
+            .accounts
+            .provider_setup()
+            .into_iter()
+            .map(|setup| match setup {
+                ProviderSetup::Claude(fields) => (Provider::Claude, fields.version),
+                ProviderSetup::Codex(codex) => (Provider::Codex, codex.setup.version),
+            })
+            .collect();
         let report = context.with_db(|db| {
             Ok(host_diagnostics(
                 Some(db),
-                &[],
+                &setup,
                 RelayState::Off,
                 context.app_version.as_deref(),
                 Some(env!("CARGO_PKG_VERSION")),

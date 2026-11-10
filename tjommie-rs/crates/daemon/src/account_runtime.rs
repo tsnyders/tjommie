@@ -206,11 +206,11 @@ pub struct PreparedAccount {
     pub max_budget_usd: Option<f64>,
 }
 
-pub type OnChanged = Arc<dyn Fn(&str) + Send + Sync>;
+pub type OnChanged = Arc<dyn Fn(&AccountRuntime, &str) + Send + Sync>;
 /// `(account_id, attempt)`.
-pub type OnSignInEnded = Arc<dyn Fn(&str, &str) + Send + Sync>;
+pub type OnSignInEnded = Arc<dyn Fn(&AccountRuntime, &str, &str) + Send + Sync>;
 /// `(account_id, threshold)`: 80 or 100 percent of the spending cap.
-pub type OnCap = Arc<dyn Fn(&str, u8) + Send + Sync>;
+pub type OnCap = Arc<dyn Fn(&AccountRuntime, &str, u8) + Send + Sync>;
 
 pub struct AccountRuntimeOptions {
     pub db: Arc<Mutex<Connection>>,
@@ -476,7 +476,7 @@ impl AccountRuntime {
             !state.closed && !state.holds.contains_key(id)
         };
         if notify && let Some(on_changed) = &self.0.options.on_changed {
-            on_changed(id);
+            on_changed(self, id);
         }
     }
 
@@ -965,7 +965,7 @@ impl AccountRuntime {
             }
             runtime.notify(&id);
             if let Some(on_ended) = &runtime.0.options.on_sign_in_ended {
-                on_ended(&id, &attempt);
+                on_ended(&runtime, &id, &attempt);
             }
             if ok {
                 drop(runtime.check(&id)); // The check is spawned; a failure only shows in the next check.
@@ -1000,7 +1000,7 @@ impl AccountRuntime {
         self.state().attempts.remove(id);
         self.changed(id);
         if let Some(on_ended) = &self.0.options.on_sign_in_ended {
-            on_ended(id, attempt);
+            on_ended(self, id, attempt);
         }
         Ok(())
     }
@@ -1567,7 +1567,7 @@ impl AccountRuntime {
         };
         if let Some(on_cap) = &self.0.options.on_cap {
             for threshold in claimed {
-                on_cap(id, threshold);
+                on_cap(self, id, threshold);
             }
         }
         self.notify(id);

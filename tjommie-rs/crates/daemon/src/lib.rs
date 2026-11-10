@@ -1,5 +1,6 @@
 //! The Tjommie daemon: a port of `packages/daemon`.
 
+pub mod account_handlers;
 pub mod account_pricing;
 pub mod account_quota;
 pub mod account_runtime;

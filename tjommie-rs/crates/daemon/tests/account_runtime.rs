@@ -336,11 +336,13 @@ fn fixture_with(ops: Ops) -> Fixture {
         ops: ops.clone(),
         on_changed: Some({
             let changed = Arc::clone(&changed);
-            Arc::new(move |id: &str| changed.lock().unwrap().push(id.to_string()))
+            Arc::new(move |_: &AccountRuntime, id: &str| {
+                changed.lock().unwrap().push(id.to_string())
+            })
         }),
         on_sign_in_ended: Some({
             let ended = Arc::clone(&ended);
-            Arc::new(move |id: &str, attempt: &str| {
+            Arc::new(move |_: &AccountRuntime, id: &str, attempt: &str| {
                 ended
                     .lock()
                     .unwrap()
@@ -349,7 +351,7 @@ fn fixture_with(ops: Ops) -> Fixture {
         }),
         on_cap: Some({
             let caps = Arc::clone(&caps);
-            Arc::new(move |id: &str, threshold: u8| {
+            Arc::new(move |_: &AccountRuntime, id: &str, threshold: u8| {
                 caps.lock().unwrap().push((id.to_string(), threshold))
             })
         }),
