@@ -679,3 +679,35 @@ async fn closes_an_idle_cli_after_ten_minutes_while_the_bot_is_limited() {
     assert!(session.closed());
     assert_eq!(h.runner.process_id(&bot.id), None);
 }
+
+/// TypeScript writes `toLocaleTimeString` and `toLocaleDateString` in the PC's locale; the Rust daemon writes the
+/// en-US form in the local zone.
+#[tokio::test]
+async fn says_when_a_limited_bot_picks_up_again_as_a_time_and_weekday() {
+    let session = FakeSession::new();
+    let h = harness_with(Setup {
+        factory: single(&session),
+        ..Setup::default()
+    });
+    let bot = h.bot(json!({}));
+    h.runner.submit(&bot.id, "hit the limit", &[]).unwrap();
+    wait_for(|| !session.sent().is_empty()).await;
+    session.emit(limit_reached(Some("2099-09-25T10:00:00.000Z")));
+    settle().await;
+    let notice = h
+        .history(&bot.id)
+        .into_iter()
+        .find(|item| item.kind == MessageKind::Notice)
+        .unwrap();
+    let prefix = format!(
+        "{} hit its usage limit. It will pick up again at ",
+        bot.name
+    );
+    let at = notice
+        .body
+        .strip_prefix(&prefix)
+        .and_then(|rest| rest.strip_suffix('.'))
+        .unwrap_or_else(|| panic!("{}", notice.body));
+    let format = regex::Regex::new(r"^\d{1,2}:\d{2} (AM|PM) on [A-Z][a-z]+day$").unwrap();
+    assert!(format.is_match(at), "{at}");
+}
