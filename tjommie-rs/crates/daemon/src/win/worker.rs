@@ -617,10 +617,12 @@ pub fn enter_review_mutex(
 }
 
 /// `inside` (`windows-worker.ts:100-102`): both resolved through links; a path that can't be resolved fails closed.
+/// Compared by file identity (`fsid`), so no share, junction or drive alias gets past it.
 fn inside(root: &Path, path: &Path) -> Result<bool, String> {
-    let real = |path: &Path| fs::canonicalize(path).map_err(|_| FAILURE.to_string());
-    let (root, path) = (real(root)?, real(path)?);
-    Ok(overlap(&root, &path))
+    if !root.exists() || !path.exists() {
+        return Err(FAILURE.into());
+    }
+    crate::fsid::is_within(path, root).map_err(|_| FAILURE.to_string())
 }
 
 /// `grantTarget` (`windows-worker.ts:142-157`): the only folders a worker may be granted. Never the runtime or the

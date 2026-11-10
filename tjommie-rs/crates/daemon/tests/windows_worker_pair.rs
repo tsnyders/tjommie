@@ -237,6 +237,24 @@ fn never_grants_owner_metadata_credentials_attachments_or_trusted_executable_des
     }
 }
 
+/// Review MAJOR 1: a loopback-share spelling of the peer's root or the owner's metadata is the same folder.
+#[test]
+fn never_grants_through_a_loopback_share_alias() {
+    let f = fixture();
+    let daemon = f.root.path().join("daemon");
+    let metadata = f.provider.owner_data_root.join("data");
+    fs::create_dir_all(&metadata).unwrap();
+    for path in [&f.review.worker_root, &metadata, &f.provider.runtime_root] {
+        let text = path.to_str().unwrap();
+        let alias = PathBuf::from(format!(r"\\localhost\{}$\{}", &text[..1], &text[3..]));
+        assert!(
+            grant_target(&f.provider, &daemon, &alias).is_err(),
+            "{}",
+            alias.display()
+        );
+    }
+}
+
 #[test]
 fn refuses_owner_metadata_reached_through_an_aliased_managed_root() {
     let f = fixture();

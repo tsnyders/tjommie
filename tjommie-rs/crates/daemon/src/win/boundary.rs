@@ -9,7 +9,6 @@
 //! stand in for Windows the way the TypeScript tests stand in for the helper process.
 
 use crate::cli::{BoxFuture, ChildExit, CliChild, CliCommand, CliExit, CliHost, LaunchOptions};
-use crate::win::acl::{below, same_path};
 use crate::win::cred;
 use crate::win::logon::{self, WorkerProcess};
 use crate::win::policy_observer::WORKER_POLICY_OBSERVER;
@@ -272,11 +271,9 @@ impl Drop for Lease {
     }
 }
 
+/// By file identity (`fsid`); anything it can't determine counts as outside, which refuses the launch.
 fn inside(root: &Path, path: &Path) -> bool {
-    match (std::fs::canonicalize(root), std::fs::canonicalize(path)) {
-        (Ok(root), Ok(path)) => same_path(&root, &path) || below(&root, &path).is_some(),
-        _ => false,
-    }
+    crate::fsid::is_within(path, root).unwrap_or(false)
 }
 
 impl WorkerBoundary {
@@ -569,7 +566,9 @@ impl WorkerBoundary {
             self.grant_directory(Path::new(home)).await?;
             self.assert_preparation()?;
         }
-        if !inside(&config.worker_root, cwd) && same_path(cwd, &config.owner_data_root) {
+        if !inside(&config.worker_root, cwd)
+            && crate::fsid::same_location(cwd, &config.owner_data_root).unwrap_or(true)
+        {
             return Err(unavailable());
         }
         let saved = self

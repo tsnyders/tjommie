@@ -249,9 +249,10 @@ fn resolve(root: &Path) -> io::Result<String> {
 }
 
 /// Whether `root` is, contains or lies inside the production data root `%LOCALAPPDATA%\Tjommie`, or shares its
-/// Credential Manager namespace. Both are judged by what they resolve to on disk (junctions, symlinks, `\\?\` and
-/// 8.3 names), not by spelling. Fails closed: anything it can't determine counts as production. Test and admin
-/// harnesses refuse such roots. It only resolves the production root's path; it never opens anything inside it.
+/// Credential Manager namespace. Folders are compared by file identity (`fsid`), so no spelling, `\?\`, UNC
+/// loopback share, junction, `subst` drive or 8.3 name gets past it. Fails closed: anything it can't determine
+/// counts as production. Test and admin harnesses refuse such roots. It only opens the production root's folder
+/// for its identity, never anything inside it.
 pub fn is_production_root(root: &Path) -> bool {
     let Some(local) = std::env::var_os("LOCALAPPDATA") else {
         return true;
@@ -261,35 +262,12 @@ pub fn is_production_root(root: &Path) -> bool {
         (Ok(a), Ok(b)) => a.digest == b.digest,
         _ => true,
     };
-    let (Some(root), Some(production)) = (on_disk(root), on_disk(&production)) else {
-        return true;
-    };
-    let within =
-        |outer: &str, inner: &str| inner == outer || inner.starts_with(&format!("{outer}\\"));
-    same_namespace || within(&root, &production) || within(&production, &root)
-}
-
-/// What `path` names on disk: its nearest existing ancestor resolved through links and short names, then the rest
-/// as written; lowercased, without `\\?\` or a trailing separator.
-fn on_disk(path: &Path) -> Option<String> {
-    let absolute = std::path::absolute(path).ok()?;
-    let (mut existing, mut rest) = (absolute.as_path(), vec![]);
-    let mut real = loop {
-        match std::fs::canonicalize(existing) {
-            Ok(real) => break real,
-            Err(_) => {
-                rest.push(existing.file_name()?.to_owned());
-                existing = existing.parent()?;
-            }
-        }
-    };
-    real.extend(rest.iter().rev());
-    let text = real.to_str()?;
-    let text = match text.strip_prefix(r"\\?\UNC\") {
-        Some(share) => format!(r"\\{share}"),
-        None => text.strip_prefix(r"\\?\").unwrap_or(text).to_owned(),
-    };
-    Some(text.trim_end_matches('\\').to_lowercase())
+    let overlaps =
+        || -> io::Result<bool> {
+            Ok(crate::fsid::is_within(root, &production)?
+                || crate::fsid::is_within(&production, root)?)
+        };
+    same_namespace || overlaps().unwrap_or(true)
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {

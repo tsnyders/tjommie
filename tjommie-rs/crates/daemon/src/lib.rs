@@ -6,6 +6,7 @@ pub mod cli;
 pub mod context;
 pub mod db;
 pub mod diagnostics;
+pub mod fsid;
 pub mod google;
 pub mod ids;
 pub mod import;

@@ -102,6 +102,16 @@ fn production_roots_are_recognised_by_what_they_resolve_to() {
     ] {
         assert!(cred::is_production_root(&alias), "{}", alias.display());
     }
+    // The loopback admin share reaches the same folder (review MAJOR 1).
+    let rest = &spelled[3..];
+    let drive = &spelled[..1];
+    for alias in [
+        format!(r"\\localhost\{drive}$\{rest}"),
+        format!(r"\\127.0.0.1\{drive}$\{rest}"),
+        format!(r"\\?\UNC\localhost\{drive}$\{rest}"),
+    ] {
+        assert!(cred::is_production_root(Path::new(&alias)), "{alias}");
+    }
     let dir = tempfile::TempDir::new().unwrap();
     assert!(!cred::is_production_root(dir.path()));
     assert!(!cred::is_production_root(
