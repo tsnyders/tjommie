@@ -177,6 +177,9 @@ pub trait Accounts: Send + Sync {
 }
 
 /// Sends an event to every client. An error is logged; TypeScript's tests throw from it to check that.
+///
+/// It runs inside both runner locks (database, then state). Its fan-out (the server, the remote transport, push) must
+/// never take the database lock or call the runner: queue the event and return.
 pub type Broadcast = Arc<dyn Fn(Event) -> Result<(), String> + Send + Sync>;
 /// `SessionFactory`: makes the CLI session for a bot. An error fails the turn with its message.
 pub type SessionFactory =
