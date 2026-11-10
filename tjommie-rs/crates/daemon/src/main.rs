@@ -49,6 +49,8 @@ fn run(args: &[String]) -> Result<(), StartupError> {
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async {
         let daemon = startup::start(&launch, &auth).await?;
+        // A path, not a secret: logs show which install a daemon used.
+        println!("Tjommie data folder: {}", daemon.root().display());
         // The desktop app and updater.real.test.ts find the port with a regex on exactly this line.
         println!(
             "Tjommie daemon listening on http://127.0.0.1:{}",

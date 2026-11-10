@@ -23,6 +23,8 @@ const WAIT: Duration = Duration::from_secs(20);
 
 pub struct Client {
     ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
+    /// Events that arrived while `call` waited for its response, in order.
+    pub events: Vec<Value>,
 }
 
 pub async fn connect(port: u16) -> Client {
@@ -33,14 +35,24 @@ pub async fn connect(port: u16) -> Client {
 
 pub async fn try_connect(port: u16, headers: &[(&str, &str)]) -> Result<Client, Error> {
     let mut request = format!("ws://127.0.0.1:{port}/").into_client_request()?;
+    let mut named = std::collections::HashSet::new();
     for (name, value) in headers {
-        request.headers_mut().insert(
+        let (name, value) = (
             HeaderName::from_bytes(name.as_bytes()).unwrap(),
             HeaderValue::from_str(value).unwrap(),
         );
+        // The first value replaces the client's own (Host); a repeated name adds a second header line.
+        if named.insert(name.clone()) {
+            request.headers_mut().insert(name, value);
+        } else {
+            request.headers_mut().append(name, value);
+        }
     }
     let (ws, _) = tokio_tungstenite::connect_async(request).await?;
-    Ok(Client { ws })
+    Ok(Client {
+        ws,
+        events: Vec::new(),
+    })
 }
 
 /// The HTTP status of a refused WebSocket upgrade.
@@ -96,11 +108,18 @@ impl Client {
         self.next().await
     }
 
-    /// Sends a request and returns its `res` frame. A successful result is checked against the method's manifest schema.
+    /// Sends a request and returns its `res` frame, keeping events that arrive first in `events`. A successful result
+    /// is checked against the method's manifest schema.
     pub async fn call(&mut self, id: i64, method: &str, params: Value) -> Value {
         self.send(json!({ "type": "req", "id": id, "method": method, "params": params }))
             .await;
-        let response = self.next().await;
+        let response = loop {
+            let frame = self.next().await;
+            if frame["type"] != "event" {
+                break frame;
+            }
+            self.events.push(frame);
+        };
         assert_eq!(response["id"], id, "{response}");
         if response["ok"] == true {
             protocol::assert_valid(method, &response["result"]);
@@ -127,6 +146,44 @@ impl Client {
     pub async fn close(mut self) {
         self.ws.close(None).await.expect("the close frame is sent");
     }
+
+    /// Closes first and returns the server's reply: `Some(None)` for a close frame without a code, `None` when the
+    /// connection just drops.
+    pub async fn close_with(mut self, frame: Option<(u16, &str)>) -> Option<Option<(u16, String)>> {
+        use tokio_tungstenite::tungstenite::protocol::CloseFrame;
+        let frame = frame.map(|(code, reason)| CloseFrame {
+            code: code.into(),
+            reason: reason.to_owned().into(),
+        });
+        self.ws
+            .send(Message::Close(frame))
+            .await
+            .expect("the close frame is sent");
+        loop {
+            match timeout(WAIT, self.ws.next())
+                .await
+                .expect("the reply arrives in time")
+            {
+                Some(Ok(Message::Close(frame))) => {
+                    return Some(
+                        frame.map(|frame| (u16::from(frame.code), frame.reason.to_string())),
+                    );
+                }
+                Some(Ok(_)) => {}
+                Some(Err(_)) | None => return None,
+            }
+        }
+    }
+
+    /// The next frame if one arrives within `wait`.
+    pub async fn try_next(&mut self, wait: Duration) -> Option<Value> {
+        match timeout(wait, self.ws.next()).await {
+            Ok(Some(Ok(Message::Text(text)))) => {
+                Some(serde_json::from_str(&text).expect("frames are JSON"))
+            }
+            _ => None,
+        }
+    }
 }
 
 /// A plain HTTP GET: the status and the body.
@@ -148,9 +205,20 @@ pub async fn http_get(port: u16, path: &str) -> (u16, String) {
     (status, body)
 }
 
-/// Opens a WebSocket by hand and sends one unmasked text frame, which clients must never send. Returns the close code the
-/// server answers with, or `None` if it only drops the connection.
-pub async fn send_unmasked_frame(port: u16) -> Option<u16> {
+/// An unmasked text frame, which clients must never send.
+pub const UNMASKED_FRAME: &[u8] = &[0x81, 0x01, b'x'];
+
+/// A masked text frame whose payload, 0xFF 0xFE, isn't UTF-8.
+pub const INVALID_UTF8_FRAME: &[u8] = &[0x81, 0x82, 1, 2, 3, 4, 0xff ^ 1, 0xfe ^ 2];
+
+/// The header of a masked text frame announcing 16 MiB + 1 bytes, one more than the server takes. The payload isn't
+/// sent: unread payload would make the server's socket close with a reset that can discard its close frame.
+pub const OVERSIZED_FRAME_HEADER: &[u8] =
+    &[0x81, 0xff, 0, 0, 0, 0, 0x01, 0x00, 0x00, 0x01, 1, 2, 3, 4];
+
+/// Opens a WebSocket by hand and sends one raw frame. Returns the close code the server answers with, or `None` if it
+/// only drops the connection.
+pub async fn send_raw_frame(port: u16, raw: &[u8]) -> Option<u16> {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
     let handshake = format!(
         "GET / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n"
@@ -167,7 +235,7 @@ pub async fn send_unmasked_frame(port: u16) -> Option<u16> {
         "{}",
         String::from_utf8_lossy(&head)
     );
-    stream.write_all(&[0x81, 0x01, b'x']).await.unwrap();
+    stream.write_all(raw).await.unwrap();
     let mut frame = [0; 4];
     match timeout(WAIT, stream.read_exact(&mut frame)).await.unwrap() {
         Ok(_) if frame[0] == 0x88 && frame[1] >= 2 => {
@@ -332,4 +400,148 @@ impl Daemon {
 /// A fresh production token: 32 random bytes as 43 base64url characters.
 pub fn token() -> String {
     daemon::paths::new_token()
+}
+
+/// A database file in `dir` with the tables T3.2 uses.
+/// TODO(lane A merge): open it with daemon::db::open instead, and delete schema.sql.
+pub fn test_db(dir: &std::path::Path) -> rusqlite::Connection {
+    let connection = rusqlite::Connection::open(dir.join("t.db")).unwrap();
+    connection
+        .execute_batch("PRAGMA foreign_keys = ON;")
+        .unwrap();
+    connection
+        .execute_batch(include_str!("schema.sql"))
+        .unwrap();
+    connection
+}
+
+/// An account row as accounts-store.ts writes it. The first account of a provider is its default.
+pub fn insert_account(
+    connection: &rusqlite::Connection,
+    id: &str,
+    provider: &str,
+    folder: &std::path::Path,
+) {
+    let created = connection
+        .query_row("SELECT COUNT(*) FROM accounts", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO accounts (id, provider, label, kind, folder, created_at, is_default)
+             VALUES (?1, ?2, ?1, 'subscription', ?3, ?4, NOT EXISTS (SELECT 1 FROM accounts WHERE provider = ?2 AND is_default = 1))",
+            rusqlite::params![id, provider, folder.display().to_string(), format!("2026-01-01T00:00:{created:02}.000Z")],
+        )
+        .unwrap();
+}
+
+/// accounts-store.ts updateAccount(db, id, { isDefault: true }).
+pub fn make_default_account(connection: &rusqlite::Connection, id: &str) {
+    connection
+        .execute_batch(&format!(
+            "UPDATE accounts SET is_default = 0 WHERE provider = (SELECT provider FROM accounts WHERE id = '{id}');
+             UPDATE accounts SET is_default = 1 WHERE id = '{id}';"
+        ))
+        .unwrap();
+}
+
+fn run(program: &str, args: &[&std::ffi::OsStr]) {
+    let status = std::process::Command::from(daemon::spawn::command(program))
+        .args(args)
+        .stdout(Stdio::null())
+        .status()
+        .unwrap();
+    assert!(status.success(), "{program} {args:?} failed");
+}
+
+/// A directory junction, as `symlinkSync(target, link, "junction")` makes it.
+pub fn junction(target: &std::path::Path, link: &std::path::Path) {
+    run(
+        "cmd",
+        &[
+            "/c".as_ref(),
+            "mklink".as_ref(),
+            "/J".as_ref(),
+            link.as_os_str(),
+            target.as_os_str(),
+        ],
+    );
+}
+
+/// Denies this user deleting a file and the children of its folder, so a recursive removal fails partway while the
+/// folders above it can still be renamed. Dropping the guard lifts the denial.
+pub struct DenyDelete {
+    home: PathBuf,
+    relative: PathBuf,
+}
+
+impl DenyDelete {
+    /// Denies deleting `home/relative` and the children of its folder.
+    pub fn new(home: &std::path::Path, relative: &str) -> Self {
+        let file = home.join(relative);
+        let user = std::env::var("USERNAME").unwrap();
+        run(
+            "icacls",
+            &[
+                file.as_os_str(),
+                "/deny".as_ref(),
+                format!("{user}:(D)").as_ref(),
+            ],
+        );
+        run(
+            "icacls",
+            &[
+                file.parent().unwrap().as_os_str(),
+                "/deny".as_ref(),
+                format!("{user}:(DC)").as_ref(),
+            ],
+        );
+        Self {
+            home: home.to_path_buf(),
+            relative: PathBuf::from(relative),
+        }
+    }
+}
+
+/// Lifts the denial wherever the file is now: in the home folder, or in a `<home>.deleting-*` folder it was renamed to.
+/// Best effort and never panicking, so it also runs while a failed test unwinds and leaves nothing undeletable in %TEMP%.
+impl Drop for DenyDelete {
+    fn drop(&mut self) {
+        let user = std::env::var("USERNAME").unwrap_or_default();
+        let name = self
+            .home
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        let parent = self
+            .home
+            .parent()
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_default();
+        let renamed = std::fs::read_dir(&parent)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name().is_some_and(|file| {
+                    file.to_string_lossy()
+                        .starts_with(&format!("{name}.deleting-"))
+                })
+            });
+        for home in std::iter::once(self.home.clone()).chain(renamed) {
+            let file = home.join(&self.relative);
+            if !file.exists() {
+                continue;
+            }
+            for target in [file.parent().unwrap_or(&home), file.as_path()] {
+                let _ = std::process::Command::from(daemon::spawn::command("icacls"))
+                    .args([target.as_os_str(), "/remove:d".as_ref(), user.as_ref()])
+                    .stdout(Stdio::null())
+                    .status();
+            }
+        }
+    }
 }

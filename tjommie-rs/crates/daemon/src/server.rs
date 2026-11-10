@@ -51,6 +51,32 @@ impl fmt::Display for RpcError {
 
 impl std::error::Error for RpcError {}
 
+/// A storage error the caller can't act on, as a thrown error in `server.ts` becomes `internal`.
+impl From<rusqlite::Error> for RpcError {
+    fn from(error: rusqlite::Error) -> Self {
+        RpcError::new(ErrorCode::Internal, error.to_string())
+    }
+}
+
+impl From<std::io::Error> for RpcError {
+    fn from(error: std::io::Error) -> Self {
+        RpcError::new(ErrorCode::Internal, error.to_string())
+    }
+}
+
+/// Sends events to every authenticated client. Handlers keep a clone.
+#[derive(Clone)]
+pub struct Broadcaster(Arc<Shared>);
+
+impl Broadcaster {
+    pub fn send(&self, event: Event) {
+        let text = serde_json::to_string(&ServerMessage::Event(event)).expect("events serialize");
+        for outbox in self.0.clients.lock().unwrap().values() {
+            let _ = outbox.send(Message::Text(text.clone().into()));
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Principal {
     /// A program on this PC that knows the token.
@@ -77,6 +103,9 @@ pub struct Handlers(HashMap<&'static str, Handler>);
 
 impl Handlers {
     /// Answers `M` with `handler`, which gets the decoded params and returns `M`'s result type.
+    ///
+    /// The handler itself runs on tokio's blocking pool, so it may wait on SQLite, files or retry sleeps without
+    /// stalling other requests. Only the future it returns runs on the async workers: keep blocking work out of it.
     pub fn on<M: Method, Fut>(
         mut self,
         handler: impl Fn(M::Params, Option<RequestContext>) -> Fut + Send + Sync + 'static,
@@ -90,7 +119,12 @@ impl Handlers {
             Box::pin(async move {
                 let params = M::take(request)
                     .expect("a request reaches the handler registered under its method's name");
-                let result = handler(params, context).await?;
+                let pending = tokio::task::spawn_blocking(move || handler(params, context))
+                    .await
+                    .map_err(|_| {
+                        RpcError::new(ErrorCode::Internal, "The request failed unexpectedly.")
+                    })?;
+                let result = pending.await?;
                 serde_json::to_value(result)
                     .map_err(|error| RpcError::new(ErrorCode::Internal, error.to_string()))
             })
@@ -173,10 +207,12 @@ impl Server {
 
     /// Sends an event to every authenticated client.
     pub fn broadcast(&self, event: Event) {
-        let text = serde_json::to_string(&ServerMessage::Event(event)).expect("events serialize");
-        for outbox in self.shared.clients.lock().unwrap().values() {
-            let _ = outbox.send(Message::Text(text.clone().into()));
-        }
+        self.broadcaster().send(event);
+    }
+
+    /// For handlers, which are built before [`Server::activate`] and send events later.
+    pub fn broadcaster(&self) -> Broadcaster {
+        Broadcaster(self.shared.clone())
     }
 
     /// Starts answering with this token and these handlers.
@@ -275,11 +311,14 @@ impl Shared {
             || host == Some(&format!("localhost:{}", self.port))
     }
 
-    /// Browsers always send Origin, so a web page can't skip this check. Programs send none.
+    /// Browsers always send Origin, so a web page can't skip this check. Programs send none. Two Origin headers never
+    /// match: Node joins them into one value that is in no allow list.
     fn origin_allowed(&self, headers: &HeaderMap) -> bool {
-        match headers.get(header::ORIGIN) {
-            None => true,
-            Some(origin) => origin
+        let mut origins = headers.get_all(header::ORIGIN).iter();
+        match (origins.next(), origins.next()) {
+            (None, _) => true,
+            (Some(_), Some(_)) => false,
+            (Some(origin), None) => origin
                 .to_str()
                 .is_ok_and(|origin| self.allowed_origins.iter().any(|allowed| allowed == origin)),
         }
@@ -331,6 +370,19 @@ fn send(outbox: &mpsc::UnboundedSender<Message>, message: &ServerMessage) {
     ));
 }
 
+/// 1009 for a message over the size limit, 1007 for text that isn't UTF-8, 1002 for any other protocol violation.
+fn read_error_code(error: axum::Error) -> u16 {
+    match error
+        .into_inner()
+        .downcast::<tungstenite::Error>()
+        .map(|error| *error)
+    {
+        Ok(tungstenite::Error::Capacity(_)) => 1009,
+        Ok(tungstenite::Error::Utf8(_)) => 1007,
+        _ => 1002,
+    }
+}
+
 fn connection_id() -> String {
     let mut bytes = [0u8; 16];
     getrandom::fill(&mut bytes).expect("the operating system's random source works");
@@ -355,8 +407,14 @@ async fn connection(socket: WebSocket, shared: Arc<Shared>) {
                 () = signal.cancelled() => None,
             };
             let Some(message) = message else { break };
-            let closing = matches!(message, Message::Close(_));
-            if sink.send(message).await.is_err() || closing {
+            if matches!(message, Message::Close(_)) {
+                // Sends our close frame. After the client closed first, sending is refused, but closing still
+                // flushes the echo tungstenite queued for it.
+                let _ = sink.send(message).await;
+                let _ = sink.close().await;
+                break;
+            }
+            if sink.send(message).await.is_err() {
                 break;
             }
         }
@@ -383,11 +441,17 @@ async fn connection(socket: WebSocket, shared: Arc<Shared>) {
         let text = match frame {
             Some(Ok(Message::Text(text))) => text.to_string(),
             Some(Ok(Message::Binary(bytes))) => String::from_utf8_lossy(&bytes).into_owned(),
-            Some(Ok(Message::Close(_))) | None => break,
+            // RFC 6455 §5.5.1, as ws does: answer the client's close. tungstenite has queued the echo of its frame
+            // (its code and reason, or none); the writer flushes it when it closes.
+            Some(Ok(Message::Close(frame))) => {
+                let _ = outbox.send(Message::Close(frame));
+                break;
+            }
+            None => break,
             Some(Ok(_)) => continue,
-            // A protocol violation, such as an unmasked frame: fail the connection with 1002 as the Node server does.
-            Some(Err(_)) => {
-                close(1002, "");
+            // A bad frame fails the connection with the code ws uses for it.
+            Some(Err(error)) => {
+                close(read_error_code(error), "");
                 break;
             }
         };
