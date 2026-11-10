@@ -10,6 +10,7 @@ use rusqlite::backup::NO_PROGRESS;
 use rusqlite::config::DbConfig;
 use rusqlite::{Connection, MAIN_DB};
 
+use crate::fsid;
 use crate::paths::data_paths;
 use crate::win::cred::{self, Namespace};
 
@@ -54,23 +55,27 @@ pub fn run(from: &Path, to: &Path, replace: bool) -> io::Result<Secrets> {
 /// move to `to`.
 /// Refuses a target that already has a database unless `replace`, and never writes into the source root.
 pub fn copy_data(from: &Path, to: &Path, replace: bool) -> io::Result<()> {
-    // The guards compare what the paths name: `\\?\`, junction and 8.3 spellings reach the same folders.
-    let (source, target_identity) = (identity(from)?, identity(to)?);
-    if is_within(&target_identity, &source) {
-        return Err(io::Error::other(
-            "Tjommie can't import into the source data root or a folder inside it.",
-        ));
-    }
-    if let Some(local) = std::env::var_os("LOCALAPPDATA")
-        && is_within(
-            &target_identity,
-            &identity(&PathBuf::from(local).join("Tjommie"))?,
-        )
-    {
-        return Err(io::Error::other(
+    // The guards compare file identities (`fsid`), which every spelling of a folder shares: `\\?\`, junctions, 8.3
+    // names and UNC loopback shares. When that can't be told, the import is refused.
+    let refuse = |inside: io::Result<bool>, message: &str| match inside {
+        Ok(false) => Ok(()),
+        Ok(true) => Err(io::Error::other(message.to_owned())),
+        Err(error) => Err(io::Error::other(format!(
+            "{message} Tjommie couldn't tell where {} is: {error}",
+            to.display()
+        ))),
+    };
+    refuse(
+        fsid::is_within(to, from),
+        "Tjommie can't import into the source data root or a folder inside it.",
+    )?;
+    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+        refuse(
+            fsid::is_within(to, &PathBuf::from(local).join("Tjommie")),
             "Tjommie won't import into the production data root. Set TJOMMIE_HOME to a dev root.",
-        ));
+        )?;
     }
+    let source = identity(from)?;
     // The copy is written, and its folders named, the way this install spells its own root.
     let target = plain(&std::path::absolute(to)?);
     let (source, target) = (Path::new(&source), Path::new(&target));
@@ -107,8 +112,8 @@ pub fn copy_data(from: &Path, to: &Path, replace: bool) -> io::Result<()> {
     }
     copy_tree(&source.join("bots"), &staged_bots)?;
     let roots = Roots {
+        from,
         source: &source.to_string_lossy(),
-        spelled: &plain(&std::path::absolute(from)?),
         target: &target.to_string_lossy(),
     };
     detach(&staged_db, &roots).map_err(io::Error::other)?;
@@ -240,10 +245,6 @@ fn inside<'a>(path: &'a str, root: &str) -> Option<&'a str> {
     (rest.is_empty() || rest.starts_with('\\')).then_some(rest)
 }
 
-fn is_within(path: &str, root: &str) -> bool {
-    inside(path, root).is_some()
-}
-
 fn ignore_missing(result: io::Result<()>) -> io::Result<()> {
     match result {
         Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
@@ -317,9 +318,42 @@ fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
 
 /// The source root as it really is (its identity) and as it was given, and the target as this install spells it.
 struct Roots<'a> {
+    from: &'a Path,
     source: &'a str,
-    spelled: &'a str,
     target: &'a str,
+}
+
+/// Where a stored folder goes. It moves under the target if it is spelled under the source root (one of its own
+/// ancestors is that root, by `fsid`; this also moves a junction spelled inside the source, which isn't copied, so
+/// the moved path finds nothing instead of sharing it), or if what it names is in the source (a link elsewhere into
+/// it, placed by its canonical path). A doubt fails the import loudly; `None` leaves the folder as it is.
+fn rebased(path: &str, roots: &Roots) -> io::Result<Option<String>> {
+    let stored = Path::new(path);
+    for ancestor in stored.ancestors() {
+        if located(fsid::same_location(ancestor, roots.from))? {
+            let rest = stored
+                .strip_prefix(ancestor)
+                .expect("an ancestor is a prefix");
+            return Ok(Some(plain(&Path::new(roots.target).join(rest))));
+        }
+    }
+    if !located(fsid::is_within(stored, roots.from))? {
+        return Ok(None);
+    }
+    match inside(&identity(stored)?, roots.source) {
+        Some(rest) => Ok(Some(format!("{}{rest}", roots.target))),
+        None => Err(io::Error::other(format!(
+            "Tjommie can't tell where {path} is in the source data root, so it won't import it."
+        ))),
+    }
+}
+
+/// A path on which nothing exists (its drive is gone) names no place in the source.
+fn located(inside: io::Result<bool>) -> io::Result<bool> {
+    match inside {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        other => other,
+    }
 }
 
 fn detach(db: &Path, roots: &Roots) -> rusqlite::Result<()> {
@@ -340,25 +374,19 @@ fn detach(db: &Path, roots: &Roots) -> rusqlite::Result<()> {
            WHERE status = 'waiting';
          UPDATE routines SET enabled = 0;"
     ))?;
-    // The daemon uses these folders as stored, so copies left pointing into the source would write there. A folder
-    // moves if what it names is in the source (any spelling of the root), or if it is spelled inside the source (a
-    // junction there to somewhere else: links aren't copied, so the moved path finds nothing instead of sharing it).
-    let io = |error: io::Error| rusqlite::Error::ToSqlConversionFailure(error.into());
+    // The daemon uses these folders as stored, so copies left pointing into the source would write there.
     for (table, folder) in [("bots", "home_folder"), ("accounts", "folder")] {
         let rows: Vec<(String, String)> = tx
             .prepare(&format!("SELECT id, {folder} FROM {table}"))?
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
             .collect::<Result<_, _>>()?;
         for (id, path) in rows {
-            let named = identity(Path::new(&path)).map_err(io)?;
-            let spelled = plain(&std::path::absolute(&path).map_err(io)?);
-            let rest = inside(&named, roots.source)
-                .or_else(|| inside(&spelled, roots.source))
-                .or_else(|| inside(&spelled, roots.spelled));
-            if let Some(rest) = rest {
+            let moved = rebased(&path, roots)
+                .map_err(|error| rusqlite::Error::ToSqlConversionFailure(error.into()))?;
+            if let Some(moved) = moved {
                 tx.execute(
                     &format!("UPDATE {table} SET {folder} = ?1 WHERE id = ?2"),
-                    [format!("{}{rest}", roots.target), id],
+                    [moved, id],
                 )?;
             }
         }
