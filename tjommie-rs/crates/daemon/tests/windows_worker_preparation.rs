@@ -136,7 +136,12 @@ impl WorkerNative for Fake {
         } else {
             "TjReview-12345678"
         };
-        let name = self.credential_user.lock().unwrap().clone().unwrap_or_else(|| default.into());
+        let name = self
+            .credential_user
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or_else(|| default.into());
         Box::pin(async move {
             if let Some((entered, release)) = gate {
                 entered.notify_one();
@@ -330,7 +335,10 @@ async fn serializes_paired_status_verification_behind_unreceipted_preparation_th
     assert_eq!(settle(status).await.unwrap(), None);
     assert_eq!(checks.load(Ordering::SeqCst), 2);
     assert!(f.provider.receipts().is_empty());
-    assert!(matches!(settle(child.exit.wait()).await, CliExit::Exited { .. }));
+    assert!(matches!(
+        settle(child.exit.wait()).await,
+        CliExit::Exited { .. }
+    ));
 }
 
 #[tokio::test]
@@ -344,8 +352,14 @@ async fn holds_queued_preparations_out_and_poisons_both_identities_promptly_afte
     let next = f.launch();
     tokio::time::sleep(Duration::from_millis(20)).await;
     f.native.retire(0, false);
-    assert_eq!(settle(first).await.unwrap().err(), Some(BoundaryError::Termination));
-    assert_eq!(settle(next).await.unwrap().err(), Some(BoundaryError::Termination));
+    assert_eq!(
+        settle(first).await.unwrap().err(),
+        Some(BoundaryError::Termination)
+    );
+    assert_eq!(
+        settle(next).await.unwrap().err(),
+        Some(BoundaryError::Termination)
+    );
     assert!(settle(status).await.unwrap().is_some());
     assert_eq!(f.native.count(), 1);
     assert_eq!(
@@ -441,7 +455,10 @@ async fn refuses_a_held_verification_result_after_a_live_job_loses_retirement_pr
         settle(f.launch()).await.unwrap().err(),
         Some(BoundaryError::Termination)
     );
-    assert!(matches!(settle(original.exit.wait()).await, CliExit::Failed(_)));
+    assert!(matches!(
+        settle(original.exit.wait()).await,
+        CliExit::Failed(_)
+    ));
     assert_eq!(f.native.count(), 1);
 }
 
@@ -457,9 +474,15 @@ async fn refuses_a_credential_result_after_poisoning_without_creating_another_na
     let next = f.launch();
     entered.notified().await;
     f.native.retire(0, false);
-    assert!(matches!(settle(original.exit.wait()).await, CliExit::Failed(_)));
+    assert!(matches!(
+        settle(original.exit.wait()).await,
+        CliExit::Failed(_)
+    ));
     release.notify_one();
-    assert_eq!(settle(next).await.unwrap().err(), Some(BoundaryError::Termination));
+    assert_eq!(
+        settle(next).await.unwrap().err(),
+        Some(BoundaryError::Termination)
+    );
     assert_eq!(f.native.count(), 1);
 }
 
@@ -473,10 +496,16 @@ async fn settles_an_already_created_pre_ack_child_after_poisoning_without_sendin
     let next = f.launch();
     until("the second launch", || f.native.count() == 2).await;
     f.native.retire(0, false);
-    assert!(matches!(settle(original.exit.wait()).await, CliExit::Failed(_)));
+    assert!(matches!(
+        settle(original.exit.wait()).await,
+        CliExit::Failed(_)
+    ));
     f.native.ack(1);
     f.native.retire(1, true);
-    assert_eq!(settle(next).await.unwrap().err(), Some(BoundaryError::Termination));
+    assert_eq!(
+        settle(next).await.unwrap().err(),
+        Some(BoundaryError::Termination)
+    );
     assert_eq!(f.native.request(1).continues.load(Ordering::SeqCst), 0);
 }
 
@@ -484,7 +513,9 @@ async fn settles_an_already_created_pre_ack_child_after_poisoning_without_sendin
 async fn refused(f: &Fixture, file: &str, env: &[(String, String)]) {
     let args = ["--synthetic".to_string()];
     let launch = f.provider.spawn(file, &args, &f.work, env);
-    let result = tokio::time::timeout(Duration::from_secs(10), launch).await.expect("the launch went ahead instead of being refused");
+    let result = tokio::time::timeout(Duration::from_secs(10), launch)
+        .await
+        .expect("the launch went ahead instead of being refused");
     assert_eq!(result.err(), Some(BoundaryError::Unavailable));
     assert_eq!(f.native.count(), 0);
 }
@@ -504,7 +535,12 @@ async fn refuses_provider_homes_outside_the_worker_root_without_starting_anythin
     let elsewhere = f.work.with_file_name("elsewhere");
     fs::create_dir(&elsewhere).unwrap();
     for key in ["CODEX_HOME", "CLAUDE_CONFIG_DIR"] {
-        refused(&f, &f.file, &[(key.into(), elsewhere.to_string_lossy().into_owned())]).await;
+        refused(
+            &f,
+            &f.file,
+            &[(key.into(), elsewhere.to_string_lossy().into_owned())],
+        )
+        .await;
     }
 }
 
