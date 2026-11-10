@@ -967,8 +967,11 @@ mod common;
 
 type Ended = Arc<Mutex<Vec<String>>>;
 
+/// The `resumeId` each session started with, in order.
+type Starts = Arc<Mutex<Vec<Option<String>>>>;
+
 /// A runner on a fresh database with the default accounts and a Codex bot, handing out `sessions` in order. Returns
-/// the runner, its database, the bot id, the items whose turn ended, how many sessions were made and the root.
+/// the runner, its database, the bot id, the items whose turn ended, the sessions' starts and the root.
 fn codex_runner(
     sessions: Vec<CodexSession>,
     autonomy: Option<&str>,
@@ -977,7 +980,7 @@ fn codex_runner(
     daemon::context::Db,
     String,
     Ended,
-    Arc<AtomicUsize>,
+    Starts,
     common::TempRoot,
 ) {
     let root = common::TempRoot::new();
@@ -999,11 +1002,12 @@ fn codex_runner(
     .unwrap();
     let db = Arc::new(Mutex::new(db));
     let ended: Ended = Arc::default();
-    let made = Arc::new(AtomicUsize::new(0));
-    let (record, count) = (Arc::clone(&ended), Arc::clone(&made));
-    let factory: daemon::runner::SessionFactory = Arc::new(move |_bot, _options| {
-        let index = count.fetch_add(1, Ordering::SeqCst);
-        Ok(Arc::new(sessions[index].clone()) as Arc<dyn ProviderSession>)
+    let starts: Starts = Arc::default();
+    let (record, started) = (Arc::clone(&ended), Arc::clone(&starts));
+    let factory: daemon::runner::SessionFactory = Arc::new(move |_bot, options: StartOptions| {
+        let mut started = started.lock().unwrap();
+        started.push(options.resume_id);
+        Ok(Arc::new(sessions[started.len() - 1].clone()) as Arc<dyn ProviderSession>)
     });
     let hooks = daemon::runner::RunnerHooks {
         turn_ended: Some(Arc::new(move |_core, item, _result| {
@@ -1014,7 +1018,7 @@ fn codex_runner(
     };
     let base = daemon::runner::RunnerDeps::new(Arc::clone(&db), Arc::new(|_| Ok(())), factory);
     let runner = daemon::runner::Runner::new(daemon::runner::RunnerDeps { hooks, ..base });
-    (runner, db, bot.id, ended, made, root)
+    (runner, db, bot.id, ended, starts, root)
 }
 
 async fn wait_for(check: impl Fn() -> bool) {
@@ -1057,7 +1061,7 @@ async fn ignores_an_approved_commands_late_events_after_stop() {
             })
         });
         let sessions = vec![h.codex.clone(), replacement.codex.clone()];
-        let (runner, db, bot_id, ended, made, _root) = codex_runner(sessions, Some("ask"));
+        let (runner, db, bot_id, ended, starts, _root) = codex_runner(sessions, Some("ask"));
         let notify = |method: &str, mut params: Value| {
             params["threadId"] = json!("thread-1");
             h.notify(method, params);
@@ -1091,14 +1095,12 @@ async fn ignores_an_approved_commands_late_events_after_stop() {
         runner
             .answer_approval(&pending().unwrap(), protocol::model::ApprovalDecision::Once)
             .unwrap();
-        if already_queued {
-            let work = daemon::queue::NewWork::new(
-                &bot_id,
-                daemon::queue::WorkSource::Routine,
-                "Reply ROUTINE-OK",
-            );
-            runner.deliver(work).unwrap();
-        }
+        let work = daemon::queue::NewWork::new(
+            &bot_id,
+            daemon::queue::WorkSource::Routine,
+            "Reply ROUTINE-OK",
+        );
+        let followup = already_queued.then(|| runner.deliver(work.clone()).unwrap());
         let stopping = tokio::spawn(runner.stop(&bot_id));
         wait_for(|| !h.requests("turn/interrupt").is_empty()).await;
         let interrupt = h.requests("turn/interrupt")[0]["id"].clone();
@@ -1125,18 +1127,80 @@ async fn ignores_an_approved_commands_late_events_after_stop() {
         wait_for(|| h.kill.calls() > 0).await;
         settle().await;
         assert_eq!(*ended.lock().unwrap(), Vec::<String>::new());
-        assert_eq!(made.load(Ordering::SeqCst), 1);
-        let bot = daemon::bots::get_stored_bot(&db.lock().unwrap(), &bot_id).unwrap();
-        assert_eq!(runner.to_bot(bot).state, protocol::model::BotState::Working);
+        assert_eq!(starts.lock().unwrap().len(), 1);
+        let state = || {
+            let bot = daemon::bots::get_stored_bot(&db.lock().unwrap(), &bot_id).unwrap();
+            runner.to_bot(bot).state
+        };
+        assert_eq!(state(), protocol::model::BotState::Working);
         terminated.send(()).unwrap();
         stopping.await.unwrap().unwrap();
+        settle().await;
+        if !already_queued {
+            assert_eq!(state(), protocol::model::BotState::Idle);
+        }
+        let bot_messages =
+            || daemon::chat::history(&db.lock().unwrap(), &bot_id, None, 50).unwrap();
+        let streaming = protocol::model::MessageStatus::Streaming;
+        assert!(!bot_messages().iter().any(|entry| entry.status == streaming));
+        assert_eq!(work_status(&db, &message.id), "interrupted");
+        let followup = followup.unwrap_or_else(|| runner.deliver(work).unwrap());
+        let followup_status = || {
+            daemon::queue::get_work_item(&db.lock().unwrap(), &followup.id)
+                .unwrap()
+                .status
+        };
+        assert_eq!(followup_status(), daemon::queue::WorkStatus::Running);
+        wait_for(|| !replacement.requests("turn/start").is_empty()).await;
+        assert_eq!(*starts.lock().unwrap(), [None, Some("thread-1".to_owned())]);
+        let next_start = replacement.requests("turn/start")[0]["id"].clone();
+        replacement.line(json!({ "id": next_start, "result": { "turn": { "id": "next" } } }));
+        replacement.notify(
+            "turn/started",
+            json!({ "turn": { "id": "next", "status": "inProgress" } }),
+        );
+        replacement.notify(
+            "item/agentMessage/delta",
+            json!({ "turnId": "next", "itemId": "answer", "delta": "ROUTINE-OK" }),
+        );
+        // A delayed duplicate completion or text from Stop cannot finish or pollute the next turn.
+        notify(
+            "turn/completed",
+            json!({ "turn": { "id": "stopped", "status": "interrupted", "error": null } }),
+        );
+        notify(
+            "item/agentMessage/delta",
+            json!({ "turnId": "stopped", "itemId": "old-answer", "delta": "STALE" }),
+        );
+        settle().await;
+        assert_eq!(followup_status(), daemon::queue::WorkStatus::Running);
+        replacement.notify(
+            "item/completed",
+            json!({ "turnId": "next", "item": { "id": "answer", "type": "agentMessage" } }),
+        );
+        replacement.notify(
+            "turn/completed",
+            json!({ "turn": { "id": "next", "status": "completed", "error": null } }),
+        );
+        settle().await;
+        assert_eq!(followup_status(), daemon::queue::WorkStatus::Done);
+        assert_eq!(state(), protocol::model::BotState::Idle);
+        let texts: Vec<String> = bot_messages()
+            .into_iter()
+            .filter(|entry| {
+                entry.kind == protocol::model::MessageKind::Text && entry.author == bot_id
+            })
+            .map(|entry| entry.body)
+            .collect();
+        assert_eq!(texts, ["ROUTINE-OK"]);
+        assert_eq!(ended.lock().unwrap().len(), 2);
     }
 }
 
 #[tokio::test]
 async fn sends_one_provider_interrupt_when_the_runner_stops_during_turn_start() {
     let h = build(true, None, |_| {}, "test-model", None);
-    let (runner, db, bot_id, _ended, _made, _root) = codex_runner(vec![h.codex.clone()], None);
+    let (runner, db, bot_id, _ended, _starts, _root) = codex_runner(vec![h.codex.clone()], None);
     let message = runner.submit(&bot_id, "begin", &[]).unwrap();
     wait_for(|| !h.requests("turn/start").is_empty()).await;
     let stopped = tokio::spawn(runner.stop(&bot_id));
