@@ -74,6 +74,8 @@ struct Host {
     servers: Mutex<VecDeque<StartServer>>,
     server_starts: Mutex<Vec<(CliCommand, Env, String)>>,
     kills: Arc<Mutex<Vec<u32>>>,
+    /// Kills that finished verifying the tree after the root exited.
+    contained: Arc<AtomicUsize>,
     fail_kill_once: Arc<Mutex<bool>>,
 }
 
@@ -147,14 +149,16 @@ impl CliHost for Host {
                 }
             });
             let kill_tree: KillTree = {
-                let (exit, fail, kills) = (
+                let (exit, fail, kills, contained) = (
                     exit.clone(),
                     Arc::clone(&self.fail_kill_once),
                     Arc::clone(&self.kills),
+                    Arc::clone(&self.contained),
                 );
                 Arc::new(move || {
                     kills.lock().unwrap().push(12345);
-                    let (exit, fail) = (exit.clone(), Arc::clone(&fail));
+                    let (exit, fail, contained) =
+                        (exit.clone(), Arc::clone(&fail), Arc::clone(&contained));
                     Box::pin(async move {
                         if std::mem::take(&mut *fail.lock().unwrap()) {
                             return Err("Containment failed".to_string());
@@ -163,6 +167,9 @@ impl CliHost for Host {
                             code: Some(1),
                             signal: None,
                         });
+                        // Like taskkill's check, the descendants are verified after the root has gone.
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        contained.fetch_add(1, Ordering::SeqCst);
                         Ok(())
                     })
                 })
@@ -1314,6 +1321,26 @@ async fn ends_claude_sign_in_at_the_deadline() {
     let calls = calls.lock().unwrap();
     assert_eq!(calls.len(), 1);
     assert!(!calls[0].0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn lets_the_deadline_finish_containing_a_hidden_claude_login_that_exits_mid_kill() {
+    let f = Fixture::new();
+    f.ensure();
+    use_claude_status(&f.host, Some("old@example.com"));
+    let (calls, on_done) = done();
+    f.setup
+        .sign_in(&f.db, Provider::Claude, on_done)
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_secs(10 * 60 + 1)).await;
+    providers_settle().await;
+    assert_eq!(calls.lock().unwrap().len(), 1);
+    assert_eq!(
+        f.host.contained.load(Ordering::SeqCst),
+        1,
+        "the deadline's containment was cut short"
+    );
 }
 
 #[tokio::test]

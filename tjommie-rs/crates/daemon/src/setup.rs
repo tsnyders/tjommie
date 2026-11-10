@@ -998,7 +998,12 @@ impl Setup {
                     .upgrade()
                     .and_then(|attempt| attempt.cancel.lock().expect("cancel lock").clone());
                 if let Some(cancel) = cancel {
-                    let _ = cancel().await; // A failed containment keeps the attempt for an explicit retry.
+                    // Its own task: the attempt's cleanup aborts this timer once the login exits, which can be partway
+                    // through the kill. A failed containment keeps the attempt for an explicit retry.
+                    let cancelling = cancel();
+                    tokio::spawn(async move {
+                        let _ = cancelling.await;
+                    });
                 }
             }
         });
