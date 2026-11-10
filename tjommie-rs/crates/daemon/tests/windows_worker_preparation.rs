@@ -288,6 +288,13 @@ async fn until(what: &str, ready: impl Fn() -> bool) {
     .unwrap_or_else(|_| panic!("timed out waiting for {what}"));
 }
 
+/// Awaits something the test expects to settle: a hang (say, a lost poison) fails in 10 s instead of stalling the run.
+async fn settle<F: std::future::Future>(future: F) -> F::Output {
+    tokio::time::timeout(Duration::from_secs(10), future)
+        .await
+        .expect("timed out waiting for a result that should have settled")
+}
+
 #[tokio::test]
 async fn serializes_paired_status_verification_behind_unreceipted_preparation_then_retries_only_a_confirmed_retired_job()
  {
@@ -319,11 +326,11 @@ async fn serializes_paired_status_verification_behind_unreceipted_preparation_th
         })
     }));
     f.native.ack(0);
-    let child = first.await.unwrap().unwrap();
-    assert_eq!(status.await.unwrap(), None);
+    let child = settle(first).await.unwrap().unwrap();
+    assert_eq!(settle(status).await.unwrap(), None);
     assert_eq!(checks.load(Ordering::SeqCst), 2);
     assert!(f.provider.receipts().is_empty());
-    assert!(matches!(child.exit.wait().await, CliExit::Exited { .. }));
+    assert!(matches!(settle(child.exit.wait()).await, CliExit::Exited { .. }));
 }
 
 #[tokio::test]
@@ -337,12 +344,12 @@ async fn holds_queued_preparations_out_and_poisons_both_identities_promptly_afte
     let next = f.launch();
     tokio::time::sleep(Duration::from_millis(20)).await;
     f.native.retire(0, false);
-    assert_eq!(first.await.unwrap().err(), Some(BoundaryError::Termination));
-    assert_eq!(next.await.unwrap().err(), Some(BoundaryError::Termination));
-    assert!(status.await.unwrap().is_some());
+    assert_eq!(settle(first).await.unwrap().err(), Some(BoundaryError::Termination));
+    assert_eq!(settle(next).await.unwrap().err(), Some(BoundaryError::Termination));
+    assert!(settle(status).await.unwrap().is_some());
     assert_eq!(f.native.count(), 1);
     assert_eq!(
-        f.launch().await.unwrap().err(),
+        settle(f.launch()).await.unwrap().err(),
         Some(BoundaryError::Termination)
     );
 }
@@ -353,21 +360,21 @@ async fn retries_a_pre_ack_launch_only_after_its_stopped_proof_and_a_peers_confi
     let first = f.launch();
     until("the first launch", || f.native.count() == 1).await;
     f.native.ack(0);
-    let original = first.await.unwrap().unwrap();
+    let original = settle(first).await.unwrap().unwrap();
     let next = f.launch();
     until("the second launch", || f.native.count() == 2).await;
     assert_eq!(f.native.request(1).continues.load(Ordering::SeqCst), 0);
     f.native.retire(0, true);
-    original.exit.wait().await;
+    settle(original.exit.wait()).await;
     f.native.retire(1, true);
     until("the retried launch", || f.native.count() == 3).await;
     f.native.ack(2);
-    let continued = next.await.unwrap().unwrap();
+    let continued = settle(next).await.unwrap().unwrap();
     assert_eq!(f.native.request(1).continues.load(Ordering::SeqCst), 0);
     assert_eq!(f.native.request(2).continues.load(Ordering::SeqCst), 1);
     f.native.retire(2, true);
     assert!(matches!(
-        continued.exit.wait().await,
+        settle(continued.exit.wait()).await,
         CliExit::Exited { .. }
     ));
 }
@@ -411,7 +418,7 @@ async fn rejects_every_queued_waiter_on_poisoning_without_waiting_for_a_blocked_
         Err(BoundaryError::Termination)
     );
     finish.notify_one();
-    assert_eq!(running.await.unwrap(), Ok(()));
+    assert_eq!(settle(running).await.unwrap(), Ok(()));
 }
 
 #[tokio::test]
@@ -420,7 +427,7 @@ async fn refuses_a_held_verification_result_after_a_live_job_loses_retirement_pr
     let first = f.launch();
     until("the first launch", || f.native.count() == 1).await;
     f.native.ack(0);
-    let original = first.await.unwrap().unwrap();
+    let original = settle(first).await.unwrap().unwrap();
     let (native, exit) = (f.native.clone(), original.exit.clone());
     *f.native.verify.lock().unwrap() = Some(Arc::new(move |_| {
         native.retire(0, false);
@@ -431,10 +438,10 @@ async fn refuses_a_held_verification_result_after_a_live_job_loses_retirement_pr
         })
     }));
     assert_eq!(
-        f.launch().await.unwrap().err(),
+        settle(f.launch()).await.unwrap().err(),
         Some(BoundaryError::Termination)
     );
-    assert!(matches!(original.exit.wait().await, CliExit::Failed(_)));
+    assert!(matches!(settle(original.exit.wait()).await, CliExit::Failed(_)));
     assert_eq!(f.native.count(), 1);
 }
 
@@ -444,15 +451,15 @@ async fn refuses_a_credential_result_after_poisoning_without_creating_another_na
     let first = f.launch();
     until("the first launch", || f.native.count() == 1).await;
     f.native.ack(0);
-    let original = first.await.unwrap().unwrap();
+    let original = settle(first).await.unwrap().unwrap();
     let (entered, release) = (Arc::new(Notify::new()), Arc::new(Notify::new()));
     *f.native.credential_gate.lock().unwrap() = Some((entered.clone(), release.clone()));
     let next = f.launch();
     entered.notified().await;
     f.native.retire(0, false);
-    assert!(matches!(original.exit.wait().await, CliExit::Failed(_)));
+    assert!(matches!(settle(original.exit.wait()).await, CliExit::Failed(_)));
     release.notify_one();
-    assert_eq!(next.await.unwrap().err(), Some(BoundaryError::Termination));
+    assert_eq!(settle(next).await.unwrap().err(), Some(BoundaryError::Termination));
     assert_eq!(f.native.count(), 1);
 }
 
@@ -462,14 +469,14 @@ async fn settles_an_already_created_pre_ack_child_after_poisoning_without_sendin
     let first = f.launch();
     until("the first launch", || f.native.count() == 1).await;
     f.native.ack(0);
-    let original = first.await.unwrap().unwrap();
+    let original = settle(first).await.unwrap().unwrap();
     let next = f.launch();
     until("the second launch", || f.native.count() == 2).await;
     f.native.retire(0, false);
-    assert!(matches!(original.exit.wait().await, CliExit::Failed(_)));
+    assert!(matches!(settle(original.exit.wait()).await, CliExit::Failed(_)));
     f.native.ack(1);
     f.native.retire(1, true);
-    assert_eq!(next.await.unwrap().err(), Some(BoundaryError::Termination));
+    assert_eq!(settle(next).await.unwrap().err(), Some(BoundaryError::Termination));
     assert_eq!(f.native.request(1).continues.load(Ordering::SeqCst), 0);
 }
 
