@@ -278,3 +278,62 @@ fn admin_worker_launch_runs_inside_a_global_job_and_dies_with_it() {
         std::panic::resume_unwind(panic);
     }
 }
+
+/// Admin, CI-runner only: a launch frame larger than the pipe buffer reaches a real suspended worker, because the
+/// write runs while the worker is resumed (review MAJOR: written first, it would never return).
+#[tokio::test]
+async fn admin_a_frame_over_8_kib_reaches_a_real_worker() {
+    if std::env::var("TJOMMIE_RS_ADMIN_TESTS").as_deref() != Ok("1") {
+        eprintln!("skipped: set TJOMMIE_RS_ADMIN_TESTS=1 on a disposable machine");
+        return;
+    }
+    let root = std::env::temp_dir().join(format!("tjommie-rs-frame-test-{}", uuid::Uuid::new_v4()));
+    assert!(
+        !cred::is_production_root(&root),
+        "refusing the production root"
+    );
+    let ns = Namespace::new(&root).unwrap();
+    let name = format!("TjWorker-{}", &ns.short()[..8]);
+    assert!(
+        logon::account_sid(&name).unwrap().is_none(),
+        "{name} already exists"
+    );
+    let password = logon::new_password().unwrap();
+    let sid = logon::create_account(&name, &password, "Tjommie rs admin test worker").unwrap();
+    let outcome = async {
+        let owner = logon::current_user_sid().unwrap();
+        let system = std::env::var("SystemRoot").unwrap();
+        let cmd = format!(r"{system}\System32\cmd.exe");
+        let line = format!(r#""{cmd}" /c more >NUL"#);
+        let env = logon::environment_block(&[("SystemRoot".into(), system.clone())]);
+        let mut worker = NativeWorker::start(
+            &name,
+            &password,
+            &cmd,
+            &line,
+            Path::new(&system),
+            &env,
+            &owner,
+            &sid,
+        )
+        .unwrap();
+        let stdin = worker.stdin().unwrap();
+        let worker = std::sync::Arc::new(worker);
+        let resumed = worker.clone();
+        let written = tokio::time::timeout(
+            Duration::from_secs(30),
+            daemon::win::boundary::write_then_resume(stdin, vec![b'x'; 9000], move || {
+                resumed.resume()
+            }),
+        )
+        .await;
+        let stdin = written.expect("the frame write deadlocked").unwrap();
+        drop(stdin); // EOF: `more` exits
+        assert_eq!(worker.wait().unwrap(), 0);
+    };
+    let result = futures_util::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(outcome)).await;
+    logon::delete_account(&name).unwrap();
+    if let Err(panic) = result {
+        std::panic::resume_unwind(panic);
+    }
+}

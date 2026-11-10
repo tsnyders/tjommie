@@ -1003,21 +1003,14 @@ impl NativeLaunch for WindowsLaunch {
                 stderr,
                 ..
             } = *self;
-            let (Some(mut stdin), Some(stdout), Some(stderr)) = (stdin, stdout, stderr) else {
+            let (Some(stdin), Some(stdout), Some(stderr)) = (stdin, stdout, stderr) else {
                 return Err(LaunchFailure {
                     message: FAILURE.into(),
                     stopped: process.retire(),
                 });
             };
             let started = process.clone();
-            let resumed = blocking(move || {
-                let written = stdin.write_all(&frame).map_err(|e| e.to_string());
-                written
-                    .and_then(|()| started.worker.resume())
-                    .map(|()| stdin)
-            })
-            .await
-            .unwrap_or_else(|| Err(FAILURE.into()));
+            let resumed = write_then_resume(stdin, frame, move || started.worker.resume()).await;
             let stdin = match resumed {
                 Ok(stdin) => stdin,
                 Err(message) => {
@@ -1057,5 +1050,66 @@ impl NativeLaunch for WindowsLaunch {
             .await
             .unwrap_or(false)
         })
+    }
+}
+
+/// Writes the private launch frame to the suspended worker's stdin while resuming it, as the TypeScript helper did
+/// (`windows-worker.ps1:349-350`). A frame (up to 262,144 bytes) can be larger than the pipe buffer (4,096 bytes
+/// here), and only the running worker drains it, so the write must not have to finish before the resume. If the
+/// resume fails, the write is left to end when the caller kills the worker, which breaks the pipe.
+pub async fn write_then_resume<W: Write + Send + 'static>(
+    stdin: W,
+    frame: Vec<u8>,
+    resume: impl FnOnce() -> Result<(), String> + Send + 'static,
+) -> Result<W, String> {
+    let writing = tokio::task::spawn_blocking(move || {
+        let mut stdin = stdin;
+        stdin
+            .write_all(&frame)
+            .map(|()| stdin)
+            .map_err(|e| e.to_string())
+    });
+    blocking(resume)
+        .await
+        .unwrap_or_else(|| Err(FAILURE.into()))?;
+    writing.await.map_err(|_| FAILURE.to_string())?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Read;
+
+    /// Review MAJOR: the pipe buffer is 4,096 bytes here and a launch frame may be 262,144, so the frame only drains
+    /// once the worker runs. The reader below starts only when "resume" is called.
+    #[tokio::test]
+    async fn a_frame_larger_than_the_pipe_buffer_is_written_while_the_worker_starts() {
+        let (reader, writer) = std::io::pipe().unwrap();
+        let reader = Arc::new(Mutex::new(Some(reader)));
+        let drain = |reader: &Arc<Mutex<Option<std::io::PipeReader>>>| {
+            if let Some(mut reader) = reader.lock().unwrap().take() {
+                std::thread::spawn(move || {
+                    let mut seen = Vec::new();
+                    reader.read_to_end(&mut seen).map(|_| seen.len())
+                });
+            }
+        };
+        let started = reader.clone();
+        let resume = move || {
+            drain(&started);
+            Ok(())
+        };
+        let written = tokio::time::timeout(
+            Duration::from_secs(10),
+            write_then_resume(writer, vec![7u8; 9000], resume),
+        )
+        .await;
+        // Unblock a stuck writer before failing, so the runtime can shut down.
+        drain(&reader);
+        assert!(
+            written
+                .expect("the frame write waited for a worker that was never resumed")
+                .is_ok()
+        );
     }
 }
