@@ -453,6 +453,74 @@ fn pauses_routines_and_fails_live_work() {
     );
 }
 
+/// A failed reply turn fails its exchange too (`team.ts:399-400`), or the asking bot would wait forever.
+#[test]
+fn fails_waiting_exchanges_with_the_turns_that_would_answer_them() {
+    let source = source();
+    Connection::open(source.path().join("data").join("tjommie.db"))
+        .unwrap()
+        .execute_batch(
+            "INSERT INTO exchanges (id, from_bot_id, to_bot_id, request, status, chain_id, reply_to, created_at)
+               VALUES ('question', 'legacy-bot', 'legacy-bot', 'What next?', 'waiting', 'chain', 'legacy-bot', 'now');
+             INSERT INTO work_items (id, bot_id, source, text, status, created_at, conversation_id, exchange_id)
+               VALUES ('answer', 'legacy-bot', 'bot_request', 'What next?', 'queued', 'now', 'legacy-bot', 'question');",
+        )
+        .unwrap();
+    let target = temp("tjommie target ñ-");
+
+    import::copy_data(source.path(), target.path(), false).unwrap();
+
+    let db = target.path().join("data").join("tjommie.db");
+    assert_eq!(
+        count(
+            &db,
+            "SELECT COUNT(*) FROM work_items WHERE id = 'answer' AND status = 'failed'"
+        ),
+        1
+    );
+    let exchange: (String, String) = Connection::open(&db)
+        .unwrap()
+        .query_row(
+            "SELECT status, reply FROM exchanges WHERE id = 'question'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        exchange,
+        ("failed".into(), "Imported while waiting.".into())
+    );
+    assert_eq!(
+        count(
+            &db,
+            "SELECT COUNT(*) FROM exchanges WHERE status = 'waiting'"
+        ),
+        0
+    );
+}
+
+/// A dev daemon holding the target database stops the swap; the error names the file and what to close.
+#[cfg(windows)]
+#[test]
+fn names_the_target_database_when_it_is_in_use() {
+    let source = source();
+    let target = temp("tjommie target ñ-");
+    import::copy_data(source.path(), target.path(), false).unwrap();
+    let db = target.path().join("data").join("tjommie.db");
+    let dev = Connection::open(&db).unwrap();
+    assert_eq!(count(&db, "SELECT COUNT(*) FROM messages"), 4);
+    dev.query_row("SELECT COUNT(*) FROM bots", [], |row| row.get::<_, i64>(0))
+        .unwrap();
+
+    let error = import::copy_data(source.path(), target.path(), true).unwrap_err();
+    drop(dev);
+
+    let message = error.to_string();
+    assert!(message.contains(text(&db)), "{message}");
+    assert!(message.contains("Close"), "{message}");
+    assert_eq!(count(&db, "SELECT COUNT(*) FROM messages"), 4);
+}
+
 #[test]
 fn copies_no_credentials_json() {
     let source = source();

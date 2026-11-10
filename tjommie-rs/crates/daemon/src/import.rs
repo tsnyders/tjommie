@@ -114,13 +114,37 @@ pub fn copy_data(from: &Path, to: &Path, replace: bool) -> io::Result<()> {
     detach(&staged_db, &roots).map_err(io::Error::other)?;
 
     // The swap. A database's old -wal must go with it, or SQLite would replay it into the new one.
-    remove_files(&[&paths.db, &logins])?;
-    fs::rename(&staged_db, &paths.db)?;
-    if source_logins.is_file() {
-        fs::rename(&staged_logins, &logins)?;
-    }
-    ignore_missing(fs::remove_dir_all(&paths.bots))?;
-    fs::rename(&staged_bots, &paths.bots)
+    let swapped = (|| {
+        remove_files(&[&paths.db, &logins])?;
+        put_in_place(&staged_db, &paths.db)?;
+        if source_logins.is_file() {
+            put_in_place(&staged_logins, &logins)?;
+        }
+        ignore_missing(fs::remove_dir_all(&paths.bots))
+            .map_err(|error| naming(&paths.bots, error))?;
+        put_in_place(&staged_bots, &paths.bots)
+    })();
+    swapped.map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!(
+                "{error} Close the Tjommie daemon that uses {} and import again.",
+                target.display()
+            ),
+        )
+    })
+}
+
+/// An error that says which file it was about.
+fn naming(path: &Path, error: io::Error) -> io::Error {
+    io::Error::new(
+        error.kind(),
+        format!("Couldn't replace {}: {error}.", path.display()),
+    )
+}
+
+fn put_in_place(staged: &Path, path: &Path) -> io::Result<()> {
+    fs::rename(staged, path).map_err(|error| naming(path, error))
 }
 
 /// Re-writes the source's `account/` and `login/` secrets under this root's namespace. The `remote-host` and
@@ -233,7 +257,8 @@ fn remove_files(databases: &[&Path]) -> io::Result<()> {
         for suffix in ["", "-wal", "-shm", "-journal"] {
             let mut file = database.as_os_str().to_owned();
             file.push(suffix);
-            ignore_missing(fs::remove_file(file))?;
+            ignore_missing(fs::remove_file(&file))
+                .map_err(|error| naming(Path::new(&file), error))?;
         }
     }
     Ok(())
@@ -242,7 +267,8 @@ fn remove_files(databases: &[&Path]) -> io::Result<()> {
 /// A read-write connection that never writes. A read-only one would leave behind the `-wal` and `-shm` it creates;
 /// this one removes them when it closes. A `-wal` that was already there (the install is running, or crashed) must
 /// not be checkpointed into its database on close, so it is left as found; then the `-shm` that SQLite built to read
-/// it stays too, and goes if it wasn't there before. SQLite may still refresh an `-shm` that was.
+/// it stays too, and goes if it wasn't there before. SQLite may still refresh an `-shm` that was. An orphan `-shm`
+/// with no `-wal` beside it (left by a crash) is deleted by SQLite's own cleanup when this last connection closes.
 fn back_up(source: &Path, target: &Path) -> io::Result<()> {
     let sidecar = |suffix: &str| {
         let mut name = source.as_os_str().to_owned();
@@ -305,12 +331,13 @@ fn detach(db: &Path, roots: &Roots) -> rusqlite::Result<()> {
         tx.execute(&format!("DELETE FROM {table}"), [])?;
     }
     // Live work would run in both installs (paid turns, duplicate messages), and live task work would act on attempts
-    // that are gone. It ends as failed, the way the daemon ends work itself, and routines are paused. Finished rows
-    // keep their history; sessions keyed by a task's context are never matched again.
+    // that are gone. It ends as failed, the way the daemon ends work itself, and routines are paused. A waiting
+    // exchange fails with the turn that would answer it (`team.ts:399-400`), or its asker would wait forever.
+    // Finished rows keep their history; sessions keyed by a task's context are never matched again.
     tx.execute_batch(&format!(
         "UPDATE work_items SET status = 'failed', ended_at = {NOW} WHERE status IN ('queued', 'running');
-         UPDATE exchanges SET status = 'failed', reply = 'Project teams were not imported.', replied_at = {NOW}
-           WHERE task_attempt_id IS NOT NULL AND status = 'waiting';
+         UPDATE exchanges SET status = 'failed', reply = 'Imported while waiting.', replied_at = {NOW}
+           WHERE status = 'waiting';
          UPDATE routines SET enabled = 0;"
     ))?;
     // The daemon uses these folders as stored, so copies left pointing into the source would write there. A folder
