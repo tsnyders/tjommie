@@ -103,6 +103,9 @@ pub struct Handlers(HashMap<&'static str, Handler>);
 
 impl Handlers {
     /// Answers `M` with `handler`, which gets the decoded params and returns `M`'s result type.
+    ///
+    /// The handler itself runs on tokio's blocking pool, so it may wait on SQLite, files or retry sleeps without
+    /// stalling other requests. Only the future it returns runs on the async workers: keep blocking work out of it.
     pub fn on<M: Method, Fut>(
         mut self,
         handler: impl Fn(M::Params, Option<RequestContext>) -> Fut + Send + Sync + 'static,
@@ -116,7 +119,12 @@ impl Handlers {
             Box::pin(async move {
                 let params = M::take(request)
                     .expect("a request reaches the handler registered under its method's name");
-                let result = handler(params, context).await?;
+                let pending = tokio::task::spawn_blocking(move || handler(params, context))
+                    .await
+                    .map_err(|_| {
+                        RpcError::new(ErrorCode::Internal, "The request failed unexpectedly.")
+                    })?;
+                let result = pending.await?;
                 serde_json::to_value(result)
                     .map_err(|error| RpcError::new(ErrorCode::Internal, error.to_string()))
             })

@@ -469,40 +469,79 @@ pub fn junction(target: &std::path::Path, link: &std::path::Path) {
     );
 }
 
-/// Denies this user deleting `file` and the children of its folder, so a recursive removal fails partway while the
-/// folders above it can still be renamed. Undo it with `allow_delete`.
-pub fn deny_delete(file: &std::path::Path) {
-    let user = std::env::var("USERNAME").unwrap();
-    run(
-        "icacls",
-        &[
-            file.as_os_str(),
-            "/deny".as_ref(),
-            format!("{user}:(D)").as_ref(),
-        ],
-    );
-    run(
-        "icacls",
-        &[
-            file.parent().unwrap().as_os_str(),
-            "/deny".as_ref(),
-            format!("{user}:(DC)").as_ref(),
-        ],
-    );
+/// Denies this user deleting a file and the children of its folder, so a recursive removal fails partway while the
+/// folders above it can still be renamed. Dropping the guard lifts the denial.
+pub struct DenyDelete {
+    home: PathBuf,
+    relative: PathBuf,
 }
 
-pub fn allow_delete(file: &std::path::Path) {
-    let user = std::env::var("USERNAME").unwrap();
-    run(
-        "icacls",
-        &[
-            file.parent().unwrap().as_os_str(),
-            "/remove:d".as_ref(),
-            user.as_ref(),
-        ],
-    );
-    run(
-        "icacls",
-        &[file.as_os_str(), "/remove:d".as_ref(), user.as_ref()],
-    );
+impl DenyDelete {
+    /// Denies deleting `home/relative` and the children of its folder.
+    pub fn new(home: &std::path::Path, relative: &str) -> Self {
+        let file = home.join(relative);
+        let user = std::env::var("USERNAME").unwrap();
+        run(
+            "icacls",
+            &[
+                file.as_os_str(),
+                "/deny".as_ref(),
+                format!("{user}:(D)").as_ref(),
+            ],
+        );
+        run(
+            "icacls",
+            &[
+                file.parent().unwrap().as_os_str(),
+                "/deny".as_ref(),
+                format!("{user}:(DC)").as_ref(),
+            ],
+        );
+        Self {
+            home: home.to_path_buf(),
+            relative: PathBuf::from(relative),
+        }
+    }
+}
+
+/// Lifts the denial wherever the file is now: in the home folder, or in a `<home>.deleting-*` folder it was renamed to.
+/// Best effort and never panicking, so it also runs while a failed test unwinds and leaves nothing undeletable in %TEMP%.
+impl Drop for DenyDelete {
+    fn drop(&mut self) {
+        let user = std::env::var("USERNAME").unwrap_or_default();
+        let name = self
+            .home
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        let parent = self
+            .home
+            .parent()
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_default();
+        let renamed = std::fs::read_dir(&parent)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name().is_some_and(|file| {
+                    file.to_string_lossy()
+                        .starts_with(&format!("{name}.deleting-"))
+                })
+            });
+        for home in std::iter::once(self.home.clone()).chain(renamed) {
+            let file = home.join(&self.relative);
+            if !file.exists() {
+                continue;
+            }
+            for target in [file.parent().unwrap_or(&home), file.as_path()] {
+                let _ = std::process::Command::from(daemon::spawn::command("icacls"))
+                    .args([target.as_os_str(), "/remove:d".as_ref(), user.as_ref()])
+                    .stdout(Stdio::null())
+                    .status();
+            }
+        }
+    }
 }

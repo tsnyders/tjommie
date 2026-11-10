@@ -414,3 +414,27 @@ async fn sends_no_events_to_a_socket_that_has_not_said_hello() {
     assert_eq!(stranger.try_next(Duration::from_secs(1)).await, None);
     server.close().await;
 }
+
+#[tokio::test]
+async fn a_slow_handler_does_not_hold_up_a_fast_one() {
+    // A handler may wait on SQLite, files or retries. That work runs on the blocking pool, so even on this one-thread
+    // runtime the fast request is answered first.
+    let handlers = Handlers::default()
+        .on::<method::BotsList, _>(|_, _| {
+            std::thread::sleep(Duration::from_secs(2));
+            async { Ok(Vec::<Bot>::new()) }
+        })
+        .on::<method::RemotePing, _>(|_, _| async { Ok(Empty {}) });
+    let server = Server::start(options("t", handlers)).await.unwrap();
+    let mut client = connect(server.port()).await;
+    client.hello("t").await;
+    client
+        .send(json!({ "type": "req", "id": 1, "method": "bots.list", "params": {} }))
+        .await;
+    client
+        .send(json!({ "type": "req", "id": 2, "method": "remote.ping", "params": {} }))
+        .await;
+    assert_eq!(client.next().await["id"], 2);
+    assert_eq!(client.next().await["id"], 1);
+    server.close().await;
+}

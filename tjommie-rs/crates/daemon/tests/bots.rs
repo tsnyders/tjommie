@@ -7,9 +7,7 @@ mod common;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use common::{
-    TempRoot, allow_delete, deny_delete, insert_account, junction, make_default_account, test_db,
-};
+use common::{DenyDelete, TempRoot, insert_account, junction, make_default_account, test_db};
 use daemon::bots::{
     StoredBot, bot_prompt, create_bot, delete_bot, get_stored_bot, list_stored_bots, set_paused,
     sweep_deleted_bot_folders, update_bot,
@@ -538,15 +536,17 @@ fn deleting_leftovers(bots_dir: &Path, id: &str) -> Vec<PathBuf> {
 fn does_not_restore_a_partially_removed_folder_after_successful_database_deletion() {
     let f = fixture();
     let bot = create_bot(&f.db, &f.bots_dir, &input(json!({}))).unwrap();
-    let locked = Path::new(&bot.home_folder).join("inbox").join("locked.txt");
-    fs::write(&locked, "locked child").unwrap();
-    deny_delete(&locked);
+    fs::write(
+        Path::new(&bot.home_folder).join("inbox").join("locked.txt"),
+        "locked child",
+    )
+    .unwrap();
+    let denied = DenyDelete::new(Path::new(&bot.home_folder), "inbox/locked.txt");
     delete_bot(&f.db, &bot.id).unwrap();
     assert!(!Path::new(&bot.home_folder).exists());
     assert_eq!(list_stored_bots(&f.db).unwrap(), []);
-    let leftovers = deleting_leftovers(&f.bots_dir, &bot.id);
-    assert_eq!(leftovers.len(), 1);
-    allow_delete(&leftovers[0].join("inbox").join("locked.txt"));
+    assert_eq!(deleting_leftovers(&f.bots_dir, &bot.id).len(), 1);
+    drop(denied);
     sweep_deleted_bot_folders(&f.db, &f.bots_dir);
     assert_eq!(fs::read_dir(&f.bots_dir).unwrap().count(), 0);
 }
