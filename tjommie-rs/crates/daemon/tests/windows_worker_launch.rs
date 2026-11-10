@@ -268,6 +268,12 @@ fn admin_worker_launch_runs_inside_a_global_job_and_dies_with_it() {
     });
     logon::delete_account(&name).unwrap();
     assert!(logon::account_sid(&name).unwrap().is_none());
+    // Review MINOR 4: the LOGON_WITH_PROFILE profile goes with the account.
+    let drive = std::env::var("SystemDrive").unwrap();
+    assert!(
+        !Path::new(&format!(r"{drive}\Users\{name}")).exists(),
+        "profile left behind"
+    );
     if let Err(panic) = result {
         std::panic::resume_unwind(panic);
     }

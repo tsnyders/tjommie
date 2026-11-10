@@ -579,16 +579,23 @@ impl WorkerBoundary {
             .await
             .map_err(|_| unavailable())?;
         self.assert_preparation()?;
-        let password = saved
-            .and_then(|saved| serde_json::from_str::<serde_json::Value>(&saved).ok())
-            .filter(|value| value["username"] == config.worker_name.as_str())
-            .and_then(|value| {
-                value["password"]
-                    .as_str()
-                    .filter(|p| !p.is_empty())
-                    .map(str::to_owned)
-            })
-            .ok_or_else(unavailable)?;
+        #[derive(serde::Deserialize)]
+        struct Saved {
+            username: String,
+            password: String,
+        }
+        // Parsed into owned strings, so every copy of the password can be wiped.
+        let mut saved = saved.ok_or_else(unavailable)?;
+        let parsed = serde_json::from_str::<Saved>(&saved);
+        logon::wipe(&mut saved);
+        let Saved {
+            username,
+            mut password,
+        } = parsed.map_err(|_| unavailable())?;
+        if username != config.worker_name || password.is_empty() {
+            logon::wipe(&mut password);
+            return Err(unavailable());
+        }
         let preparation = self.preparation();
         let launch_generation = preparation.retirements();
         self.assert_preparation()?;

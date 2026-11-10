@@ -1,6 +1,7 @@
 //! Native worker identity calls, ported from `windows-worker.ps1` (C# P/Invoke), `windows-worker.ts` (the directory
-//! grant) and `scripts/vault/provision-worker.ps1`. Creating accounts, adding group members and creating `Global\`
-//! objects need an elevated owner; the tests that do so run only with `TJOMMIE_RS_ADMIN_TESTS=1`.
+//! grant) and `scripts/vault/provision-worker.ps1`. Creating accounts and adding group members need an elevated
+//! owner; `Global\` job and mutex objects don't (probed). The tests that make accounts run only with
+//! `TJOMMIE_RS_ADMIN_TESTS=1`.
 
 use crate::win::cred::{self, Namespace};
 use crate::win::worker::{
@@ -83,6 +84,12 @@ const CHANGE_PERMISSIONS: u32 = 0x0004_0000;
 const TAKE_OWNERSHIP: u32 = 0x0008_0000;
 /// Privileges an ordinary user token holds: shutdown, change notify, undock, working set, time zone.
 const ORDINARY_PRIVILEGES: [u32; 5] = [19, 23, 25, 33, 34];
+
+/// Overwrites a secret's bytes before it is dropped.
+pub(crate) fn wipe(secret: &mut str) {
+    // SAFETY: zeros keep the string valid UTF-8.
+    unsafe { secret.as_bytes_mut().fill(0) };
+}
 
 fn text(error: impl std::fmt::Display) -> String {
     error.to_string()
@@ -586,7 +593,11 @@ impl NativeWorker {
                     0x1ff,
                     Some(&secured),
                 );
-                SetProcessWindowStation(previous).map_err(text)?;
+                // The daemon creates no windows, but its own station must come back: try twice, then fail the
+                // launch rather than carry on from the worker's station.
+                SetProcessWindowStation(previous)
+                    .or_else(|_| SetProcessWindowStation(previous))
+                    .map_err(text)?;
                 worker.desktop = desktop.map_err(text)?;
             }
         }
@@ -787,11 +798,12 @@ pub(crate) fn random_uuid() -> Result<String, String> {
 /// A worker password like `provision-worker.ps1` makes: `Aa1!` and 48 random bytes in base64.
 pub fn new_password() -> Result<String, String> {
     let mut bytes = random_bytes(48)?;
-    let password = format!(
-        "Aa1!{}",
-        base64::engine::general_purpose::STANDARD.encode(&bytes)
-    );
+    let mut encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
     bytes.fill(0);
+    let mut password = String::with_capacity(4 + encoded.len());
+    password.push_str("Aa1!");
+    password.push_str(&encoded);
+    wipe(&mut encoded);
     Ok(password)
 }
 
@@ -903,8 +915,19 @@ pub fn create_account(name: &str, password: &str, comment: &str) -> Result<Strin
     Ok(sid)
 }
 
-/// Removes local account `name`. A missing account is not an error. Needs an elevated owner.
+#[link(name = "userenv")]
+unsafe extern "system" {
+    fn DeleteProfileW(sid: PCWSTR, profile_path: PCWSTR, computer: PCWSTR) -> BOOL;
+}
+
+/// Removes local account `name` and the profile a `LOGON_WITH_PROFILE` launch made for it (`C:\Users\<name>` and its
+/// `ProfileList` entry), by SID, first. A missing account or profile is not an error. Needs an elevated owner.
 pub fn delete_account(name: &str) -> Result<(), String> {
+    if let Some(sid) = account_sid(name)? {
+        let sid = HSTRING::from(sid);
+        // SAFETY: plain call; a missing profile just fails, which is fine.
+        let _ = unsafe { DeleteProfileW(PCWSTR(sid.as_ptr()), PCWSTR::null(), PCWSTR::null()) };
+    }
     // SAFETY: plain call.
     match unsafe { NetUserDel(PCWSTR::null(), &HSTRING::from(name)) } {
         0 => Ok(()),
@@ -1471,8 +1494,13 @@ pub fn provision(owner_data_root: &Path) -> Result<String, String> {
                 created.push(name.clone());
             }
             let sid = made.and_then(|sid| {
-                let mut secret =
-                    serde_json::json!({ "username": name, "password": password }).to_string();
+                // Built by hand: a serde_json::Value would keep an unwiped copy of the password.
+                let mut quoted = serde_json::to_string(&password).map_err(text)?;
+                let mut secret = format!(
+                    "{{\"username\":{},\"password\":{quoted}}}",
+                    serde_json::to_string(name).map_err(text)?
+                );
+                wipe(&mut quoted);
                 let saved = cred::write_as(target, &secret, WORKER_CREDENTIAL_USER).map_err(text);
                 // SAFETY: overwriting with zeros keeps the string valid UTF-8.
                 unsafe { secret.as_bytes_mut().fill(0) };
