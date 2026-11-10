@@ -8,6 +8,7 @@ pub mod context;
 pub mod db;
 pub mod devices_store;
 pub mod diagnostics;
+pub mod fsid;
 pub mod google;
 pub mod host_poll;
 pub mod ids;
