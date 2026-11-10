@@ -1,5 +1,4 @@
-//! `main.test.ts`, run against `tjommie-daemon.exe`. Cases that need later tasks say so where they are left out:
-//! `bots.list` answers from T3.2, the account folders from T3.4, and the database start-up error from M1.
+//! `main.test.ts`, run against `tjommie-daemon.exe`. The account folders arrive with T3.4.
 //! "stops cleanly when production stdin errors" is in `startup.rs`: Rust can't inject a stdin error into the exe.
 
 mod common;
@@ -46,6 +45,12 @@ async fn piped_production_token(stale: bool) {
     }
     let mut client = connect(port).await;
     assert_eq!(client.hello(&token).await["type"], "welcome");
+    let bots = client.call(1, "bots.list", json!({})).await;
+    assert_eq!(
+        (&bots["ok"], &bots["result"]),
+        (&json!(true), &json!([])),
+        "{bots}"
+    );
     let mut stranger = connect(port).await;
     stranger
         .send(json!({ "type": "hello", "protocol": 2, "token": common::token() }))
@@ -132,6 +137,30 @@ async fn exits_plainly_for_a_missing_production_token() {
 async fn exits_plainly_when_no_production_token_arrives_in_time() {
     let daemon = launch(&["--token-stdin"], TempRoot::new(), &[]);
     exits_plainly(daemon, "No daemon token arrived on stdin within 5 seconds.").await;
+}
+
+/// TypeScript checks for a stack trace; the Rust exe prints the error's details instead.
+#[tokio::test]
+async fn prints_an_unexpected_startup_error_with_its_details_and_without_the_token() {
+    let root = TempRoot::new();
+    std::fs::create_dir(root.0.join("tjommie.db")).unwrap();
+    let token = token();
+    let mut daemon = launch(&["--token-stdin"], root, &[]);
+    daemon
+        .write(&format!(
+            "{token}
+"
+        ))
+        .await;
+    daemon.close_stdin();
+    assert_eq!(daemon.exited().await.code(), Some(1));
+    let stderr = daemon.stderr();
+    assert!(
+        stderr.contains("Legacy database path is not a regular file"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains(&token));
+    assert_eq!(daemon.stdout(), "");
 }
 
 #[tokio::test]

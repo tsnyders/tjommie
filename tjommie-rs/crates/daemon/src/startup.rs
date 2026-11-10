@@ -5,12 +5,13 @@ use std::fmt;
 use std::fs;
 use std::io::{self, BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
+use std::sync::{Arc, Mutex, mpsc};
 
 use serde::Deserialize;
 
-use crate::paths;
+use crate::context::{self, Context, StoredState};
 use crate::server::{Handlers, Server, ServerOptions};
+use crate::{bots, db, diagnostics, paths};
 
 /// The phone's LAN port, now set by `TJOMMIE_LAN_PORT` (`remote-host.ts:24` fixes it at 47101). A debug build uses the
 /// spec §4 dev port.
@@ -258,35 +259,53 @@ pub async fn start(launch: &Launch, auth: &Auth) -> Result<Daemon, StartupError>
             _ => StartupError::Unexpected(error),
         })?;
     let root = paths::data_root();
-    let token = match settle_token(auth, &root) {
-        Ok(token) => token,
+    let (token, context) = match open_data(launch, auth, &root, &server) {
+        Ok(opened) => opened,
         Err(error) => {
             server.close().await;
             return Err(error);
         }
     };
     server
-        .activate(token, Handlers::default())
+        .activate(token, context::handlers(&context))
         .map_err(|error| plain(error.message))?;
     Ok(Daemon { server, root })
 }
 
-/// Production removes a development token file left behind, so no stale token can open the daemon. Development reads
-/// or creates it.
-fn settle_token(auth: &Auth, root: &Path) -> Result<String, StartupError> {
-    let file = root.join(paths::TOKEN_FILE);
-    match auth {
-        Auth::Production { token, .. } => {
-            if remove_leftover_token(&file)? {
-                println!("Removed a leftover development daemon-token file.");
-            }
-            Ok(token.clone())
-        }
-        Auth::Development => {
-            fs::create_dir_all(root)?;
-            Ok(paths::read_or_create_token(&file)?)
-        }
+/// `initializeDaemon` up to `activate`, as far as the port has come. T3.4 adds the accounts and M4 the team and
+/// scheduler; the runner replaces [`StoredState`] once T3.4 gives it a CLI session factory.
+fn open_data(
+    launch: &Launch,
+    auth: &Auth,
+    root: &Path,
+    server: &Server,
+) -> Result<(String, Context), StartupError> {
+    let mut paths = paths::data_paths(root)?;
+    if let Some(accounts) = &launch.accounts_dir {
+        paths.accounts = accounts.clone();
     }
+    // Never open SQLite before the legacy database has moved: a split WAL and database must not be used.
+    paths::migrate_legacy_db(&paths)?;
+    // Production removes a development token file left behind, so no stale token can open the daemon.
+    if matches!(auth, Auth::Production { .. }) && remove_leftover_token(&paths.token)? {
+        println!("Removed a leftover development daemon-token file.");
+    }
+    let db = db::open(&paths.db)?;
+    let token = match auth {
+        Auth::Production { token, .. } => token.clone(),
+        Auth::Development => paths::read_or_create_token(&paths.token)?,
+    };
+    bots::sweep_deleted_bot_folders(&db, &paths.bots);
+    let exe = std::env::current_exe()?;
+    let context = Context {
+        db: Arc::new(Mutex::new(db)),
+        bots_dir: paths.bots,
+        events: server.broadcaster(),
+        bot_view: Arc::new(StoredState),
+        // Beside the exe, as `build-info.json` sat beside the Node daemon's bundle.
+        app_version: exe.parent().and_then(diagnostics::read_app_version),
+    };
+    Ok((token, context))
 }
 
 /// Removes a development token file. True if there was one. Retries a file that is briefly locked, as
