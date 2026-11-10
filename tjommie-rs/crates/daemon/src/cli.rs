@@ -702,10 +702,11 @@ impl SystemCli {
             .find(|(key, _)| key.eq_ignore_ascii_case("PATH"))
             .map(|(_, value)| value.as_str())
             .unwrap_or("");
+        // Relative entries (`.`) would make the lookup depend on the daemon's working directory.
         let dirs: Vec<&Path> = path
             .split(';')
-            .filter(|dir| !dir.is_empty())
             .map(Path::new)
+            .filter(|dir| dir.is_absolute())
             .collect();
         let exe = if runtime.platform == "win32" {
             format!("{cli}.exe")

@@ -231,6 +231,35 @@ fn prefers_a_native_executable_on_path() {
 }
 
 #[test]
+fn ignores_relative_path_entries_so_the_lookup_never_depends_on_the_working_directory() {
+    let bin = dir();
+    std::fs::write(bin.path().join("codex.exe"), "").unwrap();
+    // The same folder, spelled relative to this process's current directory (same drive).
+    let cwd = std::env::current_dir().unwrap();
+    let normal = |path: &Path| {
+        path.components()
+            .filter(|part| matches!(part, std::path::Component::Normal(_)))
+            .count()
+    };
+    let mut relative = PathBuf::new();
+    (0..normal(&cwd)).for_each(|_| relative.push(".."));
+    relative.extend(
+        bin.path()
+            .components()
+            .filter(|part| matches!(part, std::path::Component::Normal(_))),
+    );
+    assert!(relative.is_relative() && relative.join("codex.exe").exists());
+    assert_eq!(
+        SystemCli::new().resolve_cli(
+            Provider::Codex,
+            &env(&[("PATH", &format!(".;{}", text(&relative)))]),
+            win("x64")
+        ),
+        None
+    );
+}
+
+#[test]
 fn runs_an_npm_installed_clis_js_entry_with_node_path_key_in_any_case() {
     let bin = dir();
     let entry = bin
