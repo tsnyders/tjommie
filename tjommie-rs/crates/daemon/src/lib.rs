@@ -15,6 +15,7 @@ pub mod import;
 pub mod models;
 pub mod native_browser_broker;
 pub mod native_browser_handlers;
+pub mod native_browser_mcp;
 pub mod paths;
 pub mod peer_wire;
 pub mod providers;

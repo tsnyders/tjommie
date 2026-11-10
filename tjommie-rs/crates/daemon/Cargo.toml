@@ -13,6 +13,7 @@ ed25519-dalek = "2.2"
 futures-util = "0.3.34"
 getrandom = "0.4.3"
 jiff = "0.2.41"
+jsonschema = { version = "0.61.0", default-features = false }
 protocol = { version = "0.4.2", path = "../protocol" }
 regex = "1.13.1"
 rusqlite = { version = "0.41.1", features = ["bundled", "backup"] }
