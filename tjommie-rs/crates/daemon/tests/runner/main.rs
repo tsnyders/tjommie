@@ -10,6 +10,7 @@ mod deletion;
 mod delivery;
 mod hooks;
 mod launch;
+mod methods;
 mod queueing;
 mod settlement;
 mod upgrade;

@@ -27,7 +27,7 @@ use protocol::model::{
     ApprovalStatus, Bot, BotState, ErrorData, Message, MessageData, MessageKind, MessageStatus,
     Provider, SETUP_SIGN_IN_PREFIX, ToolApprovalData, UserMessageData, message_data,
 };
-use protocol::wire::{MessageDelta, Notify};
+use protocol::wire::{Empty, MessageDelta, Notify, method};
 use protocol::{ErrorCode, Event};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
@@ -48,7 +48,7 @@ use crate::chat::{
     MessagePatch, NewMessage, add_message, build_recap, get_message, history, update_message,
 };
 use crate::cli::{BoxFuture as CliFuture, CliChild, CliCommand, CliHost, LaunchOptions};
-use crate::context::{BotView, Db};
+use crate::context::{BotView, Context, Db};
 use crate::ids::{new_id, now_iso};
 use crate::providers::claude::ClaudeSession;
 use crate::providers::codex::CodexSession;
@@ -61,7 +61,7 @@ use crate::queue::{
     NewWork, WorkItem, WorkSource, WorkStatus, enqueue, get_work_item, last_item_for_message,
     new_chain, next_queued, next_steerable, recover_after_restart, set_status,
 };
-use crate::server::RpcError;
+use crate::server::{Handlers, RpcError};
 
 const IDLE_SHUTDOWN: Duration = Duration::from_secs(10 * 60);
 const RECAP_MESSAGES: u32 = 20;
@@ -3243,6 +3243,67 @@ impl Core<'_> {
         });
         self.lv(live).idle_timer = Some((serial, timer));
     }
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The chat and approval methods (`daemon.ts`).
+
+/// `chat.*` and `approvals.respond`. Runner calls happen outside the database lock the context hands out.
+pub fn register(handlers: Handlers, context: &Context, runner: &Runner) -> Handlers {
+    let (history, send, stop, retry, respond) = (
+        context.clone(),
+        runner.clone(),
+        runner.clone(),
+        runner.clone(),
+        runner.clone(),
+    );
+    let approvals = context.clone();
+    handlers
+        .on::<method::ChatHistory, _>(move |params, _| {
+            let page = history.with_db(|db| {
+                get_stored_bot(db, &params.bot_id)?;
+                crate::chat::history_page(
+                    db,
+                    &params.bot_id,
+                    params.before.as_deref(),
+                    params.limit,
+                )
+            });
+            async move { page }
+        })
+        .on::<method::ChatSend, _>(move |params, _| {
+            let message = send.submit(&params.bot_id, &params.text, &params.files);
+            async move { message }
+        })
+        .on::<method::ChatStop, _>(move |params, _| {
+            let stopping = stop.stop(&params.bot_id);
+            async move {
+                stopping
+                    .await
+                    .map_err(|error| RpcError::new(ErrorCode::Internal, error.message()))?;
+                Ok(Empty {})
+            }
+        })
+        .on::<method::ChatRetry, _>(move |params, _| {
+            let message = retry.retry(&params.message_id, params.bot_id.as_deref());
+            async move { message }
+        })
+        .on::<method::ApprovalsRespond, _>(move |params, _| {
+            let answered = approvals
+                .with_db(|db| crate::approvals::get_approval(db, &params.approval_id))
+                .and_then(|approval| match approval.kind {
+                    // M4: `team.answerRoutineProposal` adds the routine on Allow.
+                    ApprovalKind::Routine => Err(RpcError::new(
+                        ErrorCode::Unavailable,
+                        "Routine proposals can't be answered yet.",
+                    )),
+                    ApprovalKind::Tool => {
+                        respond.answer_approval(&params.approval_id, params.decision)
+                    }
+                })
+                .inspect(|approval| respond.pump(&approval.bot_id));
+            async move { answered }
+        })
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
