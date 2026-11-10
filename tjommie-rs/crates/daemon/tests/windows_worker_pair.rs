@@ -109,6 +109,11 @@ fn configurations_are_strict() {
         ("workerName", json!("TjWorker-1234567")),
         ("provisionedAt", json!("yesterday")),
         ("credentialTarget", json!("Tjommie/x/isolated-worker")),
+        // Review MINOR 3: byte 24 falls inside "é"; this must be refused, not panic.
+        (
+            "credentialTarget",
+            json!(format!("Tjommie/{}é/isolated-worker", "a".repeat(23))),
+        ),
         ("workerRoot", json!("")),
     ] {
         let mut bad = good.clone();

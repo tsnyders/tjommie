@@ -192,10 +192,13 @@ fn worker_name_shape(name: &str) -> bool {
 
 /// `^Tjommie\/[a-f0-9]{24}\/isolated-(?:worker|review)$`
 fn credential_target_shape(target: &str) -> bool {
+    // `get` rather than slicing: byte 24 may fall inside a character of an untrusted file.
     target.strip_prefix("Tjommie/").is_some_and(|rest| {
-        rest.len() > 24
-            && lower_hex(&rest[..24], 24)
-            && matches!(&rest[24..], "/isolated-worker" | "/isolated-review")
+        rest.get(..24).is_some_and(|hex| lower_hex(hex, 24))
+            && matches!(
+                rest.get(24..),
+                Some("/isolated-worker" | "/isolated-review")
+            )
     })
 }
 
