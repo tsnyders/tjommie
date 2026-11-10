@@ -280,3 +280,35 @@ fn events_and_responses_serialize_as_server_frames() {
         json!({ "type": "res", "id": 2, "ok": false, "error": { "code": "not_found", "message": "No bot" } })
     );
 }
+
+#[test]
+fn api_keys_never_show_in_debug_output() {
+    use protocol::accounts::{AccountInput, AccountPatch, AccountsUpdate, ApiKey};
+    use protocol::model::Provider;
+    let key = "synthetic-secret-key-123";
+    let input = AccountInput::ApiKey {
+        provider: Provider::Claude,
+        label: "API".into(),
+        api_key: ApiKey::new(key).unwrap(),
+        spending_cap_usd: 5.0,
+        is_fallback: None,
+    };
+    let patch = AccountPatch {
+        api_key: Some(ApiKey::new(key).unwrap()),
+        ..AccountPatch::default()
+    };
+    let update = AccountsUpdate {
+        id: "account".into(),
+        patch: patch.clone(),
+    };
+    for shown in [
+        format!("{input:?}"),
+        format!("{patch:?}"),
+        format!("{update:?}"),
+    ] {
+        assert!(!shown.contains(key), "{shown}");
+        assert!(shown.contains("ApiKey([redacted])"), "{shown}");
+    }
+    // The key itself still reaches the wire.
+    assert!(serde_json::to_string(&input).unwrap().contains(key));
+}
