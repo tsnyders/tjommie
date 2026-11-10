@@ -32,3 +32,4 @@ pub mod startup;
 pub mod vault_handlers;
 pub mod vault_host_broker;
 pub mod win;
+pub mod worker_boundary_host;
