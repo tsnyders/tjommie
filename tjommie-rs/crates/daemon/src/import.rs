@@ -16,6 +16,10 @@ use crate::win::cred::{self, Namespace};
 /// The Claude CLI's sign-in is never copied: refresh-token rotation would sign one of the two installs out.
 const CLAUDE_SIGN_IN: &str = ".credentials.json";
 
+/// A bot's browser profile (`browser-manager.ts:14`) holds its signed-in web sessions, so it stays behind too. It is
+/// also locked while that browser runs.
+const BROWSER_PROFILE: &str = "chrome-profile";
+
 /// The project-team schema (migration 11), children first: its foreign keys have no `ON DELETE CASCADE`.
 const PROJECT_TEAM_TABLES: [&str; 9] = [
     "task_evaluations",
@@ -260,7 +264,8 @@ fn back_up(source: &Path, target: &Path) -> io::Result<()> {
     copied.map_err(io::Error::other)
 }
 
-/// Folders and regular files, without the Claude sign-in. Links are skipped: they could reach outside the root.
+/// Folders and regular files, without the Claude sign-in or browser profiles. Links are skipped: they could reach
+/// outside the root.
 fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
     fs::create_dir_all(to)?;
     if !from.is_dir() {
@@ -270,10 +275,15 @@ fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
         let entry = entry?;
         let kind = entry.file_type()?;
         let (source, target) = (entry.path(), to.join(entry.file_name()));
-        if kind.is_dir() {
+        if kind.is_dir() && entry.file_name() != BROWSER_PROFILE {
             copy_tree(&source, &target)?;
         } else if kind.is_file() && entry.file_name() != CLAUDE_SIGN_IN {
-            fs::copy(&source, &target)?;
+            fs::copy(&source, &target).map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!("Couldn't copy {}: {error}", source.display()),
+                )
+            })?;
         }
     }
     Ok(())

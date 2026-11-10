@@ -347,6 +347,59 @@ fn says_that_project_teams_were_not_imported() {
     assert!(imported.status.success(), "{err}");
     assert!(out.contains("Project teams weren't imported"), "{out}");
     assert!(out.contains("0 account keys and 0 logins"), "{out}");
+    assert!(out.contains("browser starts signed out"), "{out}");
+}
+
+/// A bot's browser profile holds signed-in web sessions (and is locked while that browser runs), so it stays behind.
+#[cfg(windows)]
+#[test]
+fn leaves_browser_profiles_behind() {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    let source = source();
+    let profile = source
+        .path()
+        .join("bots")
+        .join("legacy-bot")
+        .join("chrome-profile");
+    fs::create_dir_all(profile.join("Default")).unwrap();
+    fs::write(profile.join("Default").join("Cookies"), "session").unwrap();
+    let in_use = fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(profile.join("Default").join("Cookies"))
+        .unwrap();
+    let target = temp("tjommie target ñ-");
+
+    import::copy_data(source.path(), target.path(), false).unwrap();
+    drop(in_use);
+
+    let bot = target.path().join("bots").join("legacy-bot");
+    assert!(bot.join("notes.md").is_file());
+    assert!(!bot.join("chrome-profile").exists());
+}
+
+/// A file that can't be copied is named in the error.
+#[cfg(windows)]
+#[test]
+fn names_a_file_it_cannot_copy() {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    let source = source();
+    let notes = source
+        .path()
+        .join("bots")
+        .join("legacy-bot")
+        .join("notes.md");
+    let locked = fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(&notes)
+        .unwrap();
+    let target = temp("tjommie target ñ-");
+    let error = import::copy_data(source.path(), target.path(), false).unwrap_err();
+    drop(locked);
+    assert!(error.to_string().contains(text(&notes)), "{error}");
 }
 
 #[test]

@@ -93,6 +93,7 @@ fn import(args: &[String]) -> Result<(), StartupError> {
     println!(
         "Project teams weren't imported: their tasks and worktrees stay with {from}, and queued task work was marked failed."
     );
+    println!("Bots' browser profiles weren't copied, so this install's browser starts signed out.");
     Ok(())
 }
 
