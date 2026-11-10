@@ -7,21 +7,7 @@ use crate::bots::get_stored_bot;
 use crate::queue::{WorkItem, WorkSource, get_work_item};
 use crate::server::RpcError;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TurnOutcome {
-    Done,
-    Failed,
-    Interrupted,
-}
-
-/// How a turn ended (`TurnResult` in `runner.ts`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TurnResult {
-    pub outcome: TurnOutcome,
-    pub text: Option<String>,
-    pub error: Option<String>,
-    pub text_message_id: Option<String>,
-}
+pub use crate::runner::{TurnOutcome, TurnResult};
 
 pub fn turn_notice(
     db: &Connection,

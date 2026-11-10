@@ -13,6 +13,7 @@ pub mod models;
 pub mod paths;
 pub mod providers;
 pub mod queue;
+pub mod runner;
 pub mod server;
 pub mod settings;
 pub mod spawn;
