@@ -178,6 +178,59 @@ pub trait CliHost: Send + Sync {
     ) -> BoxFuture<'_, io::Result<()>> {
         Box::pin(async { Ok(()) })
     }
+
+    // The rest of `cli.ts` that setup uses. The defaults run nothing: a fake that doesn't override one sees "not
+    // installed", never a real process.
+
+    /// `resolveCli(name)` on this host.
+    fn find_cli(&self, _name: Provider) -> Option<CliCommand> {
+        None
+    }
+
+    /// `runCli`.
+    fn run_cli<'a>(
+        &'a self,
+        _cmd: &'a CliCommand,
+        _args: &'a [String],
+        _env: &'a Env,
+        _timeout: Duration,
+    ) -> BoxFuture<'a, io::Result<CliOutput>> {
+        Box::pin(async {
+            Ok(CliOutput {
+                code: None,
+                stdout: String::new(),
+                stderr: "This host runs no CLI.".into(),
+            })
+        })
+    }
+
+    /// `openUrl`.
+    fn open_url(&self, _url: &str) -> Result<(), String> {
+        Err("This host opens no browser.".into())
+    }
+
+    /// `providerAccountFolder`.
+    fn provider_account_folder(&self, folder: &str) -> String {
+        folder.to_string()
+    }
+
+    /// `workerAccountsRoot`.
+    fn worker_accounts_root(&self) -> Option<PathBuf> {
+        None
+    }
+
+    /// `cliEnv(extra, base)`, mapping account folders into the worker.
+    fn cli_env_from(&self, extra: &Env, base: &Env) -> Env {
+        cli_env(extra, base)
+    }
+}
+
+/// What a short command run printed (`runCli`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CliOutput {
+    pub code: Option<i32>,
+    pub stdout: String,
+    pub stderr: String,
 }
 
 /// `WorkerLaunchTerminationError`: a worker launch whose process tree may still run. It is never an ordinary failure:
@@ -439,14 +492,6 @@ fn npm_codex(entry: &Path, runtime: Runtime) -> Option<CliCommand> {
     })
 }
 
-/// What a short command printed (`runCli`).
-#[derive(Debug, Clone, PartialEq)]
-pub struct CliOutput {
-    pub code: Option<i32>,
-    pub stdout: String,
-    pub stderr: String,
-}
-
 /// Runs and stops the provider CLIs on this PC, inside the worker boundary when one is required.
 pub struct SystemCli {
     worker: Option<Arc<dyn WorkerBoundary>>,
@@ -687,6 +732,36 @@ impl CliHost for SystemCli {
                 tokio::process::Command::from(std::process::Command::from(command)).spawn()?,
             ))
         })
+    }
+
+    fn find_cli(&self, name: Provider) -> Option<CliCommand> {
+        self.resolve_cli(name, &process_env(), Runtime::current())
+    }
+
+    fn run_cli<'a>(
+        &'a self,
+        cmd: &'a CliCommand,
+        args: &'a [String],
+        env: &'a Env,
+        timeout: Duration,
+    ) -> BoxFuture<'a, io::Result<CliOutput>> {
+        Box::pin(SystemCli::run_cli(self, cmd, args, env, timeout))
+    }
+
+    fn open_url(&self, url: &str) -> Result<(), String> {
+        open_url(url)
+    }
+
+    fn provider_account_folder(&self, folder: &str) -> String {
+        SystemCli::provider_account_folder(self, folder)
+    }
+
+    fn worker_accounts_root(&self) -> Option<PathBuf> {
+        SystemCli::worker_accounts_root(self)
+    }
+
+    fn cli_env_from(&self, extra: &Env, base: &Env) -> Env {
+        SystemCli::cli_env_from(self, extra, base)
     }
 
     fn prepare_provider_directories(&self, folders: Vec<PathBuf>) -> BoxFuture<'_, io::Result<()>> {
