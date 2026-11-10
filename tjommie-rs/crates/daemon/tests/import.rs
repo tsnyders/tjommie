@@ -104,6 +104,38 @@ fn source() -> TempDir {
     dir
 }
 
+/// The 8.3 spelling of an existing path, if the volume makes them.
+#[cfg(windows)]
+fn short_name(path: &Path) -> Option<PathBuf> {
+    use windows::Win32::Storage::FileSystem::GetShortPathNameW;
+    use windows::core::HSTRING;
+
+    let mut buffer = [0u16; 1024];
+    // SAFETY: the call writes at most the buffer's length into it.
+    let length =
+        unsafe { GetShortPathNameW(&HSTRING::from(path.as_os_str()), Some(&mut buffer)) } as usize;
+    if length == 0 || length >= buffer.len() {
+        return None;
+    }
+    let short = PathBuf::from(String::from_utf16(&buffer[..length]).ok()?);
+    (short != path).then_some(short)
+}
+
+#[cfg(windows)]
+fn junction(link: &Path, target: &Path) {
+    let made = spawn::command("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(link)
+        .arg(target)
+        .output()
+        .unwrap();
+    assert!(
+        made.status.success(),
+        "{}",
+        String::from_utf8_lossy(&made.stdout)
+    );
+}
+
 fn count(db: &Path, sql: &str) -> i64 {
     Connection::open(db)
         .unwrap()
@@ -309,6 +341,7 @@ fn says_that_project_teams_were_not_imported() {
     );
     assert!(imported.status.success(), "{err}");
     assert!(out.contains("Project teams weren't imported"), "{out}");
+    assert!(out.contains("0 account keys and 0 logins"), "{out}");
 }
 
 #[test]
@@ -458,6 +491,105 @@ fn refuses_the_production_root() {
     assert!(!production.exists());
 }
 
+/// The guards compare what paths name, not how they are spelled: `\\?\` and a junction reach the production root too.
+#[cfg(windows)]
+#[test]
+fn refuses_other_spellings_of_the_production_root() {
+    let source = source();
+    let local = temp("tjommie local ñ-");
+    let production = local.path().join("Tjommie");
+    let production_db = production.join("data").join("tjommie.db");
+    fs::create_dir_all(production.join("data")).unwrap();
+    fs::copy(FIXTURE, &production_db).unwrap();
+    Connection::open(&production_db)
+        .unwrap()
+        .execute(
+            "INSERT INTO settings (key, value) VALUES ('production-only', 'kept')",
+            [],
+        )
+        .unwrap();
+    let links = temp("tjommie links-");
+    let link = links.path().join("production");
+    junction(&link, &production);
+
+    let verbatim = PathBuf::from(format!(r"\\?\{}", production.display()));
+    for target in [verbatim, link.clone()] {
+        let refused = spawn::command(env!("CARGO_BIN_EXE_tjommie-daemon"))
+            .args(["import", "--from", text(source.path()), "--replace"])
+            .env("LOCALAPPDATA", local.path())
+            .env("TJOMMIE_HOME", &target)
+            .output()
+            .unwrap();
+        let message = String::from_utf8_lossy(&refused.stderr);
+        assert!(!refused.status.success(), "{}", target.display());
+        assert!(message.contains("production"), "{message}");
+        assert_eq!(
+            count(
+                &production_db,
+                "SELECT COUNT(*) FROM settings WHERE key = 'production-only'"
+            ),
+            1
+        );
+    }
+    fs::remove_dir(&link).unwrap();
+}
+
+/// A junction to the source, its 8.3 spelling and a `\\?\` source spelling all name the source root.
+#[cfg(windows)]
+#[test]
+fn refuses_other_spellings_of_the_source_root() {
+    let source = source();
+    let before = tree_hash(source.path());
+    let links = temp("tjommie links-");
+    let link = links.path().join("source");
+    junction(&link, source.path());
+    let verbatim = PathBuf::from(format!(r"\\?\{}", source.path().display()));
+    let mut cases = vec![
+        (source.path().to_path_buf(), link.clone()),
+        (verbatim, source.path().join("inner")),
+    ];
+    match short_name(source.path()) {
+        Some(short) => cases.push((source.path().to_path_buf(), short.join("inner"))),
+        None => eprintln!("this volume makes no 8.3 names: that spelling is not checked"),
+    }
+    for (from, to) in cases {
+        let error = import::copy_data(&from, &to, true).unwrap_err();
+        assert!(
+            error.to_string().contains("source"),
+            "{} -> {}: {error}",
+            from.display(),
+            to.display()
+        );
+    }
+    fs::remove_dir(&link).unwrap();
+    assert_eq!(tree_hash(source.path()), before);
+}
+
+/// Stored folders are matched by what they name, so a source given by its 8.3 spelling still moves them.
+#[cfg(windows)]
+#[test]
+fn rebases_folders_when_the_source_is_spelled_with_short_names() {
+    let source = source();
+    let Some(short) = short_name(source.path()) else {
+        eprintln!("skipped: this volume makes no 8.3 names");
+        return;
+    };
+    let target = temp("tjommie target ñ-");
+    import::copy_data(&short, target.path(), false).unwrap();
+    let db = Connection::open(target.path().join("data").join("tjommie.db")).unwrap();
+    let folder = |sql: &str| -> String { db.query_row(sql, [], |row| row.get(0)).unwrap() };
+    let home = target.path().join("bots").join("legacy-bot");
+    let account = target.path().join("accounts").join("claude-main");
+    assert_eq!(
+        folder("SELECT home_folder FROM bots WHERE id = 'legacy-bot'"),
+        text(&home)
+    );
+    assert_eq!(
+        folder("SELECT folder FROM accounts WHERE id = 'claude-main'"),
+        text(&account)
+    );
+}
+
 #[test]
 fn never_imports_into_the_source_root() {
     let source = source();
@@ -553,7 +685,16 @@ fn rewrites_account_and_login_secrets_under_the_target_namespace() {
         cred::write(&from.relay_login_target(), "relay-key").unwrap();
         let source_secrets = enumerate(&format!("Tjommie/{}*", from.short()));
 
-        import::run(source.path(), target.path(), false).unwrap();
+        // Spelled with 8.3 names where the volume has them: the secrets are still found under the source's namespace.
+        let spelled = short_name(source.path()).unwrap_or_else(|| source.path().to_path_buf());
+        let secrets = import::run(&spelled, target.path(), false).unwrap();
+        assert_eq!(
+            secrets,
+            import::Secrets {
+                account_keys: 1,
+                logins: 1
+            }
+        );
 
         let copied = |target: &str| cred::read(target).unwrap();
         assert_eq!(

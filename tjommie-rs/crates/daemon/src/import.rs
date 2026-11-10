@@ -32,8 +32,15 @@ const PROJECT_TEAM_TABLES: [&str; 9] = [
 /// `new Date().toISOString()` in SQL.
 const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";
 
+/// What `copy_secrets` re-wrote, so an import that found none can say so.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Secrets {
+    pub account_keys: usize,
+    pub logins: usize,
+}
+
 /// `copy_data`, then `copy_secrets`.
-pub fn run(from: &Path, to: &Path, replace: bool) -> io::Result<()> {
+pub fn run(from: &Path, to: &Path, replace: bool) -> io::Result<Secrets> {
     copy_data(from, to, replace)?;
     copy_secrets(from, to)
 }
@@ -43,19 +50,25 @@ pub fn run(from: &Path, to: &Path, replace: bool) -> io::Result<()> {
 /// move to `to`.
 /// Refuses a target that already has a database unless `replace`, and never writes into the source root.
 pub fn copy_data(from: &Path, to: &Path, replace: bool) -> io::Result<()> {
-    let (source, target) = (resolved(from)?, resolved(to)?);
-    if is_within(&target, &source) {
+    // The guards compare what the paths name: `\\?\`, junction and 8.3 spellings reach the same folders.
+    let (source, target_identity) = (identity(from)?, identity(to)?);
+    if is_within(&target_identity, &source) {
         return Err(io::Error::other(
             "Tjommie can't import into the source data root or a folder inside it.",
         ));
     }
     if let Some(local) = std::env::var_os("LOCALAPPDATA")
-        && is_within(&target, &resolved(&PathBuf::from(local).join("Tjommie"))?)
+        && is_within(
+            &target_identity,
+            &identity(&PathBuf::from(local).join("Tjommie"))?,
+        )
     {
         return Err(io::Error::other(
             "Tjommie won't import into the production data root. Set TJOMMIE_HOME to a dev root.",
         ));
     }
+    // The copy is written, and its folders named, the way this install spells its own root.
+    let target = plain(&std::path::absolute(to)?);
     let (source, target) = (Path::new(&source), Path::new(&target));
     let source_db = source.join("data").join("tjommie.db");
     if !source_db.is_file() {
@@ -108,47 +121,99 @@ pub fn copy_data(from: &Path, to: &Path, replace: bool) -> io::Result<()> {
 
 /// Re-writes the source's `account/` and `login/` secrets under this root's namespace. The `remote-host` and
 /// `relay-login` keys and the worker passwords stay behind: the new install makes its own.
-pub fn copy_secrets(from: &Path, to: &Path) -> io::Result<()> {
-    let (source, target) = (Namespace::new(from)?, Namespace::new(to)?);
+pub fn copy_secrets(from: &Path, to: &Path) -> io::Result<Secrets> {
+    // The source named its secrets after its root as it spelled it, most likely as given here; an 8.3 or `\\?\`
+    // spelling gives another namespace, so the canonical one is tried too. The target is named as this install
+    // spells its own root.
+    let mut sources = vec![Namespace::new(from)?];
+    let canonical = Namespace::new(Path::new(&identity(from)?))?;
+    if canonical.short() != sources[0].short() {
+        sources.push(canonical);
+    }
+    let target = Namespace::new(to)?;
     let data = to.join("data");
-    let mut targets = Vec::new();
+    let mut secrets = Secrets {
+        account_keys: 0,
+        logins: 0,
+    };
     for id in column(&data.join("tjommie.db"), "SELECT id FROM accounts")? {
-        let pair = (source.account_target(&id), target.account_target(&id));
-        targets.push((
-            pair.0.map_err(io::Error::other)?,
-            pair.1.map_err(io::Error::other)?,
-        ));
+        let from = sources
+            .iter()
+            .map(|source| source.account_target(&id))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(io::Error::other)?;
+        let to = target.account_target(&id).map_err(io::Error::other)?;
+        secrets.account_keys += usize::from(copy_secret(&from, &to)?);
     }
     let logins = data.join("logins.sqlite");
     if logins.is_file() {
         for reference in column(&logins, "SELECT reference FROM logins")? {
-            if let (Some(from), Some(to)) = (
-                source.login_target(&reference),
-                target.login_target(&reference),
-            ) {
-                targets.push((from, to));
+            let from: Vec<String> = sources
+                .iter()
+                .filter_map(|source| source.login_target(&reference))
+                .collect();
+            if let Some(to) = target.login_target(&reference) {
+                secrets.logins += usize::from(copy_secret(&from, &to)?);
             }
         }
     }
-    for (from, to) in targets {
-        if let Some(secret) = cred::read(&from)? {
-            cred::write(&to, &secret)?;
+    Ok(secrets)
+}
+
+/// Copies the first of `from` that holds a secret. Says whether one did.
+fn copy_secret(from: &[String], to: &str) -> io::Result<bool> {
+    for target in from {
+        if let Some(secret) = cred::read(target)? {
+            cred::write(to, &secret)?;
+            return Ok(true);
         }
     }
-    Ok(())
+    Ok(false)
 }
 
-/// Absolute, without a trailing separator.
-fn resolved(path: &Path) -> io::Result<String> {
+/// What a path names, for comparing roots: `fs::canonicalize` of its deepest existing part, which sees through
+/// junctions, 8.3 names and `\\?\`, then the rest as written. `bots.ts` checks project folders with
+/// `realpathSync.native` the same way.
+fn identity(path: &Path) -> io::Result<String> {
     let absolute = std::path::absolute(path)?;
-    let text = absolute.to_str().ok_or(io::ErrorKind::InvalidInput)?;
-    Ok(text.trim_end_matches('\\').to_owned())
+    let mut existing = absolute.as_path();
+    while !existing.exists() {
+        match existing.parent() {
+            Some(parent) => existing = parent,
+            None => return Ok(plain(&absolute)), // Not even the drive exists.
+        }
+    }
+    let rest = absolute
+        .strip_prefix(existing)
+        .expect("an ancestor is a prefix");
+    Ok(plain(&fs::canonicalize(existing)?.join(rest)))
 }
 
-/// `path` is `root` or inside it. Windows paths ignore case.
+/// A path as text, without a `\\?\` prefix or a trailing separator.
+fn plain(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    let text = match text.strip_prefix(r"\\?\UNC\") {
+        Some(share) => format!(r"\\{share}"),
+        None => text.strip_prefix(r"\\?\").unwrap_or(&text).to_owned(),
+    };
+    text.trim_end_matches('\\').to_owned()
+}
+
+/// What follows `root` in `path` (empty, or starting with `\`), if `path` is `root` or inside it. Windows ignores case.
+fn inside<'a>(path: &'a str, root: &str) -> Option<&'a str> {
+    let mut chars = path.char_indices();
+    for expected in root.chars() {
+        let (_, actual) = chars.next()?;
+        if !actual.to_lowercase().eq(expected.to_lowercase()) {
+            return None;
+        }
+    }
+    let rest = &path[chars.offset()..];
+    (rest.is_empty() || rest.starts_with('\\')).then_some(rest)
+}
+
 fn is_within(path: &str, root: &str) -> bool {
-    let (path, root) = (path.to_lowercase(), root.to_lowercase());
-    path == root || path.starts_with(&format!("{root}\\"))
+    inside(path, root).is_some()
 }
 
 fn ignore_missing(result: io::Result<()>) -> io::Result<()> {
@@ -221,29 +286,25 @@ fn detach(db: &Path, from: &str, to: &str) -> rusqlite::Result<()> {
          UPDATE exchanges SET status = 'failed', reply = 'Project teams were not imported.', replied_at = {NOW}
            WHERE task_attempt_id IS NOT NULL AND status = 'waiting';"
     ))?;
-    // The daemon uses these folders as stored, so copies left pointing into the source would write there.
+    // The daemon uses these folders as stored, so copies left pointing into the source would write there. They are
+    // matched by what they name, so any spelling of the source root (`from` is its identity) moves.
     for (table, folder) in [("bots", "home_folder"), ("accounts", "folder")] {
         let rows: Vec<(String, String)> = tx
             .prepare(&format!("SELECT id, {folder} FROM {table}"))?
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
             .collect::<Result<_, _>>()?;
         for (id, path) in rows {
-            if let Some(moved) = rebase(&path, from, to) {
+            let named = identity(Path::new(&path))
+                .map_err(|error| rusqlite::Error::ToSqlConversionFailure(error.into()))?;
+            if let Some(rest) = inside(&named, from) {
                 tx.execute(
                     &format!("UPDATE {table} SET {folder} = ?1 WHERE id = ?2"),
-                    [&moved, &id],
+                    [format!("{to}{rest}"), id],
                 )?;
             }
         }
     }
     tx.commit()
-}
-
-/// `path` with the `from` root swapped for `to`, if it is inside `from`.
-fn rebase(path: &str, from: &str, to: &str) -> Option<String> {
-    let rest = path.get(from.len()..)?;
-    (path[..from.len()].eq_ignore_ascii_case(from) && rest.starts_with('\\'))
-        .then(|| format!("{to}{rest}"))
 }
 
 fn column(db: &Path, sql: &str) -> io::Result<Vec<String>> {

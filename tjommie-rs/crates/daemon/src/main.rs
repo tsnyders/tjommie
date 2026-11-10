@@ -83,9 +83,13 @@ fn import(args: &[String]) -> Result<(), StartupError> {
     }
     let from = from.ok_or_else(usage)?;
     let to = daemon::paths::data_root();
-    daemon::import::run(Path::new(from), &to, replace)
+    let secrets = daemon::import::run(Path::new(from), &to, replace)
         .map_err(|error| StartupError::Plain(error.to_string()))?;
     println!("Imported {from} into {}.", to.display());
+    println!(
+        "Re-wrote {} account keys and {} logins in this install's Credential Manager namespace.",
+        secrets.account_keys, secrets.logins
+    );
     println!(
         "Project teams weren't imported: their tasks and worktrees stay with {from}, and queued task work was marked failed."
     );

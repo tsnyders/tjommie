@@ -29,6 +29,8 @@ tempfile = "3.27.0"
 tokio = { version = "1.54.1", features = ["process", "io-util"] }
 tokio-tungstenite = "0.29"
 uuid = { version = "1.26.0", features = ["v4"] }
+# Tests spell roots with 8.3 short names.
+windows = { version = "0.62.2", features = ["Win32_Storage_FileSystem"] }
 
 [[bin]]
 name = "tjommie-daemon"
