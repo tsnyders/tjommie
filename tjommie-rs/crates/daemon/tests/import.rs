@@ -232,13 +232,18 @@ fn copies_an_unmerged_wal_without_merging_it_into_the_source() {
     fs::copy(live.path().join("tjommie.db"), &db).unwrap();
     fs::copy(live.path().join("tjommie.db-wal"), &wal).unwrap();
     drop(writer);
-    let (main_bytes, wal_bytes) = (fs::read(&db).unwrap(), fs::read(&wal).unwrap());
+    // A WAL without its -shm: the copy must not leave a new -shm behind either.
+    assert!(!source.path().join("data").join("tjommie.db-shm").exists());
+    let before = tree_hash(source.path());
 
     let target = temp("tjommie target ñ-");
     import::copy_data(source.path(), target.path(), false).unwrap();
 
-    assert_eq!(fs::read(&db).unwrap(), main_bytes);
-    assert_eq!(fs::read(&wal).unwrap(), wal_bytes);
+    assert_eq!(
+        tree_hash(source.path()),
+        before,
+        "every file and folder in the source is as it was"
+    );
     let copy = target.path().join("data").join("tjommie.db");
     assert_eq!(
         count(&copy, "SELECT COUNT(*) FROM settings WHERE key = 'crashed'"),

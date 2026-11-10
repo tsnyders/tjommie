@@ -237,18 +237,27 @@ fn remove_files(databases: &[&Path]) -> io::Result<()> {
 
 /// A read-write connection that never writes. A read-only one would leave behind the `-wal` and `-shm` it creates;
 /// this one removes them when it closes. A `-wal` that was already there (the install is running, or crashed) must
-/// not be checkpointed into its database on close, so it is left as found. SQLite may still refresh the `-shm` index.
+/// not be checkpointed into its database on close, so it is left as found; then the `-shm` that SQLite built to read
+/// it stays too, and goes if it wasn't there before. SQLite may still refresh an `-shm` that was.
 fn back_up(source: &Path, target: &Path) -> io::Result<()> {
-    let mut wal = source.as_os_str().to_owned();
-    wal.push("-wal");
-    let had_wal = Path::new(&wal).exists();
-    let db = Connection::open(source).map_err(io::Error::other)?;
-    if had_wal {
-        db.set_db_config(DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, true)
-            .map_err(io::Error::other)?;
+    let sidecar = |suffix: &str| {
+        let mut name = source.as_os_str().to_owned();
+        name.push(suffix);
+        PathBuf::from(name)
+    };
+    let (wal, shm) = (sidecar("-wal"), sidecar("-shm"));
+    let (had_wal, had_shm) = (wal.exists(), shm.exists());
+    let copied = (|| {
+        let db = Connection::open(source)?;
+        if had_wal {
+            db.set_db_config(DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, true)?;
+        }
+        db.backup(MAIN_DB, target, NO_PROGRESS)
+    })();
+    if !had_shm {
+        let _ = fs::remove_file(&shm); // Best effort: the source install may have opened it meanwhile.
     }
-    db.backup(MAIN_DB, target, NO_PROGRESS)
-        .map_err(io::Error::other)
+    copied.map_err(io::Error::other)
 }
 
 /// Folders and regular files, without the Claude sign-in. Links are skipped: they could reach outside the root.
