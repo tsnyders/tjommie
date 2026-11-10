@@ -14,6 +14,11 @@ pub mod codex_parse;
 pub mod codex_rpc;
 pub(crate) mod js;
 
+/// `new Date(ms).toISOString()`. Empty outside JavaScript's date range, where JavaScript throws.
+pub fn js_iso(ms: f64) -> String {
+    js::iso_from_millis(ms).unwrap_or_default()
+}
+
 use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Mutex;
