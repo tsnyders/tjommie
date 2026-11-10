@@ -911,7 +911,7 @@ impl Setup {
                     ));
                 };
                 if let Some(url) = url.as_deref().filter(|_| provider == Provider::Codex) {
-                    let _ = self.0.cli.open_url(url);
+                    self.0.cli.open_url(url).map_err(internal)?;
                 }
                 return Ok(SignInStart {
                     url,
@@ -1172,7 +1172,8 @@ impl Setup {
             attempt.finish(completed.get("success") == Some(&Value::Bool(true)));
         }
         if !attempt.finished() {
-            let _ = self.0.cli.open_url(url);
+            // A refused URL ends the attempt, as TypeScript's `openUrl` throws.
+            self.0.cli.open_url(url).map_err(internal)?;
         }
         Ok(SignInStart {
             url: Some(url.to_string()),

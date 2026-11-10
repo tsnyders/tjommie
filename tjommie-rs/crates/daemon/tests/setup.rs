@@ -235,7 +235,11 @@ impl CliHost for Host {
         })
     }
 
+    /// As `cli::open_url`, without the browser: anything but https is refused.
     fn open_url(&self, url: &str) -> Result<(), String> {
+        if !url.starts_with("https://") {
+            return Err(format!("Refusing to open a non-https URL: {url}"));
+        }
         self.opened.lock().unwrap().push(url.into());
         Ok(())
     }
@@ -1431,6 +1435,27 @@ async fn reopens_the_same_codex_sign_in_page_without_a_second_app_server_then_st
     assert_eq!(f.host.server_starts.lock().unwrap().len(), 2);
     assert_eq!(f.host.opened.lock().unwrap().len(), 3);
     complete(&rpcs.lock().unwrap()[1], "login-1", true);
+}
+
+#[tokio::test]
+async fn ends_a_codex_sign_in_whose_page_is_not_https_instead_of_ignoring_the_refusal() {
+    let f = Fixture::new();
+    f.ensure();
+    let (codex, closes, _, _) = server(|_, _| {
+        Ok(json!({ "authUrl": "http://example.invalid/login", "loginId": "login-1" }))
+    });
+    f.host.push_server(codex);
+    let (calls, on_done) = done();
+    let error = f
+        .setup
+        .sign_in(&f.db, Provider::Codex, on_done)
+        .await
+        .unwrap_err();
+    assert!(error.message.contains("non-https"), "{}", error.message);
+    assert!(f.host.opened.lock().unwrap().is_empty());
+    let calls = calls.lock().unwrap();
+    assert_eq!((calls.len(), calls[0].0), (1, false));
+    assert!(closes.load(Ordering::SeqCst) >= 1);
 }
 
 #[tokio::test]
