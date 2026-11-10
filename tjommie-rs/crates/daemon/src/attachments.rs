@@ -51,8 +51,8 @@ fn database(_: rusqlite::Error) -> RpcError {
 }
 
 /// `sameFile`: the same size, write time and creation time.
-/// ponytail: Node also compares dev and inode; Windows' volume serial and file index need an unstable std API or a
-/// GetFileInformationByHandle call. Add them if a same-size, same-time swap ever matters.
+/// ponytail: a stand-in. Node also compares dev and inode; switch to lane B's `daemon::fsid` (FileIdInfo: volume
+/// serial plus 128-bit file id, where `Err` means refuse) once it merges.
 fn same_file(a: &Metadata, b: &Metadata) -> bool {
     a.len() == b.len()
         && a.modified().ok() == b.modified().ok()
