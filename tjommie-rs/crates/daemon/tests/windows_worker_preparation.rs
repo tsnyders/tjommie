@@ -46,6 +46,8 @@ struct Fake {
     verify: Mutex<Option<Verify>>,
     verifies: AtomicUsize,
     credential_gate: Mutex<Option<(Arc<Notify>, Arc<Notify>)>>,
+    /// Overrides the user name in the saved worker credential.
+    credential_user: Mutex<Option<String>>,
     pids: AtomicU32,
 }
 
@@ -129,11 +131,12 @@ impl WorkerNative for Fake {
         target: &'a str,
     ) -> BoxFuture<'a, Result<Option<String>, String>> {
         let gate = self.credential_gate.lock().unwrap().clone();
-        let name = if target.ends_with("isolated-worker") {
+        let default = if target.ends_with("isolated-worker") {
             "TjWorker-12345678"
         } else {
             "TjReview-12345678"
         };
+        let name = self.credential_user.lock().unwrap().clone().unwrap_or_else(|| default.into());
         Box::pin(async move {
             if let Some((entered, release)) = gate {
                 entered.notify_one();
@@ -468,4 +471,39 @@ async fn settles_an_already_created_pre_ack_child_after_poisoning_without_sendin
     f.native.retire(1, true);
     assert_eq!(next.await.unwrap().err(), Some(BoundaryError::Termination));
     assert_eq!(f.native.request(1).continues.load(Ordering::SeqCst), 0);
+}
+
+/// One `#spawnHeld` refusal: `Unavailable`, promptly, and no native launch at all.
+async fn refused(f: &Fixture, file: &str, env: &[(String, String)]) {
+    let args = ["--synthetic".to_string()];
+    let launch = f.provider.spawn(file, &args, &f.work, env);
+    let result = tokio::time::timeout(Duration::from_secs(10), launch).await.expect("the launch went ahead instead of being refused");
+    assert_eq!(result.err(), Some(BoundaryError::Unavailable));
+    assert_eq!(f.native.count(), 0);
+}
+
+#[tokio::test]
+async fn refuses_a_target_that_is_not_an_exe_without_starting_anything() {
+    let f = fixture();
+    let text = Path::new(&f.file).with_file_name("tool.txt");
+    fs::write(&text, "synthetic").unwrap();
+    refused(&f, text.to_str().unwrap(), &[]).await;
+}
+
+#[tokio::test]
+async fn refuses_provider_homes_outside_the_worker_root_without_starting_anything() {
+    let f = fixture();
+    // A folder a worker could otherwise be granted (an external project), so only the home check refuses it.
+    let elsewhere = f.work.with_file_name("elsewhere");
+    fs::create_dir(&elsewhere).unwrap();
+    for key in ["CODEX_HOME", "CLAUDE_CONFIG_DIR"] {
+        refused(&f, &f.file, &[(key.into(), elsewhere.to_string_lossy().into_owned())]).await;
+    }
+}
+
+#[tokio::test]
+async fn refuses_a_credential_that_names_the_other_worker_without_starting_anything() {
+    let f = fixture();
+    *f.native.credential_user.lock().unwrap() = Some("TjReview-12345678".into());
+    refused(&f, &f.file, &[]).await;
 }
