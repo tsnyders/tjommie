@@ -100,7 +100,7 @@ The 13 `*.real.test.ts` files in this table also appear in section 2. Rust paths
 | `packages/daemon/src/team.routing.test.ts` | M4 | `tjommie-rs/crates/daemon/tests/team_routing.rs` |  |
 | `packages/daemon/src/team.snapshots.test.ts` | M4 | `tjommie-rs/crates/daemon/tests/team_snapshots.rs` |  |
 | `packages/daemon/src/team.test.ts` | M4 | `tjommie-rs/crates/daemon/tests/team.rs` |  |
-| `packages/daemon/src/terminal-chat.test.ts` | M3 T3.5 | `tjommie-rs/crates/daemon/tests/terminal_chat.rs` |  |
+| `packages/daemon/src/terminal-chat.test.ts` | — | n/a: stays TypeScript | tests the `scripts/chat.ts` dev tool on `@tjommie/client`, not the daemon; runs unchanged against the Rust daemon |
 | `packages/daemon/src/testing.test.ts` | n/a | n/a | tests the TypeScript helper testing.ts (tempRoot, realAccount, waitFor); Rust has its own test support |
 | `packages/daemon/src/turn-notices.test.ts` | M3 T3.5 | `tjommie-rs/crates/daemon/tests/turn_notices.rs` |  |
 | `packages/daemon/src/usage.test.ts` | M3 T3.4 | `tjommie-rs/crates/daemon/tests/usage.rs` |  |

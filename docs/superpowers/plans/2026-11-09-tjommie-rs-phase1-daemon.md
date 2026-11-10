@@ -170,9 +170,9 @@ That is seven lanes at most, matching the agent limit.
 - **Covers:** `account-*.ts`, `accounts-store.ts`, `setup.ts`, `usage.ts`, `cli.ts`. These are the `accounts.*`, `setup.*` and `usage.*` methods plus quota.
 - **Tests:** port the matching tests.
 
-**T3.5 Runner, queue, chat, approvals** (Core, after T3.1–T3.3).
+**T3.5 Runner, queue, chat, approvals** (Core, after T3.1–T3.3; it also uses T3.4's accounts: `accountFor`/`accountEnv`, `recordUsage`, `priceUsage`, `killTree`, `resolveCli`. Build against an `Accounts` trait with marked stand-ins, then swap in T3.4's code at its merge).
 - **Covers:** `runner.ts`, `queue.ts`, `chat.ts`, `approvals.ts`, `turn-notices.ts`, including steer vs queue (`runner.ts:268-282`, `:726-762`).
-- **Tests:** port `runner`, `queue`, `chat`, `approvals`, `turn-notices` and `terminal-chat`.
+- **Tests:** port `runner`, `queue`, `chat`, `approvals` and `turn-notices`. `terminal-chat.test.ts` stays in TypeScript: it tests the `scripts/chat.ts` dev tool on `@tjommie/client`, which runs unchanged against the Rust daemon.
 
 ## M4 Collaboration (Lane A, after T3.5)
 - **Covers:**
