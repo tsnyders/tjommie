@@ -1,11 +1,11 @@
 //! The launch seam: `cliSessionFactory`, and `launchCli`'s choice between the Windows worker boundary and a direct
-//! launch (`cli.ts:153-154`). Lane B's `WindowsWorkerBoundary` implements [`WorkerBoundary`]; these are test doubles.
+//! launch (`cli.ts:153-154`). Lane B's `WorkerBoundary` implements [`WorkerIsolation`]; these are test doubles.
 
 use std::collections::BTreeMap;
 
 use super::*;
 use daemon::cli::{BoxFuture as CliFuture, CliChild, CliCommand, CliHost, LaunchOptions};
-use daemon::runner::{BoundaryHost, WorkerBoundary, cli_session_factory};
+use daemon::runner::{BoundaryHost, WorkerIsolation, cli_session_factory};
 use protocol::model::{Autonomy, Provider};
 
 /// Records each launch under `name` and refuses it, so a test sees which side was asked.
@@ -43,11 +43,13 @@ struct Boundary {
     recorder: Recorder,
 }
 
-impl WorkerBoundary for Boundary {
+impl WorkerIsolation for Boundary {
     fn required(&self) -> bool {
         self.required
     }
+}
 
+impl CliHost for Boundary {
     fn launch<'a>(
         &'a self,
         cmd: &'a CliCommand,
@@ -70,7 +72,7 @@ fn host(launches: &Recorded<String>, boundary: Option<bool>) -> BoundaryHost {
                 name: "boundary",
                 launches: launches.clone(),
             },
-        }) as Arc<dyn WorkerBoundary>
+        }) as Arc<dyn WorkerIsolation>
     });
     BoundaryHost { direct, boundary }
 }

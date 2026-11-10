@@ -199,24 +199,19 @@ pub fn cli_session_factory(host: Arc<dyn CliHost>, resolve: ResolveCli) -> Sessi
     })
 }
 
-/// Lane B's `WindowsWorkerBoundary` as the CLIs see it: while Windows worker isolation is on, bot CLIs launch through
-/// it under the isolated worker accounts.
-pub trait WorkerBoundary: Send + Sync {
+/// Lane B's `win::boundary::WorkerBoundary`, which is itself a [`CliHost`], plus its gate. While Windows worker
+/// isolation is on, bot CLIs launch through it under the isolated worker accounts; a launch whose stop it can't
+/// confirm ends with `CliExit::Failed`, which the providers report as an exit with an error, a crashed turn.
+pub trait WorkerIsolation: CliHost {
     /// `boundary()?.required`.
     fn required(&self) -> bool;
-    fn launch<'a>(
-        &'a self,
-        cmd: &'a CliCommand,
-        args: Vec<String>,
-        options: LaunchOptions,
-    ) -> CliFuture<'a, io::Result<CliChild>>;
 }
 
 /// `launchCli`'s choice (`cli.ts:153-154`): through the worker boundary when isolation requires it, otherwise a
 /// direct launch. Codex's app-server goes the same way: `start_codex_server` launches through this host.
 pub struct BoundaryHost {
     pub direct: Arc<dyn CliHost>,
-    pub boundary: Option<Arc<dyn WorkerBoundary>>,
+    pub boundary: Option<Arc<dyn WorkerIsolation>>,
 }
 
 impl CliHost for BoundaryHost {
