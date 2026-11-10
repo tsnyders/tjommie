@@ -71,6 +71,7 @@ pub fn handlers(context: &Context) -> Handlers {
     let handlers = settings::register(Handlers::default(), context);
     let handlers = bots::register(handlers, context);
     let handlers = diagnostics::register(handlers, context);
-    let handlers = models::register(handlers);
+    // T3.4 brings the CLI host Codex models need.
+    let handlers = models::register(handlers, context, None);
     google::register(handlers)
 }

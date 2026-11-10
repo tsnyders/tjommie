@@ -3289,6 +3289,15 @@ fn read_account(row: &rusqlite::Row) -> rusqlite::Result<Account> {
     })
 }
 
+/// The default account's `accountEnv` and folder, for a CLI started outside a turn (`listModels`).
+pub(crate) fn default_account_env(
+    db: &Connection,
+    provider: Provider,
+) -> Result<(BTreeMap<String, String>, String), RpcError> {
+    let account = account_for(db, provider)?;
+    Ok((account_env(provider, &account), account.folder))
+}
+
 /// `accountEnv(account)`. T3.4: `setup::account_env`, which starts from `cliEnv`'s scrubbed environment.
 fn account_env(provider: Provider, account: &Account) -> BTreeMap<String, String> {
     let name = if provider == Provider::Claude {
