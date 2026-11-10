@@ -12,8 +12,9 @@ use serde::Deserialize;
 use crate::paths;
 use crate::server::{Handlers, Server, ServerOptions};
 
-/// The phone's LAN port, now set by `TJOMMIE_LAN_PORT` (`remote-host.ts:24` fixes it at 47101).
-pub const DEFAULT_LAN_PORT: u16 = 47101;
+/// The phone's LAN port, now set by `TJOMMIE_LAN_PORT` (`remote-host.ts:24` fixes it at 47101). A debug build uses the
+/// spec §4 dev port.
+pub const DEFAULT_LAN_PORT: u16 = if cfg!(debug_assertions) { 47201 } else { 47101 };
 
 const NO_MODE: &str =
     "Start Tjommie from the desktop app, or run npm start -w @tjommie/daemon for development.";
@@ -199,11 +200,17 @@ fn allowed_origins(auth: &Auth) -> Vec<String> {
 
 pub struct Daemon {
     server: Server,
+    root: PathBuf,
 }
 
 impl Daemon {
     pub fn port(&self) -> u16 {
         self.server.port()
+    }
+
+    /// The data root this daemon uses.
+    pub fn root(&self) -> &Path {
+        &self.root
     }
 
     pub async fn close(self) {
@@ -250,7 +257,8 @@ pub async fn start(launch: &Launch, auth: &Auth) -> Result<Daemon, StartupError>
             )),
             _ => StartupError::Unexpected(error),
         })?;
-    let token = match settle_token(auth) {
+    let root = paths::data_root();
+    let token = match settle_token(auth, &root) {
         Ok(token) => token,
         Err(error) => {
             server.close().await;
@@ -260,28 +268,49 @@ pub async fn start(launch: &Launch, auth: &Auth) -> Result<Daemon, StartupError>
     server
         .activate(token, Handlers::default())
         .map_err(|error| plain(error.message))?;
-    Ok(Daemon { server })
+    Ok(Daemon { server, root })
 }
 
 /// Production removes a development token file left behind, so no stale token can open the daemon. Development reads
 /// or creates it.
-fn settle_token(auth: &Auth) -> Result<String, StartupError> {
-    let root = paths::data_root();
+fn settle_token(auth: &Auth, root: &Path) -> Result<String, StartupError> {
     let file = root.join(paths::TOKEN_FILE);
     match auth {
         Auth::Production { token, .. } => {
-            let leftover = file.exists();
-            remove_regular_file(&file, leftover).map_err(|_| {
-                plain("Could not remove the development daemon-token file. Close programs using it and start Tjommie again.")
-            })?;
-            if leftover {
+            if remove_leftover_token(&file)? {
                 println!("Removed a leftover development daemon-token file.");
             }
             Ok(token.clone())
         }
         Auth::Development => {
-            fs::create_dir_all(&root)?;
+            fs::create_dir_all(root)?;
             Ok(paths::read_or_create_token(&file)?)
+        }
+    }
+}
+
+/// Removes a development token file. True if there was one. Retries a file that is briefly locked, as
+/// `rmSync(..., { maxRetries: 3 })` does with its default 100 ms linear backoff.
+pub fn remove_leftover_token(file: &Path) -> Result<bool, StartupError> {
+    let leftover = file.exists();
+    let mut attempt = 0;
+    loop {
+        match remove_regular_file(file, leftover) {
+            Ok(()) => return Ok(leftover),
+            // Access denied, or a sharing or lock violation (Windows errors 32 and 33).
+            Err(error)
+                if attempt < 3
+                    && (error.kind() == io::ErrorKind::PermissionDenied
+                        || matches!(error.raw_os_error(), Some(32 | 33))) =>
+            {
+                attempt += 1;
+                std::thread::sleep(std::time::Duration::from_millis(100 * attempt));
+            }
+            Err(_) => {
+                return Err(plain(
+                    "Could not remove the development daemon-token file. Close programs using it and start Tjommie again.",
+                ));
+            }
         }
     }
 }

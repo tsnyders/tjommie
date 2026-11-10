@@ -193,10 +193,17 @@ async fn rejects_conflicting_production_and_development_modes_before_reading_std
 
 #[tokio::test]
 async fn prints_exactly_the_listening_line_the_desktop_reads() {
-    // updater.real.test.ts:20 and the desktop's daemon-process.ts match this line with a regex.
+    // updater.real.test.ts:20 and the desktop's daemon-process.ts match this line with a regex. The resolved data root
+    // comes first, so a log shows which install a daemon used.
     let daemon = launch(&["--dev"], TempRoot::new(), &[]);
     let port = daemon.ready().await;
-    assert_eq!(daemon.stdout(), format!("{LISTENING}{port}\n"));
+    assert_eq!(
+        daemon.stdout(),
+        format!(
+            "Tjommie data folder: {}\n{LISTENING}{port}\n",
+            daemon.root.0.display()
+        )
+    );
 }
 
 #[tokio::test]

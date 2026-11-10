@@ -275,11 +275,14 @@ impl Shared {
             || host == Some(&format!("localhost:{}", self.port))
     }
 
-    /// Browsers always send Origin, so a web page can't skip this check. Programs send none.
+    /// Browsers always send Origin, so a web page can't skip this check. Programs send none. Two Origin headers never
+    /// match: Node joins them into one value that is in no allow list.
     fn origin_allowed(&self, headers: &HeaderMap) -> bool {
-        match headers.get(header::ORIGIN) {
-            None => true,
-            Some(origin) => origin
+        let mut origins = headers.get_all(header::ORIGIN).iter();
+        match (origins.next(), origins.next()) {
+            (None, _) => true,
+            (Some(_), Some(_)) => false,
+            (Some(origin), None) => origin
                 .to_str()
                 .is_ok_and(|origin| self.allowed_origins.iter().any(|allowed| allowed == origin)),
         }
@@ -331,6 +334,19 @@ fn send(outbox: &mpsc::UnboundedSender<Message>, message: &ServerMessage) {
     ));
 }
 
+/// 1009 for a message over the size limit, 1007 for text that isn't UTF-8, 1002 for any other protocol violation.
+fn read_error_code(error: axum::Error) -> u16 {
+    match error
+        .into_inner()
+        .downcast::<tungstenite::Error>()
+        .map(|error| *error)
+    {
+        Ok(tungstenite::Error::Capacity(_)) => 1009,
+        Ok(tungstenite::Error::Utf8(_)) => 1007,
+        _ => 1002,
+    }
+}
+
 fn connection_id() -> String {
     let mut bytes = [0u8; 16];
     getrandom::fill(&mut bytes).expect("the operating system's random source works");
@@ -355,8 +371,14 @@ async fn connection(socket: WebSocket, shared: Arc<Shared>) {
                 () = signal.cancelled() => None,
             };
             let Some(message) = message else { break };
-            let closing = matches!(message, Message::Close(_));
-            if sink.send(message).await.is_err() || closing {
+            if matches!(message, Message::Close(_)) {
+                // Sends our close frame. After the client closed first, sending is refused, but closing still
+                // flushes the echo tungstenite queued for it.
+                let _ = sink.send(message).await;
+                let _ = sink.close().await;
+                break;
+            }
+            if sink.send(message).await.is_err() {
                 break;
             }
         }
@@ -383,11 +405,17 @@ async fn connection(socket: WebSocket, shared: Arc<Shared>) {
         let text = match frame {
             Some(Ok(Message::Text(text))) => text.to_string(),
             Some(Ok(Message::Binary(bytes))) => String::from_utf8_lossy(&bytes).into_owned(),
-            Some(Ok(Message::Close(_))) | None => break,
+            // RFC 6455 §5.5.1, as ws does: answer the client's close. tungstenite has queued the echo of its frame
+            // (its code and reason, or none); the writer flushes it when it closes.
+            Some(Ok(Message::Close(frame))) => {
+                let _ = outbox.send(Message::Close(frame));
+                break;
+            }
+            None => break,
             Some(Ok(_)) => continue,
-            // A protocol violation, such as an unmasked frame: fail the connection with 1002 as the Node server does.
-            Some(Err(_)) => {
-                close(1002, "");
+            // A bad frame fails the connection with the code ws uses for it.
+            Some(Err(error)) => {
+                close(read_error_code(error), "");
                 break;
             }
         };

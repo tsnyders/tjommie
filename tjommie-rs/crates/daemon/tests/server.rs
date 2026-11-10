@@ -6,7 +6,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use common::{connect, http_get, refused, send_unmasked_frame, try_connect};
+use common::{
+    INVALID_UTF8_FRAME, OVERSIZED_FRAME_HEADER, UNMASKED_FRAME, connect, http_get, refused,
+    send_raw_frame, try_connect,
+};
 use daemon::server::{Handlers, Principal, RequestContext, RpcError, Server, ServerOptions};
 use protocol::model::Bot;
 use protocol::wire::{Empty, Id, method};
@@ -191,7 +194,10 @@ async fn survives_a_bad_websocket_frame() {
     let server = Server::start(options("secret", Handlers::default()))
         .await
         .unwrap();
-    assert_eq!(send_unmasked_frame(server.port()).await, Some(1002));
+    assert_eq!(
+        send_raw_frame(server.port(), UNMASKED_FRAME).await,
+        Some(1002)
+    );
     let mut fresh = connect(server.port()).await;
     assert_eq!(
         fresh.hello("secret").await,
@@ -328,5 +334,83 @@ async fn answers_internal_when_a_handler_panics_and_keeps_the_connection() {
         "internal"
     );
     assert_eq!(client.call(2, "bots.list", json!({})).await["ok"], true);
+    server.close().await;
+}
+
+// T3.1 review follow-up: behaviour of the Node `ws` server the port keeps, and two cases server.test.ts lacks.
+
+#[tokio::test]
+async fn echoes_the_clients_close_frame() {
+    // RFC 6455 §5.5.1, as ws does: the reply carries the client's code and reason, or no code when the client sent none.
+    let server = Server::start(options("t", Handlers::default()))
+        .await
+        .unwrap();
+    let mut client = connect(server.port()).await;
+    client.hello("t").await;
+    assert_eq!(
+        client.close_with(Some((1000, "bye"))).await,
+        Some(Some((1000, "bye".into())))
+    );
+    let mut quiet = connect(server.port()).await;
+    quiet.hello("t").await;
+    assert_eq!(quiet.close_with(None).await, Some(None));
+    server.close().await;
+}
+
+#[tokio::test]
+async fn closes_with_the_code_that_names_a_bad_frame() {
+    let server = Server::start(options("t", Handlers::default()))
+        .await
+        .unwrap();
+    assert_eq!(
+        send_raw_frame(server.port(), INVALID_UTF8_FRAME).await,
+        Some(1007)
+    );
+    assert_eq!(
+        send_raw_frame(server.port(), OVERSIZED_FRAME_HEADER).await,
+        Some(1009)
+    );
+    server.close().await;
+}
+
+#[tokio::test]
+async fn refuses_a_request_with_two_origin_headers() {
+    let server = Server::start(ServerOptions {
+        allowed_origins: vec!["app://tjommie".into()],
+        ..options("t", Handlers::default())
+    })
+    .await
+    .unwrap();
+    let twice = [("Origin", "app://tjommie"), ("Origin", "app://tjommie")];
+    assert_eq!(refused(try_connect(server.port(), &twice).await), 403);
+    server.close().await;
+}
+
+#[tokio::test]
+async fn keeps_an_idle_client_connected_after_its_welcome() {
+    let server = Server::start(options("t", Handlers::default()))
+        .await
+        .unwrap();
+    let mut client = connect(server.port()).await;
+    client.hello("t").await;
+    tokio::time::sleep(Duration::from_secs(6)).await;
+    assert_eq!(
+        client.call(1, "remote.ping", json!({})).await["error"]["code"],
+        "unknown_method"
+    );
+    server.close().await;
+}
+
+#[tokio::test]
+async fn sends_no_events_to_a_socket_that_has_not_said_hello() {
+    let server = Server::start(options("t", Handlers::default()))
+        .await
+        .unwrap();
+    let mut stranger = connect(server.port()).await;
+    let mut member = connect(server.port()).await;
+    member.hello("t").await;
+    server.broadcast(Event::BotDeleted(Id { id: "b1".into() }));
+    assert_eq!(member.next().await["event"], "bot.deleted");
+    assert_eq!(stranger.try_next(Duration::from_secs(1)).await, None);
     server.close().await;
 }

@@ -47,9 +47,14 @@ fn picks_one_mode_from_the_flags_and_tjommie_dev() {
 #[test]
 fn reads_the_ports_and_the_account_folder_override() {
     let defaults = parse(&["--dev"], &[]).unwrap();
+    let ports = if cfg!(debug_assertions) {
+        (47200, 47201)
+    } else {
+        (47100, 47101)
+    };
     assert_eq!(
         (defaults.port, defaults.lan_port, defaults.accounts_dir),
-        (47100, 47101, None)
+        (ports.0, ports.1, None)
     );
     let set = parse(
         &["--dev"],
@@ -118,4 +123,53 @@ fn stops_cleanly_when_production_stdin_errors() {
         events(FailsAfter(io::Cursor::new(Vec::new()))),
         [StdinEvent::Closed]
     );
+}
+
+// T3.1 review follow-up.
+
+/// Spec §4: a debug build must never default to the production install's data root and ports.
+#[cfg(debug_assertions)]
+#[test]
+fn debug_builds_default_to_the_dev_identity() {
+    use daemon::paths::data_root_from;
+    use std::ffi::OsString;
+    let local = |key: &str| {
+        (key == "LOCALAPPDATA").then(|| OsString::from(r"C:\Users\owner\AppData\Local"))
+    };
+    assert_eq!(
+        data_root_from(local),
+        PathBuf::from(r"C:\Users\owner\AppData\Local\Tjommie-rs")
+    );
+    let home = |key: &str| (key == "TJOMMIE_HOME").then(|| OsString::from(r"D:\elsewhere"));
+    assert_eq!(data_root_from(home), PathBuf::from(r"D:\elsewhere"));
+    let launch = parse(&["--dev"], &[]).unwrap();
+    assert_eq!((launch.port, launch.lan_port), (47200, 47201));
+    let set = parse(
+        &["--dev"],
+        &[("TJOMMIE_PORT", "47100"), ("TJOMMIE_LAN_PORT", "47101")],
+    )
+    .unwrap();
+    assert_eq!((set.port, set.lan_port), (47100, 47101));
+}
+
+#[test]
+fn removes_a_stale_development_token_that_is_briefly_locked() {
+    // rmSync(..., { maxRetries: 3 }): an indexer or antivirus can hold the file for a moment.
+    let root = std::env::temp_dir().join(format!("tjommie-rs-test-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let file = root.join("daemon-token");
+    std::fs::write(&file, "x".repeat(43)).unwrap();
+    let locked =
+        std::os::windows::fs::OpenOptionsExt::share_mode(std::fs::OpenOptions::new().read(true), 0)
+            .open(&file)
+            .unwrap();
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(150));
+        drop(locked);
+    });
+    assert!(daemon::startup::remove_leftover_token(&file).unwrap());
+    release.join().unwrap();
+    assert!(!file.exists());
+    assert!(!daemon::startup::remove_leftover_token(&file).unwrap());
+    std::fs::remove_dir_all(&root).unwrap();
 }
