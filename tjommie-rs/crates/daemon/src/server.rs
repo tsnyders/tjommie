@@ -51,6 +51,32 @@ impl fmt::Display for RpcError {
 
 impl std::error::Error for RpcError {}
 
+/// A storage error the caller can't act on, as a thrown error in `server.ts` becomes `internal`.
+impl From<rusqlite::Error> for RpcError {
+    fn from(error: rusqlite::Error) -> Self {
+        RpcError::new(ErrorCode::Internal, error.to_string())
+    }
+}
+
+impl From<std::io::Error> for RpcError {
+    fn from(error: std::io::Error) -> Self {
+        RpcError::new(ErrorCode::Internal, error.to_string())
+    }
+}
+
+/// Sends events to every authenticated client. Handlers keep a clone.
+#[derive(Clone)]
+pub struct Broadcaster(Arc<Shared>);
+
+impl Broadcaster {
+    pub fn send(&self, event: Event) {
+        let text = serde_json::to_string(&ServerMessage::Event(event)).expect("events serialize");
+        for outbox in self.0.clients.lock().unwrap().values() {
+            let _ = outbox.send(Message::Text(text.clone().into()));
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Principal {
     /// A program on this PC that knows the token.
@@ -173,10 +199,12 @@ impl Server {
 
     /// Sends an event to every authenticated client.
     pub fn broadcast(&self, event: Event) {
-        let text = serde_json::to_string(&ServerMessage::Event(event)).expect("events serialize");
-        for outbox in self.shared.clients.lock().unwrap().values() {
-            let _ = outbox.send(Message::Text(text.clone().into()));
-        }
+        self.broadcaster().send(event);
+    }
+
+    /// For handlers, which are built before [`Server::activate`] and send events later.
+    pub fn broadcaster(&self) -> Broadcaster {
+        Broadcaster(self.shared.clone())
     }
 
     /// Starts answering with this token and these handlers.

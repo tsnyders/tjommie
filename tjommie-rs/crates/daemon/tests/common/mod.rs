@@ -23,6 +23,8 @@ const WAIT: Duration = Duration::from_secs(20);
 
 pub struct Client {
     ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
+    /// Events that arrived while `call` waited for its response, in order.
+    pub events: Vec<Value>,
 }
 
 pub async fn connect(port: u16) -> Client {
@@ -47,7 +49,10 @@ pub async fn try_connect(port: u16, headers: &[(&str, &str)]) -> Result<Client, 
         }
     }
     let (ws, _) = tokio_tungstenite::connect_async(request).await?;
-    Ok(Client { ws })
+    Ok(Client {
+        ws,
+        events: Vec::new(),
+    })
 }
 
 /// The HTTP status of a refused WebSocket upgrade.
@@ -103,11 +108,18 @@ impl Client {
         self.next().await
     }
 
-    /// Sends a request and returns its `res` frame. A successful result is checked against the method's manifest schema.
+    /// Sends a request and returns its `res` frame, keeping events that arrive first in `events`. A successful result
+    /// is checked against the method's manifest schema.
     pub async fn call(&mut self, id: i64, method: &str, params: Value) -> Value {
         self.send(json!({ "type": "req", "id": id, "method": method, "params": params }))
             .await;
-        let response = self.next().await;
+        let response = loop {
+            let frame = self.next().await;
+            if frame["type"] != "event" {
+                break frame;
+            }
+            self.events.push(frame);
+        };
         assert_eq!(response["id"], id, "{response}");
         if response["ok"] == true {
             protocol::assert_valid(method, &response["result"]);
@@ -388,4 +400,109 @@ impl Daemon {
 /// A fresh production token: 32 random bytes as 43 base64url characters.
 pub fn token() -> String {
     daemon::paths::new_token()
+}
+
+/// A database file in `dir` with the tables T3.2 uses.
+/// TODO(lane A merge): open it with daemon::db::open instead, and delete schema.sql.
+pub fn test_db(dir: &std::path::Path) -> rusqlite::Connection {
+    let connection = rusqlite::Connection::open(dir.join("t.db")).unwrap();
+    connection
+        .execute_batch("PRAGMA foreign_keys = ON;")
+        .unwrap();
+    connection
+        .execute_batch(include_str!("schema.sql"))
+        .unwrap();
+    connection
+}
+
+/// An account row as accounts-store.ts writes it. The first account of a provider is its default.
+pub fn insert_account(
+    connection: &rusqlite::Connection,
+    id: &str,
+    provider: &str,
+    folder: &std::path::Path,
+) {
+    let created = connection
+        .query_row("SELECT COUNT(*) FROM accounts", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO accounts (id, provider, label, kind, folder, created_at, is_default)
+             VALUES (?1, ?2, ?1, 'subscription', ?3, ?4, NOT EXISTS (SELECT 1 FROM accounts WHERE provider = ?2 AND is_default = 1))",
+            rusqlite::params![id, provider, folder.display().to_string(), format!("2026-01-01T00:00:{created:02}.000Z")],
+        )
+        .unwrap();
+}
+
+/// accounts-store.ts updateAccount(db, id, { isDefault: true }).
+pub fn make_default_account(connection: &rusqlite::Connection, id: &str) {
+    connection
+        .execute_batch(&format!(
+            "UPDATE accounts SET is_default = 0 WHERE provider = (SELECT provider FROM accounts WHERE id = '{id}');
+             UPDATE accounts SET is_default = 1 WHERE id = '{id}';"
+        ))
+        .unwrap();
+}
+
+fn run(program: &str, args: &[&std::ffi::OsStr]) {
+    let status = std::process::Command::from(daemon::spawn::command(program))
+        .args(args)
+        .stdout(Stdio::null())
+        .status()
+        .unwrap();
+    assert!(status.success(), "{program} {args:?} failed");
+}
+
+/// A directory junction, as `symlinkSync(target, link, "junction")` makes it.
+pub fn junction(target: &std::path::Path, link: &std::path::Path) {
+    run(
+        "cmd",
+        &[
+            "/c".as_ref(),
+            "mklink".as_ref(),
+            "/J".as_ref(),
+            link.as_os_str(),
+            target.as_os_str(),
+        ],
+    );
+}
+
+/// Denies this user deleting `file` and the children of its folder, so a recursive removal fails partway while the
+/// folders above it can still be renamed. Undo it with `allow_delete`.
+pub fn deny_delete(file: &std::path::Path) {
+    let user = std::env::var("USERNAME").unwrap();
+    run(
+        "icacls",
+        &[
+            file.as_os_str(),
+            "/deny".as_ref(),
+            format!("{user}:(D)").as_ref(),
+        ],
+    );
+    run(
+        "icacls",
+        &[
+            file.parent().unwrap().as_os_str(),
+            "/deny".as_ref(),
+            format!("{user}:(DC)").as_ref(),
+        ],
+    );
+}
+
+pub fn allow_delete(file: &std::path::Path) {
+    let user = std::env::var("USERNAME").unwrap();
+    run(
+        "icacls",
+        &[
+            file.parent().unwrap().as_os_str(),
+            "/remove:d".as_ref(),
+            user.as_ref(),
+        ],
+    );
+    run(
+        "icacls",
+        &[file.as_os_str(), "/remove:d".as_ref(), user.as_ref()],
+    );
 }
