@@ -1,8 +1,8 @@
 //! Port of `packages/daemon/src/providers/codex.test.ts`. A test-owned `JsonRpcLines` stands in for the app-server,
 //! as the mocked `startCodexServer` does in TypeScript.
 //!
-//! Not ported until T3.5 brings the Runner: "ignores an approved command's late events after Stop" (both rows) and
-//! "sends one provider interrupt when the runner stops during turn/start". They drive `Runner`, `db` and `bots`.
+//! "ignores an approved command's late events after Stop" (both rows) and "sends one provider interrupt when the
+//! runner stops during turn/start" drive the Runner; they are at the end.
 
 mod providers_fakes;
 
@@ -959,4 +959,201 @@ async fn reports_a_lost_app_server_as_an_exit_with_its_error() {
         }]
     );
     assert_eq!(h.codex.pid(), None);
+}
+
+// The steering cases that drive the Runner (T3.5).
+
+mod common;
+
+type Ended = Arc<Mutex<Vec<String>>>;
+
+/// A runner on a fresh database with the default accounts and a Codex bot, handing out `sessions` in order. Returns
+/// the runner, its database, the bot id, the items whose turn ended, how many sessions were made and the root.
+fn codex_runner(
+    sessions: Vec<CodexSession>,
+    autonomy: Option<&str>,
+) -> (
+    daemon::runner::Runner,
+    daemon::context::Db,
+    String,
+    Ended,
+    Arc<AtomicUsize>,
+    common::TempRoot,
+) {
+    let root = common::TempRoot::new();
+    let db = common::test_db(&root.0);
+    for (id, provider) in [("claude-main", "claude"), ("codex-main", "codex")] {
+        let folder = root.0.join("accounts").join(id);
+        std::fs::create_dir_all(&folder).unwrap();
+        common::insert_account(&db, id, provider, &folder);
+    }
+    let mut input = json!({ "name": "Codex Stop", "color": "blue", "shape": "circle", "provider": "codex", "model": "test-model", "instructions": "" });
+    if let Some(autonomy) = autonomy {
+        input["autonomy"] = json!(autonomy);
+    }
+    let bot = daemon::bots::create_bot(
+        &db,
+        &root.0.join("bots"),
+        &serde_json::from_value(input).unwrap(),
+    )
+    .unwrap();
+    let db = Arc::new(Mutex::new(db));
+    let ended: Ended = Arc::default();
+    let made = Arc::new(AtomicUsize::new(0));
+    let (record, count) = (Arc::clone(&ended), Arc::clone(&made));
+    let factory: daemon::runner::SessionFactory = Arc::new(move |_bot, _options| {
+        let index = count.fetch_add(1, Ordering::SeqCst);
+        Ok(Arc::new(sessions[index].clone()) as Arc<dyn ProviderSession>)
+    });
+    let hooks = daemon::runner::RunnerHooks {
+        turn_ended: Some(Arc::new(move |_core, item, _result| {
+            record.lock().unwrap().push(item.id.clone());
+            Ok(())
+        })),
+        ..Default::default()
+    };
+    let base = daemon::runner::RunnerDeps::new(Arc::clone(&db), Arc::new(|_| Ok(())), factory);
+    let runner = daemon::runner::Runner::new(daemon::runner::RunnerDeps { hooks, ..base });
+    (runner, db, bot.id, ended, made, root)
+}
+
+async fn wait_for(check: impl Fn() -> bool) {
+    for _ in 0..2000 {
+        if check() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+    }
+    panic!("timed out waiting for the condition");
+}
+
+fn work_status(db: &daemon::context::Db, message_id: &str) -> String {
+    db.lock()
+        .unwrap()
+        .query_row(
+            "SELECT status FROM work_items WHERE message_id = ?1",
+            [message_id],
+            |row| row.get(0),
+        )
+        .unwrap()
+}
+
+#[tokio::test]
+async fn ignores_an_approved_commands_late_events_after_stop() {
+    for already_queued in [false, true] {
+        let h = build(true, None, |_| {}, "test-model", None);
+        let replacement = build(true, Some("thread-1"), |_| {}, "test-model", None);
+        let (terminated, finished) = oneshot::channel::<()>();
+        let exit = h.exit.clone();
+        h.kill.once(move || {
+            // The parent's exit alone must not release the runner's queue.
+            exit.fire(CliExit::Exited {
+                code: Some(1),
+                signal: None,
+            });
+            Box::pin(async move {
+                let _ = finished.await;
+                Ok(())
+            })
+        });
+        let sessions = vec![h.codex.clone(), replacement.codex.clone()];
+        let (runner, db, bot_id, ended, made, _root) = codex_runner(sessions, Some("ask"));
+        let notify = |method: &str, mut params: Value| {
+            params["threadId"] = json!("thread-1");
+            h.notify(method, params);
+        };
+        let message = runner
+            .submit(&bot_id, "Run the foreground timer", &[])
+            .unwrap();
+        wait_for(|| !h.requests("turn/start").is_empty()).await;
+        let turn_start = h.requests("turn/start")[0]["id"].clone();
+        h.line(json!({ "id": turn_start, "result": { "turn": { "id": "stopped" } } }));
+        notify(
+            "turn/started",
+            json!({ "turn": { "id": "stopped", "status": "inProgress" } }),
+        );
+        let item = json!({ "id": "timer", "type": "commandExecution", "command": "node timer", "status": "inProgress" });
+        notify("item/started", json!({ "turnId": "stopped", "item": item }));
+        let params = json!({ "threadId": "thread-1", "turnId": "stopped", "itemId": "timer", "command": "node timer" });
+        h.line(json!({ "id": "approve", "method": "item/commandExecution/requestApproval", "params": params }));
+        let pending = || -> Option<String> {
+            let db = db.lock().unwrap();
+            let mut statement = db
+                .prepare("SELECT id FROM approvals WHERE status = 'pending'")
+                .unwrap();
+            statement
+                .query_map([], |row| row.get(0))
+                .unwrap()
+                .next()
+                .map(Result::unwrap)
+        };
+        wait_for(|| pending().is_some()).await;
+        runner
+            .answer_approval(&pending().unwrap(), protocol::model::ApprovalDecision::Once)
+            .unwrap();
+        if already_queued {
+            let work = daemon::queue::NewWork::new(
+                &bot_id,
+                daemon::queue::WorkSource::Routine,
+                "Reply ROUTINE-OK",
+            );
+            runner.deliver(work).unwrap();
+        }
+        let stopping = tokio::spawn(runner.stop(&bot_id));
+        wait_for(|| !h.requests("turn/interrupt").is_empty()).await;
+        let interrupt = h.requests("turn/interrupt")[0]["id"].clone();
+        notify(
+            "turn/completed",
+            json!({ "turn": { "id": "stopped", "status": "interrupted", "error": null } }),
+        );
+        // Captured from the real app-server: approval, Stop, turn/completed, then item/started for the same command
+        // and item/completed, with no further turn completion.
+        notify("item/started", json!({ "turnId": "stopped", "item": item }));
+        let mut failed = item.clone();
+        failed["status"] = json!("failed");
+        notify(
+            "item/completed",
+            json!({ "turnId": "stopped", "item": failed }),
+        );
+        settle().await;
+        assert_eq!(
+            work_status(&db, &message.id),
+            "running",
+            "already queued: {already_queued}"
+        );
+        h.line(json!({ "id": interrupt, "result": {} }));
+        wait_for(|| h.kill.calls() > 0).await;
+        settle().await;
+        assert_eq!(*ended.lock().unwrap(), Vec::<String>::new());
+        assert_eq!(made.load(Ordering::SeqCst), 1);
+        let bot = daemon::bots::get_stored_bot(&db.lock().unwrap(), &bot_id).unwrap();
+        assert_eq!(runner.to_bot(bot).state, protocol::model::BotState::Working);
+        terminated.send(()).unwrap();
+        stopping.await.unwrap().unwrap();
+    }
+}
+
+#[tokio::test]
+async fn sends_one_provider_interrupt_when_the_runner_stops_during_turn_start() {
+    let h = build(true, None, |_| {}, "test-model", None);
+    let (runner, db, bot_id, _ended, _made, _root) = codex_runner(vec![h.codex.clone()], None);
+    let message = runner.submit(&bot_id, "begin", &[]).unwrap();
+    wait_for(|| !h.requests("turn/start").is_empty()).await;
+    let stopped = tokio::spawn(runner.stop(&bot_id));
+    let turn_start = h.requests("turn/start")[0]["id"].clone();
+    h.line(json!({ "id": turn_start, "result": { "turn": { "id": "turn-1" } } }));
+    settle().await;
+    assert_eq!(h.requests("turn/interrupt").len(), 1);
+    assert_eq!(work_status(&db, &message.id), "running");
+    for request in h.requests("turn/interrupt") {
+        h.line(json!({ "id": request["id"], "result": {} }));
+    }
+    stopped.await.unwrap().unwrap();
+    h.notify(
+        "turn/completed",
+        json!({ "turn": { "id": "turn-1", "status": "interrupted", "error": null } }),
+    );
+    settle().await;
+    assert_eq!(h.requests("turn/interrupt").len(), 1);
+    assert_eq!(work_status(&db, &message.id), "interrupted");
 }
