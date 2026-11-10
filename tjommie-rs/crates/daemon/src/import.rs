@@ -297,13 +297,14 @@ fn detach(db: &Path, from: &str, to: &str) -> rusqlite::Result<()> {
     for table in PROJECT_TEAM_TABLES {
         tx.execute(&format!("DELETE FROM {table}"), [])?;
     }
-    // Live task work would act on attempts that are gone, so it ends as failed, the way the daemon ends work itself.
-    // Finished rows keep their history; sessions keyed by a task's context are never matched again.
+    // Live work would run in both installs (paid turns, duplicate messages), and live task work would act on attempts
+    // that are gone. It ends as failed, the way the daemon ends work itself, and routines are paused. Finished rows
+    // keep their history; sessions keyed by a task's context are never matched again.
     tx.execute_batch(&format!(
-        "UPDATE work_items SET status = 'failed', ended_at = {NOW}
-           WHERE task_attempt_id IS NOT NULL AND status IN ('queued', 'running');
+        "UPDATE work_items SET status = 'failed', ended_at = {NOW} WHERE status IN ('queued', 'running');
          UPDATE exchanges SET status = 'failed', reply = 'Project teams were not imported.', replied_at = {NOW}
-           WHERE task_attempt_id IS NOT NULL AND status = 'waiting';"
+           WHERE task_attempt_id IS NOT NULL AND status = 'waiting';
+         UPDATE routines SET enabled = 0;"
     ))?;
     // The daemon uses these folders as stored, so copies left pointing into the source would write there. They are
     // matched by what they name, so any spelling of the source root (`from` is its identity) moves.

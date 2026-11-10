@@ -90,8 +90,9 @@ fn import(args: &[String]) -> Result<(), StartupError> {
         "Re-wrote {} account keys and {} logins in this install's Credential Manager namespace.",
         secrets.account_keys, secrets.logins
     );
+    println!("Project teams weren't imported: their tasks and worktrees stay with {from}.");
     println!(
-        "Project teams weren't imported: their tasks and worktrees stay with {from}, and queued task work was marked failed."
+        "Routines are paused and queued or running work was marked failed, so nothing runs in both installs."
     );
     println!("Bots' browser profiles weren't copied, so this install's browser starts signed out.");
     Ok(())

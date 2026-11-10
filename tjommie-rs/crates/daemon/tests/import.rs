@@ -348,6 +348,7 @@ fn says_that_project_teams_were_not_imported() {
     assert!(out.contains("Project teams weren't imported"), "{out}");
     assert!(out.contains("0 account keys and 0 logins"), "{out}");
     assert!(out.contains("browser starts signed out"), "{out}");
+    assert!(out.contains("Routines are paused"), "{out}");
 }
 
 /// A bot's browser profile holds signed-in web sessions (and is locked while that browser runs), so it stays behind.
@@ -400,6 +401,56 @@ fn names_a_file_it_cannot_copy() {
     let error = import::copy_data(source.path(), target.path(), false).unwrap_err();
     drop(locked);
     assert!(error.to_string().contains(text(&notes)), "{error}");
+}
+
+/// The copy would otherwise run alongside the source install: routines would fire twice and queued turns (paid ones)
+/// would run in both. The fixture holds a running and a queued chat turn.
+#[test]
+fn pauses_routines_and_fails_live_work() {
+    let source = source();
+    let source_db = source.path().join("data").join("tjommie.db");
+    Connection::open(&source_db)
+        .unwrap()
+        .execute_batch(
+            r#"INSERT INTO routines (id, bot_id, name, prompt, days, times, time_zone, enabled, created_at)
+                 VALUES ('daily', 'legacy-bot', 'Daily', 'Check', '[1]', '["08:00"]', 'UTC', 1, 'then');
+               INSERT INTO work_items (id, bot_id, source, text, status, created_at, conversation_id)
+                 VALUES ('old-turn', 'legacy-bot', 'you', 'Hello', 'done', 'then', 'legacy-bot');"#,
+        )
+        .unwrap();
+    let target = temp("tjommie target ñ-");
+
+    import::copy_data(source.path(), target.path(), false).unwrap();
+
+    let db = target.path().join("data").join("tjommie.db");
+    assert_eq!(count(&db, "SELECT COUNT(*) FROM routines"), 1);
+    assert_eq!(
+        count(&db, "SELECT COUNT(*) FROM routines WHERE enabled = 1"),
+        0
+    );
+    let failed = "SELECT COUNT(*) FROM work_items WHERE id IN ('running-work', 'queued-work') AND status = 'failed' AND ended_at IS NOT NULL";
+    assert_eq!(count(&db, failed), 2);
+    assert_eq!(
+        count(
+            &db,
+            "SELECT COUNT(*) FROM work_items WHERE status IN ('queued', 'running')"
+        ),
+        0
+    );
+    assert_eq!(
+        count(
+            &db,
+            "SELECT COUNT(*) FROM work_items WHERE id = 'old-turn' AND status = 'done'"
+        ),
+        1
+    );
+    assert_eq!(
+        count(
+            &source_db,
+            "SELECT COUNT(*) FROM routines WHERE enabled = 1"
+        ),
+        1
+    );
 }
 
 #[test]
