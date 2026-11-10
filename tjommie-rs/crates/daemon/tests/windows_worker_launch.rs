@@ -222,6 +222,7 @@ fn closing_the_job_kills_the_whole_tree() {
 /// Admin, CI-runner only: a disposable `TjWorker-<test ns8>` account runs a process tree inside
 /// `Global\TjommieWorkerJob-…`; stopping the job kills the tree; the account is removed by its ns8.
 #[test]
+#[ignore = "admin: needs elevation; run with TJOMMIE_RS_ADMIN_TESTS=1 cargo test -- --ignored"]
 fn admin_worker_launch_runs_inside_a_global_job_and_dies_with_it() {
     if std::env::var("TJOMMIE_RS_ADMIN_TESTS").as_deref() != Ok("1") {
         eprintln!("skipped: set TJOMMIE_RS_ADMIN_TESTS=1 on a disposable machine");
@@ -282,6 +283,7 @@ fn admin_worker_launch_runs_inside_a_global_job_and_dies_with_it() {
 /// Admin, CI-runner only: a launch frame larger than the pipe buffer reaches a real suspended worker, because the
 /// write runs while the worker is resumed (review MAJOR: written first, it would never return).
 #[tokio::test]
+#[ignore = "admin: needs elevation; run with TJOMMIE_RS_ADMIN_TESTS=1 cargo test -- --ignored"]
 async fn admin_a_frame_over_8_kib_reaches_a_real_worker() {
     if std::env::var("TJOMMIE_RS_ADMIN_TESTS").as_deref() != Ok("1") {
         eprintln!("skipped: set TJOMMIE_RS_ADMIN_TESTS=1 on a disposable machine");
