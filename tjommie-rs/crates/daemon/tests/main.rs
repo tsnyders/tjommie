@@ -164,6 +164,31 @@ async fn prints_an_unexpected_startup_error_with_its_details_and_without_the_tok
 }
 
 #[tokio::test]
+async fn names_the_database_file_when_it_cannot_be_opened() {
+    let root = TempRoot::new();
+    let db = root.0.join("data").join("tjommie.db");
+    std::fs::create_dir_all(&db).unwrap();
+    let token = token();
+    let mut daemon = launch(&["--token-stdin"], root, &[]);
+    daemon
+        .write(&format!(
+            "{token}
+"
+        ))
+        .await;
+    daemon.close_stdin();
+    assert_eq!(daemon.exited().await.code(), Some(1));
+    let stderr = daemon.stderr();
+    assert!(stderr.contains(&db.display().to_string()), "{stderr}");
+    assert!(
+        !stderr.contains("Custom {") && !stderr.contains("kind:"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains(&token));
+    assert_eq!(daemon.stdout(), "");
+}
+
+#[tokio::test]
 async fn requires_an_explicit_mode() {
     exits_plainly(launch(&[], TempRoot::new(), &[]), MISSING_MODE).await;
 }

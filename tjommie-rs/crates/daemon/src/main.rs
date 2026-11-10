@@ -16,7 +16,7 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
         Err(StartupError::Unexpected(error)) => {
-            eprintln!("Tjommie's daemon could not start: {error:?}");
+            eprintln!("Tjommie's daemon could not start: {error}");
             ExitCode::FAILURE
         }
     }
