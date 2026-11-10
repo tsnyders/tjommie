@@ -679,3 +679,102 @@ async fn keeps_api_authentication_out_of_argv_and_redacts_provider_errors_while_
     );
     claude.close();
 }
+
+// Worker boundaries (T3.4; covered in TypeScript by the runner and worker real tests).
+
+const UNCONFIRMED: &str =
+    "The isolated provider could not confirm process-tree exit. Its account stays reserved.";
+
+#[tokio::test]
+async fn grants_the_session_project_and_extra_folders_before_launching() {
+    let host = Arc::new(FakeHost::default());
+    let root = temp_root();
+    let (child, fake) = fake_child(4321);
+    host.push_child(child);
+    let claude = session(
+        &host,
+        StartOptions {
+            extra_dirs: vec![r"C:\home".into()],
+            ..base(root.path())
+        },
+    );
+    claude.start().await.unwrap();
+    let (_, args, _) = host.last_launch();
+    let folder = PathBuf::from(arg_after(&args, "--append-system-prompt-file"))
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    assert_eq!(
+        *host.grants.lock().unwrap(),
+        vec![vec![
+            folder,
+            root.path().to_path_buf(),
+            PathBuf::from(r"C:\home")
+        ]]
+    );
+    claude.close();
+    fake.exit_with(Some(0), None);
+}
+
+#[tokio::test]
+async fn holds_a_worker_childs_exit_until_its_tree_has_gone() {
+    let host = Arc::new(FakeHost::default());
+    let root = temp_root();
+    let (mut child, fake) = fake_child(4321);
+    let (proof, settle_proof) = providers_fakes::retirement();
+    child.retirement = Some(proof);
+    host.push_child(child);
+    let claude = session(&host, base(root.path()));
+    let mut events = claude.subscribe();
+    claude.start().await.unwrap();
+    let exited = tokio::spawn(claude.wait_for_exit());
+    fake.exit_with(Some(0), None);
+    settle().await;
+    assert_eq!(drain(&mut events), vec![]);
+    assert!(!exited.is_finished());
+    settle_proof.send(Ok(())).unwrap();
+    assert_eq!(exited.await.unwrap(), Ok(()));
+    assert_eq!(
+        drain(&mut events),
+        vec![ProviderEvent::Exit {
+            error: None,
+            completed_turn: None
+        }]
+    );
+}
+
+#[tokio::test]
+async fn reports_an_unconfirmed_tree_as_a_failed_turn_and_keeps_waiting_callers_informed() {
+    let host = Arc::new(FakeHost::default());
+    let root = temp_root();
+    let (mut child, fake) = fake_child(4321);
+    let (proof, settle_proof) = providers_fakes::retirement();
+    child.retirement = Some(proof);
+    host.push_child(child);
+    let claude = session(&host, base(root.path()));
+    let mut events = claude.subscribe();
+    claude.start().await.unwrap();
+    fake.exit_with(Some(1), None);
+    settle_proof
+        .send(Err("the job could not be closed".into()))
+        .unwrap();
+    let exited = claude.wait_for_exit().await;
+    assert!(
+        exited
+            .unwrap_err()
+            .message()
+            .contains("could not confirm process-tree termination")
+    );
+    assert_eq!(
+        drain(&mut events),
+        vec![ProviderEvent::TurnDone(daemon::providers::TurnResult {
+            ok: false,
+            error: Some(UNCONFIRMED.into())
+        })]
+    );
+    assert_eq!(
+        claude.steer("too late").await,
+        Ok(false),
+        "the session is closing"
+    );
+}

@@ -13,7 +13,10 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 use super::{ProviderError, js};
-use crate::cli::{ChildExit, CliChild, CliCommand, CliExit, CliHost, KillTree, LaunchOptions};
+use crate::cli::{
+    ChildExit, CliChild, CliCommand, CliExit, CliHost, KillTree, LaunchOptions, Retirement,
+    wait_for_cli_exit,
+};
 
 /// A request id: a number or a string. Tjommie's own requests use numbers.
 #[derive(Debug, Clone, PartialEq)]
@@ -219,6 +222,8 @@ pub struct CodexServer {
     pub kill_tree: KillTree,
     /// Ends stdin, then stops the process tree if it is still running 3 seconds later.
     pub close: Arc<dyn Fn() + Send + Sync>,
+    /// Set inside a worker boundary: proof that the whole process tree has gone.
+    pub retirement: Option<Retirement>,
 }
 
 /// Starts `codex app-server` with the given environment (CODEX_HOME = the account folder) and completes
@@ -250,6 +255,7 @@ pub async fn start_codex_server<H: CliHost + ?Sized>(
         stderr,
         exit,
         kill_tree,
+        retirement,
     } = host.launch(cmd, args, options).await?;
 
     let (lines, lines_out) = mpsc::unbounded_channel::<String>();
@@ -331,7 +337,7 @@ pub async fn start_codex_server<H: CliHost + ?Sized>(
         .await
     {
         close();
-        exit.wait().await;
+        wait_for_cli_exit(&exit, retirement.as_ref()).await?;
         return Err(error);
     }
     rpc.notify("initialized", None);
@@ -341,6 +347,7 @@ pub async fn start_codex_server<H: CliHost + ?Sized>(
         exit,
         kill_tree,
         close,
+        retirement,
     })
 }
 

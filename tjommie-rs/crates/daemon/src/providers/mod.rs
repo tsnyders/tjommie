@@ -248,6 +248,11 @@ pub enum ProviderError {
 }
 
 impl ProviderError {
+    /// A worker launch or exit whose process tree may still run (`WorkerLaunchTerminationError`).
+    pub fn is_worker_termination(&self) -> bool {
+        self.message() == crate::cli::WorkerTermination.to_string()
+    }
+
     pub fn message(&self) -> &str {
         match self {
             ProviderError::Remote { message, .. } | ProviderError::Failed(message) => message,
@@ -282,8 +287,9 @@ pub trait ProviderSession: Send + Sync {
     fn interrupt(&self) -> BoxFuture<'static, Result<bool, ProviderError>>;
     fn answer(&self, approval_id: &str, answer: ApprovalAnswer);
     fn close(&self);
-    /// Resolves after the underlying process has exited, including a pending start.
-    fn wait_for_exit(&self) -> BoxFuture<'static, ()>;
+    /// Resolves after the underlying process has exited, including a pending start. An error means a worker could not
+    /// confirm that its whole process tree has gone: the account stays reserved.
+    fn wait_for_exit(&self) -> BoxFuture<'static, Result<(), ProviderError>>;
     fn pid(&self) -> Option<u32>;
     /// Every event from now on (`onEvent` in TypeScript).
     fn subscribe(&self) -> mpsc::UnboundedReceiver<ProviderEvent>;

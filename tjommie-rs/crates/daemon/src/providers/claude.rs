@@ -20,9 +20,15 @@ use super::{
     Approval, ApprovalAnswer, McpServer, ProviderError, ProviderEvent, ProviderSession,
     StartOptions, Subscribers, TurnResult, Usage, js, read_lines, redact_provider_event,
 };
-use crate::cli::{BoxFuture, CliChild, CliCommand, CliExit, CliHost, KillTree, LaunchOptions};
+use crate::cli::{
+    BoxFuture, CliChild, CliCommand, CliExit, CliHost, Env, KillTree, LaunchOptions, Retirement,
+    WorkerTermination, cli_env, process_env,
+};
 
 const INTERRUPT_GRACE: Duration = Duration::from_secs(10);
+/// The `turn_done` error when a worker could not prove that Claude's process tree has gone.
+pub const UNCONFIRMED_EXIT: &str =
+    "The isolated provider could not confirm process-tree exit. Its account stays reserved.";
 const CLOSE_GRACE: Duration = Duration::from_secs(5);
 /// Kept for the exit message: the last 2,000 characters are reported.
 const STDERR_TAIL_BYTES: usize = 8_000;
@@ -124,6 +130,17 @@ struct Child {
     stdin: Option<mpsc::UnboundedSender<String>>,
     exit: crate::cli::ChildExit,
     kill_tree: KillTree,
+    retirement: Option<Retirement>,
+}
+
+/// What `waitForExit` waits on.
+#[derive(Clone, Copy, PartialEq)]
+enum Lifecycle {
+    /// No child runs.
+    Idle,
+    Running,
+    /// A worker could not confirm that the tree has gone.
+    Unconfirmed,
 }
 
 impl Child {
@@ -154,8 +171,7 @@ struct Inner {
     options: StartOptions,
     subscribers: Subscribers,
     state: Mutex<State>,
-    /// True while no child runs (`waitForExit`).
-    idle: watch::Sender<bool>,
+    lifecycle: watch::Sender<Lifecycle>,
 }
 
 /// One `claude -p` process. Cloning shares the session.
@@ -189,7 +205,7 @@ impl ClaudeSession {
             options,
             subscribers: Subscribers::default(),
             state: Mutex::new(state),
-            idle: watch::channel(true).0,
+            lifecycle: watch::channel(Lifecycle::Idle).0,
         }))
     }
 }
@@ -319,10 +335,19 @@ impl ProviderSession for ClaudeSession {
         );
     }
 
-    fn wait_for_exit(&self) -> BoxFuture<'static, ()> {
-        let mut idle = self.0.idle.subscribe();
+    fn wait_for_exit(&self) -> BoxFuture<'static, Result<(), ProviderError>> {
+        let mut lifecycle = self.0.lifecycle.subscribe();
         Box::pin(async move {
-            let _ = idle.wait_for(|idle| *idle).await;
+            let settled = lifecycle
+                .wait_for(|state| *state != Lifecycle::Running)
+                .await
+                .map(|state| *state);
+            match settled {
+                Ok(Lifecycle::Unconfirmed) => {
+                    Err(ProviderError::Failed(WorkerTermination.to_string()))
+                }
+                _ => Ok(()),
+            }
         })
     }
 
@@ -358,6 +383,11 @@ impl Inner {
         self.lock().files_dir = Some(dir.clone());
         let child = match self.launch(&dir).await {
             Ok(child) => child,
+            Err(error) if error.is_worker_termination() => {
+                // The launch may have left a running tree: keep its files and report it to waitForExit.
+                self.lifecycle.send_replace(Lifecycle::Unconfirmed);
+                return Err(error);
+            }
             Err(error) => {
                 remove_files(&mut self.lock());
                 return Err(error);
@@ -370,6 +400,7 @@ impl Inner {
             stderr,
             exit,
             kill_tree,
+            retirement,
         } = child;
         let (lines, lines_out) = mpsc::unbounded_channel();
         let generation = {
@@ -382,10 +413,11 @@ impl Inner {
                 stdin: Some(lines),
                 exit: exit.clone(),
                 kill_tree,
+                retirement,
             });
             generation
         };
-        self.idle.send_replace(false);
+        self.lifecycle.send_replace(Lifecycle::Running);
         tokio::spawn(write_stdin(stdin, lines_out));
         let stderr_tail: Arc<Mutex<Vec<u8>>> = Arc::default();
         tokio::spawn(collect_tail(stderr, Arc::clone(&stderr_tail)));
@@ -421,6 +453,9 @@ impl Inner {
             .map_err(|_| {
                 ProviderError::Failed("Could not make Claude's session files private.".into())
             })??;
+        let mut folders = vec![dir.to_path_buf(), PathBuf::from(&self.options.cwd)];
+        folders.extend(self.options.extra_dirs.iter().map(PathBuf::from));
+        self.host.prepare_provider_directories(folders).await?;
         let path = |name: &str| dir.join(name).to_string_lossy().into_owned();
         let files = SessionFiles {
             instructions: path("instructions.txt"),
@@ -444,11 +479,16 @@ impl Inner {
         Ok(self.host.launch(&self.cmd, args, options).await?)
     }
 
-    fn exited(&self, generation: u64, exit: &CliExit, stderr_tail: &Mutex<Vec<u8>>) {
-        let mut state = self.lock();
-        if state.child.as_ref().map(|child| child.generation) != Some(generation) {
+    fn exited(self: &Arc<Self>, generation: u64, exit: &CliExit, stderr_tail: &Mutex<Vec<u8>>) {
+        let state = self.lock();
+        let Some(child) = state
+            .child
+            .as_ref()
+            .filter(|child| child.generation == generation)
+        else {
             return; // already reported or from a superseded child
-        }
+        };
+        let retirement = child.retirement.clone();
         let error = match exit {
             _ if state.closing => None,
             CliExit::Failed(error) => Some(error.clone()),
@@ -468,9 +508,36 @@ impl Inner {
                 })
             }
         };
+        drop(state);
+        let Some(proof) = retirement else {
+            return self.finish_exited(generation, error);
+        };
+        let inner = Arc::clone(self);
+        tokio::spawn(async move {
+            match proof.await {
+                Ok(()) => inner.finish_exited(generation, error),
+                Err(_) => {
+                    let mut state = inner.lock();
+                    state.closing = true;
+                    state.in_turn = false;
+                    inner.lifecycle.send_replace(Lifecycle::Unconfirmed);
+                    inner.emit(ProviderEvent::TurnDone(TurnResult {
+                        ok: false,
+                        error: Some(UNCONFIRMED_EXIT.into()),
+                    }));
+                }
+            }
+        });
+    }
+
+    fn finish_exited(&self, generation: u64, error: Option<String>) {
+        let mut state = self.lock();
+        if state.child.as_ref().map(|child| child.generation) != Some(generation) {
+            return;
+        }
         state.child = None;
         remove_files(&mut state);
-        self.idle.send_replace(true);
+        self.lifecycle.send_replace(Lifecycle::Idle);
         state.in_turn = false;
         state
             .interrupt_timer
@@ -661,13 +728,15 @@ static USER_SID: Mutex<Option<String>> = Mutex::new(None);
 static SID: LazyLock<Regex> = LazyLock::new(|| Regex::new("S-1-[0-9-]+").unwrap());
 
 /// Windows ignores POSIX file modes. Remove inherited ACL entries before placing secrets in the folder.
-// ponytail: whoami and icacls inherit the daemon's environment until T3.4 ports cliEnv; TypeScript scrubs it.
 fn restrict_session_folder(folder: &Path) -> Result<(), ProviderError> {
+    let env = cli_env(&Env::new(), &process_env());
     let sid = {
         let mut sid = USER_SID.lock().expect("SID lock");
         if sid.is_none() {
             let identity = crate::spawn::command("whoami")
                 .args(["/user", "/fo", "csv", "/nh"])
+                .env_clear()
+                .envs(&env)
                 .stdin(Stdio::null())
                 .output();
             *sid = identity.ok().and_then(|output| {
@@ -682,6 +751,8 @@ fn restrict_session_folder(folder: &Path) -> Result<(), ProviderError> {
     let result = crate::spawn::command("icacls")
         .arg(folder)
         .args(["/inheritance:r", "/grant:r", &format!("*{sid}:(OI)(CI)F")])
+        .env_clear()
+        .envs(&env)
         .stdin(Stdio::null())
         .output();
     match result {

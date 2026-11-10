@@ -208,7 +208,7 @@ impl Namespace {
 /// Node's `path.resolve()` on Windows: absolute, `\` separators, no `.` or `..`, and no trailing separator except
 /// at a drive root. ponytail: GetFullPathNameW also drops trailing dots and spaces and Node doesn't; such a root
 /// would get a different namespace. Port Node's algorithm if a real root ever ends that way.
-fn resolve(root: &Path) -> io::Result<String> {
+pub(crate) fn resolve(root: &Path) -> io::Result<String> {
     let absolute = std::path::absolute(root)?;
     let text = absolute
         .to_str()
