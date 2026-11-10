@@ -9,6 +9,11 @@
 //! session exists as soon as `submit` returns, and steering claims a queued item inside `deliver`. The ports keep it:
 //! each does its synchronous part inside the lock, and only the rest runs as a task (see [`Turn`]).
 //!
+//! **Steering after the first send (on purpose, not TypeScript's way).** When a turn's first message reaches the CLI,
+//! queued follow-ups are steered in. If reading the queue (`next_steerable`) or claiming an item (`set_status`) fails
+//! then, the error is logged and the turn carries on with its item unclaimed, so it runs as a later turn. In TypeScript
+//! that throw rejected `#startTurn` and failed a turn that was already running fine. Keep this.
+//!
 //! **T3.4 seams.** Accounts come in through [`Accounts`] (`AccountRuntime`). `accountFor`, `accountEnv`, `priceUsage` and
 //! `recordUsage` are small stand-ins at the end of this file, each marked for T3.4's version at merge.
 
