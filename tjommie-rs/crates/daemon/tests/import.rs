@@ -1,0 +1,424 @@
+//! T1.4 `tjommie-daemon import --from <root>` (spec §4). Every source and target is a temp root; nothing here reads
+//! or writes the real `%LOCALAPPDATA%\Tjommie`.
+
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use daemon::{import, spawn};
+use rusqlite::Connection;
+use sha2::{Digest, Sha256};
+use tempfile::TempDir;
+
+const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fixture.db");
+const LOGIN: &str = "0f8fad5b-d9cb-469f-a165-70867728950e";
+const ELSEWHERE: &str = r"D:\Elsewhere\codex";
+
+fn temp(prefix: &str) -> TempDir {
+    tempfile::Builder::new().prefix(prefix).tempdir().unwrap()
+}
+
+fn text(path: &Path) -> &str {
+    path.to_str().unwrap()
+}
+
+/// A 0.4.2 data root: the fixture database with a paired phone, a logins database, a bot folder and an account folder
+/// that holds a Claude sign-in.
+fn source() -> TempDir {
+    let dir = temp("tjommie source ñ-");
+    let root = dir.path();
+    let data = root.join("data");
+    fs::create_dir_all(&data).unwrap();
+    fs::copy(FIXTURE, data.join("tjommie.db")).unwrap();
+    let home = root.join("bots").join("legacy-bot");
+    let account = root.join("accounts").join("claude-main");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&account).unwrap();
+    fs::write(home.join("notes.md"), "# Writer's notes\n").unwrap();
+    fs::write(home.join(".credentials.json"), "{\"stray\":true}").unwrap();
+    fs::write(account.join(".credentials.json"), "{\"claudeAiOauth\":{}}").unwrap();
+    {
+        let db = Connection::open(data.join("tjommie.db")).unwrap();
+        db.execute(
+            "UPDATE bots SET home_folder = ?1 WHERE id = 'legacy-bot'",
+            [text(&home)],
+        )
+        .unwrap();
+        db.execute(
+            "UPDATE accounts SET folder = ?1 WHERE id = 'claude-main'",
+            [text(&account)],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO accounts (id, provider, label, kind, folder, created_at) VALUES ('codex-elsewhere', 'codex', 'Codex', 'api_key', ?1, 'now')",
+            [ELSEWHERE],
+        )
+        .unwrap();
+        db.execute_batch(
+            "INSERT INTO devices (id, name, public_key, paired_at) VALUES ('phone', 'Phone', 'key', 'now');
+             INSERT INTO remote_host (singleton, id, name, public_key, created_at) VALUES (1, 'host', 'PC', 'key', 'now');
+             INSERT INTO pairing_codes (id, secret_hash, expires_at, created_at) VALUES ('code', 'hash', 'later', 'now');",
+        )
+        .unwrap();
+    }
+    let logins = Connection::open(data.join("logins.sqlite")).unwrap();
+    logins
+        .execute_batch(
+            "PRAGMA journal_mode=WAL; CREATE TABLE logins (id TEXT PRIMARY KEY, data TEXT NOT NULL, reference TEXT NOT NULL UNIQUE);
+             CREATE TABLE login_deletions (reference TEXT PRIMARY KEY);",
+        )
+        .unwrap();
+    logins
+        .execute("INSERT INTO logins VALUES ('login-1', '{}', ?1)", [LOGIN])
+        .unwrap();
+    dir
+}
+
+fn count(db: &Path, sql: &str) -> i64 {
+    Connection::open(db)
+        .unwrap()
+        .query_row(sql, [], |row| row.get(0))
+        .unwrap()
+}
+
+/// The sha256 of every path and file under `root`.
+fn tree_hash(root: &Path) -> String {
+    fn walk(root: &Path, dir: &Path, out: &mut Vec<(String, Vec<u8>)>) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            let name = path
+                .strip_prefix(root)
+                .unwrap()
+                .to_string_lossy()
+                .into_owned();
+            if path.is_dir() {
+                out.push((format!("{name}\\"), Vec::new()));
+                walk(root, &path, out);
+            } else {
+                out.push((name, fs::read(&path).unwrap()));
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(root, root, &mut files);
+    files.sort();
+    let mut hash = Sha256::new();
+    for (name, bytes) in files {
+        hash.update((name.len() as u64).to_le_bytes());
+        hash.update(name);
+        hash.update((bytes.len() as u64).to_le_bytes());
+        hash.update(bytes);
+    }
+    format!("{:x}", hash.finalize())
+}
+
+fn files_named(root: &Path, name: &str) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    for entry in fs::read_dir(root).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            found.extend(files_named(&path, name));
+        } else if path.file_name().is_some_and(|file| file == name) {
+            found.push(path);
+        }
+    }
+    found
+}
+
+#[test]
+fn copies_the_databases_and_bots_without_changing_the_source() {
+    let source = source();
+    let target = temp("tjommie target ñ-");
+    let before = tree_hash(source.path());
+
+    import::copy_data(source.path(), target.path(), false).unwrap();
+
+    assert_eq!(tree_hash(source.path()), before);
+    let data = target.path().join("data");
+    assert_eq!(
+        count(&data.join("tjommie.db"), "SELECT COUNT(*) FROM messages"),
+        4
+    );
+    assert_eq!(
+        count(&data.join("logins.sqlite"), "SELECT COUNT(*) FROM logins"),
+        1
+    );
+    let notes = fs::read_to_string(
+        target
+            .path()
+            .join("bots")
+            .join("legacy-bot")
+            .join("notes.md"),
+    )
+    .unwrap();
+    assert_eq!(notes, "# Writer's notes\n");
+}
+
+/// After a crash the source can hold rows that are only in its WAL. The copy reads them, and the source's database and
+/// WAL stay as they were: nothing checkpoints into the other install.
+#[test]
+fn copies_an_unmerged_wal_without_merging_it_into_the_source() {
+    let source = source();
+    let db = source.path().join("data").join("tjommie.db");
+    let wal = source.path().join("data").join("tjommie.db-wal");
+    let live = temp("tjommie live-");
+    fs::copy(&db, live.path().join("tjommie.db")).unwrap();
+    let writer = Connection::open(live.path().join("tjommie.db")).unwrap();
+    writer
+        .execute_batch("PRAGMA wal_autocheckpoint = 0; INSERT INTO settings (key, value) VALUES ('crashed', 'yes');")
+        .unwrap();
+    fs::copy(live.path().join("tjommie.db"), &db).unwrap();
+    fs::copy(live.path().join("tjommie.db-wal"), &wal).unwrap();
+    drop(writer);
+    let (main_bytes, wal_bytes) = (fs::read(&db).unwrap(), fs::read(&wal).unwrap());
+
+    let target = temp("tjommie target ñ-");
+    import::copy_data(source.path(), target.path(), false).unwrap();
+
+    assert_eq!(fs::read(&db).unwrap(), main_bytes);
+    assert_eq!(fs::read(&wal).unwrap(), wal_bytes);
+    let copy = target.path().join("data").join("tjommie.db");
+    assert_eq!(
+        count(&copy, "SELECT COUNT(*) FROM settings WHERE key = 'crashed'"),
+        1
+    );
+}
+
+#[test]
+fn clears_devices_remote_host_and_pairing_codes() {
+    let source = source();
+    let target = temp("tjommie target ñ-");
+    import::copy_data(source.path(), target.path(), false).unwrap();
+    let db = target.path().join("data").join("tjommie.db");
+    for table in ["devices", "remote_host", "pairing_codes"] {
+        assert_eq!(
+            count(&db, &format!("SELECT COUNT(*) FROM {table}")),
+            0,
+            "{table}"
+        );
+    }
+    let source_db = source.path().join("data").join("tjommie.db");
+    assert_eq!(count(&source_db, "SELECT COUNT(*) FROM devices"), 1);
+}
+
+#[test]
+fn copies_no_credentials_json() {
+    let source = source();
+    let target = temp("tjommie target ñ-");
+    import::copy_data(source.path(), target.path(), false).unwrap();
+    assert_eq!(
+        files_named(target.path(), ".credentials.json"),
+        Vec::<PathBuf>::new()
+    );
+}
+
+/// The daemon uses the stored folders as they are, so copies that pointed into the source root would make the new
+/// install write there and share its Claude sign-in.
+#[test]
+fn points_bot_and_account_folders_under_the_source_root_at_the_target() {
+    let source = source();
+    let target = temp("tjommie target ñ-");
+    import::copy_data(source.path(), target.path(), false).unwrap();
+    let db = Connection::open(target.path().join("data").join("tjommie.db")).unwrap();
+    let folder = |sql: &str| -> String { db.query_row(sql, [], |row| row.get(0)).unwrap() };
+    let home = target.path().join("bots").join("legacy-bot");
+    let account = target.path().join("accounts").join("claude-main");
+    assert_eq!(
+        folder("SELECT home_folder FROM bots WHERE id = 'legacy-bot'"),
+        text(&home)
+    );
+    assert_eq!(
+        folder("SELECT folder FROM accounts WHERE id = 'claude-main'"),
+        text(&account)
+    );
+    assert_eq!(
+        folder("SELECT folder FROM accounts WHERE id = 'codex-elsewhere'"),
+        ELSEWHERE
+    );
+}
+
+#[test]
+fn refuses_an_existing_target_unless_replace_is_given() {
+    let source = source();
+    let target = temp("tjommie target ñ-");
+    import::copy_data(source.path(), target.path(), false).unwrap();
+    let db = target.path().join("data").join("tjommie.db");
+    Connection::open(&db)
+        .unwrap()
+        .execute(
+            "INSERT INTO settings (key, value) VALUES ('dev-only', 'kept')",
+            [],
+        )
+        .unwrap();
+
+    let refused = spawn::command(env!("CARGO_BIN_EXE_tjommie-daemon"))
+        .args(["import", "--from", text(source.path())])
+        .env("TJOMMIE_HOME", target.path())
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    let message = String::from_utf8_lossy(&refused.stderr);
+    assert!(message.contains("--replace"), "{message}");
+    assert_eq!(
+        count(&db, "SELECT COUNT(*) FROM settings WHERE key = 'dev-only'"),
+        1
+    );
+
+    import::copy_data(source.path(), target.path(), true).unwrap();
+    assert_eq!(
+        count(&db, "SELECT COUNT(*) FROM settings WHERE key = 'dev-only'"),
+        0
+    );
+    assert_eq!(count(&db, "SELECT COUNT(*) FROM messages"), 4);
+}
+
+/// `--replace` would delete a database, so the production root (`%LOCALAPPDATA%\Tjommie`, faked here) is never a target.
+#[test]
+fn refuses_the_production_root() {
+    let source = source();
+    let local = temp("tjommie local ñ-");
+    let production = local.path().join("Tjommie");
+    let refused = spawn::command(env!("CARGO_BIN_EXE_tjommie-daemon"))
+        .args(["import", "--from", text(source.path()), "--replace"])
+        .env("LOCALAPPDATA", local.path())
+        .env("TJOMMIE_HOME", &production)
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    let message = String::from_utf8_lossy(&refused.stderr);
+    assert!(message.contains("production"), "{message}");
+    assert!(!production.exists());
+}
+
+#[test]
+fn never_imports_into_the_source_root() {
+    let source = source();
+    let before = tree_hash(source.path());
+    for target in [source.path().to_path_buf(), source.path().join("inner")] {
+        let error = import::copy_data(source.path(), &target, true).unwrap_err();
+        assert!(error.to_string().contains("source"), "{error}");
+    }
+    assert_eq!(tree_hash(source.path()), before);
+}
+
+/// Credential Manager: one random namespace per root, both refused if they are production's, cleaned up by namespace,
+/// and a failure if any other `Tjommie/*` target changed (the guard from `cred_roundtrip.rs`).
+#[cfg(windows)]
+#[test]
+fn rewrites_account_and_login_secrets_under_the_target_namespace() {
+    use daemon::win::cred::{self, Namespace};
+    use std::collections::BTreeMap;
+    use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
+    use windows::Win32::Foundation::ERROR_NOT_FOUND;
+    use windows::Win32::Security::Credentials::{CREDENTIALW, CredEnumerateW, CredFree};
+    use windows::core::HSTRING;
+
+    if std::env::var("TJOMMIE_CI_HOSTED").as_deref() == Ok("1") {
+        eprintln!(
+            "skipped: hosted Windows service logons cannot reliably reach Credential Manager"
+        );
+        return;
+    }
+    fn enumerate(filter: &str) -> BTreeMap<String, u64> {
+        let mut count = 0u32;
+        let mut list: *mut *mut CREDENTIALW = std::ptr::null_mut();
+        // SAFETY: CredEnumerateW fills `count` and `list`; the list is freed once with CredFree.
+        unsafe {
+            if let Err(error) = CredEnumerateW(&HSTRING::from(filter), None, &mut count, &mut list)
+            {
+                assert_eq!(
+                    error.code(),
+                    ERROR_NOT_FOUND.to_hresult(),
+                    "Credential Manager is unreachable"
+                );
+                return BTreeMap::new();
+            }
+            let found = std::slice::from_raw_parts(list, count as usize)
+                .iter()
+                .map(|&credential| {
+                    let credential = &*credential;
+                    let written = (u64::from(credential.LastWritten.dwHighDateTime) << 32)
+                        | u64::from(credential.LastWritten.dwLowDateTime);
+                    (credential.TargetName.to_string().unwrap(), written)
+                })
+                .collect();
+            CredFree(list as *const _);
+            found
+        }
+    }
+
+    let source = source();
+    let target = temp("tjommie target ñ-");
+    let from = Namespace::new(source.path()).unwrap();
+    let to = Namespace::new(target.path()).unwrap();
+    let local = std::env::var_os("LOCALAPPDATA").expect("LOCALAPPDATA");
+    let production = Namespace::new(&PathBuf::from(local).join("Tjommie")).unwrap();
+    for ns in [&from, &to] {
+        assert_ne!(
+            ns.short(),
+            production.short(),
+            "refusing the production namespace"
+        );
+        assert_ne!(
+            ns.long(),
+            production.long(),
+            "refusing the production namespace"
+        );
+    }
+    let prefixes = [from.short(), from.long(), to.short(), to.long()]
+        .map(|prefix| format!("Tjommie/{prefix}/"));
+    let mine = |target: &str| prefixes.iter().any(|prefix| target.starts_with(prefix));
+    let outside = |all: &BTreeMap<String, u64>| -> BTreeMap<String, u64> {
+        all.iter()
+            .filter(|(target, _)| !mine(target))
+            .map(|(t, w)| (t.clone(), *w))
+            .collect()
+    };
+
+    let before = enumerate("Tjommie/*");
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let account = from.account_target("claude-main").unwrap();
+        let login = from.login_target(LOGIN).unwrap();
+        cred::write(&account, "sk-test-account-key").unwrap();
+        cred::write(&login, "{\"username\":\"me\",\"password\":\"pw\"}").unwrap();
+        cred::write(&from.remote_host_target(), "noise-key").unwrap();
+        cred::write(&from.relay_login_target(), "relay-key").unwrap();
+        let source_secrets = enumerate(&format!("Tjommie/{}*", from.short()));
+
+        import::run(source.path(), target.path(), false).unwrap();
+
+        let copied = |target: &str| cred::read(target).unwrap();
+        assert_eq!(
+            copied(&to.account_target("claude-main").unwrap()).as_deref(),
+            Some("sk-test-account-key")
+        );
+        assert_eq!(
+            copied(&to.login_target(LOGIN).unwrap()).as_deref(),
+            Some("{\"username\":\"me\",\"password\":\"pw\"}")
+        );
+        assert_eq!(copied(&to.remote_host_target()), None);
+        assert_eq!(copied(&to.relay_login_target()), None);
+        assert_eq!(
+            enumerate(&format!("Tjommie/{}*", from.short())),
+            source_secrets,
+            "the source secrets are untouched"
+        );
+    }));
+    for prefix in &prefixes {
+        for name in enumerate(&format!("{prefix}*")).keys() {
+            cred::delete(name).unwrap();
+        }
+    }
+    let after = enumerate("Tjommie/*");
+    if let Err(panic) = result {
+        resume_unwind(panic);
+    }
+    assert!(
+        after.keys().all(|name| !mine(name)),
+        "test targets were left behind"
+    );
+    assert_eq!(
+        outside(&before),
+        outside(&after),
+        "a Tjommie/* target outside the test namespaces changed"
+    );
+}
