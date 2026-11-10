@@ -76,7 +76,9 @@ pub struct JsonRpcLines {
 
 impl JsonRpcLines {
     /// `write` sends one line, without its newline.
-    pub fn new(write: impl Fn(String) -> Result<(), ProviderError> + Send + Sync + 'static) -> Self {
+    pub fn new(
+        write: impl Fn(String) -> Result<(), ProviderError> + Send + Sync + 'static,
+    ) -> Self {
         JsonRpcLines {
             write: Box::new(write),
             next_id: AtomicU64::new(1),
@@ -95,7 +97,11 @@ impl JsonRpcLines {
     }
 
     /// Writes the request now; the future waits for its response.
-    pub fn request(&self, method: &str, params: Value) -> impl Future<Output = Result<Value, ProviderError>> + Send + 'static {
+    pub fn request(
+        &self,
+        method: &str,
+        params: Value,
+    ) -> impl Future<Output = Result<Value, ProviderError>> + Send + 'static {
         self.request_with_timeout(method, params, REQUEST_TIMEOUT)
     }
 
@@ -107,9 +113,13 @@ impl JsonRpcLines {
     ) -> impl Future<Output = Result<Value, ProviderError>> + Send + 'static {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (sender, response) = oneshot::channel();
-        self.pending.lock().expect("pending lock").insert(id, sender);
+        self.pending
+            .lock()
+            .expect("pending lock")
+            .insert(id, sender);
         // Not under the lock: a test's write can answer at once.
-        let written = (self.write)(json!({ "id": id, "method": method, "params": params }).to_string());
+        let written =
+            (self.write)(json!({ "id": id, "method": method, "params": params }).to_string());
         if written.is_err() {
             self.pending.lock().expect("pending lock").remove(&id);
         }
@@ -141,11 +151,16 @@ impl JsonRpcLines {
     }
 
     pub fn respond_error(&self, id: &RpcId, code: i64, message: &str) {
-        let _ = (self.write)(json!({ "id": id.to_value(), "error": { "code": code, "message": message } }).to_string());
+        let _ = (self.write)(
+            json!({ "id": id.to_value(), "error": { "code": code, "message": message } })
+                .to_string(),
+        );
     }
 
     pub fn handle_line(&self, line: &str) {
-        let Ok(Value::Object(mut message)) = serde_json::from_str::<Value>(line) else { return }; // stray log output
+        let Ok(Value::Object(mut message)) = serde_json::from_str::<Value>(line) else {
+            return;
+        }; // stray log output
         let params = message.remove("params").unwrap_or(Value::Null);
 
         if let Some(method) = message.get("method").and_then(Value::as_str) {
@@ -166,13 +181,23 @@ impl JsonRpcLines {
             }
             return;
         }
-        let Some(id) = message.get("id").and_then(Value::as_u64) else { return };
-        let Some(pending) = self.pending.lock().expect("pending lock").remove(&id) else { return };
+        let Some(id) = message.get("id").and_then(Value::as_u64) else {
+            return;
+        };
+        let Some(pending) = self.pending.lock().expect("pending lock").remove(&id) else {
+            return;
+        };
         let result = match message.get("error").filter(|error| !error.is_null()) {
             Some(error) => {
                 let code = error.get("code").and_then(Value::as_i64).unwrap_or(0);
-                let text = error.get("message").and_then(Value::as_str).map_or_else(|| error.to_string(), str::to_string);
-                Err(ProviderError::Remote { code, message: text })
+                let text = error
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .map_or_else(|| error.to_string(), str::to_string);
+                Err(ProviderError::Remote {
+                    code,
+                    message: text,
+                })
             }
             None => Ok(message.remove("result").unwrap_or(Value::Null)),
         };
@@ -207,11 +232,25 @@ pub async fn start_codex_server<H: CliHost + ?Sized>(
 ) -> Result<CodexServer, ProviderError> {
     let mut args: Vec<String> = Vec::new();
     if ephemeral_auth {
-        args.extend(["-c".into(), r#"cli_auth_credentials_store="ephemeral""#.into()]);
+        args.extend([
+            "-c".into(),
+            r#"cli_auth_credentials_store="ephemeral""#.into(),
+        ]);
     }
     args.push("app-server".into());
-    let options = LaunchOptions { cwd: cwd.into(), env: env.clone(), claude_api_key: None };
-    let CliChild { pid, stdin, stdout, stderr, exit, kill_tree } = host.launch(cmd, args, options).await?;
+    let options = LaunchOptions {
+        cwd: cwd.into(),
+        env: env.clone(),
+        claude_api_key: None,
+    };
+    let CliChild {
+        pid,
+        stdin,
+        stdout,
+        stderr,
+        exit,
+        kill_tree,
+    } = host.launch(cmd, args, options).await?;
 
     let (lines, lines_out) = mpsc::unbounded_channel::<String>();
     let input = Arc::new(Mutex::new(Some(lines)));
@@ -219,8 +258,16 @@ pub async fn start_codex_server<H: CliHost + ?Sized>(
         let input = Arc::clone(&input);
         move |line| {
             let input = input.lock().expect("stdin lock");
-            let sent = input.as_ref().is_some_and(|lines| lines.send(format!("{line}\n")).is_ok());
-            if sent { Ok(()) } else { Err(ProviderError::Failed("codex app-server's input is closed".into())) }
+            let sent = input
+                .as_ref()
+                .is_some_and(|lines| lines.send(format!("{line}\n")).is_ok());
+            if sent {
+                Ok(())
+            } else {
+                Err(ProviderError::Failed(
+                    "codex app-server's input is closed".into(),
+                ))
+            }
         }
     }));
     tokio::spawn(write_lines(stdin, lines_out, Arc::downgrade(&rpc)));
@@ -245,14 +292,22 @@ pub async fn start_codex_server<H: CliHost + ?Sized>(
         }
     });
     let close: Arc<dyn Fn() + Send + Sync> = Arc::new({
-        let (exit, kill_tree, kill_timer) = (exit.clone(), Arc::clone(&kill_tree), Arc::clone(&kill_timer));
+        let (exit, kill_tree, kill_timer) = (
+            exit.clone(),
+            Arc::clone(&kill_tree),
+            Arc::clone(&kill_timer),
+        );
         move || {
             let mut timer = kill_timer.lock().expect("kill timer lock");
             if exit.status().is_some() || timer.is_some() {
                 return;
             }
             input.lock().expect("stdin lock").take(); // child.stdin.end()
-            let (exit, kill_tree, kill_timer) = (exit.clone(), Arc::clone(&kill_tree), Arc::clone(&kill_timer));
+            let (exit, kill_tree, kill_timer) = (
+                exit.clone(),
+                Arc::clone(&kill_tree),
+                Arc::clone(&kill_timer),
+            );
             *timer = Some(tokio::spawn(async move {
                 tokio::time::sleep(Duration::from_secs(3)).await;
                 kill_timer.lock().expect("kill timer lock").take();
@@ -263,17 +318,31 @@ pub async fn start_codex_server<H: CliHost + ?Sized>(
         }
     });
 
-    let client_info = json!({ "clientInfo": { "name": "tjommie", "title": "Tjommie", "version": "0.1.0" } });
-    if let Err(error) = rpc.request_with_timeout("initialize", client_info, Duration::from_secs(30)).await {
+    let client_info =
+        json!({ "clientInfo": { "name": "tjommie", "title": "Tjommie", "version": "0.1.0" } });
+    if let Err(error) = rpc
+        .request_with_timeout("initialize", client_info, Duration::from_secs(30))
+        .await
+    {
         close();
         exit.wait().await;
         return Err(error);
     }
     rpc.notify("initialized", None);
-    Ok(CodexServer { rpc, pid, exit, kill_tree, close })
+    Ok(CodexServer {
+        rpc,
+        pid,
+        exit,
+        kill_tree,
+        close,
+    })
 }
 
-async fn write_lines(mut stdin: Box<dyn AsyncWrite + Send + Unpin>, mut lines: mpsc::UnboundedReceiver<String>, rpc: Weak<JsonRpcLines>) {
+async fn write_lines(
+    mut stdin: Box<dyn AsyncWrite + Send + Unpin>,
+    mut lines: mpsc::UnboundedReceiver<String>,
+    rpc: Weak<JsonRpcLines>,
+) {
     while let Some(line) = lines.recv().await {
         if let Err(error) = stdin.write_all(line.as_bytes()).await {
             if let Some(rpc) = rpc.upgrade() {

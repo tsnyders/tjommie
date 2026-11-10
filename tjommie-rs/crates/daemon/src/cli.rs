@@ -32,7 +32,10 @@ pub struct LaunchOptions {
 /// How a child ended: Node's `exit` event, or its `error` event (it failed to start or was lost).
 #[derive(Debug, Clone, PartialEq)]
 pub enum CliExit {
-    Exited { code: Option<i32>, signal: Option<String> },
+    Exited {
+        code: Option<i32>,
+        signal: Option<String>,
+    },
     Failed(String),
 }
 
@@ -59,14 +62,21 @@ impl Default for ChildExit {
 
 impl ChildExit {
     pub fn new() -> Self {
-        ChildExit(Arc::new(ExitState { status: watch::channel(None).0, listeners: Mutex::new(Vec::new()) }))
+        ChildExit(Arc::new(ExitState {
+            status: watch::channel(None).0,
+            listeners: Mutex::new(Vec::new()),
+        }))
     }
 
     /// Records the exit and runs the listeners. Only the first call counts.
     pub fn fire(&self, exit: CliExit) {
-        let first = self.0.status.send_if_modified(|status| status.is_none() && status.replace(exit.clone()).is_none());
+        let first = self
+            .0
+            .status
+            .send_if_modified(|status| status.is_none() && status.replace(exit.clone()).is_none());
         if first {
-            let listeners = std::mem::take(&mut *self.0.listeners.lock().expect("exit listeners lock"));
+            let listeners =
+                std::mem::take(&mut *self.0.listeners.lock().expect("exit listeners lock"));
             listeners.into_iter().for_each(|listener| listener(&exit));
         }
     }
@@ -89,7 +99,10 @@ impl ChildExit {
 
     pub async fn wait(&self) -> CliExit {
         let mut status = self.0.status.subscribe();
-        let exit = status.wait_for(Option::is_some).await.expect("the sender lives in self");
+        let exit = status
+            .wait_for(Option::is_some)
+            .await
+            .expect("the sender lives in self");
         exit.clone().expect("waited for an exit")
     }
 }
@@ -106,7 +119,12 @@ pub struct CliChild {
 
 pub trait CliHost: Send + Sync {
     /// `launchCli`: starts `cmd` with `args` appended, in `options.cwd` with exactly `options.env`.
-    fn launch<'a>(&'a self, cmd: &'a CliCommand, args: Vec<String>, options: LaunchOptions) -> BoxFuture<'a, std::io::Result<CliChild>>;
+    fn launch<'a>(
+        &'a self,
+        cmd: &'a CliCommand,
+        args: Vec<String>,
+        options: LaunchOptions,
+    ) -> BoxFuture<'a, std::io::Result<CliChild>>;
 
     /// `startCodexServer`. Tests replace this to drive a Codex session's RPC directly, as the TypeScript tests mock it.
     fn start_codex_server<'a>(
@@ -116,6 +134,12 @@ pub trait CliHost: Send + Sync {
         cwd: &'a str,
         ephemeral_auth: bool,
     ) -> BoxFuture<'a, Result<CodexServer, ProviderError>> {
-        Box::pin(codex_rpc::start_codex_server(self, cmd, env, cwd, ephemeral_auth))
+        Box::pin(codex_rpc::start_codex_server(
+            self,
+            cmd,
+            env,
+            cwd,
+            ephemeral_auth,
+        ))
     }
 }

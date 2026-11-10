@@ -34,11 +34,20 @@ pub struct ResultLine {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ClaudeLine {
-    Init { session_id: String },
-    TextDelta { text: String },
-    Assistant { texts: Vec<String>, tools: Vec<ToolUse> },
+    Init {
+        session_id: String,
+    },
+    TextDelta {
+        text: String,
+    },
+    Assistant {
+        texts: Vec<String>,
+        tools: Vec<ToolUse>,
+    },
     /// `(tool use id, ok)`.
-    ToolResults { results: Vec<(String, bool)> },
+    ToolResults {
+        results: Vec<(String, bool)>,
+    },
     Permission(Permission),
     /// Its `limit_id` is always `None`.
     RateLimit(Limit),
@@ -68,7 +77,9 @@ fn limit_state(reached: bool, percent: Option<f64>) -> LimitState {
 }
 
 pub fn parse_claude_line(line: &str) -> ClaudeLine {
-    let Ok(Value::Object(parsed)) = serde_json::from_str::<Value>(line) else { return ClaudeLine::Other };
+    let Ok(Value::Object(parsed)) = serde_json::from_str::<Value>(line) else {
+        return ClaudeLine::Other;
+    };
 
     // Subagent traffic stays inside its tool call and never reaches the chat.
     let from_subagent = !matches!(parsed.get("parent_tool_use_id"), None | Some(Value::Null));
@@ -76,14 +87,26 @@ pub fn parse_claude_line(line: &str) -> ClaudeLine {
 
     match text(&parsed, "type") {
         Some("system") => match (text(&parsed, "subtype"), text(&parsed, "session_id")) {
-            (Some("init"), Some(session_id)) => ClaudeLine::Init { session_id: session_id.into() },
+            (Some("init"), Some(session_id)) => ClaudeLine::Init {
+                session_id: session_id.into(),
+            },
             _ => ClaudeLine::Other,
         },
         Some("stream_event") => {
-            let Some(event) = object(parsed.get("event")).filter(|_| !from_subagent) else { return ClaudeLine::Other };
-            let Some(delta) = object(event.get("delta")) else { return ClaudeLine::Other };
-            match (text(event, "type"), text(delta, "type"), text(delta, "text")) {
-                (Some("content_block_delta"), Some("text_delta"), Some(text)) => ClaudeLine::TextDelta { text: text.into() },
+            let Some(event) = object(parsed.get("event")).filter(|_| !from_subagent) else {
+                return ClaudeLine::Other;
+            };
+            let Some(delta) = object(event.get("delta")) else {
+                return ClaudeLine::Other;
+            };
+            match (
+                text(event, "type"),
+                text(delta, "type"),
+                text(delta, "text"),
+            ) {
+                (Some("content_block_delta"), Some("text_delta"), Some(text)) => {
+                    ClaudeLine::TextDelta { text: text.into() }
+                }
                 _ => ClaudeLine::Other,
             }
         }
@@ -92,10 +115,18 @@ pub fn parse_claude_line(line: &str) -> ClaudeLine {
                 return ClaudeLine::Other;
             }
             let message = object(parsed.get("message")).unwrap_or(&empty);
-            let content = message.get("content").and_then(Value::as_array).map_or(&[][..], Vec::as_slice);
+            let content = message
+                .get("content")
+                .and_then(Value::as_array)
+                .map_or(&[][..], Vec::as_slice);
             let (mut texts, mut tools) = (Vec::new(), Vec::new());
             for block in content.iter().filter_map(Value::as_object) {
-                match (text(block, "type"), text(block, "text"), text(block, "id"), text(block, "name")) {
+                match (
+                    text(block, "type"),
+                    text(block, "text"),
+                    text(block, "id"),
+                    text(block, "name"),
+                ) {
                     (Some("text"), Some(text), _, _) => texts.push(text.to_string()),
                     (Some("tool_use"), _, Some(id), Some(name)) => tools.push(ToolUse {
                         id: id.into(),
@@ -108,36 +139,61 @@ pub fn parse_claude_line(line: &str) -> ClaudeLine {
             ClaudeLine::Assistant { texts, tools }
         }
         Some("user") => {
-            let content = object(parsed.get("message")).and_then(|message| message.get("content")?.as_array());
-            let Some(content) = content.filter(|_| !from_subagent) else { return ClaudeLine::Other };
+            let content = object(parsed.get("message"))
+                .and_then(|message| message.get("content")?.as_array());
+            let Some(content) = content.filter(|_| !from_subagent) else {
+                return ClaudeLine::Other;
+            };
             let results: Vec<(String, bool)> = content
                 .iter()
                 .filter_map(Value::as_object)
                 .filter(|block| text(block, "type") == Some("tool_result"))
-                .filter_map(|block| Some((text(block, "tool_use_id")?.to_string(), block.get("is_error") != Some(&Value::Bool(true)))))
+                .filter_map(|block| {
+                    Some((
+                        text(block, "tool_use_id")?.to_string(),
+                        block.get("is_error") != Some(&Value::Bool(true)),
+                    ))
+                })
                 .collect();
-            if results.is_empty() { ClaudeLine::Other } else { ClaudeLine::ToolResults { results } }
+            if results.is_empty() {
+                ClaudeLine::Other
+            } else {
+                ClaudeLine::ToolResults { results }
+            }
         }
         Some("control_request") => {
-            let Some(request) = object(parsed.get("request")).filter(|request| text(request, "subtype") == Some("can_use_tool"))
+            let Some(request) = object(parsed.get("request"))
+                .filter(|request| text(request, "subtype") == Some("can_use_tool"))
             else {
                 return ClaudeLine::Other;
             };
-            let (Some(request_id), Some(tool_name)) = (text(&parsed, "request_id"), text(request, "tool_name")) else {
+            let (Some(request_id), Some(tool_name)) =
+                (text(&parsed, "request_id"), text(request, "tool_name"))
+            else {
                 return ClaudeLine::Other;
             };
             let suggestion = request
                 .get("permission_suggestions")
                 .and_then(Value::as_array)
                 .and_then(|suggestions| {
-                    suggestions.iter().filter_map(Value::as_object).find(|candidate| {
-                        text(candidate, "type") == Some("addRules") && text(candidate, "behavior") == Some("allow")
-                    })
+                    suggestions
+                        .iter()
+                        .filter_map(Value::as_object)
+                        .find(|candidate| {
+                            text(candidate, "type") == Some("addRules")
+                                && text(candidate, "behavior") == Some("allow")
+                        })
                 })
                 .cloned();
-            let first = suggestion.as_ref().and_then(|suggestion| object(suggestion.get("rules")?.as_array()?.first()));
-            let first_tool_name = first.and_then(|first| text(first, "toolName")).filter(|name| !name.is_empty());
-            let first_rule_content = first.and_then(|first| text(first, "ruleContent")).filter(|content| !content.is_empty());
+            let first = suggestion
+                .as_ref()
+                .and_then(|suggestion| object(suggestion.get("rules")?.as_array()?.first()));
+            let first_tool_name = first
+                .and_then(|first| text(first, "toolName"))
+                .filter(|name| !name.is_empty());
+            let first_rule_content = first
+                .and_then(|first| text(first, "ruleContent"))
+                .filter(|content| !content.is_empty());
             let rule = match (first_tool_name, first_rule_content) {
                 (Some(name), Some(content)) => format!("{name}({content})"),
                 (Some(name), None) => name.into(),
@@ -162,8 +218,12 @@ pub fn parse_claude_line(line: &str) -> ClaudeLine {
                 .iter()
                 .filter_map(|(window_key, value)| Some((window_key, value.as_object()?)))
                 .map(|(window_key, value)| {
-                    let percent = js::finite(value.get("utilization")).map(|used| js::round(used * 100.0).clamp(0.0, 100.0));
-                    let resets_at = value.get("resetsAt").and_then(Value::as_f64).and_then(|seconds| js::iso_from_millis(seconds * 1000.0));
+                    let percent = js::finite(value.get("utilization"))
+                        .map(|used| js::round(used * 100.0).clamp(0.0, 100.0));
+                    let resets_at = value
+                        .get("resetsAt")
+                        .and_then(Value::as_f64)
+                        .and_then(|seconds| js::iso_from_millis(seconds * 1000.0));
                     LimitWindow {
                         window_key: window_key.clone(),
                         duration_minutes: match window_key.as_str() {
@@ -173,7 +233,10 @@ pub fn parse_claude_line(line: &str) -> ClaudeLine {
                         },
                         used_percent: percent,
                         resets_at,
-                        state: limit_state(Some(window_key.as_str()) == limit_type && rejected, percent),
+                        state: limit_state(
+                            Some(window_key.as_str()) == limit_type && rejected,
+                            percent,
+                        ),
                     }
                 })
                 .collect();
@@ -183,9 +246,14 @@ pub fn parse_claude_line(line: &str) -> ClaudeLine {
                     Some("allowed_warning") => LimitState::Near,
                     _ => LimitState::Ok,
                 },
-                used_percent: selected.and_then(|window| window.get("utilization")?.as_f64()).map(|used| js::round(used * 100.0)),
+                used_percent: selected
+                    .and_then(|window| window.get("utilization")?.as_f64())
+                    .map(|used| js::round(used * 100.0)),
                 // TypeScript throws on a reset outside the Date range; this reports none.
-                resets_at: info.get("resetsAt").and_then(Value::as_f64).and_then(|seconds| js::iso_from_millis(seconds * 1000.0)),
+                resets_at: info
+                    .get("resetsAt")
+                    .and_then(Value::as_f64)
+                    .and_then(|seconds| js::iso_from_millis(seconds * 1000.0)),
                 limit_id: None,
                 windows: Some(all_windows).filter(|windows| !windows.is_empty()),
             })
@@ -193,7 +261,8 @@ pub fn parse_claude_line(line: &str) -> ClaudeLine {
         Some("result") => {
             let usage = object(parsed.get("usage")).unwrap_or(&empty);
             let output_details = object(usage.get("output_tokens_details")).unwrap_or(&empty);
-            let failed = parsed.get("is_error") == Some(&Value::Bool(true)) || text(&parsed, "subtype") != Some("success");
+            let failed = parsed.get("is_error") == Some(&Value::Bool(true))
+                || text(&parsed, "subtype") != Some("success");
             let error = ["result", "terminal_reason", "subtype"]
                 .into_iter()
                 .map(|key| parsed.get(key))
@@ -205,9 +274,11 @@ pub fn parse_claude_line(line: &str) -> ClaudeLine {
                 ok: !failed,
                 error: failed.then_some(error),
                 total_cost_usd: parsed.get("total_cost_usd").and_then(Value::as_f64),
-                model: object(parsed.get("modelUsage")).and_then(|models| models.keys().next().cloned()),
+                model: object(parsed.get("modelUsage"))
+                    .and_then(|models| models.keys().next().cloned()),
                 usage: TokenUsage {
-                    input: number_or_zero(usage, "input_tokens") + number_or_zero(usage, "cache_creation_input_tokens"),
+                    input: number_or_zero(usage, "input_tokens")
+                        + number_or_zero(usage, "cache_creation_input_tokens"),
                     cached_input: number_or_zero(usage, "cache_read_input_tokens"),
                     output: number_or_zero(usage, "output_tokens"),
                     reasoning: number_or_zero(output_details, "thinking_tokens"),

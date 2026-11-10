@@ -5,7 +5,9 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use daemon::cli::{BoxFuture, ChildExit, CliChild, CliCommand, CliExit, CliHost, KillTree, LaunchOptions};
+use daemon::cli::{
+    BoxFuture, ChildExit, CliChild, CliCommand, CliExit, CliHost, KillTree, LaunchOptions,
+};
 use daemon::providers::ProviderError;
 use daemon::providers::codex_rpc::{CodexServer, start_codex_server};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream, duplex};
@@ -25,7 +27,10 @@ pub struct FakeChild {
 
 impl FakeChild {
     pub async fn print(&mut self, line: &str) {
-        self.stdout.write_all(format!("{line}\n").as_bytes()).await.unwrap();
+        self.stdout
+            .write_all(format!("{line}\n").as_bytes())
+            .await
+            .unwrap();
         settle().await;
     }
 
@@ -36,7 +41,10 @@ impl FakeChild {
     }
 
     pub fn exit_with(&self, code: Option<i32>, signal: Option<&str>) {
-        self.exit.fire(CliExit::Exited { code, signal: signal.map(str::to_string) });
+        self.exit.fire(CliExit::Exited {
+            code,
+            signal: signal.map(str::to_string),
+        });
     }
 
     pub fn kills(&self) -> usize {
@@ -65,20 +73,32 @@ pub fn fake_child(pid: u32) -> (CliChild, FakeChild) {
         exit: exit.clone(),
         kill_tree,
     };
-    (child, FakeChild { stdin: BufReader::new(stdin_test), stdout: stdout_test, stderr: stderr_test, exit, pid, kills })
+    (
+        child,
+        FakeChild {
+            stdin: BufReader::new(stdin_test),
+            stdout: stdout_test,
+            stderr: stderr_test,
+            exit,
+            pid,
+            kills,
+        },
+    )
 }
 
 type Launch = Box<dyn FnOnce(&[String]) -> CliChild + Send>;
 type StartServer = BoxFuture<'static, Result<CodexServer, ProviderError>>;
+pub type LaunchCall = (CliCommand, Vec<String>, LaunchOptions);
+/// `(env, cwd, ephemeral_auth)`.
+pub type ServerStart = (BTreeMap<String, String>, String, bool);
 
 /// Launches queued fake children, or hands out queued Codex servers in place of `codex app-server`.
 #[derive(Default)]
 pub struct FakeHost {
-    pub launches: Mutex<Vec<(CliCommand, Vec<String>, LaunchOptions)>>,
+    pub launches: Mutex<Vec<LaunchCall>>,
     children: Mutex<VecDeque<Launch>>,
     servers: Mutex<VecDeque<StartServer>>,
-    /// `(env, cwd, ephemeral_auth)` of every Codex server start.
-    pub server_starts: Mutex<Vec<(BTreeMap<String, String>, String, bool)>>,
+    pub server_starts: Mutex<Vec<ServerStart>>,
 }
 
 impl FakeHost {
@@ -92,24 +112,42 @@ impl FakeHost {
     }
 
     pub fn push_server(&self, server: CodexServer) {
-        self.servers.lock().unwrap().push_back(Box::pin(async { Ok(server) }));
+        self.servers
+            .lock()
+            .unwrap()
+            .push_back(Box::pin(async { Ok(server) }));
     }
 
     /// A server whose start finishes when the test sends it.
     pub fn push_pending_server(&self) -> oneshot::Sender<CodexServer> {
         let (sender, receiver) = oneshot::channel();
-        self.servers.lock().unwrap().push_back(Box::pin(async { Ok(receiver.await.expect("the test sends the server")) }));
+        self.servers.lock().unwrap().push_back(Box::pin(async {
+            Ok(receiver.await.expect("the test sends the server"))
+        }));
         sender
     }
 
     pub fn last_launch(&self) -> (CliCommand, Vec<String>, LaunchOptions) {
-        self.launches.lock().unwrap().last().cloned().expect("a launch")
+        self.launches
+            .lock()
+            .unwrap()
+            .last()
+            .cloned()
+            .expect("a launch")
     }
 }
 
 impl CliHost for FakeHost {
-    fn launch<'a>(&'a self, cmd: &'a CliCommand, args: Vec<String>, options: LaunchOptions) -> BoxFuture<'a, std::io::Result<CliChild>> {
-        self.launches.lock().unwrap().push((cmd.clone(), args.clone(), options));
+    fn launch<'a>(
+        &'a self,
+        cmd: &'a CliCommand,
+        args: Vec<String>,
+        options: LaunchOptions,
+    ) -> BoxFuture<'a, std::io::Result<CliChild>> {
+        self.launches
+            .lock()
+            .unwrap()
+            .push((cmd.clone(), args.clone(), options));
         let launch = self.children.lock().unwrap().pop_front();
         Box::pin(async move { Ok(launch.expect("a queued fake child")(&args)) })
     }
@@ -121,7 +159,10 @@ impl CliHost for FakeHost {
         cwd: &'a str,
         ephemeral_auth: bool,
     ) -> BoxFuture<'a, Result<CodexServer, ProviderError>> {
-        self.server_starts.lock().unwrap().push((env.clone(), cwd.into(), ephemeral_auth));
+        self.server_starts
+            .lock()
+            .unwrap()
+            .push((env.clone(), cwd.into(), ephemeral_auth));
         match self.servers.lock().unwrap().pop_front() {
             Some(server) => server,
             None => Box::pin(start_codex_server(self, cmd, env, cwd, ephemeral_auth)),
@@ -130,7 +171,10 @@ impl CliHost for FakeHost {
 }
 
 pub fn command(file: &str) -> CliCommand {
-    CliCommand { file: file.into(), args: vec![] }
+    CliCommand {
+        file: file.into(),
+        args: vec![],
+    }
 }
 
 /// Lets spawned tasks (line readers, writers, timers due now) catch up. The tests run on one thread.
@@ -141,11 +185,16 @@ pub async fn settle() {
 }
 
 /// Every event received so far.
-pub fn drain(events: &mut tokio::sync::mpsc::UnboundedReceiver<daemon::providers::ProviderEvent>) -> Vec<daemon::providers::ProviderEvent> {
+pub fn drain(
+    events: &mut tokio::sync::mpsc::UnboundedReceiver<daemon::providers::ProviderEvent>,
+) -> Vec<daemon::providers::ProviderEvent> {
     std::iter::from_fn(|| events.try_recv().ok()).collect()
 }
 
 /// A fresh folder whose path has a space and an accented letter, like many Windows profile paths.
 pub fn temp_root() -> tempfile::TempDir {
-    tempfile::Builder::new().prefix("tjommie test ñ-").tempdir().unwrap()
+    tempfile::Builder::new()
+        .prefix("tjommie test ñ-")
+        .tempdir()
+        .unwrap()
 }

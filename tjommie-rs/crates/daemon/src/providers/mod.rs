@@ -92,21 +92,37 @@ pub struct TurnResult {
 /// What every CLI adapter reports, whatever its CLI prints.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ProviderEvent {
-    Session { cli_session_id: String },
-    Text { delta: String },
+    Session {
+        cli_session_id: String,
+    },
+    Text {
+        delta: String,
+    },
     TextEnd,
-    Tool { id: String, name: String, summary: String },
-    ToolDone { id: String, ok: bool },
+    Tool {
+        id: String,
+        name: String,
+        summary: String,
+    },
+    ToolDone {
+        id: String,
+        ok: bool,
+    },
     Approval(Approval),
     Usage(Usage),
     Limit(Limit),
     TurnDone(TurnResult),
-    Exit { error: Option<String>, completed_turn: Option<TurnResult> },
+    Exit {
+        error: Option<String>,
+        completed_turn: Option<TurnResult>,
+    },
 }
 
 /// Provider errors and echoed approval details must never put the explicit API key on the wire.
 pub fn redact_provider_event(mut event: ProviderEvent, key: Option<&str>) -> ProviderEvent {
-    let Some(key) = key.filter(|key| !key.is_empty()) else { return event };
+    let Some(key) = key.filter(|key| !key.is_empty()) else {
+        return event;
+    };
     let redact = |text: &mut String| {
         if text.contains(key) {
             *text = text.replace(key, "[redacted]");
@@ -117,10 +133,19 @@ pub fn redact_provider_event(mut event: ProviderEvent, key: Option<&str>) -> Pro
         ProviderEvent::Session { cli_session_id } => redact(cli_session_id),
         ProviderEvent::Text { delta } => redact(delta),
         ProviderEvent::TextEnd => {}
-        ProviderEvent::Tool { id, name, summary } => [id, name, summary].into_iter().for_each(redact),
+        ProviderEvent::Tool { id, name, summary } => {
+            [id, name, summary].into_iter().for_each(redact)
+        }
         ProviderEvent::ToolDone { id, .. } => redact(id),
         ProviderEvent::Approval(approval) => {
-            [&mut approval.id, &mut approval.tool, &mut approval.summary, &mut approval.detail].into_iter().for_each(redact);
+            [
+                &mut approval.id,
+                &mut approval.tool,
+                &mut approval.summary,
+                &mut approval.detail,
+            ]
+            .into_iter()
+            .for_each(redact);
             redact_option(&mut approval.rule);
         }
         ProviderEvent::Usage(usage) => {
@@ -136,9 +161,14 @@ pub fn redact_provider_event(mut event: ProviderEvent, key: Option<&str>) -> Pro
             }
         }
         ProviderEvent::TurnDone(turn) => redact_option(&mut turn.error),
-        ProviderEvent::Exit { error, completed_turn } => {
+        ProviderEvent::Exit {
+            error,
+            completed_turn,
+        } => {
             redact_option(error);
-            completed_turn.iter_mut().for_each(|turn| redact_option(&mut turn.error));
+            completed_turn
+                .iter_mut()
+                .for_each(|turn| redact_option(&mut turn.error));
         }
     }
     event
@@ -158,8 +188,19 @@ impl fmt::Debug for ApiKey {
 /// `auto_allow`: its tools run without asking the person.
 #[derive(Debug, Clone, PartialEq)]
 pub enum McpServer {
-    Http { name: String, url: String, headers: BTreeMap<String, String>, auto_allow: bool },
-    Stdio { name: String, command: String, args: Vec<String>, env: BTreeMap<String, String>, auto_allow: bool },
+    Http {
+        name: String,
+        url: String,
+        headers: BTreeMap<String, String>,
+        auto_allow: bool,
+    },
+    Stdio {
+        name: String,
+        command: String,
+        args: Vec<String>,
+        env: BTreeMap<String, String>,
+        auto_allow: bool,
+    },
 }
 
 impl McpServer {
@@ -260,13 +301,19 @@ impl Subscribers {
     }
 
     fn emit(&self, event: ProviderEvent) {
-        self.0.lock().expect("subscribers lock").retain(|sender| sender.send(event.clone()).is_ok());
+        self.0
+            .lock()
+            .expect("subscribers lock")
+            .retain(|sender| sender.send(event.clone()).is_ok());
     }
 }
 
 /// Calls `on_line` for each line of a CLI's output, like Node's readline: a `\r\n` ending counts as one, the last
 /// line needs no ending, and invalid UTF-8 is replaced rather than ending the stream.
-async fn read_lines(output: Box<dyn AsyncRead + Send + Unpin>, mut on_line: impl FnMut(String) + Send + 'static) {
+async fn read_lines(
+    output: Box<dyn AsyncRead + Send + Unpin>,
+    mut on_line: impl FnMut(String) + Send + 'static,
+) {
     let mut reader = BufReader::new(output);
     let mut buffer = Vec::new();
     loop {

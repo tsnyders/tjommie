@@ -36,11 +36,21 @@ pub fn string(value: &Value) -> String {
     match value {
         Value::Null => "null".into(),
         Value::Bool(value) => value.to_string(),
-        Value::Number(number) => number.as_f64().map_or_else(|| number.to_string(), |number| number.to_string()),
+        Value::Number(number) => number
+            .as_f64()
+            .map_or_else(|| number.to_string(), |number| number.to_string()),
         Value::String(text) => text.clone(),
-        Value::Array(items) => {
-            items.iter().map(|item| if item.is_null() { String::new() } else { string(item) }).collect::<Vec<_>>().join(",")
-        }
+        Value::Array(items) => items
+            .iter()
+            .map(|item| {
+                if item.is_null() {
+                    String::new()
+                } else {
+                    string(item)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(","),
         Value::Object(_) => "[object Object]".into(),
     }
 }
@@ -57,19 +67,31 @@ pub fn truthy(value: Option<&Value>) -> bool {
 
 /// A finite number, as `typeof value === "number" && Number.isFinite(value)` accepts it.
 pub fn finite(value: Option<&Value>) -> Option<f64> {
-    value.and_then(Value::as_f64).filter(|number| number.is_finite())
+    value
+        .and_then(Value::as_f64)
+        .filter(|number| number.is_finite())
 }
 
 /// `Math.round`: halves round towards positive infinity.
 pub fn round(value: f64) -> f64 {
     let floor = value.floor();
-    if value - floor >= 0.5 { floor + 1.0 } else { floor }
+    if value - floor >= 0.5 {
+        floor + 1.0
+    } else {
+        floor
+    }
 }
 
 /// `\s` and `String#trim` whitespace.
 pub fn is_space(ch: char) -> bool {
-    matches!(ch, '\t' | '\n' | '\u{b}' | '\u{c}' | '\r' | ' ' | '\u{a0}' | '\u{1680}' | '\u{2000}'..='\u{200a}')
-        || matches!(ch, '\u{2028}' | '\u{2029}' | '\u{202f}' | '\u{205f}' | '\u{3000}' | '\u{feff}')
+    matches!(
+        ch,
+        '\t' | '\n' | '\u{b}' | '\u{c}' | '\r' | ' ' | '\u{a0}' | '\u{1680}' | '\u{2000}'
+            ..='\u{200a}'
+    ) || matches!(
+        ch,
+        '\u{2028}' | '\u{2029}' | '\u{202f}' | '\u{205f}' | '\u{3000}' | '\u{feff}'
+    )
 }
 
 /// The regex class for `\s`.
@@ -88,7 +110,11 @@ pub fn iso_from_millis(ms: f64) -> Option<String> {
     let timestamp = jiff::Timestamp::from_millisecond(ms.trunc() as i64).ok()?;
     let date = jiff::tz::Offset::UTC.to_datetime(timestamp);
     let year = date.year();
-    let year = if year < 0 { format!("-{:06}", -i32::from(year)) } else { format!("{year:04}") };
+    let year = if year < 0 {
+        format!("-{:06}", -i32::from(year))
+    } else {
+        format!("{year:04}")
+    };
     Some(format!(
         "{year}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
         date.month(),
