@@ -577,3 +577,38 @@ async fn closes_every_session_and_revokes_every_token_on_shutdown() {
     assert!(recorded(&h.sessions).iter().all(|session| session.closed()));
     assert_eq!(*recorded(&closed), [first.id, second.id]);
 }
+
+/// `close_session`'s task and `close_for_deletion`'s both wait on the same process exit, and on a multi-thread runtime
+/// nothing orders them (TypeScript's promise reactions run first-in, first-out). Here deletion's wait finishes and
+/// `close_session`'s never does: the restored bot must not inherit the old `retiring` and wait forever.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn restores_a_failed_deletion_whose_exit_settled_before_the_session_close_saw_it() {
+    let root = TempRoot::new();
+    let cwd = root.0.display().to_string();
+    let h = harness_in(
+        root,
+        Setup {
+            hooks: develop_context(move |_| cwd.clone(), "Task"),
+            ..Setup::default()
+        },
+    );
+    let bot = h.bot(json!({}));
+    let item = h
+        .runner
+        .deliver(task_work(&bot.id, "Task", "a", "a"))
+        .unwrap();
+    wait_for(|| h.sent(0) > 0).await;
+    let (session_close_wait, _never) = gate();
+    let (deletion_wait, exited) = gate();
+    h.session(0)
+        .set(|state| state.exits = [session_close_wait, deletion_wait].into());
+    let closing = h.runner.close_for_deletion(&bot.id).unwrap();
+    exited.open(());
+    closing.await;
+    h.runner.cancel_deletion(&bot.id);
+    wait_for(|| h.sent(1) > 0).await;
+    assert_eq!(
+        h.runner.current_work(&bot.id).map(|work| work.id),
+        Some(item.id)
+    );
+}

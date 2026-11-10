@@ -1571,11 +1571,16 @@ impl Core<'_> {
         let detached = self.st.deleting.remove(bot_id).expect("checked above");
         self.flush_text(detached.live, MessageStatus::Interrupted)?;
         self.close_activity(detached.live, ActivityStatus::Failed)?;
-        // A new object, so pending callbacks from the closed session cannot change resumed work.
+        // A new object, so pending callbacks from the closed session cannot change resumed work. Settled means the
+        // process exited, so nothing is retiring and the old run's account lease is gone. `close_session`'s own exit
+        // wait may not have run yet: on a multi-thread runtime nothing orders it before ours, where TypeScript's
+        // promise reactions ran first-in, first-out.
         let old = self.live(detached.live).clone();
         let live = self.next_serial();
         let restored = Live {
             session: None,
+            retiring: None,
+            context: None,
             sent: false,
             steering: false,
             steering_done: None,

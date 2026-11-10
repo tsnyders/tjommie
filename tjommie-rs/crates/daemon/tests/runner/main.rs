@@ -83,6 +83,8 @@ pub struct FakeState {
     pub send: Pending<Result<(), String>>,
     pub interrupt: Pending<Result<(), String>>,
     pub exit: Pending<()>,
+    /// Handed out one per `wait_for_exit()` call before `exit` is, so two waiters on one exit can finish apart.
+    pub exits: std::collections::VecDeque<Pending<()>>,
     pub steer_pending: Option<Pending<bool>>,
     pub sent: Vec<String>,
     pub steered: Vec<String>,
@@ -106,6 +108,7 @@ impl FakeSession {
             send: ready(Ok(())),
             interrupt: ready(Ok(())),
             exit: ready(()),
+            exits: std::collections::VecDeque::new(),
             steer_pending: None,
             sent: Vec::new(),
             steered: Vec::new(),
@@ -211,7 +214,11 @@ impl ProviderSession for FakeSession {
     }
 
     fn wait_for_exit(&self) -> BoxFuture<'static, ()> {
-        let exit = self.state().exit.clone();
+        let mut state = self.state();
+        let exit = state
+            .exits
+            .pop_front()
+            .unwrap_or_else(|| state.exit.clone());
         Box::pin(exit)
     }
 
