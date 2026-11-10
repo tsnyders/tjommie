@@ -8,12 +8,15 @@ use daemon::win::cred::{self, CredentialError, Namespace, validate_api_key};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::io::Write;
+use std::os::windows::ffi::OsStrExt;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use windows::Win32::Foundation::ERROR_NOT_FOUND;
 use windows::Win32::Security::Credentials::{
     CRED_TYPE_GENERIC, CREDENTIALW, CredEnumerateW, CredFree, CredReadW,
 };
+use windows::Win32::Storage::FileSystem::GetShortPathNameW;
 use windows::core::{HSTRING, PWSTR};
 
 // ---- Pure checks (no Credential Manager access; these run in CI too) ----
@@ -56,6 +59,99 @@ fn targets_match_typescript_golden_values() {
             "Tjommie/c7b7c5a986b63824c0803169405cdcd6/relay-login"
         );
     }
+}
+
+/// Node's `path.resolve` keeps the separator after a bare share, as after a bare drive.
+#[test]
+fn unc_share_roots_match_typescript() {
+    for root in [r"\\server\share", r"\\SERVER\Share\"] {
+        let ns = Namespace::new(Path::new(root)).unwrap();
+        assert_eq!(ns.long(), "af69ebc65f06522ece8ff99f0cc6dc33", "{root}");
+    }
+}
+
+/// Windows drops a trailing dot or space from the last name when resolving and Node keeps it, so such a root would
+/// get a different namespace than 0.4.2 gives it. Refusing it makes start-up fail loudly instead.
+#[test]
+fn roots_whose_last_name_ends_in_a_dot_or_space_are_refused() {
+    for root in [r"D:\Tjommie ", r"D:\Tjommie.", r"D:\Tjommie \", "Tjommie."] {
+        let error = Namespace::new(Path::new(root)).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput, "{root}");
+    }
+    // "." and ".." resolve the same way in both.
+    let dotted = Namespace::new(Path::new(r"C:\Tjommie\one\.\..\two")).unwrap();
+    assert_eq!(
+        dotted.short(),
+        Namespace::new(Path::new("C:/Tjommie/two")).unwrap().short()
+    );
+}
+
+/// The harness guard judges what a root is on disk, not how it is spelled: `\\?\`, case, slashes, junctions and
+/// 8.3 names all reach production. It only looks the production root up; it never opens anything inside it.
+#[test]
+fn production_roots_are_recognised_by_what_they_resolve_to() {
+    let local = PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap());
+    let production = local.join("Tjommie");
+    let spelled = production.to_str().unwrap();
+    for alias in [
+        production.clone(),
+        PathBuf::from(format!(r"\\?\{spelled}")),
+        PathBuf::from(spelled.to_uppercase().replace('\\', "/")),
+        production.join("data"),
+        local.clone(),
+    ] {
+        assert!(cred::is_production_root(&alias), "{}", alias.display());
+    }
+    // The loopback admin share reaches the same folder (review MAJOR 1).
+    let rest = &spelled[3..];
+    let drive = &spelled[..1];
+    for alias in [
+        format!(r"\\localhost\{drive}$\{rest}"),
+        format!(r"\\127.0.0.1\{drive}$\{rest}"),
+        format!(r"\\?\UNC\localhost\{drive}$\{rest}"),
+    ] {
+        assert!(cred::is_production_root(Path::new(&alias)), "{alias}");
+    }
+    let dir = tempfile::TempDir::new().unwrap();
+    assert!(!cred::is_production_root(dir.path()));
+    assert!(!cred::is_production_root(
+        &dir.path().join("not-yet-created")
+    ));
+
+    // A junction to %LOCALAPPDATA% makes <junction>\Tjommie the production root.
+    let link = dir.path().join("link");
+    let made = spawn::command("cmd")
+        .arg("/c")
+        .arg("mklink")
+        .arg("/J")
+        .arg(&link)
+        .arg(&local)
+        .output()
+        .unwrap();
+    assert!(made.status.success());
+    let through_link = cred::is_production_root(&link.join("Tjommie"));
+    std::fs::remove_dir(&link).unwrap(); // removes only the link
+    assert!(through_link, "junction alias");
+
+    // An 8.3 name, where the volume has them.
+    if let Some(short) = short_name(&local) {
+        assert!(
+            cred::is_production_root(&short.join("Tjommie")),
+            "{}",
+            short.display()
+        );
+    }
+}
+
+fn short_name(path: &Path) -> Option<PathBuf> {
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+    let mut buffer = vec![0u16; 1024];
+    // SAFETY: both buffers are local and sized.
+    let length =
+        unsafe { GetShortPathNameW(windows::core::PCWSTR(wide.as_ptr()), Some(&mut buffer)) }
+            as usize;
+    let short = PathBuf::from(String::from_utf16_lossy(buffer.get(..length)?));
+    (length > 0 && short != path).then_some(short)
 }
 
 #[test]
@@ -137,6 +233,11 @@ fn credential_manager_round_trips_with_typescript() {
         return;
     }
     let root = std::env::temp_dir().join(format!("tjommie-rs-cred-test-{}", uuid::Uuid::new_v4()));
+    // Refused by what the root resolves to on disk, and (below) by namespace, which is what targets are keyed by.
+    assert!(
+        !cred::is_production_root(&root),
+        "refusing the production root"
+    );
     let ns = Namespace::new(&root).unwrap();
     let local = std::env::var_os("LOCALAPPDATA").expect("LOCALAPPDATA");
     let production = Namespace::new(&PathBuf::from(local).join("Tjommie")).unwrap();
@@ -349,8 +450,14 @@ fn enumerate(filter: &str) -> Vec<(String, u64)> {
     let mut list: *mut *mut CREDENTIALW = std::ptr::null_mut();
     // SAFETY: CredEnumerateW fills `count` and `list`; the list is freed once with CredFree.
     unsafe {
-        if CredEnumerateW(&HSTRING::from(filter), None, &mut count, &mut list).is_err() {
-            return Vec::new(); // ERROR_NOT_FOUND: no matching targets.
+        // Only "no matching targets" is empty; any other failure would make the before/after check pass vacuously.
+        if let Err(error) = CredEnumerateW(&HSTRING::from(filter), None, &mut count, &mut list) {
+            assert_eq!(
+                error.code(),
+                ERROR_NOT_FOUND.to_hresult(),
+                "CredEnumerateW {filter}: {error}"
+            );
+            return Vec::new();
         }
         let found = std::slice::from_raw_parts(list, count as usize)
             .iter()
@@ -407,8 +514,11 @@ fn entry(target: &str) -> Option<Entry> {
                 text(c.TargetAlias),
                 c.AttributeCount,
             ),
-            blob: std::slice::from_raw_parts(c.CredentialBlob, c.CredentialBlobSize as usize)
-                .to_vec(),
+            // An empty blob may come with a null pointer, which from_raw_parts must never see.
+            blob: match c.CredentialBlobSize {
+                0 => Vec::new(),
+                size => std::slice::from_raw_parts(c.CredentialBlob, size as usize).to_vec(),
+            },
         };
         CredFree(pointer as *const _);
         Some(found)
