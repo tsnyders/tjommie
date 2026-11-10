@@ -13,6 +13,36 @@ const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fixtu
 const LOGIN: &str = "0f8fad5b-d9cb-469f-a165-70867728950e";
 const ELSEWHERE: &str = r"D:\Elsewhere\codex";
 
+/// One row in every project-team table, a queued task turn and a waiting task exchange, plus a finished task turn.
+const PROJECT_TEAM: &str = r"
+INSERT INTO project_repositories VALUES ('repo', 'C:\Code\app', 'C:\Code\app\.git', 'app', 'now');
+INSERT INTO projects VALUES ('project', 'repo', 'active', 1, '{}');
+INSERT INTO project_members VALUES ('project', 'legacy-bot', 1);
+INSERT INTO project_bot_leases VALUES ('legacy-bot', 'project', 'project');
+INSERT INTO project_tasks VALUES ('task', 'project', 'running', 1, '{}');
+INSERT INTO task_attempts VALUES ('attempt', 'task', 1, 'running', 'legacy-bot', 'C:\Code\app-worktrees\task', 'tjommie/task', '{}');
+INSERT INTO task_evaluations VALUES ('evaluation', 'attempt', 1, 'abc', 'review', 'passed', '{}');
+INSERT INTO task_integrations VALUES ('integration', 'attempt', 'repo', 'ready', 'main', '{}');
+INSERT INTO task_requests VALUES ('request', 'start', 'task', 'attempt');
+INSERT INTO work_items (id, bot_id, source, text, status, created_at, conversation_id, task_attempt_id, task_revision, execution_context_key)
+  VALUES ('task-turn', 'legacy-bot', 'task', 'Build it', 'queued', 'now', 'legacy-bot', 'attempt', 1, 'key'),
+         ('old-task-turn', 'legacy-bot', 'task', 'Built it', 'done', 'then', 'legacy-bot', 'attempt', 1, 'key');
+INSERT INTO exchanges (id, from_bot_id, to_bot_id, request, status, chain_id, reply_to, created_at, task_attempt_id, task_revision, execution_context_key)
+  VALUES ('task-exchange', 'legacy-bot', 'legacy-bot', 'Check this', 'waiting', 'chain', 'legacy-bot', 'now', 'attempt', 1, 'key');
+";
+
+const PROJECT_TABLES: [&str; 9] = [
+    "project_repositories",
+    "projects",
+    "project_members",
+    "project_bot_leases",
+    "project_tasks",
+    "task_attempts",
+    "task_evaluations",
+    "task_integrations",
+    "task_requests",
+];
+
 fn temp(prefix: &str) -> TempDir {
     tempfile::Builder::new().prefix(prefix).tempdir().unwrap()
 }
@@ -59,6 +89,7 @@ fn source() -> TempDir {
              INSERT INTO pairing_codes (id, secret_hash, expires_at, created_at) VALUES ('code', 'hash', 'later', 'now');",
         )
         .unwrap();
+        db.execute_batch(PROJECT_TEAM).unwrap();
     }
     let logins = Connection::open(data.join("logins.sqlite")).unwrap();
     logins
@@ -198,6 +229,86 @@ fn clears_devices_remote_host_and_pairing_codes() {
     }
     let source_db = source.path().join("data").join("tjommie.db");
     assert_eq!(count(&source_db, "SELECT COUNT(*) FROM devices"), 1);
+}
+
+/// Project teams point at git repositories and worktrees outside the root, so a copy would work in production's.
+#[test]
+fn leaves_project_teams_behind() {
+    let source = source();
+    let target = temp("tjommie target ñ-");
+    let before = tree_hash(source.path());
+    let source_db = source.path().join("data").join("tjommie.db");
+    for table in PROJECT_TABLES {
+        assert_eq!(
+            count(&source_db, &format!("SELECT COUNT(*) FROM {table}")),
+            1,
+            "{table}"
+        );
+    }
+
+    import::copy_data(source.path(), target.path(), false).unwrap();
+
+    assert_eq!(tree_hash(source.path()), before);
+    let db = target.path().join("data").join("tjommie.db");
+    for table in PROJECT_TABLES {
+        assert_eq!(
+            count(&db, &format!("SELECT COUNT(*) FROM {table}")),
+            0,
+            "{table}"
+        );
+    }
+    let broken: i64 = Connection::open(&db)
+        .unwrap()
+        .prepare("PRAGMA foreign_key_check")
+        .unwrap()
+        .query_map([], |_| Ok(()))
+        .unwrap()
+        .count() as i64;
+    assert_eq!(broken, 0);
+    // Live task work would run against a missing attempt, so it ends as failed; finished history stays as it was.
+    let status = |sql: &str| -> String {
+        Connection::open(&db)
+            .unwrap()
+            .query_row(sql, [], |row| row.get(0))
+            .unwrap()
+    };
+    assert_eq!(
+        status("SELECT status FROM work_items WHERE id = 'task-turn'"),
+        "failed"
+    );
+    assert_eq!(
+        status("SELECT status FROM work_items WHERE id = 'old-task-turn'"),
+        "done"
+    );
+    assert_eq!(
+        status("SELECT status FROM exchanges WHERE id = 'task-exchange'"),
+        "failed"
+    );
+}
+
+/// Run as a command, the import says that project teams stayed behind. It reads Credential Manager (this source's
+/// namespace is new and empty, so nothing is written), which hosted CI can't reach.
+#[test]
+fn says_that_project_teams_were_not_imported() {
+    if std::env::var("TJOMMIE_CI_HOSTED").as_deref() == Ok("1") {
+        eprintln!(
+            "skipped: hosted Windows service logons cannot reliably reach Credential Manager"
+        );
+        return;
+    }
+    let source = source();
+    let target = temp("tjommie target ñ-");
+    let imported = spawn::command(env!("CARGO_BIN_EXE_tjommie-daemon"))
+        .args(["import", "--from", text(source.path())])
+        .env("TJOMMIE_HOME", target.path())
+        .output()
+        .unwrap();
+    let (out, err) = (
+        String::from_utf8_lossy(&imported.stdout),
+        String::from_utf8_lossy(&imported.stderr),
+    );
+    assert!(imported.status.success(), "{err}");
+    assert!(out.contains("Project teams weren't imported"), "{out}");
 }
 
 #[test]

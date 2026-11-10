@@ -16,6 +16,22 @@ use crate::win::cred::{self, Namespace};
 /// The Claude CLI's sign-in is never copied: refresh-token rotation would sign one of the two installs out.
 const CLAUDE_SIGN_IN: &str = ".credentials.json";
 
+/// The project-team schema (migration 11), children first: its foreign keys have no `ON DELETE CASCADE`.
+const PROJECT_TEAM_TABLES: [&str; 9] = [
+    "task_evaluations",
+    "task_integrations",
+    "task_attempts",
+    "project_tasks",
+    "project_members",
+    "projects",
+    "project_repositories",
+    "project_bot_leases",
+    "task_requests",
+];
+
+/// `new Date().toISOString()` in SQL.
+const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";
+
 /// `copy_data`, then `copy_secrets`.
 pub fn run(from: &Path, to: &Path, replace: bool) -> io::Result<()> {
     copy_data(from, to, replace)?;
@@ -23,7 +39,8 @@ pub fn run(from: &Path, to: &Path, replace: bool) -> io::Result<()> {
 }
 
 /// Copies `tjommie.db`, `logins.sqlite` and `bots\`, then detaches the copy from the source install: it forgets the
-/// paired phones and this PC's remote identity, and bot and account folders under the source root move to `to`.
+/// paired phones, this PC's remote identity and the project teams, and bot and account folders under the source root
+/// move to `to`.
 /// Refuses a target that already has a database unless `replace`, and never writes into the source root.
 pub fn copy_data(from: &Path, to: &Path, replace: bool) -> io::Result<()> {
     let (source, target) = (resolved(from)?, resolved(to)?);
@@ -172,6 +189,18 @@ fn detach(db: &Path, from: &str, to: &str) -> rusqlite::Result<()> {
     let mut db = Connection::open(db)?;
     let tx = db.transaction()?;
     tx.execute_batch("DELETE FROM devices; DELETE FROM remote_host; DELETE FROM pairing_codes;")?;
+    // Project teams point at git repositories and worktrees outside the root, which a copy would then work in.
+    for table in PROJECT_TEAM_TABLES {
+        tx.execute(&format!("DELETE FROM {table}"), [])?;
+    }
+    // Live task work would act on attempts that are gone, so it ends as failed, the way the daemon ends work itself.
+    // Finished rows keep their history; sessions keyed by a task's context are never matched again.
+    tx.execute_batch(&format!(
+        "UPDATE work_items SET status = 'failed', ended_at = {NOW}
+           WHERE task_attempt_id IS NOT NULL AND status IN ('queued', 'running');
+         UPDATE exchanges SET status = 'failed', reply = 'Project teams were not imported.', replied_at = {NOW}
+           WHERE task_attempt_id IS NOT NULL AND status = 'waiting';"
+    ))?;
     // The daemon uses these folders as stored, so copies left pointing into the source would write there.
     for (table, folder) in [("bots", "home_folder"), ("accounts", "folder")] {
         let rows: Vec<(String, String)> = tx

@@ -86,6 +86,9 @@ fn import(args: &[String]) -> Result<(), StartupError> {
     daemon::import::run(Path::new(from), &to, replace)
         .map_err(|error| StartupError::Plain(error.to_string()))?;
     println!("Imported {from} into {}.", to.display());
+    println!(
+        "Project teams weren't imported: their tasks and worktrees stay with {from}, and queued task work was marked failed."
+    );
     Ok(())
 }
 
