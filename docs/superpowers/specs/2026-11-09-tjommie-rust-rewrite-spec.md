@@ -98,8 +98,9 @@ Split further only when a crate needs it.
 | `PushKind` | `approval`, `limit`, `routine_failed`, `done`, `failed` | `remote.ts:40` |
 
 ### 3.3 Transport and relay
-- **Noise:** patterns at `transport/native/src/lib.rs:5-6`; `snow =0.10.0` (`Cargo.toml:13`).
-- **Framing:** 2-byte length prefix, `MAX_NOISE_FRAME = 65535` (`client/src/encrypted-channel.ts:7`, `:66`).
+- **Noise:** patterns at `transport/native/src/lib.rs:5-6`; `snow =0.10.0` (`Cargo.toml:13`). The prologue is the domain prefix `"Tjommie/remote/v1\0"` followed by `remotePrologue(preface)` (`transport/src/index.ts`).
+- **Framing:** a 4-byte big-endian length prefix (`lengthPrefixed` / `FrameDecoder`), with each Noise record capped at `MAX_NOISE_FRAME = 65535` (`client/src/encrypted-channel.ts:7`, `:66`). Larger messages span several records.
+- **Errors to remote devices:** any non-`RpcError` message and any schema failure is replaced with the generic text "This request could not be completed on the PC." The error code is kept.
 - **Peer wire:** `daemon/src/peer-wire.ts`.
 - **Relay:**
   - URL, limits, login message and close codes: `protocol/src/relay.ts:5-25`.

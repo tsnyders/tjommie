@@ -1,0 +1,560 @@
+[
+  {
+    "type": "index",
+    "name": "accounts_default",
+    "tbl_name": "accounts",
+    "sql": "CREATE UNIQUE INDEX accounts_default ON accounts(provider) WHERE is_default = 1 AND deleted_at IS NULL"
+  },
+  {
+    "type": "index",
+    "name": "accounts_fallback",
+    "tbl_name": "accounts",
+    "sql": "CREATE UNIQUE INDEX accounts_fallback ON accounts(provider) WHERE is_fallback = 1 AND deleted_at IS NULL"
+  },
+  {
+    "type": "index",
+    "name": "approvals_pending_routine_by_bot",
+    "tbl_name": "approvals",
+    "sql": "CREATE INDEX approvals_pending_routine_by_bot ON approvals (bot_id) WHERE kind = 'routine' AND status = 'pending'"
+  },
+  {
+    "type": "index",
+    "name": "message_attachments_by_attachment",
+    "tbl_name": "message_attachments",
+    "sql": "CREATE INDEX message_attachments_by_attachment ON message_attachments(attachment_id)"
+  },
+  {
+    "type": "index",
+    "name": "messages_by_conversation",
+    "tbl_name": "messages",
+    "sql": "CREATE INDEX messages_by_conversation ON messages (conversation_id, seq)"
+  },
+  {
+    "type": "index",
+    "name": "project_bot_binding",
+    "tbl_name": "project_members",
+    "sql": "CREATE UNIQUE INDEX project_bot_binding ON project_members(bot_id) WHERE active=1"
+  },
+  {
+    "type": "index",
+    "name": "project_tasks_by_project",
+    "tbl_name": "project_tasks",
+    "sql": "CREATE INDEX project_tasks_by_project ON project_tasks(project_id,state)"
+  },
+  {
+    "type": "index",
+    "name": "routine_runs_by_routine",
+    "tbl_name": "routine_runs",
+    "sql": "CREATE INDEX routine_runs_by_routine ON routine_runs (routine_id, due_at)"
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_account_cap_notifications_1",
+    "tbl_name": "account_cap_notifications",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_account_limit_snapshots_1",
+    "tbl_name": "account_limit_snapshots",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_account_limit_windows_1",
+    "tbl_name": "account_limit_windows",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_accounts_1",
+    "tbl_name": "accounts",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_allow_rules_1",
+    "tbl_name": "allow_rules",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_approvals_1",
+    "tbl_name": "approvals",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_attachments_1",
+    "tbl_name": "attachments",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_attachments_2",
+    "tbl_name": "attachments",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_bot_links_1",
+    "tbl_name": "bot_links",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_bots_1",
+    "tbl_name": "bots",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_chains_1",
+    "tbl_name": "chains",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_conversations_1",
+    "tbl_name": "conversations",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_devices_1",
+    "tbl_name": "devices",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_devices_2",
+    "tbl_name": "devices",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_exchanges_1",
+    "tbl_name": "exchanges",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_message_attachments_1",
+    "tbl_name": "message_attachments",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_messages_1",
+    "tbl_name": "messages",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_pairing_codes_1",
+    "tbl_name": "pairing_codes",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_project_bot_leases_1",
+    "tbl_name": "project_bot_leases",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_project_members_1",
+    "tbl_name": "project_members",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_project_repositories_1",
+    "tbl_name": "project_repositories",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_project_repositories_2",
+    "tbl_name": "project_repositories",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_project_repositories_3",
+    "tbl_name": "project_repositories",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_project_tasks_1",
+    "tbl_name": "project_tasks",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_projects_1",
+    "tbl_name": "projects",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_remote_host_1",
+    "tbl_name": "remote_host",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_room_members_1",
+    "tbl_name": "room_members",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_routine_failure_notifications_1",
+    "tbl_name": "routine_failure_notifications",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_routine_runs_1",
+    "tbl_name": "routine_runs",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_routines_1",
+    "tbl_name": "routines",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_sessions_1",
+    "tbl_name": "sessions",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_settings_1",
+    "tbl_name": "settings",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_task_attempts_1",
+    "tbl_name": "task_attempts",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_task_attempts_2",
+    "tbl_name": "task_attempts",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_task_attempts_3",
+    "tbl_name": "task_attempts",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_task_attempts_4",
+    "tbl_name": "task_attempts",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_task_evaluations_1",
+    "tbl_name": "task_evaluations",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_task_integrations_1",
+    "tbl_name": "task_integrations",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_task_requests_1",
+    "tbl_name": "task_requests",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_usage_1",
+    "tbl_name": "usage",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "sqlite_autoindex_work_items_1",
+    "tbl_name": "work_items",
+    "sql": null
+  },
+  {
+    "type": "index",
+    "name": "task_active_bot",
+    "tbl_name": "task_attempts",
+    "sql": "CREATE UNIQUE INDEX task_active_bot ON task_attempts(bot_id) WHERE state IN ('provisioning','queued','running')"
+  },
+  {
+    "type": "index",
+    "name": "task_attempts_by_task",
+    "tbl_name": "task_attempts",
+    "sql": "CREATE INDEX task_attempts_by_task ON task_attempts(task_id,ordinal)"
+  },
+  {
+    "type": "index",
+    "name": "task_evaluations_by_attempt",
+    "tbl_name": "task_evaluations",
+    "sql": "CREATE INDEX task_evaluations_by_attempt ON task_evaluations(attempt_id,revision,source_sha,kind)"
+  },
+  {
+    "type": "index",
+    "name": "task_integration_target",
+    "tbl_name": "task_integrations",
+    "sql": "CREATE UNIQUE INDEX task_integration_target ON task_integrations(repository_id,target_ref) WHERE state IN ('preparing','checking','ready')"
+  },
+  {
+    "type": "index",
+    "name": "task_integrations_by_attempt",
+    "tbl_name": "task_integrations",
+    "sql": "CREATE INDEX task_integrations_by_attempt ON task_integrations(attempt_id)"
+  },
+  {
+    "type": "index",
+    "name": "usage_by_account_date",
+    "tbl_name": "usage",
+    "sql": "CREATE INDEX usage_by_account_date ON usage(account_id, created_at)"
+  },
+  {
+    "type": "index",
+    "name": "usage_by_bot_date",
+    "tbl_name": "usage",
+    "sql": "CREATE INDEX usage_by_bot_date ON usage(bot_id, created_at)"
+  },
+  {
+    "type": "index",
+    "name": "usage_by_date",
+    "tbl_name": "usage",
+    "sql": "CREATE INDEX usage_by_date ON usage(created_at)"
+  },
+  {
+    "type": "index",
+    "name": "usage_by_model_date",
+    "tbl_name": "usage",
+    "sql": "CREATE INDEX usage_by_model_date ON usage(model, created_at)"
+  },
+  {
+    "type": "index",
+    "name": "work_items_by_bot",
+    "tbl_name": "work_items",
+    "sql": "CREATE INDEX work_items_by_bot ON work_items (bot_id, status)"
+  },
+  {
+    "type": "table",
+    "name": "account_cap_notifications",
+    "tbl_name": "account_cap_notifications",
+    "sql": "CREATE TABLE account_cap_notifications (\n    account_id TEXT NOT NULL REFERENCES accounts(id), cap_revision INTEGER NOT NULL,\n    threshold INTEGER NOT NULL CHECK (threshold IN (80, 100)), created_at TEXT NOT NULL,\n    PRIMARY KEY (account_id, cap_revision, threshold)\n  )"
+  },
+  {
+    "type": "table",
+    "name": "account_limit_snapshots",
+    "tbl_name": "account_limit_snapshots",
+    "sql": "CREATE TABLE account_limit_snapshots (\n    account_id TEXT NOT NULL REFERENCES accounts(id), limit_id TEXT NOT NULL, observed_at TEXT NOT NULL,\n    PRIMARY KEY (account_id, limit_id)\n  )"
+  },
+  {
+    "type": "table",
+    "name": "account_limit_windows",
+    "tbl_name": "account_limit_windows",
+    "sql": "CREATE TABLE account_limit_windows (\n    account_id TEXT NOT NULL REFERENCES accounts(id), limit_id TEXT NOT NULL, window_key TEXT NOT NULL,\n    duration_minutes REAL, used_percent REAL, resets_at TEXT,\n    state TEXT NOT NULL CHECK (state IN ('ok', 'near', 'reached')), observed_at TEXT NOT NULL,\n    PRIMARY KEY (account_id, limit_id, window_key)\n  )"
+  },
+  {
+    "type": "table",
+    "name": "accounts",
+    "tbl_name": "accounts",
+    "sql": "CREATE TABLE accounts (\n    id TEXT PRIMARY KEY,\n    provider TEXT NOT NULL,\n    label TEXT NOT NULL,\n    kind TEXT NOT NULL,\n    folder TEXT NOT NULL,\n    created_at TEXT NOT NULL\n  , credential_ref TEXT, is_default INTEGER NOT NULL DEFAULT 0 CHECK (is_default IN (0, 1)), is_fallback INTEGER NOT NULL DEFAULT 0 CHECK (is_fallback IN (0, 1)), spending_cap_usd REAL CHECK (spending_cap_usd IS NULL OR spending_cap_usd > 0), limited_until TEXT, deleted_at TEXT, cap_revision INTEGER NOT NULL DEFAULT 0)"
+  },
+  {
+    "type": "table",
+    "name": "allow_rules",
+    "tbl_name": "allow_rules",
+    "sql": "CREATE TABLE allow_rules (\n    bot_id TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE,\n    rule TEXT NOT NULL,\n    PRIMARY KEY (bot_id, rule)\n  )"
+  },
+  {
+    "type": "table",
+    "name": "approvals",
+    "tbl_name": "approvals",
+    "sql": "CREATE TABLE approvals (\n    id TEXT PRIMARY KEY,\n    bot_id TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE,\n    tool TEXT NOT NULL,\n    summary TEXT NOT NULL,\n    detail TEXT NOT NULL,\n    rule TEXT,\n    status TEXT NOT NULL,\n    message_id TEXT NOT NULL,\n    created_at TEXT NOT NULL,\n    decided_at TEXT\n  , kind TEXT NOT NULL DEFAULT 'tool', payload TEXT)"
+  },
+  {
+    "type": "table",
+    "name": "attachments",
+    "tbl_name": "attachments",
+    "sql": "CREATE TABLE attachments (\n    id TEXT PRIMARY KEY, host_id TEXT NOT NULL, storage_name TEXT NOT NULL UNIQUE,\n    original_name TEXT NOT NULL, byte_length INTEGER NOT NULL CHECK(byte_length >= 0 AND byte_length <= 209715200),\n    content_type TEXT NOT NULL, sha256 TEXT NOT NULL, created_at TEXT NOT NULL\n  )"
+  },
+  {
+    "type": "table",
+    "name": "bot_links",
+    "tbl_name": "bot_links",
+    "sql": "CREATE TABLE bot_links (\n    bot_id TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE,\n    target_bot_id TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE,\n    PRIMARY KEY (bot_id, target_bot_id)\n  )"
+  },
+  {
+    "type": "table",
+    "name": "bots",
+    "tbl_name": "bots",
+    "sql": "CREATE TABLE bots (\n    id TEXT PRIMARY KEY,\n    name TEXT NOT NULL,\n    color TEXT NOT NULL,\n    shape TEXT NOT NULL,\n    instructions TEXT NOT NULL,\n    provider TEXT NOT NULL,\n    model TEXT NOT NULL,\n    autonomy TEXT NOT NULL,\n    home_folder TEXT NOT NULL,\n    project_folder TEXT,\n    browser INTEGER NOT NULL DEFAULT 0,\n    paused INTEGER NOT NULL DEFAULT 0,\n    limited_until TEXT,\n    created_at TEXT NOT NULL\n  , account_id TEXT REFERENCES accounts(id))"
+  },
+  {
+    "type": "table",
+    "name": "chains",
+    "tbl_name": "chains",
+    "sql": "CREATE TABLE chains (id TEXT PRIMARY KEY, requests_made INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL)"
+  },
+  {
+    "type": "table",
+    "name": "conversations",
+    "tbl_name": "conversations",
+    "sql": "CREATE TABLE conversations (\n    id TEXT PRIMARY KEY,\n    kind TEXT NOT NULL,\n    bot_id TEXT REFERENCES bots(id) ON DELETE CASCADE\n  , name TEXT, created_at TEXT)"
+  },
+  {
+    "type": "table",
+    "name": "devices",
+    "tbl_name": "devices",
+    "sql": "CREATE TABLE devices (\n    id TEXT PRIMARY KEY, name TEXT NOT NULL, public_key TEXT NOT NULL UNIQUE,\n    paired_at TEXT NOT NULL, last_seen_at TEXT, revoked_at TEXT\n  , push_token TEXT, push_kinds TEXT)"
+  },
+  {
+    "type": "table",
+    "name": "exchanges",
+    "tbl_name": "exchanges",
+    "sql": "CREATE TABLE exchanges (\n    id TEXT PRIMARY KEY,\n    from_bot_id TEXT NOT NULL,\n    to_bot_id TEXT NOT NULL,\n    request TEXT NOT NULL,\n    reply TEXT,\n    status TEXT NOT NULL,\n    chain_id TEXT NOT NULL,\n    reply_to TEXT NOT NULL,\n    created_at TEXT NOT NULL,\n    replied_at TEXT\n  , task_attempt_id TEXT, task_revision INTEGER, execution_context_key TEXT)"
+  },
+  {
+    "type": "table",
+    "name": "message_attachments",
+    "tbl_name": "message_attachments",
+    "sql": "CREATE TABLE message_attachments (\n    message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE, attachment_index INTEGER NOT NULL CHECK(attachment_index >= 0),\n    attachment_id TEXT NOT NULL REFERENCES attachments(id), PRIMARY KEY(message_id,attachment_index)\n  )"
+  },
+  {
+    "type": "table",
+    "name": "messages",
+    "tbl_name": "messages",
+    "sql": "CREATE TABLE messages (\n    id TEXT PRIMARY KEY,\n    conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,\n    author TEXT NOT NULL,\n    kind TEXT NOT NULL,\n    body TEXT NOT NULL,\n    data TEXT,\n    status TEXT NOT NULL,\n    created_at TEXT NOT NULL,\n    seq INTEGER NOT NULL\n  )"
+  },
+  {
+    "type": "table",
+    "name": "pairing_codes",
+    "tbl_name": "pairing_codes",
+    "sql": "CREATE TABLE pairing_codes (\n    id TEXT PRIMARY KEY, secret_hash TEXT NOT NULL, expires_at TEXT NOT NULL,\n    created_at TEXT NOT NULL, used_at TEXT\n  )"
+  },
+  {
+    "type": "table",
+    "name": "project_bot_leases",
+    "tbl_name": "project_bot_leases",
+    "sql": "CREATE TABLE project_bot_leases (bot_id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, kind TEXT NOT NULL)"
+  },
+  {
+    "type": "table",
+    "name": "project_members",
+    "tbl_name": "project_members",
+    "sql": "CREATE TABLE project_members (project_id TEXT NOT NULL REFERENCES projects(id), bot_id TEXT NOT NULL, active INTEGER NOT NULL CHECK(active IN (0,1)), PRIMARY KEY(project_id,bot_id))"
+  },
+  {
+    "type": "table",
+    "name": "project_repositories",
+    "tbl_name": "project_repositories",
+    "sql": "CREATE TABLE project_repositories (id TEXT PRIMARY KEY, path TEXT NOT NULL UNIQUE, common_dir TEXT NOT NULL UNIQUE, name TEXT NOT NULL, created_at TEXT NOT NULL)"
+  },
+  {
+    "type": "table",
+    "name": "project_tasks",
+    "tbl_name": "project_tasks",
+    "sql": "CREATE TABLE project_tasks (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), state TEXT NOT NULL, revision INTEGER NOT NULL, data TEXT NOT NULL CHECK(json_valid(data)))"
+  },
+  {
+    "type": "table",
+    "name": "projects",
+    "tbl_name": "projects",
+    "sql": "CREATE TABLE projects (id TEXT PRIMARY KEY, repository_id TEXT NOT NULL REFERENCES project_repositories(id), state TEXT NOT NULL, revision INTEGER NOT NULL, data TEXT NOT NULL CHECK(json_valid(data)))"
+  },
+  {
+    "type": "table",
+    "name": "remote_host",
+    "tbl_name": "remote_host",
+    "sql": "CREATE TABLE remote_host (\n    singleton INTEGER PRIMARY KEY CHECK(singleton = 1), id TEXT NOT NULL UNIQUE,\n    name TEXT NOT NULL, public_key TEXT NOT NULL, created_at TEXT NOT NULL\n  )"
+  },
+  {
+    "type": "table",
+    "name": "room_members",
+    "tbl_name": "room_members",
+    "sql": "CREATE TABLE room_members (\n    room_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,\n    bot_id TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE,\n    PRIMARY KEY (room_id, bot_id))"
+  },
+  {
+    "type": "table",
+    "name": "routine_failure_notifications",
+    "tbl_name": "routine_failure_notifications",
+    "sql": "CREATE TABLE routine_failure_notifications (\n    run_id TEXT PRIMARY KEY REFERENCES routine_runs(id) ON DELETE CASCADE,\n    title TEXT NOT NULL,\n    body TEXT NOT NULL\n  )"
+  },
+  {
+    "type": "table",
+    "name": "routine_runs",
+    "tbl_name": "routine_runs",
+    "sql": "CREATE TABLE routine_runs (\n    id TEXT PRIMARY KEY,\n    routine_id TEXT NOT NULL REFERENCES routines(id) ON DELETE CASCADE,\n    due_at TEXT NOT NULL,\n    started_at TEXT,\n    ended_at TEXT,\n    status TEXT NOT NULL,\n    note TEXT\n  )"
+  },
+  {
+    "type": "table",
+    "name": "routines",
+    "tbl_name": "routines",
+    "sql": "CREATE TABLE routines (\n    id TEXT PRIMARY KEY,\n    bot_id TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE,\n    name TEXT NOT NULL,\n    prompt TEXT NOT NULL,\n    days TEXT NOT NULL,\n    times TEXT NOT NULL,\n    time_zone TEXT NOT NULL,\n    time_limit_minutes INTEGER,\n    enabled INTEGER NOT NULL DEFAULT 1,\n    next_run_at TEXT,\n    created_at TEXT NOT NULL\n  )"
+  },
+  {
+    "type": "table",
+    "name": "sessions",
+    "tbl_name": "sessions",
+    "sql": "CREATE TABLE \"sessions\" (\n    bot_id TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE,\n    provider TEXT NOT NULL, account_id TEXT NOT NULL, cli_session_id TEXT NOT NULL,\n    updated_at TEXT NOT NULL, total_cost_usd REAL, execution_context_key TEXT NOT NULL DEFAULT '',\n    PRIMARY KEY (bot_id, provider, account_id)\n  )"
+  },
+  {
+    "type": "table",
+    "name": "settings",
+    "tbl_name": "settings",
+    "sql": "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+  },
+  {
+    "type": "table",
+    "name": "task_attempts",
+    "tbl_name": "task_attempts",
+    "sql": "CREATE TABLE task_attempts (id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES project_tasks(id), ordinal INTEGER NOT NULL, state TEXT NOT NULL, bot_id TEXT NOT NULL, worktree_path TEXT NOT NULL UNIQUE, branch TEXT NOT NULL UNIQUE, data TEXT NOT NULL CHECK(json_valid(data)), UNIQUE(task_id,ordinal))"
+  },
+  {
+    "type": "table",
+    "name": "task_evaluations",
+    "tbl_name": "task_evaluations",
+    "sql": "CREATE TABLE task_evaluations (id TEXT PRIMARY KEY, attempt_id TEXT NOT NULL REFERENCES task_attempts(id), revision INTEGER NOT NULL, source_sha TEXT NOT NULL, kind TEXT NOT NULL, state TEXT NOT NULL, data TEXT NOT NULL CHECK(json_valid(data)))"
+  },
+  {
+    "type": "table",
+    "name": "task_integrations",
+    "tbl_name": "task_integrations",
+    "sql": "CREATE TABLE task_integrations (id TEXT PRIMARY KEY, attempt_id TEXT NOT NULL REFERENCES task_attempts(id), repository_id TEXT NOT NULL REFERENCES project_repositories(id), state TEXT NOT NULL, target_ref TEXT NOT NULL, data TEXT NOT NULL CHECK(json_valid(data)))"
+  },
+  {
+    "type": "table",
+    "name": "task_requests",
+    "tbl_name": "task_requests",
+    "sql": "CREATE TABLE task_requests (id TEXT PRIMARY KEY, operation TEXT NOT NULL, task_id TEXT NOT NULL, result_id TEXT NOT NULL)"
+  },
+  {
+    "type": "table",
+    "name": "usage",
+    "tbl_name": "usage",
+    "sql": "CREATE TABLE usage (\n    id TEXT PRIMARY KEY,\n    bot_id TEXT NOT NULL,\n    account_id TEXT NOT NULL,\n    provider TEXT NOT NULL,\n    model TEXT NOT NULL,\n    input INTEGER NOT NULL,\n    cached_input INTEGER NOT NULL,\n    output INTEGER NOT NULL,\n    reasoning INTEGER NOT NULL,\n    cost_usd REAL,\n    cost_source TEXT,\n    created_at TEXT NOT NULL\n  , account_kind TEXT NOT NULL DEFAULT 'unknown' CHECK (account_kind IN ('subscription', 'api_key', 'unknown')), pricing_revision TEXT)"
+  },
+  {
+    "type": "table",
+    "name": "work_items",
+    "tbl_name": "work_items",
+    "sql": "CREATE TABLE work_items (\n    id TEXT PRIMARY KEY,\n    bot_id TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE,\n    source TEXT NOT NULL,\n    text TEXT NOT NULL,\n    message_id TEXT,\n    status TEXT NOT NULL,\n    created_at TEXT NOT NULL,\n    started_at TEXT,\n    ended_at TEXT\n  , conversation_id TEXT, priority INTEGER NOT NULL DEFAULT 0, chain_id TEXT, exchange_id TEXT, routine_run_id TEXT, task_attempt_id TEXT, task_revision INTEGER, execution_context_key TEXT)"
+  }
+]
