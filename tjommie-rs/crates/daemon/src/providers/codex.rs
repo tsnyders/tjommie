@@ -455,8 +455,8 @@ impl Inner {
         };
         let weak = Arc::downgrade(&self);
         server.exit.on_exit(move |exit| {
-            if let (Some(inner), CliExit::Exited { code, .. }) = (weak.upgrade(), exit) {
-                inner.server_exited(server_id, *code);
+            if let Some(inner) = weak.upgrade() {
+                inner.server_exited(server_id, exit);
             }
         });
         if let Some(key) = &options.api_key {
@@ -553,7 +553,7 @@ impl Inner {
         Ok(())
     }
 
-    fn server_exited(&self, server_id: u64, code: Option<i32>) {
+    fn server_exited(&self, server_id: u64, exit: &CliExit) {
         let mut state = self.lock();
         if state.server_id() != Some(server_id) {
             return; // closed on purpose
@@ -562,9 +562,13 @@ impl Inner {
         if state.stopping {
             return; // interrupt publishes exit after the whole tree has stopped
         }
-        let error = code
-            .filter(|code| *code != 0)
-            .map(|code| format!("Codex exited with code {code}"));
+        let error = match exit {
+            CliExit::Exited { code, .. } => code
+                .filter(|code| *code != 0)
+                .map(|code| format!("Codex exited with code {code}")),
+            // TypeScript listens for `exit` only; a lost process must still end the session for the runner.
+            CliExit::Failed(error) => Some(error.clone()),
+        };
         self.emit(
             &mut state,
             ProviderEvent::Exit {

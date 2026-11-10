@@ -280,11 +280,17 @@ pub async fn start_codex_server<H: CliHost + ?Sized>(
 
     let kill_timer: Arc<Mutex<Option<JoinHandle<()>>>> = Arc::default();
     exit.on_exit({
-        let (rpc, kill_timer) = (Arc::clone(&rpc), Arc::clone(&kill_timer));
+        let (rpc, kill_timer, input) = (
+            Arc::clone(&rpc),
+            Arc::clone(&kill_timer),
+            Arc::clone(&input),
+        );
         move |exit| {
             if let Some(timer) = kill_timer.lock().expect("kill timer lock").take() {
                 timer.abort();
             }
+            // Later writes fail at once, as Node's EPIPE does, instead of waiting out their timeout.
+            input.lock().expect("stdin lock").take();
             rpc.fail_all(ProviderError::Failed(match exit {
                 CliExit::Exited { .. } => "codex app-server exited".into(),
                 CliExit::Failed(error) => error.clone(),

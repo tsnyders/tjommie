@@ -303,3 +303,34 @@ async fn starts_api_key_app_server_authentication_in_ephemeral_storage_without_s
     (server.close)();
     fake.exit_with(Some(0), None);
 }
+
+/// A write racing the child's exit (a Stop's `turn/interrupt`, say) must fail at once, not wait out its timeout.
+#[tokio::test(start_paused = true)]
+async fn fails_writes_at_once_after_the_child_exits() {
+    let host = FakeHost::default();
+    let (child, fake) = fake_child(4321);
+    host.push_child(child);
+    let answering = answer_initialize(fake);
+    let server = daemon::providers::codex_rpc::start_codex_server(
+        &host,
+        &command("codex"),
+        &BTreeMap::new(),
+        ".",
+        false,
+    )
+    .await
+    .unwrap();
+    let fake = answering.await.unwrap(); // its stdin stays open: only the exit can close the input
+
+    fake.exit_with(Some(1), None);
+    // With paused time, a request that waited for an answer would reach its 120-second timeout instead.
+    let error = server
+        .rpc
+        .request("turn/interrupt", json!({}))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error,
+        ProviderError::Failed("codex app-server's input is closed".into())
+    );
+}

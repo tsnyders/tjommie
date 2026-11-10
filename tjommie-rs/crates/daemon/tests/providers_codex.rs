@@ -943,3 +943,20 @@ async fn deduplicates_repeated_usage_snapshots_without_dropping_a_later_cumulati
     h.notify("thread/tokenUsage/updated", params);
     assert_eq!(usage_events(h.events()).len(), 2);
 }
+
+/// Not in TypeScript, which only listens for `exit`: a host that loses the process reports `Failed`, and the runner
+/// must still learn that the session ended.
+#[tokio::test]
+async fn reports_a_lost_app_server_as_an_exit_with_its_error() {
+    let mut h = session(true).await;
+    h.exit
+        .fire(CliExit::Failed("The Codex process was lost".into()));
+    assert_eq!(
+        h.events(),
+        vec![ProviderEvent::Exit {
+            error: Some("The Codex process was lost".into()),
+            completed_turn: None
+        }]
+    );
+    assert_eq!(h.codex.pid(), None);
+}
