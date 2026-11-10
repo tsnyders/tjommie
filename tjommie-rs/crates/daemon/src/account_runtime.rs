@@ -191,14 +191,14 @@ pub struct AccountRunContext {
 pub enum AccountSelection {
     Ready(AccountRunContext),
     /// `limited_until`: absent, an unknown reset (`Some(None)`), or the latest known reset.
-    Blocked {
+    NotReady {
         reason: String,
         account_id: String,
         limited_until: Option<Option<String>>,
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PreparedAccount {
     pub env: Env,
     pub api_key: Option<ApiKey>,
@@ -1286,10 +1286,14 @@ impl AccountRuntime {
     /// Chooses the account for a bot's next turn: its pinned (or default) account, or an opted-in fallback while the
     /// pinned subscription is limited.
     pub fn inspect(&self, bot: &StoredBot) -> AccountSelection {
-        let db = self.db();
+        self.inspect_with(&self.db(), bot)
+    }
+
+    /// `inspect` with a database connection the caller already holds locked, as the runner does.
+    pub fn inspect_with(&self, db: &Connection, bot: &StoredBot) -> AccountSelection {
         let state = self.state();
-        self.select(&db, &state, bot)
-            .unwrap_or_else(|error| AccountSelection::Blocked {
+        self.select(db, &state, bot)
+            .unwrap_or_else(|error| AccountSelection::NotReady {
                 reason: error.message,
                 account_id: bot.account_id.clone().unwrap_or_default(),
                 limited_until: None,
@@ -1302,7 +1306,7 @@ impl AccountRuntime {
         state: &State,
         bot: &StoredBot,
     ) -> Result<AccountSelection, RpcError> {
-        let blocked = |reason: &str, account_id: &str, limited_until| AccountSelection::Blocked {
+        let blocked = |reason: &str, account_id: &str, limited_until| AccountSelection::NotReady {
             reason: reason.into(),
             account_id: account_id.into(),
             limited_until,

@@ -243,17 +243,22 @@ impl Accounts {
             accounts: options.accounts_dir.clone(),
             credentials: options.credentials,
             ops: options.ops,
+            // Deferred: the runner calls the runtime with its own state and the database locked, and these read both.
             on_changed: Some(Arc::new(move |runtime: &AccountRuntime, _: &str| {
-                changed.changed(runtime)
+                let (feed, runtime) = (changed.clone(), runtime.clone());
+                tokio::spawn(async move { feed.changed(&runtime) });
             })),
             on_sign_in_ended: Some(Arc::new(
                 move |runtime: &AccountRuntime, id: &str, attempt: &str| {
-                    ended.sign_in_ended(runtime, id, attempt)
+                    let (feed, runtime) = (ended.clone(), runtime.clone());
+                    let (id, attempt) = (id.to_string(), attempt.to_string());
+                    tokio::spawn(async move { feed.sign_in_ended(&runtime, &id, &attempt) });
                 },
             )),
             on_cap: Some(Arc::new(
                 move |runtime: &AccountRuntime, id: &str, threshold: u8| {
-                    cap.cap(runtime, id, threshold)
+                    let (feed, runtime, id) = (cap.clone(), runtime.clone(), id.to_string());
+                    tokio::spawn(async move { feed.cap(&runtime, &id, threshold) });
                 },
             )),
             now: Arc::new(now_ms),

@@ -402,8 +402,11 @@ impl Fixture {
         get_stored_bot(&self.db.lock().unwrap(), id).unwrap()
     }
 
+    /// As the runner inspects: with the database it already holds locked.
     fn inspect(&self) -> AccountSelection {
-        self.runtime.inspect(&self.stored(&self.bot))
+        let db = self.db.lock().unwrap();
+        let bot = get_stored_bot(&db, &self.bot).unwrap();
+        self.runtime.inspect_with(&db, &bot)
     }
 
     fn ready(&self) -> bool {
@@ -413,7 +416,7 @@ impl Fixture {
     fn context(&self) -> AccountRunContext {
         match self.inspect() {
             AccountSelection::Ready(context) => context,
-            AccountSelection::Blocked { reason, .. } => panic!("{reason}"),
+            AccountSelection::NotReady { reason, .. } => panic!("{reason}"),
         }
     }
 
@@ -725,7 +728,7 @@ async fn claude_model_exhaustion_is_display_only_for_healthy_accounts_but_preser
     h.runtime.check("claude-main").await.unwrap();
     assert!(matches!(
         h.runtime.inspect(&h.stored(&bot.id)),
-        AccountSelection::Blocked { .. }
+        AccountSelection::NotReady { .. }
     ));
     let mut cleared = value;
     cleared["limits"] = json!([]);
@@ -843,7 +846,7 @@ async fn blocks_unknown_reset_limits_for_every_pinned_bot_and_only_uses_an_opted
     h.runtime.observe_limit(&context, &reached(None));
     assert!(matches!(
         h.inspect(),
-        AccountSelection::Blocked {
+        AccountSelection::NotReady {
             limited_until: Some(None),
             ..
         }
@@ -913,7 +916,7 @@ async fn uses_all_quota_windows_and_does_not_invent_a_reset_or_replace_known_exh
     assert_eq!(h.limits("codex-main").len(), 2);
     assert!(matches!(
         h.inspect(),
-        AccountSelection::Blocked {
+        AccountSelection::NotReady {
             limited_until: Some(None),
             ..
         }
@@ -931,7 +934,7 @@ async fn requires_known_codex_model_pricing_and_serializes_api_account_turns() {
         h.bot
     ));
     assert!(
-        matches!(h.inspect(), AccountSelection::Blocked { reason, .. } if reason.contains("price"))
+        matches!(h.inspect(), AccountSelection::NotReady { reason, .. } if reason.contains("price"))
     );
     h.sql(&format!(
         "UPDATE bots SET model = 'gpt-5.3-codex' WHERE id = '{}'",
@@ -1039,7 +1042,7 @@ async fn caps_locally_recorded_api_spend_and_deduplicates_threshold_notification
         Some(&("api".to_string(), 100))
     );
     assert!(
-        matches!(h.inspect(), AccountSelection::Blocked { reason, .. } if reason.contains("unknown"))
+        matches!(h.inspect(), AccountSelection::NotReady { reason, .. } if reason.contains("unknown"))
     );
 }
 
@@ -1055,7 +1058,7 @@ async fn never_falls_back_to_the_same_limited_api_account() {
     ));
     h.runtime.observe_limit(&h.context(), &reached(None));
     assert!(
-        matches!(h.inspect(), AccountSelection::Blocked { account_id, .. } if account_id == "api")
+        matches!(h.inspect(), AccountSelection::NotReady { account_id, .. } if account_id == "api")
     );
 }
 
@@ -1088,7 +1091,7 @@ async fn keeps_per_account_sandbox_readiness_separate_and_stops_new_probes_after
         h.bot
     ));
     assert!(
-        matches!(h.inspect(), AccountSelection::Blocked { reason, .. } if reason.contains("sandbox"))
+        matches!(h.inspect(), AccountSelection::NotReady { reason, .. } if reason.contains("sandbox"))
     );
     h.runtime.close().await;
     let calls = h.ops.probe.count();
@@ -1437,7 +1440,7 @@ async fn does_not_let_explicit_retries_bypass_known_resets_spending_caps_pricing
         h.bot
     ));
     assert!(
-        matches!(h.inspect(), AccountSelection::Blocked { reason, .. } if reason.contains("price"))
+        matches!(h.inspect(), AccountSelection::NotReady { reason, .. } if reason.contains("price"))
     );
     h.usage("spend", "gpt-5.3-codex", Some(1.0));
     assert!(
