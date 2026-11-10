@@ -54,6 +54,7 @@ pub enum RelayToHost {
     },
     Ready {
         push: bool,
+        /// At most 16 of at most 32 characters: the manifest schema caps it, so decode with [`crate::parse`].
         #[serde(default, skip_serializing_if = "Option::is_none")]
         kinds: Option<Vec<String>>,
     },
@@ -62,6 +63,7 @@ pub enum RelayToHost {
     },
     Pushed {
         id: i64,
+        /// At most 16: the manifest schema caps it, so decode with [`crate::parse`].
         results: Vec<PushResult>,
     },
 }
