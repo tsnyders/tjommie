@@ -16,6 +16,7 @@ use crate::win::worker::{
     BOOTSTRAP, FAILURE, Purpose, WorkerConfiguration, command_line, grant_target,
     launch_environment, launch_frame, ready, required, validate_pair,
 };
+use futures_util::FutureExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -667,12 +668,24 @@ impl WorkerBoundary {
             }
         });
         let (stop, waiting) = (running.retire.clone(), exit.clone());
+        // `workerProcessRetired`: the exit above fires `Exited` only once the whole tree is confirmed gone and `Failed`
+        // when it is not, so that outcome is the proof. Providers use it to keep an unconfirmed tree's account reserved.
+        let retirement: BoxFuture<'static, Result<(), String>> = {
+            let exit = exit.clone();
+            Box::pin(async move {
+                match exit.wait().await {
+                    CliExit::Exited { .. } => Ok(()),
+                    CliExit::Failed(message) => Err(message),
+                }
+            })
+        };
         Ok(Some(CliChild {
             pid: Some(pid),
             stdin: running.stdin,
             stdout: running.stdout,
             stderr: running.stderr,
             exit,
+            retirement: Some(retirement.shared()),
             kill_tree: Arc::new(move || {
                 let (stop, waiting) = (stop.clone(), waiting.clone());
                 Box::pin(async move {
