@@ -4,7 +4,8 @@
 //! Credential Manager; every target is derived from the data root.
 
 use sha2::{Digest, Sha256};
-use std::{fmt, io, path::Path, ptr, slice};
+use std::path::{Component, Path};
+use std::{fmt, io, ptr, slice};
 use windows::Win32::Foundation::ERROR_NOT_FOUND;
 use windows::Win32::Security::Credentials::{
     CRED_PERSIST_LOCAL_MACHINE, CRED_TYPE_GENERIC, CREDENTIALW, CredDeleteW, CredFree, CredReadW,
@@ -72,11 +73,16 @@ pub fn read(target: &str) -> io::Result<Option<String>> {
 
 /// Writes a generic, local-machine credential with user name `Tjommie`, exactly as the TypeScript daemon does.
 pub fn write(target: &str, value: &str) -> io::Result<()> {
+    write_as(target, value, USER_NAME)
+}
+
+/// `write` with another user name: worker passwords use `Tjommie isolated worker` (`worker-credential.ps1`).
+pub fn write_as(target: &str, value: &str, user_name: &str) -> io::Result<()> {
     if value.is_empty() || value.len() > MAX_BLOB {
         return Err(io::ErrorKind::InvalidInput.into());
     }
     let target = HSTRING::from(target);
-    let user = HSTRING::from(USER_NAME);
+    let user = HSTRING::from(user_name);
     let credential = CREDENTIALW {
         Type: CRED_TYPE_GENERIC,
         TargetName: PWSTR(target.as_ptr().cast_mut()),
@@ -174,6 +180,16 @@ impl Namespace {
         valid.then(|| format!("Tjommie/{}/login/{reference}", self.short()))
     }
 
+    /// `provision-worker.ps1:14`: the provider worker's password.
+    pub fn isolated_worker_target(&self) -> String {
+        format!("Tjommie/{}/isolated-worker", self.short())
+    }
+
+    /// `provision-worker.ps1:15`: the review worker's password.
+    pub fn isolated_review_target(&self) -> String {
+        format!("Tjommie/{}/isolated-review", self.short())
+    }
+
     /// `remote-identity.ts:17-20`.
     pub fn remote_host_target(&self) -> String {
         format!("Tjommie/{}/remote-host", self.long())
@@ -206,19 +222,53 @@ impl Namespace {
 }
 
 /// Node's `path.resolve()` on Windows: absolute, `\` separators, no `.` or `..`, and no trailing separator except
-/// at a drive root. ponytail: GetFullPathNameW also drops trailing dots and spaces and Node doesn't; such a root
-/// would get a different namespace. Port Node's algorithm if a real root ever ends that way.
+/// after a bare drive or share. GetFullPathNameW drops a trailing dot or space from the last name and Node keeps
+/// it, so such a root is refused: it would silently get a different namespace than the TypeScript daemon gives it.
+/// `pub(crate)`: `account_quota` compares account folders with it.
 pub(crate) fn resolve(root: &Path) -> io::Result<String> {
+    if let Some(Component::Normal(name)) = root.components().next_back()
+        && name.to_str().is_some_and(|name| name.ends_with(['.', ' ']))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Tjommie can't use a data folder whose name ends in a dot or a space.",
+        ));
+    }
     let absolute = std::path::absolute(root)?;
     let text = absolute
         .to_str()
         .ok_or(io::ErrorKind::InvalidInput)?
         .trim_end_matches('\\');
-    Ok(if text.ends_with(':') {
+    let bare = Path::new(text)
+        .components()
+        .all(|part| matches!(part, Component::Prefix(_) | Component::RootDir));
+    Ok(if bare {
         format!("{text}\\")
     } else {
         text.to_owned()
     })
+}
+
+/// Whether `root` is, contains or lies inside the production data root `%LOCALAPPDATA%\Tjommie`, or shares its
+/// Credential Manager namespace. Folders are compared by file identity (`fsid`), so no spelling, `\?\`, UNC
+/// loopback share, junction, `subst` drive or 8.3 name gets past it. Fails closed: anything it can't determine
+/// counts as production. Test and admin harnesses refuse such roots. It only opens the production root's folder
+/// for its identity, never anything inside it.
+pub fn is_production_root(root: &Path) -> bool {
+    let Some(local) = std::env::var_os("LOCALAPPDATA") else {
+        return true;
+    };
+    let production = Path::new(&local).join("Tjommie");
+    let same_namespace = match (Namespace::new(root), Namespace::new(&production)) {
+        (Ok(a), Ok(b)) => a.digest == b.digest,
+        _ => true,
+    };
+    let overlaps =
+        || -> io::Result<bool> {
+            Ok(crate::fsid::is_within(root, &production)?
+                || crate::fsid::is_within(&production, root)?)
+        };
+    same_namespace || overlaps().unwrap_or(true)
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {

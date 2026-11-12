@@ -35,7 +35,9 @@ switch (operation) {
   case "account-delete": await new WindowsAccountCredentials(root).delete(id); print(null); break;
   case "login-read": print(await new WindowsLoginCredentials(root).read(id)); break;
   case "login-write": {
-    const secret: VaultSecret = JSON.parse(stdin());
+    let secret: VaultSecret;
+    // A SyntaxError can quote its input, and the Rust test prints stderr: nothing from stdin may reach it.
+    try { secret = JSON.parse(stdin()); } catch { process.exit(1); }
     await new WindowsLoginCredentials(root).write(id, secret); print(null); break;
   }
   case "login-delete": await new WindowsLoginCredentials(root).delete(id); print(null); break;
