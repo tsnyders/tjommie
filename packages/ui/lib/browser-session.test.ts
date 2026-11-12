@@ -1,6 +1,7 @@
-import type { BrowserFrame, BrowserState } from "@tjommie/protocol";
+import { ClientRpcError } from "@tjommie/client";
+import type { BrowserFrame, BrowserState, BrowserStreamFrame, StreamedBrowserFrame } from "@tjommie/protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { addressToUrl, BrowserSession, keyRoute, mouseButton, pagePoint, viewportSize, wheelPixels, type BrowserCall, type BrowserView } from "./browser-session";
+import { addressToUrl, BrowserSession, keyRoute, mouseButton, pagePoint, viewportSize, wheelPixels, type BrowserCall, type BrowserListen, type BrowserView } from "./browser-session";
 
 const state = (patch: Partial<BrowserState> = {}): BrowserState => ({
   botId: "b1",
@@ -531,6 +532,111 @@ describe("BrowserSession", () => {
     expect(releases).toHaveLength(2);
     expect(releases.every((entry) => entry.params.pageId === "p1")).toBe(true);
     await t.session.close();
+  });
+});
+
+// A daemon with the live stream (or one from before it), whose stream frames the test pushes.
+function streamed(initial = state(), unsupported = false) {
+  const log: Log = [];
+  const listeners = new Set<(data: BrowserStreamFrame) => void>();
+  let current = initial;
+  let seq = 0;
+  const call: BrowserCall = async (method, params) => {
+    log.push({ method, params: params as Record<string, unknown> });
+    await Promise.resolve();
+    if (method === "browser.stream" && unsupported) throw new ClientRpcError("unknown_method", "Unknown method browser.stream");
+    if (method === "browser.frame") return { state: current, frame: { ...frame(++seq), controlEpoch: current.controlEpoch } } as never;
+    if (method === "browser.streamAck") return {} as never;
+    if (method === "browser.control") current = { ...current, control: (params as { control: "human" | "bot" }).control, controlEpoch: (current.controlEpoch ?? 0) + 1 };
+    return current as never;
+  };
+  const listen: BrowserListen = (listener) => {
+    listeners.add(listener);
+    return () => { listeners.delete(listener); };
+  };
+  return {
+    session: new BrowserSession("b1", call, () => {}, listen),
+    log,
+    set: (next: BrowserState) => { current = next; },
+    push: (pushed: StreamedBrowserFrame | null) => { for (const listener of [...listeners]) listener({ botId: "b1", frame: pushed }); },
+    listening: () => listeners.size,
+  };
+}
+const live = (sequence: number): StreamedBrowserFrame => ({ ...frame(sequence), streamId: "s1", pageId: "p1" });
+const calls = (log: Log, method: string) => log.filter((entry) => entry.method === method);
+const streams = (log: Log) => calls(log, "browser.stream").map((entry) => entry.params.on);
+const acks = (log: Log) => calls(log, "browser.streamAck").map((entry) => entry.params.sequence);
+
+describe("BrowserSession live stream", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("asks for the stream while shown, and stops it when hidden or closed", async () => {
+    const t = streamed(); t.session.open(); await flush();
+    expect(methods(t.log)).toEqual(["browser.open", "browser.frame", "browser.stream"]);
+    expect(t.log[2].params).toEqual({ botId: "b1", on: true });
+    expect(t.listening()).toBe(1);
+    t.session.setVisible(false); await flush();
+    expect(streams(t.log)).toEqual([true, false]);
+    expect(t.listening()).toBe(0);
+    t.session.setVisible(true); await flush();
+    expect(streams(t.log)).toEqual([true, false, true]);
+    expect(t.listening()).toBe(1);
+    await t.session.close();
+    expect(streams(t.log)).toEqual([true, false, true, false]);
+    expect(t.listening()).toBe(0);
+  });
+
+  it("acknowledges each streamed frame once, in order, as it is drawn, replaced or dropped", async () => {
+    const t = streamed(); t.session.open(); await flush();
+    t.push(live(1)); t.push(live(2)); // the first is replaced before it is drawn
+    expect(t.session.view.frame).toEqual(live(2));
+    expect(acks(t.log)).toEqual([1]);
+    const shown = t.session.view.frame!;
+    t.session.drawn(shown); t.session.drawn(shown); // Strict Mode runs the view's effect twice
+    expect(acks(t.log)).toEqual([1, 2]);
+    t.push({ ...live(3), pageId: "p9" }); // another tab's, so never drawn
+    expect(t.session.view.frame).toBe(shown);
+    expect(acks(t.log)).toEqual([1, 2, 3]);
+    expect(calls(t.log, "browser.streamAck")[0].params).toEqual({ botId: "b1", sequence: 1 });
+  });
+
+  it("polls browser.frame once the stream ends, and asks again when the private interaction is over", async () => {
+    const t = streamed(); t.session.open(); await flush();
+    await vi.advanceTimersByTimeAsync(600);
+    expect(calls(t.log, "browser.frame")).toHaveLength(1); // while streaming, the poll reads only the state
+    expect(calls(t.log, "browser.open").length).toBeGreaterThan(1);
+    t.set(state({ privateActive: true, privateEpoch: 1 }));
+    t.push(null);
+    expect(t.listening()).toBe(0);
+    await vi.advanceTimersByTimeAsync(600);
+    expect(calls(t.log, "browser.frame").length).toBeGreaterThan(1);
+    expect(t.session.view.frame).toBeNull();
+    expect(streams(t.log)).toEqual([true]); // not while it is private
+    t.set(state({ privateEpoch: 1 }));
+    await vi.advanceTimersByTimeAsync(300);
+    expect(streams(t.log)).toEqual([true, true]);
+    expect(t.listening()).toBe(1);
+  });
+
+  it("keeps polling browser.frame, and never asks again, when an older daemon answers unknown_method", async () => {
+    const t = streamed(state(), true); t.session.open(); await flush();
+    expect(streams(t.log)).toEqual([true]);
+    expect(t.listening()).toBe(0);
+    await vi.advanceTimersByTimeAsync(600);
+    expect(calls(t.log, "browser.frame").length).toBeGreaterThan(1);
+    t.session.setVisible(false); await flush();
+    t.session.setVisible(true); await flush();
+    expect(streams(t.log)).toEqual([true]);
+  });
+
+  it("pulls one fresh picture when a command leaves the streamed one out of date", async () => {
+    const t = streamed(state({ controlEpoch: 1 })); t.session.open(); await flush();
+    t.session.setControl("bot"); await flush(); // the picture shown was taken under the old controller
+    expect(calls(t.log, "browser.frame")).toHaveLength(2);
+    expect(t.session.view.frame?.controlEpoch).toBe(2);
+    await vi.advanceTimersByTimeAsync(600);
+    expect(calls(t.log, "browser.frame")).toHaveLength(2); // then the stream keeps it current again
   });
 });
 
