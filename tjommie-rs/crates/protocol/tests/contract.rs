@@ -2,7 +2,9 @@
 
 use protocol::diagnostics::DiagnosticReport;
 use protocol::model::MessageData;
-use protocol::native_browser::{NativeBrowserCommand, NativeBrowserMount, NativeBrowserUiCommand};
+use protocol::native_browser::{
+    NativeBrowserCommand, NativeBrowserMount, NativeBrowserStreamMessage, NativeBrowserUiCommand,
+};
 use protocol::relay::{HostToRelay, PushData, RelayToHost};
 use protocol::remote::{PairingCode, RemoteConfirm, RemotePreface, RemoteReady, RemoteRefused};
 use protocol::speech::{SpeechEvent, SpeechStart, SpeechStatus};
@@ -48,7 +50,7 @@ fn method_names_equal_the_manifest() {
         sorted(METHODS.iter().copied()),
         sorted(manifest.methods.iter().map(|method| method.name.as_str()))
     );
-    assert_eq!(METHODS.len(), 101);
+    assert_eq!(METHODS.len(), 103);
 }
 
 #[test]
@@ -58,7 +60,7 @@ fn event_names_equal_the_manifest() {
         sorted(EVENTS.iter().copied()),
         sorted(manifest.events.iter().map(|event| event.name.as_str()))
     );
-    assert_eq!(EVENTS.len(), 26);
+    assert_eq!(EVENTS.len(), 27);
 }
 
 macro_rules! wire_types {
@@ -84,6 +86,7 @@ wire_types!(
     NativeBrowserCommand,
     NativeBrowserUiCommand,
     NativeBrowserMount,
+    NativeBrowserStreamMessage,
     VaultHostCommand,
     VaultHostJob,
     VaultHostReply,

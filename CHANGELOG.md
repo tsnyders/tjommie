@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Paired devices can watch a bot's browser live instead of in snapshots.
+
 ## 0.4.2 — 2026-11-04
 
 - Markdown tables keep readable columns and scroll sideways in chats and file previews; short files have simpler search controls.

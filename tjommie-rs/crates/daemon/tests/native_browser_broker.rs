@@ -3,12 +3,14 @@
 
 mod host_support;
 
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use daemon::native_browser_broker::{BotIdentity, NativeBrowserBroker};
 use daemon::server::{Handlers, Routes, Server, ServerOptions};
 use host_support::{get, post};
+use protocol::native_browser::{NativeBrowserStreamMessage, StreamEnd};
 use serde_json::{Value, json};
 
 fn secret() -> String {
@@ -288,5 +290,80 @@ async fn sends_urgent_control_on_its_own_lane_and_keeps_one_job_per_bot_in_fligh
             .unwrap_err()
             .contains("tool session closed")
     );
+    f.close().await;
+}
+
+#[tokio::test]
+async fn takes_a_live_frame_or_the_end_of_a_stream_from_the_desktop_without_a_job() {
+    let f = fixture(Duration::from_secs(1)).await;
+    let post_message = |body: Value| {
+        let port = f.port;
+        async move {
+            post(
+                port,
+                "/browser-host",
+                &[("Authorization", &auth())],
+                body.to_string().as_bytes(),
+            )
+            .await
+            .status
+        }
+    };
+    let frame = json!({ "data": "image", "mime": "image/jpeg", "width": 1280, "height": 800, "sequence": 4, "streamId": "stream" });
+    let live = json!({ "kind": "stream_frame", "botId": "bot-one", "frame": frame });
+    // Nobody listens until the daemon installs a sink: the desktop is told to stop.
+    assert_eq!(post_message(live.clone()).await, 404);
+    let taken: Arc<Mutex<Vec<NativeBrowserStreamMessage>>> = Arc::default();
+    let watched = Arc::new(AtomicBool::new(true));
+    let (record, watching) = (taken.clone(), watched.clone());
+    f.broker.on_stream(Arc::new(move |message| {
+        record.lock().unwrap().push(message);
+        watching.load(Ordering::SeqCst)
+    }));
+    assert_eq!(post_message(live.clone()).await, 204);
+    watched.store(false, Ordering::SeqCst);
+    assert_eq!(
+        post_message(live).await,
+        404,
+        "the sink says nobody watches that bot"
+    );
+    watched.store(true, Ordering::SeqCst);
+    let end = json!({ "kind": "stream_end", "botId": "bot-one", "reason": "private" });
+    assert_eq!(post_message(end).await, 204);
+    {
+        let taken = taken.lock().unwrap();
+        assert_eq!(taken.len(), 3);
+        assert!(matches!(
+            &taken[0],
+            NativeBrowserStreamMessage::StreamFrame { bot_id, frame } if bot_id == "bot-one" && frame.sequence == 4
+        ));
+        assert!(matches!(
+            &taken[2],
+            NativeBrowserStreamMessage::StreamEnd { reason: StreamEnd::Private, .. }
+        ));
+    }
+    // Malformed posts never reach the sink.
+    let unnamed = json!({ "data": "image", "mime": "image/jpeg", "width": 1280, "height": 800, "sequence": 4 });
+    for bad in [
+        json!({ "kind": "stream_frame", "botId": "bot-one" }),
+        json!({ "kind": "stream_frame", "botId": "bot-one", "frame": unnamed }),
+        json!({ "kind": "stream_end", "botId": "bot-one", "reason": "bored" }),
+        json!({ "kind": "frame", "botId": "bot-one" }),
+    ] {
+        assert_eq!(post_message(bad.clone()).await, 400, "{bad}");
+    }
+    assert_eq!(taken.lock().unwrap().len(), 3);
+    // The host token is still required.
+    let status = post(
+        f.port,
+        "/browser-host",
+        &[("Authorization", "Bearer renderer-token")],
+        json!({ "kind": "stream_end", "botId": "bot-one", "reason": "closed" })
+            .to_string()
+            .as_bytes(),
+    )
+    .await
+    .status;
+    assert_eq!(status, 401);
     f.close().await;
 }

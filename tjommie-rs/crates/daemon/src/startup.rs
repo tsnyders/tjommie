@@ -598,6 +598,8 @@ fn assemble(
         .map_err(rpc)?,
     );
     let _ = context.late.m6.set(m6.clone());
+    // `browser.stream` frames go to the connection that asked, over the local WebSocket or a paired device's channel.
+    m6.connect_events(events.clone(), remote.clone());
 
     // 6. What a restart cut off is settled before anything listens (`runner.start()` then runs the queue).
     runner.recover().map_err(rpc)?;
