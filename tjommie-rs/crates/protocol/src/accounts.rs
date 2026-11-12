@@ -19,7 +19,8 @@ fn api_key(value: &str) -> Option<String> {
 }
 
 refined_string!(
-    ApiKey,
+    /// `Debug` shows `ApiKey([redacted])`, never the key.
+    secret ApiKey,
     api_key,
     "Expected one API key of at most 2560 UTF-8 bytes"
 );

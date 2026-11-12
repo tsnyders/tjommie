@@ -135,6 +135,24 @@ fn build(
     resolved_model: &str,
     before_thread_response: Option<Value>,
 ) -> Harness {
+    build_with(
+        auto_allow,
+        resume_id,
+        change,
+        resolved_model,
+        before_thread_response,
+        None,
+    )
+}
+
+fn build_with(
+    auto_allow: bool,
+    resume_id: Option<&str>,
+    change: impl FnOnce(&mut StartOptions),
+    resolved_model: &str,
+    before_thread_response: Option<Value>,
+    retirement: Option<daemon::cli::Retirement>,
+) -> Harness {
     let sent = Arc::new(Mutex::new(Vec::new()));
     let rpc = Arc::new_cyclic(|weak: &Weak<JsonRpcLines>| {
         let (weak, sent, model) = (weak.clone(), Arc::clone(&sent), resolved_model.to_string());
@@ -192,6 +210,7 @@ fn build(
         exit: exit.clone(),
         kill_tree,
         close,
+        retirement,
     });
     let mut options = options();
     change(&mut options);
@@ -716,7 +735,8 @@ async fn closes_a_server_that_finishes_initializing_after_the_session_was_closed
                 pid: Some(42),
                 exit: exit.clone(),
                 kill_tree,
-                close
+                close,
+                retirement: None,
             })
             .is_ok()
     );
@@ -1220,4 +1240,72 @@ async fn sends_one_provider_interrupt_when_the_runner_stops_during_turn_start() 
     settle().await;
     assert_eq!(h.requests("turn/interrupt").len(), 1);
     assert_eq!(work_status(&db, &message.id), "interrupted");
+
+// Worker boundaries (T3.4; covered in TypeScript by the runner and worker real tests).
+
+#[tokio::test]
+async fn grants_the_project_and_extra_folders_before_starting_the_server() {
+    let h = build(
+        true,
+        None,
+        |options| options.extra_dirs = vec![r"C:\home".into()],
+        "test-model",
+        None,
+    );
+    h.codex.start().await.unwrap();
+    assert_eq!(
+        *h.host.grants.lock().unwrap(),
+        vec![vec![
+            std::path::PathBuf::from(r"C:\bots\b1"),
+            std::path::PathBuf::from(r"C:\home")
+        ]]
+    );
+}
+
+#[tokio::test]
+async fn holds_a_worker_servers_exit_until_its_tree_has_gone_and_reports_an_unconfirmed_tree() {
+    for confirmed in [true, false] {
+        let (proof, settle_proof) = providers_fakes::retirement();
+        let mut h = build_with(true, None, |_| {}, "test-model", None, Some(proof));
+        h.codex.start().await.unwrap();
+        h.events();
+        let exited = tokio::spawn(h.codex.wait_for_exit());
+        h.exit_child(1);
+        settle().await;
+        assert_eq!(h.events(), vec![], "held until the proof");
+        assert!(!exited.is_finished());
+        settle_proof
+            .send(if confirmed {
+                Ok(())
+            } else {
+                Err("the job could not be closed".into())
+            })
+            .unwrap();
+        let exited = exited.await.unwrap();
+        settle().await;
+        if confirmed {
+            assert_eq!(exited, Ok(()));
+            assert_eq!(
+                h.events(),
+                vec![ProviderEvent::Exit {
+                    error: Some("Codex exited with code 1".into()),
+                    completed_turn: None
+                }]
+            );
+        } else {
+            assert!(
+                exited
+                    .unwrap_err()
+                    .message()
+                    .contains("could not confirm process-tree termination")
+            );
+            assert_eq!(
+                h.events(),
+                vec![ProviderEvent::TurnDone(TurnResult {
+                    ok: false,
+                    error: Some("The isolated provider could not confirm process-tree exit. Its account stays reserved.".into()),
+                })]
+            );
+        }
+    }
 }

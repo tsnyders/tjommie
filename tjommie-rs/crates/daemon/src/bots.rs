@@ -625,9 +625,12 @@ pub fn register(handlers: Handlers, context: &Context) -> Handlers {
             async move { bots }
         })
         .on::<method::BotsCreate, _>(move |input, _| {
-            // T3.4 checks the account is available first; afterwards T2.2 refreshes folder protection and T3.5 tells the
-            // runner setup changed.
+            // Afterwards T2.2 refreshes folder protection and T3.5 tells the runner setup changed.
             let bot = create.with_db(|db| {
+                let requested = input.account_id.clone().flatten();
+                create
+                    .accounts
+                    .check_available(db, input.provider, requested.as_deref())?;
                 let stored = create_bot(db, &create.bots_dir, &input)?;
                 Ok(create.bot_view.to_bot(db, stored))
             });
@@ -640,6 +643,26 @@ pub fn register(handlers: Handlers, context: &Context) -> Handlers {
             // M5 refuses while the bot has a project task running. On a provider or account change, T3.5 stops and holds
             // the bot and T2.2 refreshes its folder protection first; M6 closes its browser when the browser is turned off.
             let bot = update.with_db(|db| {
+                let (before, patch) = (get_stored_bot(db, &params.id)?, &params.patch);
+                let provider_changed = patch
+                    .provider
+                    .is_some_and(|provider| provider != before.provider);
+                let account_changed = patch
+                    .account_id
+                    .as_ref()
+                    .is_some_and(|account| *account != before.account_id);
+                if provider_changed || account_changed {
+                    let kept = if provider_changed {
+                        None
+                    } else {
+                        before.account_id
+                    };
+                    let requested = patch.account_id.clone().flatten().or(kept);
+                    let provider = patch.provider.unwrap_or(before.provider);
+                    update
+                        .accounts
+                        .check_available(db, provider, requested.as_deref())?;
+                }
                 let stored = update_bot(db, &params.id, &params.patch)?;
                 Ok(update.bot_view.to_bot(db, stored))
             });

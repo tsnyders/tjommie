@@ -72,6 +72,7 @@ pub fn fake_child(pid: u32) -> (CliChild, FakeChild) {
         stderr: Box::new(stderr),
         exit: exit.clone(),
         kill_tree,
+        retirement: None,
     };
     (
         child,
@@ -99,6 +100,8 @@ pub struct FakeHost {
     children: Mutex<VecDeque<Launch>>,
     servers: Mutex<VecDeque<StartServer>>,
     pub server_starts: Mutex<Vec<ServerStart>>,
+    /// The folders of every `prepare_provider_directories` call.
+    pub grants: Mutex<Vec<Vec<std::path::PathBuf>>>,
 }
 
 impl FakeHost {
@@ -138,6 +141,14 @@ impl FakeHost {
 }
 
 impl CliHost for FakeHost {
+    fn prepare_provider_directories(
+        &self,
+        folders: Vec<std::path::PathBuf>,
+    ) -> BoxFuture<'_, std::io::Result<()>> {
+        self.grants.lock().unwrap().push(folders);
+        Box::pin(async { Ok(()) })
+    }
+
     fn launch<'a>(
         &'a self,
         cmd: &'a CliCommand,
@@ -174,6 +185,7 @@ pub fn command(file: &str) -> CliCommand {
     CliCommand {
         file: file.into(),
         args: vec![],
+        codex_package: None,
     }
 }
 
@@ -197,4 +209,16 @@ pub fn temp_root() -> tempfile::TempDir {
         .prefix("tjommie test ñ-")
         .tempdir()
         .unwrap()
+}
+
+/// A worker's retirement proof the test settles: `Ok` once the tree has gone, `Err` when it can't be confirmed.
+pub fn retirement() -> (daemon::cli::Retirement, oneshot::Sender<Result<(), String>>) {
+    use futures_util::FutureExt;
+    let (sender, receiver) = oneshot::channel();
+    let proof: BoxFuture<'static, Result<(), String>> = Box::pin(async move {
+        receiver
+            .await
+            .unwrap_or_else(|_| Err("the test dropped the proof".into()))
+    });
+    (proof.shared(), sender)
 }

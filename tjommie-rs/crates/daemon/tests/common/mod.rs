@@ -553,3 +553,107 @@ pub fn new_bot(
     let input = json!({ "name": name, "color": "blue", "shape": "circle", "instructions": "", "provider": provider, "model": model });
     daemon::bots::create_bot(db, bots_dir, &serde_json::from_value(input).unwrap()).unwrap()
 }
+
+/// A CLI host that finds no provider CLI, so nothing reaches a real Claude or Codex.
+pub struct NoCli;
+
+impl daemon::cli::CliHost for NoCli {
+    fn launch<'a>(
+        &'a self,
+        _cmd: &'a daemon::cli::CliCommand,
+        _args: Vec<String>,
+        _options: daemon::cli::LaunchOptions,
+    ) -> daemon::cli::BoxFuture<'a, std::io::Result<daemon::cli::CliChild>> {
+        Box::pin(async { Err(std::io::ErrorKind::NotFound.into()) })
+    }
+}
+
+/// Usage reads without a network.
+pub struct NoFetch;
+
+impl daemon::account_quota::UsageFetch for NoFetch {
+    fn get<'a>(
+        &'a self,
+        _url: &'a str,
+        _headers: &'a [(&'static str, String)],
+        _timeout: Duration,
+    ) -> daemon::cli::BoxFuture<'a, Result<daemon::account_quota::UsageResponse, String>> {
+        Box::pin(async { Err("no network in tests".to_string()) })
+    }
+}
+
+pub fn no_cli_setup() -> daemon::setup::Setup {
+    daemon::setup::Setup::new(Arc::new(NoCli), Arc::new(NoFetch))
+}
+
+/// API keys in memory instead of Credential Manager.
+#[derive(Default)]
+pub struct MemoryKeys(pub Mutex<std::collections::HashMap<String, String>>);
+
+impl daemon::account_runtime::CredentialStore for MemoryKeys {
+    fn reference(&self, account_id: &str) -> Result<String, daemon::server::RpcError> {
+        Ok(format!("synthetic/{account_id}"))
+    }
+
+    fn read(
+        &self,
+        account_id: &str,
+    ) -> daemon::cli::BoxFuture<'_, Result<Option<String>, daemon::server::RpcError>> {
+        let key = self.0.lock().unwrap().get(account_id).cloned();
+        Box::pin(async move { Ok(key) })
+    }
+
+    fn write(
+        &self,
+        account_id: &str,
+        key: &str,
+    ) -> daemon::cli::BoxFuture<'_, Result<(), daemon::server::RpcError>> {
+        self.0.lock().unwrap().insert(account_id.into(), key.into());
+        Box::pin(async { Ok(()) })
+    }
+
+    fn delete(
+        &self,
+        account_id: &str,
+    ) -> daemon::cli::BoxFuture<'_, Result<(), daemon::server::RpcError>> {
+        self.0.lock().unwrap().remove(account_id);
+        Box::pin(async { Ok(()) })
+    }
+}
+
+/// The handlers' context over a data root as startup prepares it: each provider's main account exists. Accounts use
+/// `ops` and `credentials`.
+pub fn test_context(
+    root: &std::path::Path,
+    events: daemon::server::Broadcaster,
+    ops: Arc<dyn daemon::account_runtime::AccountOps>,
+    credentials: Arc<dyn daemon::account_runtime::CredentialStore>,
+) -> daemon::context::Context {
+    use daemon::account_handlers::{Accounts, AccountsOptions};
+    use daemon::context::{BotView, StoredState};
+    let db = Arc::new(Mutex::new(test_db(root)));
+    let setup = no_cli_setup();
+    let accounts_dir = root.join("accounts");
+    setup
+        .ensure_accounts(&db.lock().unwrap(), &accounts_dir, root)
+        .unwrap();
+    let bot_view: Arc<dyn BotView> = Arc::new(StoredState);
+    let accounts = Accounts::new(AccountsOptions {
+        db: db.clone(),
+        root: root.to_path_buf(),
+        accounts_dir,
+        events: events.clone(),
+        bot_view: bot_view.clone(),
+        setup,
+        ops,
+        credentials,
+    });
+    daemon::context::Context {
+        db,
+        bots_dir: root.join("bots"),
+        events,
+        bot_view,
+        app_version: None,
+        accounts,
+    }
+}

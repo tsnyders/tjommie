@@ -224,7 +224,7 @@ impl Namespace {
 /// Node's `path.resolve()` on Windows: absolute, `\` separators, no `.` or `..`, and no trailing separator except
 /// after a bare drive or share. GetFullPathNameW drops a trailing dot or space from the last name and Node keeps
 /// it, so such a root is refused: it would silently get a different namespace than the TypeScript daemon gives it.
-fn resolve(root: &Path) -> io::Result<String> {
+pub(crate) fn resolve(root: &Path) -> io::Result<String> {
     if let Some(Component::Normal(name)) = root.components().next_back()
         && name.to_str().is_some_and(|name| name.ends_with(['.', ' ']))
     {
