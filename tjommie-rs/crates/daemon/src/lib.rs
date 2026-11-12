@@ -3,6 +3,7 @@
 pub mod account_pricing;
 pub mod attachments;
 pub mod bots;
+pub mod browser_stream;
 pub mod cli;
 pub mod context;
 pub mod db;
