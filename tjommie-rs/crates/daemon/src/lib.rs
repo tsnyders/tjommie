@@ -11,6 +11,7 @@ pub mod fsid;
 pub mod google;
 pub mod ids;
 pub mod import;
+pub mod m4;
 pub mod mcp;
 pub mod models;
 pub mod paths;
