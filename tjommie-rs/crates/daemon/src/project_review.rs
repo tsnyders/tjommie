@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
 use protocol::projects::{CoveredFile, EvaluationState, ReviewCoverage, TaskFinding};
+use serde::Serialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
@@ -90,8 +91,8 @@ impl ReviewSnapshot {
     }
 }
 
-/// `ReviewInstructions` (project-review.ts:9).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// `ReviewInstructions` (project-review.ts:9). The fields are in the TypeScript key order, which `Serialize` keeps.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ReviewInstructions {
     pub reviewer: String,
     pub role: String,
@@ -100,8 +101,9 @@ pub struct ReviewInstructions {
     pub acceptance: Vec<String>,
 }
 
-/// `ReviewContext` (project-review.ts:7-9).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// `ReviewContext` (project-review.ts:7-9). The audit record serializes it as TypeScript does.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ReviewContext {
     pub bot_id: String,
     pub project_id: String,

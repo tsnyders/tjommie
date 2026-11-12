@@ -15,9 +15,6 @@ use daemon::project_review_policy::{
 };
 use daemon::spawn;
 use daemon::worktrees::{Repository, Worktrees};
-// TODO(M5-integration): `validate_review_reply` is in project-review-runtime.ts, which has no Rust module in the
-// contract yet. This assumes `validate_review_reply(text: &str, snapshot: &ReviewSnapshot, instructions_sha256: &str)
-// -> Result<ReviewResult, String>` in `daemon::project_review_runtime`.
 use daemon::project_review_runtime::validate_review_reply;
 use protocol::projects::EvaluationState;
 use serde_json::{Value, json};
@@ -390,6 +387,29 @@ fn requires_complete_exact_source_coverage_and_confines_findings_to_real_snapsho
         "message": "A concrete synthetic finding",
     }]);
     let text = with_patch(reply(&snapshot), json!({ "findings": findings })).to_string();
+    assert_eq!(
+        validate_review_reply(&text, &snapshot, INSTRUCTIONS_SHA)
+            .unwrap()
+            .state,
+        EvaluationState::Findings
+    );
+}
+
+/// `reason` and a finding's `line` are `.nullable()` in zod, not `.optional()`: `null` is fine, a missing key is not.
+#[test]
+fn requires_the_nullable_reason_and_line_keys_to_be_present() {
+    let snapshot = example_snapshot();
+    let mut no_reason = reply(&snapshot);
+    no_reason.as_object_mut().unwrap().remove("reason");
+    assert!(validate_review_reply(&no_reason.to_string(), &snapshot, INSTRUCTIONS_SHA).is_err());
+
+    let no_line = json!([{"severity": "high", "path": EXAMPLE_PATH, "message": "No line key"}]);
+    let text = with_patch(reply(&snapshot), json!({ "findings": no_line })).to_string();
+    assert!(validate_review_reply(&text, &snapshot, INSTRUCTIONS_SHA).is_err());
+
+    let null_line =
+        json!([{"severity": "high", "path": EXAMPLE_PATH, "line": null, "message": "File-level finding"}]);
+    let text = with_patch(reply(&snapshot), json!({ "findings": null_line })).to_string();
     assert_eq!(
         validate_review_reply(&text, &snapshot, INSTRUCTIONS_SHA)
             .unwrap()

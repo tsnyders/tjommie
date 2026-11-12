@@ -40,7 +40,9 @@ pub fn review_cli_args(
     if model.is_empty() || model.encode_utf16().count() > 200 {
         return Err("review_model_unavailable".to_string());
     }
-    if allowance.is_some_and(|value| !value.is_finite() || value <= 0.0) {
+    // `String(allowance)` and `f64::to_string` agree (shortest round-trip digits) except that JavaScript switches to
+    // exponent form below 1e-6 and from 1e21. Those budgets are refused instead of formatted differently.
+    if allowance.is_some_and(|value| !(1e-6..1e21).contains(&value)) {
         return Err("review_budget_unavailable".to_string());
     }
     let mut args = vec!["--bare".to_string()];

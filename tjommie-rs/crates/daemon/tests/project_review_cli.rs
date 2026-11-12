@@ -125,7 +125,8 @@ async fn waits_for_worker_job_proof_and_records_unknown_spending_without_final_u
     let (child, fake) = fake_child(4242);
     drop(fake.stdout);
     drop(fake.stderr);
-    fake.exit.fire(CliExit::Failed("worker job unknown".into()));
+    // The worker boundary reports an unconfirmed retirement with its own text.
+    fake.exit.fire(CliExit::Failed(BoundaryError::Termination.to_string()));
     let launch = scripted(Ok(child));
     match run_review_cli(options(launch, &cwd(&root), &record)).await {
         Err(CheckError::Termination(message)) => assert_eq!(
@@ -139,6 +140,23 @@ async fn waits_for_worker_job_proof_and_records_unknown_spending_without_final_u
     match recorded.as_slice() {
         [ProviderEvent::Usage(usage)] => assert_eq!(usage.cost_usd, None),
         other => panic!("expected one unknown usage event, got {other:?}"),
+    }
+}
+
+/// project-review-cli.ts:64: a child `error` event rejects with a plain `Error`, which retains nothing.
+#[tokio::test]
+async fn reports_a_child_that_failed_to_start_as_a_plain_failure_not_a_retained_termination() {
+    let root = temp_root();
+    let record = |_: ProviderEvent| -> Result<(), String> { Ok(()) };
+    let (child, fake) = fake_child(4242);
+    drop(fake.stdout);
+    drop(fake.stderr);
+    fake.exit.fire(CliExit::Failed("spawn ENOENT".into()));
+    let launch = scripted(Ok(child));
+    match run_review_cli(options(launch, &cwd(&root), &record)).await {
+        Err(CheckError::Failed(message)) => assert_eq!(message, "review_provider_start_failed"),
+        Err(other) => panic!("expected a plain failure, got: {other}"),
+        Ok(_) => panic!("expected a plain failure, got a result"),
     }
 }
 

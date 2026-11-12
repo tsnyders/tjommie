@@ -33,6 +33,7 @@ const LAUNCH_TERMINATED: &str =
     "Could not confirm that the owned check launch stopped. Its worktree remains reserved.";
 const LAUNCH_FAILED: &str = "The configured check could not start. Isolated hosts require an executable in their protected worker runtime.";
 const STOP_UNCONFIRMED: &str = "Could not confirm that the owned check process tree stopped.";
+const CHILD_FAILED: &str = "The configured check could not start.";
 
 /// `CheckTerminationError` (`Termination`) and every other check error (`Failed`, a plain `Error`). The message is
 /// what the RPC layer shows.
@@ -165,8 +166,13 @@ impl HostCheckRuntime {
             }
         };
 
+        // A child `error` event is a plain failure in TypeScript (project-checks.ts:34). Only the worker boundary's
+        // unconfirmed retirement (`workerProcessRetired` undefined) is a termination, and it carries its own text.
         let exit_code = match status {
-            CliExit::Failed(_) => return Err(termination()),
+            CliExit::Failed(message) if message == BoundaryError::Termination.to_string() => {
+                return Err(termination());
+            }
+            CliExit::Failed(_) => return Err(CheckError::Failed(CHILD_FAILED.into())),
             CliExit::Exited { code, .. } => code,
         };
         if let Some(pending) = stop.take() {

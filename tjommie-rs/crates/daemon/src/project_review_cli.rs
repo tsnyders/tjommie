@@ -354,6 +354,10 @@ async fn review_turn(
     timeout: Duration,
 ) -> Result<ReviewCliResult, CheckError> {
     read_until_closed(turn, child, input, signal, timeout).await?;
+    // `closed` rejected: the caller's stop is still awaited (the outcome handling in `run_review_cli`), as in the catch.
+    if start_failed(&child.exit) {
+        return Err(CheckError::Failed("review_provider_start_failed".into()));
+    }
     if !job_retired(&child.exit).await {
         return Err(CheckError::Termination(JOB_RETIREMENT.into()));
     }
@@ -519,6 +523,10 @@ pub async fn review_cli_version(
     // running. The job check comes first, as in TypeScript.
     let job = job_retired(&exit).await;
     let stopped = stop.settled().await;
+    // `child.once("error")` rejects before either check (project-review-cli.ts:101): a plain error, nothing retained.
+    if start_failed(&exit) {
+        return Err(CheckError::Failed("review_cli_unavailable".into()));
+    }
     if !job {
         return Err(CheckError::Termination(VERSION_JOB.into()));
     }
@@ -549,11 +557,22 @@ where
     stdin.shutdown().await
 }
 
-/// `waitForCliExit(child, Promise.resolve())`: false when the child's exit proof failed, so its tree may still run.
+/// `waitForCliExit(child, Promise.resolve())`: false when the worker boundary could not confirm that the child's tree
+/// has gone, so it may still run. A child that merely failed to start is [`start_failed`], not this.
 // TODO(M5-integration): Core's `CliChild` also carries `retirement`, which a worker child's exit alone doesn't prove.
-// Once merged, await `cli::wait_for_cli_exit(&child.exit, child.retirement.as_ref())` here instead.
+// Once merged, await `cli::wait_for_cli_exit(&child.exit, child.retirement.as_ref())` here instead (and test it).
 async fn job_retired(exit: &ChildExit) -> bool {
-    !matches!(exit.wait().await, CliExit::Failed(_))
+    !matches!(exit.wait().await, CliExit::Failed(message) if is_termination_message(&message))
+}
+
+/// A child `error` event (project-review-cli.ts:64, :101): the process never started. In TypeScript that is a plain
+/// `Error`, so nothing is retained. The worker boundary reports its unconfirmed retirement with its own text instead.
+fn start_failed(exit: &ChildExit) -> bool {
+    matches!(exit.status(), Some(CliExit::Failed(message)) if !is_termination_message(&message))
+}
+
+fn is_termination_message(message: &str) -> bool {
+    message == BoundaryError::Termination.to_string()
 }
 
 /// The exit code of a child that has exited. `None` when it was stopped by a signal or its exit is unknown.
@@ -569,7 +588,7 @@ fn exit_code(exit: &ChildExit) -> Option<i32> {
 // TODO(M5-integration): the boundary returns `io::Error::other(BoundaryError::Termination)`, and Core's `cli.rs`
 // checks for its own `WorkerTermination` type. Both carry the same message, so the message is the test here.
 fn is_launch_termination(error: &io::Error) -> bool {
-    error.to_string() == BoundaryError::Termination.to_string()
+    is_termination_message(&error.to_string())
 }
 
 /// The `usage` record for spending that could not be measured (`costUsd: null`).
