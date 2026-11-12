@@ -161,3 +161,18 @@ fn subst_drives_and_volume_guid_paths_reach_the_same_folder() {
         std::panic::resume_unwind(panic);
     }
 }
+
+#[test]
+fn real_path_drops_the_verbatim_prefix_and_resolves_links() {
+    let (dir, root) = tree();
+    let link = dir.path().join("link");
+    junction(&link, &root);
+    let real = daemon::fsid::real_path(&link.join("child")).unwrap();
+    assert!(!real.to_string_lossy().starts_with(r"\\?\"), "{}", real.display());
+    assert!(real.to_string_lossy().to_lowercase().ends_with(r"root\child"), "{}", real.display());
+    for alias in loopback(&root) {
+        let real = daemon::fsid::real_path(&alias).unwrap();
+        assert!(!real.to_string_lossy().starts_with(r"\\?\"), "{}", real.display());
+    }
+    assert!(daemon::fsid::real_path(&root.join("missing")).is_err());
+}
