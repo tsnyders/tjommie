@@ -17,7 +17,9 @@ use super::{
     Subscribers, TurnResult, Usage, js, redact_provider_event,
 };
 use crate::account_pricing::has_pricing;
-use crate::cli::{BoxFuture, ChildExit, CliCommand, CliExit, CliHost};
+use crate::cli::{
+    BoxFuture, ChildExit, CliCommand, CliExit, CliHost, Retirement, wait_for_cli_exit,
+};
 
 const EXITED_BEFORE_STOP: &str = "Codex exited before its process tree could be stopped.";
 static TURN_ALREADY_ENDED: LazyLock<Regex> =
@@ -115,6 +117,25 @@ pub fn codex_config(options: &StartOptions, windows: bool) -> Value {
     config.into()
 }
 
+/// What `waitForExit` waits on: the latest server's exit, or its worker's proof that the whole tree has gone.
+#[derive(Clone)]
+enum ServerExit {
+    Server(ChildExit, Option<Retirement>),
+    /// A launch whose process tree may still run.
+    Unconfirmed,
+}
+
+impl ServerExit {
+    async fn wait(self) -> Result<(), ProviderError> {
+        match self {
+            ServerExit::Server(exit, retirement) => {
+                wait_for_cli_exit(&exit, retirement.as_ref()).await
+            }
+            ServerExit::Unconfirmed => Err(ProviderError::WorkerTermination),
+        }
+    }
+}
+
 /// A result several callers can await, settled by a task that runs to the end like a JavaScript promise.
 type Shared<T> = watch::Receiver<Option<T>>;
 
@@ -159,7 +180,7 @@ struct State {
     stopped_turn_id: Option<String>,
     stop_completion: Option<TurnResult>,
     /// The latest server's exit; `None` before one starts.
-    exited: Option<ChildExit>,
+    exited: Option<ServerExit>,
 }
 
 impl State {
@@ -369,7 +390,7 @@ impl ProviderSession for CodexSession {
         self.0.close();
     }
 
-    fn wait_for_exit(&self) -> BoxFuture<'static, ()> {
+    fn wait_for_exit(&self) -> BoxFuture<'static, Result<(), ProviderError>> {
         let starting = self.0.lock().starting.clone();
         let inner = Arc::clone(&self.0);
         Box::pin(async move {
@@ -377,8 +398,9 @@ impl ProviderSession for CodexSession {
                 let _ = settled(starting).await; // A failed start still closes its process.
             }
             let exited = inner.lock().exited.clone();
-            if let Some(exited) = exited {
-                exited.wait().await;
+            match exited {
+                Some(exited) => exited.wait().await,
+                None => Ok(()),
             }
         })
     }
@@ -431,19 +453,36 @@ impl Inner {
             return Err(closed());
         }
         let options = &self.options;
-        let server = Arc::new(
-            self.host
-                .start_codex_server(
-                    &self.cmd,
-                    &options.env,
-                    &options.cwd,
-                    options.api_key.is_some(),
-                )
-                .await?,
-        );
+        let mut folders = vec![std::path::PathBuf::from(&options.cwd)];
+        folders.extend(options.extra_dirs.iter().map(std::path::PathBuf::from));
+        self.host.prepare_provider_directories(folders).await?;
+        if self.lock().closed {
+            return Err(closed());
+        }
+        let started = self
+            .host
+            .start_codex_server(
+                &self.cmd,
+                &options.env,
+                &options.cwd,
+                options.api_key.is_some(),
+            )
+            .await;
+        let server = match started {
+            Ok(server) => Arc::new(server),
+            Err(error) => {
+                if error.is_worker_termination() {
+                    self.lock().exited = Some(ServerExit::Unconfirmed);
+                }
+                return Err(error);
+            }
+        };
         let server_id = {
             let mut state = self.lock();
-            state.exited = Some(server.exit.clone());
+            state.exited = Some(ServerExit::Server(
+                server.exit.clone(),
+                server.retirement.clone(),
+            ));
             if state.closed {
                 drop(state);
                 (server.close)();
@@ -454,10 +493,29 @@ impl Inner {
             state.servers
         };
         let weak = Arc::downgrade(&self);
+        let retirement = server.retirement.clone();
         server.exit.on_exit(move |exit| {
-            if let Some(inner) = weak.upgrade() {
-                inner.server_exited(server_id, exit);
-            }
+            let Some(inner) = weak.upgrade() else { return };
+            let Some(proof) = retirement else {
+                return inner.server_exited(server_id, exit);
+            };
+            let exit = exit.clone();
+            tokio::spawn(async move {
+                match proof.await {
+                    Ok(()) => inner.server_exited(server_id, &exit),
+                    Err(_) => {
+                        let mut state = inner.lock();
+                        let error = super::claude::UNCONFIRMED_EXIT.to_string();
+                        inner.emit(
+                            &mut state,
+                            ProviderEvent::TurnDone(TurnResult {
+                                ok: false,
+                                error: Some(error),
+                            }),
+                        );
+                    }
+                }
+            });
         });
         if let Some(key) = &options.api_key {
             let login = server.rpc.request(
@@ -467,7 +525,9 @@ impl Inner {
             if login.await.is_err() {
                 self.lock().server = None;
                 (server.close)();
-                server.exit.wait().await;
+                ServerExit::Server(server.exit.clone(), server.retirement.clone())
+                    .wait()
+                    .await?;
                 return Err(failed(
                     "Codex could not configure this API key. Check the account in Settings.",
                 ));
@@ -743,7 +803,7 @@ impl Inner {
             Ok(stop) => stop,
             Err(exited) => {
                 if let Some(exited) = exited {
-                    exited.wait().await;
+                    exited.wait().await?;
                 }
                 return Err(failed(EXITED_BEFORE_STOP));
             }
@@ -773,7 +833,7 @@ impl Inner {
         (server.kill_tree)().await.map_err(ProviderError::Failed)?;
         let exited = self.lock().exited.clone();
         if let Some(exited) = exited {
-            exited.wait().await;
+            exited.wait().await?;
         }
         self.finish_stop();
         Ok(true)

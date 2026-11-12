@@ -82,6 +82,27 @@ fn reads_the_ports_and_the_account_folder_override() {
     );
 }
 
+#[test]
+fn binds_the_phone_connection_to_every_interface_unless_told_otherwise() {
+    let every: std::net::IpAddr = [0, 0, 0, 0].into();
+    let loopback: std::net::IpAddr = [127, 0, 0, 1].into();
+    assert_eq!(parse(&["--dev"], &[]).unwrap().lan_bind, every);
+    assert_eq!(
+        parse(&["--dev"], &[("TJOMMIE_LAN_BIND", "")]).unwrap().lan_bind,
+        every
+    );
+    assert_eq!(
+        parse(&["--dev"], &[("TJOMMIE_LAN_BIND", "127.0.0.1")])
+            .unwrap()
+            .lan_bind,
+        loopback
+    );
+    assert_eq!(
+        parse(&["--dev"], &[("TJOMMIE_LAN_BIND", "lan")]).unwrap_err(),
+        "TJOMMIE_LAN_BIND must be an IP address."
+    );
+}
+
 fn events(input: impl Read + Send + 'static) -> Vec<StdinEvent> {
     let receiver: Receiver<StdinEvent> = watch_stdin(input);
     std::iter::from_fn(|| receiver.recv_timeout(Duration::from_secs(5)).ok()).collect()

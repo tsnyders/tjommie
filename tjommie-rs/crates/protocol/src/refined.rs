@@ -1,11 +1,12 @@
 //! Strings with a zod refinement or transform that JSON Schema can't express.
 
 /// A string newtype whose `new` applies `$check`: `fn(&str) -> Option<String>` returns the (possibly normalized) value, or
-/// `None` with `$message` as the error. Deserializing runs the same check.
+/// `None` with `$message` as the error. Deserializing runs the same check. A `secret` one never shows its value in
+/// `Debug` output.
 macro_rules! refined_string {
-    ($(#[$meta:meta])* $name:ident, $check:path, $message:literal) => {
+    (@define $(#[$meta:meta])* $name:ident, $check:path, $message:literal) => {
         $(#[$meta])*
-        #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize)]
+        #[derive(Clone, PartialEq, Eq, Hash, serde::Serialize)]
         #[serde(transparent)]
         pub struct $name(String);
 
@@ -25,5 +26,17 @@ macro_rules! refined_string {
                 Self::new(value).map_err(serde::de::Error::custom)
             }
         }
+    };
+    ($(#[$meta:meta])* secret $name:ident, $check:path, $message:literal) => {
+        refined_string!(@define $(#[$meta])* $name, $check, $message);
+
+        impl std::fmt::Debug for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "{}([redacted])", stringify!($name))
+            }
+        }
+    };
+    ($(#[$meta:meta])* $name:ident, $check:path, $message:literal) => {
+        refined_string!(@define $(#[$meta])* #[derive(Debug)] $name, $check, $message);
     };
 }
