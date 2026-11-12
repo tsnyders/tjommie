@@ -289,6 +289,8 @@ pub fn launch(args: &[&str], root: TempRoot, env: &[(&str, &str)]) -> Daemon {
     // Never the production 0.0.0.0 bind on this PC: it would raise a Windows Firewall prompt. Loopback, and an
     // ephemeral port in case a test pairs a device.
     command.env("TJOMMIE_LAN_BIND", "127.0.0.1");
+    // Nor a real Claude or Codex: the daemon probes the provider CLIs at start unless told not to.
+    command.env("TJOMMIE_SKIP_ACCOUNT_CHECK", "1");
     command.env("TJOMMIE_LAN_PORT", "0");
     command.envs(env.iter().copied());
     command
@@ -660,5 +662,89 @@ pub fn test_context(
         app_version: None,
         accounts,
         late: daemon::context::Late::default(),
+    }
+}
+
+/// Healthy providers, as the TypeScript integration fixtures' probe reports them: installed, signed in, Codex's
+/// sandbox ready. Account folders are made on demand, and `account_env` names the folder as the CLI's config home,
+/// as `Setup::account_env` does.
+#[derive(Default)]
+pub struct HealthyOps;
+
+impl daemon::account_runtime::AccountOps for HealthyOps {
+    fn check(
+        &self,
+        account: &daemon::setup::Account,
+    ) -> daemon::cli::BoxFuture<'_, protocol::model::ProviderSetup> {
+        use protocol::model::{CodexSandboxReadiness, CodexSetup, Provider, ProviderSetup, SetupFields};
+        let fields = |version: &str| SetupFields {
+            installed: true,
+            version: Some(version.into()),
+            signed_in: true,
+            account: Some(format!("{}@example.test", account.id)),
+            plan: Some("synthetic".into()),
+            error: None,
+        };
+        let setup = match account.provider {
+            Provider::Claude => ProviderSetup::Claude(fields("2.1.304")),
+            Provider::Codex => ProviderSetup::Codex(CodexSetup {
+                setup: fields("0.160.0"),
+                sandbox: CodexSandboxReadiness::Ready,
+            }),
+        };
+        Box::pin(async move { setup })
+    }
+
+    fn check_usage(
+        &self,
+        _: &daemon::setup::Account,
+        _: &std::path::Path,
+    ) -> daemon::cli::BoxFuture<'_, daemon::account_quota::AccountUsageRead> {
+        Box::pin(async { daemon::account_quota::AccountUsageRead::Unavailable { error: None } })
+    }
+
+    fn sign_in(
+        &self,
+        _: &daemon::setup::Account,
+        _: daemon::setup::OnDone,
+    ) -> daemon::cli::BoxFuture<'_, Result<protocol::accounts::SignInStart, daemon::server::RpcError>> {
+        Box::pin(async {
+            Ok(protocol::accounts::SignInStart { url: None, attempt: "synthetic-attempt".into() })
+        })
+    }
+
+    fn cancel_sign_in(
+        &self,
+        _: &daemon::setup::Account,
+        _: &str,
+    ) -> daemon::cli::BoxFuture<'_, Result<(), daemon::server::RpcError>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn prepare_sandbox(
+        &self,
+        _: &daemon::setup::Account,
+    ) -> daemon::cli::BoxFuture<'_, Result<(), daemon::server::RpcError>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn logout(
+        &self,
+        _: &daemon::setup::Account,
+    ) -> daemon::cli::BoxFuture<'_, Result<(), daemon::server::RpcError>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn prepare_folder(&self, account: &daemon::setup::Account, _: &std::path::Path) -> std::io::Result<()> {
+        std::fs::create_dir_all(&account.folder)
+    }
+
+    fn account_env(&self, account: &daemon::setup::Account) -> daemon::cli::Env {
+        let key = if account.provider == protocol::model::Provider::Claude {
+            "CLAUDE_CONFIG_DIR"
+        } else {
+            "CODEX_HOME"
+        };
+        daemon::cli::Env::from([(key.to_owned(), account.folder.clone())])
     }
 }

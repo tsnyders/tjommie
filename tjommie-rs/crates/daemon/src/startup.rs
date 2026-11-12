@@ -83,6 +83,9 @@ pub struct Launch {
     /// The address the phone's LAN host binds. Production listens on every interface so phones on the network reach
     /// this PC; tests and manual runs set `TJOMMIE_LAN_BIND=127.0.0.1`, which keeps Windows Firewall from prompting.
     pub lan_bind: IpAddr,
+    /// A test hook (`TJOMMIE_SKIP_ACCOUNT_CHECK=1`): don't probe the provider CLIs when the daemon starts, so tests
+    /// never run a real `claude` or `codex`.
+    pub skip_account_check: bool,
     /// A test hook: the desktop's real-CLI tests point a disposable root at signed-in account folders.
     pub accounts_dir: Option<PathBuf>,
 }
@@ -121,6 +124,7 @@ pub fn parse_launch(
             "TJOMMIE_LAN_PORT",
         )?,
         lan_bind: lan_bind(env("TJOMMIE_LAN_BIND"))?,
+        skip_account_check: env("TJOMMIE_SKIP_ACCOUNT_CHECK").as_deref() == Some("1"),
         accounts_dir: env("TJOMMIE_ACCOUNTS_DIR")
             .filter(|dir| !dir.is_empty())
             .map(PathBuf::from),
@@ -358,12 +362,14 @@ pub async fn start(launch: &Launch, auth: &Auth) -> Result<Daemon, StartupError>
         daemon.close().await;
         return Err(error);
     }
-    let checking = daemon.accounts.runtime.check_all();
-    tokio::spawn(async move {
-        if checking.await.is_err() {
-            eprintln!("Some accounts could not be checked. Retry from Accounts.");
-        }
-    });
+    if !launch.skip_account_check {
+        let checking = daemon.accounts.runtime.check_all();
+        tokio::spawn(async move {
+            if checking.await.is_err() {
+                eprintln!("Some accounts could not be checked. Retry from Accounts.");
+            }
+        });
+    }
     let remote = daemon.remote.clone();
     tokio::spawn(async move { remote.start().await });
     Ok(daemon)
