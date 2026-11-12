@@ -139,6 +139,32 @@ pub struct BrowserFrame {
     pub private_epoch: Option<u64>,
 }
 
+/// `browser.streamFrame`: a live frame for one connection, or `None` when the stream ended (a private interaction
+/// began, the browser closed or the desktop stopped it). A frame always carries its `stream_id`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserStreamFrame {
+    pub bot_id: String,
+    pub frame: Option<BrowserFrame>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserStreamParams {
+    pub bot_id: String,
+    pub on: bool,
+    /// 1 to 60.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_fps: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserStreamAckParams {
+    pub bot_id: String,
+    pub sequence: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BotTarget {

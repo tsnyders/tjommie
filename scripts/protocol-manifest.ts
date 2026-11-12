@@ -3,7 +3,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import {
-  ClientMessage, DiagnosticReport, ErrorCode, HostToRelay, MessageData, NativeBrowserCommand, NativeBrowserMount, NativeBrowserUiCommand,
+  ClientMessage, DiagnosticReport, ErrorCode, HostToRelay, MessageData, NativeBrowserCommand, NativeBrowserMount, NativeBrowserStreamMessage, NativeBrowserUiCommand,
   PROTOCOL_VERSION, PairingCode, PushData, RelayToHost, RemoteConfirm, RemotePreface, RemoteReady, RemoteRefused, SpeechEvent, SpeechStart,
   SpeechStatus, VaultHostCommand, events, methods,
 } from "../packages/protocol/src/index.ts";
@@ -17,7 +17,7 @@ type Schema = z.core.JSONSchema.BaseSchema | "custom";
 // Schemas parsed outside method calls: the WebSocket frame, message payloads, remote and relay frames, the desktop-host bridges.
 const types = {
   ClientMessage, MessageData, PairingCode, RemotePreface, RemoteConfirm, RemoteReady, RemoteRefused, RelayToHost, HostToRelay, PushData,
-  NativeBrowserCommand, NativeBrowserUiCommand, NativeBrowserMount, VaultHostCommand, VaultHostJob, VaultHostReply, DiagnosticReport,
+  NativeBrowserCommand, NativeBrowserUiCommand, NativeBrowserMount, NativeBrowserStreamMessage, VaultHostCommand, VaultHostJob, VaultHostReply, DiagnosticReport,
   SpeechStatus, SpeechEvent, SpeechStart,
 };
 
