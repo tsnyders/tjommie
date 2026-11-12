@@ -4,7 +4,10 @@
 //! string comparisons after `canonicalize` don't. Use it for every "is this the same or inside that folder" check.
 
 use std::ffi::OsString;
+use std::fs::File;
 use std::io;
+use std::mem::ManuallyDrop;
+use std::os::windows::io::AsRawHandle;
 use std::path::{Path, PathBuf};
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::Storage::FileSystem::{
@@ -123,6 +126,15 @@ fn locate(path: &Path) -> io::Result<Location> {
 pub fn same_location(a: &Path, b: &Path) -> io::Result<bool> {
     let (a, b) = (locate(a)?, locate(b)?);
     Ok(a.chain[0] == b.chain[0] && a.rest == b.rest)
+}
+
+/// Whether `path` names the very file `file` holds open: the same volume serial and file id. A different file copied
+/// into its place, even with the same size and times, is not. Like the rest of this module, `Err` means refuse.
+pub fn is_open_file(file: &File, path: &Path) -> io::Result<bool> {
+    // Borrowed from `file`, so it must not be closed here.
+    let held = ManuallyDrop::new(Handle(HANDLE(file.as_raw_handle())));
+    let at = locate(path)?;
+    Ok(at.rest.is_empty() && at.chain[0] == identity(&held)?)
 }
 
 /// Whether `path` is `root` or lies anywhere below it.

@@ -30,6 +30,7 @@ use sha2::{Digest, Sha256};
 use tokio::time::Instant;
 
 use crate::context::Db;
+use crate::fsid;
 use crate::ids::{new_id, now_iso};
 use crate::server::{Handlers, Principal, RequestContext, RpcError};
 
@@ -50,13 +51,19 @@ fn database(_: rusqlite::Error) -> RpcError {
     )
 }
 
-/// `sameFile`: the same size, write time and creation time.
-/// ponytail: a stand-in. Node also compares dev and inode; switch to lane B's `daemon::fsid` (FileIdInfo: volume
-/// serial plus 128-bit file id, where `Err` means refuse) once it merges.
+/// The size, write time and creation time a handle reports. They say whether the open file changed; they can't say
+/// which file a path names, which is `fsid`'s job (`sameFile` in Node also compares the device and inode).
 fn same_file(a: &Metadata, b: &Metadata) -> bool {
     a.len() == b.len()
         && a.modified().ok() == b.modified().ok()
         && a.created().ok() == b.created().ok()
+}
+
+/// The snapshot open as `input` is unmodified since `initial` and is still the file at `source`. An identity that
+/// can't be read refuses.
+fn unchanged(initial: &Metadata, input: &File, source: &Path) -> bool {
+    input.metadata().is_ok_and(|now| same_file(initial, &now))
+        && fsid::is_open_file(input, source).unwrap_or(false)
 }
 
 fn is_link(path: &Path) -> bool {
@@ -361,8 +368,7 @@ impl Attachments {
             let initial = input.metadata().map_err(|_| published())?;
             let still = |input: &File| -> bool {
                 self.legacy_path(source).as_deref() == Some(source)
-                    && input.metadata().is_ok_and(|now| same_file(&initial, &now))
-                    && fs::metadata(source).is_ok_and(|now| same_file(&initial, &now))
+                    && unchanged(&initial, input, source)
             };
             if !initial.is_file() || initial.len() > MAX_ATTACHMENT_BYTES || !still(&input) {
                 return Err(error(
@@ -1048,5 +1054,33 @@ impl Attachments {
                         .map(|()| Empty {}),
                 )
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs::{self, File, FileTimes};
+    use std::os::windows::fs::FileTimesExt;
+
+    use super::{same_file, unchanged};
+
+    #[test]
+    fn a_copy_swapped_in_with_the_same_size_and_times_is_not_the_opened_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let (source, moved) = (dir.path().join("snapshot.bin"), dir.path().join("moved.bin"));
+        fs::write(&source, b"synthetic snapshot").unwrap();
+        let input = File::open(&source).unwrap();
+        let initial = input.metadata().unwrap();
+        assert!(unchanged(&initial, &input, &source));
+        fs::rename(&source, &moved).unwrap();
+        fs::write(&source, b"synthetic snapshot").unwrap();
+        let times = FileTimes::new()
+            .set_modified(initial.modified().unwrap())
+            .set_created(initial.created().unwrap());
+        File::options().write(true).open(&source).unwrap().set_times(times).unwrap();
+        let copy = fs::metadata(&source).unwrap();
+        assert!(same_file(&initial, &copy), "size and times alone can't tell them apart");
+        assert!(!unchanged(&initial, &input, &source), "only the file identity can");
+        assert!(unchanged(&initial, &input, &moved));
     }
 }
