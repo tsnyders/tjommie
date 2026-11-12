@@ -29,4 +29,5 @@ pub mod server;
 pub mod settings;
 pub mod spawn;
 pub mod startup;
+pub mod team;
 pub mod win;

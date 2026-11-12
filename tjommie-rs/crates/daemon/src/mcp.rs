@@ -61,6 +61,15 @@ impl McpTool {
             prepare,
         }
     }
+
+    /// Parses `arguments` and runs the tool as `bot_id`, without the endpoint's token checks: for a test, or a caller
+    /// inside the daemon. A parse failure is an `Err` with the text a bot would read.
+    pub fn call(&self, bot_id: &str, arguments: &Value) -> ToolFuture {
+        match (self.prepare)(arguments) {
+            Ok(run) => run(bot_id.to_owned()),
+            Err(message) => Box::pin(std::future::ready(Err(message))),
+        }
+    }
 }
 
 /// One validation problem, as zod reports it.
