@@ -24,6 +24,7 @@ pub mod remote_host;
 pub mod remote_identity;
 pub mod rooms;
 pub mod routines;
+pub mod scheduler;
 pub mod server;
 pub mod settings;
 pub mod spawn;
