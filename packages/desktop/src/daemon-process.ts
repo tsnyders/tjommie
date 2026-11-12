@@ -8,6 +8,9 @@ export type DaemonLaunch = {
   args: string[];
   env: NodeJS.ProcessEnv;
   testAccountsDir?: string;
+  // True (the default) when execPath is Electron or Node running the daemon's JavaScript, which needs ELECTRON_RUN_AS_NODE.
+  // False for the Rust daemon's own exe, which must not inherit it.
+  runAsNode?: boolean;
 };
 export type RunningDaemon = {
   connection: DaemonConnection;
@@ -30,12 +33,13 @@ export function listeningPort(output: string): number | null {
 }
 
 // Production mode cannot inherit development settings or the test-only account-folder hook. The explicit
-// testAccountsDir option is the only way a desktop test can send that hook to its disposable daemon.
-export function daemonEnv(base: NodeJS.ProcessEnv, testAccountsDir?: string): NodeJS.ProcessEnv {
+// testAccountsDir option is the only way a desktop test can send that hook to its disposable daemon. The Node daemon runs
+// as plain Node inside Electron (ELECTRON_RUN_AS_NODE); the Rust daemon gets none, and drops an inherited one.
+export function daemonEnv(base: NodeJS.ProcessEnv, testAccountsDir?: string, runAsNode = true): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = Object.fromEntries(
     Object.entries(base).filter(([key]) => !["TJOMMIE_DEV", "TJOMMIE_ACCOUNTS_DIR", "ELECTRON_RUN_AS_NODE"].includes(key.toUpperCase())),
   );
-  env.ELECTRON_RUN_AS_NODE = "1";
+  if (runAsNode) env.ELECTRON_RUN_AS_NODE = "1";
   if (testAccountsDir !== undefined) env.TJOMMIE_ACCOUNTS_DIR = testAccountsDir;
   return env;
 }
@@ -46,9 +50,11 @@ export const packagedDaemonPath = (resourcesPath: string): string => join(resour
 // What starts the daemon. An installed app (`packagedExe` is its bundled exe) always runs that exe, never an override
 // and never Node. An unpackaged run hosts the Rust daemon when TJOMMIE_DAEMON_EXE names its exe, else runs the Node
 // daemon from source. The exe takes the same --token-stdin contract and no Node arguments.
-export function daemonCommand(env: NodeJS.ProcessEnv, packagedExe: string | null, nodePath: string, entry: string): Pick<DaemonLaunch, "execPath" | "args"> {
+export function daemonCommand(env: NodeJS.ProcessEnv, packagedExe: string | null, nodePath: string, entry: string): Pick<DaemonLaunch, "execPath" | "args" | "runAsNode"> {
   const exe = packagedExe ?? env.TJOMMIE_DAEMON_EXE;
-  return exe ? { execPath: exe, args: [] } : { execPath: nodePath, args: ["--disable-warning=ExperimentalWarning", entry] };
+  return exe
+    ? { execPath: exe, args: [], runAsNode: false }
+    : { execPath: nodePath, args: ["--disable-warning=ExperimentalWarning", entry], runAsNode: true };
 }
 
 // The executable of the process that listens on the daemon's port, for tests that must recognize their own daemon: the
@@ -95,7 +101,7 @@ export function startDaemonProcess(
   const token = newToken();
   const desktopHostToken = newToken();
   const child = spawn(launch.execPath, [...launch.args, "--token-stdin"], {
-    env: daemonEnv(launch.env, launch.testAccountsDir),
+    env: daemonEnv(launch.env, launch.testAccountsDir, launch.runAsNode ?? true),
     stdio: "pipe",
     windowsHide: true,
   });

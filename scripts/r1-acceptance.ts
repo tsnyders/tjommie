@@ -190,11 +190,11 @@ export async function installTjommie(installer: string, localAppData: string): P
 }
 
 // The daemon an install runs by itself: the bundled Rust exe, or 0.4.2's bundled Node daemon inside its own Electron.
-export function installedDaemon(install: string): Pick<DaemonLaunch, "execPath" | "args"> {
+export function installedDaemon(install: string): Pick<DaemonLaunch, "execPath" | "args" | "runAsNode"> {
   const rust = packagedDaemonPath(join(install, "resources"));
-  if (existsSync(rust)) return { execPath: rust, args: [] };
+  if (existsSync(rust)) return { execPath: rust, args: [], runAsNode: false };
   const entry = join(install, "resources", "daemon", "main.mjs");
-  if (existsSync(entry)) return { execPath: join(install, "Tjommie.exe"), args: ["--disable-warning=ExperimentalWarning", entry] };
+  if (existsSync(entry)) return { execPath: join(install, "Tjommie.exe"), args: ["--disable-warning=ExperimentalWarning", entry], runAsNode: true };
   throw new Error(`The install has no daemon: ${install}`);
 }
 

@@ -61,10 +61,10 @@ describe("daemon process", () => {
 
   it("starts the exe named by TJOMMIE_DAEMON_EXE in unpackaged runs, with no Node arguments", () => {
     const exe = "C:\\tjommie-rs\\tjommie-daemon.exe";
-    const node = { execPath: "C:\\node.exe", args: ["--disable-warning=ExperimentalWarning", "C:\\daemon\\main.ts"] };
+    const node = { execPath: "C:\\node.exe", args: ["--disable-warning=ExperimentalWarning", "C:\\daemon\\main.ts"], runAsNode: true };
     const command = (env: NodeJS.ProcessEnv) => daemonCommand(env, null, node.execPath, "C:\\daemon\\main.ts");
     expect(command({})).toEqual(node);
-    expect(command({ TJOMMIE_DAEMON_EXE: exe })).toEqual({ execPath: exe, args: [] });
+    expect(command({ TJOMMIE_DAEMON_EXE: exe })).toEqual({ execPath: exe, args: [], runAsNode: false });
     expect(command({ TJOMMIE_DAEMON_EXE: "" })).toEqual(node);
   });
 
@@ -73,9 +73,17 @@ describe("daemon process", () => {
     const bundled = packagedDaemonPath(resources);
     expect(bundled).toBe(join(resources, "daemon", "tjommie-daemon.exe"));
     const command = (env: NodeJS.ProcessEnv) => daemonCommand(env, bundled, "C:\\Tjommie.exe", "C:\\daemon\\main.ts");
-    expect(command({})).toEqual({ execPath: bundled, args: [] });
+    expect(command({})).toEqual({ execPath: bundled, args: [], runAsNode: false });
     // An installed app never runs an override, and never the Node daemon.
-    expect(command({ TJOMMIE_DAEMON_EXE: "C:\\elsewhere\\daemon.exe" })).toEqual({ execPath: bundled, args: [] });
+    expect(command({ TJOMMIE_DAEMON_EXE: "C:\\elsewhere\\daemon.exe" })).toEqual({ execPath: bundled, args: [], runAsNode: false });
+  });
+
+  it("sets ELECTRON_RUN_AS_NODE only for the Node daemon, and never lets the Rust exe inherit it", () => {
+    const inherited = { TJOMMIE_HOME: "C:\\x", ELECTRON_RUN_AS_NODE: "1", TJOMMIE_DEV: "1" };
+    expect(daemonEnv(inherited, undefined, true)).toEqual({ TJOMMIE_HOME: "C:\\x", ELECTRON_RUN_AS_NODE: "1" });
+    expect(daemonEnv(inherited, undefined, false)).toEqual({ TJOMMIE_HOME: "C:\\x" });
+    expect(daemonEnv({ electron_run_as_node: "1" }, undefined, false)).toEqual({}); // Whatever its case.
+    expect(daemonEnv(inherited, "C:\\disposable", false)).toEqual({ TJOMMIE_HOME: "C:\\x", TJOMMIE_ACCOUNTS_DIR: "C:\\disposable" });
   });
 
   it("names the process that owns the daemon's port for an installed app, an exe-hosted source run and the Node daemon", () => {

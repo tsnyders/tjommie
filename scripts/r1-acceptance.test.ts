@@ -118,9 +118,9 @@ it("runs an install's bundled Rust daemon, else 0.4.2's bundled Node daemon insi
   const install = temp();
   expect(() => installedDaemon(install)).toThrow("no daemon");
   put(join(install, "resources", "daemon", "main.mjs"));
-  expect(installedDaemon(install)).toEqual({ execPath: join(install, "Tjommie.exe"), args: ["--disable-warning=ExperimentalWarning", join(install, "resources", "daemon", "main.mjs")] });
+  expect(installedDaemon(install)).toEqual({ execPath: join(install, "Tjommie.exe"), args: ["--disable-warning=ExperimentalWarning", join(install, "resources", "daemon", "main.mjs")], runAsNode: true });
   put(join(install, "resources", "daemon", "tjommie-daemon.exe"));
-  expect(installedDaemon(install)).toEqual({ execPath: join(install, "resources", "daemon", "tjommie-daemon.exe"), args: [] });
+  expect(installedDaemon(install)).toEqual({ execPath: join(install, "resources", "daemon", "tjommie-daemon.exe"), args: [], runAsNode: false });
 });
 
 it("changes a machine only on a GitHub Actions runner", async () => {
