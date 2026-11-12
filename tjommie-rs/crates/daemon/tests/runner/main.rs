@@ -514,7 +514,7 @@ fn base_deps(
             logs.lock().unwrap().push(format!("{context}: {error}"))
         }),
         kill_tree: Arc::new(move |pid| kills.lock().unwrap().push(pid)),
-        ..RunnerDeps::new(db.clone(), broadcast, create_session)
+        ..RunnerDeps::new(db.clone(), broadcast, create_session, common::no_cli_setup())
     }
 }
 

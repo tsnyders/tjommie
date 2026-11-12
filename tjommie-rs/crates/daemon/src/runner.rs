@@ -14,10 +14,10 @@
 //! then, the error is logged and the turn carries on with its item unclaimed, so it runs as a later turn. In TypeScript
 //! that throw rejected `#startTurn` and failed a turn that was already running fine. Keep this.
 //!
-//! **T3.4 seams.** Accounts come in through [`Accounts`] (`AccountRuntime`). `accountFor`, `accountEnv`, `priceUsage` and
-//! `recordUsage` are small stand-ins at the end of this file, each marked for T3.4's version at merge.
+//! **Accounts.** [`Accounts`] is the runner's view of T3.4's `AccountRuntime`. The runner holds the database while it
+//! calls in, so the runtime's `_with(db)` variants take that connection and its notifications run on their own task.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::path::Path;
@@ -42,6 +42,11 @@ use tokio::runtime::Handle;
 use tokio::sync::oneshot;
 use tokio::task::AbortHandle;
 
+use crate::account_pricing::price_usage;
+use crate::account_runtime::{
+    AccountRunContext, AccountRuntime, AccountSelection, PreparedAccount,
+};
+use crate::accounts_store::get_account;
 use crate::approvals::{
     NewApproval, allow_rules, create_approval, expire_pending_approvals, resolve_approval,
 };
@@ -52,13 +57,13 @@ use crate::bots::{
 use crate::chat::{
     MessagePatch, NewMessage, add_message, build_recap, get_message, history, update_message,
 };
-use crate::cli::{BoxFuture as CliFuture, CliChild, CliCommand, CliHost, LaunchOptions};
+use crate::cli::CliHost;
 use crate::context::{BotView, Context, Db};
 use crate::ids::{new_id, now_iso};
 use crate::providers::claude::ClaudeSession;
 use crate::providers::codex::CodexSession;
 use crate::providers::{
-    ApiKey, Approval as ProviderApproval, ApprovalAnswer, Limit, LimitState, McpServer,
+    Approval as ProviderApproval, ApprovalAnswer, Limit, LimitState, McpServer,
     ProviderError, ProviderEvent, ProviderSession, StartOptions, TurnResult as ProviderTurn, Usage,
     js,
 };
@@ -67,6 +72,8 @@ use crate::queue::{
     new_chain, next_queued, next_steerable, recover_after_restart, set_status,
 };
 use crate::server::{Handlers, RpcError};
+use crate::setup::Setup;
+use crate::usage::{CostSource, UsageInput, record_usage};
 
 const IDLE_SHUTDOWN: Duration = Duration::from_secs(10 * 60);
 const RECAP_MESSAGES: u32 = 20;
@@ -127,53 +134,62 @@ pub struct TaskExecutionContext {
     pub instructions: String,
 }
 
-/// `AccountRunContext` from `account-runtime.ts`: the account one run is billed to.
-#[derive(Debug, Clone, PartialEq)]
-pub struct AccountRunContext {
-    pub run_id: String,
-    pub bot_id: String,
-    pub provider: Provider,
-    pub pinned_account_id: String,
-    pub effective_account_id: String,
-    pub kind: AccountKind,
-    pub account_revision: u64,
-    pub using_fallback: bool,
-    pub model: String,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum AccountSelection {
-    Ready(AccountRunContext),
-    NotReady {
-        reason: String,
-        account_id: String,
-        /// `Some` when the account is limited (TypeScript's `"limitedUntil" in selection`), with its reset when known.
-        limited_until: Option<Option<String>>,
-    },
-}
-
-/// `PreparedAccount`: what a run's CLI gets from its account.
-#[derive(Debug, Clone)]
-pub struct PreparedAccount {
-    pub env: BTreeMap<String, String>,
-    pub api_key: Option<ApiKey>,
-    pub codex_sandbox_ready: bool,
-    pub max_budget_usd: Option<f64>,
-}
-
-/// The part of T3.4's `AccountRuntime` the runner uses. Implementations get the database the runner already holds and
-/// must not call back into the runner synchronously (TypeScript's `onChanged` -> `setupChanged` has to be deferred).
+/// The part of T3.4's `AccountRuntime` the runner uses. The runner calls these with its own state and the database
+/// locked, so an implementation must not take the database lock, run a change callback or call the runner: the
+/// calls that read the database take the connection the runner holds, and notifications run on their own task.
+/// [`AccountRuntime`] implements it below.
 pub trait Accounts: Send + Sync {
     fn inspect(&self, db: &Connection, bot: &StoredBot) -> AccountSelection;
+    /// Leases the account to a turn and reads what its CLI needs. Polled without the runner's locks.
     fn prepare(
         &self,
         context: &AccountRunContext,
     ) -> BoxFuture<'static, Result<PreparedAccount, String>>;
     fn release(&self, context: &AccountRunContext);
-    fn assert_current(&self, context: &AccountRunContext) -> Result<(), String>;
-    fn complete_turn(&self, context: &AccountRunContext, successful: bool) -> bool;
-    fn observe_limit(&self, context: &AccountRunContext, limit: &Limit);
-    fn usage_changed(&self, account_id: &str);
+    fn assert_current(&self, db: &Connection, context: &AccountRunContext) -> Result<(), String>;
+    fn complete_turn(&self, db: &Connection, context: &AccountRunContext, successful: bool) -> bool;
+    fn observe_limit(&self, db: &Connection, context: &AccountRunContext, limit: &Limit);
+    fn usage_changed(&self, db: &Connection, account_id: &str);
+}
+
+impl Accounts for AccountRuntime {
+    fn inspect(&self, db: &Connection, bot: &StoredBot) -> AccountSelection {
+        self.inspect_with(db, bot)
+    }
+
+    fn prepare(
+        &self,
+        context: &AccountRunContext,
+    ) -> BoxFuture<'static, Result<PreparedAccount, String>> {
+        let prepared = self.prepare_owned(context.clone());
+        async move { prepared.await.map_err(|error| error.message) }.boxed()
+    }
+
+    fn release(&self, context: &AccountRunContext) {
+        if self.release_quiet(context) {
+            self.defer_notify(&context.effective_account_id);
+        }
+    }
+
+    fn assert_current(&self, db: &Connection, context: &AccountRunContext) -> Result<(), String> {
+        self.assert_current_with(db, context)
+            .map_err(|error| error.message)
+    }
+
+    fn complete_turn(&self, db: &Connection, context: &AccountRunContext, successful: bool) -> bool {
+        self.complete_turn_with(db, context, successful)
+    }
+
+    fn observe_limit(&self, db: &Connection, context: &AccountRunContext, limit: &Limit) {
+        if self.observe_limit_with(db, context, limit) {
+            self.defer_notify(&context.effective_account_id);
+        }
+    }
+
+    fn usage_changed(&self, db: &Connection, account_id: &str) {
+        let claimed = self.usage_changed_with(db, account_id);
+        self.defer_usage_changed(account_id, claimed);
+    }
 }
 
 /// Sends an event to every client. An error is logged; TypeScript's tests throw from it to check that.
@@ -186,14 +202,15 @@ pub type SessionFactory =
     Arc<dyn Fn(&StoredBot, StartOptions) -> Result<Arc<dyn ProviderSession>, String> + Send + Sync>;
 /// `console.error(context, error)`.
 pub type Log = Arc<dyn Fn(&str, &str) + Send + Sync>;
-/// `resolveCli(provider)`: the installed CLI, if any.
-pub type ResolveCli = Arc<dyn Fn(Provider) -> Option<CliCommand> + Send + Sync>;
 
-/// `cliSessionFactory`: a Claude or Codex session whose CLI launches through `host`.
-pub fn cli_session_factory(host: Arc<dyn CliHost>, resolve: ResolveCli) -> SessionFactory {
+/// `cliSessionFactory`: a Claude or Codex session whose CLI launches through `host`. The host also finds the CLI
+/// (`find_cli`, TypeScript's `resolveCli`): a `SystemCli` with its worker boundary launches and finds inside the
+/// boundary when Windows isolation is on, and directly otherwise (`cli.ts:153-154`). A launch whose stop the boundary
+/// can't confirm ends as `CliExit::Failed`, which the providers report as an exit with an error: a crashed turn.
+pub fn cli_session_factory(host: Arc<dyn CliHost>) -> SessionFactory {
     Arc::new(move |bot: &StoredBot, options: StartOptions| {
         let claude = bot.provider == Provider::Claude;
-        let Some(cmd) = resolve(bot.provider) else {
+        let Some(cmd) = host.find_cli(bot.provider) else {
             return Err(format!(
                 "{} is not installed",
                 if claude { "Claude Code" } else { "Codex" }
@@ -205,35 +222,6 @@ pub fn cli_session_factory(host: Arc<dyn CliHost>, resolve: ResolveCli) -> Sessi
             Arc::new(CodexSession::new(host.clone(), cmd, options))
         })
     })
-}
-
-/// Lane B's `win::boundary::WorkerBoundary`, which is itself a [`CliHost`], plus its gate. While Windows worker
-/// isolation is on, bot CLIs launch through it under the isolated worker accounts; a launch whose stop it can't
-/// confirm ends with `CliExit::Failed`, which the providers report as an exit with an error, a crashed turn.
-pub trait WorkerIsolation: CliHost {
-    /// `boundary()?.required`.
-    fn required(&self) -> bool;
-}
-
-/// `launchCli`'s choice (`cli.ts:153-154`): through the worker boundary when isolation requires it, otherwise a
-/// direct launch. Codex's app-server goes the same way: `start_codex_server` launches through this host.
-pub struct BoundaryHost {
-    pub direct: Arc<dyn CliHost>,
-    pub boundary: Option<Arc<dyn WorkerIsolation>>,
-}
-
-impl CliHost for BoundaryHost {
-    fn launch<'a>(
-        &'a self,
-        cmd: &'a CliCommand,
-        args: Vec<String>,
-        options: LaunchOptions,
-    ) -> CliFuture<'a, io::Result<CliChild>> {
-        match &self.boundary {
-            Some(boundary) if boundary.required() => boundary.launch(cmd, args, options),
-            _ => self.direct.launch(cmd, args, options),
-        }
-    }
 }
 
 pub type ItemHook = Arc<dyn Fn(&mut Core<'_>, &WorkItem) -> Result<(), String> + Send + Sync>;
@@ -277,6 +265,8 @@ pub struct RunnerDeps {
     pub codex_sandbox_ready: Arc<dyn Fn() -> bool + Send + Sync>,
     pub create_session: SessionFactory,
     pub accounts: Option<Arc<dyn Accounts>>,
+    /// Without `accounts`, the default account's folder and environment come from here (`accountFor`, `accountEnv`).
+    pub setup: Setup,
     pub hooks: RunnerHooks,
     /// `killTree(pid)`: stops a CLI's whole process tree without waiting.
     pub kill_tree: Arc<dyn Fn(Option<u32>) + Send + Sync>,
@@ -287,7 +277,12 @@ pub struct RunnerDeps {
 
 impl RunnerDeps {
     /// The TypeScript defaults: signed out of nothing, no setup issue, nothing held, Codex's sandbox not ready.
-    pub fn new(db: Db, broadcast: Broadcast, create_session: SessionFactory) -> Self {
+    pub fn new(
+        db: Db,
+        broadcast: Broadcast,
+        create_session: SessionFactory,
+        setup: Setup,
+    ) -> Self {
         RunnerDeps {
             db,
             broadcast,
@@ -297,6 +292,7 @@ impl RunnerDeps {
             codex_sandbox_ready: Arc::new(|| false),
             create_session,
             accounts: None,
+            setup,
             hooks: RunnerHooks::default(),
             kill_tree: Arc::new(|_| {}),
             close_browser: Arc::new(|_| futures_util::future::ready(()).boxed()),
@@ -435,10 +431,24 @@ type LiveId = u64;
 type Waiter = Shared<BoxFuture<'static, ()>>;
 type StopPending = Shared<BoxFuture<'static, Result<bool, ProviderError>>>;
 type ShutdownWait = Shared<BoxFuture<'static, Result<(), String>>>;
+/// A process exit others wait on. An error means a worker couldn't confirm its process tree had gone: the account
+/// and its folders stay reserved. Dropping the sender leaves it pending forever, as an unsettled promise does.
+type Exit = Shared<BoxFuture<'static, Result<(), ProviderError>>>;
 
 fn waiter() -> (oneshot::Sender<()>, Waiter) {
     let (sender, receiver) = oneshot::channel::<()>();
     (sender, receiver.map(drop).boxed().shared())
+}
+
+fn exit_waiter() -> (oneshot::Sender<Result<(), ProviderError>>, Exit) {
+    let (sender, receiver) = oneshot::channel();
+    let exit = async move {
+        match receiver.await {
+            Ok(result) => result,
+            Err(_) => std::future::pending().await,
+        }
+    };
+    (sender, exit.boxed().shared())
 }
 
 /// One CLI session. The serial stands for TypeScript's object identity.
@@ -467,7 +477,7 @@ struct Live {
     context: Option<AccountRunContext>,
     execution: Option<TaskExecutionContext>,
     execution_key: String,
-    retiring: Option<Waiter>,
+    retiring: Option<Exit>,
     /// Started without resuming.
     fresh: bool,
     /// The CLI reported its session id since it started.
@@ -502,7 +512,7 @@ struct Deleting {
     items: Vec<WorkItem>,
     pid: Option<u32>,
     process_exited: bool,
-    closed: Waiter,
+    closed: Exit,
     settled: bool,
     restore_when_closed: bool,
 }
@@ -597,7 +607,7 @@ impl Runner {
         self.with(|core| core.effective_folder(bot_id))
     }
 
-    pub fn retired(&self, bot_id: &str) -> BoxFuture<'static, ()> {
+    pub fn retired(&self, bot_id: &str) -> BoxFuture<'static, Result<(), ProviderError>> {
         self.with(|core| core.retired(bot_id))
     }
 
@@ -637,7 +647,10 @@ impl Runner {
         self.with(|core| core.bot_changed(bot_id, provider_changed))
     }
 
-    pub fn close_for_deletion(&self, bot_id: &str) -> Result<BoxFuture<'static, ()>, RpcError> {
+    pub fn close_for_deletion(
+        &self,
+        bot_id: &str,
+    ) -> Result<BoxFuture<'static, Result<(), ProviderError>>, RpcError> {
         self.with(|core| core.close_for_deletion(bot_id))
     }
 
@@ -1135,9 +1148,9 @@ impl Core<'_> {
         Ok(bot.project_folder.unwrap_or(bot.home_folder))
     }
 
-    pub fn retired(&mut self, bot_id: &str) -> BoxFuture<'static, ()> {
+    pub fn retired(&mut self, bot_id: &str) -> BoxFuture<'static, Result<(), ProviderError>> {
         let Some(id) = self.live_id(bot_id) else {
-            return futures_util::future::ready(()).boxed();
+            return futures_util::future::ready(Ok(())).boxed();
         };
         let live = self.live(id);
         if live.busy
@@ -1152,15 +1165,16 @@ impl Core<'_> {
                 .entry(bot_id.to_owned())
                 .or_default()
                 .push(sender);
-            return receiver.map(drop).boxed();
+            return receiver.map(|_| Ok(())).boxed();
         }
-        let waits = [
-            live.retiring.clone(),
-            live.steering_done.as_ref().map(|(_, done)| done.clone()),
-        ];
+        let (retiring, steering) = (live.retiring.clone(), live.steering_done.as_ref().map(|(_, done)| done.clone()));
         async move {
-            for wait in waits.into_iter().flatten() {
-                wait.await;
+            if let Some(steering) = steering {
+                steering.await;
+            }
+            match retiring {
+                Some(retiring) => retiring.await,
+                None => Ok(()),
             }
         }
         .boxed()
@@ -1318,10 +1332,10 @@ impl Core<'_> {
                 self.close_session(bot_id, id);
                 let retiring = self.live(id).retiring.clone();
                 return async move {
-                    if let Some(retiring) = retiring {
-                        retiring.await;
+                    match retiring {
+                        Some(retiring) => retiring.await,
+                        None => Ok(()),
                     }
-                    Ok(())
                 }
                 .boxed();
             }
@@ -1439,7 +1453,10 @@ impl Core<'_> {
     }
 
     /// Releases folder locks without changing persisted work; only explicit cancellation may resume it.
-    pub fn close_for_deletion(&mut self, bot_id: &str) -> Result<BoxFuture<'static, ()>, RpcError> {
+    pub fn close_for_deletion(
+        &mut self,
+        bot_id: &str,
+    ) -> Result<BoxFuture<'static, Result<(), ProviderError>>, RpcError> {
         if let Some(existing) = self.st.deleting.get(bot_id) {
             if existing.restore_when_closed {
                 return Err(RpcError::new(
@@ -1466,7 +1483,7 @@ impl Core<'_> {
         }
         let session = self.live(live).session.clone();
         let serial = self.next_serial();
-        let (done, closed) = waiter();
+        let (done, closed) = exit_waiter();
         let pid = session.as_ref().and_then(|session| session.session.pid());
         let detached = Deleting {
             serial,
@@ -1489,21 +1506,31 @@ impl Core<'_> {
         let bot = bot_id.to_owned();
         self.spawn(async move {
             let process = async {
-                if let Some(exited) = exited {
-                    exited.await;
+                let exited = match exited {
+                    Some(exited) => exited.await,
+                    None => Ok(()),
+                };
+                if exited.is_ok() {
+                    runner.with(|core| {
+                        if let Some(deleting) = core
+                            .st
+                            .deleting
+                            .get_mut(&bot)
+                            .filter(|deleting| deleting.serial == serial)
+                        {
+                            deleting.process_exited = true;
+                        }
+                    });
                 }
-                runner.with(|core| {
-                    if let Some(deleting) = core
-                        .st
-                        .deleting
-                        .get_mut(&bot)
-                        .filter(|deleting| deleting.serial == serial)
-                    {
-                        deleting.process_exited = true;
-                    }
-                });
+                exited
             };
-            futures_util::join!(process, browser);
+            // Like `Promise.all`, an unconfirmed exit fails this at once. It never settles: the bot can't be restored
+            // onto a process tree that may still run.
+            let both = futures_util::future::try_join(process, browser.map(Ok::<(), ProviderError>));
+            if let Err(error) = both.await {
+                let _ = done.send(Err(error));
+                return;
+            }
             runner.with(|core| {
                 if let Some(deleting) = core
                     .st
@@ -1514,7 +1541,7 @@ impl Core<'_> {
                     deleting.settled = true;
                 }
             });
-            let _ = done.send(());
+            let _ = done.send(Ok(()));
         });
         Ok(closed.boxed())
     }
@@ -1561,8 +1588,11 @@ impl Core<'_> {
                 let runner = self.runner.clone();
                 let bot = bot_id.to_owned();
                 self.spawn(async move {
-                    closed.await;
+                    let closed = closed.await;
                     runner.with(|core| {
+                        if let Err(error) = closed {
+                            return core.log("Tjommie: restoring a bot after deletion failed", error.message());
+                        }
                         if core
                             .st
                             .deleting
@@ -1742,7 +1772,9 @@ impl Core<'_> {
                 &deps.accounts,
                 live.and_then(|id| self.live(id).context.clone()),
             ) {
-                (Some(accounts), Some(context)) => accounts.assert_current(&context).is_err(),
+                (Some(accounts), Some(context)) => {
+                    accounts.assert_current(self.db, &context).is_err()
+                }
                 _ => false,
             };
             if (deps.setup_issue)(bot).is_none() && !changed {
@@ -1781,7 +1813,8 @@ impl Core<'_> {
         }
         self.st.ready = false;
         let lives = std::mem::take(&mut self.st.live);
-        let mut pending: Vec<Waiter> = self.st.launches.values().cloned().collect();
+        let mut pending: Vec<Exit> =
+            self.st.launches.values().map(|launch| launch.clone().map(Ok).boxed().shared()).collect();
         let deleting: Vec<Deleting> = self
             .st
             .deleting
@@ -1804,7 +1837,7 @@ impl Core<'_> {
             pending.push(match (self.live(*live).retiring.clone(), session) {
                 (Some(retiring), _) => retiring,
                 (None, Some(session)) => session.session.wait_for_exit().shared(),
-                (None, None) => futures_util::future::ready(()).boxed().shared(),
+                (None, None) => futures_util::future::ready(Ok(())).boxed().shared(),
             });
         }
         // Production teardown awaits this bounded barrier before closing SQLite; late usage stays billable until then.
@@ -1816,9 +1849,11 @@ impl Core<'_> {
         }
         let runner = self.runner.clone();
         let waiting = async move {
-            let all = futures_util::future::join_all(pending);
+            // Like `Promise.all`, the first unconfirmed exit fails the barrier at once.
+            let all = futures_util::future::try_join_all(pending);
             let result = match tokio::time::timeout(Duration::from_secs(30), all).await {
-                Ok(_) => Ok(()),
+                Ok(Ok(_)) => Ok(()),
+                Ok(Err(error)) => Err(error.message().to_owned()),
                 Err(_) => Err("Timed out waiting for owned account processes to close.".to_owned()),
             };
             runner.with(|core| core.st.events_closed = true);
@@ -1909,6 +1944,10 @@ impl Core<'_> {
 
     fn turn_resume(&mut self, turn: &mut Turn, phase: Phase, awaited: Awaited) -> Step {
         match (phase, awaited) {
+            // An unconfirmed exit rejects `#startTurn`, which fails the turn.
+            (Phase::Retired | Phase::Unretired, Awaited::Result(Err(error))) => {
+                Step::Ready(Err(error.message().to_owned()))
+            }
             (Phase::Retired, _) => {
                 if self.same_turn(turn) {
                     self.turn_prepare(turn)
@@ -1988,7 +2027,7 @@ impl Core<'_> {
                 Some(retiring) => retiring.boxed(),
                 None => old.session.wait_for_exit(),
             };
-            return Step::Await(Phase::Retired, exited.map(|_| Awaited::Done).boxed());
+            return Step::Await(Phase::Retired, exited.map(Awaited::Result).boxed());
         }
         self.turn_prepare(turn)
     }
@@ -2004,7 +2043,7 @@ impl Core<'_> {
                 self.turn_send(turn)
             }
             (None, Some(retiring)) => {
-                Step::Await(Phase::Unretired, retiring.map(|_| Awaited::Done).boxed())
+                Step::Await(Phase::Unretired, retiring.map(Awaited::Result).boxed())
             }
             (None, None) => self.turn_account(turn),
         }
@@ -2025,8 +2064,16 @@ impl Core<'_> {
         }
         let context = self.live(turn.live).context.clone();
         let account = match &context {
-            Some(context) => account_by_id(self.db, &context.effective_account_id),
-            None => account_for(self.db, turn.bot.provider),
+            Some(context) => get_account(self.db, &context.effective_account_id, false)
+                .map(|stored| Account { id: stored.id, folder: stored.folder, kind: stored.kind }),
+            None => self
+                .deps()
+                .setup
+                .account_for(self.db, turn.bot.provider)
+                .and_then(|account| {
+                    let kind = get_account(self.db, &account.id, false)?.kind;
+                    Ok(Account { id: account.id, folder: account.folder, kind })
+                }),
         };
         match account {
             Ok(account) => turn.account = Some(account),
@@ -2053,7 +2100,7 @@ impl Core<'_> {
             return Step::Ready(Ok(()));
         }
         if let (Some(context), Some(accounts)) = (&self.live(turn.live).context, &accounts)
-            && let Err(error) = accounts.assert_current(context)
+            && let Err(error) = accounts.assert_current(self.db, context)
         {
             return Step::Ready(Err(error));
         }
@@ -2110,7 +2157,14 @@ impl Core<'_> {
             resume_id: resume_id.clone(),
             resume_cost_usd: resume.and_then(|(_, cost)| cost),
             env: prepared.as_ref().map_or_else(
-                || account_env(bot.provider, &account),
+                || {
+                    self.deps().setup.account_env(&crate::setup::Account {
+                        id: account.id.clone(),
+                        provider: bot.provider,
+                        label: String::new(),
+                        folder: account.folder.clone(),
+                    })
+                },
                 |prepared| prepared.env.clone(),
             ),
             api_key: prepared
@@ -2813,31 +2867,35 @@ impl Core<'_> {
         let provider = identity.provider;
         let account_id = identity.effective_account_id.clone();
         let estimated = if usage.cost_usd.is_none() {
-            price_usage(provider, &usage.model, usage)
+            price_usage(provider, &usage.model, usage.tokens)
         } else {
             None
         };
         let cost_source = match (usage.cost_usd, &estimated) {
-            (Some(_), _) => "reported",
-            (None, Some(_)) => "estimated",
-            (None, None) => "unknown",
+            (Some(_), _) => CostSource::Reported,
+            (None, Some(_)) => CostSource::Estimated,
+            (None, None) => CostSource::Unknown,
         };
-        let row = UsageRow {
+        let row = UsageInput {
             id: usage
                 .event_id
                 .as_ref()
                 .map(|event| format!("{}:{event}", identity.run_id)),
-            bot_id,
-            account_id: &account_id,
+            bot_id: bot_id.to_owned(),
+            account_id: account_id.clone(),
             provider,
-            model: &usage.model,
-            usage,
-            cost_usd: usage.cost_usd.or(estimated.as_ref().map(|(cost, _)| *cost)),
+            model: usage.model.clone(),
+            input: usage.tokens.input,
+            cached_input: usage.tokens.cached_input,
+            output: usage.tokens.output,
+            reasoning: usage.tokens.reasoning,
+            cost_usd: usage.cost_usd.or(estimated.map(|priced| priced.cost_usd)),
             cost_source,
-            pricing_revision: estimated.map(|(_, revision)| revision),
+            pricing_revision: estimated.map(|priced| priced.pricing_revision.to_owned()),
+            created_at: None,
         };
         let transaction = self.db.unchecked_transaction()?;
-        let inserted = record_usage_row(&transaction, &row)?;
+        let inserted = record_usage(&transaction, &row)?;
         if inserted && let Some(total) = usage.total_cost_usd {
             transaction.execute(
                 "UPDATE sessions SET total_cost_usd = ?1 WHERE bot_id = ?2 AND provider = ?3 AND account_id = ?4 AND execution_context_key = ?5",
@@ -2847,7 +2905,7 @@ impl Core<'_> {
         transaction.commit()?;
         if inserted {
             if let Some(accounts) = &self.deps().accounts {
-                accounts.usage_changed(&account_id);
+                accounts.usage_changed(self.db, &account_id);
             }
             self.send(Event::UsageChanged(UsageChanged {
                 account_id,
@@ -2869,7 +2927,7 @@ impl Core<'_> {
                 state.limit_hit = true;
                 state.reload = true;
             }
-            accounts.observe_limit(&context, limit);
+            accounts.observe_limit(self.db, &context, limit);
             if let (Some(resets_at), true) = (
                 limit.resets_at.as_deref().filter(|at| !at.is_empty()),
                 reached,
@@ -3017,7 +3075,7 @@ impl Core<'_> {
         let limit_hit = self.live(live).limit_hit;
         let retried_limit = match (&context, &accounts) {
             (Some(context), Some(accounts)) => {
-                accounts.complete_turn(context, ok && !stop_requested && !limit_hit)
+                accounts.complete_turn(self.db, context, ok && !stop_requested && !limit_hit)
             }
             _ => false,
         };
@@ -3049,18 +3107,19 @@ impl Core<'_> {
                 self.turn_ended_hook(item, &result);
             }
             if item.task_attempt_id.is_some() {
-                let waits = [
-                    self.live(live).retiring.clone(),
-                    self.live(live)
-                        .steering_done
-                        .as_ref()
-                        .map(|(_, done)| done.clone()),
-                ];
+                let retiring = self.live(live).retiring.clone();
+                let steering = self.live(live).steering_done.as_ref().map(|(_, done)| done.clone());
                 let runner = self.runner.clone();
                 let bot = bot_id.to_owned();
                 self.spawn(async move {
-                    for wait in waits.into_iter().flatten() {
-                        wait.await;
+                    if let Some(steering) = steering {
+                        steering.await;
+                    }
+                    // An unconfirmed process exit keeps task leases held.
+                    if let Some(retiring) = retiring
+                        && retiring.await.is_err()
+                    {
+                        return;
                     }
                     runner.with(|core| {
                         for waiter in core.st.task_waiters.remove(&bot).unwrap_or_default() {
@@ -3090,7 +3149,7 @@ impl Core<'_> {
             let successful = completed_turn.as_ref().is_some_and(|turn| turn.ok)
                 && !stop_requested
                 && !limit_hit;
-            accounts.complete_turn(context, successful);
+            accounts.complete_turn(self.db, context, successful);
         }
         let state = self.lv(live);
         state.session = None;
@@ -3172,13 +3231,16 @@ impl Core<'_> {
         let runner = self.runner.clone();
         let bot = bot_id.to_owned();
         if let (Some(context), Some(accounts)) = (context, accounts) {
-            // Keep the account lease and queued work until the owned process exits.
-            let (done, retiring) = waiter();
+            // Keep the account lease and queued work until the owned process exits. If its exit can't be confirmed,
+            // they stay held: `retiring` never settles.
+            let (done, retiring) = exit_waiter();
             self.lv(live).retiring = Some(retiring);
             session.session.close();
             let exited = session.session.wait_for_exit();
             self.spawn(async move {
-                exited.await;
+                if exited.await.is_err() {
+                    return;
+                }
                 runner.with(|core| {
                     let state = core.lv(live);
                     if state
@@ -3190,7 +3252,7 @@ impl Core<'_> {
                     }
                     state.retiring = None;
                     accounts.release(&context);
-                    let _ = done.send(());
+                    let _ = done.send(Ok(()));
                     if core.live_id(&bot) == Some(live) {
                         core.pump_logged(&bot);
                     }
@@ -3200,17 +3262,20 @@ impl Core<'_> {
             return;
         }
         if self.live(live).execution.is_some() {
-            let (done, retiring) = waiter();
+            let (done, retiring) = exit_waiter();
             self.lv(live).retiring = Some(retiring);
             session.session.close();
             let exited = session.session.wait_for_exit();
             self.spawn(async move {
-                exited.await;
-                runner.with(|core| {
-                    core.lv(live).retiring = None;
-                    core.pump_logged(&bot);
-                });
-                let _ = done.send(());
+                // An unconfirmed exit stays as `retiring`: later pumps wait and a turn awaiting it fails.
+                let exited = exited.await;
+                if exited.is_ok() {
+                    runner.with(|core| {
+                        core.lv(live).retiring = None;
+                        core.pump_logged(&bot);
+                    });
+                }
+                let _ = done.send(exited);
             });
             self.session_closed_hook(bot_id);
             return;
@@ -3317,198 +3382,4 @@ pub fn register(handlers: Handlers, context: &Context, runner: &Runner) -> Handl
                 .inspect(|approval| respond.pump(&approval.bot_id));
             async move { answered }
         })
-}
-
-// ---------------------------------------------------------------------------------------------------------------------
-// Stand-ins for T3.4 (lane C). Each is replaced by its port at merge.
-
-/// `getAccount(db, id)`. T3.4: `accounts_store::get_account`.
-fn account_by_id(db: &Connection, id: &str) -> Result<Account, RpcError> {
-    db.query_row(
-        "SELECT id, folder, kind FROM accounts WHERE id = ?1 AND deleted_at IS NULL",
-        [id],
-        read_account,
-    )
-    .optional()?
-    .ok_or_else(|| RpcError::new(ErrorCode::NotFound, "Account not found"))
-}
-
-/// `accountFor(db, provider)`: the provider's default account. T3.4: `setup::account_for`, which also maps the folder
-/// into the worker boundary's root (`providerAccountFolder`).
-fn account_for(db: &Connection, provider: Provider) -> Result<Account, RpcError> {
-    db.query_row(
-        "SELECT id, folder, kind FROM accounts WHERE provider = ?1 AND deleted_at IS NULL ORDER BY is_default DESC, created_at, id LIMIT 1",
-        [text(&provider)],
-        read_account,
-    )
-    .optional()?
-    .ok_or_else(|| RpcError::new(ErrorCode::NoAccount, format!("No {} account", text(&provider))))
-}
-
-fn read_account(row: &rusqlite::Row) -> rusqlite::Result<Account> {
-    let kind: String = row.get(2)?;
-    Ok(Account {
-        id: row.get(0)?,
-        folder: row.get(1)?,
-        kind: if kind == "api_key" {
-            AccountKind::ApiKey
-        } else {
-            AccountKind::Subscription
-        },
-    })
-}
-
-/// The default account's `accountEnv` and folder, for a CLI started outside a turn (`listModels`).
-pub(crate) fn default_account_env(
-    db: &Connection,
-    provider: Provider,
-) -> Result<(BTreeMap<String, String>, String), RpcError> {
-    let account = account_for(db, provider)?;
-    Ok((account_env(provider, &account), account.folder))
-}
-
-/// `accountEnv(account)`. T3.4: `setup::account_env`, which starts from `cliEnv`'s scrubbed environment.
-fn account_env(provider: Provider, account: &Account) -> BTreeMap<String, String> {
-    let name = if provider == Provider::Claude {
-        "CLAUDE_CONFIG_DIR"
-    } else {
-        "CODEX_HOME"
-    };
-    BTreeMap::from([(name.to_owned(), account.folder.clone())])
-}
-
-/// `priceUsage`: an estimated cost and its pricing revision. T3.4 ports the rates; until then nothing is estimated.
-fn price_usage(_provider: Provider, _model: &str, _usage: &Usage) -> Option<(f64, String)> {
-    None
-}
-
-struct UsageRow<'a> {
-    id: Option<String>,
-    bot_id: &'a str,
-    account_id: &'a str,
-    provider: Provider,
-    model: &'a str,
-    usage: &'a Usage,
-    cost_usd: Option<f64>,
-    cost_source: &'static str,
-    pricing_revision: Option<String>,
-}
-
-/// `recordUsage` from `usage.ts`; the caller owns the transaction. A repeated provider event id is harmless, a
-/// conflicting one an error. T3.4: `usage::record_usage`.
-fn record_usage_row(db: &Connection, row: &UsageRow) -> Result<bool, RpcError> {
-    let bad = |message: &str| Err(RpcError::new(ErrorCode::BadParams, message));
-    let safe =
-        |count: f64| count.fract() == 0.0 && (0.0..=9_007_199_254_740_991.0).contains(&count);
-    let tokens = &row.usage.tokens;
-    if ![
-        tokens.input,
-        tokens.cached_input,
-        tokens.output,
-        tokens.reasoning,
-    ]
-    .into_iter()
-    .all(safe)
-    {
-        return bad("Usage token counts must be nonnegative safe integers");
-    }
-    if !safe(tokens.input + tokens.cached_input + tokens.output) {
-        return bad("Usage token total is too large");
-    }
-    if row
-        .cost_usd
-        .is_some_and(|cost| !cost.is_finite() || cost < 0.0)
-    {
-        return bad("Usage cost must be a nonnegative finite amount");
-    }
-    if row.cost_usd.is_none() != (row.cost_source == "unknown") {
-        return bad("Usage cost provenance must match its amount");
-    }
-    if js::trim(row.bot_id).is_empty()
-        || js::trim(row.account_id).is_empty()
-        || js::trim(row.model).is_empty()
-        || row.id.as_deref() == Some("")
-    {
-        return bad("Usage identity is required");
-    }
-    let account: Option<(String, String)> = db
-        .query_row(
-            "SELECT provider, kind FROM accounts WHERE id = ?1",
-            [row.account_id],
-            |found| Ok((found.get(0)?, found.get(1)?)),
-        )
-        .optional()?;
-    let Some((_, account_kind)) = account.filter(|(provider, kind)| {
-        *provider == text(&row.provider) && (kind == "subscription" || kind == "api_key")
-    }) else {
-        return bad("Usage must identify its actual provider account");
-    };
-    let id = row.id.clone().unwrap_or_else(new_id);
-    let counts = [
-        tokens.input,
-        tokens.cached_input,
-        tokens.output,
-        tokens.reasoning,
-    ]
-    .map(|count| count as i64);
-    let wanted = (
-        row.bot_id.to_owned(),
-        row.account_id.to_owned(),
-        text(&row.provider),
-        row.model.to_owned(),
-        counts,
-        row.cost_usd,
-        Some(row.cost_source.to_owned()),
-        account_kind.clone(),
-        row.pricing_revision.clone(),
-    );
-    let existing = db
-        .query_row(
-            "SELECT bot_id, account_id, provider, model, input, cached_input, output, reasoning, cost_usd, cost_source, account_kind, pricing_revision FROM usage WHERE id = ?1",
-            [&id],
-            |found| {
-                Ok((
-                    found.get::<_, String>(0)?,
-                    found.get::<_, String>(1)?,
-                    found.get::<_, String>(2)?,
-                    found.get::<_, String>(3)?,
-                    [found.get::<_, i64>(4)?, found.get(5)?, found.get(6)?, found.get(7)?],
-                    found.get::<_, Option<f64>>(8)?,
-                    found.get::<_, Option<String>>(9)?,
-                    found.get::<_, String>(10)?,
-                    found.get::<_, Option<String>>(11)?,
-                ))
-            },
-        )
-        .optional()?;
-    if let Some(existing) = existing {
-        if existing != wanted {
-            return Err(RpcError::new(
-                ErrorCode::BadState,
-                "Conflicting usage event identity",
-            ));
-        }
-        return Ok(false);
-    }
-    db.execute(
-        "INSERT INTO usage (id, bot_id, account_id, provider, model, input, cached_input, output, reasoning, cost_usd, cost_source, created_at, account_kind, pricing_revision)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
-        params![
-            id,
-            row.bot_id,
-            row.account_id,
-            text(&row.provider),
-            row.model,
-            counts[0],
-            counts[1],
-            counts[2],
-            counts[3],
-            row.cost_usd,
-            row.cost_source,
-            now_iso(),
-            account_kind,
-            row.pricing_revision,
-        ],
-    )?;
-    Ok(true)
 }

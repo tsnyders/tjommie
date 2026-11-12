@@ -27,6 +27,7 @@ use crate::accounts_store::{
 use crate::bots::list_stored_bots;
 use crate::context::{BotView, Context, Db};
 use crate::ids::new_id;
+use crate::runner::Runner;
 use crate::server::{Broadcaster, Handlers, RequestContext, RpcError};
 use crate::setup::Setup;
 use crate::usage::query_usage;
@@ -59,9 +60,23 @@ struct Feed {
     events: Broadcaster,
     bot_view: Arc<dyn BotView>,
     provider_setup: Arc<Mutex<Vec<ProviderSetup>>>,
+    /// The runner, once built: it needs the accounts, and the accounts' feed needs it (`runner.setupChanged()`, the
+    /// stop at a spending cap).
+    runner: Arc<Mutex<Option<Runner>>>,
 }
 
 impl Feed {
+    fn runner(&self) -> Option<Runner> {
+        lock(&self.runner).clone()
+    }
+
+    /// `runner.setupChanged()`. Called without the database or any runner lock.
+    fn setup_changed(&self) {
+        if let Some(runner) = self.runner() {
+            runner.setup_changed();
+        }
+    }
+
     fn bots_updated(&self) {
         let bots = {
             let db = lock(&self.db);
@@ -84,7 +99,7 @@ impl Feed {
         *lock(&self.provider_setup) = setup.clone();
         self.events.send(Event::AccountsChanged(current));
         self.events.send(Event::SetupChanged(setup));
-        // T3.5: runner.setupChanged().
+        self.setup_changed();
         self.bots_updated();
     }
 
@@ -101,7 +116,7 @@ impl Feed {
         *lock(&self.provider_setup) = setup.clone();
         self.events.send(Event::SetupChanged(setup.clone()));
         self.bots_updated();
-        // T3.5: runner.setupChanged().
+        self.setup_changed();
         Ok(setup)
     }
 
@@ -177,8 +192,23 @@ impl Feed {
             )
         };
         for bot_id in bots {
-            // T3.5: at 100 percent the runner stops the bot, and notifies "Check this bot after its spending cap" if the
-            // provider does not confirm Stop.
+            // At 100 percent the runner stops the bot, and says so if the provider doesn't confirm Stop.
+            if threshold == 100
+                && let Some(runner) = self.runner()
+            {
+                let stopping = runner.stop(&bot_id);
+                let (events, bot_id) = (self.events.clone(), bot_id.clone());
+                tokio::spawn(async move {
+                    if stopping.await.is_err() {
+                        events.send(Event::Notify(Notify::Limit {
+                            bot_id,
+                            title: "Check this bot after its spending cap".into(),
+                            body: "The provider did not confirm Stop. Check the chat before starting more work."
+                                .into(),
+                        }));
+                    }
+                });
+            }
             self.events.send(Event::Notify(Notify::Limit {
                 bot_id,
                 title: title.clone(),
@@ -235,6 +265,7 @@ impl Accounts {
             events: options.events,
             bot_view: options.bot_view,
             provider_setup: Arc::default(),
+            runner: Arc::default(),
         };
         let (changed, ended, cap) = (feed.clone(), feed.clone(), feed.clone());
         let runtime = AccountRuntime::new(AccountRuntimeOptions {
@@ -270,6 +301,11 @@ impl Accounts {
             changing: Arc::default(),
             feed,
         }
+    }
+
+    /// Gives the feed the runner (built after the accounts it uses).
+    pub fn attach_runner(&self, runner: Runner) {
+        *lock(&self.feed.runner) = Some(runner);
     }
 
     /// The default accounts' latest setup checks.

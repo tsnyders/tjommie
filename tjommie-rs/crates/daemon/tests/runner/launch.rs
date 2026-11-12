@@ -1,113 +1,38 @@
-//! The launch seam: `cliSessionFactory`, and `launchCli`'s choice between the Windows worker boundary and a direct
-//! launch (`cli.ts:153-154`). Lane B's `WorkerBoundary` implements [`WorkerIsolation`]; these are test doubles.
+//! `cliSessionFactory`: it finds the CLI through its host (`find_cli`, TypeScript's `resolveCli`) and starts sessions that
+//! launch through that host. Whether a launch goes through the Windows worker boundary is the host's choice (lane C's
+//! `SystemCli::with_worker`, tested in `tests/cli_worker.rs`), so a double stands in for it here.
 
 use std::collections::BTreeMap;
 
 use super::*;
 use daemon::cli::{BoxFuture as CliFuture, CliChild, CliCommand, CliHost, LaunchOptions};
-use daemon::runner::{BoundaryHost, WorkerIsolation, cli_session_factory};
+use daemon::runner::cli_session_factory;
 use protocol::model::{Autonomy, Provider};
 
-/// Records each launch under `name` and refuses it, so a test sees which side was asked.
-struct Recorder {
-    name: &'static str,
+/// Finds only `installed` CLIs, records each launch and refuses it, so nothing reaches a real Claude or Codex.
+struct Host {
+    installed: Vec<Provider>,
     launches: Recorded<String>,
 }
 
-impl Recorder {
-    fn refuse(&self, cmd: &CliCommand) -> std::io::Result<CliChild> {
-        self.launches
-            .lock()
-            .unwrap()
-            .push(format!("{}:{}", self.name, cmd.file));
-        Err(std::io::Error::other(format!(
-            "{} launch refused",
-            self.name
-        )))
-    }
-}
-
-impl CliHost for Recorder {
+impl CliHost for Host {
     fn launch<'a>(
         &'a self,
         cmd: &'a CliCommand,
         _args: Vec<String>,
         _options: LaunchOptions,
     ) -> CliFuture<'a, std::io::Result<CliChild>> {
-        Box::pin(async move { self.refuse(cmd) })
+        Box::pin(async move {
+            self.launches.lock().unwrap().push(cmd.file.clone());
+            Err(std::io::Error::other("launch refused"))
+        })
     }
-}
 
-struct Boundary {
-    required: bool,
-    recorder: Recorder,
-}
-
-impl WorkerIsolation for Boundary {
-    fn required(&self) -> bool {
-        self.required
-    }
-}
-
-impl CliHost for Boundary {
-    fn launch<'a>(
-        &'a self,
-        cmd: &'a CliCommand,
-        _args: Vec<String>,
-        _options: LaunchOptions,
-    ) -> CliFuture<'a, std::io::Result<CliChild>> {
-        Box::pin(async move { self.recorder.refuse(cmd) })
-    }
-}
-
-fn host(launches: &Recorded<String>, boundary: Option<bool>) -> BoundaryHost {
-    let direct = Arc::new(Recorder {
-        name: "direct",
-        launches: launches.clone(),
-    });
-    let boundary = boundary.map(|required| {
-        Arc::new(Boundary {
-            required,
-            recorder: Recorder {
-                name: "boundary",
-                launches: launches.clone(),
-            },
-        }) as Arc<dyn WorkerIsolation>
-    });
-    BoundaryHost { direct, boundary }
-}
-
-fn launch_options() -> LaunchOptions {
-    LaunchOptions {
-        cwd: ".".into(),
-        env: BTreeMap::new(),
-        claude_api_key: None,
-    }
-}
-
-#[tokio::test]
-async fn launches_through_the_worker_boundary_only_when_isolation_requires_it() {
-    let cmd = CliCommand {
-        file: "claude.exe".into(),
-        args: Vec::new(),
-    };
-    for (boundary, expected) in [
-        (None, "direct"),
-        (Some(false), "direct"),
-        (Some(true), "boundary"),
-    ] {
-        let launches: Recorded<String> = Arc::default();
-        let error = host(&launches, boundary)
-            .launch(&cmd, Vec::new(), launch_options())
-            .await
-            .err()
-            .unwrap();
-        assert_eq!(error.to_string(), format!("{expected} launch refused"));
-        assert_eq!(
-            *recorded(&launches),
-            [format!("{expected}:claude.exe")],
-            "{boundary:?}"
-        );
+    fn find_cli(&self, name: Provider) -> Option<CliCommand> {
+        let file = if name == Provider::Claude { "claude.exe" } else { "codex.exe" };
+        self.installed
+            .contains(&name)
+            .then(|| CliCommand { file: file.into(), args: Vec::new(), codex_package: None })
     }
 }
 
@@ -130,43 +55,30 @@ fn start_options(cwd: &str) -> StartOptions {
 }
 
 #[tokio::test]
-async fn reports_a_missing_cli_as_not_installed_and_starts_installed_ones_through_the_host() {
+async fn reports_a_missing_cli_as_not_installed() {
+    let h = harness();
+    let claude = h.bot(json!({}));
+    let codex = h.bot(json!({ "provider": "codex", "model": "gpt-5.6-sol" }));
+    let launches: Recorded<String> = Arc::default();
+    let factory = cli_session_factory(Arc::new(Host { installed: Vec::new(), launches: launches.clone() }));
+    assert_eq!(factory(&claude, start_options(".")).err().unwrap(), "Claude Code is not installed");
+    assert_eq!(factory(&codex, start_options(".")).err().unwrap(), "Codex is not installed");
+    assert_eq!(*recorded(&launches), Vec::<String>::new());
+}
+
+#[tokio::test]
+async fn starts_each_providers_session_through_its_host() {
     let h = harness();
     let claude = h.bot(json!({}));
     let codex = h.bot(json!({ "provider": "codex", "model": "gpt-5.6-sol" }));
     let cwd = h.path("cwd");
     std::fs::create_dir(&cwd).unwrap();
     let launches: Recorded<String> = Arc::default();
-    let missing = cli_session_factory(Arc::new(host(&launches, Some(true))), Arc::new(|_| None));
-    assert_eq!(
-        missing(&claude, start_options(&cwd)).err().unwrap(),
-        "Claude Code is not installed"
-    );
-    assert_eq!(
-        missing(&codex, start_options(&cwd)).err().unwrap(),
-        "Codex is not installed"
-    );
-
-    let resolve = |provider: Provider| {
-        Some(CliCommand {
-            file: format!(
-                "{}.exe",
-                if provider == Provider::Claude {
-                    "claude"
-                } else {
-                    "codex"
-                }
-            ),
-            args: Vec::new(),
-        })
-    };
-    let factory = cli_session_factory(Arc::new(host(&launches, Some(true))), Arc::new(resolve));
+    let host = Host { installed: vec![Provider::Claude, Provider::Codex], launches: launches.clone() };
+    let factory = cli_session_factory(Arc::new(host));
     for bot in [&claude, &codex] {
         let session = factory(bot, start_options(&cwd)).unwrap();
         assert!(session.start().await.is_err());
     }
-    assert_eq!(
-        *recorded(&launches),
-        ["boundary:claude.exe", "boundary:codex.exe"]
-    );
+    assert_eq!(*recorded(&launches), ["claude.exe", "codex.exe"]);
 }

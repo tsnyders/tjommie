@@ -8,7 +8,12 @@
 //! fires only after the worker's job is confirmed stopped. Native calls go through `WorkerNative`, so tests can
 //! stand in for Windows the way the TypeScript tests stand in for the helper process.
 
-use crate::cli::{BoxFuture, ChildExit, CliChild, CliCommand, CliExit, CliHost, LaunchOptions};
+use crate::cli::{
+    BoxFuture, ChildExit, CliChild, CliCommand, CliExit, CliHost, Env, LaunchOptions, Retirement,
+    WorkerPurpose, WorkerTermination,
+};
+use futures_util::FutureExt;
+
 use crate::win::cred;
 use crate::win::logon::{self, WorkerProcess};
 use crate::win::policy_observer::WORKER_POLICY_OBSERVER;
@@ -667,6 +672,19 @@ impl WorkerBoundary {
             }
         });
         let (stop, waiting) = (running.retire.clone(), exit.clone());
+        // The exit fires only after the job's stop is confirmed (or fails), so it is the retirement proof: an
+        // unconfirmed stop is an error the providers report as `WorkerTermination`.
+        let retirement: Retirement = {
+            let exit = exit.clone();
+            async move {
+                match exit.wait().await {
+                    CliExit::Exited { .. } => Ok(()),
+                    CliExit::Failed(message) => Err(message),
+                }
+            }
+            .boxed()
+            .shared()
+        };
         Ok(Some(CliChild {
             pid: Some(pid),
             stdin: running.stdin,
@@ -683,6 +701,7 @@ impl WorkerBoundary {
                     }
                 })
             }),
+            retirement: Some(retirement),
         }))
     }
 
@@ -872,6 +891,69 @@ impl CliHost for WorkerBoundary {
             self.spawn(&cmd.file, &all, Path::new(&options.cwd), &env)
                 .await
                 .map_err(std::io::Error::other)
+        })
+    }
+}
+
+/// This boundary as `SystemCli` routes through it (`cli::WorkerBoundary`): the gate, the identities' SIDs, the roots and
+/// grants, and the launch. `spawn` calls this boundary's own `spawn`, not `CliHost::launch`: `SystemCli` has already
+/// scrubbed the environment and added the Claude key, and doing either twice would change the CLI's environment.
+impl crate::cli::WorkerBoundary for WorkerBoundary {
+    fn required(&self) -> bool {
+        WorkerBoundary::required(self)
+    }
+
+    fn purpose(&self) -> WorkerPurpose {
+        match WorkerBoundary::purpose(self) {
+            Purpose::Provider => WorkerPurpose::Provider,
+            Purpose::Review => WorkerPurpose::Review,
+        }
+    }
+
+    fn sids(&self) -> Option<(String, String)> {
+        self.configuration()
+            .ok()
+            .map(|config| (config.worker_sid, config.peer_sid))
+    }
+
+    // ponytail: an unreadable configuration gives an empty root, and every launch then fails as unavailable. These are
+    // only asked of a boundary whose `required()` is true, whose launch re-reads the configuration anyway.
+    fn worker_root(&self) -> PathBuf {
+        self.configuration()
+            .map(|config| config.worker_root)
+            .unwrap_or_default()
+    }
+
+    fn runtime_root(&self) -> PathBuf {
+        self.configuration()
+            .map(|config| config.runtime_root)
+            .unwrap_or_default()
+    }
+
+    fn grant_directory<'a>(&'a self, folder: &'a Path) -> BoxFuture<'a, std::io::Result<()>> {
+        Box::pin(async move {
+            WorkerBoundary::grant_directory(self, folder)
+                .await
+                .map_err(std::io::Error::other)
+        })
+    }
+
+    fn spawn<'a>(
+        &'a self,
+        file: &'a str,
+        args: Vec<String>,
+        cwd: &'a str,
+        env: Env,
+    ) -> BoxFuture<'a, std::io::Result<CliChild>> {
+        Box::pin(async move {
+            let env: Vec<(String, String)> = env.into_iter().collect();
+            WorkerBoundary::spawn(self, file, &args, Path::new(cwd), &env)
+                .await
+                .map_err(|error| match error {
+                    // `SystemCli` and the providers tell this one apart: the launch may have left a running tree.
+                    BoundaryError::Termination => std::io::Error::other(WorkerTermination),
+                    other => std::io::Error::other(other),
+                })
         })
     }
 }

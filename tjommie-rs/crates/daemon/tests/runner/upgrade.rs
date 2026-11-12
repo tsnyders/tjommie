@@ -79,6 +79,7 @@ async fn upgrades_and_recovers_a_version_1_chat_before_resuming_its_queued_work(
         db.clone(),
         Arc::new(|_| Ok(())),
         create_session,
+        common::no_cli_setup(),
     ));
     let lock = || db.lock().unwrap();
     let strings = |sql: &str| -> Vec<String> {

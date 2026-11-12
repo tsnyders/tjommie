@@ -1036,7 +1036,12 @@ fn codex_runner(
         })),
         ..Default::default()
     };
-    let base = daemon::runner::RunnerDeps::new(Arc::clone(&db), Arc::new(|_| Ok(())), factory);
+    let base = daemon::runner::RunnerDeps::new(
+        Arc::clone(&db),
+        Arc::new(|_| Ok(())),
+        factory,
+        common::no_cli_setup(),
+    );
     let runner = daemon::runner::Runner::new(daemon::runner::RunnerDeps { hooks, ..base });
     (runner, db, bot.id, ended, starts, root)
 }
