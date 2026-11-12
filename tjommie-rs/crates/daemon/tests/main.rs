@@ -188,6 +188,18 @@ async fn names_the_database_file_when_it_cannot_be_opened() {
     assert_eq!(daemon.stdout(), "");
 }
 
+/// Only the argument check: `provision` itself creates Windows accounts, so no test runs it.
+#[tokio::test]
+async fn refuses_arguments_to_provision_before_touching_anything() {
+    let root = TempRoot::new();
+    let daemon = launch(&["provision", "--root", "elsewhere"], root, &[]);
+    exits_plainly(
+        daemon,
+        "Usage: tjommie-daemon provision (from an elevated window, as the Tjommie owner)",
+    )
+    .await;
+}
+
 #[tokio::test]
 async fn requires_an_explicit_mode() {
     exits_plainly(launch(&[], TempRoot::new(), &[]), MISSING_MODE).await;
