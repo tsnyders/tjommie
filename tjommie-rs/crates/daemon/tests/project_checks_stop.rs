@@ -38,6 +38,7 @@ fn refusing_child(pid: u32) -> RefusingChild {
             stderr: Box::new(stderr),
             exit: ChildExit::new(),
             kill_tree,
+            retirement: None,
         },
         stdin: BufReader::new(stdin_test),
         _stdout: stdout_test,

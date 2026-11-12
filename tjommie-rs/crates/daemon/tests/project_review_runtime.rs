@@ -107,6 +107,7 @@ fn stub_child(state: Arc<StubState>, args: Vec<String>, cwd: PathBuf) -> CliChil
         stderr: Box::new(stderr_runner),
         exit,
         kill_tree,
+        retirement: None,
     }
 }
 
@@ -362,7 +363,11 @@ impl Harness {
     }
 
     fn cli_seam(&self) -> CliSeam {
-        let command = CliCommand { file: self.cli.to_string_lossy().into_owned(), args: vec![] };
+        let command = CliCommand {
+            file: self.cli.to_string_lossy().into_owned(),
+            args: vec![],
+            codex_package: None,
+        };
         Arc::new(move || Some(command.clone()))
     }
 
@@ -786,7 +791,11 @@ mod worker {
 
     /// The review runs through the worker: its CLI is the one in the runtime root, and its policy is observed for real.
     pub fn options(h: &Harness, worker: &Worker) -> ProjectReviewOptions {
-        let command = CliCommand { file: worker.cli.to_string_lossy().into_owned(), args: vec![] };
+        let command = CliCommand {
+            file: worker.cli.to_string_lossy().into_owned(),
+            args: vec![],
+            codex_package: None,
+        };
         ProjectReviewOptions {
             worker: Some(worker.boundary.clone()),
             cli: Some(Arc::new(move || Some(command.clone()))),
