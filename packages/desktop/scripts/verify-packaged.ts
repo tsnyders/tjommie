@@ -1,16 +1,17 @@
 // Mandatory Windows packaging gate: npm run package, then npm run test:packaged.
-// This verifies the existing artifact; it never builds it or runs the other real CLI suites.
+// This verifies the existing artifact (the app and its bundled Rust daemon); it never builds it or runs the other real CLI suites.
 // Missing artifacts, missing test results, zero tests and skipped tests all fail the gate.
 // Missing provenance or changed source/installer/payload bytes require a fresh `npm run package`.
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { packagedExecutable, verifyPackagedProvenance } from "./packaged-provenance.ts";
+import { packagedDaemon, packagedExecutable, verifyPackagedProvenance } from "./packaged-provenance.ts";
 
 const repo = resolve(import.meta.dirname, "..", "..", "..");
 const testFile = join(repo, "packages", "desktop", "src", "packaged.real.test.ts");
 const exe = join(repo, packagedExecutable);
+const daemonExe = join(repo, packagedDaemon);
 
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -36,6 +37,7 @@ function verifyReport(value: unknown): void {
 async function main(): Promise<void> {
   if (process.argv.length !== 2) throw new Error("test:packaged accepts no filters or overrides; run npm run test:packaged.");
   if (!existsSync(exe)) throw new Error("Packaged executable missing. Run npm run package before npm run test:packaged.");
+  if (!existsSync(daemonExe)) throw new Error("Packaged Rust daemon missing. Build it (cargo build --release --locked -p daemon --bin tjommie-daemon, inside tjommie-rs), then run npm run package.");
   if (process.platform !== "win32") throw new Error("Packaged verification requires Windows.");
   verifyPackagedProvenance(repo);
 

@@ -3,7 +3,7 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { afterEach, expect, it } from "vitest";
-import { buildInputHash, packagedExecutable, provenanceFile, verifyPackagedProvenance, writePackagedProvenance } from "../scripts/packaged-provenance.ts";
+import { buildInputHash, packagedDaemon, packagedExecutable, provenanceFile, verifyPackagedProvenance, writePackagedProvenance } from "../scripts/packaged-provenance.ts";
 
 const roots: string[] = [];
 function put(repo: string, path: string, content = "original"): void {
@@ -23,7 +23,7 @@ function fixture(): string {
   put(repo, packagedExecutable, "executable bytes");
   put(repo, "dist-desktop/installer/Tjommie-Setup-0.1.0.exe", "installer bytes");
   put(repo, "dist-desktop/installer/win-unpacked/resources/app.asar", "desktop payload");
-  put(repo, "dist-desktop/installer/win-unpacked/resources/daemon/main.mjs", "daemon payload");
+  put(repo, packagedDaemon, "Rust daemon bytes");
   put(repo, "dist-desktop/installer/win-unpacked/resources/ui/index.html", "UI payload");
   return repo;
 }
@@ -48,7 +48,7 @@ it("hashes worktree content consistently before and after staging an untracked s
   expect(buildInputHash(repo)).toBe(withUntracked);
 });
 
-it.each(["package.json", "package-lock.json", "tsconfig.json", "vitest.config.ts", "packages/desktop/src/main.ts", "packages/desktop/assets/icon.png", "packages/desktop/scripts/package.ts", "packages/ui/next.config.ts", "packages/ui/app/page.tsx"])("detects changed or added build input %s", (path) => {
+it.each(["package.json", "package-lock.json", "tsconfig.json", "vitest.config.ts", "packages/desktop/src/main.ts", "packages/desktop/assets/icon.png", "packages/desktop/scripts/package.ts", "packages/ui/next.config.ts", "packages/ui/app/page.tsx", "tjommie-rs/Cargo.lock", "tjommie-rs/crates/daemon/src/main.rs", "tjommie-rs/crates/daemon/tests/fixtures/fixture.db"])("detects changed or added build input %s", (path) => {
   const repo = fixture();
   const original = buildInputHash(repo);
   put(repo, path, "changed");
@@ -68,7 +68,7 @@ it("detects deletions and renames even when the file content is unchanged", () =
 it("ignores documentation and generated files, including accidentally tracked generated output", () => {
   const repo = fixture();
   const original = buildInputHash(repo);
-  for (const path of ["README.md", "docs/plan.md", "packages/ui/AGENTS.md", "packages/ui/docs/readme.md", "packages/ui/out/index.html", "packages/ui/.next/build.js", "packages/ui/next-env.d.ts", "packages/ui/tsconfig.tsbuildinfo", "packages/desktop/node_modules/dependency.js"]) put(repo, path, "generated or docs");
+  for (const path of ["README.md", "docs/plan.md", "packages/ui/AGENTS.md", "packages/ui/docs/readme.md", "packages/ui/out/index.html", "packages/ui/.next/build.js", "packages/ui/next-env.d.ts", "packages/ui/tsconfig.tsbuildinfo", "packages/desktop/node_modules/dependency.js", "tjommie-rs/SPEC.md", "tjommie-rs/crates/daemon/notes.md", "tjommie-rs/target/release/tjommie-daemon.exe", "tjommie-rs/target/debug/deps/daemon.d"]) put(repo, path, "generated or docs");
   git(repo, ["add", "--force", "packages/ui/out/index.html"]);
   expect(buildInputHash(repo)).toBe(original);
 });
@@ -96,7 +96,7 @@ it("rejects an older build when current worktree source changes", () => {
   expect(() => verifyPackagedProvenance(repo)).toThrow("build is stale");
 });
 
-it.each([packagedExecutable, "dist-desktop/installer/Tjommie-Setup-0.1.0.exe", "dist-desktop/installer/win-unpacked/resources/app.asar", "dist-desktop/installer/win-unpacked/resources/daemon/main.mjs", "dist-desktop/installer/win-unpacked/resources/ui/index.html"])("rejects a replaced packaged artifact %s", (path) => {
+it.each([packagedExecutable, "dist-desktop/installer/Tjommie-Setup-0.1.0.exe", "dist-desktop/installer/win-unpacked/resources/app.asar", packagedDaemon, "dist-desktop/installer/win-unpacked/resources/ui/index.html"])("rejects a replaced packaged artifact %s", (path) => {
   const repo = fixture();
   writePackagedProvenance(repo, buildInputHash(repo));
   put(repo, path, "different artifact bytes");
@@ -111,6 +111,26 @@ it("rejects a missing packaged executable or NSIS installer", () => {
   put(repo, packagedExecutable, "executable bytes");
   rmSync(join(repo, "dist-desktop/installer/Tjommie-Setup-0.1.0.exe"));
   expect(() => verifyPackagedProvenance(repo)).toThrow("NSIS installer is required");
+});
+
+it("rejects a package without its Rust daemon, whether it is missing at stamping or deleted afterwards", () => {
+  const repo = fixture();
+  rmSync(join(repo, packagedDaemon));
+  expect(() => writePackagedProvenance(repo, buildInputHash(repo))).toThrow("daemon is missing");
+  expect(existsSync(join(repo, provenanceFile))).toBe(false);
+  put(repo, packagedDaemon, "Rust daemon bytes");
+  writePackagedProvenance(repo, buildInputHash(repo));
+  rmSync(join(repo, packagedDaemon));
+  expect(() => verifyPackagedProvenance(repo)).toThrow("daemon is missing");
+});
+
+it("rejects a package built before the Rust daemon's source changed", () => {
+  const repo = fixture();
+  put(repo, "tjommie-rs/crates/daemon/src/main.rs", "fn main() {}");
+  git(repo, ["add", "tjommie-rs"]);
+  writePackagedProvenance(repo, buildInputHash(repo));
+  put(repo, "tjommie-rs/crates/daemon/src/main.rs", "fn main() { /* changed after packaging */ }");
+  expect(() => verifyPackagedProvenance(repo)).toThrow("build is stale");
 });
 
 it("rejects added or deleted payload files", () => {

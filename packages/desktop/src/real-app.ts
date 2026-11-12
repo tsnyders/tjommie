@@ -8,10 +8,13 @@ import { connect, type Client } from "@tjommie/client";
 import type { Bot, BotInput } from "@tjommie/protocol";
 import { _electron, type ElectronApplication, type Page } from "playwright-core";
 import { realAccountsDir, tempRoot } from "../../daemon/src/testing.ts";
+import { daemonExecutable } from "./daemon-process.ts";
 
 type Bridge = { tjommie: { connection(): Promise<{ ok: true; port: number; token: string } | { ok: false; error: string }> } };
 type OwnedProcess = { image: string; path: string; started: string };
-type Ownership = { executablePath: string; startedAt: number; ownedPids: Map<number, OwnedProcess> };
+// `executablePath` is the app's own executable. `daemonPath` is the executable of the process listening on the daemon's
+// port: the app's own for the Node daemon, else the Rust daemon's exe.
+type Ownership = { executablePath: string; daemonPath: string; startedAt: number; ownedPids: Map<number, OwnedProcess> };
 
 export type RealApp = { electronApp: ElectronApplication; page: Page; client: Client; root: string; userData: string };
 
@@ -23,8 +26,12 @@ const ownerships = new WeakMap<RealApp, Ownership>();
 export async function launchRealApp(executablePath?: string, options: { isolatedAccounts?: boolean } = {}): Promise<RealApp> {
   // The same lifecycle and screen suites can verify the installed app after NSIS installation.
   const selectedExecutable = executablePath ?? process.env.TJOMMIE_TEST_EXECUTABLE;
+  const appExecutable = resolve(selectedExecutable ?? (createRequire(import.meta.url)("electron") as string));
   const ownership: Ownership = {
-    executablePath: resolve(selectedExecutable ?? (createRequire(import.meta.url)("electron") as string)),
+    executablePath: appExecutable,
+    // A packaged or installed app runs the Rust daemon bundled beside it. From source, TJOMMIE_DAEMON_EXE (which the app
+    // inherits from this environment) selects the Rust daemon, else the Node daemon runs inside Electron.
+    daemonPath: daemonExecutable(appExecutable, selectedExecutable !== undefined, process.env),
     startedAt: Date.now(),
     ownedPids: new Map(),
   };
@@ -52,7 +59,7 @@ export async function launchRealApp(executablePath?: string, options: { isolated
     const page = await electronApp.firstWindow();
     await page.getByRole("heading", { name: "Set up Tjommie" }).waitFor({ timeout: 120_000 });
     const { port, token } = await daemonConnection(page);
-    rememberProcess(ownership, listeningPid(port));
+    rememberProcess(ownership, listeningPid(port), ownership.daemonPath);
     client = await connect(port, token);
     const app = { electronApp, page, client, root, userData };
     ownerships.set(app, ownership);
@@ -93,10 +100,11 @@ export async function quitApp(app: RealApp): Promise<void> {
   for (const pid of [...ownership.ownedPids.keys()]) await waitForOwnedProcessExit(ownership, pid);
 }
 
-// Record a replacement daemon after a reconnect. The pid must have this launch's executable and start time.
+// Record a replacement daemon after a reconnect. The pid must have the daemon's executable and this launch's start time.
 export function rememberDaemon(app: RealApp, port: number): number {
   const pid = listeningPid(port);
-  rememberProcess(ownershipFor(app), pid);
+  const ownership = ownershipFor(app);
+  rememberProcess(ownership, pid, ownership.daemonPath);
   return pid;
 }
 
@@ -195,12 +203,13 @@ function processIdentity(pid: number): OwnedProcess | undefined {
   }
 }
 
-function rememberProcess(ownership: Ownership, pid: number): void {
+// The process must run `executablePath` (the app's by default), started after this launch began.
+function rememberProcess(ownership: Ownership, pid: number, executablePath = ownership.executablePath): void {
   const identity = processIdentity(pid);
   const startedAt = identity ? Date.parse(identity.started) : NaN;
-  const executableName = basename(ownership.executablePath, extname(ownership.executablePath)).toLowerCase();
+  const executableName = basename(executablePath, extname(executablePath)).toLowerCase();
   const imageAllowed = identity !== undefined && ["electron", "node", executableName].includes(identity.image.toLowerCase());
-  const pathMatches = identity !== undefined && resolve(identity.path).toLowerCase() === ownership.executablePath.toLowerCase();
+  const pathMatches = identity !== undefined && resolve(identity.path).toLowerCase() === executablePath.toLowerCase();
   const startedAfterTest = Number.isFinite(startedAt) && startedAt >= ownership.startedAt;
   if (!identity || !imageAllowed || !pathMatches || !startedAfterTest) {
     throw new Error(`The test couldn't verify ownership of its process (found=${identity !== undefined}, image=${identity?.image ?? "none"}, pathMatches=${pathMatches}, startedAfterTest=${startedAfterTest}).`);

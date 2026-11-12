@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- The background service that runs your bots was rebuilt; bots, chats, settings and logins carry over, and a backup of your data is made the first time it starts.
+
 ## 0.4.2 — 2026-11-04
 
 - Markdown tables keep readable columns and scroll sideways in chats and file previews; short files have simpler search controls.
