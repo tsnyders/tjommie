@@ -23,6 +23,9 @@ use crate::queue::{WorkItem, get_work_item};
 use crate::runner::{TurnOutcome, TurnResult};
 use crate::server::{Handlers, RpcError};
 
+/// The daemon's composed `turnEnded`: ends one work item with a result, telling the runner's hooks, the scheduler and the team.
+pub type TurnEnded = Arc<dyn Fn(&WorkItem, &TurnResult) + Send + Sync>;
+
 /// Finished runs kept per routine. Open runs (queued or running) are always kept.
 pub const RUNS_KEPT: i64 = 20;
 const DAY_MS: i64 = 86_400_000;
@@ -516,7 +519,7 @@ pub fn has_open_run(db: &Connection, routine_id: &str) -> Result<bool, RpcError>
 pub fn register(
     handlers: Handlers,
     context: &Context,
-    turn_ended: Arc<dyn Fn(&WorkItem, &TurnResult) + Send + Sync>,
+    turn_ended: TurnEnded,
 ) -> Handlers {
     let (list, create, update, delete, runs) = (
         context.clone(),

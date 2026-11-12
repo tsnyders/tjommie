@@ -48,7 +48,7 @@ pub const GRACE_MS: i64 = 120_000;
 
 /// `duration`: "1 hour", "2 hours", "1 minute" or "90 minutes".
 pub fn duration(minutes: u32) -> String {
-    if minutes % 60 == 0 {
+    if minutes.is_multiple_of(60) {
         let hours = minutes / 60;
         format!("{hours} {}", if minutes == 60 { "hour" } else { "hours" })
     } else {

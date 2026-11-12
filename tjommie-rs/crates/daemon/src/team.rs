@@ -52,6 +52,7 @@ use crate::server::{Handlers, RpcError};
 
 pub use files::file_inside;
 use files::{first_line, snapshot_folder, sweep_stale};
+pub use tools::{CompanionArg, RoutineProposal};
 
 /// Room messages given to a bot that is mentioned in a room.
 const ROOM_CONTEXT: u32 = 20;

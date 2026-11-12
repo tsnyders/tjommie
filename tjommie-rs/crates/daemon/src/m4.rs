@@ -32,7 +32,7 @@ use crate::mcp::{McpTokens, McpTool, mcp_route};
 use crate::providers::McpServer;
 use crate::queue::WorkItem;
 use crate::rooms;
-use crate::routines::{self, now_ms};
+use crate::routines::{self, TurnEnded, now_ms};
 use crate::runner::{Broadcast, Core, Log, Runner, TurnResult};
 use crate::scheduler::{self, Scheduler, SchedulerDeps, TICK_MS};
 use crate::server::{Handlers, Routes, RpcError};
@@ -50,7 +50,7 @@ pub struct M4Deps {
     pub cleanup_shared: Arc<dyn Fn() + Send + Sync>,
     /// The daemon's composed `turnEnded` (task hooks, M4's [`M4::turn_ended`], the turn notice). `routines.delete` ends
     /// the work its routine had queued through it.
-    pub turn_ended: Arc<dyn Fn(&WorkItem, &TurnResult) + Send + Sync>,
+    pub turn_ended: TurnEnded,
 }
 
 pub struct M4 {
@@ -60,7 +60,7 @@ pub struct M4 {
     pub scheduler: Scheduler,
     runner: Arc<OnceLock<Runner>>,
     cleanup_shared: Arc<dyn Fn() + Send + Sync>,
-    turn_ended: Arc<dyn Fn(&WorkItem, &TurnResult) + Send + Sync>,
+    turn_ended: TurnEnded,
 }
 
 impl M4 {
