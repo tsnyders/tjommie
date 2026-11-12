@@ -1245,6 +1245,7 @@ async fn sends_one_provider_interrupt_when_the_runner_stops_during_turn_start() 
     settle().await;
     assert_eq!(h.requests("turn/interrupt").len(), 1);
     assert_eq!(work_status(&db, &message.id), "interrupted");
+}
 
 // Worker boundaries (T3.4; covered in TypeScript by the runner and worker real tests).
 

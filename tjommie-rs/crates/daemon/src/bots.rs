@@ -17,6 +17,7 @@ use serde::de::DeserializeOwned;
 
 use crate::context::Context;
 use crate::ids::{new_id, now_iso};
+use crate::providers::ProviderError;
 use crate::server::{Handlers, RpcError};
 
 /// A bot as stored: everything but its live state.
@@ -603,6 +604,43 @@ fn notes_preview(home: &str) -> String {
 }
 
 /// The `bots.*` methods. Steps that need later tasks are noted where they go (daemon.ts:437-550).
+/// A bot being deleted: only one deletion of it at a time. Dropping this ends it, on every path out.
+struct Deleting {
+    ids: Arc<Mutex<HashSet<String>>>,
+    id: String,
+}
+
+impl Drop for Deleting {
+    fn drop(&mut self) {
+        self.ids
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&self.id);
+    }
+}
+
+/// A bot whose provider or account is changing: the runner holds its work until this is dropped (`switchingBots`).
+struct Switching {
+    ids: Arc<Mutex<HashSet<String>>>,
+    id: String,
+}
+
+impl Drop for Switching {
+    fn drop(&mut self) {
+        self.ids
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&self.id);
+    }
+}
+
+fn provider_error(error: ProviderError) -> RpcError {
+    RpcError::new(ErrorCode::Internal, error.message())
+}
+
+/// `waitForBotClose`: a bot that won't close in time is busy, not stuck.
+const CLOSE_WAIT: Duration = Duration::from_secs(15);
+
 pub fn register(handlers: Handlers, context: &Context) -> Handlers {
     let deleting: Arc<Mutex<HashSet<String>>> = Arc::default();
     let (list, create, update, delete, pause, show, notes) = (
@@ -625,25 +663,32 @@ pub fn register(handlers: Handlers, context: &Context) -> Handlers {
             async move { bots }
         })
         .on::<method::BotsCreate, _>(move |input, _| {
-            // Afterwards T2.2 refreshes folder protection and T3.5 tells the runner setup changed.
-            let bot = create.with_db(|db| {
-                let requested = input.account_id.clone().flatten();
-                create
-                    .accounts
-                    .check_available(db, input.provider, requested.as_deref())?;
-                let stored = create_bot(db, &create.bots_dir, &input)?;
-                Ok(create.bot_view.to_bot(db, stored))
-            });
-            if let Ok(bot) = &bot {
+            // T2.2 refreshes folder protection after the bot is made, whether or not it was.
+            let created = (|| {
+                create.with_db(|db| {
+                    let requested = input.account_id.clone().flatten();
+                    create
+                        .accounts
+                        .check_available(db, input.provider, requested.as_deref())
+                })?;
+                let made = create.with_db(|db| create_bot(db, &create.bots_dir, &input));
+                if let Some(runner) = create.late.runner.get() {
+                    runner.setup_changed();
+                }
+                let stored = made?;
+                let bot = create.with_db(|db| Ok(create.bot_view.to_bot(db, stored)))?;
                 create.events.send(Event::BotUpdated(bot.clone()));
-            }
-            async move { bot }
+                Ok::<_, RpcError>(bot)
+            })();
+            async move { created }
         })
         .on::<method::BotsUpdate, _>(move |params, _| {
-            // M5 refuses while the bot has a project task running. On a provider or account change, T3.5 stops and holds
-            // the bot and T2.2 refreshes its folder protection first; M6 closes its browser when the browser is turned off.
-            let bot = update.with_db(|db| {
-                let (before, patch) = (get_stored_bot(db, &params.id)?, &params.patch);
+            // M5 refuses while the bot has a project task running (`tasks.botBusy`).
+            let prefix = (|| {
+                let (before, patch) = (
+                    update.with_db(|db| get_stored_bot(db, &params.id))?,
+                    &params.patch,
+                );
                 let provider_changed = patch
                     .provider
                     .is_some_and(|provider| provider != before.provider);
@@ -651,76 +696,183 @@ pub fn register(handlers: Handlers, context: &Context) -> Handlers {
                     .account_id
                     .as_ref()
                     .is_some_and(|account| *account != before.account_id);
-                if provider_changed || account_changed {
+                let identity_changed = provider_changed || account_changed;
+                let mut switching = None;
+                if identity_changed {
                     let kept = if provider_changed {
                         None
                     } else {
-                        before.account_id
+                        before.account_id.clone()
                     };
                     let requested = patch.account_id.clone().flatten().or(kept);
                     let provider = patch.provider.unwrap_or(before.provider);
-                    update
-                        .accounts
-                        .check_available(db, provider, requested.as_deref())?;
+                    update.with_db(|db| {
+                        update
+                            .accounts
+                            .check_available(db, provider, requested.as_deref())
+                    })?;
+                    let mut ids = update
+                        .late
+                        .switching
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner);
+                    if ids.contains(&params.id) {
+                        return Err(RpcError::new(
+                            ErrorCode::Busy,
+                            "This bot is already changing provider. Try again shortly.",
+                        ));
+                    }
+                    update.with_db(|db| validate_bot_patch(db, &before, patch))?;
+                    ids.insert(params.id.clone());
+                    switching = Some(Switching {
+                        ids: update.late.switching.clone(),
+                        id: params.id.clone(),
+                    });
                 }
-                let stored = update_bot(db, &params.id, &params.patch)?;
-                Ok(update.bot_view.to_bot(db, stored))
-            });
-            if let Ok(bot) = &bot {
+                Ok::<_, RpcError>((before, switching))
+            })();
+            let update = update.clone();
+            async move {
+                let (before, switching) = prefix?;
+                let identity_changed = switching.is_some();
+                let runner = update.late.runner.get().cloned();
+                let changed = async {
+                    if identity_changed && let Some(runner) = &runner {
+                        runner.stop(&params.id).await.map_err(provider_error)?;
+                        runner.bot_changed(&params.id, true)?;
+                    }
+                    // T2.2 refreshes folder protection first when the provider changed.
+                    update.with_db(|db| update_bot(db, &params.id, &params.patch))
+                }
+                .await;
+                if identity_changed {
+                    drop(switching);
+                    if let Some(runner) = &runner {
+                        runner.setup_changed();
+                    }
+                }
+                let changed = changed?;
+                if !identity_changed && let Some(runner) = &runner {
+                    runner.bot_changed(&params.id, false)?;
+                }
+                let bot = update.with_db(|db| Ok(update.bot_view.to_bot(db, changed.clone())))?;
+                let closed = match update.late.m6.get() {
+                    Some(m6) if before.browser && !changed.browser => {
+                        m6.browser_off(&params.id).await
+                    }
+                    _ => Ok(()),
+                };
                 update.events.send(Event::BotUpdated(bot.clone()));
+                closed?;
+                Ok::<_, RpcError>(bot)
             }
-            async move { bot }
         })
         .on::<method::BotsDelete, _>(move |Id { id }, _| {
-            // M5 refuses while the bot is in a project or task. Before the row goes, T3.5 closes its session, M6 deletes its
-            // browser profile and M4 captures its exchanges; afterwards M6 cleans up unused shared files.
-            let deleted = (|| {
+            // M5 refuses while the bot is in a project or task (`projects.botInUse`, `tasks.botBusy`).
+            let started = (|| {
                 delete.with_db(|db| get_stored_bot(db, &id))?;
-                if !deleting
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .insert(id.clone())
-                {
+                let mut ids = deleting.lock().unwrap_or_else(PoisonError::into_inner);
+                if !ids.insert(id.clone()) {
                     return Err(RpcError::new(
                         ErrorCode::Busy,
                         "The bot is already being deleted. Try again shortly.",
                     ));
                 }
-                let deleted = delete.with_db(|db| delete_bot(db, &id));
-                deleting
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .remove(&id);
-                deleted?;
-                delete.events.send(Event::BotDeleted(Id { id }));
-                Ok(Empty {})
+                Ok::<_, RpcError>(Deleting {
+                    ids: deleting.clone(),
+                    id: id.clone(),
+                })
             })();
-            async move { deleted }
+            let delete = delete.clone();
+            async move {
+                let _deleting = started?;
+                let runner = delete.late.runner.get().cloned();
+                let m6 = delete.late.m6.get().cloned();
+                let removed = async {
+                    if let Some(runner) = &runner {
+                        let closing = runner.close_for_deletion(&id)?;
+                        match tokio::time::timeout(CLOSE_WAIT, closing).await {
+                            Ok(closed) => closed.map_err(provider_error)?,
+                            Err(_) => {
+                                return Err(RpcError::new(
+                                    ErrorCode::Busy,
+                                    "The bot is taking too long to close. Try deleting it again shortly.",
+                                ));
+                            }
+                        }
+                    }
+                    if let Some(m6) = &m6 {
+                        m6.bot_deleting(&id).await?;
+                    }
+                    // M4: `team.botDeleting(id)` captures the bot's exchanges here, before the row goes.
+                    delete.with_db(|db| delete_bot(db, &id))
+                }
+                .await;
+                if let Err(error) = removed {
+                    if let Some(runner) = &runner {
+                        runner.cancel_deletion(&id);
+                    }
+                    return Err(error);
+                }
+                // M4: `team.botDeleted(handle)`.
+                if let Some(runner) = &runner {
+                    runner.forget(&id);
+                }
+                if let Some(m6) = &m6
+                    && m6.attachments.cleanup().is_err()
+                {
+                    eprintln!(
+                        "Unused shared files could not be removed. Cleanup will retry after restart."
+                    );
+                }
+                delete.events.send(Event::BotDeleted(Id { id }));
+                Ok::<_, RpcError>(Empty {})
+            }
         })
         .on::<method::BotsPause, _>(move |params, _| {
-            // M6 cancels the bot's browser tools when it pauses; T3.5 runs its queued work when it resumes.
-            let bot = pause.with_db(|db| {
-                set_paused(db, &params.id, params.paused)?;
-                let stored = get_stored_bot(db, &params.id)?;
-                Ok(pause.bot_view.to_bot(db, stored))
-            });
-            if let Ok(bot) = &bot {
+            let paused = (|| {
+                pause.with_db(|db| set_paused(db, &params.id, params.paused))?;
+                if params.paused
+                    && let Some(m6) = pause.late.m6.get()
+                {
+                    m6.bot_paused(&params.id);
+                }
+                let bot = pause.with_db(|db| {
+                    let stored = get_stored_bot(db, &params.id)?;
+                    Ok(pause.bot_view.to_bot(db, stored))
+                })?;
                 pause.events.send(Event::BotUpdated(bot.clone()));
-            }
-            async move { bot }
+                if !params.paused
+                    && let Some(runner) = pause.late.runner.get()
+                {
+                    runner.pump(&params.id);
+                }
+                Ok::<_, RpcError>(bot)
+            })();
+            async move { paused }
         })
         .on::<method::BotsShowBrowser, _>(move |Id { id }, _| {
-            let shown = show.with_db(|db| get_stored_bot(db, &id)).and_then(|bot| {
-                if !bot.browser {
-                    return Err(bad_params("This bot's browser is off"));
+            let checked = show.with_db(|db| get_stored_bot(db, &id)).and_then(|bot| {
+                if bot.browser {
+                    Ok(())
+                } else {
+                    Err(bad_params("This bot's browser is off"))
                 }
-                // M6: the desktop host opens the native browser.
-                Err::<Empty, _>(RpcError::new(
-                    ErrorCode::BadState,
-                    "The native browser needs the Tjommie desktop app.",
-                ))
             });
-            async move { shown }
+            let m6 = show.late.m6.get().cloned();
+            async move {
+                checked?;
+                match m6 {
+                    Some(m6) => {
+                        m6.show_browser(&id).await?;
+                        Ok(Empty {})
+                    }
+                    None => Err(RpcError::new(
+                        ErrorCode::BadState,
+                        "The native browser needs the Tjommie desktop app.",
+                    )),
+                }
+            }
         })
         .on::<method::BotsNotes, _>(move |Id { id }, _| {
             let text = notes

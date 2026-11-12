@@ -47,7 +47,7 @@ async fn interrupts_a_streaming_team_room_reply_exactly_once_when_its_bot_is_del
         .find(|message| message.author == bot.id && message.kind == MessageKind::Text)
         .unwrap();
     let before = h.event_count();
-    h.runner.close_for_deletion(&bot.id).unwrap().await;
+    h.runner.close_for_deletion(&bot.id).unwrap().await.unwrap();
     delete_bot_row(&h, &bot.id);
     h.runner.forget(&bot.id);
     let saved = h.message(&reply.id);
@@ -77,7 +77,7 @@ async fn settles_an_activity_row_in_a_shared_conversation_when_its_bot_is_delete
     settle().await;
     let activity = h.activity_for("team");
     let before = h.event_count();
-    h.runner.close_for_deletion(&bot.id).unwrap().await;
+    h.runner.close_for_deletion(&bot.id).unwrap().await.unwrap();
     delete_bot_row(&h, &bot.id);
     h.runner.forget(&bot.id);
     h.expect_activity_settlement(&activity.id, &[ActivityStatus::Failed], before);
@@ -102,7 +102,7 @@ async fn clears_text_activity_and_the_last_answer_when_a_failed_deletion_restore
     old.emit(tool("old", "Read", "Read old.txt"));
     old.emit(text("old partial"));
     settle().await;
-    h.runner.close_for_deletion(&bot.id).unwrap().await;
+    h.runner.close_for_deletion(&bot.id).unwrap().await.unwrap();
     h.runner.cancel_deletion(&bot.id);
     wait_for(|| h.sent(1) > 0).await;
     let replacement = h.session(1);
@@ -151,7 +151,7 @@ async fn keeps_a_requested_stop_when_deletion_fails_instead_of_relaunching_the_s
         .stop_item(&item.id, "Routine time limit reached.")
         .await
         .unwrap();
-    h.runner.close_for_deletion(&bot.id).unwrap().await;
+    h.runner.close_for_deletion(&bot.id).unwrap().await.unwrap();
     h.runner.cancel_deletion(&bot.id);
     settle().await;
     assert_eq!(h.session_count(), 1);
@@ -184,7 +184,7 @@ async fn restores_a_failed_deletion_only_after_its_delayed_process_exit_settles(
     let error = h.runner.close_for_deletion(&bot.id).err().unwrap();
     assert!(error.message.contains("still closing"), "{}", error.message);
     exited.open(());
-    closing.await;
+    closing.await.unwrap();
     wait_for(|| h.sent(1) > 0).await;
     assert_eq!(
         h.runner.current_work(&bot.id).map(|work| work.id),
@@ -213,7 +213,7 @@ async fn restores_deletion_after_an_approval_was_answered_during_the_close_wait(
         .answer_approval(&added.id, ApprovalDecision::Once)
         .unwrap();
     exited.open(());
-    closing.await;
+    closing.await.unwrap();
     h.runner.cancel_deletion(&bot.id);
     wait_for(|| h.sent(1) > 0).await;
     assert_eq!(
@@ -251,7 +251,7 @@ async fn kills_a_busy_detached_session_using_the_pid_captured_before_close_clear
     drop(h.runner.shutdown());
     assert_eq!(*recorded(&h.kills), [Some(4321)]);
     exited.open(());
-    closing.await;
+    closing.await.unwrap();
 }
 
 #[tokio::test]
@@ -260,7 +260,7 @@ async fn does_not_kill_a_detached_pid_after_its_process_has_already_exited() {
     let bot = h.bot(json!({}));
     h.runner.submit(&bot.id, "running", &[]).unwrap();
     wait_for(|| h.sent(0) > 0).await;
-    h.runner.close_for_deletion(&bot.id).unwrap().await;
+    h.runner.close_for_deletion(&bot.id).unwrap().await.unwrap();
     drop(h.runner.shutdown());
     assert_eq!(*recorded(&h.kills), []);
 }
@@ -282,7 +282,7 @@ async fn waits_for_process_exit_and_blocks_every_pump_until_deletion_is_cancelle
         let settled = settled.clone();
         let closed = h.runner.close_for_deletion(&bot.id).unwrap();
         tokio::spawn(async move {
-            closed.await;
+            closed.await.unwrap();
             settled.store(true, Ordering::SeqCst);
         })
     };
@@ -312,7 +312,7 @@ async fn closes_a_session_again_when_startup_succeeds_after_it_was_detached() {
     });
     let bot = h.bot(json!({}));
     h.runner.submit(&bot.id, "first", &[]).unwrap();
-    h.runner.close_for_deletion(&bot.id).unwrap().await;
+    h.runner.close_for_deletion(&bot.id).unwrap().await.unwrap();
     assert_eq!(session.close_calls(), 1);
     started.open(Ok(()));
     settle().await;
@@ -358,7 +358,7 @@ async fn keeps_queued_work_unchanged_while_closing_for_deletion_and_pumps_it_aft
     )
     .unwrap();
     let before = work_rows(&h, &bot.id);
-    h.runner.close_for_deletion(&bot.id).unwrap().await;
+    h.runner.close_for_deletion(&bot.id).unwrap().await.unwrap();
     assert_eq!(work_rows(&h, &bot.id), before);
     assert_eq!(lifecycle.ended_ids(), Vec::<String>::new());
     h.runner.cancel_deletion(&bot.id);
@@ -406,7 +406,7 @@ async fn restarts_active_work_after_failed_deletion_and_ignores_a_late_start_or_
             wait_for(|| !old.sent().is_empty()).await;
         }
         let before = work_rows(&h, &bot.id);
-        h.runner.close_for_deletion(&bot.id).unwrap().await;
+        h.runner.close_for_deletion(&bot.id).unwrap().await.unwrap();
         assert!(old.closed());
         assert_eq!(work_rows(&h, &bot.id), before);
         assert_eq!(lifecycle.ended_ids(), Vec::<String>::new());
@@ -448,7 +448,7 @@ async fn ends_captured_active_and_queued_routine_work_after_successful_deletion(
         .runner
         .deliver(work(&bot.id, WorkSource::Routine, "Queued routine"))
         .unwrap();
-    h.runner.close_for_deletion(&bot.id).unwrap().await;
+    h.runner.close_for_deletion(&bot.id).unwrap().await.unwrap();
     delete_bot_row(&h, &bot.id);
     h.runner.forget(&bot.id);
     h.runner.forget(&bot.id);
@@ -484,7 +484,7 @@ async fn ignores_pending_steering_after_deletion() {
         wait_for(|| !old.sent().is_empty()).await;
         let steered = h.runner.submit(&bot.id, "Still needed", &[]).unwrap();
         wait_for(|| !old.steered().is_empty()).await;
-        h.runner.close_for_deletion(&bot.id).unwrap().await;
+        h.runner.close_for_deletion(&bot.id).unwrap().await.unwrap();
         if deleted {
             delete_bot_row(&h, &bot.id);
             h.runner.forget(&bot.id);
@@ -535,7 +535,7 @@ async fn expires_obsolete_approval_cards_only_when_failed_deletion_resumes_the_b
         .emit(approval("old-provider-request", "Write notes", None));
     settle().await;
     let added = h.added_approvals().remove(0);
-    h.runner.close_for_deletion(&bot.id).unwrap().await;
+    h.runner.close_for_deletion(&bot.id).unwrap().await.unwrap();
     assert_eq!(
         h.message(&added.message_id).data.unwrap()["status"],
         json!("pending")
@@ -604,7 +604,7 @@ async fn restores_a_failed_deletion_whose_exit_settled_before_the_session_close_
         .set(|state| state.exits = [session_close_wait, deletion_wait].into());
     let closing = h.runner.close_for_deletion(&bot.id).unwrap();
     exited.open(());
-    closing.await;
+    closing.await.unwrap();
     h.runner.cancel_deletion(&bot.id);
     wait_for(|| h.sent(1) > 0).await;
     assert_eq!(

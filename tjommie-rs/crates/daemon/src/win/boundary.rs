@@ -958,6 +958,55 @@ impl crate::cli::WorkerBoundary for WorkerBoundary {
     }
 }
 
+/// This boundary as M6's `/worker-host` asks about it: whether isolation is available, short leases and a generation
+/// bump (`worker_boundary_host::WorkerBoundary`).
+impl crate::worker_boundary_host::WorkerBoundary for WorkerBoundary {
+    fn unavailable_reason(&self) -> BoxFuture<'static, Option<String>> {
+        let boundary = self.clone();
+        Box::pin(async move {
+            WorkerBoundary::unavailable_reason(&boundary)
+                .await
+                .map(str::to_owned)
+        })
+    }
+
+    fn acquire(
+        &self,
+    ) -> BoxFuture<'static, Option<Box<dyn crate::worker_boundary_host::WorkerLease>>> {
+        let boundary = self.clone();
+        Box::pin(async move {
+            WorkerBoundary::acquire(&boundary).await.ok().map(|lease| {
+                Box::new(HostLease(Mutex::new(lease)))
+                    as Box<dyn crate::worker_boundary_host::WorkerLease>
+            })
+        })
+    }
+
+    fn invalidate(&self) {
+        WorkerBoundary::invalidate(self);
+    }
+}
+
+/// A [`Lease`] as `/worker-host` holds it: `valid` is `assert()` and `release` is idempotent.
+struct HostLease(Mutex<Lease>);
+
+impl crate::worker_boundary_host::WorkerLease for HostLease {
+    fn valid(&self) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .assert()
+            .is_ok()
+    }
+
+    fn release(&self) {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .release();
+    }
+}
+
 /// The real Windows calls, each on a blocking thread.
 pub struct WindowsNative;
 

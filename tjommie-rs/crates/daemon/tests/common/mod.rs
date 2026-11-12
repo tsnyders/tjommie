@@ -286,6 +286,10 @@ pub fn launch(args: &[&str], root: TempRoot, env: &[(&str, &str)]) -> Daemon {
     for key in ["TJOMMIE_DEV", "TJOMMIE_ACCOUNTS_DIR", "TJOMMIE_LAN_PORT"] {
         command.env_remove(key);
     }
+    // Never the production 0.0.0.0 bind on this PC: it would raise a Windows Firewall prompt. Loopback, and an
+    // ephemeral port in case a test pairs a device.
+    command.env("TJOMMIE_LAN_BIND", "127.0.0.1");
+    command.env("TJOMMIE_LAN_PORT", "0");
     command.envs(env.iter().copied());
     command
         .stdin(Stdio::piped())
@@ -655,5 +659,6 @@ pub fn test_context(
         bot_view,
         app_version: None,
         accounts,
+        late: daemon::context::Late::default(),
     }
 }

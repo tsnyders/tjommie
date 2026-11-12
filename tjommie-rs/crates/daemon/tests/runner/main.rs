@@ -83,6 +83,8 @@ pub struct FakeState {
     pub send: Pending<Result<(), String>>,
     pub interrupt: Pending<Result<(), String>>,
     pub exit: Pending<()>,
+    /// The exit, when it comes, couldn't confirm the process tree stopped (`ProviderError::WorkerTermination`).
+    pub exit_unconfirmed: bool,
     /// Handed out one per `wait_for_exit()` call before `exit` is, so two waiters on one exit can finish apart.
     pub exits: std::collections::VecDeque<Pending<()>>,
     pub steer_pending: Option<Pending<bool>>,
@@ -108,6 +110,7 @@ impl FakeSession {
             send: ready(Ok(())),
             interrupt: ready(Ok(())),
             exit: ready(()),
+            exit_unconfirmed: false,
             exits: std::collections::VecDeque::new(),
             steer_pending: None,
             sent: Vec::new(),
@@ -213,13 +216,22 @@ impl ProviderSession for FakeSession {
         state.closed = true;
     }
 
-    fn wait_for_exit(&self) -> BoxFuture<'static, ()> {
+    fn wait_for_exit(&self) -> BoxFuture<'static, Result<(), ProviderError>> {
         let mut state = self.state();
         let exit = state
             .exits
             .pop_front()
             .unwrap_or_else(|| state.exit.clone());
-        Box::pin(exit)
+        let unconfirmed = state.exit_unconfirmed;
+        Box::pin(async move {
+            exit.await;
+            // A worker that couldn't confirm its process tree had gone: the account stays reserved.
+            if unconfirmed {
+                Err(ProviderError::WorkerTermination)
+            } else {
+                Ok(())
+            }
+        })
     }
 
     fn pid(&self) -> Option<u32> {
@@ -981,7 +993,7 @@ async fn keeps_the_next_task_queued_until_the_previous_tasks_owned_process_has_e
         let retired = retired.clone();
         let waiting = h.runner.retired(&bot.id);
         tokio::spawn(async move {
-            waiting.await;
+            waiting.await.unwrap();
             retired.store(true, Ordering::SeqCst);
         })
     };

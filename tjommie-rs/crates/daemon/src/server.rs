@@ -6,7 +6,7 @@ use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::Duration;
 
 use axum::Router;
@@ -71,10 +71,30 @@ pub struct Broadcaster(Arc<Shared>);
 
 impl Broadcaster {
     pub fn send(&self, event: Event) {
+        let tapped = self.0.tap.get().map(|tap| (tap.clone(), event.clone()));
         let text = serde_json::to_string(&ServerMessage::Event(event)).expect("events serialize");
         for outbox in self.0.clients.lock().unwrap().values() {
             let _ = outbox.send(Message::Text(text.clone().into()));
         }
+        if let Some((tap, event)) = tapped {
+            tap(&event);
+        }
+    }
+}
+
+/// Calls the daemon's methods from inside it: a paired device's request goes through the same handlers as a local
+/// client's. A clone of what [`Server::dispatch`] uses.
+#[derive(Clone)]
+pub struct Dispatcher(Arc<Shared>);
+
+impl Dispatcher {
+    pub async fn dispatch(
+        &self,
+        method: &str,
+        params: Value,
+        context: Option<RequestContext>,
+    ) -> Result<Value, RpcError> {
+        self.0.call(method, params, context).await
     }
 }
 
@@ -173,12 +193,17 @@ struct Gate {
     config: Arc<Config>,
 }
 
+/// What sees every broadcast event: the remote transport.
+type EventTap = Arc<dyn Fn(&Event) + Send + Sync>;
+
 struct Shared {
     port: u16,
     allowed_origins: Vec<String>,
     gate: RwLock<Gate>,
     /// Authenticated connections, which receive events.
     clients: Mutex<HashMap<u64, mpsc::UnboundedSender<Message>>>,
+    /// Sees every broadcast event after the clients do: the remote transport publishes them to paired devices.
+    tap: OnceLock<EventTap>,
     next_client: AtomicU64,
     /// The parent of every connection's signal.
     shutdown: CancellationToken,
@@ -206,6 +231,7 @@ impl Server {
                 }),
             }),
             clients: Mutex::default(),
+            tap: OnceLock::new(),
             next_client: AtomicU64::new(0),
             shutdown: CancellationToken::new(),
         });
@@ -231,6 +257,16 @@ impl Server {
     /// For handlers, which are built before [`Server::activate`] and send events later.
     pub fn broadcaster(&self) -> Broadcaster {
         Broadcaster(self.shared.clone())
+    }
+
+    /// Passes every event any [`Broadcaster`] sends to `tap` as well. Set once; a second call is ignored.
+    pub fn tap_events(&self, tap: impl Fn(&Event) + Send + Sync + 'static) {
+        let _ = self.shared.tap.set(Arc::new(tap));
+    }
+
+    /// A handle that calls methods without a connection, for the remote transport.
+    pub fn dispatcher(&self) -> Dispatcher {
+        Dispatcher(self.shared.clone())
     }
 
     /// Starts answering with this token and these handlers.
