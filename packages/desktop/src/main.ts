@@ -8,7 +8,7 @@ import { NativeBrowserMount, NativeBrowserUiCommand, type EventData } from "@tjo
 import updater from "electron-updater";
 import { navigationFor, uiFile } from "./app-protocol.ts";
 import { notesFile } from "./bot-files.ts";
-import { daemonCommand, daemonLaunchEnv, startDaemonProcess, stopDaemonBeforeQuit, type DaemonConnection, type RunningDaemon } from "./daemon-process.ts";
+import { daemonCommand, daemonLaunchEnv, packagedDaemonPath, startDaemonProcess, stopDaemonBeforeQuit, type DaemonConnection, type RunningDaemon } from "./daemon-process.ts";
 import { notificationDelivery, notificationRoute } from "./notification-delivery.ts";
 import { beginGoogleConsent } from "./google-consent.ts";
 import { NativeBrowserEngine } from "./native-browser.ts";
@@ -46,7 +46,10 @@ const production = packaged || process.env.TJOMMIE_DESKTOP === "production";
 const dataRoot = process.env.TJOMMIE_HOME ?? packageIdentity.testDataRoot ?? join(process.env.LOCALAPPDATA ?? join(homedir(), ".local", "share"), productName);
 const assets = packaged ? join(process.resourcesPath, "assets") : join(here, "..", "assets");
 const uiDir = packaged ? join(process.resourcesPath, "ui") : join(here, "..", "..", "ui", "out");
-const daemonEntry = packaged ? join(process.resourcesPath, "daemon", "main.mjs") : join(here, "..", "..", "daemon", "src", "main.ts");
+// An installed app runs the Rust daemon bundled in resources. A run from source starts the Node daemon, or the Rust exe
+// named by TJOMMIE_DAEMON_EXE (see daemonCommand).
+const bundledDaemon = packaged ? packagedDaemonPath(process.resourcesPath) : null;
+const daemonEntry = join(here, "..", "..", "daemon", "src", "main.ts");
 const appIcon = join(assets, "icon-256.png");
 const APP_ID = packageIdentity.appId ?? "com.tsnyders.tjommie";
 // Next needs inline bootstrap scripts; Noise WASM needs wasm-unsafe-eval; Markdown sanitization handles injected content.
@@ -292,7 +295,7 @@ function developmentConnection(): DaemonConnection {
 async function launchDaemon(): Promise<DaemonConnection> {
   const running = await startDaemonProcess(
     {
-      ...daemonCommand(process.env, packaged, process.execPath, daemonEntry),
+      ...daemonCommand(process.env, bundledDaemon, process.execPath, daemonEntry),
       env: daemonLaunchEnv(process.env, dataRoot, !!packageIdentity.testDataRoot),
       // Only an isolated desktop test may redirect the daemon's account folders.
       testAccountsDir: packageIdentity.testDataRoot

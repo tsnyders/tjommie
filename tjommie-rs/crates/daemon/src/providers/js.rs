@@ -126,6 +126,42 @@ pub fn iso_from_millis(ms: f64) -> Option<String> {
     ))
 }
 
+/// `Date.parse` for ISO strings: with an offset or `Z` it is that instant, a date-time without one is local time, and a
+/// date alone is UTC midnight. ponytail: the other formats JavaScript engines accept (RFC 2822 and the like) are `None`,
+/// JavaScript's `NaN`; add them if a provider ever sends one.
+pub fn date_parse(text: &str) -> Option<f64> {
+    use jiff::{Timestamp, civil, tz::TimeZone};
+    let ms = |instant: Timestamp| instant.as_millisecond() as f64;
+    if let Ok(instant) = text.parse::<Timestamp>() {
+        return Some(ms(instant));
+    }
+    let zoned = if text.contains(['T', 't', ' ']) {
+        text.parse::<civil::DateTime>()
+            .ok()?
+            .to_zoned(TimeZone::system())
+    } else {
+        text.parse::<civil::Date>().ok()?.to_zoned(TimeZone::UTC)
+    };
+    zoned.ok().map(|zoned| ms(zoned.timestamp()))
+}
+
+/// `Number(text)` for decimal text: blank is 0, anything else unparseable is `NaN`. ponytail: decimal only;
+/// JavaScript also reads `0x`/`0o`/`0b` prefixes, which no caller's input carries.
+pub fn number(text: &str) -> f64 {
+    let text = trim(text);
+    if text.is_empty() {
+        return 0.0;
+    }
+    let numeric = text
+        .bytes()
+        .all(|b| b.is_ascii_digit() || matches!(b, b'.' | b'e' | b'E' | b'+' | b'-'));
+    if numeric {
+        text.parse().unwrap_or(f64::NAN)
+    } else {
+        f64::NAN
+    }
+}
+
 /// `JSON.stringify(value, null, 2)`.
 pub fn pretty(value: &Value) -> String {
     serde_json::to_string_pretty(value).expect("JSON values serialize")

@@ -76,3 +76,46 @@ CREATE TABLE approvals (
   payload TEXT
 );
 CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+-- T3.4: account limits, spending and usage, as db.ts migrations 1-12 leave them.
+CREATE UNIQUE INDEX accounts_fallback ON accounts(provider) WHERE is_fallback = 1 AND deleted_at IS NULL;
+CREATE TABLE sessions (
+  bot_id TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
+  provider TEXT NOT NULL, account_id TEXT NOT NULL, cli_session_id TEXT NOT NULL,
+  updated_at TEXT NOT NULL, total_cost_usd REAL,
+  PRIMARY KEY (bot_id, provider, account_id)
+);
+CREATE TABLE usage (
+  id TEXT PRIMARY KEY,
+  bot_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  model TEXT NOT NULL,
+  input INTEGER NOT NULL,
+  cached_input INTEGER NOT NULL,
+  output INTEGER NOT NULL,
+  reasoning INTEGER NOT NULL,
+  cost_usd REAL,
+  cost_source TEXT,
+  created_at TEXT NOT NULL,
+  account_kind TEXT NOT NULL DEFAULT 'unknown' CHECK (account_kind IN ('subscription', 'api_key', 'unknown')),
+  pricing_revision TEXT
+);
+CREATE INDEX usage_by_date ON usage(created_at);
+CREATE INDEX usage_by_bot_date ON usage(bot_id, created_at);
+CREATE INDEX usage_by_account_date ON usage(account_id, created_at);
+CREATE INDEX usage_by_model_date ON usage(model, created_at);
+CREATE TABLE account_limit_snapshots (
+  account_id TEXT NOT NULL REFERENCES accounts(id), limit_id TEXT NOT NULL, observed_at TEXT NOT NULL,
+  PRIMARY KEY (account_id, limit_id)
+);
+CREATE TABLE account_limit_windows (
+  account_id TEXT NOT NULL REFERENCES accounts(id), limit_id TEXT NOT NULL, window_key TEXT NOT NULL,
+  duration_minutes REAL, used_percent REAL, resets_at TEXT,
+  state TEXT NOT NULL CHECK (state IN ('ok', 'near', 'reached')), observed_at TEXT NOT NULL,
+  PRIMARY KEY (account_id, limit_id, window_key)
+);
+CREATE TABLE account_cap_notifications (
+  account_id TEXT NOT NULL REFERENCES accounts(id), cap_revision INTEGER NOT NULL,
+  threshold INTEGER NOT NULL CHECK (threshold IN (80, 100)), created_at TEXT NOT NULL,
+  PRIMARY KEY (account_id, cap_revision, threshold)
+);

@@ -4,10 +4,10 @@
 mod common;
 
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use common::{Client, TempRoot, connect, test_db};
-use daemon::context::{Context, StoredState, handlers};
+use common::{Client, TempRoot, connect};
+use daemon::context::handlers;
 use daemon::server::{Handlers, Server, ServerOptions};
 use protocol::relay::DEFAULT_RELAY_URL;
 use serde_json::{Value, json};
@@ -28,13 +28,12 @@ async fn harness() -> Harness {
         defer_requests: true,
     };
     let server = Server::start(options).await.unwrap();
-    let context = Context {
-        db: Arc::new(Mutex::new(test_db(&root.0))),
-        bots_dir: root.0.join("bots"),
-        events: server.broadcaster(),
-        bot_view: Arc::new(StoredState),
-        app_version: None,
-    };
+    let context = common::test_context(
+        &root.0,
+        server.broadcaster(),
+        Arc::new(common::no_cli_setup()),
+        Arc::new(common::MemoryKeys::default()),
+    );
     server.activate("t", handlers(&context)).unwrap();
     let mut client = connect(server.port()).await;
     client.hello("t").await;
@@ -237,12 +236,12 @@ async fn lists_the_claude_models() {
             { "id": "haiku", "label": "Claude Haiku (latest)", "isDefault": false },
         ])
     );
-    // Codex lists its models through its app server, which T3.3 brings.
+    // Codex lists its models through its app server with the default account; this host has no Codex CLI.
     assert_eq!(
         h.client
             .call(2, "models.list", json!({ "provider": "codex" }))
             .await["error"]["code"],
-        "unavailable"
+        "not_installed"
     );
     h.server.close().await;
 }
@@ -251,7 +250,7 @@ async fn lists_the_claude_models() {
 async fn serves_bounded_diagnostics_through_the_running_daemon() {
     let mut h = harness().await;
     let report = h.client.call(1, "diagnostics.get", json!({})).await["result"].clone();
-    assert_eq!(report["daemonVersion"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(report["daemonVersion"], env!("TJOMMIE_VERSION"));
     assert_eq!(
         (
             report["appVersion"].clone(),

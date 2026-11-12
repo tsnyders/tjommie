@@ -1,5 +1,6 @@
 import { execFileSync, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { dirname, join, resolve } from "node:path";
 
 export type DaemonConnection = { port: number; token: string };
 export type DaemonLaunch = {
@@ -7,6 +8,9 @@ export type DaemonLaunch = {
   args: string[];
   env: NodeJS.ProcessEnv;
   testAccountsDir?: string;
+  // True (the default) when execPath is Electron or Node running the daemon's JavaScript, which needs ELECTRON_RUN_AS_NODE.
+  // False for the Rust daemon's own exe, which must not inherit it.
+  runAsNode?: boolean;
 };
 export type RunningDaemon = {
   connection: DaemonConnection;
@@ -29,23 +33,40 @@ export function listeningPort(output: string): number | null {
 }
 
 // Production mode cannot inherit development settings or the test-only account-folder hook. The explicit
-// testAccountsDir option is the only way a desktop test can send that hook to its disposable daemon.
-export function daemonEnv(base: NodeJS.ProcessEnv, testAccountsDir?: string): NodeJS.ProcessEnv {
+// testAccountsDir option is the only way a desktop test can send that hook to its disposable daemon. The Node daemon runs
+// as plain Node inside Electron (ELECTRON_RUN_AS_NODE); the Rust daemon gets none, and drops an inherited one.
+export function daemonEnv(base: NodeJS.ProcessEnv, testAccountsDir?: string, runAsNode = true): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = Object.fromEntries(
     Object.entries(base).filter(([key]) => !["TJOMMIE_DEV", "TJOMMIE_ACCOUNTS_DIR", "ELECTRON_RUN_AS_NODE"].includes(key.toUpperCase())),
   );
-  env.ELECTRON_RUN_AS_NODE = "1";
+  if (runAsNode) env.ELECTRON_RUN_AS_NODE = "1";
   if (testAccountsDir !== undefined) env.TJOMMIE_ACCOUNTS_DIR = testAccountsDir;
   return env;
 }
 
-// Unpackaged runs can host the Rust daemon: TJOMMIE_DAEMON_EXE names its exe, started with the same --token-stdin
-// contract and no Node arguments. Packaged builds always run the bundled daemon (switching them is T9.1's job).
-export function daemonCommand(env: NodeJS.ProcessEnv, packaged: boolean, nodePath: string, entry: string): Pick<DaemonLaunch, "execPath" | "args"> {
-  const exe = packaged ? undefined : env.TJOMMIE_DAEMON_EXE;
-  return exe ? { execPath: exe, args: [] } : { execPath: nodePath, args: ["--disable-warning=ExperimentalWarning", entry] };
+// The Rust daemon ships as one exe in the installed app's resources, beside the UI and the icons.
+export const packagedDaemonPath = (resourcesPath: string): string => join(resourcesPath, "daemon", "tjommie-daemon.exe");
+
+// What starts the daemon. An installed app (`packagedExe` is its bundled exe) always runs that exe, never an override
+// and never Node. An unpackaged run hosts the Rust daemon when TJOMMIE_DAEMON_EXE names its exe, else runs the Node
+// daemon from source. The exe takes the same --token-stdin contract and no Node arguments.
+export function daemonCommand(env: NodeJS.ProcessEnv, packagedExe: string | null, nodePath: string, entry: string): Pick<DaemonLaunch, "execPath" | "args" | "runAsNode"> {
+  const exe = packagedExe ?? env.TJOMMIE_DAEMON_EXE;
+  return exe
+    ? { execPath: exe, args: [], runAsNode: false }
+    : { execPath: nodePath, args: ["--disable-warning=ExperimentalWarning", entry], runAsNode: true };
 }
 
+// The executable of the process that listens on the daemon's port, for tests that must recognize their own daemon: the
+// Rust daemon bundled beside an installed app, the one TJOMMIE_DAEMON_EXE names for a run from source, else the app's own
+// executable (the Node daemon runs inside it).
+export function daemonExecutable(appExecutable: string, installed: boolean, env: NodeJS.ProcessEnv): string {
+  if (installed) return packagedDaemonPath(join(dirname(appExecutable), "resources"));
+  return env.TJOMMIE_DAEMON_EXE ? resolve(env.TJOMMIE_DAEMON_EXE) : appExecutable;
+}
+
+// TJOMMIE_HOME always follows the data root. TJOMMIE_PORT is only forced for a disposable test root; an inherited one
+// passes through, so a second install (a dev build beside production) sets both and never contends for port 47100.
 export function daemonLaunchEnv(base: NodeJS.ProcessEnv, dataRoot: string, testRoot = false): NodeJS.ProcessEnv {
   return { ...base, TJOMMIE_HOME: dataRoot, ...(testRoot ? { TJOMMIE_PORT: "0" } : {}) };
 }
@@ -80,7 +101,7 @@ export function startDaemonProcess(
   const token = newToken();
   const desktopHostToken = newToken();
   const child = spawn(launch.execPath, [...launch.args, "--token-stdin"], {
-    env: daemonEnv(launch.env, launch.testAccountsDir),
+    env: daemonEnv(launch.env, launch.testAccountsDir, launch.runAsNode ?? true),
     stdio: "pipe",
     windowsHide: true,
   });

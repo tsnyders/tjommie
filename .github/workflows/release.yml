@@ -61,6 +61,13 @@ jobs:
       - name: Build and verify pinned local speech runtime
         shell: pwsh
         run: ./packages/desktop/scripts/build-speech-runtime.ps1
+      # The installer carries the Rust daemon, so build it first. Inside tjommie-rs so rustup applies rust-toolchain.toml.
+      - name: Install the pinned Rust toolchain
+        working-directory: tjommie-rs
+        run: rustup toolchain install
+      - name: Build the Rust daemon
+        working-directory: tjommie-rs
+        run: cargo build --release --locked -p daemon --bin tjommie-daemon
       - run: npm run package
       - run: npm run test:packaged
       - name: Check installer update metadata
