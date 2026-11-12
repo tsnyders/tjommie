@@ -82,6 +82,7 @@ fn user_name(target: &str) -> Option<String> {
 /// Admin, CI-runner only (`TJOMMIE_RS_ADMIN_TESTS=1`): provisions both identities for a disposable root, checks
 /// what was made, and removes exactly that root's ns8 accounts, targets and folders.
 #[test]
+#[ignore = "admin: needs elevation; run with TJOMMIE_RS_ADMIN_TESTS=1 cargo test -- --ignored"]
 fn admin_provisions_both_identities_for_a_disposable_root() {
     if std::env::var("TJOMMIE_RS_ADMIN_TESTS").as_deref() != Ok("1") {
         eprintln!("skipped: set TJOMMIE_RS_ADMIN_TESTS=1 on a disposable machine");
