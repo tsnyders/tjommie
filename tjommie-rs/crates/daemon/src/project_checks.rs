@@ -92,6 +92,7 @@ impl HostCheckRuntime {
         let command = CliCommand {
             file: check.command.clone(),
             args: Vec::new(),
+            codex_package: None,
         };
         let options = LaunchOptions {
             cwd: cwd.to_string(),

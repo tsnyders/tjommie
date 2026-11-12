@@ -4,13 +4,32 @@
 use std::fmt;
 use std::fs;
 use std::io::{self, BufRead, BufReader, Read};
+use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
 
+use protocol::Event;
 use serde::Deserialize;
+use serde_json::Value;
+use tokio::task::JoinHandle;
 
-use crate::paths;
-use crate::server::{Handlers, Server, ServerOptions};
+use crate::account_handlers::{Accounts, AccountsOptions};
+use crate::account_quota::HttpsFetch;
+use crate::cli::{InstalledWorkers, SystemCli, WorkerInstall, WorkerPurpose};
+use crate::context::{self, Context, Db, Late, LateBotView};
+use crate::m6::{self, M6, M6Deps};
+use crate::relay_client::default_connector;
+use crate::remote::{Remote, RemoteOptions};
+use crate::remote_host::{Dispatch, RemoteHostOptions};
+use crate::queue::WorkItem;
+use crate::runner::{Core, Runner, RunnerDeps, RunnerHooks, TurnResult, cli_session_factory};
+use crate::server::{Handlers, RequestContext, Routes, RpcError, Server, ServerOptions};
+use crate::setup::Setup;
+use crate::turn_notices::turn_notice;
+use crate::win::boundary::{BoundaryOptions, WindowsNative, WorkerBoundary};
+use crate::win::cred::Namespace;
+use crate::win::worker::Purpose;
+use crate::{bots, db, diagnostics, paths, settings};
 
 /// The phone's LAN port, now set by `TJOMMIE_LAN_PORT` (`remote-host.ts:24` fixes it at 47101). A debug build uses the
 /// spec §4 dev port.
@@ -61,6 +80,9 @@ pub struct Launch {
     pub mode: Mode,
     pub port: u16,
     pub lan_port: u16,
+    /// The address the phone's LAN host binds. Production listens on every interface so phones on the network reach
+    /// this PC; tests and manual runs set `TJOMMIE_LAN_BIND=127.0.0.1`, which keeps Windows Firewall from prompting.
+    pub lan_bind: IpAddr,
     /// A test hook: the desktop's real-CLI tests point a disposable root at signed-in account folders.
     pub accounts_dir: Option<PathBuf>,
 }
@@ -98,10 +120,21 @@ pub fn parse_launch(
             DEFAULT_LAN_PORT,
             "TJOMMIE_LAN_PORT",
         )?,
+        lan_bind: lan_bind(env("TJOMMIE_LAN_BIND"))?,
         accounts_dir: env("TJOMMIE_ACCOUNTS_DIR")
             .filter(|dir| !dir.is_empty())
             .map(PathBuf::from),
     })
+}
+
+/// `TJOMMIE_LAN_BIND`: unset or empty is every interface.
+fn lan_bind(value: Option<String>) -> Result<IpAddr, StartupError> {
+    match value.as_deref().map(str::trim) {
+        None | Some("") => Ok(IpAddr::V4(Ipv4Addr::UNSPECIFIED)),
+        Some(value) => value
+            .parse()
+            .map_err(|_| plain("TJOMMIE_LAN_BIND must be an IP address.")),
+    }
 }
 
 /// `Number(value)` in `main.ts`: unset is the default, empty is 0 (any free port).
@@ -201,6 +234,14 @@ fn allowed_origins(auth: &Auth) -> Vec<String> {
 pub struct Daemon {
     server: Server,
     root: PathBuf,
+    runner: Runner,
+    accounts: Accounts,
+    remote: Arc<Remote>,
+    m6: Arc<M6>,
+    /// Delivers every broadcast event to paired devices, in order.
+    publisher: JoinHandle<()>,
+    /// Dropping this uninstalls the Windows worker pair.
+    _workers: Option<InstalledWorkers>,
 }
 
 impl Daemon {
@@ -213,13 +254,31 @@ impl Daemon {
         &self.root
     }
 
+    /// Stops answering, then closes what the daemon runs, in `daemon.ts`'s order: the phone connection, the M6
+    /// brokers, the runner (and the CLI processes it owns), the accounts, and last the server.
     pub async fn close(self) {
+        self.server.stop_requests();
+        self.remote.close().await;
+        self.m6.close();
+        if let Err(error) = self.runner.shutdown().await {
+            eprintln!("{error}");
+        }
+        self.accounts.runtime.close().await;
+        self.publisher.abort();
         self.server.close().await;
     }
 }
 
-/// `startDaemon`, as far as T3.1 goes: check the tokens, hold the port, settle the token file, then answer.
-/// T3.2 and later add the database and the handlers.
+fn rpc(error: RpcError) -> StartupError {
+    plain(error.message)
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// `startDaemon`: check the tokens, hold the port, open the data root and its database, build the daemon's services and
+/// answer.
 pub async fn start(launch: &Launch, auth: &Auth) -> Result<Daemon, StartupError> {
     if let Auth::Production {
         token,
@@ -258,35 +317,295 @@ pub async fn start(launch: &Launch, auth: &Auth) -> Result<Daemon, StartupError>
             _ => StartupError::Unexpected(error),
         })?;
     let root = paths::data_root();
-    let token = match settle_token(auth, &root) {
-        Ok(token) => token,
+    let parts = match assemble(launch, auth, &root, &server) {
+        Ok(parts) => parts,
         Err(error) => {
             server.close().await;
             return Err(error);
         }
     };
-    server
-        .activate(token, Handlers::default())
-        .map_err(|error| plain(error.message))?;
-    Ok(Daemon { server, root })
+    let Parts {
+        token,
+        handlers,
+        routes,
+        runner,
+        accounts,
+        remote,
+        m6,
+        publisher,
+        workers,
+    } = parts;
+    // `runner.start()` runs before the server answers, as in `daemon.ts:646-648`.
+    let activated = runner
+        .start()
+        .map_err(rpc)
+        .and_then(|()| {
+            server
+                .activate_with(token, handlers, routes)
+                .map_err(rpc)
+        });
+    let daemon = Daemon {
+        server,
+        root,
+        runner,
+        accounts,
+        remote,
+        m6,
+        publisher,
+        _workers: workers,
+    };
+    if let Err(error) = activated {
+        daemon.close().await;
+        return Err(error);
+    }
+    let checking = daemon.accounts.runtime.check_all();
+    tokio::spawn(async move {
+        if checking.await.is_err() {
+            eprintln!("Some accounts could not be checked. Retry from Accounts.");
+        }
+    });
+    let remote = daemon.remote.clone();
+    tokio::spawn(async move { remote.start().await });
+    Ok(daemon)
 }
 
-/// Production removes a development token file left behind, so no stale token can open the daemon. Development reads
-/// or creates it.
-fn settle_token(auth: &Auth, root: &Path) -> Result<String, StartupError> {
-    let file = root.join(paths::TOKEN_FILE);
-    match auth {
-        Auth::Production { token, .. } => {
-            if remove_leftover_token(&file)? {
-                println!("Removed a leftover development daemon-token file.");
-            }
-            Ok(token.clone())
-        }
-        Auth::Development => {
-            fs::create_dir_all(root)?;
-            Ok(paths::read_or_create_token(&file)?)
-        }
+/// Everything `start` builds before the server answers.
+struct Parts {
+    token: String,
+    handlers: Handlers,
+    routes: Routes,
+    runner: Runner,
+    accounts: Accounts,
+    remote: Arc<Remote>,
+    m6: Arc<M6>,
+    publisher: JoinHandle<()>,
+    workers: Option<InstalledWorkers>,
+}
+
+/// The provider and review worker boundaries (`startDaemon`'s `WindowsWorkerBoundary` pair), installed as the daemon's
+/// launch path when provider isolation is set up. Returns the provider boundary, which `SystemCli` and M6 use even
+/// when isolation is off: a boundary that isn't required launches nothing.
+fn install_workers(
+    root: &Path,
+    exe_dir: &Path,
+    install: &Arc<WorkerInstall>,
+) -> Result<(WorkerBoundary, Option<InstalledWorkers>), StartupError> {
+    let boundary = |file: &str, purpose: Purpose, kind: WorkerPurpose| {
+        let install = install.clone();
+        WorkerBoundary::new(BoundaryOptions {
+            configuration_path: root.join(file),
+            purpose,
+            daemon_dir: exe_dir.to_path_buf(),
+            exclusive: Arc::new(move || install.exclusive(kind)),
+            native: Arc::new(WindowsNative),
+            observer: None,
+        })
+    };
+    let provider = boundary("worker.json", Purpose::Provider, WorkerPurpose::Provider);
+    let review = boundary("review-worker.json", Purpose::Review, WorkerPurpose::Review);
+    let installed = if provider.required() {
+        // Pairing runs the rest of `validateWorkerPair` and lets each identity see the other's receipts.
+        provider
+            .pair_with(&review)
+            .and_then(|()| review.pair_with(&provider))
+            .map_err(|error| plain(error.to_string()))?;
+        Some(
+            install
+                .install(Arc::new(provider.clone()), Arc::new(review))
+                .map_err(plain)?,
+        )
+    } else {
+        None
+    };
+    Ok((provider, installed))
+}
+
+/// `initializeDaemon` as far as the port has come, up to activating the server: open the data root and database, bring
+/// up the accounts and the runner (recovering what a restart cut off), the phone connection and M6. M4 (the team,
+/// routines and `/mcp`) and M5 (projects and tasks) add their handlers and runner hooks where marked.
+fn assemble(
+    launch: &Launch,
+    auth: &Auth,
+    root: &Path,
+    server: &Server,
+) -> Result<Parts, StartupError> {
+    let mut paths = paths::data_paths(root)?;
+    if let Some(accounts) = &launch.accounts_dir {
+        paths.accounts = accounts.clone();
     }
+    // Never open SQLite before the legacy database has moved: a split WAL and database must not be used.
+    paths::migrate_legacy_db(&paths)?;
+    // Production removes a development token file left behind, so no stale token can open the daemon.
+    if matches!(auth, Auth::Production { .. }) && remove_leftover_token(&paths.token)? {
+        println!("Removed a leftover development daemon-token file.");
+    }
+    // T2.2 protects the Codex data and each account folder here, before SQLite opens.
+    let db: Db = Arc::new(Mutex::new(db::open(&paths.db)?));
+    let token = match auth {
+        Auth::Production { token, .. } => token.clone(),
+        Auth::Development => paths::read_or_create_token(&paths.token)?,
+    };
+    let exe = std::env::current_exe()?;
+    let exe_dir = exe.parent().map(Path::to_path_buf).unwrap_or_default();
+
+    // How CLIs launch: inside the Windows worker when it is set up, else directly.
+    let install = Arc::new(WorkerInstall::default());
+    let (provider_worker, workers) = install_workers(&paths.root, &exe_dir, &install)?;
+    let cli = Arc::new(
+        SystemCli::with_worker(Arc::new(provider_worker.clone())).reporting_to(install),
+    );
+    let setup = Setup::new(cli.clone(), Arc::new(HttpsFetch::new().map_err(plain)?));
+
+    // 1. One account per provider, then the accounts runtime.
+    setup
+        .ensure_accounts(&lock(&db), &paths.accounts, &paths.root)
+        .map_err(rpc)?;
+    let events = server.broadcaster();
+    let view = LateBotView::default();
+    let accounts = Accounts::new(AccountsOptions {
+        db: db.clone(),
+        root: paths.root.clone(),
+        accounts_dir: paths.accounts.clone(),
+        events: events.clone(),
+        bot_view: Arc::new(view.clone()),
+        setup: setup.clone(),
+        ops: Arc::new(setup.clone()),
+        credentials: Arc::new(Namespace::new(&paths.root)?),
+    });
+
+    // 2. The runner, on those accounts.
+    let late = Late::default();
+    let (held, issue) = (late.switching.clone(), late.switching.clone());
+    let (broadcast, notices) = (events.clone(), events.clone());
+    let deps = RunnerDeps {
+        accounts: Some(Arc::new(accounts.runtime.clone())),
+        is_held: Arc::new(move |bot_id| lock(&held).contains(bot_id)),
+        // T2.2 adds the folder protection's reason here.
+        setup_issue: Arc::new(move |bot| {
+            lock(&issue)
+                .contains(&bot.id)
+                .then(|| "This bot is changing provider. Try again shortly.".to_owned())
+        }),
+        kill_tree: Arc::new(crate::cli::kill_tree),
+        hooks: RunnerHooks {
+            // M4 and M5 run their own turn hooks first (`tasks.turnEnded`, `scheduler.runEnded`, `team.turnEnded`).
+            turn_ended: Some(Arc::new(move |core: &mut Core<'_>, item: &WorkItem, result: &TurnResult| {
+                if let Some(notice) = turn_notice(core.db(), item, result).map_err(|e| e.message)? {
+                    notices.send(Event::Notify(notice));
+                }
+                Ok(())
+            })),
+            ..RunnerHooks::default()
+        },
+        ..RunnerDeps::new(
+            db.clone(),
+            Arc::new(move |event| {
+                broadcast.send(event);
+                Ok(())
+            }),
+            cli_session_factory(cli),
+            setup.clone(),
+        )
+    };
+    let runner = Runner::new(deps);
+    view.bind(Arc::new(runner.clone()));
+    accounts.attach_runner(runner.clone());
+    let _ = late.runner.set(runner.clone());
+
+    // 3. The handlers.
+    let context = Context {
+        db: db.clone(),
+        bots_dir: paths.bots.clone(),
+        events: events.clone(),
+        bot_view: Arc::new(runner.clone()),
+        // Beside the exe, as `build-info.json` sat beside the Node daemon's bundle.
+        app_version: diagnostics::read_app_version(&exe_dir),
+        accounts: accounts.clone(),
+        late,
+    };
+    let mut handlers = crate::runner::register(context::handlers(&context), &context, &runner);
+
+    // 4. The phone connection (M7). Events reach paired devices through one ordered queue: publishing reads the
+    // database, and the runner and the accounts broadcast with it locked.
+    let (publish, mut published) = tokio::sync::mpsc::unbounded_channel::<Event>();
+    server.tap_events(move |event| {
+        let _ = publish.send(event.clone());
+    });
+    let dispatcher = server.dispatcher();
+    let dispatch: Dispatch = Arc::new(
+        move |method: String, params: Value, request: RequestContext| {
+            let dispatcher = dispatcher.clone();
+            Box::pin(async move { dispatcher.dispatch(&method, params, Some(request)).await })
+        },
+    );
+    let mut host = RemoteHostOptions::new(db.clone(), paths.root.clone(), dispatch);
+    host.port = launch.lan_port;
+    host.bind = launch.lan_bind;
+    let relay_db = db.clone();
+    let remote = Remote::new(RemoteOptions {
+        host,
+        relay_url: Arc::new(move || {
+            settings::get_settings(&lock(&relay_db))
+                .ok()
+                .and_then(|settings| settings.relay_url)
+                .map(|url| url.as_str().to_owned())
+        }),
+        relay_connect: default_connector(),
+        broadcast: {
+            let events = events.clone();
+            Arc::new(move |event| events.send(event))
+        },
+    });
+    let _ = context.late.remote.set(remote.clone());
+    handlers = remote.handlers(handlers);
+    let publisher = tokio::spawn({
+        let remote = remote.clone();
+        async move {
+            while let Some(event) = published.recv().await {
+                remote.publish(&event);
+            }
+        }
+    });
+
+    // 5. Attachments, Logins, the native browser and the worker host (M6). After the sweep, before activating.
+    bots::sweep_deleted_bot_folders(&lock(&db), &paths.bots);
+    let mut routes = Routes::default();
+    let desktop_host_token = match auth {
+        Auth::Production {
+            desktop_host_token, ..
+        } => desktop_host_token.clone(),
+        Auth::Development => None,
+    };
+    let m6 = Arc::new(
+        m6::install(
+            &mut handlers,
+            &mut routes,
+            M6Deps {
+                db: db.clone(),
+                data_root: paths.root.clone(),
+                desktop_host_token,
+                // M4: `McpTokens::bot_for`, shared with `/mcp`. Until then no tool session token names a bot.
+                bot_for: Arc::new(|_token| None),
+                worker: Some(Arc::new(provider_worker)),
+            },
+        )
+        .map_err(rpc)?,
+    );
+    let _ = context.late.m6.set(m6.clone());
+
+    // 6. What a restart cut off is settled before anything listens (`runner.start()` then runs the queue).
+    runner.recover().map_err(rpc)?;
+    Ok(Parts {
+        token,
+        handlers,
+        routes,
+        runner,
+        accounts,
+        remote,
+        m6,
+        publisher,
+        workers,
+    })
 }
 
 /// Removes a development token file. True if there was one. Retries a file that is briefly locked, as

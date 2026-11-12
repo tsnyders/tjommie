@@ -25,8 +25,17 @@ pub const MIGRATIONS: [&str; 12] = [
     include_str!("../migrations/12.sql"),
 ];
 
-/// `openDb`. An existing database is backed up first, once per daemon version.
+/// `openDb`. An existing database is backed up first, once per daemon version. An error names the file.
 pub fn open(file: &Path) -> io::Result<Connection> {
+    open_named(file).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("Could not open the database {}: {error}", file.display()),
+        )
+    })
+}
+
+fn open_named(file: &Path) -> io::Result<Connection> {
     let existed = file.exists();
     let db = Connection::open(file).map_err(io::Error::other)?;
     // The copy runs before the PRAGMAs, so wait out a brief lock here too. rusqlite already defaults to 5 s; this

@@ -1,10 +1,6 @@
-//! `models.list` (`listModels` in `setup.ts`).
+//! Claude's model list for `models.list`. Codex asks its app server (`Setup::list_models`).
 
-use protocol::ErrorCode;
-use protocol::model::{ModelInfo, Provider};
-use protocol::wire::method;
-
-use crate::server::{Handlers, RpcError};
+use protocol::model::ModelInfo;
 
 /// `CLAUDE_MODELS`: Claude Code takes these aliases and resolves the latest model behind each.
 pub fn claude_models() -> Vec<ModelInfo> {
@@ -19,17 +15,4 @@ pub fn claude_models() -> Vec<ModelInfo> {
         is_default,
     })
     .to_vec()
-}
-
-pub fn register(handlers: Handlers) -> Handlers {
-    handlers.on::<method::ModelsList, _>(|params, _| async move {
-        match params.provider {
-            Provider::Claude => Ok(claude_models()),
-            // T3.3 and T3.4: ask the Codex app server with the default account (setup.ts:470-482).
-            Provider::Codex => Err(RpcError::new(
-                ErrorCode::Unavailable,
-                "Codex models aren't available yet.",
-            )),
-        }
-    })
 }

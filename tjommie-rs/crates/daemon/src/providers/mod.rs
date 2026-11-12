@@ -12,7 +12,12 @@ pub mod claude_parse;
 pub mod codex;
 pub mod codex_parse;
 pub mod codex_rpc;
-mod js;
+pub(crate) mod js;
+
+/// `new Date(ms).toISOString()`. Empty outside JavaScript's date range, where JavaScript throws.
+pub fn js_iso(ms: f64) -> String {
+    js::iso_from_millis(ms).unwrap_or_default()
+}
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -245,12 +250,20 @@ pub enum ProviderError {
     Remote { code: i64, message: String },
     /// Anything else: a transport failure, a timeout or the session's state.
     Failed(String),
+    /// A worker launch or exit whose process tree may still run (`WorkerLaunchTerminationError`). Never an ordinary
+    /// failure: the account and its folders stay reserved.
+    WorkerTermination,
 }
 
 impl ProviderError {
+    pub fn is_worker_termination(&self) -> bool {
+        matches!(self, ProviderError::WorkerTermination)
+    }
+
     pub fn message(&self) -> &str {
         match self {
             ProviderError::Remote { message, .. } | ProviderError::Failed(message) => message,
+            ProviderError::WorkerTermination => crate::cli::WORKER_TERMINATION,
         }
     }
 }
@@ -265,7 +278,11 @@ impl std::error::Error for ProviderError {}
 
 impl From<std::io::Error> for ProviderError {
     fn from(error: std::io::Error) -> Self {
-        ProviderError::Failed(error.to_string())
+        if crate::cli::is_worker_termination(&error) {
+            ProviderError::WorkerTermination
+        } else {
+            ProviderError::Failed(error.to_string())
+        }
     }
 }
 
@@ -282,8 +299,9 @@ pub trait ProviderSession: Send + Sync {
     fn interrupt(&self) -> BoxFuture<'static, Result<bool, ProviderError>>;
     fn answer(&self, approval_id: &str, answer: ApprovalAnswer);
     fn close(&self);
-    /// Resolves after the underlying process has exited, including a pending start.
-    fn wait_for_exit(&self) -> BoxFuture<'static, ()>;
+    /// Resolves after the underlying process has exited, including a pending start. An error means a worker could not
+    /// confirm that its whole process tree has gone: the account stays reserved.
+    fn wait_for_exit(&self) -> BoxFuture<'static, Result<(), ProviderError>>;
     fn pid(&self) -> Option<u32>;
     /// Every event from now on (`onEvent` in TypeScript).
     fn subscribe(&self) -> mpsc::UnboundedReceiver<ProviderEvent>;

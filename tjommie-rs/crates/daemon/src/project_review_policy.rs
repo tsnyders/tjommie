@@ -240,6 +240,8 @@ pub fn canonical_review_command(command: &CliCommand) -> Result<CliCommand, Stri
     Ok(CliCommand {
         file: file.to_string_lossy().into_owned(),
         args,
+        // The reviewer is Claude; only Codex launches carry a package.
+        codex_package: None,
     })
 }
 
