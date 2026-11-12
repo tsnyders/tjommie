@@ -17,7 +17,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::SystemTime;
 
 use protocol::ErrorCode;
@@ -152,6 +152,32 @@ pub trait SharedAttachments: Send + Sync {
     fn cleanup(&self, db: &Connection) -> Result<(), RpcError>;
 }
 
+/// The real `Attachments`, through its `*_in` variants that use the connection the host already holds.
+impl SharedAttachments for crate::attachments::Attachments {
+    fn register_snapshot(
+        &self,
+        db: &Connection,
+        path: &Path,
+        name: &str,
+    ) -> Result<AttachmentInfo, RpcError> {
+        self.register_snapshot_in(db, path, name)
+    }
+
+    fn link(
+        &self,
+        db: &Connection,
+        message_id: &str,
+        index: u64,
+        attachment_id: &str,
+    ) -> Result<(), RpcError> {
+        self.link_in(db, message_id, index, attachment_id)
+    }
+
+    fn cleanup(&self, db: &Connection) -> Result<(), RpcError> {
+        self.cleanup_in(db)
+    }
+}
+
 pub struct TeamDeps {
     /// Sends an event to every client. Called after the change commits, outside any borrow of the database.
     pub broadcast: Broadcast,
@@ -178,6 +204,9 @@ struct State {
 /// Bots working together: the tools on Tjommie's MCP server, exchanges between bots, and rooms.
 pub struct Team {
     deps: TeamDeps,
+    /// The shared-file links. Given at construction, or once later with [`Team::attach_attachments`] when the real
+    /// `Attachments` is made after the runner (which needs the team's hooks first).
+    attachments: OnceLock<Arc<dyn SharedAttachments>>,
     state: Mutex<State>,
 }
 
@@ -377,10 +406,20 @@ fn file_slots(typed: &mut Typed) -> Vec<(Option<String>, &mut Option<AttachmentC
 
 impl Team {
     pub fn new(deps: TeamDeps) -> Self {
+        let attachments = OnceLock::new();
+        if let Some(given) = &deps.attachments {
+            let _ = attachments.set(given.clone());
+        }
         Team {
             deps,
+            attachments,
             state: Mutex::default(),
         }
+    }
+
+    /// Gives the team its shared-file links, once. A second call is ignored.
+    pub fn attach_attachments(&self, attachments: Arc<dyn SharedAttachments>) {
+        let _ = self.attachments.set(attachments);
     }
 
     fn state(&self) -> MutexGuard<'_, State> {
@@ -635,7 +674,7 @@ impl Team {
             Typed::Other => message.data.clone(),
         };
         let stored = add_message(db, &NewMessage { data, ..message })?;
-        if let Some(attachments) = &self.deps.attachments {
+        if let Some(attachments) = self.attachments.get() {
             for (index, (attachment_id, companions)) in links.iter().enumerate() {
                 if let Some(id) = attachment_id {
                     attachments.link(db, &stored.id, index as u64, id)?;

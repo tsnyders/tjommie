@@ -111,6 +111,12 @@ impl M4 {
         let _ = self.runner.set(runner);
     }
 
+    /// Gives the team its shared-file links, when the real `Attachments` is made after M4 (as in startup, where M6
+    /// makes it).
+    pub fn attach_attachments(&self, attachments: Arc<dyn SharedAttachments>) {
+        self.team.attach_attachments(attachments);
+    }
+
     fn runner(&self) -> Result<Runner, RpcError> {
         self.runner
             .get()

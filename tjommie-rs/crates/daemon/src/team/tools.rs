@@ -766,7 +766,7 @@ impl Team {
         for companion in companions {
             sources.push(checked(&companion.path)?);
         }
-        if !companions.is_empty() && self.deps.attachments.is_none() {
+        if !companions.is_empty() && self.attachments.get().is_none() {
             return Err(plain("Shared companion images are unavailable."));
         }
         let exchange = match &work {
@@ -787,7 +787,7 @@ impl Team {
         let attempt = (|| -> Result<(), RpcError> {
             for source in &sources {
                 snapshots.push(snapshot_file(&roots, source, staging, bot_id).map_err(plain)?);
-                if let Some(attachments) = &self.deps.attachments {
+                if let Some(attachments) = self.attachments.get() {
                     let last = snapshots.last_mut().expect("a snapshot was just pushed");
                     let info =
                         attachments.register_snapshot(host.db(), Path::new(&last.path), &last.name)?;
@@ -864,7 +864,7 @@ impl Team {
                     let _ = fs::remove_dir_all(folder);
                 }
             }
-            if let Some(attachments) = &self.deps.attachments
+            if let Some(attachments) = self.attachments.get()
                 && let Err(cleanup) = attachments.cleanup(host.db())
             {
                 self.log("Tjommie: shared attachment cleanup failed", &cleanup.to_string());
