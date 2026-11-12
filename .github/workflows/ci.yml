@@ -24,6 +24,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: node scripts/protocol-manifest.ts --check
+      - run: node scripts/browser-tools-manifest.ts --check
       - run: npm run typecheck
       - run: npm run lint
       - run: npm test

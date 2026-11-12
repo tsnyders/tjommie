@@ -1,0 +1,292 @@
+//! Port of `packages/daemon/src/native-browser-broker.test.ts`: the desktop main process long-polls `/browser-host`
+//! with its private host token for browser jobs and posts each result back.
+
+mod host_support;
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use daemon::native_browser_broker::{BotIdentity, NativeBrowserBroker};
+use daemon::server::{Handlers, Routes, Server, ServerOptions};
+use host_support::{get, post};
+use serde_json::{Value, json};
+
+fn secret() -> String {
+    "h".repeat(43)
+}
+
+fn auth() -> String {
+    format!("Bearer {}", secret())
+}
+
+fn bot() -> BotIdentity {
+    BotIdentity {
+        id: "bot-one".into(),
+        name: "One".into(),
+        home_folder: "C:/synthetic/bot-one".into(),
+        project_folder: None,
+    }
+}
+
+struct Fixture {
+    broker: Arc<NativeBrowserBroker>,
+    server: Server,
+    port: u16,
+}
+
+async fn fixture(timeout: Duration) -> Fixture {
+    let broker = NativeBrowserBroker::new(secret(), timeout);
+    let server = Server::start(ServerOptions {
+        port: 0,
+        token: "renderer-token".into(),
+        handlers: Handlers::default(),
+        allowed_origins: Vec::new(),
+        defer_requests: false,
+    })
+    .await
+    .unwrap();
+    server
+        .activate_with(
+            "renderer-token",
+            Handlers::default(),
+            Routes::default().route("/browser-host", broker.route()),
+        )
+        .unwrap();
+    let port = server.port();
+    Fixture {
+        broker,
+        server,
+        port,
+    }
+}
+
+impl Fixture {
+    fn request(
+        &self,
+        bot: BotIdentity,
+        command: Value,
+    ) -> tokio::task::JoinHandle<Result<Value, String>> {
+        let broker = self.broker.clone();
+        tokio::spawn(async move {
+            broker
+                .request(bot, command, None)
+                .await
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    async fn close(self) {
+        self.broker.close();
+        self.server.close().await;
+    }
+}
+
+#[tokio::test]
+async fn does_not_accept_the_renderers_daemon_token_or_a_browser_origin() {
+    let f = fixture(Duration::from_secs(1)).await;
+    assert_eq!(
+        get(
+            f.port,
+            "/browser-host",
+            &[("Authorization", "Bearer renderer-token")]
+        )
+        .await
+        .status,
+        401
+    );
+    assert_eq!(
+        get(
+            f.port,
+            "/browser-host",
+            &[("Authorization", &auth()), ("Origin", "app://tjommie")]
+        )
+        .await
+        .status,
+        403
+    );
+    f.close().await;
+}
+
+#[tokio::test]
+async fn delivers_only_to_the_private_host_and_settles_each_command_once() {
+    let f = fixture(Duration::from_secs(1)).await;
+    let result = f.request(bot(), json!({ "kind": "state" }));
+    let job = get(f.port, "/browser-host", &[("Authorization", &auth())])
+        .await
+        .json();
+    assert_eq!(
+        job["bot"],
+        json!({ "id": "bot-one", "name": "One", "homeFolder": "C:/synthetic/bot-one" })
+    );
+    assert_eq!(job["command"], json!({ "kind": "state" }));
+    let reply =
+        json!({ "id": job["id"], "ok": true, "result": { "title": "Synthetic page" } }).to_string();
+    assert_eq!(
+        post(
+            f.port,
+            "/browser-host",
+            &[("Authorization", &auth())],
+            reply.as_bytes()
+        )
+        .await
+        .status,
+        204
+    );
+    assert_eq!(
+        result.await.unwrap(),
+        Ok(json!({ "title": "Synthetic page" }))
+    );
+    assert_eq!(
+        post(
+            f.port,
+            "/browser-host",
+            &[("Authorization", &auth())],
+            reply.as_bytes()
+        )
+        .await
+        .status,
+        404
+    );
+    f.close().await;
+}
+
+#[tokio::test]
+async fn does_not_accept_unsolicited_or_malformed_replies() {
+    let f = fixture(Duration::from_secs(1)).await;
+    assert_eq!(
+        post(
+            f.port,
+            "/browser-host",
+            &[("Authorization", &auth())],
+            b"{}"
+        )
+        .await
+        .status,
+        400
+    );
+    let unknown = json!({ "id": "unknown", "ok": true }).to_string();
+    assert_eq!(
+        post(
+            f.port,
+            "/browser-host",
+            &[("Authorization", &auth())],
+            unknown.as_bytes()
+        )
+        .await
+        .status,
+        404
+    );
+    let oversized = vec![b'x'; 8 * 1024 * 1024 + 1];
+    assert_eq!(
+        post(
+            f.port,
+            "/browser-host",
+            &[("Authorization", &auth())],
+            &oversized
+        )
+        .await
+        .status,
+        413
+    );
+    f.close().await;
+}
+
+#[tokio::test]
+async fn bounds_unavailable_host_waits_and_cancels_only_the_closed_bots_jobs() {
+    let f = fixture(Duration::from_millis(25)).await;
+    let late = f
+        .broker
+        .request(bot(), json!({ "kind": "state" }), None)
+        .await
+        .unwrap_err();
+    assert!(late.to_string().contains("not started"), "{late}");
+    let f = fixture(Duration::from_secs(5)).await;
+    let other = BotIdentity {
+        id: "bot-two".into(),
+        ..bot()
+    };
+    let closing = f.request(bot(), json!({ "kind": "state" }));
+    let kept = f.request(other, json!({ "kind": "state" }));
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    f.broker.close_bot("bot-one");
+    assert!(closing.await.unwrap().unwrap_err().contains("closed"));
+    // The other bot's job is still waiting for the host.
+    let job = get(f.port, "/browser-host", &[("Authorization", &auth())])
+        .await
+        .json();
+    assert_eq!(job["bot"]["id"], "bot-two");
+    let reply =
+        json!({ "id": job["id"], "ok": false, "error": "Synthetic page error" }).to_string();
+    post(
+        f.port,
+        "/browser-host",
+        &[("Authorization", &auth())],
+        reply.as_bytes(),
+    )
+    .await;
+    assert_eq!(kept.await.unwrap(), Err("Synthetic page error".to_owned()));
+    f.close().await;
+}
+
+#[tokio::test]
+async fn sends_urgent_control_on_its_own_lane_and_keeps_one_job_per_bot_in_flight() {
+    let f = fixture(Duration::from_secs(5)).await;
+    let first = f.request(
+        bot(),
+        json!({ "kind": "tool", "name": "browser_snapshot", "args": {} }),
+    );
+    let job = get(f.port, "/browser-host", &[("Authorization", &auth())])
+        .await
+        .json();
+    assert_eq!(job["command"]["kind"], "tool");
+    // The bot's next normal job waits for the first to answer; a disconnect goes out on the control lane at once.
+    let second = f.request(
+        bot(),
+        json!({ "kind": "tool", "name": "browser_snapshot", "args": {} }),
+    );
+    let disconnect = f.request(
+        bot(),
+        json!({ "kind": "remote", "controllerId": "rpc:one", "action": { "kind": "disconnect" } }),
+    );
+    let control = get(
+        f.port,
+        "/browser-host?control=1",
+        &[("Authorization", &auth())],
+    )
+    .await
+    .json();
+    assert_eq!(control["command"]["action"]["kind"], "disconnect");
+    let port = f.port;
+    let waiting =
+        tokio::spawn(
+            async move { get(port, "/browser-host", &[("Authorization", &auth())]).await },
+        );
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        !waiting.is_finished(),
+        "nothing else for this bot while its tool runs"
+    );
+    for id in [&job["id"], &control["id"]] {
+        let reply = json!({ "id": id, "ok": true, "result": null }).to_string();
+        post(
+            port,
+            "/browser-host",
+            &[("Authorization", &auth())],
+            reply.as_bytes(),
+        )
+        .await;
+    }
+    assert_eq!(first.await.unwrap(), Ok(Value::Null));
+    assert_eq!(disconnect.await.unwrap(), Ok(Value::Null));
+    let next = waiting.await.unwrap().json();
+    assert_eq!(next["command"]["kind"], "tool");
+    f.broker.cancel_tools("bot-one");
+    assert!(
+        second
+            .await
+            .unwrap()
+            .unwrap_err()
+            .contains("tool session closed")
+    );
+    f.close().await;
+}
