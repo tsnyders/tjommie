@@ -250,7 +250,7 @@ async fn lists_the_claude_models() {
 async fn serves_bounded_diagnostics_through_the_running_daemon() {
     let mut h = harness().await;
     let report = h.client.call(1, "diagnostics.get", json!({})).await["result"].clone();
-    assert_eq!(report["daemonVersion"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(report["daemonVersion"], env!("TJOMMIE_VERSION"));
     assert_eq!(
         (
             report["appVersion"].clone(),
