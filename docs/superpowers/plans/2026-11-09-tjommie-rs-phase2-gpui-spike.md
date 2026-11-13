@@ -3,6 +3,7 @@
 - **Status:** draft for owner approval, 2026-11-09. Time-boxed to 10 working days on the owner's PC. It runs alongside Phase 1.
 - **Spec:** §5 Phase 2 (criteria 1–8 and the gate table), §3.9 (stream target), §1 (Aegis).
 - **Tag:** UI work. Throwaway code under `tjommie-rs/spikes/gpui/`. Nothing here ships.
+- **Note:** TypeScript references (`packages/daemon/...`) point at the `legacy` branch since R1.
 
 ## Setup and safety
 - **Crate:** `tjommie-rs/spikes/gpui/` is its own binary, `tjommie-spike.exe`. `gpui` and `gpui-component` are pinned with `git = …, rev = "<sha>"`. Record both SHAs in the report.

@@ -4,6 +4,7 @@
 - **Spec:** `docs/superpowers/specs/2026-11-09-tjommie-rust-rewrite-spec.md`, mainly §2, §3, §4, §5 Phase 1 and §6.
 - **Branch:** `rust-rewrite`. Baseline v0.4.2 (`aa20216`).
 - **Goal:** `tjommie-daemon.exe` replaces the Node daemon inside the Electron app. It is behaviourally identical to 0.4.2, plus native Win32 and `browser.stream`. It ships as R1 (0.5.0) with the production identity.
+- **Note:** TypeScript references (`packages/daemon/...`) point at the `legacy` branch since R1.
 
 ## Rules for every task
 - **The code wins.** Read the spec section and the cited TypeScript files before writing. If they disagree, follow the code and report it so the spec gets fixed.

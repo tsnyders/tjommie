@@ -3,6 +3,7 @@
 - Date: 2026-11-09. Branch: `rust-rewrite`. Baseline: v0.4.2 (`aa20216`, `packages/*`).
 - Targets: the owner's Windows 11 PC and Samsung S25 Ultra only.
 - Rule: `packages/*` at the baseline defines behaviour. If this spec and the code disagree, the code wins and the spec gets fixed. Facts are cited, not copied. Read the cited lines.
+- Note: TypeScript references (`packages/daemon/...`) point at the `legacy` branch since R1.
 
 ## 1. Scope
 **Goal:** replace the Node daemon, then Electron and Capacitor, with:

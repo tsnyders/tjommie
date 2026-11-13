@@ -2,6 +2,8 @@
 
 Plan: `docs/superpowers/plans/2026-11-09-tjommie-rs-phase1-daemon.md`. Rust paths are planned; milestones and tasks come from that plan.
 
+Note: the TypeScript tests this file maps from now live on the `legacy` branch. Run the `git ls-files` commands below there to list them.
+
 Commands used (from the repo root):
 ```
 git ls-files ':(glob)packages/daemon/src/**/*.test.ts'   # 99 files
