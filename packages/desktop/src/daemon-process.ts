@@ -32,12 +32,17 @@ export function listeningPort(output: string): number | null {
   return match ? Number(match[1]) : null;
 }
 
-// Production mode cannot inherit development settings or the test-only account-folder hook. The explicit
-// testAccountsDir option is the only way a desktop test can send that hook to its disposable daemon. The Node daemon runs
+// Production mode cannot inherit development settings or the test-only hooks: the account-folder hook, and every
+// TJOMMIE_SKIP_* switch (the Rust daemon's test hooks that turn off its account check and its Codex folder protection;
+// a debug build honours them, and none of them may ride in from a PC's environment). The explicit testAccountsDir
+// option is the only way a desktop test can send the account-folder hook to its disposable daemon. The Node daemon runs
 // as plain Node inside Electron (ELECTRON_RUN_AS_NODE); the Rust daemon gets none, and drops an inherited one.
 export function daemonEnv(base: NodeJS.ProcessEnv, testAccountsDir?: string, runAsNode = true): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = Object.fromEntries(
-    Object.entries(base).filter(([key]) => !["TJOMMIE_DEV", "TJOMMIE_ACCOUNTS_DIR", "ELECTRON_RUN_AS_NODE"].includes(key.toUpperCase())),
+    Object.entries(base).filter(([key]) => {
+      const name = key.toUpperCase();
+      return !["TJOMMIE_DEV", "TJOMMIE_ACCOUNTS_DIR", "ELECTRON_RUN_AS_NODE"].includes(name) && !name.startsWith("TJOMMIE_SKIP_");
+    }),
   );
   if (runAsNode) env.ELECTRON_RUN_AS_NODE = "1";
   if (testAccountsDir !== undefined) env.TJOMMIE_ACCOUNTS_DIR = testAccountsDir;

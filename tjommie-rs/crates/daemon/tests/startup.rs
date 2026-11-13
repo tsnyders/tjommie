@@ -82,13 +82,17 @@ fn reads_the_ports_and_the_account_folder_override() {
     );
 }
 
+// The test hooks switch off real checks, so only a debug build honours them: tests build debug executables, and a
+// release build ignores a variable left in an owner's environment. `cfg!(debug_assertions)` is that same switch here.
+
 #[test]
 fn probes_the_provider_clis_at_start_unless_a_test_says_not_to() {
     assert!(!parse(&["--dev"], &[]).unwrap().skip_account_check);
-    assert!(
+    assert_eq!(
         parse(&["--dev"], &[("TJOMMIE_SKIP_ACCOUNT_CHECK", "1")])
             .unwrap()
-            .skip_account_check
+            .skip_account_check,
+        cfg!(debug_assertions)
     );
 }
 
@@ -101,11 +105,30 @@ fn runs_the_codex_data_acl_pass_unless_a_test_says_not_to() {
             .unwrap()
             .skip_folder_protection
     );
-    assert!(
+    assert_eq!(
         parse(&["--dev"], &[("TJOMMIE_SKIP_FOLDER_PROTECTION", "1")])
             .unwrap()
-            .skip_folder_protection
+            .skip_folder_protection,
+        cfg!(debug_assertions)
     );
+}
+
+#[test]
+fn honours_each_test_hook_on_its_own_and_both_in_production_mode() {
+    for mode in [&["--dev"][..], &["--token-stdin"][..]] {
+        let both = parse(
+            mode,
+            &[
+                ("TJOMMIE_SKIP_ACCOUNT_CHECK", "1"),
+                ("TJOMMIE_SKIP_FOLDER_PROTECTION", "1"),
+            ],
+        )
+        .unwrap();
+        assert_eq!(both.skip_account_check, cfg!(debug_assertions));
+        assert_eq!(both.skip_folder_protection, cfg!(debug_assertions));
+        let only_accounts = parse(mode, &[("TJOMMIE_SKIP_ACCOUNT_CHECK", "1")]).unwrap();
+        assert!(!only_accounts.skip_folder_protection);
+    }
 }
 
 #[test]
