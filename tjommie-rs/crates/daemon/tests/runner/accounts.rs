@@ -358,3 +358,37 @@ async fn does_not_start_paid_work_when_the_pin_changes_during_credential_loading
     assert_eq!(s.session_count(), 0);
     assert!(!s.runtime.in_use("api"));
 }
+
+/// `close_session`'s task releases the old run's account lease once the process exits, and `cancel_deletion`'s settled branch
+/// can't count on it having run: on a multi-thread runtime nothing orders them, where TypeScript's promise reactions run
+/// first-in, first-out (`runner.ts:1080-1083`). Here deletion's wait finishes and `close_session`'s never does. The restored
+/// bot's first message must still start, not fail with "Another turn is using this API account."
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn restores_a_failed_deletion_whose_exit_settled_before_the_session_close_released_the_api_lease()
+ {
+    let s = stack().await;
+    s.api("api", false, 1.0).await;
+    let bot = codex_bot(&s, json!({ "accountId": "api" }));
+    s.runner.submit(&bot.id, "First", &[]).unwrap();
+    wait_for(|| s.sent(0) > 0).await;
+    s.session(0).emit(turn_done(true, None));
+    settle().await;
+    assert!(s.runtime.in_use("api"), "an idle session keeps its account");
+
+    let (session_close_wait, _never) = gate();
+    let (deletion_wait, exited) = gate();
+    s.session(0)
+        .set(|state| state.exits = [session_close_wait, deletion_wait].into());
+    let closing = s.runner.close_for_deletion(&bot.id).unwrap();
+    exited.open(());
+    closing.await.unwrap();
+    assert!(
+        s.runtime.in_use("api"),
+        "close_session's exit task has not run, so the old run still holds the account"
+    );
+
+    s.runner.cancel_deletion(&bot.id);
+    s.runner.submit(&bot.id, "After the restore", &[]).unwrap();
+    wait_for(|| s.sent(1) > 0).await;
+    assert_eq!(s.session_count(), 2);
+}
