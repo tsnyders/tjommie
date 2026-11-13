@@ -696,7 +696,8 @@ impl daemon::account_runtime::AccountOps for HealthyOps {
     fn check(
         &self,
         account: &daemon::setup::Account,
-    ) -> daemon::cli::BoxFuture<'_, protocol::model::ProviderSetup> {
+    ) -> daemon::cli::BoxFuture<'_, Result<protocol::model::ProviderSetup, daemon::server::RpcError>>
+    {
         use protocol::model::{
             CodexSandboxReadiness, CodexSetup, Provider, ProviderSetup, SetupFields,
         };
@@ -715,7 +716,7 @@ impl daemon::account_runtime::AccountOps for HealthyOps {
                 sandbox: CodexSandboxReadiness::Ready,
             }),
         };
-        Box::pin(async move { setup })
+        Box::pin(async move { Ok(setup) })
     }
 
     fn check_usage(

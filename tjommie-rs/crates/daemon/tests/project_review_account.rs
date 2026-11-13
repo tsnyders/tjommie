@@ -52,9 +52,9 @@ fn healthy(account: &Account) -> ProviderSetup {
 }
 
 impl AccountOps for Healthy {
-    fn check(&self, account: &Account) -> BoxFuture<'_, ProviderSetup> {
+    fn check(&self, account: &Account) -> BoxFuture<'_, Result<ProviderSetup, RpcError>> {
         let setup = healthy(account);
-        Box::pin(async move { setup })
+        Box::pin(async move { Ok(setup) })
     }
 
     /// `probeLimit: async () => null`: the legacy limit probe finds nothing.

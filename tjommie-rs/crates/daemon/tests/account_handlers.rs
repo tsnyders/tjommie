@@ -32,7 +32,7 @@ struct Ops {
 }
 
 impl AccountOps for Ops {
-    fn check(&self, account: &Account) -> BoxFuture<'_, ProviderSetup> {
+    fn check(&self, account: &Account) -> BoxFuture<'_, Result<ProviderSetup, RpcError>> {
         let fields = |version: &str| SetupFields {
             installed: true,
             version: Some(version.into()),
@@ -48,7 +48,7 @@ impl AccountOps for Ops {
                 sandbox: CodexSandboxReadiness::Ready,
             }),
         };
-        Box::pin(async move { setup })
+        Box::pin(async move { Ok(setup) })
     }
 
     fn check_usage(&self, _: &Account, _: &Path) -> BoxFuture<'_, AccountUsageRead> {

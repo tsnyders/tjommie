@@ -4,7 +4,7 @@ mod common;
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use daemon::account_quota::{
@@ -115,11 +115,28 @@ struct Ops {
     login: Login,
     cancels: Mutex<Vec<(String, String)>>,
     logout: Script<Result<(), RpcError>>,
+    /// The setup probe fails outright, as a worker termination does (`probe` throws in TypeScript).
+    check_fails: AtomicBool,
+    /// What the CLI lookup finds when a probe failed before it could say.
+    cli_installed: AtomicBool,
 }
 
 impl AccountOps for Ops {
-    fn check(&self, account: &Account) -> BoxFuture<'_, ProviderSetup> {
-        self.probe.call(account)
+    fn check(&self, account: &Account) -> BoxFuture<'_, Result<ProviderSetup, RpcError>> {
+        if self.check_fails.load(Ordering::SeqCst) {
+            return Box::pin(async {
+                Err(RpcError::new(
+                    ErrorCode::Internal,
+                    "synthetic worker termination",
+                ))
+            });
+        }
+        let answer = self.probe.call(account);
+        Box::pin(async move { Ok(answer.await) })
+    }
+
+    fn installed(&self, _provider: Provider) -> bool {
+        self.cli_installed.load(Ordering::SeqCst)
     }
 
     fn uses_legacy_limit_probe(&self) -> bool {
@@ -281,6 +298,8 @@ fn ops() -> Ops {
         }),
         cancels: Mutex::default(),
         logout: Script::new(|_| Ok(())),
+        check_fails: AtomicBool::new(false),
+        cli_installed: AtomicBool::new(true),
     }
 }
 
@@ -1557,4 +1576,47 @@ async fn windows_credentials_use_the_namespace_targets_and_validate_before_the_s
             .message
             .contains("Windows Credential Manager")
     );
+}
+
+// `#check`'s catch (account-runtime.ts:90-92): a probe that fails outright (a worker termination during `--version`, say)
+// leaves "could not be checked", never "version check failed", and `installed` comes from the CLI lookup.
+#[tokio::test]
+async fn reports_a_probe_that_fails_as_could_not_be_checked_with_installed_from_the_cli_lookup() {
+    const MESSAGE: &str = "This account could not be checked. Try again in Accounts.";
+    let h = fixture();
+    h.ops.check_fails.store(true, Ordering::SeqCst);
+    for installed in [true, false] {
+        h.ops.cli_installed.store(installed, Ordering::SeqCst);
+        h.runtime.check("codex-main").await.unwrap();
+        let Some(ProviderSetup::Codex(codex)) = h.runtime.info("codex-main").unwrap().setup else {
+            panic!("a Codex check leaves a Codex setup");
+        };
+        assert_eq!(
+            (
+                codex.setup.installed,
+                codex.setup.version.clone(),
+                codex.setup.signed_in,
+                codex.setup.error.as_deref(),
+                codex.sandbox
+            ),
+            (
+                installed,
+                None,
+                false,
+                Some(MESSAGE),
+                CodexSandboxReadiness::Unavailable
+            ),
+            "installed: {installed}"
+        );
+    }
+    h.runtime.check("claude-main").await.unwrap();
+    let Some(ProviderSetup::Claude(claude)) = h.runtime.info("claude-main").unwrap().setup else {
+        panic!("a Claude check leaves a Claude setup");
+    };
+    assert_eq!(
+        (claude.signed_in, claude.error.as_deref()),
+        (false, Some(MESSAGE))
+    );
+    // An account that could not be checked can't take work.
+    assert!(!h.ready());
 }

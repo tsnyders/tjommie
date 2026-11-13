@@ -218,6 +218,20 @@ fn not_installed(provider: Provider) -> ProviderSetup {
     setup_of(provider, fields, CodexSandboxReadiness::Unavailable)
 }
 
+/// What a check that could not run at all leaves (`#check`'s catch in `account-runtime.ts:90-92`): the provider's CLI
+/// lookup says whether it is installed, and nothing else is known.
+pub(crate) fn could_not_check(provider: Provider, installed: bool) -> ProviderSetup {
+    let fields = SetupFields {
+        installed,
+        version: None,
+        signed_in: false,
+        account: None,
+        plan: None,
+        error: Some("This account could not be checked. Try again in Accounts.".into()),
+    };
+    setup_of(provider, fields, CodexSandboxReadiness::Unavailable)
+}
+
 fn failed_check(provider: Provider, version: Option<String>, error: &str) -> ProviderSetup {
     let fields = SetupFields {
         installed: true,
@@ -560,7 +574,8 @@ impl Setup {
         )
     }
 
-    /// `checkSetup`: both providers' default accounts.
+    /// `checkSetup`: both providers' default accounts. TypeScript's version rejects when a check ends in a worker
+    /// termination; here the account runtime's outcome stands in, "could not be checked".
     pub fn check_setup(&self, db: &Connection) -> BoxFuture<'static, Vec<ProviderSetup>> {
         let accounts = [Provider::Claude, Provider::Codex]
             .map(|provider| (provider, self.account_for(db, provider)));
@@ -569,7 +584,12 @@ impl Setup {
             let mut setups = Vec::new();
             for (provider, account) in accounts {
                 setups.push(match account {
-                    Ok(account) => setup.check_account_setup(&account).await,
+                    Ok(account) => match setup.check_account_setup(&account).await {
+                        Ok(checked) => checked,
+                        Err(_) => {
+                            could_not_check(provider, setup.0.cli.find_cli(provider).is_some())
+                        }
+                    },
                     Err(_) => failed_check(provider, None, "Add an account in Accounts."),
                 });
             }
@@ -577,17 +597,23 @@ impl Setup {
         })
     }
 
-    pub async fn check_account_setup(&self, account: &Account) -> ProviderSetup {
+    /// `checkAccountSetup`. The only error is a command that ended in a worker termination (or could not be stopped):
+    /// `runCli` rejects for nothing else, so a command that merely failed is a failed check, not an error. The account
+    /// runtime reports the error as "could not be checked".
+    pub async fn check_account_setup(
+        &self,
+        account: &Account,
+    ) -> Result<ProviderSetup, ProviderError> {
         match account.provider {
             Provider::Claude => self.claude_setup(account).await,
             Provider::Codex => self.codex_setup(account).await,
         }
     }
 
-    async fn claude_setup(&self, account: &Account) -> ProviderSetup {
+    async fn claude_setup(&self, account: &Account) -> Result<ProviderSetup, ProviderError> {
         let account = self.mapped(account);
         let Some(cmd) = self.0.cli.find_cli(Provider::Claude) else {
-            return not_installed(Provider::Claude);
+            return Ok(not_installed(Provider::Claude));
         };
         let env = self.account_env(&account);
         let (version_args, status_args) = (
@@ -598,16 +624,25 @@ impl Setup {
             self.0.cli.run_cli(&cmd, &version_args, &env, RUN_TIMEOUT),
             self.0.cli.run_cli(&cmd, &status_args, &env, RUN_TIMEOUT)
         );
-        let Some(version) = version.ok().filter(|version| version.code == Some(0)) else {
-            return failed_check(Provider::Claude, None, "Claude Code version check failed");
-        };
+        // `Promise.all`: either command ending in a worker termination leaves the check.
+        let (version, status) = (version?, status?);
+        if version.code != Some(0) {
+            return Ok(failed_check(
+                Provider::Claude,
+                None,
+                "Claude Code version check failed",
+            ));
+        }
         let version = parse_version(&version.stdout);
-        let status = status
-            .ok()
+        let status = Some(status)
             .filter(|status| status.code.is_some())
             .and_then(|status| try_parse_claude_status(&status.stdout));
         let Some(status) = status else {
-            return failed_check(Provider::Claude, version, "Claude sign-in check failed");
+            return Ok(failed_check(
+                Provider::Claude,
+                version,
+                "Claude sign-in check failed",
+            ));
         };
         let fields = SetupFields {
             installed: true,
@@ -617,23 +652,27 @@ impl Setup {
             plan: status.plan,
             error: None,
         };
-        ProviderSetup::Claude(fields)
+        Ok(ProviderSetup::Claude(fields))
     }
 
-    async fn codex_setup(&self, account: &Account) -> ProviderSetup {
+    async fn codex_setup(&self, account: &Account) -> Result<ProviderSetup, ProviderError> {
         let account = self.mapped(account);
         let Some(cmd) = self.0.cli.find_cli(Provider::Codex) else {
-            return not_installed(Provider::Codex);
+            return Ok(not_installed(Provider::Codex));
         };
         let env = self.account_env(&account);
         let version = self
             .0
             .cli
             .run_cli(&cmd, &["--version".to_string()], &env, RUN_TIMEOUT)
-            .await;
-        let Some(version) = version.ok().filter(|version| version.code == Some(0)) else {
-            return failed_check(Provider::Codex, None, "Codex version check failed");
-        };
+            .await?;
+        if version.code != Some(0) {
+            return Ok(failed_check(
+                Provider::Codex,
+                None,
+                "Codex version check failed",
+            ));
+        }
         let version = parse_version(&version.stdout);
         let checked = async {
             let server = self
@@ -649,7 +688,7 @@ impl Setup {
             close_server(&server).await;
             Ok::<_, ProviderError>((read?, sandbox))
         };
-        match checked.await {
+        Ok(match checked.await {
             // TypeScript reads `account.type`, so a read without `account` throws into the failed check.
             Ok((read, sandbox)) if read.get("account").is_some() => {
                 let signed_in = read.get("account").filter(|account| account.is_object());
@@ -675,7 +714,7 @@ impl Setup {
                 })
             }
             _ => failed_check(Provider::Codex, version, "Codex account check failed."),
-        }
+        })
     }
 
     /// ChatGPT subscription metadata only: never creates a thread or starts a model turn.
