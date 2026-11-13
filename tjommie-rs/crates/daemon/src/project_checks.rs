@@ -222,15 +222,16 @@ fn termination() -> CheckError {
     CheckError::Termination(STOP_UNCONFIRMED.into())
 }
 
-/// `error instanceof WorkerLaunchTerminationError`. The worker boundary carries its `Termination` error inside an
-/// `io::Error` (win/boundary.rs, `CliHost for WorkerBoundary`).
-/// TODO(M5-integration): Core's cli.rs has `is_worker_termination` for its own `WorkerTermination` type; switch to
-/// it when the two cli.rs files are merged.
+/// `error instanceof WorkerLaunchTerminationError`. A launch the worker could not prove stopped arrives in one of two
+/// forms. Production checks go through `SystemCli::with_worker`, where the boundary's `Termination` becomes
+/// `cli::WorkerTermination` (`win/boundary.rs`, `cli::WorkerBoundary::spawn`). A boundary used directly as the
+/// `CliHost` carries its own `BoundaryError::Termination` inside the `io::Error` instead.
 fn is_worker_termination(error: &io::Error) -> bool {
-    error
-        .get_ref()
-        .and_then(|inner| inner.downcast_ref::<BoundaryError>())
-        .is_some_and(|boundary| matches!(boundary, BoundaryError::Termination))
+    crate::cli::is_worker_termination(error)
+        || error
+            .get_ref()
+            .and_then(|inner| inner.downcast_ref::<BoundaryError>())
+            .is_some_and(|boundary| matches!(boundary, BoundaryError::Termination))
 }
 
 /// `{ ...process.env }` for the scrubbed keys (project-checks.ts:12-15).

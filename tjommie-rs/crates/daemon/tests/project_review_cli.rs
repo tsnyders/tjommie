@@ -7,7 +7,9 @@ use std::collections::BTreeMap;
 use std::io;
 use std::sync::{Arc, Mutex};
 
-use daemon::cli::{BoxFuture, CliChild, CliCommand, CliExit, CliHost, LaunchOptions, Retirement};
+use daemon::cli::{
+    BoxFuture, CliChild, CliCommand, CliExit, CliHost, LaunchOptions, Retirement, WorkerTermination,
+};
 use daemon::project_checks::CheckError;
 use daemon::project_review_cli::{ReviewCliOptions, run_review_cli};
 use daemon::providers::ProviderEvent;
@@ -89,6 +91,23 @@ async fn records_unknown_spending_and_keeps_the_lease_when_a_paid_launch_cannot_
             assert!(shape.is_match(id), "{id}");
         }
         other => panic!("expected one unknown usage event, got {other:?}"),
+    }
+}
+
+/// The same launch, in the form production produces: `SystemCli::with_worker` turns the boundary's `Termination` into
+/// `cli::WorkerTermination` (`win/boundary.rs`, `cli::WorkerBoundary::spawn`).
+#[tokio::test]
+async fn keeps_the_lease_when_the_system_cli_reports_a_worker_launch_it_could_not_prove_stopped() {
+    let root = temp_root();
+    let record = |_: ProviderEvent| -> Result<(), String> { Ok(()) };
+    let launch = scripted(Err(io::Error::other(WorkerTermination)));
+    match run_review_cli(options(launch, &cwd(&root), &record)).await {
+        Err(CheckError::Termination(message)) => assert_eq!(
+            message,
+            "Reviewer launch retirement is unconfirmed; its account and scratch profile are retained."
+        ),
+        Err(other) => panic!("expected a termination, got: {other}"),
+        Ok(_) => panic!("expected a termination, got a result"),
     }
 }
 

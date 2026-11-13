@@ -100,6 +100,26 @@ async fn announces_the_account_folder_override_in_production_mode() {
     );
 }
 
+/// The harness sets both test hooks, and the daemon says so, once each, so a log shows a protection is off. (The
+/// `stderr()` the other tests compare leaves these two lines out.)
+#[tokio::test]
+async fn announces_each_test_hook_it_honours() {
+    let daemon = launch(&["--dev"], TempRoot::new(), &[]);
+    daemon.ready().await;
+    let stderr = daemon.stderr_raw();
+    let notices: Vec<&str> = stderr
+        .lines()
+        .filter(|line| line.starts_with(common::HOOK_NOTICE))
+        .collect();
+    assert_eq!(
+        notices,
+        [
+            "Test hook TJOMMIE_SKIP_ACCOUNT_CHECK is on: the provider CLIs are not probed at start.",
+            "Test hook TJOMMIE_SKIP_FOLDER_PROTECTION is on: the Codex data ACL pass is skipped.",
+        ]
+    );
+}
+
 #[tokio::test]
 async fn announces_the_account_folder_override_in_development_mode() {
     let root = TempRoot::new();

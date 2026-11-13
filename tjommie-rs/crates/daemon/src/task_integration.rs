@@ -348,17 +348,27 @@ impl TaskIntegrations {
         Ok(())
     }
 
-    /// Blocks the record under the lock.
+    /// Blocks the record under the lock, and releases the tester's lease in the same lock section. TypeScript's `finally`
+    /// releases right after the terminal write with nothing in between, so no one can see the integration finished while
+    /// the bot is still leased; a separate step here would leave that window open, and an immediate second integration
+    /// on the same tester would be refused.
     async fn block_record(
         self: &Arc<Self>,
+        prepared: &Prepared,
         record: &TaskIntegration,
         reason: &'static str,
     ) -> Result<(), CheckError> {
-        let (this, record) = (self.clone(), record.clone());
-        blocking(move || this.blocked(&this.tasks.lock(), &record, reason))
-            .await
-            .map_err(failed)?
-            .map_err(failed)?;
+        let (this, record, tester) = (self.clone(), record.clone(), prepared.tester.id.clone());
+        blocking(move || {
+            let db = this.tasks.lock();
+            let written = this.blocked(&db, &record, reason);
+            let released = this.tasks.release(&db, &tester, &record.id);
+            written?;
+            released
+        })
+        .await
+        .map_err(failed)?
+        .map_err(failed)?;
         Ok(())
     }
 
@@ -389,6 +399,7 @@ impl TaskIntegrations {
         if merged.conflict {
             return self
                 .block_record(
+                    prepared,
                     &record,
                     "conflict: resolve the retained candidate files, then create a new reviewed task commit; no side was selected.",
                 )
@@ -408,7 +419,9 @@ impl TaskIntegrations {
             record.updated_at = now_iso();
             self.save_record(&record).await?;
             if !passed {
-                return self.block_record(&record, "combined_checks_failed").await;
+                return self
+                    .block_record(prepared, &record, "combined_checks_failed")
+                    .await;
             }
         }
         let this = self.clone();
@@ -427,6 +440,7 @@ impl TaskIntegrations {
         if prepared.controller.is_cancelled() {
             return self
                 .block_record(
+                    prepared,
                     &record,
                     "Integration stopped; retained candidate is unchanged.",
                 )
@@ -445,19 +459,32 @@ impl TaskIntegrations {
         .map_err(failed)?;
         if changed {
             return self
-                .block_record(&record, "Combined checks changed the candidate source.")
+                .block_record(
+                    prepared,
+                    &record,
+                    "Combined checks changed the candidate source.",
+                )
                 .await;
         }
         record.state = IntegrationState::Ready;
         record.checks_completed = true;
         record.updated_at = now_iso();
         self.save_record(&record).await?;
+        // The promotion is the last write, and `finally { release }` follows it with nothing in between (see
+        // `block_record`): the lease is released in the same lock section, whether or not the promotion worked.
         let this = self.clone();
         let (id, expected) = (record.id.clone(), record.expected_target_sha.clone());
-        blocking(move || this.promote(&this.tasks.lock(), &id, &expected))
-            .await
-            .map_err(failed)?
-            .map_err(failed)?;
+        let tester = prepared.tester.id.clone();
+        blocking(move || {
+            let db = this.tasks.lock();
+            let promoted = this.promote(&db, &id, &expected);
+            let released = this.tasks.release(&db, &tester, &id);
+            promoted?;
+            released
+        })
+        .await
+        .map_err(failed)?
+        .map_err(failed)?;
         Ok(())
     }
 

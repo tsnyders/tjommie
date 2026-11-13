@@ -283,14 +283,24 @@ async fn integrates_two_exact_accepted_tasks_with_combined_checks_while_preservi
         .start(&integrate(&first, &h.base, "integrate-a"))
         .unwrap();
     let integrated_a = finished(&h, &service, &a.id).await;
-    assert!(integrated_a.reason.is_none());
+    assert!(
+        integrated_a.reason.is_none(),
+        "{:?}: {:?}",
+        integrated_a.state,
+        integrated_a.reason
+    );
     assert_eq!(integrated_a.state, IntegrationState::Integrated);
     let a_candidate = integrated_a.candidate_sha.clone().unwrap();
     let b = service
         .start(&integrate(&second, &a_candidate, "integrate-b"))
         .unwrap();
     let integrated_b = finished(&h, &service, &b.id).await;
-    assert!(integrated_b.reason.is_none());
+    assert!(
+        integrated_b.reason.is_none(),
+        "{:?}: {:?}",
+        integrated_b.state,
+        integrated_b.reason
+    );
     assert_eq!(integrated_b.state, IntegrationState::Integrated);
     let candidate = integrated_b.candidate_sha.clone().unwrap();
     assert_eq!(h.git(&h.repo_path, &["rev-parse", "delivery"]), candidate);

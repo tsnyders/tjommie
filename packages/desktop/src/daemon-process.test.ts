@@ -119,6 +119,21 @@ describe("daemon process", () => {
     await client.disconnected;
   }, 60_000);
 
+  it("does not forward an inherited test hook that turns off a check or a protection", () => {
+    const parentEnv = {
+      ...process.env,
+      TJOMMIE_SKIP_FOLDER_PROTECTION: "1",
+      tjommie_skip_account_check: "1", // Whatever its case.
+      TJOMMIE_SKIP_SOMETHING_NEW: "1", // Every TJOMMIE_SKIP_* switch, not only the ones that exist today.
+      TJOMMIE_HOME: "C:\\x",
+    };
+    for (const runAsNode of [true, false]) {
+      const env = daemonEnv(parentEnv, undefined, runAsNode);
+      expect(Object.keys(env).filter((key) => key.toUpperCase().startsWith("TJOMMIE_SKIP_"))).toEqual([]);
+      expect(env.TJOMMIE_HOME).toBe("C:\\x"); // Other settings still pass through.
+    }
+  });
+
   it("does not forward an inherited accounts-folder hook", () => {
     const parentEnv = { ...process.env, TJOMMIE_ACCOUNTS_DIR: "C:\\private-accounts" };
     expect(daemonEnv(parentEnv).TJOMMIE_ACCOUNTS_DIR).toBeUndefined();

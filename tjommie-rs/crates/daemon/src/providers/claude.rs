@@ -731,7 +731,7 @@ fn restrict_session_folder(folder: &Path) -> Result<(), ProviderError> {
     let sid = {
         let mut sid = USER_SID.lock().expect("SID lock");
         if sid.is_none() {
-            let identity = crate::spawn::command("whoami")
+            let identity = crate::spawn::command(crate::cli::system32("whoami.exe"))
                 .args(["/user", "/fo", "csv", "/nh"])
                 .env_clear()
                 .envs(&env)
@@ -746,7 +746,7 @@ fn restrict_session_folder(folder: &Path) -> Result<(), ProviderError> {
             ProviderError::Failed("Could not identify the user for Claude's session files.".into())
         })?
     };
-    let result = crate::spawn::command("icacls")
+    let result = crate::spawn::command(crate::cli::system32("icacls.exe"))
         .arg(folder)
         .args(["/inheritance:r", "/grant:r", &format!("*{sid}:(OI)(CI)F")])
         .env_clear()

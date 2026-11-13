@@ -981,7 +981,10 @@ async fn collect(child: CliChild, timeout: Duration) -> io::Result<CliOutput> {
     })
 }
 
-fn system32(program: &str) -> PathBuf {
+/// A Windows system tool by absolute path: `%SystemRoot%\System32\<program>`, or `C:\Windows\System32` when `SystemRoot`
+/// is unset. Never found through PATH, where Git's Unix `whoami` (which rejects `/user`) can come before the real one, and
+/// any folder could hold a look-alike.
+pub fn system32(program: &str) -> PathBuf {
     let root =
         std::env::var_os("SystemRoot").map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from);
     root.join("System32").join(program)

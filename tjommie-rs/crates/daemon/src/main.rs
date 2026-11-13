@@ -53,6 +53,17 @@ fn run(args: &[String]) -> Result<(), StartupError> {
     if launch.accounts_dir.is_some() {
         eprintln!("Using account folders from TJOMMIE_ACCOUNTS_DIR.");
     }
+    // A test hook that switches off a real check says so, so a log shows it. `test_hook` honours them in debug builds only.
+    if launch.skip_account_check {
+        eprintln!(
+            "Test hook TJOMMIE_SKIP_ACCOUNT_CHECK is on: the provider CLIs are not probed at start."
+        );
+    }
+    if launch.skip_folder_protection {
+        eprintln!(
+            "Test hook TJOMMIE_SKIP_FOLDER_PROTECTION is on: the Codex data ACL pass is skipped."
+        );
+    }
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async {
         let daemon = startup::start(&launch, &auth).await?;

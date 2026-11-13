@@ -316,21 +316,103 @@ describe("native browser stream failures", () => {
   });
 });
 
+// A tab has one screencast and Page.stopScreencast is not counted, so a capture (a polled browser.frame or a bot's screenshot)
+// and a live stream take turns on it. These cases hold each side mid-command to force every interleaving.
 describe("polled capture beside a live stream", () => {
-  it("a polled capture with streaming set sends only its screenshot and adds no listener", async () => {
-    const debuggerApi = fakeDebugger((method) => method === "Page.captureScreenshot" ? { data: Buffer.alloc(100).toString("base64") } : {});
-    const captured = await captureNativeBrowserFrame(debuggerApi, () => {}, undefined, true);
-    expect(captured.length).toBeGreaterThan(100);
-    expect(sentMethods(debuggerApi)).toEqual(["Page.captureScreenshot"]);
-    expect(debuggerApi.listenerCount("message")).toBe(0);
-  });
-  it("while a stream runs, a polled capture leaves the screencast and its listener alone", async () => {
-    const debuggerApi = fakeDebugger((method) => method === "Page.captureScreenshot" ? { data: Buffer.alloc(100).toString("base64") } : {});
+  const screenshot = { data: Buffer.alloc(100).toString("base64") };
+  /** A promise settled by hand, to hold a command open. */
+  const gate = (): { promise: Promise<void>; open: () => void } => {
+    let open: () => void = () => {};
+    const promise = new Promise<void>((resolve) => { open = resolve; });
+    return { promise, open };
+  };
+  const answer = (method: string): unknown => method === "Page.captureScreenshot" ? screenshot : {};
+
+  it("while a stream runs, a capture takes only its screenshot and leaves the screencast and its listener alone", async () => {
+    const debuggerApi = fakeDebugger(answer);
     const stream = await startNativeBrowserStream(debuggerApi, streamOptions());
-    await captureNativeBrowserFrame(debuggerApi, () => {}, undefined, true);
+    const captured = await captureNativeBrowserFrame(debuggerApi, () => {});
+    expect(captured.length).toBeGreaterThan(100);
     expect(sentMethods(debuggerApi)).toEqual(["Page.startScreencast", "Page.captureScreenshot"]);
     expect(debuggerApi.listenerCount("message")).toBe(1);
     await stream.stop();
+    expect(sentMethods(debuggerApi)).toEqual(["Page.startScreencast", "Page.captureScreenshot", "Page.stopScreencast"]);
+  });
+  it("a capture already running when a stream starts finishes first, so nothing stops the stream after it starts", async () => {
+    const shot = gate();
+    const debuggerApi = fakeDebugger((method) => method === "Page.captureScreenshot" ? shot.promise.then(() => screenshot) : {});
+    const poll = captureNativeBrowserFrame(debuggerApi, () => {});
+    await vi.waitFor(() => expect(sentMethods(debuggerApi)).toContain("Page.captureScreenshot"));
+    const starting = startNativeBrowserStream(debuggerApi, streamOptions());
+    await settle();
+    // The stream waits for the capture's turn; it has not touched the screencast.
+    expect(sentMethods(debuggerApi)).toEqual(["Page.startScreencast", "Page.captureScreenshot"]);
+    shot.open();
+    await poll;
+    const stream = await starting;
+    // The capture's own stop comes before the stream's start, and nothing follows the start.
+    expect(sentMethods(debuggerApi)).toEqual(["Page.startScreencast", "Page.captureScreenshot", "Page.stopScreencast", "Page.startScreencast"]);
+    await settle();
+    expect(sentMethods(debuggerApi).at(-1)).toBe("Page.startScreencast");
+    await stream.stop();
+    expect(sentMethods(debuggerApi).at(-1)).toBe("Page.stopScreencast");
+  });
+  it("a capture that arrives while a stream is starting waits for it, then borrows its screencast", async () => {
+    const started = gate();
+    const debuggerApi = fakeDebugger((method) => method === "Page.startScreencast" ? started.promise.then(() => ({})) : answer(method));
+    const starting = startNativeBrowserStream(debuggerApi, streamOptions());
+    await vi.waitFor(() => expect(sentMethods(debuggerApi)).toEqual(["Page.startScreencast"]));
+    const poll = captureNativeBrowserFrame(debuggerApi, () => {});
+    await settle();
+    expect(sentMethods(debuggerApi)).toEqual(["Page.startScreencast"]);
+    started.open();
+    const stream = await starting;
+    await poll;
+    // No second start and no stop: the capture only took its screenshot.
+    expect(sentMethods(debuggerApi)).toEqual(["Page.startScreencast", "Page.captureScreenshot"]);
+    expect(debuggerApi.listenerCount("message")).toBe(1);
+    await stream.stop();
+  });
+  it("stopping a stream waits for a capture that is borrowing its screencast", async () => {
+    const shot = gate();
+    const debuggerApi = fakeDebugger((method) => method === "Page.captureScreenshot" ? shot.promise.then(() => screenshot) : {});
+    const stream = await startNativeBrowserStream(debuggerApi, streamOptions());
+    const poll = captureNativeBrowserFrame(debuggerApi, () => {});
+    await vi.waitFor(() => expect(sentMethods(debuggerApi)).toContain("Page.captureScreenshot"));
+    const stopping = stream.stop();
+    await settle();
+    expect(sentMethods(debuggerApi)).not.toContain("Page.stopScreencast");
+    shot.open();
+    await poll;
+    await stopping;
+    expect(sentMethods(debuggerApi)).toEqual(["Page.startScreencast", "Page.captureScreenshot", "Page.stopScreencast"]);
+  });
+  it("a capture after the stream has stopped runs its own screencast again", async () => {
+    const debuggerApi = fakeDebugger(answer);
+    const stream = await startNativeBrowserStream(debuggerApi, streamOptions());
+    await stream.stop();
+    await captureNativeBrowserFrame(debuggerApi, () => {});
+    expect(sentMethods(debuggerApi)).toEqual(["Page.startScreencast", "Page.stopScreencast", "Page.startScreencast", "Page.captureScreenshot", "Page.stopScreencast"]);
+  });
+  it("stops the screencast only when the last stream on the tab stops", async () => {
+    const debuggerApi = fakeDebugger();
+    const first = await startNativeBrowserStream(debuggerApi, streamOptions());
+    const second = await startNativeBrowserStream(debuggerApi, streamOptions());
+    await first.stop();
+    expect(sentMethods(debuggerApi)).not.toContain("Page.stopScreencast");
+    await second.stop();
+    expect(sentMethods(debuggerApi).filter((method) => method === "Page.stopScreencast")).toHaveLength(1);
+  });
+  it("a stream that fails to start leaves the tab usable for captures", async () => {
+    let starts = 0;
+    const debuggerApi = fakeDebugger((method) => {
+      if (method === "Page.startScreencast" && ++starts === 1) throw new Error("Synthetic screencast failure");
+      return answer(method);
+    });
+    await expect(startNativeBrowserStream(debuggerApi, streamOptions())).rejects.toThrow("Synthetic screencast failure");
+    await captureNativeBrowserFrame(debuggerApi, () => {});
+    // The capture ran its own screencast, so no stream was counted as owning it.
+    expect(sentMethods(debuggerApi)).toEqual(["Page.startScreencast", "Page.startScreencast", "Page.captureScreenshot", "Page.stopScreencast"]);
   });
 });
 
