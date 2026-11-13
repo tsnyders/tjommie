@@ -912,3 +912,48 @@ async fn a_close_racing_a_start_never_leaves_the_host_listening() {
         assert_eq!(host.status().port, None, "round {round}");
     }
 }
+
+#[tokio::test]
+async fn sends_an_event_to_one_device_connection_without_touching_the_database_and_stops_at_revoke()
+{
+    let Fixture {
+        db,
+        host,
+        code,
+        contexts,
+        ..
+    } = fixture().await;
+    let keys = generate_keypair().unwrap();
+    let paired = pair(
+        &code,
+        &keys.private_key[..],
+        &secret(&code),
+        open(Kind::Lan, &host, &code).await,
+    )
+    .await
+    .unwrap();
+    let device_id = paired.device_id.clone();
+    let mut client = paired.connect().await;
+    assert_eq!(client.call("bots.list", json!({})).await, Ok(json!([])));
+    let connection = contexts.lock().unwrap()[0].connection_id.clone();
+    // Streamed frames come through here up to 60 times a second. With the database held by someone else for the whole
+    // call, a send that looked the device up in it would wait; this one must not.
+    let (done, result) = std::sync::mpsc::channel();
+    let guard = db.lock().unwrap();
+    let sender = {
+        let (host, connection) = (host.clone(), connection.clone());
+        std::thread::spawn(move || {
+            let _ = done.send(host.send_to(&connection, &devices_changed()));
+        })
+    };
+    let sent = result.recv_timeout(Duration::from_secs(5));
+    drop(guard);
+    sender.join().unwrap();
+    assert_eq!(sent, Ok(true), "send_to needs no database access");
+    assert_eq!(client.next_event().await["event"], "devices.changed");
+    assert!(!host.send_to("no-such-connection", &devices_changed()));
+    // Revoking closes the device's connections before it returns, so nothing is sent to it afterwards.
+    host.revoke(&device_id).unwrap();
+    assert!(!host.send_to(&connection, &devices_changed()));
+    host.close().await;
+}

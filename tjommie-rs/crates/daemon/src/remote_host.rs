@@ -533,26 +533,32 @@ impl RemoteHost {
     }
 
     /// Sends an event to one welcomed device connection, named by the id its requests carry in their `RequestContext`.
-    /// False when there is none (it left, or its device was revoked and is disconnected). A device that stops reading is
-    /// closed by the wire writer's own buffer limit, so a flood here cannot grow without bound.
+    /// False when there is none (it left, or it was closed). A device that stops reading is closed by the wire writer's own
+    /// buffer limit, so a flood here cannot grow without bound.
+    ///
+    /// This runs for every streamed frame, up to 60 a second per watching device, so it never touches the database.
+    /// Revocation holds without it: `revoke` closes the device's connections before it returns, so the next call finds
+    /// them closed. A revocation made any other way (an edit to the devices table) ends the connection at the device's
+    /// next frame, which `receive` and `request` check; `expire` closes a connection that sends none within `IDLE_TIMEOUT`
+    /// (150 s), at its next sweep (30 s), so within 180 s at the outside.
     pub fn send_to(&self, connection_id: &str, event: &Event) -> bool {
-        let peers = self.state().peers.clone();
-        let Some(peer) = peers.into_iter().find(|peer| {
-            peer.welcomed.load(Ordering::Acquire)
-                && peer.connection().as_deref() == Some(connection_id)
-        }) else {
+        let found = self
+            .state()
+            .peers
+            .iter()
+            .find(|peer| {
+                peer.welcomed.load(Ordering::Acquire)
+                    && peer.connection().as_deref() == Some(connection_id)
+            })
+            .cloned();
+        let Some(peer) = found else {
             return false;
         };
-        let Some(device_id) = peer.device() else {
-            return false;
-        };
-        if is_revoked(&self.db(), &device_id) {
-            peer.close();
-            return false;
-        }
-        peer.outbox
-            .send(json_text(&ServerMessage::Event(event.clone())))
-            .is_ok()
+        !peer.writer.is_closed()
+            && peer
+                .outbox
+                .send(json_text(&ServerMessage::Event(event.clone())))
+                .is_ok()
     }
 
     pub fn has_devices(&self) -> bool {
