@@ -13,7 +13,10 @@ use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
-use crate::cli::{ChildExit, CliChild, CliCommand, CliExit, CliHost, KillTree, LaunchOptions};
+use crate::cli::{
+    ChildExit, CliChild, CliCommand, CliExit, CliHost, KillTree, LaunchOptions, Retirement,
+    wait_for_cli_exit,
+};
 use crate::ids::new_id;
 use crate::project_checks::CheckError;
 use crate::project_review_policy::{
@@ -358,7 +361,7 @@ async fn review_turn(
     if start_failed(&child.exit) {
         return Err(CheckError::Failed("review_provider_start_failed".into()));
     }
-    if !job_retired(&child.exit).await {
+    if !job_retired(&child.exit, child.retirement.as_ref()).await {
         return Err(CheckError::Termination(JOB_RETIREMENT.into()));
     }
     if !turn.pending.is_empty() {
@@ -453,6 +456,7 @@ pub async fn review_cli_version(
         mut stderr,
         exit,
         kill_tree,
+        retirement,
         ..
     } = host
         .launch(
@@ -521,7 +525,7 @@ pub async fn review_cli_version(
     }
     // Both checks run before either error is returned, so the stop is awaited on every path and nothing is left
     // running. The job check comes first, as in TypeScript.
-    let job = job_retired(&exit).await;
+    let job = job_retired(&exit, retirement.as_ref()).await;
     let stopped = stop.settled().await;
     // `child.once("error")` rejects before either check (project-review-cli.ts:101): a plain error, nothing retained.
     if start_failed(&exit) {
@@ -559,10 +563,10 @@ where
 
 /// `waitForCliExit(child, Promise.resolve())`: false when the worker boundary could not confirm that the child's tree
 /// has gone, so it may still run. A child that merely failed to start is [`start_failed`], not this.
-// TODO(M5-integration): Core's `CliChild` also carries `retirement`, which a worker child's exit alone doesn't prove.
-// Once merged, await `cli::wait_for_cli_exit(&child.exit, child.retirement.as_ref())` here instead (and test it).
-async fn job_retired(exit: &ChildExit) -> bool {
-    !matches!(exit.wait().await, CliExit::Failed(message) if is_termination_message(&message))
+/// A worker child's `retirement` is the proof (its exit alone doesn't show that the tree is gone); any other child's
+/// exit is.
+async fn job_retired(exit: &ChildExit, retirement: Option<&Retirement>) -> bool {
+    wait_for_cli_exit(exit, retirement).await.is_ok()
 }
 
 /// A child `error` event (project-review-cli.ts:64, :101): the process never started. In TypeScript that is a plain

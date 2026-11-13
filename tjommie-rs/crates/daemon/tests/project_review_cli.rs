@@ -7,7 +7,8 @@ use std::collections::BTreeMap;
 use std::io;
 use std::sync::{Arc, Mutex};
 
-use daemon::cli::{BoxFuture, CliChild, CliCommand, CliExit, CliHost, LaunchOptions};
+use daemon::cli::{BoxFuture, CliChild, CliCommand, CliExit, CliHost, LaunchOptions, Retirement};
+use futures_util::FutureExt;
 use daemon::project_checks::CheckError;
 use daemon::project_review_cli::{ReviewCliOptions, run_review_cli};
 use daemon::providers::ProviderEvent;
@@ -121,12 +122,13 @@ async fn waits_for_worker_job_proof_and_records_unknown_spending_without_final_u
         events.lock().unwrap().push(event);
         Ok(())
     };
-    // The child printed nothing and has exited, but its job could not be shown to have stopped.
-    let (child, fake) = fake_child(4242);
+    // The child printed nothing and has exited, but its job could not be shown to have stopped. As `win::boundary`
+    // builds a worker child, the exit says so and `retirement` carries the proof, which is what the reviewer waits on.
+    let (mut child, fake) = fake_child(4242);
     drop(fake.stdout);
     drop(fake.stderr);
-    // The worker boundary reports an unconfirmed retirement with its own text.
     fake.exit.fire(CliExit::Failed(BoundaryError::Termination.to_string()));
+    child.retirement = Some(unconfirmed_retirement());
     let launch = scripted(Ok(child));
     match run_review_cli(options(launch, &cwd(&root), &record)).await {
         Err(CheckError::Termination(message)) => assert_eq!(
@@ -140,6 +142,37 @@ async fn waits_for_worker_job_proof_and_records_unknown_spending_without_final_u
     match recorded.as_slice() {
         [ProviderEvent::Usage(usage)] => assert_eq!(usage.cost_usd, None),
         other => panic!("expected one unknown usage event, got {other:?}"),
+    }
+}
+
+/// A worker child whose tree could not be shown to have stopped (`workerProcessRetired` rejecting).
+fn unconfirmed_retirement() -> Retirement {
+    async { Err(BoundaryError::Termination.to_string()) }
+        .boxed()
+        .shared()
+}
+
+/// The exit is clean, but the retirement proof is not: `waitForCliExit` throws, so the account stays reserved.
+#[tokio::test]
+async fn retains_the_account_when_the_exit_is_clean_but_the_retirement_proof_fails() {
+    let root = temp_root();
+    let record = |_: ProviderEvent| -> Result<(), String> { Ok(()) };
+    let (mut child, fake) = fake_child(4242);
+    drop(fake.stdout);
+    drop(fake.stderr);
+    fake.exit.fire(CliExit::Exited {
+        code: Some(0),
+        signal: None,
+    });
+    child.retirement = Some(unconfirmed_retirement());
+    let launch = scripted(Ok(child));
+    match run_review_cli(options(launch, &cwd(&root), &record)).await {
+        Err(CheckError::Termination(message)) => assert_eq!(
+            message,
+            "Reviewer job retirement is unconfirmed; its account and scratch profile are retained."
+        ),
+        Err(other) => panic!("expected a termination, got: {other}"),
+        Ok(_) => panic!("expected a termination, got a result"),
     }
 }
 

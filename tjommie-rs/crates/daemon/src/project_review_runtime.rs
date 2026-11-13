@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
-use crate::cli::{BoxFuture, CliCommand, CliHost};
+use crate::cli::{BoxFuture, CliCommand, CliHost, Runtime, SystemCli, process_env};
 use crate::fsid;
 use crate::ids::{new_id, now_iso};
 use crate::project_checks::CheckError;
@@ -755,12 +755,14 @@ impl WorkerPolicyObserver for ReviewObserver<'_> {
     }
 }
 
-/// `resolveCli("claude")` (cli.ts:61).
-// TODO(M5-integration): assumed Core's `SystemCli::resolve_cli(Provider::Claude, &process_env(), Runtime::current())`
-// on this review worker's runtime root. Core's `SystemCli` takes its own `WorkerBoundary` trait, so it can't be
-// wired until the merge. Until then production reviews fail closed with `review_cli_unavailable`.
-fn default_claude_cli() -> Option<CliCommand> {
-    None
+/// `resolveCli("claude")` (cli.ts:61): inside the review worker's runtime root when one is required (only a CLI
+/// installed there is ever launched as the reviewer), else on the owner's PATH.
+fn default_claude_cli(worker: Option<Arc<WorkerBoundary>>) -> Option<CliCommand> {
+    let host = match worker.filter(|worker| worker.required()) {
+        Some(worker) => SystemCli::with_worker(worker),
+        None => SystemCli::new(),
+    };
+    host.resolve_cli(Provider::Claude, &process_env(), Runtime::current())
 }
 
 /// `writeFileSync` of `receipts/` or `evaluations/`, with its folder.
@@ -1009,7 +1011,7 @@ impl ProjectReviewRuntime {
         account.assert_current().map_err(Failure::Review)?;
         let found = match &self.cli {
             Some(seam) => seam(),
-            None => default_claude_cli(),
+            None => default_claude_cli(self.worker.clone()),
         };
         let Some(found) = found else {
             return Ok(unavailable("review_cli_unavailable"));
