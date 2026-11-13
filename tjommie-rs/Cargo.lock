@@ -310,7 +310,7 @@ dependencies = [
 
 [[package]]
 name = "daemon"
-version = "0.4.2"
+version = "0.5.0"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -1342,7 +1342,7 @@ dependencies = [
 
 [[package]]
 name = "protocol"
-version = "0.4.2"
+version = "0.5.0"
 dependencies = [
  "base64 0.23.1",
  "jiff",
@@ -2062,7 +2062,7 @@ dependencies = [
 
 [[package]]
 name = "transport"
-version = "0.4.2"
+version = "0.5.0"
 dependencies = [
  "snow",
  "zeroize",
