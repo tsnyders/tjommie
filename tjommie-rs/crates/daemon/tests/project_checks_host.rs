@@ -1,8 +1,4 @@
-//! The two real-process tests of `project-checks.test.ts`: they run PowerShell through Core's real `SystemCli`, which
-//! is not in this branch until `rs/core` is merged. Until then the file compiles to nothing.
-// TODO(M5-integration): delete the `cfg(any())` line below once `daemon::cli::SystemCli` exists, and check
-// `SystemCli::new()` (rs-core cli.rs:590, `impl CliHost for SystemCli` at :809).
-#![cfg(any())]
+//! The two real-process tests of `project-checks.test.ts`: they run PowerShell through Core's real `SystemCli`.
 
 use std::sync::Arc;
 
