@@ -13,6 +13,7 @@ use rusqlite::{Connection, OptionalExtension};
 use crate::account_handlers::{self, Accounts};
 use crate::bots::{BotStatus, StoredBot, bot_state_of};
 use crate::ids::now_iso;
+use crate::m5::M5;
 use crate::m6::M6;
 use crate::remote::Remote;
 use crate::runner::Runner;
@@ -78,9 +79,14 @@ pub struct Late {
     pub runner: Arc<OnceLock<Runner>>,
     pub remote: Arc<OnceLock<Arc<Remote>>>,
     pub m6: Arc<OnceLock<Arc<M6>>>,
+    /// The project services: a bot in a project, or with a task running, can't be changed or deleted (`daemon.ts:451`,
+    /// `:494`).
+    pub m5: Arc<OnceLock<Arc<M5>>>,
     /// Bots whose provider or account is changing: the runner holds their work and reports "changing provider"
     /// (`switchingBots`).
     pub switching: Arc<Mutex<HashSet<String>>>,
+    /// Bots being deleted (`deletionRequests`). Projects refuse to take one on.
+    pub deleting: Arc<Mutex<HashSet<String>>>,
 }
 
 #[derive(Clone)]

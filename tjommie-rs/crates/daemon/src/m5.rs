@@ -19,7 +19,7 @@ use crate::project_checks::HostCheckRuntime;
 use crate::project_handlers::{ProjectServices, register};
 use crate::project_review_account::review_account_resolver;
 use crate::project_review_runtime::{ProjectReviewOptions, create_project_review_runtime};
-use crate::projects::{Projects, SqlRooms};
+use crate::projects::{AssertAvailable, Projects, SqlRooms};
 use crate::queue::WorkItem;
 use crate::runner::{Core, ItemHook, Runner, RunnerHooks, TurnResult};
 use crate::server::{Broadcaster, Handlers, RpcError};
@@ -105,6 +105,8 @@ pub struct M5Deps {
     /// `switchingBots`, shared with the runner's `is_held`: a bot whose provider is changing can't join a project or
     /// lease a task.
     pub switching: Arc<Mutex<HashSet<String>>>,
+    /// `deletionRequests`, shared with the bot handlers: a bot being deleted can't join a project either.
+    pub deleting: Arc<Mutex<HashSet<String>>>,
     pub runner: Runner,
     pub accounts: AccountRuntime,
     /// How checks and the review CLI launch when no worker is required.
@@ -122,11 +124,33 @@ pub struct M5 {
     pub integrations: Arc<TaskIntegrations>,
 }
 
+/// `daemon.ts:167`: `switchingBots.has(botId) || deletionRequests.has(botId)` is "busy", for the projects to refuse a bot
+/// whose settings or lifecycle is changing.
+pub fn bot_available(
+    switching: Arc<Mutex<HashSet<String>>>,
+    deleting: Arc<Mutex<HashSet<String>>>,
+) -> AssertAvailable {
+    Arc::new(move |bot_id| {
+        let changing = |set: &Mutex<HashSet<String>>| {
+            set.lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .contains(bot_id)
+        };
+        if changing(&switching) || changing(&deleting) {
+            return Err(RpcError::new(
+                ErrorCode::Busy,
+                "This bot's settings or lifecycle is changing. Try again shortly.",
+            ));
+        }
+        Ok(())
+    })
+}
+
 /// Builds the project services, binds the runner's task hooks and registers the 22 `projects.*` and `tasks.*` methods.
 /// Call it inside the runtime (settling and integration work run on it), after the runner exists.
 pub fn install(handlers: &mut Handlers, deps: M5Deps) -> Result<M5, RpcError> {
     let events = deps.events.clone();
-    let switching = deps.switching.clone();
+    let (switching, deleting) = (deps.switching.clone(), deps.deleting.clone());
     let projects = Arc::new(
         Projects::new(
             deps.db.clone(),
@@ -134,20 +158,7 @@ pub fn install(handlers: &mut Handlers, deps: M5Deps) -> Result<M5, RpcError> {
             Arc::new(SqlRooms),
         )
         .with_emit(Arc::new(move |event| events.send(event)))
-        // `daemon.ts:167`. The deletion requests of M4's bot lifecycle join this check when that is wired.
-        .with_assert_available(Arc::new(move |bot_id| {
-            if switching
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .contains(bot_id)
-            {
-                return Err(RpcError::new(
-                    ErrorCode::Busy,
-                    "This bot's settings or lifecycle is changing. Try again shortly.",
-                ));
-            }
-            Ok(())
-        })),
+        .with_assert_available(bot_available(switching, deleting)),
     );
     let review = create_project_review_runtime(ProjectReviewOptions {
         root: deps.root.join("data").join("reviewer"),

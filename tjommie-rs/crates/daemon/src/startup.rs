@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
 
 use protocol::Event;
+use protocol::model::{Autonomy, Provider};
 use serde::Deserialize;
 use serde_json::Value;
 use tokio::task::JoinHandle;
@@ -19,6 +20,7 @@ use crate::cli::{InstalledWorkers, SystemCli, WorkerInstall, WorkerPurpose};
 use crate::context::{self, Context, Db, Late, LateBotView};
 use crate::m5::{self, LateTasks, M5, M5Deps};
 use crate::m6::{self, M6, M6Deps};
+use crate::protect::{FolderProtection, ListAccounts};
 use crate::queue::WorkItem;
 use crate::relay_client::default_connector;
 use crate::remote::{Remote, RemoteOptions};
@@ -27,10 +29,11 @@ use crate::runner::{Core, Runner, RunnerDeps, RunnerHooks, TurnResult, cli_sessi
 use crate::server::{Handlers, RequestContext, Routes, RpcError, Server, ServerOptions};
 use crate::setup::Setup;
 use crate::turn_notices::turn_notice;
+use crate::win::acl::{ProtectedAccount, ProtectedPaths, Protection};
 use crate::win::boundary::{BoundaryOptions, WindowsNative, WorkerBoundary};
 use crate::win::cred::Namespace;
 use crate::win::worker::Purpose;
-use crate::{bots, db, diagnostics, paths, settings};
+use crate::{accounts_store, bots, db, diagnostics, paths, settings};
 
 /// The phone's LAN port, now set by `TJOMMIE_LAN_PORT` (`remote-host.ts:24` fixes it at 47101). A debug build uses the
 /// spec §4 dev port.
@@ -87,6 +90,10 @@ pub struct Launch {
     /// A test hook (`TJOMMIE_SKIP_ACCOUNT_CHECK=1`): don't probe the provider CLIs when the daemon starts, so tests
     /// never run a real `claude` or `codex`.
     pub skip_account_check: bool,
+    /// A test hook (`TJOMMIE_SKIP_FOLDER_PROTECTION=1`): don't run the Codex data ACL pass, at start or later. The pass
+    /// reads and changes the real `~/.codex/.sandbox` permissions, which no test may touch; skipped, the protection
+    /// reads as ready.
+    pub skip_folder_protection: bool,
     /// A test hook: the desktop's real-CLI tests point a disposable root at signed-in account folders.
     pub accounts_dir: Option<PathBuf>,
 }
@@ -126,6 +133,7 @@ pub fn parse_launch(
         )?,
         lan_bind: lan_bind(env("TJOMMIE_LAN_BIND"))?,
         skip_account_check: env("TJOMMIE_SKIP_ACCOUNT_CHECK").as_deref() == Some("1"),
+        skip_folder_protection: env("TJOMMIE_SKIP_FOLDER_PROTECTION").as_deref() == Some("1"),
         accounts_dir: env("TJOMMIE_ACCOUNTS_DIR")
             .filter(|dir| !dir.is_empty())
             .map(PathBuf::from),
@@ -331,6 +339,9 @@ pub async fn start(launch: &Launch, auth: &Auth) -> Result<Daemon, StartupError>
             return Err(error);
         }
     };
+    // Account and token creation, plus existing bot homes, need a fresh pass (`daemon.ts:134-135`). It runs here, where
+    // a failure closes everything built so far, rather than inside `assemble`, which is not async.
+    let protected = parts.accounts.protect(true, None).await.map_err(rpc);
     let Parts {
         token,
         handlers,
@@ -344,9 +355,8 @@ pub async fn start(launch: &Launch, auth: &Auth) -> Result<Daemon, StartupError>
         workers,
     } = parts;
     // `runner.start()` runs before the server answers, as in `daemon.ts:646-648`.
-    let activated = runner
-        .start()
-        .map_err(rpc)
+    let activated = protected
+        .and_then(|()| runner.start().map_err(rpc))
         .and_then(|()| server.activate_with(token, handlers, routes).map_err(rpc));
     let daemon = Daemon {
         server,
@@ -452,7 +462,13 @@ fn assemble(
     if matches!(auth, Auth::Production { .. }) && remove_leftover_token(&paths.token)? {
         println!("Removed a leftover development daemon-token file.");
     }
-    // T2.2 protects the Codex data and each account folder here, before SQLite opens.
+    // The only synchronous ACL pass (`daemon.ts:127-128`): it finishes before SQLite opens. A test hook skips it.
+    let protected = ProtectedPaths::new(&paths.root);
+    let first = if launch.skip_folder_protection {
+        Protection::Ready
+    } else {
+        FolderProtection::first_pass(&protected)
+    };
     let db: Db = Arc::new(Mutex::new(db::open(&paths.db)?));
     let token = match auth {
         Auth::Production { token, .. } => token.clone(),
@@ -485,6 +501,30 @@ fn assemble(
         ops: Arc::new(setup.clone()),
         credentials: Arc::new(Namespace::new(&paths.root)?),
     });
+    // The Codex data ACL pass, which the account and bot handlers and `setup.status` run again. A test hook swaps the
+    // real pass for one that finds nothing to do.
+    let list_accounts: ListAccounts = Arc::new(|db| {
+        Ok(accounts_store::list_accounts(db, false)?
+            .into_iter()
+            .map(|account| ProtectedAccount {
+                id: account.id,
+                provider: account.provider,
+                folder: PathBuf::from(account.folder),
+            })
+            .collect())
+    });
+    let protection = if launch.skip_folder_protection {
+        FolderProtection::with_pass(
+            protected,
+            db.clone(),
+            list_accounts,
+            first,
+            Arc::new(|_, _, _| Protection::Ready),
+        )
+    } else {
+        FolderProtection::new(protected, db.clone(), list_accounts, first)
+    };
+    accounts.attach_protection(protection.clone());
 
     // 2. The runner, on those accounts.
     let late = Late::default();
@@ -494,11 +534,16 @@ fn assemble(
     let deps = RunnerDeps {
         accounts: Some(Arc::new(accounts.runtime.clone())),
         is_held: Arc::new(move |bot_id| lock(&held).contains(bot_id)),
-        // T2.2 adds the folder protection's reason here.
+        // `daemon.ts:234-239`: a bot changing provider waits; a Codex bot that is confined to its folder also waits for
+        // the folder protection to be in place.
         setup_issue: Arc::new(move |bot| {
-            lock(&issue)
-                .contains(&bot.id)
-                .then(|| "This bot is changing provider. Try again shortly.".to_owned())
+            if lock(&issue).contains(&bot.id) {
+                return Some("This bot is changing provider. Try again shortly.".to_owned());
+            }
+            if bot.provider != Provider::Codex || bot.autonomy != Autonomy::Folder {
+                return None;
+            }
+            protection.reason().map(str::to_owned)
         }),
         kill_tree: Arc::new(crate::cli::kill_tree),
         // M5's task hooks run first (`tasks.turnEnded`, then the rest). M4 adds `scheduler.runEnded` and
@@ -623,6 +668,7 @@ fn assemble(
                 root: paths.root.clone(),
                 events: events.clone(),
                 switching: context.late.switching.clone(),
+                deleting: context.late.deleting.clone(),
                 runner: runner.clone(),
                 accounts: accounts.runtime.clone(),
                 host: cli,
@@ -632,6 +678,7 @@ fn assemble(
         )
         .map_err(rpc)?,
     );
+    let _ = context.late.m5.set(m5.clone());
 
     // 6. What a restart cut off is settled before anything listens (`runner.start()` then runs the queue).
     runner.recover().map_err(rpc)?;
