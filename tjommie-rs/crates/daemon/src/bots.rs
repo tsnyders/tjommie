@@ -842,6 +842,7 @@ pub fn register(handlers: Handlers, context: &Context) -> Handlers {
                 let _deleting = started?;
                 let runner = delete.late.runner.get().cloned();
                 let m6 = delete.late.m6.get().cloned();
+                let m4 = delete.late.m4.get().cloned();
                 let removed = async {
                     if let Some(runner) = &runner {
                         let closing = runner.close_for_deletion(&id)?;
@@ -858,17 +859,29 @@ pub fn register(handlers: Handlers, context: &Context) -> Handlers {
                     if let Some(m6) = &m6 {
                         m6.bot_deleting(&id).await?;
                     }
-                    // M4: `team.botDeleting(id)` captures the bot's exchanges here, before the row goes.
-                    delete.with_db(|db| delete_bot(db, &id))
+                    // `team.botDeleting(id)` captures the bot's exchanges here, before the row goes.
+                    let handle = match &m4 {
+                        Some(m4) => Some(m4.bot_deleting(&id)?),
+                        None => None,
+                    };
+                    delete.with_db(|db| delete_bot(db, &id))?;
+                    Ok::<_, RpcError>(handle)
                 }
                 .await;
-                if let Err(error) = removed {
-                    if let Some(runner) = &runner {
-                        runner.cancel_deletion(&id);
+                let handle = match removed {
+                    Ok(handle) => handle,
+                    Err(error) => {
+                        if let Some(runner) = &runner {
+                            runner.cancel_deletion(&id);
+                        }
+                        return Err(error);
                     }
-                    return Err(error);
-                }
-                // M4: `team.botDeleted(handle)`.
+                };
+                // `team.botDeleted(handle)`: its error is reported after the rest, as `finally` does in `daemon.ts`.
+                let deleted = match (&m4, &handle) {
+                    (Some(m4), Some(handle)) => m4.bot_deleted(handle),
+                    _ => Ok(()),
+                };
                 if let Some(runner) = &runner {
                     runner.forget(&id);
                 }
@@ -880,6 +893,7 @@ pub fn register(handlers: Handlers, context: &Context) -> Handlers {
                     );
                 }
                 delete.events.send(Event::BotDeleted(Id { id }));
+                deleted?;
                 Ok::<_, RpcError>(Empty {})
             }
         })

@@ -91,7 +91,8 @@ pub fn register(handlers: Handlers, context: &Context) -> Handlers {
                 &setup,
                 RelayState::Off,
                 context.app_version.as_deref(),
-                Some(env!("CARGO_PKG_VERSION")),
+                // The app's version (the root package.json, through build.rs), which releases bump. Cargo.toml's stays put.
+                Some(env!("TJOMMIE_VERSION")),
             ))
         });
         async move { report }

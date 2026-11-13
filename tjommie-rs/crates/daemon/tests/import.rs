@@ -11,7 +11,8 @@ use tempfile::TempDir;
 
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fixture.db");
 const LOGIN: &str = "0f8fad5b-d9cb-469f-a165-70867728950e";
-const ELSEWHERE: &str = r"D:\Elsewhere\codex";
+/// An account folder outside the source, on a drive that is usually missing: the import must neither move it nor fail.
+const ELSEWHERE: &str = r"Q:\Elsewhere\codex";
 
 /// One row in every project-team table, a queued task turn and a waiting task exchange, plus a finished task turn.
 const PROJECT_TEAM: &str = r"
@@ -119,6 +120,23 @@ fn short_name(path: &Path) -> Option<PathBuf> {
     }
     let short = PathBuf::from(String::from_utf16(&buffer[..length]).ok()?);
     (short != path).then_some(short)
+}
+
+/// `C:\x` as the UNC loopback shares `\\localhost\c$\x`, `\\127.0.0.1\c$\x` and `\\?\UNC\localhost\c$\x`, which
+/// `canonicalize` keeps in UNC form. Where the admin share is off they can't be opened, and the guards refuse that too.
+#[cfg(windows)]
+fn loopback_spellings(path: &Path) -> Vec<PathBuf> {
+    let text = text(path);
+    let (drive, rest) = text.split_once(":\\").unwrap();
+    let share = format!("{}$\\{rest}", drive.to_lowercase());
+    if !Path::new(&format!(r"\\localhost\{share}")).exists() {
+        eprintln!(
+            "the c$ admin share is off here: the loopback spellings are refused because they can't be opened"
+        );
+    }
+    [r"\\localhost\", r"\\127.0.0.1\", r"\\?\UNC\localhost\"]
+        .map(|host| PathBuf::from(format!("{host}{share}")))
+        .to_vec()
 }
 
 #[cfg(windows)]
@@ -690,7 +708,9 @@ fn refuses_other_spellings_of_the_production_root() {
     junction(&link, &production);
 
     let verbatim = PathBuf::from(format!(r"\\?\{}", production.display()));
-    for target in [verbatim, link.clone()] {
+    let mut targets = vec![verbatim, link.clone()];
+    targets.extend(loopback_spellings(&production));
+    for target in targets {
         let refused = spawn::command(env!("CARGO_BIN_EXE_tjommie-daemon"))
             .args(["import", "--from", text(source.path()), "--replace"])
             .env("LOCALAPPDATA", local.path())
@@ -725,6 +745,9 @@ fn refuses_other_spellings_of_the_source_root() {
         (source.path().to_path_buf(), link.clone()),
         (verbatim, source.path().join("inner")),
     ];
+    for alias in loopback_spellings(source.path()) {
+        cases.push((source.path().to_path_buf(), alias));
+    }
     match short_name(source.path()) {
         Some(short) => cases.push((source.path().to_path_buf(), short.join("inner"))),
         None => eprintln!("this volume makes no 8.3 names: that spelling is not checked"),

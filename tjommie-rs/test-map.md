@@ -144,7 +144,7 @@ The 13 `*.real.test.ts` files in this table also appear in section 2. Rust paths
 | `packages/desktop/src/mobile-appearance.real.test.ts` | **black-box** | yes | only launchRealApp and the page; no daemon imports |
 | `packages/desktop/src/mobile-motion.real.test.ts` | **black-box** | yes | only launchRealApp and the page; no daemon imports |
 | `packages/desktop/src/native-browser.real.test.ts` | **black-box** | no | launches its own Electron fixture (native-browser-fixture.ts) and never starts a daemon, so TJOMMIE_DAEMON_EXE has no effect |
-| `packages/desktop/src/packaged.real.test.ts` | **black-box** | yes | launches the packaged exe and uses the client; line 20 checks the bundled Playwright MCP file, which T9.1 stops shipping, so that assertion must change |
+| `packages/desktop/src/packaged.real.test.ts` | **black-box** | yes | launches the packaged exe and uses the client; T9.1 replaced its Playwright MCP assertion with one that `resources/daemon/tjommie-daemon.exe` ships and the Node daemon, Playwright MCP and daemon wasm don't |
 | `packages/desktop/src/phone-layout.real.test.ts` | **white-box** | no | seeds with addMessage, openDb, recordUsage and replaceAccountLimits from daemon src |
 | `packages/desktop/src/remote-bridge.real.test.ts` | **black-box** | no | bundles the remote bridge into an Electron CSP fixture; no daemon involved |
 | `packages/desktop/src/screens.real.test.ts` | **black-box** | yes | only launchRealApp, bot helpers and the client; real accounts and paid turns |

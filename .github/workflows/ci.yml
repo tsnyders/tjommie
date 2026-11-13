@@ -57,3 +57,12 @@ jobs:
         env:
           # Hosted service logons can't reliably reach Credential Manager; those tests run on real PCs.
           TJOMMIE_CI_HOSTED: '1'
+      # The desktop's daemon-process test hosts the Rust exe when TJOMMIE_DAEMON_EXE names it (plan T9.1). Build it here so
+      # that test runs on every change instead of being skipped. It needs the node_modules the step above installed.
+      - run: cargo build --locked -p daemon --bin tjommie-daemon
+      - name: Run the desktop daemon-process test against the Rust exe
+        working-directory: .
+        run: npx vitest run packages/desktop/src/daemon-process.test.ts
+        env:
+          TJOMMIE_DAEMON_EXE: ${{ github.workspace }}\tjommie-rs\target\debug\tjommie-daemon.exe
+          TJOMMIE_CI_HOSTED: '1'

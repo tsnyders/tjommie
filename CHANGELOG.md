@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- The background service that runs your bots was rebuilt; bots, chats, settings and logins carry over, and a backup of your data is made the first time it starts.
 - Paired devices can watch a bot's browser live instead of in snapshots.
 
 ## 0.4.2 — 2026-11-04

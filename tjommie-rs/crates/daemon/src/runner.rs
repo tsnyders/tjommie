@@ -275,7 +275,8 @@ pub struct RunnerDeps {
     pub hooks: RunnerHooks,
     /// `killTree(pid)`: stops a CLI's whole process tree without waiting.
     pub kill_tree: Arc<dyn Fn(Option<u32>) + Send + Sync>,
-    /// `closeBrowser(botId)`: resolves once the bot's browser tools are closed.
+    /// `closeBrowser(botId)`: resolves once the bot's browser tools are closed. Deletion awaits it with the process's
+    /// exit. The call itself is made with the runner's locks held, so do the work in the returned future.
     pub close_browser: CloseBrowser,
     pub log: Log,
 }
@@ -3394,11 +3395,16 @@ pub fn register(handlers: Handlers, context: &Context, runner: &Runner) -> Handl
             let answered = approvals
                 .with_db(|db| crate::approvals::get_approval(db, &params.approval_id))
                 .and_then(|approval| match approval.kind {
-                    // M4: `team.answerRoutineProposal` adds the routine on Allow.
-                    ApprovalKind::Routine => Err(RpcError::new(
-                        ErrorCode::Unavailable,
-                        "Routine proposals can't be answered yet.",
-                    )),
+                    // `team.answerRoutineProposal` adds the routine on Allow. Without M4 (handler tests) it can't.
+                    ApprovalKind::Routine => match approvals.late.m4.get() {
+                        Some(m4) => {
+                            m4.answer_routine_proposal(&params.approval_id, params.decision)
+                        }
+                        None => Err(RpcError::new(
+                            ErrorCode::Unavailable,
+                            "Routine proposals can't be answered yet.",
+                        )),
+                    },
                     ApprovalKind::Tool => {
                         respond.answer_approval(&params.approval_id, params.decision)
                     }
