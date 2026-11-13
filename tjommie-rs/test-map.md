@@ -2,7 +2,7 @@
 
 Plan: `docs/superpowers/plans/2026-11-09-tjommie-rs-phase1-daemon.md`. Rust paths are planned; milestones and tasks come from that plan.
 
-Note: the TypeScript tests this file maps from now live on the `legacy` branch. Run the `git ls-files` commands below there to list them.
+Note: the TypeScript tests this file maps from now live on the `legacy` branch. Run the `git ls-files` commands below there to list them. So do `scripts/make-fixture-db.ts` and `scripts/export-migrations.ts`, which the table cites. The files they wrote stay committed: `fixture.db` and `schema.json` under `tjommie-rs/crates/daemon/tests/fixtures/`, and the migration SQL under `tjommie-rs/crates/daemon/migrations/`. The desktop `accounts.real` test no longer imports daemon code; it seeds usage through `packages/desktop/src/real-seed.ts`.
 
 Commands used (from the repo root):
 ```
