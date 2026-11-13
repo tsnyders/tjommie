@@ -23,7 +23,9 @@ export function cleanupTempRoots(): void {
 }
 
 // Use the real Tjommie accounts so CLI credential refreshes stay where the daemon reads them: the accounts folder of the
-// data root (TJOMMIE_HOME, else %LOCALAPPDATA%\Tjommie). Tests never read or copy credential contents. Databases, bots and
-// browser profiles stay disposable. Unlike the old TypeScript helper, this only computes the path; it creates no folders.
+// data root (TJOMMIE_HOME, else the installed app's %LOCALAPPDATA%\Tjommie). This is deliberately not the app's own default
+// (an unpackaged app keeps its data in Tjommie-rs): it names where the owner's signed-in CLI profiles live, and only the
+// real-account suites ask for it. Tests never read or copy credential contents. Databases, bots and browser profiles stay
+// disposable, in a temp root of the test's own. Unlike the old TypeScript helper, this only computes the path; it creates no folders.
 export const realAccountsDir = (): string =>
   join(process.env.TJOMMIE_HOME ?? join(process.env.LOCALAPPDATA ?? join(homedir(), ".local", "share"), "Tjommie"), "accounts");

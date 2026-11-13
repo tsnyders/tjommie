@@ -1,9 +1,10 @@
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { connect } from "@tjommie/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { BUILD_RUST_DAEMON, daemonCommand, daemonEnv, daemonExecutable, daemonLaunchEnv, listeningPort, newToken, packagedDaemonPath, sourceDaemonPath, startDaemonProcess, stopWithin, type DaemonLaunch, type RunningDaemon } from "./daemon-process.ts";
+import { credentialNamespace } from "./credential-transport.ts";
+import { BUILD_RUST_DAEMON, DEV_LAN_PORT, DEV_PORT, daemonCommand, daemonEnv, daemonExecutable, daemonLaunchEnv, dataRootFor, developmentDaemonMessage, listeningPort, newToken, packagedDaemonPath, sourceDaemonPath, startDaemonProcess, stopWithin, type DaemonLaunch, type RunningDaemon } from "./daemon-process.ts";
 
 const repoRoot = resolve(import.meta.dirname, "..", "..", "..");
 // The Rust daemon the process tests start: TJOMMIE_DAEMON_EXE, else the debug build. Build it with
@@ -113,11 +114,70 @@ describe("daemon process", () => {
   });
 
   it("keeps an inherited TJOMMIE_PORT next to TJOMMIE_HOME, so a second install sets both and never contends for 47100", () => {
-    expect(daemonLaunchEnv({ TJOMMIE_PORT: "47200", TJOMMIE_LAN_PORT: "47201" }, "C:\\Users\\owner\\AppData\\Local\\Tjommie-rs")).toEqual({
-      TJOMMIE_PORT: "47200", TJOMMIE_LAN_PORT: "47201", TJOMMIE_HOME: "C:\\Users\\owner\\AppData\\Local\\Tjommie-rs",
+    expect(daemonLaunchEnv({ TJOMMIE_PORT: "47300", TJOMMIE_LAN_PORT: "47301" }, "C:\\Users\\owner\\AppData\\Local\\Tjommie-two")).toEqual({
+      TJOMMIE_PORT: "47300", TJOMMIE_LAN_PORT: "47301", TJOMMIE_HOME: "C:\\Users\\owner\\AppData\\Local\\Tjommie-two",
     });
     // A disposable test root always gets a free port, whatever was inherited.
     expect(daemonLaunchEnv({ TJOMMIE_PORT: "47200" }, "C:\\disposable", true).TJOMMIE_PORT).toBe("0");
+  });
+
+  describe("where an unpackaged run keeps its data and which ports it uses", () => {
+    const local = "C:\\Users\\owner\\AppData\\Local";
+    const installedFolder = join(local, "Tjommie");
+
+    it("never resolves to the installed app's data folder with no environment, and an installed app does", () => {
+      const unpackaged = dataRootFor({ LOCALAPPDATA: local }, false, "Tjommie");
+      expect(unpackaged).toBe(join(local, "Tjommie-rs"));
+      expect(unpackaged).not.toBe(installedFolder);
+      // A different folder is a different Credential Manager namespace, so a run from source cannot reach the installed app's secrets either.
+      expect(credentialNamespace(unpackaged)).not.toBe(credentialNamespace(installedFolder));
+      expect(dataRootFor({ LOCALAPPDATA: local }, true, "Tjommie")).toBe(installedFolder);
+      expect(credentialNamespace(dataRootFor({ LOCALAPPDATA: local }, true, "Tjommie"))).toBe(credentialNamespace(installedFolder));
+      // Without LOCALAPPDATA the fallback is still the development folder, not the product folder.
+      expect(dataRootFor({}, false, "Tjommie", undefined, "C:\\Users\\owner")).toBe(join("C:\\Users\\owner", ".local", "share", "Tjommie-rs"));
+      expect(dataRootFor({}, true, "Tjommie", undefined, "C:\\Users\\owner")).toBe(join("C:\\Users\\owner", ".local", "share", "Tjommie"));
+    });
+
+    it("lets an explicit TJOMMIE_HOME win in both, and an isolated test build's own root win over the defaults", () => {
+      for (const packaged of [false, true]) {
+        expect(dataRootFor({ LOCALAPPDATA: local, TJOMMIE_HOME: "C:\\chosen" }, packaged, "Tjommie")).toBe("C:\\chosen");
+        expect(dataRootFor({ LOCALAPPDATA: local, TJOMMIE_HOME: "C:\\chosen" }, packaged, "Tjommie", "C:\\test-root")).toBe("C:\\chosen");
+        expect(dataRootFor({ LOCALAPPDATA: local }, packaged, "Tjommie Update Test", "C:\\test-root")).toBe("C:\\test-root");
+      }
+      expect(dataRootFor({ LOCALAPPDATA: local }, true, "Tjommie Update Test")).toBe(join(local, "Tjommie Update Test"));
+    });
+
+    it("gives a development run the debug ports when it inherits none, and an installed app nothing of its own", () => {
+      expect(DEV_PORT).toBe("47200");
+      expect(DEV_LAN_PORT).toBe("47201");
+      const dev = "C:\\Users\\owner\\AppData\\Local\\Tjommie-rs";
+      expect(daemonLaunchEnv({ PATH: "test" }, dev, false, true)).toEqual({ PATH: "test", TJOMMIE_HOME: dev, TJOMMIE_PORT: "47200", TJOMMIE_LAN_PORT: "47201" });
+      // An installed app leaves the ports to the release daemon: 47100 and 47101.
+      expect(daemonLaunchEnv({ PATH: "test" }, "C:\\Tjommie", false, false)).toEqual({ PATH: "test", TJOMMIE_HOME: "C:\\Tjommie" });
+      // An inherited port wins, whatever its case, and a disposable test root still gets a free one.
+      expect(daemonLaunchEnv({ TJOMMIE_PORT: "47300" }, dev, false, true)).toEqual({ TJOMMIE_PORT: "47300", TJOMMIE_LAN_PORT: "47201", TJOMMIE_HOME: dev });
+      expect(daemonLaunchEnv({ tjommie_lan_port: "47301" }, dev, false, true)).toEqual({ tjommie_lan_port: "47301", TJOMMIE_PORT: "47200", TJOMMIE_HOME: dev });
+      expect(daemonLaunchEnv({ TJOMMIE_PORT: "47300" }, "C:\\disposable", true, true).TJOMMIE_PORT).toBe("0");
+    });
+
+    it("asks only for what the daemon cannot guess when development mode finds no daemon", () => {
+      const dev = join(local, "Tjommie-rs");
+      const start = "Start the Rust daemon in development mode first: cargo run -p daemon --bin tjommie-daemon -- --dev (inside tjommie-rs)";
+      expect(developmentDaemonMessage({}, dev, 47200)).toBe(`${start}.`);
+      expect(developmentDaemonMessage({ TJOMMIE_PORT: "47300" }, dev, 47300)).toBe(`${start}, with the same TJOMMIE_PORT=47300 as this app.`);
+      expect(developmentDaemonMessage({ TJOMMIE_HOME: "C:\\chosen", TJOMMIE_PORT: "47300" }, "C:\\chosen", 47300)).toBe(`${start}, with the same TJOMMIE_HOME=C:\\chosen and TJOMMIE_PORT=47300 as this app.`);
+    });
+
+    // main.ts is the Electron entry and cannot be imported by a test, so check that it takes its folder, port and launch
+    // environment from the functions above instead of deriving its own, which is how a run from source reached the installed app's data.
+    it("takes the data folder, the development port and the launch environment from those functions in main.ts", () => {
+      const main = readFileSync(resolve(import.meta.dirname, "main.ts"), "utf8");
+      expect(main).toContain("const dataRoot = dataRootFor(process.env, packaged, productName, packageIdentity.testDataRoot);");
+      expect(main).toContain("daemonLaunchEnv(process.env, dataRoot, !!packageIdentity.testDataRoot, !packaged)");
+      expect(main).toContain("Number(process.env.TJOMMIE_PORT ?? DEV_PORT)");
+      expect(main).toContain("developmentDaemonMessage(process.env, dataRoot, port)");
+      expect(main).not.toMatch(/LOCALAPPDATA|47100|47101/);
+    });
   });
 
   it("does not forward an inherited test hook that turns off a check or a protection", () => {

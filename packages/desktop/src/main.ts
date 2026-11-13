@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, net, Notification, protocol, session, shell, Tray } from "electron";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { homedir, userInfo } from "node:os";
+import { userInfo } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { connect, type Client } from "@tjommie/client";
@@ -8,7 +8,7 @@ import { NativeBrowserMount, NativeBrowserUiCommand, type EventData } from "@tjo
 import updater from "electron-updater";
 import { navigationFor, uiFile } from "./app-protocol.ts";
 import { notesFile } from "./bot-files.ts";
-import { daemonCommand, daemonLaunchEnv, packagedDaemonPath, startDaemonProcess, stopDaemonBeforeQuit, type DaemonConnection, type RunningDaemon } from "./daemon-process.ts";
+import { DEV_PORT, daemonCommand, daemonLaunchEnv, dataRootFor, developmentDaemonMessage, packagedDaemonPath, startDaemonProcess, stopDaemonBeforeQuit, type DaemonConnection, type RunningDaemon } from "./daemon-process.ts";
 import { notificationDelivery, notificationRoute } from "./notification-delivery.ts";
 import { beginGoogleConsent } from "./google-consent.ts";
 import { NativeBrowserEngine } from "./native-browser.ts";
@@ -43,7 +43,9 @@ const productName = packaged ? app.getName() : "Tjommie";
 // (TJOMMIE_DESKTOP=production): this process starts the Rust daemon and serves the static export. Installed: the same,
 // with the daemon, the UI and the icons as plain files in resources (npm run package).
 const production = packaged || process.env.TJOMMIE_DESKTOP === "production";
-const dataRoot = process.env.TJOMMIE_HOME ?? packageIdentity.testDataRoot ?? join(process.env.LOCALAPPDATA ?? join(homedir(), ".local", "share"), productName);
+// An installed app keeps its data in its Tjommie folder under Local AppData; an unpackaged run in Tjommie-rs, with the debug
+// ports (see dataRootFor). The installed app's data is never the default of a run from source.
+const dataRoot = dataRootFor(process.env, packaged, productName, packageIdentity.testDataRoot);
 const assets = packaged ? join(process.resourcesPath, "assets") : join(here, "..", "assets");
 const uiDir = packaged ? join(process.resourcesPath, "ui") : join(here, "..", "..", "ui", "out");
 // An installed app runs the Rust daemon bundled in resources. A run from source starts the Rust exe named by
@@ -286,11 +288,11 @@ async function openConnection(): Promise<DaemonConnection> {
   return connection;
 }
 
-// A debug Rust daemon defaults to the Tjommie-rs data folder and port 47200, so it must be started on this app's folder and port.
+// Development mode is always an unpackaged run, so its default folder and port are the debug daemon's own (see dataRootFor).
 function developmentConnection(): DaemonConnection {
-  const port = Number(process.env.TJOMMIE_PORT ?? 47100);
+  const port = Number(process.env.TJOMMIE_PORT ?? DEV_PORT);
   const tokenFile = join(dataRoot, "daemon-token");
-  if (!existsSync(tokenFile)) throw new Error(`Start the Rust daemon in development mode first: cargo run -p daemon --bin tjommie-daemon -- --dev (inside tjommie-rs), with TJOMMIE_HOME=${dataRoot} and TJOMMIE_PORT=${port}.`);
+  if (!existsSync(tokenFile)) throw new Error(developmentDaemonMessage(process.env, dataRoot, port));
   return { port, token: readFileSync(tokenFile, "utf8").trim() };
 }
 
@@ -298,7 +300,7 @@ async function launchDaemon(): Promise<DaemonConnection> {
   const running = await startDaemonProcess(
     {
       ...daemonCommand(process.env, bundledDaemon, repoRoot),
-      env: daemonLaunchEnv(process.env, dataRoot, !!packageIdentity.testDataRoot),
+      env: daemonLaunchEnv(process.env, dataRoot, !!packageIdentity.testDataRoot, !packaged),
       // Only an isolated desktop test may redirect the daemon's account folders.
       testAccountsDir: packageIdentity.testDataRoot
         ? join(dataRoot, "accounts")

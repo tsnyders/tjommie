@@ -1,6 +1,7 @@
 import { execFileSync, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 export type DaemonConnection = { port: number; token: string };
@@ -75,10 +76,39 @@ export function daemonExecutable(appExecutable: string, installed: boolean, env:
   return installed ? packagedDaemonPath(join(dirname(appExecutable), "resources")) : sourceDaemonPath(env, repoRoot);
 }
 
+// An unpackaged run is a development run. It keeps its data in the folder a debug Rust daemon uses (`Tjommie-rs`, APP_FOLDER
+// in the daemon's paths.rs) and listens on the debug ports (startup.rs: 47200, and 47201 for the phone), so it never touches
+// the installed app's `Tjommie` folder or ports 47100 and 47101. An installed app keeps `Tjommie` and the release defaults.
+// An explicit TJOMMIE_HOME or TJOMMIE_PORT wins in both.
+export const DEV_FOLDER = "Tjommie-rs";
+export const DEV_PORT = "47200";
+export const DEV_LAN_PORT = "47201";
+
+// Where this run keeps its data: TJOMMIE_HOME, else an isolated test build's own root, else the installed app's product
+// folder, or the development folder when unpackaged. A pure function so a test can prove which folder a run resolves to.
+export function dataRootFor(env: NodeJS.ProcessEnv, packaged: boolean, productName: string, testDataRoot?: string, home: string = homedir()): string {
+  return env.TJOMMIE_HOME ?? testDataRoot ?? join(env.LOCALAPPDATA ?? join(home, ".local", "share"), packaged ? productName : DEV_FOLDER);
+}
+
 // TJOMMIE_HOME always follows the data root. TJOMMIE_PORT is only forced for a disposable test root; an inherited one
-// passes through, so a second install (a dev build beside production) sets both and never contends for port 47100.
-export function daemonLaunchEnv(base: NodeJS.ProcessEnv, dataRoot: string, testRoot = false): NodeJS.ProcessEnv {
-  return { ...base, TJOMMIE_HOME: dataRoot, ...(testRoot ? { TJOMMIE_PORT: "0" } : {}) };
+// passes through, so a second install sets both and never contends for port 47100. A development run, when it inherits no
+// port, gets the development ports, whichever daemon exe (debug or release) it starts.
+export function daemonLaunchEnv(base: NodeJS.ProcessEnv, dataRoot: string, testRoot = false, development = false): NodeJS.ProcessEnv {
+  const inherited = (name: string): boolean => Object.keys(base).some((key) => key.toUpperCase() === name);
+  return {
+    ...(development && !inherited("TJOMMIE_PORT") ? { TJOMMIE_PORT: DEV_PORT } : {}),
+    ...(development && !inherited("TJOMMIE_LAN_PORT") ? { TJOMMIE_LAN_PORT: DEV_LAN_PORT } : {}),
+    ...base,
+    TJOMMIE_HOME: dataRoot,
+    ...(testRoot ? { TJOMMIE_PORT: "0" } : {}),
+  };
+}
+
+// What the app says when development mode finds no running daemon. With no TJOMMIE_HOME or TJOMMIE_PORT of its own, the app
+// and a debug daemon already agree on the folder and port; with either set, the daemon needs the same value.
+export function developmentDaemonMessage(env: NodeJS.ProcessEnv, dataRoot: string, port: number): string {
+  const same = [env.TJOMMIE_HOME === undefined ? null : `TJOMMIE_HOME=${dataRoot}`, env.TJOMMIE_PORT === undefined ? null : `TJOMMIE_PORT=${port}`].filter((setting) => setting !== null);
+  return `Start the Rust daemon in development mode first: cargo run -p daemon --bin tjommie-daemon -- --dev (inside tjommie-rs)${same.length ? `, with the same ${same.join(" and ")} as this app` : ""}.`;
 }
 
 export async function stopWithin(stop: Promise<void>, timeoutMs: number): Promise<void> {
