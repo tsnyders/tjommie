@@ -8,8 +8,7 @@ use std::path::Path;
 use common::{Daemon, LISTENING, TempRoot, connect, launch, refused, token, try_connect};
 use serde_json::json;
 
-const MISSING_MODE: &str =
-    "Start Tjommie from the desktop app, or run npm start -w @tjommie/daemon for development.";
+const MISSING_MODE: &str = "Start Tjommie from the desktop app, or run cargo run -p daemon --bin tjommie-daemon -- --dev in tjommie-rs for development.";
 const ACCOUNTS_NOTICE: &str = "Using account folders from TJOMMIE_ACCOUNTS_DIR.";
 const STALE_NOTICE: &str = "Removed a leftover development daemon-token file.";
 

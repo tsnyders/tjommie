@@ -7,9 +7,7 @@ use daemon::spawn;
 use daemon::win::acl::{AclTarget, Mode, PassResult, run_pass, run_pass_for};
 use serde_json::{Value, json};
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use tempfile::TempDir;
 use windows::Win32::Foundation::{HLOCAL, LocalFree};
 use windows::Win32::Security::Authorization::{
@@ -309,93 +307,113 @@ fn resolves_the_live_sandbox_group_on_every_pass() {
     assert_eq!((first.failures.len(), first.applied), (0, 0));
 }
 
-/// TypeScript (`tjommie-rs/tools/acl-probe.ts`) prepares one copy of a folder tree and Rust the other; every node
-/// ends with the same SDDL. Needs the CodexSandboxUsers group, which the TypeScript pass always looks up.
+/// One pass as `fixtures/compat/acl-pass.json` records it: how many targets changed, and the failures with the temp root
+/// spelled `{ROOT}`.
+fn pass_summary(result: &PassResult, root: &Path) -> Value {
+    let failures: Vec<String> = result
+        .failures
+        .iter()
+        .map(|line| line.replace(path(root), "{ROOT}"))
+        .collect();
+    json!({ "applied": result.applied, "failures": failures })
+}
+
+/// What the fixture keeps of one node's SDDL: the DACL flags, and the ACEs that name `sid` (spelled `{SID}`): every
+/// explicit one, and the inherited ones with the pass's own (RX,W) rights. Other inherited ACEs are whatever %TEMP% grants
+/// on this machine.
+fn node_summary(sddl: &str, sid: &str) -> Value {
+    let dacl = &sddl[sddl.find("D:").unwrap()..];
+    let flags = &dacl[2..dacl.find('(').unwrap_or(dacl.len())];
+    let aces: Vec<String> = dacl
+        .split('(')
+        .skip(1)
+        .map(|ace| ace.trim_end_matches(')'))
+        .filter(|ace| {
+            let mut fields = ace.split(';').skip(1);
+            let (ace_flags, rights) = (fields.next().unwrap_or(""), fields.next().unwrap_or(""));
+            ace.ends_with(&format!(";;;{sid}")) && (!ace_flags.contains("ID") || rights == RXW)
+        })
+        .map(|ace| format!("({})", ace.replace(sid, "{SID}")))
+        .collect();
+    json!({ "daclFlags": flags, "sandboxAces": aces })
+}
+
+/// `fixtures/compat/acl-pass.json` is what the 0.4.2 TypeScript pass (`windows-acl.ts`, run through icacls) reported and
+/// left on this folder tree. The Rust pass must report the same and leave the same ACEs on every node, because a
+/// rollback to 0.4.2 runs its own pass over what Rust left. Needs the CodexSandboxUsers group, which the TypeScript
+/// pass always looked up.
 #[test]
-fn typescript_and_rust_passes_leave_equal_sddl() {
+fn the_rust_pass_matches_what_the_typescript_pass_reported_and_left() {
     let Some(sid) = run_pass(&[]).unwrap().sid else {
         eprintln!("skipped: CodexSandboxUsers does not exist on this machine");
         return;
     };
+    let golden: Value =
+        serde_json::from_str(include_str!("fixtures/compat/acl-pass.json")).unwrap();
     let dir = TempDir::new().unwrap();
-    let twins = [dir.path().join("ts"), dir.path().join("rs")];
-    for root in &twins {
-        for folder in [
-            "deny/child",
-            "allow/child",
-            "undeny/child",
-            "both/child",
-            "reverse/child",
-            "modify/child",
-            "home/.sandbox/child",
-        ] {
-            fs::create_dir_all(root.join(folder)).unwrap();
+    let root = dir.path();
+    for folder in [
+        "deny/child",
+        "allow/child",
+        "undeny/child",
+        "both/child",
+        "reverse/child",
+        "modify/child",
+        "home/.sandbox/child",
+    ] {
+        fs::create_dir_all(root.join(folder)).unwrap();
+    }
+    // An explicit Modify allow: /deny (RX,W) leaves DELETE and SYNCHRONIZE of it.
+    icacls(&[
+        root.join("modify").to_str().unwrap(),
+        "/grant",
+        &format!("*{sid}:(OI)(CI)(M)"),
+    ]);
+    fs::write(root.join("file.txt"), "x").unwrap();
+    codex_bin(&root.join("home/.sandbox-bin"), &sid);
+    let first = vec![
+        target(&root.join("deny"), true, Mode::Deny),
+        target(&root.join("file.txt"), false, Mode::Deny),
+        target(&root.join("allow"), true, Mode::Allow),
+        target(&root.join("undeny"), true, Mode::Deny),
+        target(&root.join("both"), true, Mode::Allow),
+        target(&root.join("reverse"), true, Mode::Deny),
+        target(&root.join("modify"), true, Mode::Deny),
+        target(&root.join("home/.sandbox-bin"), true, Mode::VerifyBin),
+        AclTarget {
+            codex_dependent: true,
+            ..target(&root.join("home"), true, Mode::Deny)
+        },
+        AclTarget {
+            codex_dependent: true,
+            ..target(&root.join("home/.sandbox"), true, Mode::Allow)
+        },
+    ];
+    let second = vec![
+        target(&root.join("undeny"), true, Mode::RemoveDeny),
+        target(&root.join("both"), true, Mode::Deny),
+        target(&root.join("reverse"), true, Mode::Allow),
+        target(&root.join("deny"), true, Mode::CheckDeny),
+        target(&root.join("allow"), true, Mode::CheckAllow),
+        target(&root.join("home/.sandbox-bin"), true, Mode::CheckNoDeny),
+        target(&root.join("undeny/child"), true, Mode::CheckNoDeny),
+        target(&root.join("allow"), true, Mode::CheckDeny), // a deliberate failure, to compare messages
+    ];
+    let results: Vec<Value> = [first, second]
+        .iter()
+        .map(|targets| pass_summary(&run_pass(targets).unwrap(), root))
+        .collect();
+    assert_eq!(Value::Array(results), golden["results"]);
+
+    let mut nodes = serde_json::Map::new();
+    for relative in walk(root, Path::new("")) {
+        let name = relative.to_str().unwrap().replace('\\', "/");
+        // Its explicit ACEs are copies of what %TEMP% grants (`icacls /inheritance:d`), so the fixture leaves it out.
+        if name != "home/.sandbox-bin" {
+            nodes.insert(name, node_summary(&sddl(&root.join(&relative)), &sid));
         }
-        // An explicit Modify allow: /deny (RX,W) leaves DELETE and SYNCHRONIZE of it.
-        icacls(&[
-            root.join("modify").to_str().unwrap(),
-            "/grant",
-            &format!("*{sid}:(OI)(CI)(M)"),
-        ]);
-        fs::write(root.join("file.txt"), "x").unwrap();
-        codex_bin(&root.join("home/.sandbox-bin"), &sid);
     }
-    let first = |root: &Path| {
-        vec![
-            target(&root.join("deny"), true, Mode::Deny),
-            target(&root.join("file.txt"), false, Mode::Deny),
-            target(&root.join("allow"), true, Mode::Allow),
-            target(&root.join("undeny"), true, Mode::Deny),
-            target(&root.join("both"), true, Mode::Allow),
-            target(&root.join("reverse"), true, Mode::Deny),
-            target(&root.join("modify"), true, Mode::Deny),
-            target(&root.join("home/.sandbox-bin"), true, Mode::VerifyBin),
-            AclTarget {
-                codex_dependent: true,
-                ..target(&root.join("home"), true, Mode::Deny)
-            },
-            AclTarget {
-                codex_dependent: true,
-                ..target(&root.join("home/.sandbox"), true, Mode::Allow)
-            },
-        ]
-    };
-    let second = |root: &Path| {
-        vec![
-            target(&root.join("undeny"), true, Mode::RemoveDeny),
-            target(&root.join("both"), true, Mode::Deny),
-            target(&root.join("reverse"), true, Mode::Allow),
-            target(&root.join("deny"), true, Mode::CheckDeny),
-            target(&root.join("allow"), true, Mode::CheckAllow),
-            target(&root.join("home/.sandbox-bin"), true, Mode::CheckNoDeny),
-            target(&root.join("undeny/child"), true, Mode::CheckNoDeny),
-            target(&root.join("allow"), true, Mode::CheckDeny), // a deliberate failure, to compare messages
-        ]
-    };
-    for pass in [first, second] {
-        let ts = probe(&pass(&twins[0]));
-        let rs = run_pass(&pass(&twins[1])).unwrap();
-        assert_eq!(ts["sid"], json!(sid));
-        assert_eq!(ts["groupMissing"], json!(false));
-        assert_eq!(ts["applied"], json!(rs.applied));
-        let ts_failures: Vec<String> = serde_json::from_value(ts["failures"].clone()).unwrap();
-        let normalised: Vec<String> = ts_failures
-            .iter()
-            .map(|line| line.replace(path(&twins[0]), path(&twins[1])))
-            .collect();
-        assert_eq!(normalised, rs.failures);
-    }
-    let mut nodes = 0;
-    for relative in walk(&twins[0], Path::new("")) {
-        assert_eq!(
-            sddl(&twins[0].join(&relative)),
-            sddl(&twins[1].join(&relative)),
-            "{}",
-            relative.display()
-        );
-        nodes += 1;
-    }
-    assert_eq!(nodes, 17);
+    assert_eq!(Value::Object(nodes), golden["nodes"]);
 }
 
 fn path(root: &Path) -> &str {
@@ -413,44 +431,4 @@ fn walk(root: &Path, relative: &Path) -> Vec<PathBuf> {
         }
     }
     found
-}
-
-fn mode_name(mode: Mode) -> &'static str {
-    match mode {
-        Mode::Deny => "deny",
-        Mode::Allow => "allow",
-        Mode::RemoveDeny => "removeDeny",
-        Mode::VerifyBin => "verifyBin",
-        Mode::CheckDeny => "checkDeny",
-        Mode::CheckAllow => "checkAllow",
-        Mode::CheckNoDeny => "checkNoDeny",
-    }
-}
-
-fn probe(targets: &[AclTarget]) -> Value {
-    let input: Vec<Value> = targets
-        .iter()
-        .map(|t| json!({ "path": t.path, "folder": t.folder, "mode": mode_name(t.mode), "codexDependent": t.codex_dependent }))
-        .collect();
-    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/acl-probe.ts");
-    let mut command = spawn::command("node");
-    command.arg(script).env("NODE_NO_WARNINGS", "1");
-    command
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = command.spawn().expect("node is on PATH");
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(Value::Array(input).to_string().as_bytes())
-        .unwrap();
-    let output = child.wait_with_output().unwrap();
-    assert!(
-        output.status.success(),
-        "acl probe failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    serde_json::from_slice(&output.stdout).unwrap()
 }

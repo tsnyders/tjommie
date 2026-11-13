@@ -110,19 +110,22 @@ async fn launch(boundary: &WorkerBoundary) -> Result<(), BoundaryError> {
         .map(|_| ())
 }
 
+/// `fixtures/compat/worker-scripts.json` holds `WORKER_POLICY_OBSERVER` as the 0.4.2 TypeScript daemon ran it, and its
+/// sha256, which goes into every review policy receipt.
 #[test]
-fn the_policy_observer_is_the_typescript_one_byte_for_byte() {
-    let file = std::fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../packages/daemon/src/worker-policy-observer.ts"),
-    )
-    .unwrap();
-    // JavaScript reads template literals with LF line ends, raw ones included, whatever the checkout uses.
-    let source = file
-        .lines()
-        .collect::<Vec<_>>()
-        .join(&char::from(10).to_string());
-    assert!(source.contains(&format!("String.raw`{WORKER_POLICY_OBSERVER}`;")));
+fn the_policy_observer_is_the_one_0_4_2_ran_byte_for_byte() {
+    use sha2::{Digest, Sha256};
+    let captured: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/compat/worker-scripts.json")).unwrap();
+    assert_eq!(
+        captured["policyObserver"].as_str(),
+        Some(WORKER_POLICY_OBSERVER)
+    );
+    let digest: String = Sha256::digest(WORKER_POLICY_OBSERVER.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    assert_eq!(captured["policyObserverSha256"].as_str(), Some(&*digest));
 }
 
 #[tokio::test]

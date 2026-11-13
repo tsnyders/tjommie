@@ -1,6 +1,6 @@
 //! T2.3 port of `windows-worker-launch.test.ts`, plus native job and logon launches.
-//! Not ported: the `vm` test of the bootstrap's partial reads. The bootstrap is the same JavaScript, pinned below,
-//! and its TypeScript test keeps covering it.
+//! Not ported: the `vm` test of the bootstrap's partial reads. The bootstrap is the same JavaScript, pinned below
+//! against `fixtures/compat/worker-scripts.json`.
 #![cfg(windows)]
 
 use daemon::spawn;
@@ -108,16 +108,13 @@ fn rejects_nul_and_injected_environment_entries() {
     assert_eq!(kept, [("SYNTHETIC_ALLOWED".to_string(), "yes".to_string())]);
 }
 
+/// `fixtures/compat/worker-scripts.json` holds `WINDOWS_WORKER_BOOTSTRAP` as the 0.4.2 TypeScript daemon ran it. A
+/// worker's configuration hash and a rollback to 0.4.2 both depend on these exact bytes.
 #[test]
-fn the_bootstrap_is_the_typescript_one_byte_for_byte() {
-    let source = std::fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../packages/daemon/src/windows-worker.ts"),
-    )
-    .unwrap();
-    assert!(source.contains(&format!(
-        "WINDOWS_WORKER_BOOTSTRAP = String.raw`{BOOTSTRAP}`;"
-    )));
+fn the_bootstrap_is_the_one_0_4_2_ran_byte_for_byte() {
+    let captured: Value =
+        serde_json::from_str(include_str!("fixtures/compat/worker-scripts.json")).unwrap();
+    assert_eq!(captured["bootstrap"].as_str(), Some(BOOTSTRAP));
 }
 
 #[test]

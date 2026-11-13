@@ -44,8 +44,7 @@ use crate::{accounts_store, bots, db, diagnostics, paths, settings};
 /// spec §4 dev port.
 pub const DEFAULT_LAN_PORT: u16 = if cfg!(debug_assertions) { 47201 } else { 47101 };
 
-const NO_MODE: &str =
-    "Start Tjommie from the desktop app, or run npm start -w @tjommie/daemon for development.";
+const NO_MODE: &str = "Start Tjommie from the desktop app, or run cargo run -p daemon --bin tjommie-daemon -- --dev in tjommie-rs for development.";
 
 #[derive(Debug)]
 pub enum StartupError {

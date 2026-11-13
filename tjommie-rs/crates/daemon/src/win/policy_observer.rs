@@ -1,5 +1,6 @@
-//! `WORKER_POLICY_OBSERVER` (`worker-policy-observer.ts`), copied byte for byte by a script: its sha256 goes into
-//! every review policy receipt. A test checks it against the TypeScript source.
+//! `WORKER_POLICY_OBSERVER` (`worker-policy-observer.ts` in 0.4.2), copied byte for byte: its sha256 goes into every
+//! review policy receipt. A test checks it against `tests/fixtures/compat/worker-scripts.json`, captured from the
+//! TypeScript source.
 
 pub const WORKER_POLICY_OBSERVER: &str = r#"
 const{spawnSync}=require('node:child_process');

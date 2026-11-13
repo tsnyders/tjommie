@@ -1,17 +1,17 @@
 //! T2.1 Credential Manager parity with `account-credentials.ts`, `vault-storage.ts`, `remote-identity.ts` and
-//! `relay-identity.ts`. Tests that touch Credential Manager use one random test namespace, refuse the production
-//! namespace, clean up by namespace, and fail if any other `Tjommie/*` target changed or was left behind.
+//! `relay-identity.ts` as 0.4.2 shipped them: the target names, blob encoding and entry shape are pinned by
+//! `fixtures/compat/credential-entries.json` (captured from the TypeScript modules), so no Node runs here. Tests that
+//! touch Credential Manager use one random test namespace, refuse the production namespace, clean up by namespace, and
+//! fail if any other `Tjommie/*` target changed or was left behind.
 #![cfg(windows)]
 
 use daemon::spawn;
 use daemon::win::cred::{self, CredentialError, Namespace, validate_api_key};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::collections::BTreeMap;
-use std::io::Write;
 use std::os::windows::ffi::OsStrExt;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use windows::Win32::Foundation::ERROR_NOT_FOUND;
 use windows::Win32::Security::Credentials::{
     CRED_TYPE_GENERIC, CREDENTIALW, CredEnumerateW, CredFree, CredReadW,
@@ -31,7 +31,33 @@ fn references_are_opaque_and_isolated_by_installation_and_account() {
     assert!(!a.contains("account-a"));
 }
 
-/// Values printed by `node tjommie-rs/tools/cred-probe.ts targets <root> account-a` (TypeScript 0.4.2 modules).
+/// The targets the TypeScript 0.4.2 modules asked for on `fixtures/compat/credential-entries.json`'s root.
+#[test]
+fn targets_match_the_captured_typescript_entries() {
+    let captured = captured();
+    let ns = Namespace::new(Path::new(captured["root"].as_str().unwrap())).unwrap();
+    let account = &captured["account"];
+    assert_eq!(
+        ns.account_target(account["id"].as_str().unwrap()).unwrap(),
+        account["target"].as_str().unwrap()
+    );
+    let login = &captured["login"];
+    assert_eq!(
+        ns.login_target(login["reference"].as_str().unwrap())
+            .unwrap(),
+        login["target"].as_str().unwrap()
+    );
+    assert_eq!(
+        ns.remote_host_target(),
+        captured["remoteHostTarget"].as_str().unwrap()
+    );
+    assert_eq!(
+        ns.relay_login_target(),
+        captured["relayLoginTarget"].as_str().unwrap()
+    );
+}
+
+/// The same targets, spelled out, for two spellings of the root (values printed by the TypeScript 0.4.2 modules).
 #[test]
 fn targets_match_typescript_golden_values() {
     for root in [
@@ -225,7 +251,7 @@ fn errors_carry_only_the_fixed_typescript_messages() {
 // ---- Credential Manager (this PC; skipped on hosted CI like account-credentials.test.ts) ----
 
 #[test]
-fn credential_manager_round_trips_with_typescript() {
+fn credential_manager_entries_have_the_shape_typescript_0_4_2_wrote() {
     if std::env::var("TJOMMIE_CI_HOSTED").as_deref() == Ok("1") {
         eprintln!(
             "skipped: hosted Windows service logons cannot reliably reach Credential Manager"
@@ -257,7 +283,7 @@ fn credential_manager_round_trips_with_typescript() {
     };
 
     let before = snapshot();
-    let result = catch_unwind(AssertUnwindSafe(|| cases(&root, &ns)));
+    let result = catch_unwind(AssertUnwindSafe(|| cases(&ns)));
     let removed = cleanup(&ns);
     let after = snapshot();
 
@@ -293,82 +319,58 @@ fn credential_manager_round_trips_with_typescript() {
     );
 }
 
-fn cases(root: &Path, ns: &Namespace) {
-    let root = root.to_str().unwrap();
+/// `fixtures/compat/credential-entries.json`, as a value.
+fn captured() -> Value {
+    serde_json::from_str(include_str!("fixtures/compat/credential-entries.json")).unwrap()
+}
 
-    // Target names: the TypeScript modules derive the same ones for this root and for mixed spellings of it.
-    let login = uuid::Uuid::new_v4().to_string();
-    let expected = json!({
-        "account": ns.account_target("account-a").unwrap(),
-        "login": ns.login_target(&login).unwrap(),
-        "remoteHost": ns.remote_host_target(),
-        "relayLogin": ns.relay_login_target(),
-    });
-    assert_eq!(
-        probe("targets", root, "account-a", Some(&login), None),
-        expected
-    );
-    let shouted = format!("{}/", root.to_uppercase().replace('\\', "/"));
-    assert_eq!(
-        probe("targets", &shouted, "account-a", Some(&login), None),
-        expected
-    );
+/// The CREDENTIALW shape 0.4.2 gave every entry it wrote, as `entry` reads one back.
+fn captured_metadata(captured: &Value) -> Metadata {
+    let entry = &captured["entry"];
+    let number = |field: &str| u32::try_from(entry[field].as_u64().unwrap()).unwrap();
+    assert!(entry["comment"].is_null() && entry["targetAlias"].is_null());
+    (
+        number("flags"),
+        number("credentialType"),
+        number("persist"),
+        entry["userName"].as_str().unwrap().to_owned(),
+        None,
+        None,
+        number("attributeCount"),
+    )
+}
 
-    // Account keys: TypeScript writes, Rust reads; Rust writes, TypeScript reads.
-    let ts_id = format!("synthetic-ts-{}", uuid::Uuid::new_v4());
-    let rs_id = format!("synthetic-rs-{}", uuid::Uuid::new_v4());
-    let ts_key = format!("synthetic-{}-é", uuid::Uuid::new_v4());
-    let rs_key = format!("synthetic-{}-ü", uuid::Uuid::new_v4());
-    assert_eq!(ns.read_account_key(&ts_id), Ok(None));
-    assert_eq!(
-        probe("account-write", root, &ts_id, None, Some(&ts_key)),
-        Value::Null
-    );
-    assert_eq!(ns.read_account_key(&ts_id), Ok(Some(ts_key.clone())));
-    ns.write_account_key(&rs_id, &rs_key).unwrap();
-    assert_eq!(
-        probe("account-read", root, &rs_id, None, None),
-        json!(rs_key)
-    );
+fn cases(ns: &Namespace) {
+    let captured = captured();
+    let metadata = captured_metadata(&captured);
 
-    // Byte-identical entries, so a rollback to 0.4.2 reads what Rust wrote.
-    let ts_entry = entry(&ns.account_target(&ts_id).unwrap()).unwrap();
-    let rs_entry = entry(&ns.account_target(&rs_id).unwrap()).unwrap();
-    assert_eq!(ts_entry.blob, ts_key.as_bytes());
-    assert_eq!(rs_entry.blob, rs_key.as_bytes());
-    assert_eq!(rs_entry.metadata, ts_entry.metadata);
-    assert_eq!(
-        rs_entry.metadata,
-        (0, 1, 2, "Tjommie".into(), None, None, 0)
-    );
+    // Account keys: written as 0.4.2 wrote them, so a rollback reads what Rust wrote.
+    let id = format!("synthetic-rs-{}", uuid::Uuid::new_v4());
+    let key = captured["account"]["key"].as_str().unwrap();
+    assert_eq!(captured["account"]["blobUtf8"].as_str(), Some(key));
+    assert_eq!(ns.read_account_key(&id), Ok(None));
+    ns.write_account_key(&id, key).unwrap();
+    assert_eq!(ns.read_account_key(&id), Ok(Some(key.to_owned())));
+    let written = entry(&ns.account_target(&id).unwrap()).unwrap();
+    assert_eq!(written.blob, key.as_bytes());
+    assert_eq!(written.metadata, metadata);
 
-    // Deletes cross over too, and deleting a missing entry is not an error.
-    ns.delete_account_key(&ts_id).unwrap();
-    assert_eq!(probe("account-read", root, &ts_id, None, None), Value::Null);
-    assert_eq!(
-        probe("account-delete", root, &rs_id, None, None),
-        Value::Null
-    );
-    assert_eq!(ns.read_account_key(&rs_id), Ok(None));
-    ns.delete_account_key(&rs_id).unwrap();
+    // Deleting removes the entry, and deleting a missing one is not an error.
+    ns.delete_account_key(&id).unwrap();
+    assert_eq!(ns.read_account_key(&id), Ok(None));
+    ns.delete_account_key(&id).unwrap();
 
     // Invalid keys are refused before Credential Manager is touched.
     assert_eq!(
-        ns.write_account_key(&rs_id, " spaced"),
+        ns.write_account_key(&id, " spaced"),
         Err(CredentialError::InvalidKey)
     );
-    assert_eq!(
-        cred::read(&ns.account_target(&rs_id).unwrap()).unwrap(),
-        None
-    );
+    assert_eq!(cred::read(&ns.account_target(&id).unwrap()).unwrap(), None);
 
     // Corrupt stored values are refused with the fixed message, and the raw layer still sees them.
-    let corrupt = ns.account_target(&rs_id).unwrap();
+    let corrupt = ns.account_target(&id).unwrap();
     cred::write(&corrupt, "has a space").unwrap();
-    assert_eq!(
-        ns.read_account_key(&rs_id),
-        Err(CredentialError::Unavailable)
-    );
+    assert_eq!(ns.read_account_key(&id), Err(CredentialError::Unavailable));
     assert_eq!(
         cred::read(&corrupt).unwrap().as_deref(),
         Some("has a space")
@@ -380,64 +382,22 @@ fn cases(root: &Path, ns: &Namespace) {
     assert!(cred::write(&corrupt, &"a".repeat(2561)).is_err());
     assert_eq!(cred::read(&corrupt).unwrap(), None);
 
-    // Login secrets (raw JSON, as `tjommie-daemon import` copies them): TypeScript writes, Rust reads, and back.
-    let ts_login = uuid::Uuid::new_v4().to_string();
-    let rs_login = uuid::Uuid::new_v4().to_string();
-    let secret = json!({ "username": "synthetic@example.test", "password": format!("pw-{}-ß", uuid::Uuid::new_v4()) });
+    // Login secrets are raw JSON that the desktop's TypeScript vault writes (`tjommie-daemon import` copies them): the blob
+    // 0.4.2 wrote reads back unchanged and keeps the shape of any other entry.
+    let reference = uuid::Uuid::new_v4().to_string();
+    let target = ns.login_target(&reference).unwrap();
+    let blob = captured["login"]["blobUtf8"].as_str().unwrap();
     assert_eq!(
-        probe(
-            "login-write",
-            root,
-            &ts_login,
-            None,
-            Some(&secret.to_string())
-        ),
-        Value::Null
+        serde_json::from_str::<Value>(blob).unwrap(),
+        captured["login"]["secret"]
     );
-    let raw = cred::read(&ns.login_target(&ts_login).unwrap())
-        .unwrap()
-        .unwrap();
-    assert_eq!(serde_json::from_str::<Value>(&raw).unwrap(), secret);
-    cred::write(&ns.login_target(&rs_login).unwrap(), &raw).unwrap();
-    assert_eq!(probe("login-read", root, &rs_login, None, None), secret);
-    assert_eq!(
-        probe("login-delete", root, &ts_login, None, None),
-        Value::Null
-    );
-    cred::delete(&ns.login_target(&rs_login).unwrap()).unwrap();
-    assert_eq!(
-        probe("login-read", root, &rs_login, None, None),
-        Value::Null
-    );
-}
-
-/// Runs `tjommie-rs/tools/cred-probe.ts`. Secrets go on stdin, never in argv.
-fn probe(operation: &str, root: &str, id: &str, login: Option<&str>, input: Option<&str>) -> Value {
-    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/cred-probe.ts");
-    let mut command = spawn::command("node");
-    command
-        .arg(script)
-        .args([operation, root, id])
-        .args(login)
-        .env("NODE_NO_WARNINGS", "1");
-    command
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = command.spawn().expect("node is on PATH");
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(input.unwrap_or("").as_bytes())
-        .unwrap();
-    let output = child.wait_with_output().unwrap();
-    assert!(
-        output.status.success(),
-        "probe {operation} failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    serde_json::from_slice(&output.stdout).unwrap()
+    cred::write(&target, blob).unwrap();
+    assert_eq!(cred::read(&target).unwrap().as_deref(), Some(blob));
+    let login = entry(&target).unwrap();
+    assert_eq!(login.blob, blob.as_bytes());
+    assert_eq!(login.metadata, metadata);
+    cred::delete(&target).unwrap();
+    assert_eq!(cred::read(&target).unwrap(), None);
 }
 
 /// Every `Tjommie/*` target and its LastWritten time. Blobs are never looked at.

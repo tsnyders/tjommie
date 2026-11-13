@@ -1,5 +1,5 @@
-//! Port of `packages/daemon/src/relay-identity.test.ts`, plus cross-implementation checks against the 0.4.2 module
-//! through `tools/remote-probe.ts`. Every vault here is in memory; nothing touches Credential Manager.
+//! Port of `packages/daemon/src/relay-identity.test.ts`, plus a check against an entry the 0.4.2 module minted
+//! (`fixtures/compat/relay-identity.json`). Every vault here is in memory; nothing touches Credential Manager.
 
 mod remote_support;
 
@@ -11,7 +11,6 @@ use daemon::relay_identity::load_relay_identity;
 use daemon::remote_identity::load_remote_identity;
 use daemon::win::cred::Namespace;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-use remote_support::probe::Probe;
 use remote_support::{MemoryVault, remote_db};
 use serde_json::{Value, json};
 use transport::Keypair;
@@ -135,56 +134,34 @@ fn keeps_corrupt_and_non_ed25519_vault_contents_out_of_errors_without_minting() 
     }
 }
 
-/// Ed25519 signatures are deterministic, so equal signatures prove both sides hold the same key.
-#[tokio::test]
-async fn a_key_written_by_either_implementation_signs_identically_in_the_other() {
-    let message = b"tjommie-relay-login/v1\nsynthetic";
-    let encoded = URL_SAFE_NO_PAD.encode(message);
-    let mut probe = Probe::start();
-
-    // TypeScript 0.4.2 writes; Rust reads.
-    let from_ts = probe
-        .send(json!({ "op": "relay-identity", "saved": null, "message": encoded }))
-        .await;
-    assert_eq!(from_ts["ok"], true, "{from_ts}");
+/// `fixtures/compat/relay-identity.json` is an entry the 0.4.2 TypeScript module minted, with the public key and the
+/// signature it gives a fixed message. Ed25519 signatures are deterministic, so equal ones prove Rust holds the same key.
+/// The other way (a rollback to 0.4.2 reads what Rust wrote) rests on `stores_the_same_pkcs8_shape_as_node`: the same
+/// record layout, whose key 0.4.2 parses with Node's `createPrivateKey`.
+#[test]
+fn a_key_written_by_typescript_0_4_2_signs_identically_in_rust() {
+    let captured: Value =
+        serde_json::from_str(include_str!("fixtures/compat/relay-identity.json")).unwrap();
+    let message = URL_SAFE_NO_PAD
+        .decode(captured["message"].as_str().unwrap())
+        .unwrap();
     let vault = MemoryVault::default();
-    let target = Namespace::new(Path::new(ROOT))
+    let target = Namespace::new(Path::new("remote-probe-root"))
         .unwrap()
         .relay_login_target();
     vault
         .values
         .lock()
         .unwrap()
-        .insert(target, from_ts["saved"].as_str().unwrap().to_owned());
-    let rust = load_relay_identity(Path::new(ROOT), &vault).unwrap();
+        .insert(target, captured["saved"].as_str().unwrap().to_owned());
+    let rust = load_relay_identity(Path::new("remote-probe-root"), &vault).unwrap();
     assert_eq!(
         URL_SAFE_NO_PAD.encode(rust.public_key),
-        from_ts["publicKey"].as_str().unwrap()
+        captured["publicKey"].as_str().unwrap()
     );
     assert_eq!(
-        URL_SAFE_NO_PAD.encode(rust.sign(message)),
-        from_ts["signature"].as_str().unwrap()
+        URL_SAFE_NO_PAD.encode(rust.sign(&message)),
+        captured["signature"].as_str().unwrap()
     );
-    assert_eq!(*vault.writes.lock().unwrap(), 0);
-
-    // Rust writes; TypeScript reads (a rollback to 0.4.2).
-    let vault = MemoryVault::default();
-    let rust = load_relay_identity(Path::new(ROOT), &vault).unwrap();
-    let from_rust = probe
-        .send(json!({ "op": "relay-identity", "saved": saved(&vault), "message": encoded }))
-        .await;
-    assert_eq!(
-        from_rust["saved"],
-        saved(&vault),
-        "TypeScript keeps the entry as written"
-    );
-    assert_eq!(
-        from_rust["publicKey"],
-        URL_SAFE_NO_PAD.encode(rust.public_key)
-    );
-    assert_eq!(
-        from_rust["signature"],
-        URL_SAFE_NO_PAD.encode(rust.sign(message))
-    );
-    probe.stop().await;
+    assert_eq!(*vault.writes.lock().unwrap(), 0, "the saved key is kept");
 }
