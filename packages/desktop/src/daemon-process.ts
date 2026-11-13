@@ -1,5 +1,6 @@
 import { execFileSync, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
 export type DaemonConnection = { port: number; token: string };
@@ -8,8 +9,8 @@ export type DaemonLaunch = {
   args: string[];
   env: NodeJS.ProcessEnv;
   testAccountsDir?: string;
-  // True (the default) when execPath is Electron or Node running the daemon's JavaScript, which needs ELECTRON_RUN_AS_NODE.
-  // False for the Rust daemon's own exe, which must not inherit it.
+  // False (the default): execPath is the Rust daemon's own exe, which must not inherit ELECTRON_RUN_AS_NODE. True only for
+  // scripts/r1-acceptance.ts, which runs 0.4.2's installed Node daemon (Electron as Node) to seed a data root.
   runAsNode?: boolean;
 };
 export type RunningDaemon = {
@@ -35,9 +36,9 @@ export function listeningPort(output: string): number | null {
 // Production mode cannot inherit development settings or the test-only hooks: the account-folder hook, and every
 // TJOMMIE_SKIP_* switch (the Rust daemon's test hooks that turn off its account check and its Codex folder protection;
 // a debug build honours them, and none of them may ride in from a PC's environment). The explicit testAccountsDir
-// option is the only way a desktop test can send the account-folder hook to its disposable daemon. The Node daemon runs
-// as plain Node inside Electron (ELECTRON_RUN_AS_NODE); the Rust daemon gets none, and drops an inherited one.
-export function daemonEnv(base: NodeJS.ProcessEnv, testAccountsDir?: string, runAsNode = true): NodeJS.ProcessEnv {
+// option is the only way a desktop test can send the account-folder hook to its disposable daemon. The Rust daemon gets no
+// ELECTRON_RUN_AS_NODE and drops an inherited one; only 0.4.2's Node daemon, which runs as plain Node inside Electron, asks for it.
+export function daemonEnv(base: NodeJS.ProcessEnv, testAccountsDir?: string, runAsNode = false): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = Object.fromEntries(
     Object.entries(base).filter(([key]) => {
       const name = key.toUpperCase();
@@ -52,22 +53,26 @@ export function daemonEnv(base: NodeJS.ProcessEnv, testAccountsDir?: string, run
 // The Rust daemon ships as one exe in the installed app's resources, beside the UI and the icons.
 export const packagedDaemonPath = (resourcesPath: string): string => join(resourcesPath, "daemon", "tjommie-daemon.exe");
 
-// What starts the daemon. An installed app (`packagedExe` is its bundled exe) always runs that exe, never an override
-// and never Node. An unpackaged run hosts the Rust daemon when TJOMMIE_DAEMON_EXE names its exe, else runs the Node
-// daemon from source. The exe takes the same --token-stdin contract and no Node arguments.
-export function daemonCommand(env: NodeJS.ProcessEnv, packagedExe: string | null, nodePath: string, entry: string): Pick<DaemonLaunch, "execPath" | "args" | "runAsNode"> {
-  const exe = packagedExe ?? env.TJOMMIE_DAEMON_EXE;
-  return exe
-    ? { execPath: exe, args: [], runAsNode: false }
-    : { execPath: nodePath, args: ["--disable-warning=ExperimentalWarning", entry], runAsNode: true };
+export const BUILD_RUST_DAEMON = "Build the Rust daemon first: cargo build -p daemon --bin tjommie-daemon (inside tjommie-rs)";
+
+// The Rust daemon an unpackaged run starts: the exe TJOMMIE_DAEMON_EXE names, else the debug build under the repo root.
+export const sourceDaemonPath = (env: NodeJS.ProcessEnv, repoRoot: string): string =>
+  env.TJOMMIE_DAEMON_EXE ? resolve(env.TJOMMIE_DAEMON_EXE) : join(repoRoot, "tjommie-rs", "target", "debug", "tjommie-daemon.exe");
+
+// What starts the daemon: always the Rust exe, never Node. An installed app (`packagedExe` is its bundled exe) runs that
+// exe whatever the environment says. An unpackaged run uses sourceDaemonPath and fails with a clear message when the exe
+// is not there. The exe takes --token-stdin and no other arguments.
+export function daemonCommand(env: NodeJS.ProcessEnv, packagedExe: string | null, repoRoot: string, exists: (path: string) => boolean = existsSync): Pick<DaemonLaunch, "execPath" | "args" | "runAsNode"> {
+  if (packagedExe !== null) return { execPath: packagedExe, args: [], runAsNode: false };
+  const exe = sourceDaemonPath(env, repoRoot);
+  if (!exists(exe)) throw new Error(env.TJOMMIE_DAEMON_EXE ? `TJOMMIE_DAEMON_EXE names a daemon that is not there: ${exe}` : BUILD_RUST_DAEMON);
+  return { execPath: exe, args: [], runAsNode: false };
 }
 
 // The executable of the process that listens on the daemon's port, for tests that must recognize their own daemon: the
-// Rust daemon bundled beside an installed app, the one TJOMMIE_DAEMON_EXE names for a run from source, else the app's own
-// executable (the Node daemon runs inside it).
-export function daemonExecutable(appExecutable: string, installed: boolean, env: NodeJS.ProcessEnv): string {
-  if (installed) return packagedDaemonPath(join(dirname(appExecutable), "resources"));
-  return env.TJOMMIE_DAEMON_EXE ? resolve(env.TJOMMIE_DAEMON_EXE) : appExecutable;
+// Rust daemon bundled beside an installed app, else the one a run from source starts (see sourceDaemonPath).
+export function daemonExecutable(appExecutable: string, installed: boolean, env: NodeJS.ProcessEnv, repoRoot: string): string {
+  return installed ? packagedDaemonPath(join(dirname(appExecutable), "resources")) : sourceDaemonPath(env, repoRoot);
 }
 
 // TJOMMIE_HOME always follows the data root. TJOMMIE_PORT is only forced for a disposable test root; an inherited one
@@ -106,7 +111,7 @@ export function startDaemonProcess(
   const token = newToken();
   const desktopHostToken = newToken();
   const child = spawn(launch.execPath, [...launch.args, "--token-stdin"], {
-    env: daemonEnv(launch.env, launch.testAccountsDir, launch.runAsNode ?? true),
+    env: daemonEnv(launch.env, launch.testAccountsDir, launch.runAsNode ?? false),
     stdio: "pipe",
     windowsHide: true,
   });

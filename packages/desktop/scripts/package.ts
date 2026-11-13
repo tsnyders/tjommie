@@ -33,6 +33,9 @@ const app = join(out, "app"); // what goes into app.asar: the main process and t
 const resources = join(out, "resources"); // plain files beside app.asar: the daemon, the UI and the icons
 // The Rust daemon, built before packaging (CI: `cargo build --release --locked -p daemon --bin tjommie-daemon` inside tjommie-rs).
 const daemonExe = join(repo, "tjommie-rs", "target", "release", "tjommie-daemon.exe");
+// The daemon's version is the Rust workspace's: [workspace.package] is the first `version =` line in tjommie-rs/Cargo.toml.
+const daemonVersion = /^version\s*=\s*"([^"]+)"/m.exec(readFileSync(join(repo, "tjommie-rs", "Cargo.toml"), "utf8"))?.[1];
+if (!daemonVersion) throw new Error("Could not read the Rust daemon's version from tjommie-rs/Cargo.toml.");
 const appId = testAppId ?? "com.tsnyders.tjommie";
 const productName = testProduct ?? "Tjommie";
 const version = process.env.TJOMMIE_PACKAGE_VERSION ?? (require(join(repo, "package.json")) as { version: string }).version;
@@ -65,11 +68,10 @@ writeFileSync(
 // The daemon is one exe: no Node bundle, no Playwright MCP and no Noise wasm (the UI keeps its own copy of the wasm in resources/ui).
 mkdirSync(join(resources, "daemon"), { recursive: true });
 cpSync(daemonExe, join(resources, "daemon", "tjommie-daemon.exe"));
-// The worker-acceptance tool in resources/vault still reads this helper from beside the daemon (..\daemon\windows-worker.ps1).
-cpSync(join(repo, "packages", "daemon", "src", "windows-worker.ps1"), join(resources, "daemon", "windows-worker.ps1"));
+// The vault folder carries the worker setup scripts. The TypeScript worker-acceptance bundle (acceptance\main.mjs) and the
+// windows-worker.ps1 helper beside the daemon went with the TypeScript daemon they ran on.
 cpSync(join(repo, "scripts", "vault"), join(resources, "vault"), { recursive: true });
-await bundle(join(repo, "scripts", "vault", "accept-worker.ts"), join(resources, "vault", "acceptance"), []);
-writeFileSync(join(resources, "daemon", "build-info.json"), JSON.stringify({ appVersion: version, daemonVersion: (require(join(repo, "packages", "daemon", "package.json")) as { version: string }).version }));
+writeFileSync(join(resources, "daemon", "build-info.json"), JSON.stringify({ appVersion: version, daemonVersion }));
 cpSync(join(repo, "packages", "ui", "out"), join(resources, "ui"), { recursive: true });
 cpSync(join(desktop, "assets"), join(resources, "assets"), { recursive: true });
 mkdirSync(join(resources, "speech"), { recursive: true });

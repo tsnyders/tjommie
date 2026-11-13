@@ -1,12 +1,15 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { connect } from "@tjommie/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { daemonCommand, daemonEnv, daemonExecutable, daemonLaunchEnv, listeningPort, newToken, packagedDaemonPath, startDaemonProcess, stopWithin, type DaemonLaunch, type RunningDaemon } from "./daemon-process.ts";
+import { BUILD_RUST_DAEMON, daemonCommand, daemonEnv, daemonExecutable, daemonLaunchEnv, listeningPort, newToken, packagedDaemonPath, sourceDaemonPath, startDaemonProcess, stopWithin, type DaemonLaunch, type RunningDaemon } from "./daemon-process.ts";
 
-const entry = fileURLToPath(new URL("../../daemon/src/main.ts", import.meta.url));
+const repoRoot = resolve(import.meta.dirname, "..", "..", "..");
+// The Rust daemon the process tests start: TJOMMIE_DAEMON_EXE, else the debug build. Build it with
+// `cargo build -p daemon --bin tjommie-daemon` inside tjommie-rs. Without it those tests are skipped, not passed.
+const exe = sourceDaemonPath(process.env, repoRoot);
+const built = existsSync(exe);
 const roots: string[] = [];
 const running: RunningDaemon[] = [];
 
@@ -15,17 +18,17 @@ afterEach(async () => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
-// The daemon from source under this test's Node, on a disposable data root and a free port. TJOMMIE_DEV is set
-// on purpose: daemonEnv must remove it, or the daemon refuses to mix development and production modes. PATH is
-// emptied, whatever its case, so the daemon finds no CLIs and starts fast (as in the daemon's main.test.ts).
+// The Rust daemon on a disposable data root and a free port, with the same environment filter the app applies.
+// TJOMMIE_DEV is set on purpose: daemonEnv must remove it, or the daemon refuses to mix development and production
+// modes. The phone listener stays on loopback with a free port, so no Windows Firewall prompt and no clash with an
+// installed Tjommie. PATH is emptied, whatever its case, so the daemon finds no provider CLIs and starts fast.
 function launch(extraEnv: Record<string, string> = {}): DaemonLaunch {
   const root = mkdtempSync(join(tmpdir(), "tjommie desktop ñ-"));
   roots.push(root);
   const inherited = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toUpperCase() !== "PATH"));
   return {
-    execPath: process.execPath,
-    args: ["--disable-warning=ExperimentalWarning", entry],
-    env: { ...inherited, PATH: "", TJOMMIE_HOME: root, TJOMMIE_PORT: "0", TJOMMIE_DEV: "1", ...extraEnv },
+    ...daemonCommand(process.env, null, repoRoot),
+    env: { ...inherited, PATH: "", TJOMMIE_HOME: root, TJOMMIE_PORT: "0", TJOMMIE_LAN_BIND: "127.0.0.1", TJOMMIE_LAN_PORT: "0", TJOMMIE_DEV: "1", ...extraEnv },
   };
 }
 
@@ -37,8 +40,8 @@ describe("daemon process", () => {
     expect(listeningPort("starting")).toBeNull();
   });
 
-  it("runs the daemon in production mode as plain Node", () => {
-    expect(daemonEnv({ TJOMMIE_DEV: "1", TJOMMIE_HOME: "C:\\x" })).toEqual({ TJOMMIE_HOME: "C:\\x", ELECTRON_RUN_AS_NODE: "1" });
+  it("runs the daemon in production mode: no development switch, and no Node environment", () => {
+    expect(daemonEnv({ TJOMMIE_DEV: "1", TJOMMIE_HOME: "C:\\x" })).toEqual({ TJOMMIE_HOME: "C:\\x" });
   });
 
   it("launches the desktop daemon on the explicit desktop data root", () => {
@@ -59,41 +62,54 @@ describe("daemon process", () => {
     }
   });
 
-  it("starts the exe named by TJOMMIE_DAEMON_EXE in unpackaged runs, with no Node arguments", () => {
-    const exe = "C:\\tjommie-rs\\tjommie-daemon.exe";
-    const node = { execPath: "C:\\node.exe", args: ["--disable-warning=ExperimentalWarning", "C:\\daemon\\main.ts"], runAsNode: true };
-    const command = (env: NodeJS.ProcessEnv) => daemonCommand(env, null, node.execPath, "C:\\daemon\\main.ts");
-    expect(command({})).toEqual(node);
-    expect(command({ TJOMMIE_DAEMON_EXE: exe })).toEqual({ execPath: exe, args: [], runAsNode: false });
-    expect(command({ TJOMMIE_DAEMON_EXE: "" })).toEqual(node);
+  it("starts the exe named by TJOMMIE_DAEMON_EXE in unpackaged runs, else the debug build, with no Node arguments", () => {
+    const override = "C:\\tjommie-rs\\tjommie-daemon.exe";
+    const debugBuild = join(repoRoot, "tjommie-rs", "target", "debug", "tjommie-daemon.exe");
+    const present = () => true;
+    expect(daemonCommand({ TJOMMIE_DAEMON_EXE: override }, null, repoRoot, present)).toEqual({ execPath: override, args: [], runAsNode: false });
+    expect(daemonCommand({}, null, repoRoot, present)).toEqual({ execPath: debugBuild, args: [], runAsNode: false });
+    expect(daemonCommand({ TJOMMIE_DAEMON_EXE: "" }, null, repoRoot, present)).toEqual({ execPath: debugBuild, args: [], runAsNode: false });
+    expect(sourceDaemonPath({}, repoRoot)).toBe(debugBuild);
+  });
+
+  it("never falls back to Node: a missing Rust daemon fails with the instruction to build it", () => {
+    const missing = () => false;
+    expect(() => daemonCommand({}, null, repoRoot, missing)).toThrow(BUILD_RUST_DAEMON);
+    expect(BUILD_RUST_DAEMON).toBe("Build the Rust daemon first: cargo build -p daemon --bin tjommie-daemon (inside tjommie-rs)");
+    expect(() => daemonCommand({ TJOMMIE_DAEMON_EXE: "" }, null, repoRoot, missing)).toThrow(BUILD_RUST_DAEMON);
+    // An override that points nowhere is its own mistake: say which file, not how to build the default.
+    expect(() => daemonCommand({ TJOMMIE_DAEMON_EXE: "C:\\rs\\tjommie-daemon.exe" }, null, repoRoot, missing)).toThrow(resolve("C:\\rs\\tjommie-daemon.exe"));
   });
 
   it("runs the bundled Rust daemon in an installed app, with no Node arguments and whatever the environment says", () => {
     const resources = "C:\\Users\\owner\\AppData\\Local\\Programs\\Tjommie\\resources";
     const bundled = packagedDaemonPath(resources);
     expect(bundled).toBe(join(resources, "daemon", "tjommie-daemon.exe"));
-    const command = (env: NodeJS.ProcessEnv) => daemonCommand(env, bundled, "C:\\Tjommie.exe", "C:\\daemon\\main.ts");
+    const command = (env: NodeJS.ProcessEnv) => daemonCommand(env, bundled, repoRoot, () => false);
     expect(command({})).toEqual({ execPath: bundled, args: [], runAsNode: false });
-    // An installed app never runs an override, and never the Node daemon.
+    // An installed app never runs an override, and never looks for the debug build.
     expect(command({ TJOMMIE_DAEMON_EXE: "C:\\elsewhere\\daemon.exe" })).toEqual({ execPath: bundled, args: [], runAsNode: false });
   });
 
-  it("sets ELECTRON_RUN_AS_NODE only for the Node daemon, and never lets the Rust exe inherit it", () => {
+  it("never lets the Rust exe inherit ELECTRON_RUN_AS_NODE, and sets it only for 0.4.2's Node daemon when asked", () => {
     const inherited = { TJOMMIE_HOME: "C:\\x", ELECTRON_RUN_AS_NODE: "1", TJOMMIE_DEV: "1" };
-    expect(daemonEnv(inherited, undefined, true)).toEqual({ TJOMMIE_HOME: "C:\\x", ELECTRON_RUN_AS_NODE: "1" });
+    expect(daemonEnv(inherited)).toEqual({ TJOMMIE_HOME: "C:\\x" });
     expect(daemonEnv(inherited, undefined, false)).toEqual({ TJOMMIE_HOME: "C:\\x" });
-    expect(daemonEnv({ electron_run_as_node: "1" }, undefined, false)).toEqual({}); // Whatever its case.
-    expect(daemonEnv(inherited, "C:\\disposable", false)).toEqual({ TJOMMIE_HOME: "C:\\x", TJOMMIE_ACCOUNTS_DIR: "C:\\disposable" });
+    expect(daemonEnv({ electron_run_as_node: "1" })).toEqual({}); // Whatever its case.
+    expect(daemonEnv(inherited, "C:\\disposable")).toEqual({ TJOMMIE_HOME: "C:\\x", TJOMMIE_ACCOUNTS_DIR: "C:\\disposable" });
+    // scripts/r1-acceptance.ts seeds a data root with the 0.4.2 install's own Node daemon, which runs inside Electron.
+    expect(daemonEnv(inherited, undefined, true)).toEqual({ TJOMMIE_HOME: "C:\\x", ELECTRON_RUN_AS_NODE: "1" });
   });
 
-  it("names the process that owns the daemon's port for an installed app, an exe-hosted source run and the Node daemon", () => {
+  it("names the process that owns the daemon's port for an installed app and a run from source", () => {
     const app = "C:\\Tjommie\\Tjommie.exe";
-    expect(daemonExecutable(app, true, {})).toBe(join("C:\\Tjommie", "resources", "daemon", "tjommie-daemon.exe"));
+    const bundled = join("C:\\Tjommie", "resources", "daemon", "tjommie-daemon.exe");
+    expect(daemonExecutable(app, true, {}, repoRoot)).toBe(bundled);
     // The override is for source runs only; an installed app ignores it, as daemonCommand does.
-    expect(daemonExecutable(app, true, { TJOMMIE_DAEMON_EXE: "C:\\elsewhere\\daemon.exe" })).toBe(join("C:\\Tjommie", "resources", "daemon", "tjommie-daemon.exe"));
-    expect(daemonExecutable("C:\\electron.exe", false, { TJOMMIE_DAEMON_EXE: "C:\\rs\\tjommie-daemon.exe" })).toBe(resolve("C:\\rs\\tjommie-daemon.exe"));
-    expect(daemonExecutable("C:\\electron.exe", false, {})).toBe("C:\\electron.exe");
-    expect(daemonExecutable("C:\\electron.exe", false, { TJOMMIE_DAEMON_EXE: "" })).toBe("C:\\electron.exe");
+    expect(daemonExecutable(app, true, { TJOMMIE_DAEMON_EXE: "C:\\elsewhere\\daemon.exe" }, repoRoot)).toBe(bundled);
+    expect(daemonExecutable("C:\\electron.exe", false, { TJOMMIE_DAEMON_EXE: "C:\\rs\\tjommie-daemon.exe" }, repoRoot)).toBe(resolve("C:\\rs\\tjommie-daemon.exe"));
+    expect(daemonExecutable("C:\\electron.exe", false, {}, repoRoot)).toBe(join(repoRoot, "tjommie-rs", "target", "debug", "tjommie-daemon.exe"));
+    expect(daemonExecutable("C:\\electron.exe", false, { TJOMMIE_DAEMON_EXE: "" }, repoRoot)).toBe(join(repoRoot, "tjommie-rs", "target", "debug", "tjommie-daemon.exe"));
   });
 
   it("keeps an inherited TJOMMIE_PORT next to TJOMMIE_HOME, so a second install sets both and never contends for 47100", () => {
@@ -103,21 +119,6 @@ describe("daemon process", () => {
     // A disposable test root always gets a free port, whatever was inherited.
     expect(daemonLaunchEnv({ TJOMMIE_PORT: "47200" }, "C:\\disposable", true).TJOMMIE_PORT).toBe("0");
   });
-
-  // Build the Rust daemon and set TJOMMIE_DAEMON_EXE to run this against it.
-  it.runIf(process.env.TJOMMIE_DAEMON_EXE)("runs the TJOMMIE_DAEMON_EXE daemon with the same token-stdin contract", async () => {
-    let output = "";
-    const daemon = await startDaemonProcess({ ...launch(), ...daemonCommand(process.env, null, process.execPath, entry) }, (text) => { output += text; });
-    running.push(daemon);
-    const { port, token } = daemon.connection;
-    const client = await connect(port, token);
-    expect(output).toContain(`listening on http://127.0.0.1:${port}`);
-    expect(output).not.toContain(token);
-    expect(output).not.toContain(daemon.desktopHostToken);
-    await daemon.stop();
-    expect((await daemon.exited).code).toBe(0);
-    await client.disconnected;
-  }, 60_000);
 
   it("does not forward an inherited test hook that turns off a check or a protection", () => {
     const parentEnv = {
@@ -140,7 +141,7 @@ describe("daemon process", () => {
     expect(daemonEnv(parentEnv, "C:\\disposable-accounts").TJOMMIE_ACCOUNTS_DIR).toBe("C:\\disposable-accounts");
   });
 
-  it("pipes the token in, keeps it out of output, and stops the daemon by closing stdin (token stays in memory)", async () => {
+  it.skipIf(!built)("pipes the token in, keeps it out of output, and stops the Rust daemon by closing stdin (token stays in memory)", async () => {
     const options = launch();
     let output = "";
     const daemon = await startDaemonProcess(options, (text) => { output += text; });
@@ -159,7 +160,7 @@ describe("daemon process", () => {
     await client.disconnected;
   }, 60_000);
 
-  it("reports the daemon's own reason when it can't start", async () => {
+  it.skipIf(!built)("reports the daemon's own reason when it can't start", async () => {
     const first = await startDaemonProcess(launch());
     running.push(first);
     const port = first.connection.port;

@@ -39,17 +39,17 @@ const packageIdentity = packaged
   ? JSON.parse(readFileSync(join(app.getAppPath(), "package.json"), "utf8")) as { appId?: string; testDataRoot?: string }
   : {};
 const productName = packaged ? app.getName() : "Tjommie";
-// Three ways to run. Development: the development daemon and `npm run dev` run separately. Production from source
-// (TJOMMIE_DESKTOP=production): this process starts the daemon and serves the static export. Installed: the same,
+// Three ways to run. Development: the Rust daemon (`--dev`) and `npm run dev` run separately. Production from source
+// (TJOMMIE_DESKTOP=production): this process starts the Rust daemon and serves the static export. Installed: the same,
 // with the daemon, the UI and the icons as plain files in resources (npm run package).
 const production = packaged || process.env.TJOMMIE_DESKTOP === "production";
 const dataRoot = process.env.TJOMMIE_HOME ?? packageIdentity.testDataRoot ?? join(process.env.LOCALAPPDATA ?? join(homedir(), ".local", "share"), productName);
 const assets = packaged ? join(process.resourcesPath, "assets") : join(here, "..", "assets");
 const uiDir = packaged ? join(process.resourcesPath, "ui") : join(here, "..", "..", "ui", "out");
-// An installed app runs the Rust daemon bundled in resources. A run from source starts the Node daemon, or the Rust exe
-// named by TJOMMIE_DAEMON_EXE (see daemonCommand).
+// An installed app runs the Rust daemon bundled in resources. A run from source starts the Rust exe named by
+// TJOMMIE_DAEMON_EXE, else tjommie-rs\target\debug\tjommie-daemon.exe under the repo root (see daemonCommand).
 const bundledDaemon = packaged ? packagedDaemonPath(process.resourcesPath) : null;
-const daemonEntry = join(here, "..", "..", "daemon", "src", "main.ts");
+const repoRoot = join(here, "..", "..", "..");
 const appIcon = join(assets, "icon-256.png");
 const APP_ID = packageIdentity.appId ?? "com.tsnyders.tjommie";
 // Next needs inline bootstrap scripts; Noise WASM needs wasm-unsafe-eval; Markdown sanitization handles injected content.
@@ -286,16 +286,18 @@ async function openConnection(): Promise<DaemonConnection> {
   return connection;
 }
 
+// A debug Rust daemon defaults to the Tjommie-rs data folder and port 47200, so it must be started on this app's folder and port.
 function developmentConnection(): DaemonConnection {
+  const port = Number(process.env.TJOMMIE_PORT ?? 47100);
   const tokenFile = join(dataRoot, "daemon-token");
-  if (!existsSync(tokenFile)) throw new Error("Start the development daemon first: npm start -w @tjommie/daemon");
-  return { port: Number(process.env.TJOMMIE_PORT ?? 47100), token: readFileSync(tokenFile, "utf8").trim() };
+  if (!existsSync(tokenFile)) throw new Error(`Start the Rust daemon in development mode first: cargo run -p daemon --bin tjommie-daemon -- --dev (inside tjommie-rs), with TJOMMIE_HOME=${dataRoot} and TJOMMIE_PORT=${port}.`);
+  return { port, token: readFileSync(tokenFile, "utf8").trim() };
 }
 
 async function launchDaemon(): Promise<DaemonConnection> {
   const running = await startDaemonProcess(
     {
-      ...daemonCommand(process.env, bundledDaemon, process.execPath, daemonEntry),
+      ...daemonCommand(process.env, bundledDaemon, repoRoot),
       env: daemonLaunchEnv(process.env, dataRoot, !!packageIdentity.testDataRoot),
       // Only an isolated desktop test may redirect the daemon's account folders.
       testAccountsDir: packageIdentity.testDataRoot

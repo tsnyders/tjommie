@@ -6,11 +6,8 @@ import { getCACertificates, setDefaultCACertificates } from "node:tls";
 import { expect, it, vi } from "vitest";
 import { parsePairingCode } from "@tjommie/protocol";
 import { connect, type Client } from "@tjommie/client";
-import type { CredentialTransport } from "../../daemon/src/account-credentials.ts";
-import { startDaemon, type Daemon } from "../../daemon/src/daemon.ts";
-import { tempRoot } from "../../daemon/src/testing.ts";
+import { credentialNamespace, windowsCredentialTransport } from "./credential-transport.ts";
 import { createDeviceKeys } from "./device-keys.ts";
-import { newToken } from "./daemon-process.ts";
 import { closeRealApp, eventually, launchRealApp, openChat, send, type RealApp } from "./real-app.ts";
 import { startLocalRelay, stopLocalRelay } from "../../relay/src/local-relay.test-helper.ts";
 
@@ -25,33 +22,29 @@ function certificate(root: string): string {
   return cert;
 }
 
-it("pairs two isolated desktop profiles through the relay, chats without a provider, switches hosts and removes the device", async () => {
+// NEEDS AN OWNER DECISION, so it is skipped. 0.4.2 ran host A as an in-process TypeScript daemon, with an in-memory credential
+// store, a made-up LAN address and a session factory that refused to start a provider. Host A is now a second app with its
+// own Rust daemon. That daemon uses the real Credential Manager (in its disposable root's namespace) and its PC's real LAN
+// addresses, and it cannot trust the local relay's self-signed certificate: NODE_EXTRA_CA_CERTS reaches Electron, not Rust.
+// Enabling this needs a decision: a test-only certificate hook or a plain-http local relay in the Rust daemon, or a different
+// relay setup. Nothing below has run against the Rust daemon. Then change `it.skip` to `it`.
+it.skip("pairs two isolated desktop profiles through the relay, chats without a provider, switches hosts and removes the device", async () => {
   let relayRoot = "";
   let relay: ChildProcessWithoutNullStreams | undefined;
-  let aDaemon: Daemon | undefined, aClient: Client | undefined, b: RealApp | undefined, hostId: string | undefined;
+  let a: RealApp | undefined, aClient: Client | undefined, b: RealApp | undefined, hostId: string | undefined;
   const oldCa = process.env.NODE_EXTRA_CA_CERTS;
   const oldCertificates = getCACertificates("default");
   const failures: unknown[] = [];
   try {
     // shortcut: keep the relay CA path ASCII; use tempRoot() when Electron accepts its accented certificate path.
     relayRoot = mkdtempSync(join(tmpdir(), "tjommie-two-hosts-relay-"));
-    const aRoot = tempRoot();
     const cert = certificate(relayRoot);
     const started = await startLocalRelay(relayRoot, { keyPath: join(relayRoot, "relay.key"), certPath: cert });
     relay = started.child;
     process.env.NODE_EXTRA_CA_CERTS = cert;
     setDefaultCACertificates([...oldCertificates, readFileSync(cert, "utf8")]);
-    const records = new Map<string, string>();
-    const credentials: CredentialTransport = async ({ operation, target, key }) => {
-      if (operation === "write" && key !== undefined) records.set(target, key);
-      if (operation === "delete") records.delete(target);
-      return operation === "read" ? records.get(target) ?? null : null;
-    };
-    aDaemon = await startDaemon({ root: aRoot, port: 0, accountsDir: join(aRoot, "accounts"),
-      auth: { mode: "production", token: newToken() },
-      remote: { port: 0, bind: "127.0.0.1", addresses: () => ["192.0.2.1"], credentials },
-      createSession: () => { throw new Error("A paused synthetic bot must never start a provider session."); } });
-    aClient = await connect(aDaemon.port, aDaemon.token);
+    a = await launchRealApp(undefined, { isolatedAccounts: true });
+    aClient = a.client;
     b = await launchRealApp(undefined, { isolatedAccounts: true });
 
     await aClient.call("settings.set", { relayUrl: started.base });
@@ -62,8 +55,6 @@ it("pairs two isolated desktop profiles through the relay, chats without a provi
     const code = parsePairingCode(invite.code);
     hostId = code.hostId;
     expect(code.relay).toBe(started.base);
-    expect(code.lan).toHaveLength(1);
-    expect(code.lan[0]?.host).toBe("192.0.2.1");
 
     await b.page.getByRole("button", { name: /Switch PC, now on This PC/ }).click();
     await b.page.getByRole("menuitem", { name: /Connect to another computer/ }).click();
@@ -108,8 +99,14 @@ it("pairs two isolated desktop profiles through the relay, chats without a provi
           }
         } catch (error) { failures.push(error); }
       }
-      if (aClient) await aClient.close().catch((error: unknown) => failures.push(error));
-      if (aDaemon) await aDaemon.close().catch((error: unknown) => failures.push(error));
+      if (a) {
+        await closeRealApp(a, false).catch((error: unknown) => failures.push(error));
+        // The Rust daemon saved host A's identity in Credential Manager, in the disposable root's own namespace.
+        const namespace = credentialNamespace(a.root, 32);
+        for (const name of ["remote-host", "relay-login"]) {
+          await windowsCredentialTransport({ operation: "delete", target: `Tjommie/${namespace}/${name}` }).catch((error: unknown) => failures.push(error));
+        }
+      }
       if (relay) await stopLocalRelay(relay).catch((error: unknown) => failures.push(error));
     } catch (error) { failures.push(error); }
     finally {

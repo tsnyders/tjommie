@@ -1,8 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { expect, it } from "vitest";
-import { openDb } from "../../daemon/src/db.ts";
-import { recordUsage } from "../../daemon/src/usage.ts";
+import { openSeedDb, recordUsage } from "./real-seed.ts";
 import { closeRealApp, eventually, launchRealApp, openChat, type RealApp } from "./real-app.ts";
 
 async function capture(app: RealApp, path: string): Promise<void> {
@@ -54,7 +53,7 @@ it("edits account metadata, pins an existing bot and shows separate spend and su
     // This key is fake; only its uniquely namespaced disposable WinCred entry is exercised.
     const key = await client.call("accounts.create", { provider: "claude", label: "UI synthetic key", kind: "api_key", apiKey: "synthetic-only-ui-account-fixture", spendingCapUsd: 10 });
     syntheticKeys.add(key.id);
-    const db = openDb(join(app.root, "data", "tjommie.db"));
+    const db = openSeedDb(join(app.root, "data", "tjommie.db"));
     try {
       for (const [accountId, costUsd] of [[other.id, 2], [key.id, 1]] as const) {
         recordUsage(db, { botId: bot.id, accountId, provider: "claude", model: "sonnet", input: 100, cachedInput: 10, output: 20, reasoning: 5, costUsd, costSource: "reported" });

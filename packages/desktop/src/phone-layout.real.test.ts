@@ -3,10 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { expect, it } from "vitest";
-import { addMessage } from "../../daemon/src/chat.ts";
-import { newId, nowIso, openDb } from "../../daemon/src/db.ts";
-import { recordUsage } from "../../daemon/src/usage.ts";
-import { replaceAccountLimits } from "../../daemon/src/accounts-store.ts";
+import { addMessage, newId, nowIso, openSeedDb, recordUsage, replaceAccountLimits } from "./real-seed.ts";
 import { closeRealApp, eventually, launchRealApp, type RealApp } from "./real-app.ts";
 
 const screenshots = resolve(import.meta.dirname, "../../../docs/screenshots/phone");
@@ -76,7 +73,7 @@ it("uses Quiet pill navigation and reachable phone sheets, forms, account dialog
       await client.call("accounts.create", { provider: "claude", label: `Layout account ${index} with a long label`, kind: "subscription" });
     }
     const accounts = await client.call("accounts.list", {});
-    const db = openDb(join(app.root, "data", "tjommie.db"));
+    const db = openSeedDb(join(app.root, "data", "tjommie.db"));
     try {
       addMessage(db, { conversationId: bot.id, author: "you", kind: "text", body: "Please review the sample inbox.", status: "done" });
       addMessage(db, { conversationId: bot.id, author: bot.id, kind: "text", body: "The sample summary is ready. These are fixture messages, with no connection to an inbox.", status: "done" });

@@ -6,8 +6,8 @@ import { basename, dirname, join, resolve } from "node:path";
 import { extractFile } from "@electron/asar";
 import { _electron, type ElectronApplication } from "playwright-core";
 import { describe, expect, it } from "vitest";
-import { tempRoot } from "../../daemon/src/testing.ts";
-import { windowsAclDriver, type AclTarget } from "../../daemon/src/windows-acl.ts";
+import { tempRoot } from "./testing.ts";
+import { removeCodexDenyEntries } from "./test-acl.ts";
 import { assertOwnerUnchanged, ownerChangedPaths, ownerLastWriteSnapshot } from "./owner-safety.ts";
 import { assertTestDownloadedUpdate, assertTestInstaller, assertTestUninstaller, assertTestUpdate, checkTestRegistration, nsisSpawnOptions, readRegistryKeys, testIdentity, testRegistryKeys } from "../scripts/update-test-guards.ts";
 import { daemonConnection, eventually, listeningPid, refused } from "./real-app.ts";
@@ -54,13 +54,10 @@ function versionAt(exe: string): string {
 
 function clearTestDataAcl(root: string): void {
   if (dirname(resolve(root)) !== resolve(tmpdir())) throw new Error("Refusing ACL cleanup outside the disposable test folder.");
-  const targets: AclTarget[] = [
+  const paths = [
     ["accounts", "claude-main"], ["logs"], ["data"], ["shared-files"], ["daemon-token"],
-  ].map((parts) => {
-    const path = join(root, ...parts);
-    return { path, folder: parts[0] !== "daemon-token", mode: "removeDeny" as const };
-  }).filter((target) => existsSync(target.path));
-  const result = windowsAclDriver.runSync(targets);
+  ].map((parts) => join(root, ...parts)).filter((path) => existsSync(path));
+  const result = removeCodexDenyEntries(paths);
   if (result.failures.length) throw new Error(`Disposable ACL cleanup failed: ${result.failures.join("; ")}`);
 }
 

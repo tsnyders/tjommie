@@ -1,9 +1,9 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { mkdirSync, lstatSync, realpathSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { LoginEntry, type LoginEntry as Entry } from "../../protocol/src/vault.ts";
-import { windowsCredentialTransport, type CredentialTransport } from "../../daemon/src/account-credentials.ts";
+import { credentialNamespace, windowsCredentialTransport, type CredentialTransport } from "./credential-transport.ts";
 
 export type VaultSecret = { username: string; password: string };
 export interface VaultCredentials {
@@ -24,7 +24,7 @@ export class WindowsLoginCredentials implements VaultCredentials {
   readonly #namespace: string;
   readonly #transport: CredentialTransport;
   constructor(dataRoot: string, transport: CredentialTransport = windowsCredentialTransport) {
-    this.#namespace = createHash("sha256").update(resolve(dataRoot).toLowerCase()).digest("hex").slice(0, 24);
+    this.#namespace = credentialNamespace(dataRoot);
     this.#transport = transport;
   }
   #target(reference: string): string {

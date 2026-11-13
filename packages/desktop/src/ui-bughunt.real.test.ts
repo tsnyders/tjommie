@@ -1,8 +1,7 @@
 import { join } from "node:path";
 import { writeFileSync } from "node:fs";
 import { expect, it } from "vitest";
-import { addDevice } from "../../daemon/src/devices-store.ts";
-import { openDb } from "../../daemon/src/db.ts";
+import { addDevice, openSeedDb } from "./real-seed.ts";
 import { closeRealApp, eventually, launchRealApp, type RealApp } from "./real-app.ts";
 
 // Delayed/failed RPCs use the production renderer and disposable daemon only.
@@ -19,7 +18,7 @@ it("retains edited drafts, reveals keyboard mentions, dismisses native overlays 
       const next = await client.call("bots.create", { name: `Mention fixture ${index}`, provider: "claude", model: "haiku", color: "gray", shape: "circle", instructions: "Synthetic fixture", autonomy: "ask", browser: false });
       await client.call("bots.pause", { id: next.id, paused: true });
     }
-    const db = openDb(join(app.root, "data", "tjommie.db"));
+    const db = openSeedDb(join(app.root, "data", "tjommie.db"));
     try { addDevice(db, { name: "Disposable phone", publicKey: Buffer.alloc(32, 3).toString("base64url") }); } finally { db.close(); }
     let pending: (() => void) | undefined;
     let heldMethod: string | null = null;
