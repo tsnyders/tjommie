@@ -14,19 +14,23 @@ import { packagedDaemonPath, startDaemonProcess, type DaemonLaunch } from "../pa
 // The R1 acceptance run (.github/workflows/r1-acceptance.yml): the Rust daemon takes over a data root that a 0.4.2 install
 // seeded, and 0.4.2 must still open it afterwards (spec §5, release R1).
 //
-//   seed    --root <dir> --counts <file>     a 0.4.2 data root, and its row counts
+//   seed    --root <dir> --install <0.4.2 dir> --counts <file>    a 0.4.2 data root (0.4.2's own daemon starts on it once), and its row counts
 //   install --installer <file>               installs silently, prints the install folder
 //   start   --install <dir> --root <dir>     runs the installed app's own daemon on the root, then stops it
 //   verify  --root <dir> --counts <file> --stage upgraded|rolledback [--version <v>]
 //   files   --dir <dir> [--installed] [--same-as <dir>] [--equals <n>]    prints the file count
 //
-// Everything but `files` changes the machine, so it refuses to run anywhere but a GitHub Actions runner. This is never run
-// against a real Tjommie data root or install.
+// Everything but `files` changes the machine (it kills Tjommie processes, runs an installer and writes a data root), so it
+// refuses to run anywhere but a GitHub-hosted runner. This is never run against a real Tjommie data root or install.
 
 export type Counts = { userVersion: number; tables: Record<string, number>; botFiles: number };
 
+// `act` and self-hosted runners also set GITHUB_ACTIONS=true, and either can be a PC with a real Tjommie on it.
+// RUNNER_ENVIRONMENT is "github-hosted" only on GitHub's own disposable runners.
 export function assertCi(env: NodeJS.ProcessEnv = process.env): void {
-  if (env.GITHUB_ACTIONS !== "true") throw new Error("The R1 acceptance run changes a data root and an install, so it runs only on a GitHub Actions runner.");
+  if (env.GITHUB_ACTIONS !== "true" || env.RUNNER_ENVIRONMENT !== "github-hosted") {
+    throw new Error("The R1 acceptance run changes a data root and an install, so it runs only on a GitHub-hosted runner.");
+  }
 }
 
 // ---- Counting ----
@@ -92,9 +96,12 @@ const botInput = (name: string, provider: BotInput["provider"], model: string): 
   name, color: "blue", shape: "circle", instructions: `You are ${name}. Answer briefly.`, provider, model, autonomy: "ask", browser: false,
 });
 
-// A 0.4.2 data root as the TypeScript daemon leaves it: accounts, bots with their folders, chats and recorded usage.
+// A 0.4.2 data root as the TypeScript daemon leaves it: accounts, bots with their folders, chats and recorded usage, then
+// 0.4.2's own daemon started on it once (`firstStart`) and stopped cleanly. That start adds rows nobody seeds (the
+// `attachmentHostId` setting, perhaps a `remote_host` identity), and any later daemon finds them already there. The counts
+// are taken after it, so they are what 0.4.2 leaves, and the R1 check compares R1 against exactly that.
 // Every message is finished and no work is queued, so a daemon's start-up recovery has nothing to change.
-export function seedRoot(root: string): Counts {
+export async function seedRoot(root: string, firstStart: (root: string) => Promise<void>): Promise<Counts> {
   const dataDir = join(root, "data");
   const dbFile = join(dataDir, "tjommie.db");
   if (existsSync(dbFile)) throw new Error("Refusing to seed a data root that already has a database.");
@@ -116,9 +123,17 @@ export function seedRoot(root: string): Counts {
       recordUsage(db, { botId: bot.id, accountId: `${bot.provider}-main`, provider: bot.provider, model: bot.model, input: 120, cachedInput: 40, output: 60, reasoning: 0, costUsd: 0.01, costSource: "reported" });
     }
   } finally {
-    db.close(); // The last connection checkpoints the WAL, so the file is complete on its own.
+    db.close(); // Close before the daemon opens the file, so nothing here holds it.
   }
+  await firstStart(root);
   return readCounts(dbFile, botsDir);
+}
+
+// What `seed` runs on the root: the 0.4.2 install's own Node daemon. An install that carries the Rust daemon would make the
+// seed R1's own work, and the check would compare R1 with itself.
+export function firstStartByOldDaemon(install: string): (root: string) => Promise<void> {
+  if (installedDaemon(install).runAsNode !== true) throw new Error(`Seeding needs 0.4.2's own Node daemon, but this install runs the Rust one: ${install}`);
+  return (root) => runInstalledDaemon(install, root);
 }
 
 // ---- Verifying ----
@@ -226,7 +241,8 @@ export async function main(args: string[]): Promise<void> {
   if (command !== "files") assertCi();
   switch (command) {
     case "seed": {
-      const counts = seedRoot(resolve(required(rest, "root")));
+      const firstStart = firstStartByOldDaemon(resolve(required(rest, "install")));
+      const counts = await seedRoot(resolve(required(rest, "root")), firstStart);
       writeFileSync(required(rest, "counts"), `${JSON.stringify(counts, null, 2)}\n`);
       console.error(`Seeded ${Object.values(counts.tables).reduce((sum, rows) => sum + rows, 0)} rows in ${Object.keys(counts.tables).length} tables and ${counts.botFiles} bot files.`);
       return;

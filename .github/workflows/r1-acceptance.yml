@@ -4,13 +4,13 @@ name: R1 acceptance (Rust daemon over a 0.4.2 install)
 # on a disposable runner that has never seen Tjommie, so it may install the production identity and use its data root:
 #
 #   1. Install 0.4.2 from GitHub Releases.
-#   2. Seed its data root (accounts, bots with folders, chats, usage).
+#   2. Seed its data root (accounts, bots with folders, chats, usage), then start 0.4.2's own daemon on it once.
 #   3. Install R1 over it.
 #   4. R1's file list equals a fresh build's; its daemon backs the database up before opening it and keeps every row.
 #   5. Reinstall 0.4.2 over R1 (the rollback): its file count returns to what it was, and its own daemon opens the database.
 #   6. The black-box real tests pass against the packaged test identity.
 #
-# Nothing here ever runs on the owner's PC: scripts/r1-acceptance.ts refuses to run outside GitHub Actions.
+# Nothing here ever runs on the owner's PC: scripts/r1-acceptance.ts refuses to run outside a GitHub-hosted runner.
 
 on:
   push:
@@ -106,7 +106,8 @@ jobs:
         shell: pwsh
         run: |
           $r1 = @('--disable-warning=ExperimentalWarning', 'scripts/r1-acceptance.ts')
-          node @r1 seed --root $env:R1_ROOT --counts $env:R1_COUNTS
+          # 0.4.2's own daemon starts on the seeded root once, so the counts include what its first start adds.
+          node @r1 seed --root $env:R1_ROOT --install $env:R1_INSTALL_DIR --counts $env:R1_COUNTS
           if ($LASTEXITCODE -ne 0) { throw 'Seeding the data root failed.' }
 
       - name: 3. Install R1 over 0.4.2
