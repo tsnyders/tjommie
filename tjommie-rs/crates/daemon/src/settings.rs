@@ -82,7 +82,12 @@ pub fn register(handlers: Handlers, context: &Context) -> Handlers {
                 set.events.send(Event::SettingsChanged(settings.clone()));
             }
             // A patch that names relayUrl (even as null) logs in to the relay again, or stops it (`daemon.ts:620-627`).
-            let remote = set.late.remote.get().cloned().filter(|_| patch.relay_url.is_some());
+            let remote = set
+                .late
+                .remote
+                .get()
+                .cloned()
+                .filter(|_| patch.relay_url.is_some());
             async move {
                 if let Some(remote) = remote {
                     remote.relay_url_changed().await;

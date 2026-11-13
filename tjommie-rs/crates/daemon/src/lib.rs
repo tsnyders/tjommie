@@ -8,6 +8,7 @@ pub mod accounts_store;
 pub mod approvals;
 pub mod attachments;
 pub mod bots;
+pub mod browser_stream;
 pub mod chat;
 pub mod cli;
 pub mod context;

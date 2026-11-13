@@ -110,12 +110,16 @@ fn import(args: &[String]) -> Result<(), StartupError> {
 fn provision(args: &[String]) -> Result<(), StartupError> {
     if !args.is_empty() {
         return Err(StartupError::Plain(
-            "Usage: tjommie-daemon provision (from an elevated window, as the Tjommie owner)".into(),
+            "Usage: tjommie-daemon provision (from an elevated window, as the Tjommie owner)"
+                .into(),
         ));
     }
     let root = daemon::paths::data_root();
     // The owner sees which install is about to get worker accounts before anything is created.
-    println!("Setting up the Windows worker accounts for {}", root.display());
+    println!(
+        "Setting up the Windows worker accounts for {}",
+        root.display()
+    );
     let done = daemon::win::logon::provision(&root).map_err(StartupError::Plain)?;
     println!("{done}");
     Ok(())

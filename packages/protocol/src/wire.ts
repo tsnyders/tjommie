@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { browserMethods } from "./browser.ts";
+import { browserEvents, browserMethods } from "./browser.ts";
 import { googleEvents, googleMethods } from "./google.ts";
 import { accountEvents, accountMethods } from "./accounts.ts";
 import { remoteEvents, remoteMethods } from "./remote.ts";
@@ -101,6 +101,7 @@ export const events = {
   ...remoteEvents,
   ...accountEvents,
   ...googleEvents,
+  ...browserEvents,
   "message.added": Message,
   "message.updated": Message,
   "message.delta": z.object({ id: z.string(), conversationId: z.string(), delta: z.string() }),

@@ -19,10 +19,10 @@ use crate::cli::{InstalledWorkers, SystemCli, WorkerInstall, WorkerPurpose};
 use crate::context::{self, Context, Db, Late, LateBotView};
 use crate::m5::{self, LateTasks, M5, M5Deps};
 use crate::m6::{self, M6, M6Deps};
+use crate::queue::WorkItem;
 use crate::relay_client::default_connector;
 use crate::remote::{Remote, RemoteOptions};
 use crate::remote_host::{Dispatch, RemoteHostOptions};
-use crate::queue::WorkItem;
 use crate::runner::{Core, Runner, RunnerDeps, RunnerHooks, TurnResult, cli_session_factory};
 use crate::server::{Handlers, RequestContext, Routes, RpcError, Server, ServerOptions};
 use crate::setup::Setup;
@@ -84,6 +84,9 @@ pub struct Launch {
     /// The address the phone's LAN host binds. Production listens on every interface so phones on the network reach
     /// this PC; tests and manual runs set `TJOMMIE_LAN_BIND=127.0.0.1`, which keeps Windows Firewall from prompting.
     pub lan_bind: IpAddr,
+    /// A test hook (`TJOMMIE_SKIP_ACCOUNT_CHECK=1`): don't probe the provider CLIs when the daemon starts, so tests
+    /// never run a real `claude` or `codex`.
+    pub skip_account_check: bool,
     /// A test hook: the desktop's real-CLI tests point a disposable root at signed-in account folders.
     pub accounts_dir: Option<PathBuf>,
 }
@@ -122,6 +125,7 @@ pub fn parse_launch(
             "TJOMMIE_LAN_PORT",
         )?,
         lan_bind: lan_bind(env("TJOMMIE_LAN_BIND"))?,
+        skip_account_check: env("TJOMMIE_SKIP_ACCOUNT_CHECK").as_deref() == Some("1"),
         accounts_dir: env("TJOMMIE_ACCOUNTS_DIR")
             .filter(|dir| !dir.is_empty())
             .map(PathBuf::from),
@@ -343,11 +347,7 @@ pub async fn start(launch: &Launch, auth: &Auth) -> Result<Daemon, StartupError>
     let activated = runner
         .start()
         .map_err(rpc)
-        .and_then(|()| {
-            server
-                .activate_with(token, handlers, routes)
-                .map_err(rpc)
-        });
+        .and_then(|()| server.activate_with(token, handlers, routes).map_err(rpc));
     let daemon = Daemon {
         server,
         root,
@@ -363,12 +363,14 @@ pub async fn start(launch: &Launch, auth: &Auth) -> Result<Daemon, StartupError>
         daemon.close().await;
         return Err(error);
     }
-    let checking = daemon.accounts.runtime.check_all();
-    tokio::spawn(async move {
-        if checking.await.is_err() {
-            eprintln!("Some accounts could not be checked. Retry from Accounts.");
-        }
-    });
+    if !launch.skip_account_check {
+        let checking = daemon.accounts.runtime.check_all();
+        tokio::spawn(async move {
+            if checking.await.is_err() {
+                eprintln!("Some accounts could not be checked. Retry from Accounts.");
+            }
+        });
+    }
     let remote = daemon.remote.clone();
     tokio::spawn(async move { remote.start().await });
     Ok(daemon)
@@ -463,9 +465,8 @@ fn assemble(
     let install = Arc::new(WorkerInstall::default());
     let (provider_worker, review_worker, workers) =
         install_workers(&paths.root, &exe_dir, &install)?;
-    let cli = Arc::new(
-        SystemCli::with_worker(Arc::new(provider_worker.clone())).reporting_to(install),
-    );
+    let cli =
+        Arc::new(SystemCli::with_worker(Arc::new(provider_worker.clone())).reporting_to(install));
     let setup = Setup::new(cli.clone(), Arc::new(HttpsFetch::new().map_err(plain)?));
 
     // 1. One account per provider, then the accounts runtime.
@@ -503,12 +504,16 @@ fn assemble(
         // M5's task hooks run first (`tasks.turnEnded`, then the rest). M4 adds `scheduler.runEnded` and
         // `team.turnEnded` ahead of the notice.
         hooks: late_tasks.hooks(RunnerHooks {
-            turn_ended: Some(Arc::new(move |core: &mut Core<'_>, item: &WorkItem, result: &TurnResult| {
-                if let Some(notice) = turn_notice(core.db(), item, result).map_err(|e| e.message)? {
-                    notices.send(Event::Notify(notice));
-                }
-                Ok(())
-            })),
+            turn_ended: Some(Arc::new(
+                move |core: &mut Core<'_>, item: &WorkItem, result: &TurnResult| {
+                    if let Some(notice) =
+                        turn_notice(core.db(), item, result).map_err(|e| e.message)?
+                    {
+                        notices.send(Event::Notify(notice));
+                    }
+                    Ok(())
+                },
+            )),
             ..RunnerHooks::default()
         }),
         ..RunnerDeps::new(
@@ -606,6 +611,8 @@ fn assemble(
         .map_err(rpc)?,
     );
     let _ = context.late.m6.set(m6.clone());
+    // `browser.stream` frames go to the connection that asked, over the local WebSocket or a paired device's channel.
+    m6.connect_events(events.clone(), remote.clone());
 
     // 5b. Projects, tasks and reviews (M5). The runner's task hooks reach the service through `late_tasks`.
     let m5 = Arc::new(

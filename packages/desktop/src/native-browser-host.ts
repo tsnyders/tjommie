@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { NativeBrowserCommand, type NativeBrowserCommand as Command } from "../../protocol/src/native-browser.ts";
+import { NativeBrowserCommand, type NativeBrowserCommand as Command, type NativeBrowserStreamMessage } from "../../protocol/src/native-browser.ts";
 
 const Job = z.object({
   id: z.string().uuid(),
@@ -13,8 +13,14 @@ type Options = {
   onError?: () => void;
 };
 
+export type NativeBrowserHost = {
+  close(): Promise<void>;
+  /** Posts a live frame, or the end of a stream, outside any job. False when the daemon did not take it (nobody is watching, or it is unreachable): stop sending. */
+  send(message: NativeBrowserStreamMessage): Promise<boolean>;
+};
+
 // This client is main-process-only. Its capability is not the renderer's daemon token.
-export function startNativeBrowserHost(options: Options): { close(): Promise<void> } {
+export function startNativeBrowserHost(options: Options): NativeBrowserHost {
   const controller = new AbortController();
   const url = `http://127.0.0.1:${options.port}/browser-host`;
   const headers = { Authorization: `Bearer ${options.token}` };
@@ -55,6 +61,15 @@ export function startNativeBrowserHost(options: Options): { close(): Promise<voi
       }
     }
   };
+  const send = async (message: NativeBrowserStreamMessage): Promise<boolean> => {
+    if (controller.signal.aborted) return false;
+    try {
+      const response = await fetch(url, { method: "POST", headers, body: JSON.stringify(message), signal: controller.signal, redirect: "error" });
+      // 204 is the only acceptance; anything else (404: nobody is subscribed) has nothing to read.
+      if (response.status !== 204) await response.body?.cancel().catch(() => {});
+      return response.status === 204;
+    } catch { return false; }
+  };
   const running = Promise.all([run(), run(true)]);
-  return { close: async () => { controller.abort(); await running; await Promise.allSettled(active); } };
+  return { close: async () => { controller.abort(); await running; await Promise.allSettled(active); }, send };
 }

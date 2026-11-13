@@ -158,6 +158,8 @@ struct Peer {
     address: String,
     writer: WireWriter,
     device_id: Mutex<Option<String>>,
+    /// The id this peer's requests carry in their `RequestContext`, once it is a device.
+    connection_id: Mutex<Option<String>>,
     welcomed: AtomicBool,
     last_frame: Mutex<Instant>,
     outbox: mpsc::UnboundedSender<String>,
@@ -170,6 +172,10 @@ impl Peer {
 
     fn device(&self) -> Option<String> {
         self.device_id.lock().unwrap().clone()
+    }
+
+    fn connection(&self) -> Option<String> {
+        self.connection_id.lock().unwrap().clone()
     }
 }
 
@@ -526,6 +532,29 @@ impl RemoteHost {
         }
     }
 
+    /// Sends an event to one welcomed device connection, named by the id its requests carry in their `RequestContext`.
+    /// False when there is none (it left, or its device was revoked and is disconnected). A device that stops reading is
+    /// closed by the wire writer's own buffer limit, so a flood here cannot grow without bound.
+    pub fn send_to(&self, connection_id: &str, event: &Event) -> bool {
+        let peers = self.state().peers.clone();
+        let Some(peer) = peers.into_iter().find(|peer| {
+            peer.welcomed.load(Ordering::Acquire)
+                && peer.connection().as_deref() == Some(connection_id)
+        }) else {
+            return false;
+        };
+        let Some(device_id) = peer.device() else {
+            return false;
+        };
+        if is_revoked(&self.db(), &device_id) {
+            peer.close();
+            return false;
+        }
+        peer.outbox
+            .send(json_text(&ServerMessage::Event(event.clone())))
+            .is_ok()
+    }
+
     pub fn has_devices(&self) -> bool {
         list_devices(&self.db()).is_ok_and(|devices| !devices.is_empty())
     }
@@ -589,6 +618,7 @@ impl RemoteHost {
             address,
             writer: wire.writer(),
             device_id: Mutex::default(),
+            connection_id: Mutex::default(),
             welcomed: AtomicBool::new(false),
             last_frame: Mutex::new(now),
             outbox,
@@ -854,8 +884,10 @@ impl RemoteHost {
         }
         *peer.device_id.lock().unwrap() = Some(device.id.clone());
         touch_device(&self.db(), &device.id, None)?;
+        let connection_id = new_id();
+        *peer.connection_id.lock().unwrap() = Some(connection_id.clone());
         link.context = Some(RequestContext {
-            connection_id: new_id(),
+            connection_id,
             principal: Principal::Device {
                 device_id: device.id.clone(),
             },

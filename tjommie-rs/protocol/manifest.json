@@ -12144,6 +12144,176 @@
       }
     },
     {
+      "name": "browser.stream",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "botId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "on": {
+            "type": "boolean"
+          },
+          "maxFps": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 60
+          }
+        },
+        "required": [
+          "botId",
+          "on"
+        ]
+      },
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "botId": {
+            "type": "string"
+          },
+          "generation": {
+            "type": "string"
+          },
+          "control": {
+            "type": "string",
+            "enum": [
+              "human",
+              "bot"
+            ]
+          },
+          "controlEpoch": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "privateEpoch": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "privateActive": {
+            "type": "boolean"
+          },
+          "canControl": {
+            "type": "boolean"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "viewportRevision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "busy": {
+            "type": "boolean"
+          },
+          "activePageId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tabs": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "url": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "url",
+                "title"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "dialog": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "pageId": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string"
+                  },
+                  "message": {
+                    "type": "string"
+                  },
+                  "defaultValue": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "pageId",
+                  "type",
+                  "message",
+                  "defaultValue"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "botId",
+          "generation",
+          "control",
+          "activePageId",
+          "tabs",
+          "dialog"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "browser.streamAck",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "botId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sequence": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "botId",
+          "sequence"
+        ]
+      },
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
       "name": "google.status",
       "params": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -17021,6 +17191,101 @@
       }
     },
     {
+      "name": "browser.streamFrame",
+      "data": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "botId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "frame": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "data": {
+                    "type": "string",
+                    "maxLength": 2796204,
+                    "pattern": "^[A-Za-z0-9+/]*={0,2}$"
+                  },
+                  "mime": {
+                    "type": "string",
+                    "const": "image/jpeg"
+                  },
+                  "width": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 4096
+                  },
+                  "height": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 4096
+                  },
+                  "sequence": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "viewportWidth": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "viewportHeight": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "pageId": {
+                    "type": "string"
+                  },
+                  "viewportRevision": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "streamId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "controlEpoch": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "privateEpoch": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "required": [
+                  "data",
+                  "mime",
+                  "width",
+                  "height",
+                  "sequence",
+                  "streamId"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "botId",
+          "frame"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
       "name": "message.added",
       "data": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -19407,6 +19672,28 @@
                     "properties": {
                       "kind": {
                         "type": "string",
+                        "const": "stream"
+                      },
+                      "on": {
+                        "type": "boolean"
+                      },
+                      "maxFps": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 60
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "on"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
                         "const": "control"
                       },
                       "control": {
@@ -20084,6 +20371,131 @@
           "bounds"
         ],
         "additionalProperties": false
+      }
+    },
+    {
+      "name": "NativeBrowserStreamMessage",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "stream_frame"
+              },
+              "botId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "frame": {
+                "type": "object",
+                "properties": {
+                  "data": {
+                    "type": "string",
+                    "maxLength": 2796204,
+                    "pattern": "^[A-Za-z0-9+/]*={0,2}$"
+                  },
+                  "mime": {
+                    "type": "string",
+                    "const": "image/jpeg"
+                  },
+                  "width": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 4096
+                  },
+                  "height": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 4096
+                  },
+                  "sequence": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "viewportWidth": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "viewportHeight": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "pageId": {
+                    "type": "string"
+                  },
+                  "viewportRevision": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "streamId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "controlEpoch": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "privateEpoch": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "required": [
+                  "data",
+                  "mime",
+                  "width",
+                  "height",
+                  "sequence",
+                  "streamId"
+                ]
+              }
+            },
+            "required": [
+              "kind",
+              "botId",
+              "frame"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "stream_end"
+              },
+              "botId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "reason": {
+                "type": "string",
+                "enum": [
+                  "private",
+                  "closed",
+                  "failed"
+                ]
+              }
+            },
+            "required": [
+              "kind",
+              "botId",
+              "reason"
+            ],
+            "additionalProperties": false
+          }
+        ]
       }
     },
     {
