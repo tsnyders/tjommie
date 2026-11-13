@@ -2,12 +2,16 @@
 //! waiting per lane (normal, and `?control=1` for urgent work) with its private host token; the daemon answers a GET
 //! with the next job, or 204 after 15 s, and the desktop POSTs each result back.
 
+use std::convert::Infallible;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
-use axum::body::Body;
-use axum::http::{HeaderMap, StatusCode, Uri, header};
+use axum::body::{Body, Bytes};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use futures_util::StreamExt;
+use http_body::{Frame, SizeHint};
 use serde::Serialize;
 use tokio::sync::oneshot;
 
@@ -69,6 +73,66 @@ pub async fn answer(waiting: oneshot::Receiver<Response>) -> Response {
         Ok(Ok(response)) => response,
         _ => StatusCode::NO_CONTENT.into_response(),
     }
+}
+
+/// A job's response body. It carries a callback for the one way a job can be lost between the broker and the desktop: the
+/// connection dies and the body is dropped before the server ever took the job to write it (`response.close` with
+/// `!writableFinished` in `native-browser-broker.ts`). Then the broker still owns the job and can hand it to the next poll.
+/// A body the server has begun writing is the desktop's: a write that fails after that cannot be seen from here, and its
+/// job ends with the broker's usual timeout, "its outcome is unknown".
+struct Handoff {
+    bytes: Option<Bytes>,
+    size: u64,
+    lost: Option<Box<dyn FnOnce() + Send + Sync>>,
+}
+
+impl http_body::Body for Handoff {
+    type Data = Bytes;
+    type Error = Infallible;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        _: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Bytes>, Infallible>>> {
+        Poll::Ready(self.bytes.take().map(|bytes| Ok(Frame::data(bytes))))
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.bytes.is_none()
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        SizeHint::with_exact(self.size)
+    }
+}
+
+impl Drop for Handoff {
+    fn drop(&mut self) {
+        if self.bytes.is_some()
+            && let Some(lost) = self.lost.take()
+        {
+            lost();
+        }
+    }
+}
+
+/// A job for the desktop, like [`job`], that calls `lost` if the connection drops it before it was written. `lost` runs
+/// wherever the response is dropped, possibly under the caller's lock, so it must not wait for anything.
+pub fn job_or(value: &impl Serialize, lost: Box<dyn FnOnce() + Send + Sync>) -> Response {
+    let bytes = Bytes::from(serde_json::to_vec(value).expect("jobs serialize"));
+    let size = bytes.len() as u64;
+    let mut response = Response::new(Body::new(Handoff {
+        bytes: Some(bytes),
+        size,
+        lost: Some(lost),
+    }));
+    let headers = response.headers_mut();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
 }
 
 /// A job for the desktop: JSON, never cached.

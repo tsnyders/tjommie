@@ -78,6 +78,8 @@ struct Pending {
     command: Value,
     job: Value,
     sent: bool,
+    /// The hand-off that set `sent`: only that hand-off's body, if dropped unwritten, may give the job back.
+    handoff: u64,
     reply: oneshot::Sender<Result<Value, BrowserError>>,
     authorized: Option<Authorized>,
     settled: CancellationToken,
@@ -119,6 +121,8 @@ struct State {
     closed: bool,
     /// Where live frames go. None until the daemon installs one: then the desktop is told nobody is watching.
     stream: Option<StreamSink>,
+    /// Hand-offs made so far; each gets its own number.
+    handoffs: u64,
 }
 
 impl State {
@@ -180,6 +184,7 @@ impl NativeBrowserBroker {
                 command,
                 job,
                 sent: false,
+                handoff: 0,
                 reply,
                 authorized,
                 settled: settled.clone(),
@@ -210,7 +215,7 @@ impl NativeBrowserBroker {
             .unwrap_or_else(|_| Err(BrowserError::unavailable()))
     }
 
-    fn dispatch(&self) {
+    fn dispatch(self: &Arc<Self>) {
         let mut state = self.state();
         if !state.polls.waiting(false) && !state.polls.waiting(true) {
             return;
@@ -224,7 +229,7 @@ impl NativeBrowserBroker {
             .iter()
             .position(|item| !item.sent && item.urgent())
         {
-            Self::send(&mut state, index, true);
+            self.send(&mut state, index, true);
         }
         let ready = state.pending.iter().position(|item| {
             !item.sent
@@ -236,19 +241,50 @@ impl NativeBrowserBroker {
                 })
         });
         if let Some(index) = ready {
-            Self::send(&mut state, index, false);
+            self.send(&mut state, index, false);
         }
     }
 
-    /// Hands a job to the lane's waiting GET. A GET whose caller left takes nothing.
-    fn send(state: &mut State, index: usize, control: bool) {
+    /// Hands a job to the lane's waiting GET. A GET whose caller left takes nothing. If the connection then drops the
+    /// response before it was written, the job goes back to the next poll (`lost` below).
+    fn send(self: &Arc<Self>, state: &mut State, index: usize, control: bool) {
         let Some(waiter) = state.polls.take(control) else {
             return;
         };
+        state.handoffs += 1;
+        let handoff = state.handoffs;
         let item = &mut state.pending[index];
-        if waiter.send(host_poll::job(&item.job)).is_ok() {
+        let lost = self.lost(item.id.clone(), handoff);
+        if waiter.send(host_poll::job_or(&item.job, lost)).is_ok() {
             item.sent = true;
+            item.handoff = handoff;
         }
+    }
+
+    /// What a dropped, unwritten response does. It can run under `state`'s lock (a response refused by a GET that just
+    /// left is dropped there), so it only schedules the work.
+    fn lost(self: &Arc<Self>, id: String, handoff: u64) -> Box<dyn FnOnce() + Send + Sync> {
+        let (broker, runtime) = (self.clone(), tokio::runtime::Handle::current());
+        Box::new(move || {
+            runtime.spawn(async move { broker.requeue(&id, handoff) });
+        })
+    }
+
+    /// Gives a job back to the next poll, if `handoff` is still the one it is out on. A job already answered or expired is
+    /// gone, and one handed on again since carries a newer number: both stay as they are.
+    fn requeue(self: &Arc<Self>, id: &str, handoff: u64) {
+        {
+            let mut state = self.state();
+            let Some(item) = state
+                .pending
+                .iter_mut()
+                .find(|item| item.id == id && item.sent && item.handoff == handoff)
+            else {
+                return;
+            };
+            item.sent = false;
+        }
+        self.dispatch();
     }
 
     pub fn route(self: &Arc<Self>) -> Route {

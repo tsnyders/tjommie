@@ -7,6 +7,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use axum::body::{Body, HttpBody, to_bytes};
+use axum::response::Response;
+use daemon::host_poll;
 use daemon::native_browser_broker::{BotIdentity, NativeBrowserBroker};
 use daemon::server::{Handlers, Routes, Server, ServerOptions};
 use host_support::{get, post};
@@ -369,4 +372,78 @@ async fn takes_a_live_frame_or_the_end_of_a_stream_from_the_desktop_without_a_jo
     .status;
     assert_eq!(status, 401);
     f.close().await;
+}
+
+/// A long poll made straight on the broker's route, so the response can be held and dropped as hyper would.
+fn poll(broker: &Arc<NativeBrowserBroker>) -> tokio::task::JoinHandle<Response> {
+    let request = axum::http::Request::builder()
+        .method("GET")
+        .uri("/browser-host")
+        .header("authorization", auth())
+        .header("host", "127.0.0.1")
+        .body(Body::empty())
+        .unwrap();
+    tokio::spawn(broker.route()(request))
+}
+
+#[tokio::test]
+async fn gives_a_job_back_to_the_next_poll_when_the_connection_drops_its_response_unwritten() {
+    let broker = NativeBrowserBroker::new(secret(), Duration::from_secs(5));
+    let asked = {
+        let broker = broker.clone();
+        tokio::spawn(async move {
+            broker
+                .request(bot(), json!({ "kind": "state" }), None)
+                .await
+        })
+    };
+    let handed = tokio::time::timeout(Duration::from_secs(5), poll(&broker))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(handed.status(), 200);
+    // The connection died before the server took the body to write it: the response is dropped unread.
+    drop(handed);
+    let next = tokio::time::timeout(Duration::from_secs(5), poll(&broker))
+        .await
+        .expect("the next poll is handed the job")
+        .unwrap();
+    assert_eq!(next.status(), 200);
+    let job: Value =
+        serde_json::from_slice(&to_bytes(next.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(job["command"], json!({ "kind": "state" }));
+    // That body was taken to be written, so the job is the desktop's now: a third poll is not handed it again.
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), poll(&broker))
+            .await
+            .is_err(),
+        "a job that was written is not handed out twice"
+    );
+    broker.close();
+    assert!(asked.await.unwrap().is_err());
+}
+
+#[tokio::test]
+async fn a_job_response_reports_its_length_and_calls_back_only_if_dropped_unread() {
+    let called = Arc::new(Mutex::new(0u32));
+    let record = |called: &Arc<Mutex<u32>>| {
+        let called = called.clone();
+        Box::new(move || *called.lock().unwrap() += 1) as Box<dyn FnOnce() + Send + Sync>
+    };
+    let value = json!({ "id": "job", "command": { "kind": "state" } });
+    let length = serde_json::to_vec(&value).unwrap().len() as u64;
+    let unread = host_poll::job_or(&value, record(&called));
+    assert_eq!(unread.headers()["content-type"], "application/json");
+    assert_eq!(unread.headers()["cache-control"], "no-store");
+    assert_eq!(unread.body().size_hint().exact(), Some(length));
+    drop(unread);
+    assert_eq!(*called.lock().unwrap(), 1, "dropped before it was written");
+    let read = host_poll::job_or(&value, record(&called));
+    let bytes = to_bytes(read.into_body(), usize::MAX).await.unwrap();
+    assert_eq!(serde_json::from_slice::<Value>(&bytes).unwrap(), value);
+    assert_eq!(
+        *called.lock().unwrap(),
+        1,
+        "a body that was taken is not called back"
+    );
 }
