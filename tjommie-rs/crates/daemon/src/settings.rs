@@ -81,8 +81,18 @@ pub fn register(handlers: Handlers, context: &Context) -> Handlers {
             if let Ok(settings) = &settings {
                 set.events.send(Event::SettingsChanged(settings.clone()));
             }
-            // TODO(Core startup wiring): a changed relayUrl must restart the relay (daemon.ts:623-626). Core startup
-            // wiring calls `Remote::relay_url_changed` here; nothing does yet.
-            async move { settings }
+            // A patch that names relayUrl (even as null) logs in to the relay again, or stops it (`daemon.ts:620-627`).
+            let remote = set
+                .late
+                .remote
+                .get()
+                .cloned()
+                .filter(|_| patch.relay_url.is_some());
+            async move {
+                if let Some(remote) = remote {
+                    remote.relay_url_changed().await;
+                }
+                settings
+            }
         })
 }

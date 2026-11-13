@@ -5,16 +5,17 @@ use std::collections::HashMap;
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::Duration;
 
 use axum::Router;
-use axum::extract::State;
 use axum::extract::ws::rejection::WebSocketUpgradeRejection;
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
-use axum::http::{HeaderMap, StatusCode, Uri, header};
+use axum::extract::{FromRequestParts, State};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use futures_util::future::BoxFuture;
 use futures_util::{SinkExt, StreamExt};
 use protocol::wire::Method;
 use protocol::{ClientMessage, ErrorCode, Event, PROTOCOL_VERSION, Request, ServerMessage};
@@ -26,6 +27,11 @@ use tokio_util::sync::CancellationToken;
 
 const HELLO_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
+/// What may wait unsent for one client. `ws` queued without limit; a client that falls this far behind has stopped reading,
+/// and is disconnected instead of being held in memory.
+const OUTBOX_BYTES: usize = 64 * 1024 * 1024;
+/// Counted on top of each message's own length, so a flood of tiny messages is bounded too.
+const MESSAGE_COST: usize = 256;
 
 /// An error a handler answers with; the client gets its code and message.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,11 +76,92 @@ pub struct Broadcaster(Arc<Shared>);
 
 impl Broadcaster {
     pub fn send(&self, event: Event) {
+        let tapped = self.0.tap.get().map(|tap| (tap.clone(), event.clone()));
         let text = serde_json::to_string(&ServerMessage::Event(event)).expect("events serialize");
-        for outbox in self.0.clients.lock().unwrap().values() {
-            let _ = outbox.send(Message::Text(text.clone().into()));
+        for client in self.0.clients.lock().unwrap().values() {
+            client.outbox.push(Message::Text(text.clone().into()));
+        }
+        if let Some((tap, event)) = tapped {
+            tap(&event);
         }
     }
+
+    /// Sends an event to one authenticated connection only, named by the id its handlers see in [`RequestContext`].
+    /// False when no such connection is open, or it has fallen too far behind and is being disconnected.
+    pub fn send_to(&self, connection_id: &str, event: &Event) -> bool {
+        let text =
+            serde_json::to_string(&ServerMessage::Event(event.clone())).expect("events serialize");
+        self.0
+            .clients
+            .lock()
+            .unwrap()
+            .values()
+            .find(|client| client.connection_id == connection_id)
+            .is_some_and(|client| client.outbox.push(Message::Text(text.into())))
+    }
+}
+
+/// Calls the daemon's methods from inside it: a paired device's request goes through the same handlers as a local
+/// client's. A clone of what [`Server::dispatch`] uses.
+#[derive(Clone)]
+pub struct Dispatcher(Arc<Shared>);
+
+impl Dispatcher {
+    pub async fn dispatch(
+        &self,
+        method: &str,
+        params: Value,
+        context: Option<RequestContext>,
+    ) -> Result<Value, RpcError> {
+        self.0.call(method, params, context).await
+    }
+}
+
+/// A connection's queue of frames for its writer. It holds at most [`OUTBOX_BYTES`]: past that the client has stopped
+/// reading, so `stalled` is cancelled and the connection is dropped, even if its socket is blocked mid-frame.
+#[derive(Clone)]
+struct Outbox {
+    queue: mpsc::UnboundedSender<Message>,
+    /// The bytes queued and not yet written.
+    queued: Arc<AtomicUsize>,
+    stalled: CancellationToken,
+}
+
+fn cost(message: &Message) -> usize {
+    MESSAGE_COST
+        + match message {
+            Message::Text(text) => text.len(),
+            Message::Binary(bytes) => bytes.len(),
+            _ => 0,
+        }
+}
+
+impl Outbox {
+    /// Queues a frame. False when the connection is already gone or stalled, or this frame stalls it.
+    fn push(&self, message: Message) -> bool {
+        if self.stalled.is_cancelled() {
+            return false;
+        }
+        let cost = cost(&message);
+        let before = self.queued.fetch_add(cost, Ordering::AcqRel);
+        // A frame is always accepted into an empty queue, however large: only a backlog counts as not reading.
+        if before > 0 && before + cost > OUTBOX_BYTES {
+            self.queued.fetch_sub(cost, Ordering::AcqRel);
+            self.stalled.cancel();
+            return false;
+        }
+        if self.queue.send(message).is_err() {
+            self.queued.fetch_sub(cost, Ordering::AcqRel);
+            return false;
+        }
+        true
+    }
+}
+
+/// An authenticated connection, which receives events.
+struct Client {
+    connection_id: String,
+    outbox: Outbox,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -134,6 +221,21 @@ impl Handlers {
     }
 }
 
+/// An extra HTTP endpoint, such as the app's MCP server at `/mcp` or a desktop host route. It gets the whole request.
+pub type Route = Arc<dyn Fn(axum::extract::Request) -> BoxFuture<'static, Response> + Send + Sync>;
+
+/// Routes by exact path, the query ignored. Only programs on this machine reach them: a local Host and no Origin header,
+/// since browsers always send one (`server.ts`).
+#[derive(Clone, Default)]
+pub struct Routes(HashMap<&'static str, Route>);
+
+impl Routes {
+    pub fn route(mut self, path: &'static str, route: Route) -> Self {
+        self.0.insert(path, route);
+        self
+    }
+}
+
 pub struct ServerOptions {
     /// 0 picks a free port.
     pub port: u16,
@@ -148,6 +250,7 @@ pub struct ServerOptions {
 struct Config {
     token: String,
     handlers: Handlers,
+    routes: Routes,
 }
 
 struct Gate {
@@ -156,12 +259,17 @@ struct Gate {
     config: Arc<Config>,
 }
 
+/// What sees every broadcast event: the remote transport.
+type EventTap = Arc<dyn Fn(&Event) + Send + Sync>;
+
 struct Shared {
     port: u16,
     allowed_origins: Vec<String>,
     gate: RwLock<Gate>,
     /// Authenticated connections, which receive events.
-    clients: Mutex<HashMap<u64, mpsc::UnboundedSender<Message>>>,
+    clients: Mutex<HashMap<u64, Client>>,
+    /// Sees every broadcast event after the clients do: the remote transport publishes them to paired devices.
+    tap: OnceLock<EventTap>,
     next_client: AtomicU64,
     /// The parent of every connection's signal.
     shutdown: CancellationToken,
@@ -185,9 +293,11 @@ impl Server {
                 config: Arc::new(Config {
                     token: options.token,
                     handlers: options.handlers,
+                    routes: Routes::default(),
                 }),
             }),
             clients: Mutex::default(),
+            tap: OnceLock::new(),
             next_client: AtomicU64::new(0),
             shutdown: CancellationToken::new(),
         });
@@ -215,8 +325,28 @@ impl Server {
         Broadcaster(self.shared.clone())
     }
 
+    /// Passes every event any [`Broadcaster`] sends to `tap` as well. Set once; a second call is ignored.
+    pub fn tap_events(&self, tap: impl Fn(&Event) + Send + Sync + 'static) {
+        let _ = self.shared.tap.set(Arc::new(tap));
+    }
+
+    /// A handle that calls methods without a connection, for the remote transport.
+    pub fn dispatcher(&self) -> Dispatcher {
+        Dispatcher(self.shared.clone())
+    }
+
     /// Starts answering with this token and these handlers.
     pub fn activate(&self, token: impl Into<String>, handlers: Handlers) -> Result<(), RpcError> {
+        self.activate_with(token, handlers, Routes::default())
+    }
+
+    /// [`Server::activate`] with extra HTTP routes.
+    pub fn activate_with(
+        &self,
+        token: impl Into<String>,
+        handlers: Handlers,
+        routes: Routes,
+    ) -> Result<(), RpcError> {
         let mut gate = self.shared.gate.write().unwrap();
         if gate.stopping {
             return Err(RpcError::new(ErrorCode::BadState, "Tjommie is stopping."));
@@ -224,6 +354,7 @@ impl Server {
         gate.config = Arc::new(Config {
             token: token.into(),
             handlers,
+            routes,
         });
         gate.ready = true;
         Ok(())
@@ -335,15 +466,18 @@ fn same_token(given: &str, expected: &str) -> bool {
             == 0
 }
 
-async fn serve(
-    State(shared): State<Arc<Shared>>,
-    headers: HeaderMap,
-    uri: Uri,
-    upgrade: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
-) -> Response {
-    if !shared.gate.read().unwrap().ready {
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
-    }
+async fn serve(State(shared): State<Arc<Shared>>, request: axum::extract::Request) -> Response {
+    let config = {
+        let gate = shared.gate.read().unwrap();
+        if !gate.ready {
+            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        }
+        gate.config.clone()
+    };
+    let (mut parts, body) = request.into_parts();
+    let upgrade: Result<WebSocketUpgrade, WebSocketUpgradeRejection> =
+        WebSocketUpgrade::from_request_parts(&mut parts, &shared).await;
+    let (headers, uri) = (parts.headers.clone(), parts.uri.clone());
     let Ok(upgrade) = upgrade else {
         if uri
             .path_and_query()
@@ -351,6 +485,12 @@ async fn serve(
         {
             let health = json!({ "ok": true, "protocol": PROTOCOL_VERSION }).to_string();
             return ([(header::CONTENT_TYPE, "application/json")], health).into_response();
+        }
+        if let Some(route) = config.routes.0.get(uri.path()) {
+            if !shared.local_host(&headers) || headers.contains_key(header::ORIGIN) {
+                return StatusCode::FORBIDDEN.into_response();
+            }
+            return route(axum::extract::Request::from_parts(parts, body)).await;
         }
         return StatusCode::NOT_FOUND.into_response();
     };
@@ -362,8 +502,8 @@ async fn serve(
         .on_upgrade(move |socket| connection(socket, shared))
 }
 
-fn send(outbox: &mpsc::UnboundedSender<Message>, message: &ServerMessage) {
-    let _ = outbox.send(Message::Text(
+fn send(outbox: &Outbox, message: &ServerMessage) {
+    outbox.push(Message::Text(
         serde_json::to_string(message)
             .expect("frames serialize")
             .into(),
@@ -396,31 +536,51 @@ async fn connection(socket: WebSocket, shared: Arc<Shared>) {
         signal: shared.shutdown.child_token(),
     };
     let (mut sink, mut stream) = socket.split();
-    let (outbox, mut queued) = mpsc::unbounded_channel::<Message>();
+    let (queue, mut queued) = mpsc::unbounded_channel::<Message>();
+    let outbox = Outbox {
+        queue,
+        queued: Arc::default(),
+        stalled: CancellationToken::new(),
+    };
     let signal = context.signal.clone();
+    let (stalled, backlog) = (outbox.stalled.clone(), outbox.queued.clone());
     let writer = tokio::spawn(async move {
         loop {
-            // Queued frames first, so a close frame goes out before the connection ends.
+            // A stalled client is dropped at once. Otherwise queued frames come first, so a close frame goes out before
+            // the connection ends.
             let message = tokio::select! {
                 biased;
+                () = stalled.cancelled() => None,
                 message = queued.recv() => message,
                 () = signal.cancelled() => None,
             };
             let Some(message) = message else { break };
+            let size = cost(&message);
             if matches!(message, Message::Close(_)) {
                 // Sends our close frame. After the client closed first, sending is refused, but closing still
                 // flushes the echo tungstenite queued for it.
-                let _ = sink.send(message).await;
-                let _ = sink.close().await;
+                tokio::select! {
+                    () = async {
+                        let _ = sink.send(message).await;
+                        let _ = sink.close().await;
+                    } => {}
+                    () = stalled.cancelled() => {}
+                }
                 break;
             }
-            if sink.send(message).await.is_err() {
+            // A client that has stopped reading blocks this write; the stall still ends it.
+            let sent = tokio::select! {
+                sent = sink.send(message) => sent.is_ok(),
+                () = stalled.cancelled() => false,
+            };
+            backlog.fetch_sub(size, Ordering::AcqRel);
+            if !sent {
                 break;
             }
         }
     });
     let close = |code: u16, reason: &str| {
-        let _ = outbox.send(Message::Close(Some(CloseFrame {
+        outbox.push(Message::Close(Some(CloseFrame {
             code,
             reason: reason.to_owned().into(),
         })));
@@ -432,6 +592,7 @@ async fn connection(socket: WebSocket, shared: Arc<Shared>) {
     loop {
         let frame = tokio::select! {
             () = context.signal.cancelled() => break,
+            () = outbox.stalled.cancelled() => break,
             () = &mut hello_deadline, if !authed => {
                 close(4401, "hello required");
                 break;
@@ -444,7 +605,7 @@ async fn connection(socket: WebSocket, shared: Arc<Shared>) {
             // RFC 6455 §5.5.1, as ws does: answer the client's close. tungstenite has queued the echo of its frame
             // (its code and reason, or none); the writer flushes it when it closes.
             Some(Ok(Message::Close(frame))) => {
-                let _ = outbox.send(Message::Close(frame));
+                outbox.push(Message::Close(frame));
                 break;
             }
             None => break,
@@ -483,11 +644,13 @@ async fn connection(socket: WebSocket, shared: Arc<Shared>) {
                     break;
                 }
                 authed = true;
-                shared
-                    .clients
-                    .lock()
-                    .unwrap()
-                    .insert(client, outbox.clone());
+                shared.clients.lock().unwrap().insert(
+                    client,
+                    Client {
+                        connection_id: context.connection_id.clone(),
+                        outbox: outbox.clone(),
+                    },
+                );
                 send(
                     &outbox,
                     &ServerMessage::Welcome {

@@ -1,10 +1,11 @@
 //! What the method handlers share, and the handler table.
 //!
-//! Storage is a `rusqlite::Connection`: lane A's `db::open` (T1.2) returns one, and these modules run the same SQL as
+//! Storage is the `rusqlite::Connection` from [`crate::db::open`], and these modules run the same SQL as
 //! their TypeScript originals against it.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use protocol::model::Bot;
 use rusqlite::{Connection, OptionalExtension};
@@ -12,6 +13,9 @@ use rusqlite::{Connection, OptionalExtension};
 use crate::account_handlers::{self, Accounts};
 use crate::bots::{BotStatus, StoredBot, bot_state_of};
 use crate::ids::now_iso;
+use crate::m6::M6;
+use crate::remote::Remote;
+use crate::runner::Runner;
 use crate::server::{Broadcaster, Handlers, RpcError};
 use crate::{bots, diagnostics, google, settings};
 
@@ -46,6 +50,39 @@ impl BotView for StoredState {
     }
 }
 
+/// A [`BotView`] bound after it is handed out: the runner needs the accounts, and the accounts' feed needs the runner's
+/// view. Until bound it is [`StoredState`].
+#[derive(Clone, Default)]
+pub struct LateBotView(Arc<OnceLock<Arc<dyn BotView>>>);
+
+impl LateBotView {
+    /// Binds the view. Set once; a second call is ignored.
+    pub fn bind(&self, view: Arc<dyn BotView>) {
+        let _ = self.0.set(view);
+    }
+}
+
+impl BotView for LateBotView {
+    fn to_bot(&self, db: &Connection, bot: StoredBot) -> Bot {
+        match self.0.get() {
+            Some(view) => view.to_bot(db, bot),
+            None => StoredState.to_bot(db, bot),
+        }
+    }
+}
+
+/// What startup binds after the handlers' context exists, because each needs the handlers' own services. Unbound (as in
+/// the handler tests), each is absent and the handler that would call it does what it does without it.
+#[derive(Clone, Default)]
+pub struct Late {
+    pub runner: Arc<OnceLock<Runner>>,
+    pub remote: Arc<OnceLock<Arc<Remote>>>,
+    pub m6: Arc<OnceLock<Arc<M6>>>,
+    /// Bots whose provider or account is changing: the runner holds their work and reports "changing provider"
+    /// (`switchingBots`).
+    pub switching: Arc<Mutex<HashSet<String>>>,
+}
+
 #[derive(Clone)]
 pub struct Context {
     pub db: Db,
@@ -56,6 +93,7 @@ pub struct Context {
     /// The desktop app's version, from the packaged `build-info.json`.
     pub app_version: Option<String>,
     pub accounts: Accounts,
+    pub late: Late,
 }
 
 impl Context {

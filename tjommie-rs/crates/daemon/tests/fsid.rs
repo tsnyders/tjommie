@@ -3,7 +3,7 @@
 //! volume-GUID paths all reach the same folder. Only temp folders made here are used.
 #![cfg(windows)]
 
-use daemon::fsid::{is_within, same_location};
+use daemon::fsid::{is_open_file, is_within, same_location};
 use daemon::spawn;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -160,4 +160,25 @@ fn subst_drives_and_volume_guid_paths_reach_the_same_folder() {
     if let Err(panic) = checks {
         std::panic::resume_unwind(panic);
     }
+}
+
+#[test]
+fn is_open_file_names_the_held_file_through_aliases_and_refuses_a_lookalike_or_a_missing_path() {
+    let (dir, root) = tree();
+    let held = root.join("held.bin");
+    fs::write(&held, b"synthetic").unwrap();
+    let open = fs::File::open(&held).unwrap();
+    let link = dir.path().join("link");
+    junction(&link, &root);
+    assert!(is_open_file(&open, &held).unwrap());
+    assert!(is_open_file(&open, &link.join("HELD.bin")).unwrap());
+    // The same bytes in another file are another file.
+    let lookalike = root.join("lookalike.bin");
+    fs::write(&lookalike, b"synthetic").unwrap();
+    assert!(!is_open_file(&open, &lookalike).unwrap());
+    // After a rename, the old name is nothing and the new name is the held file.
+    let moved = root.join("moved.bin");
+    fs::rename(&held, &moved).unwrap();
+    assert!(!is_open_file(&open, &held).unwrap());
+    assert!(is_open_file(&open, &moved).unwrap());
 }

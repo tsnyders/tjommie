@@ -1,8 +1,11 @@
-import type { BrowserFrame, BrowserInput, BrowserState, MethodName, ParamsIn, Result } from "@tjommie/protocol";
+import { ClientRpcError } from "@tjommie/client";
+import type { BrowserFrame, BrowserInput, BrowserState, BrowserStreamFrame, MethodName, ParamsIn, Result, StreamedBrowserFrame } from "@tjommie/protocol";
 import { errorText } from "./labels";
 export { addressToUrl, keyRoute, mouseButton, wheelPixels } from "./browser-geometry";
 
 export type BrowserCall = <M extends MethodName>(method: M, params: ParamsIn<M>) => Promise<Result<M>>;
+// Subscribes to the live stream's frames on the connection the calls go to, and returns the unsubscribe.
+export type BrowserListen = (listener: (data: BrowserStreamFrame) => void) => () => void;
 export type BrowserView = { state: BrowserState | null; frame: BrowserFrame | null; error: string | null; busy?: boolean };
 const closes = new Map<string, Promise<void>>();
 const ACTIVE_POLL_MS = 33;
@@ -13,8 +16,15 @@ type Button = "left" | "middle" | "right";
 type InputTarget = { generation: string; pageId: string; viewportRevision?: number; controlEpoch?: number };
 type HeldPointer = InputTarget & { x: number; y: number };
 
+// Whether a frame is of the page, layout, controller and private session the state describes.
+const fits = (frame: BrowserFrame, state: BrowserState): boolean => (!frame.pageId || frame.pageId === state.activePageId)
+  && (frame.controlEpoch === undefined || frame.controlEpoch === state.controlEpoch)
+  && (frame.privateEpoch === undefined || frame.privateEpoch === state.privateEpoch)
+  && (frame.viewportRevision === undefined || frame.viewportRevision === state.viewportRevision);
+
 // Input and commands stay ordered. One independent, bounded frame request can never hold up a key
 // release or dialog answer. Local epochs and server revisions fence responses across either lane.
+// While shown, a daemon's live stream brings the pictures, and the poll reads only the state.
 export class BrowserSession {
   view: BrowserView = { state: null, frame: null, error: null, busy: false };
   #tasks: Task[] = [];
@@ -36,8 +46,14 @@ export class BrowserSession {
   #buttons = new Map<Button, HeldPointer>();
   #heldKeys = new Map<string, InputTarget>();
   #heldButtons = new Map<Button, HeldPointer>();
+  // The live stream: listening while it is asked for or on. An older daemon (unknown_method) is only polled.
+  #unlisten: (() => void) | undefined;
+  #unsupported = false;
+  #streamCalls: Promise<unknown> = Promise.resolve(); // on and off reach the daemon in the order they were asked
+  #awaiting: StreamedBrowserFrame | null = null; // the streamed frame handed to the view, acknowledged once drawn
+  #behind = false; // a streamed frame was dropped, so a pulled one brings the picture up to date
 
-  constructor(private readonly botId: string, private readonly call: BrowserCall, private readonly onChange: (view: BrowserView) => void) {}
+  constructor(private readonly botId: string, private readonly call: BrowserCall, private readonly onChange: (view: BrowserView) => void, private readonly listen?: BrowserListen) {}
 
   open(): void {
     const earlier = closes.get(this.botId);
@@ -61,6 +77,7 @@ export class BrowserSession {
     this.#suspended = true;
     this.#epoch++;
     this.#stopTimer();
+    this.#stopStream();
     this.#discardPresses();
     if (this.#suspending) return this.#suspending;
     let finish = (): void => {};
@@ -82,10 +99,12 @@ export class BrowserSession {
   }
 
   // Terminal unmount cleanup. A new session waits for this one, so a late handback cannot steal
-  // a new takeover. Suspending instead retains this session, its frame and the UI's address draft.
+  // a new takeover, nor a late stream stop end its stream. Suspending instead retains this session,
+  // its frame and the UI's address draft.
   close(): Promise<void> {
     if (this.#done) return this.#done;
     this.#stopTimer();
+    this.#stopStream();
     this.#epoch++;
     this.#discardPresses();
     let finish = (): void => {};
@@ -98,9 +117,14 @@ export class BrowserSession {
     this.#push({ release: true, run: async () => {
       try { await this.#handBack(); }
       catch { /* best effort at terminal unmount */ }
-      finally { finish(); }
+      finally { await this.#streamCalls; finish(); }
     } });
     return done;
+  }
+
+  // The view drew this picture, so the stream may send the next.
+  drawn(frame: BrowserFrame): void {
+    if (frame === this.#awaiting) this.#ack();
   }
 
   #discardPresses(): void {
@@ -225,7 +249,10 @@ export class BrowserSession {
     } finally { this.#running = false; }
   }
 
-  #wake(): void { this.#activeUntil = Date.now() + 1000; this.#stopTimer(); this.#poll(0); }
+  #wake(): void {
+    if (this.#current()) return; // the stream brings the next picture
+    this.#activeUntil = Date.now() + 1000; this.#stopTimer(); this.#poll(0);
+  }
   #poll(delay: number): void {
     if (this.#closing || this.#suspended || this.#suspending || !this.#visible || this.#framePending || this.#timer !== undefined || !this.view.state) return;
     this.#timer = setTimeout(() => {
@@ -237,19 +264,23 @@ export class BrowserSession {
         if (epoch === this.#epoch) this.#set({ error: errorText(error) });
       }).finally(() => {
         this.#framePending = null;
-        this.#poll(retry ? RETRY_MS : Date.now() < this.#activeUntil || this.view.busy ? ACTIVE_POLL_MS : IDLE_POLL_MS);
+        this.#poll(retry ? RETRY_MS : !this.#unlisten && (Date.now() < this.#activeUntil || this.view.busy) ? ACTIVE_POLL_MS : IDLE_POLL_MS);
       });
       this.#framePending = pending;
     }, delay);
   }
   async #pull(epoch: number): Promise<void> {
+    if (this.#current()) { // the tabs, address, dialog and control; the pictures come with the stream
+      const state = await this.call("browser.open", { botId: this.botId });
+      if (!this.#closing && this.#visible && epoch === this.#epoch && this.#fences === 0) this.#apply(state);
+      return;
+    }
+    const shown = this.view.frame;
     const result = await this.call("browser.frame", { botId: this.botId, after: this.#cursor });
     if (this.#closing || !this.#visible || epoch !== this.#epoch || this.#fences > 0 || !this.#fresh(result.state)) return;
     let frame = result.unchanged ? this.view.frame : result.frame;
-    if (frame && ((frame.pageId && frame.pageId !== result.state.activePageId)
-      || (frame.controlEpoch !== undefined && frame.controlEpoch !== result.state.controlEpoch)
-      || (frame.privateEpoch !== undefined && frame.privateEpoch !== result.state.privateEpoch)
-      || (frame.viewportRevision !== undefined && frame.viewportRevision !== result.state.viewportRevision))) frame = null;
+    if (this.#unlisten && this.view.frame !== shown) frame = this.view.frame; // a streamed frame came meanwhile
+    if (frame && !fits(frame, result.state)) frame = null;
     if (frame?.streamId) this.#cursor = { streamId: frame.streamId, sequence: frame.sequence };
     else if (!frame) this.#cursor = undefined;
     const before = this.view.frame;
@@ -257,7 +288,59 @@ export class BrowserSession {
       && frame.viewportWidth === before.viewportWidth && frame.viewportHeight === before.viewportHeight
       && frame.controlEpoch === before.controlEpoch && frame.privateEpoch === before.privateEpoch
       && frame.pageId === before.pageId && frame.viewportRevision === before.viewportRevision && frame.streamId === before.streamId) frame = before;
+    this.#behind = false;
     this.#set({ state: result.state, frame, error: null });
+    if (!result.state.privateActive) this.#startStream();
+  }
+
+  // The stream keeps the picture current, so polls read only the state and input needs no follow-up picture.
+  #current(): boolean {
+    const { frame, state } = this.view;
+    return !!this.#unlisten && !this.#behind && !!frame && !!state && fits(frame, state);
+  }
+  #startStream(): void {
+    if (!this.listen || this.#unlisten || this.#unsupported) return;
+    const off = this.listen((data) => this.#streamed(data)); // before asking, so no frame is missed
+    this.#unlisten = off;
+    void this.#streamCall(true).then((state) => { if (this.#unlisten === off) this.#apply(state); }, (error: unknown) => {
+      if (this.#unlisten !== off) return; // stopped or asked again meanwhile
+      this.#endStream();
+      this.#unsupported = error instanceof ClientRpcError && error.code === "unknown_method";
+    });
+  }
+  // Hidden, closed or private: the daemon stops sending.
+  #stopStream(): void {
+    if (!this.#unlisten) return;
+    this.#endStream();
+    void this.#streamCall(false).catch(() => {});
+  }
+  #endStream(): void {
+    this.#unlisten?.();
+    this.#unlisten = undefined;
+    this.#ack();
+  }
+  #streamCall(on: boolean): Promise<BrowserState> {
+    const answer = this.#streamCalls.then(() => this.call("browser.stream", { botId: this.botId, on }));
+    this.#streamCalls = answer.catch(() => {});
+    return answer;
+  }
+  #streamed({ botId, frame }: BrowserStreamFrame): void {
+    if (botId !== this.botId) return;
+    // It ended (a private interaction, the browser closed or the desktop stopped it). The next poll pulls browser.frame, and asks
+    // for the stream again once it isn't private. Paced by the poll, so a desktop that keeps stopping it can't make a loop.
+    if (!frame) { this.#endStream(); return; }
+    this.#ack(); // the frame before it goes first, drawn or now replaced
+    this.#awaiting = frame;
+    const state = this.view.state;
+    if (this.#fences === 0 && state && fits(frame, state)) { this.#behind = false; this.#set({ frame }); }
+    else { this.#behind = true; this.#ack(); } // mid-command, or of another page or controller
+  }
+  // Every streamed frame is acknowledged once, in order: when drawn, replaced or dropped. The daemon holds at most two.
+  #ack(): void {
+    const frame = this.#awaiting;
+    if (!frame) return;
+    this.#awaiting = null;
+    void this.call("browser.streamAck", { botId: this.botId, sequence: frame.sequence }).catch(() => {});
   }
   #stopTimer(): void { clearTimeout(this.#timer); this.#timer = undefined; }
   #fresh(state: BrowserState): boolean {
@@ -267,12 +350,14 @@ export class BrowserSession {
   #apply(state: BrowserState): void { if (this.#fresh(state)) this.#set({ state, error: null }); }
   #set(patch: Partial<BrowserView>): void {
     if (patch.state) { this.#human = patch.state.control === "human"; if (!this.#human) this.#askedHuman = false; }
+    if (patch.state?.privateActive) this.#stopStream(); // asked for again once a poll shows it over
     if (this.#closing) return;
     const before = this.view;
     const state = patch.state && JSON.stringify(patch.state) !== JSON.stringify(before.state) ? patch.state : before.state;
     const moved = state && (state.generation !== before.state?.generation || state.activePageId !== before.state.activePageId || state.viewportRevision !== before.state.viewportRevision);
     if (moved) this.#cursor = undefined;
     const frame = state?.privateActive ? null : patch.frame !== undefined ? patch.frame : moved ? null : before.frame;
+    if (this.#awaiting && frame !== this.#awaiting) this.#ack(); // replaced before it was drawn
     const next = { ...before, ...patch, state, frame, busy: this.#fences > 0 || !!this.#suspending || !!state?.busy };
     if (next.state === before.state && next.frame === before.frame && next.error === before.error && next.busy === before.busy) return;
     this.view = next;

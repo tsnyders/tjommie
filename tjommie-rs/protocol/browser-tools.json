@@ -1,0 +1,1526 @@
+[
+  {
+    "name": "browser_snapshot",
+    "description": "Bounded accessibility snapshot with document-scoped refs. Use these refs for actions.",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "element": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "target": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "filename": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "depth": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 30
+        },
+        "boxes": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "argumentsSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "element": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "target": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "filename": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "depth": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 30
+        },
+        "boxes": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "browser_click",
+    "description": "Click a visible, enabled, stable, unobscured element from a snapshot ref or unique CSS target.",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "element": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "target": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "doubleClick": {
+          "type": "boolean"
+        },
+        "button": {
+          "type": "string",
+          "enum": [
+            "left",
+            "right",
+            "middle"
+          ]
+        },
+        "modifiers": {
+          "maxItems": 5,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "Alt",
+              "Control",
+              "ControlOrMeta",
+              "Meta",
+              "Shift"
+            ]
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "argumentsSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "element": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "target": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "doubleClick": {
+          "type": "boolean"
+        },
+        "button": {
+          "type": "string",
+          "enum": [
+            "left",
+            "right",
+            "middle"
+          ]
+        },
+        "modifiers": {
+          "maxItems": 5,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "Alt",
+              "Control",
+              "ControlOrMeta",
+              "Meta",
+              "Shift"
+            ]
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "browser_hover",
+    "description": "Hover over an actionable element.",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "element": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "target": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        }
+      },
+      "additionalProperties": false
+    },
+    "argumentsSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "element": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "target": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "browser_type",
+    "description": "Fill an editable element, or type key by key with slowly. Optionally press Enter.",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "element": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "target": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 100000
+        },
+        "slowly": {
+          "type": "boolean"
+        },
+        "submit": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "additionalProperties": false
+    },
+    "argumentsSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "element": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "target": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 100000
+        },
+        "slowly": {
+          "type": "boolean"
+        },
+        "submit": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "browser_select_option",
+    "description": "Select existing options by value in a native select element.",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "element": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "target": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "values": {
+          "minItems": 1,
+          "maxItems": 100,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 2000
+          }
+        }
+      },
+      "required": [
+        "values"
+      ],
+      "additionalProperties": false
+    },
+    "argumentsSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "element": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "target": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "values": {
+          "minItems": 1,
+          "maxItems": 100,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 2000
+          }
+        }
+      },
+      "required": [
+        "values"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "browser_fill_form",
+    "description": "Fill native textboxes, checkboxes, radios, select boxes and sliders from snapshot refs.",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "fields": {
+          "minItems": 1,
+          "maxItems": 30,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "element": {
+                "type": "string",
+                "maxLength": 1000
+              },
+              "target": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              "ref": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              "name": {
+                "type": "string",
+                "maxLength": 1000
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "textbox",
+                  "checkbox",
+                  "radio",
+                  "combobox",
+                  "slider"
+                ]
+              },
+              "value": {
+                "type": "string",
+                "maxLength": 100000
+              }
+            },
+            "required": [
+              "name",
+              "type",
+              "value"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "fields"
+      ],
+      "additionalProperties": false
+    },
+    "argumentsSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "fields": {
+          "minItems": 1,
+          "maxItems": 30,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "element": {
+                "type": "string",
+                "maxLength": 1000
+              },
+              "target": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              "ref": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              "name": {
+                "type": "string",
+                "maxLength": 1000
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "textbox",
+                  "checkbox",
+                  "radio",
+                  "combobox",
+                  "slider"
+                ]
+              },
+              "value": {
+                "type": "string",
+                "maxLength": 100000
+              }
+            },
+            "required": [
+              "name",
+              "type",
+              "value"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "fields"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "browser_drag",
+    "description": "Drag between visible, stable elements using native mouse input.",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "startElement": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "startTarget": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "startRef": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "endElement": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "endTarget": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "endRef": {
+          "type": "string",
+          "maxLength": 2000
+        }
+      },
+      "additionalProperties": false
+    },
+    "argumentsSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "startElement": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "startTarget": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "startRef": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "endElement": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "endTarget": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "endRef": {
+          "type": "string",
+          "maxLength": 2000
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "browser_drop",
+    "description": "Drop authorized bot-folder files (20 MiB total) or bounded MIME text data on a visible element.",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "element": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "target": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "paths": {
+          "minItems": 1,
+          "maxItems": 20,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        },
+        "data": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "additionalProperties": {
+            "type": "string",
+            "maxLength": 100000
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "argumentsSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "element": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "target": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "paths": {
+          "minItems": 1,
+          "maxItems": 20,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        },
+        "data": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "additionalProperties": {
+            "type": "string",
+            "maxLength": 100000
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "browser_emulate_media",
+    "description": "Set page CSS media preferences; null resets a previously set override.",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "colorScheme": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "light",
+                "dark",
+                "no-preference"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reducedMotion": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "reduce",
+                "no-preference"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "forcedColors": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "active",
+                "none"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "contrast": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "more",
+                "no-preference"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "media": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "screen",
+                "print"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "argumentsSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "colorScheme": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "light",
+                "dark",
+                "no-preference"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reducedMotion": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "reduce",
+                "no-preference"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "forcedColors": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "active",
+                "none"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "contrast": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "more",
+                "no-preference"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "media": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "screen",
+                "print"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "browser_take_screenshot",
+    "description": "Capture the shared tab, full page or element (16 megapixels / 2 MiB maximum). Optional plain filename saves in the bot's browser-files folder.",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "element": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "target": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "png",
+            "jpeg",
+            "webp"
+          ]
+        },
+        "filename": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "fullPage": {
+          "type": "boolean"
+        },
+        "scale": {
+          "type": "string",
+          "enum": [
+            "css",
+            "device"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "argumentsSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "element": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "target": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "png",
+            "jpeg",
+            "webp"
+          ]
+        },
+        "filename": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "fullPage": {
+          "type": "boolean"
+        },
+        "scale": {
+          "type": "string",
+          "enum": [
+            "css",
+            "device"
+          ]
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "browser_resize",
+    "description": "Resize an unmounted bot viewport. A visible native browser follows the actual Tjommie panel and cannot be resized by this tool.",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "width": {
+          "type": "integer",
+          "minimum": 240,
+          "maximum": 2560
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 180,
+          "maximum": 1600
+        }
+      },
+      "required": [
+        "width",
+        "height"
+      ],
+      "additionalProperties": false
+    },
+    "argumentsSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "width": {
+          "type": "integer",
+          "minimum": 240,
+          "maximum": 2560
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 180,
+          "maximum": 1600
+        }
+      },
+      "required": [
+        "width",
+        "height"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "browser_press_key",
+    "description": "Press a key or modifier combination such as Enter, ArrowLeft or Control+A.",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        }
+      },
+      "required": [
+        "key"
+      ],
+      "additionalProperties": false
+    },
+    "argumentsSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        }
+      },
+      "required": [
+        "key"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "browser_evaluate",
+    "description": "Evaluate page-context JavaScript, optionally with an element. No Node or desktop APIs are exposed.",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "element": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "target": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "function": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 50000
+        },
+        "filename": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        }
+      },
+      "required": [
+        "function"
+      ],
+      "additionalProperties": false
+    },
+    "argumentsSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "element": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "target": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "function": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 50000
+        },
+        "filename": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        }
+      },
+      "required": [
+        "function"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "browser_navigate",
+    "description": "Navigate the shared native tab to an HTTP/HTTPS address or about:blank.",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8192
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "additionalProperties": false
+    },
+    "argumentsSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8192
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "browser_navigate_back",
+    "description": "Go back in the active tab's history.",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    },
+    "argumentsSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "browser_navigate_forward",
+    "description": "Go forward in the active tab's history.",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    },
+    "argumentsSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "browser_reload",
+    "description": "Reload the active tab.",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    },
+    "argumentsSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "browser_close",
+    "description": "Close the active page while preserving this bot's persistent browser session.",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    },
+    "argumentsSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "browser_tabs",
+    "description": "List, create, close or select tabs in the same native browser the person sees.",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "list",
+            "new",
+            "close",
+            "select"
+          ]
+        },
+        "index": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 99
+        },
+        "url": {
+          "type": "string",
+          "maxLength": 8192
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "additionalProperties": false
+    },
+    "argumentsSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "list",
+            "new",
+            "close",
+            "select"
+          ]
+        },
+        "index": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 99
+        },
+        "url": {
+          "type": "string",
+          "maxLength": 8192
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "browser_handle_dialog",
+    "description": "Accept or dismiss the current page dialog, including a background tab; can unblock an in-flight action.",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "accept": {
+          "type": "boolean"
+        },
+        "promptText": {
+          "type": "string",
+          "maxLength": 10000
+        }
+      },
+      "required": [
+        "accept"
+      ],
+      "additionalProperties": false
+    },
+    "argumentsSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "accept": {
+          "type": "boolean"
+        },
+        "promptText": {
+          "type": "string",
+          "maxLength": 10000
+        }
+      },
+      "required": [
+        "accept"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "browser_console_messages",
+    "description": "Read up to 200 console messages observed during bot control; human sign-in output is not recorded.",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "level": {
+          "default": "info",
+          "type": "string",
+          "enum": [
+            "error",
+            "warning",
+            "info",
+            "debug"
+          ]
+        },
+        "all": {
+          "type": "boolean"
+        },
+        "filename": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        }
+      },
+      "required": [
+        "level"
+      ],
+      "additionalProperties": false
+    },
+    "argumentsSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "level": {
+          "default": "info",
+          "type": "string",
+          "enum": [
+            "error",
+            "warning",
+            "info",
+            "debug"
+          ]
+        },
+        "all": {
+          "type": "boolean"
+        },
+        "filename": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "browser_network_requests",
+    "description": "List up to 200 observed bot-control network requests. Credential headers are redacted; request bodies are not retained.",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "static": {
+          "default": false,
+          "type": "boolean"
+        },
+        "includeStatic": {
+          "type": "boolean"
+        },
+        "filter": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "filename": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        }
+      },
+      "required": [
+        "static"
+      ],
+      "additionalProperties": false
+    },
+    "argumentsSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "static": {
+          "default": false,
+          "type": "boolean"
+        },
+        "includeStatic": {
+          "type": "boolean"
+        },
+        "filter": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "filename": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "browser_network_request",
+    "description": "Read bounded observed request metadata or an explicitly requested response body. Credential headers are redacted; request bodies are not retained.",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "index": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "part": {
+          "type": "string",
+          "enum": [
+            "request-headers",
+            "request-body",
+            "response-headers",
+            "response-body"
+          ]
+        },
+        "filename": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        }
+      },
+      "required": [
+        "index"
+      ],
+      "additionalProperties": false
+    },
+    "argumentsSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "index": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "part": {
+          "type": "string",
+          "enum": [
+            "request-headers",
+            "request-body",
+            "response-headers",
+            "response-body"
+          ]
+        },
+        "filename": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        }
+      },
+      "required": [
+        "index"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "browser_file_upload",
+    "description": "Set a pending bot-opened file chooser. Files must be in this bot's authorized folders, at most 20 MiB total. Omit paths to cancel.",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "paths": {
+          "maxItems": 20,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "argumentsSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "paths": {
+          "maxItems": 20,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "browser_wait_for",
+    "description": "Wait up to 20 seconds, or up to 10 seconds for visible page text to appear/disappear; the total tool deadline is 22 seconds.",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "time": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 20
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "textGone": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        }
+      },
+      "additionalProperties": false
+    },
+    "argumentsSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "time": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 20
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "textGone": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "browser_find",
+    "description": "Search the bounded accessibility snapshot using plain text or a simple regular expression (no groups or multiple repetitions).",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "regex": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      },
+      "additionalProperties": false
+    },
+    "argumentsSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "regex": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+]

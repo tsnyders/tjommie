@@ -1138,9 +1138,18 @@ impl AccountRuntime {
 
     /// Ends a retried turn. A successful turn clears only the retried windows still unchanged since the retry.
     pub fn complete_turn(&self, context: &AccountRunContext, successful: bool) -> bool {
+        self.complete_turn_with(&self.db(), context, successful)
+    }
+
+    /// `complete_turn` with a database connection the caller already holds locked, as the runner does.
+    pub fn complete_turn_with(
+        &self,
+        db: &Connection,
+        context: &AccountRunContext,
+        successful: bool,
+    ) -> bool {
         let id = &context.effective_account_id;
         {
-            let db = self.db();
             let mut state = self.state();
             let claimed = state
                 .limit_retries
@@ -1157,15 +1166,20 @@ impl AccountRuntime {
                 && permit.quota_version == state.quota_version(id);
             if successful
                 && current
-                && let Err(error) = self.clear_retried(&db, id, &permit)
+                && let Err(error) = self.clear_retried(db, id, &permit)
             {
                 eprintln!("Could not clear a retried account limit. {}", error.message);
             }
         }
         // The runner is still completing the old turn; wake other bots after its retirement is installed.
-        let (runtime, id) = (self.clone(), id.clone());
-        tokio::spawn(async move { runtime.notify(&id) });
+        self.defer_notify(id);
         true
+    }
+
+    /// Notifies on its own task, for callers that hold locks the change callbacks take.
+    pub fn defer_notify(&self, id: &str) {
+        let (runtime, id) = (self.clone(), id.to_string());
+        tokio::spawn(async move { runtime.notify(&id) });
     }
 
     fn clear_retried(&self, db: &Connection, id: &str, permit: &Permit) -> Result<(), RpcError> {
@@ -1396,9 +1410,17 @@ impl AccountRuntime {
     }
 
     pub fn assert_current(&self, context: &AccountRunContext) -> Result<(), RpcError> {
-        let db = self.db();
+        self.assert_current_with(&self.db(), context)
+    }
+
+    /// `assert_current` with a database connection the caller already holds locked, as the runner does.
+    pub fn assert_current_with(
+        &self,
+        db: &Connection,
+        context: &AccountRunContext,
+    ) -> Result<(), RpcError> {
         let state = self.state();
-        self.current(&db, &state, context).map(drop)
+        self.current(db, &state, context).map(drop)
     }
 
     pub async fn prepare(&self, context: &AccountRunContext) -> Result<PreparedAccount, RpcError> {
@@ -1481,48 +1503,64 @@ impl AccountRuntime {
     }
 
     pub fn release(&self, context: &AccountRunContext) {
-        let id = &context.effective_account_id;
-        let released = {
-            let mut state = self.state();
-            if state
-                .limit_retries
-                .get(id)
-                .is_some_and(|permit| permit.run_id.as_deref() == Some(context.run_id.as_str()))
-            {
-                state.limit_retries.remove(id);
-            }
-            state.runs.remove(&context.run_id).is_some()
-        };
-        if released {
-            self.notify(id);
+        if self.release_quiet(context) {
+            self.notify(&context.effective_account_id);
         }
+    }
+
+    /// `release` without the notification: true if the run held the account, and the caller should notify.
+    pub fn release_quiet(&self, context: &AccountRunContext) -> bool {
+        let id = &context.effective_account_id;
+        let mut state = self.state();
+        if state
+            .limit_retries
+            .get(id)
+            .is_some_and(|permit| permit.run_id.as_deref() == Some(context.run_id.as_str()))
+        {
+            state.limit_retries.remove(id);
+        }
+        state.runs.remove(&context.run_id).is_some()
     }
 
     /// A provider's limit event during a turn. Any event invalidates older reads and retry permits; a generic repeat
     /// of a known exhaustion keeps the more informative stored windows.
     pub fn observe_limit(&self, context: &AccountRunContext, event: &Limit) {
-        match self.record_limit(&context.effective_account_id, event) {
-            Ok(true) => self.notify(&context.effective_account_id),
-            Ok(false) => {}
-            Err(error) => eprintln!("Could not record a provider limit. {}", error.message),
+        if self.observe_limit_with(&self.db(), context, event) {
+            self.notify(&context.effective_account_id);
         }
     }
 
-    fn record_limit(&self, id: &str, event: &Limit) -> Result<bool, RpcError> {
-        let db = self.db();
-        if get_account(&db, id, false).is_err() {
+    /// `observe_limit` with a database connection the caller already holds locked, as the runner does. True if the
+    /// caller should notify.
+    pub fn observe_limit_with(
+        &self,
+        db: &Connection,
+        context: &AccountRunContext,
+        event: &Limit,
+    ) -> bool {
+        match self.record_limit(db, &context.effective_account_id, event) {
+            Ok(changed) => changed,
+            Err(error) => {
+                eprintln!("Could not record a provider limit. {}", error.message);
+                false
+            }
+        }
+    }
+
+    fn record_limit(&self, db: &Connection, id: &str, event: &Limit) -> Result<bool, RpcError> {
+        if get_account(db, id, false).is_err() {
             return Ok(false);
         }
         *self.state().quota_versions.entry(id.into()).or_default() += 1;
-        if event.windows.is_none() && event.state == LimitState::Reached && self.limit(&db, id)?.0 {
+        if event.windows.is_none() && event.state == LimitState::Reached && self.limit(db, id)?.0 {
             return Ok(true);
         }
-        let observed_at = self.next_quota_stamp(&db, id)?;
+        let observed_at = self.next_quota_stamp(db, id)?;
         let limit_id = event.limit_id.as_deref();
         if event.windows.is_some()
             && present(limit_id).is_some_and(|limit_id| limit_id != "provider")
         {
-            replace_account_limits(&db, id, "provider", &observed_at, &[])?;
+            replace_account_limits(db, id, "provider", &observed_at, &[])?;
         }
         let primary = || {
             vec![LimitWindow {
@@ -1535,7 +1573,7 @@ impl AccountRuntime {
         };
         let windows = event.windows.clone().unwrap_or_else(primary);
         replace_account_limits(
-            &db,
+            db,
             id,
             limit_id.unwrap_or("provider"),
             &observed_at,
@@ -1546,19 +1584,33 @@ impl AccountRuntime {
 
     /// Recorded usage changed: the 80 and 100 percent cap notifications are claimed once each.
     pub fn usage_changed(&self, id: &str) {
-        let claimed: Vec<u8> = {
-            let db = self.db();
-            [80, 100]
-                .into_iter()
-                .filter(|threshold| claim_cap_notification(&db, id, *threshold).unwrap_or(false))
-                .collect()
-        };
+        let claimed = self.usage_changed_with(&self.db(), id);
+        self.finish_usage_changed(id, claimed);
+    }
+
+    /// The database half of `usage_changed`, for a caller that already holds the connection locked: the cap
+    /// thresholds this call claimed. Pass them to [`Self::finish_usage_changed`] without the lock.
+    pub fn usage_changed_with(&self, db: &Connection, id: &str) -> Vec<u8> {
+        [80, 100]
+            .into_iter()
+            .filter(|threshold| claim_cap_notification(db, id, *threshold).unwrap_or(false))
+            .collect()
+    }
+
+    /// The callbacks half of `usage_changed`: each claimed threshold's cap notification, then the change.
+    pub fn finish_usage_changed(&self, id: &str, claimed: Vec<u8>) {
         if let Some(on_cap) = &self.0.options.on_cap {
             for threshold in claimed {
                 on_cap(self, id, threshold);
             }
         }
         self.notify(id);
+    }
+
+    /// [`Self::finish_usage_changed`] on its own task, for callers that hold locks the callbacks take.
+    pub fn defer_usage_changed(&self, id: &str, claimed: Vec<u8>) {
+        let (runtime, id) = (self.clone(), id.to_string());
+        tokio::spawn(async move { runtime.finish_usage_changed(&id, claimed) });
     }
 
     /// Cancels waiting sign-ins and waits for running checks and starting sign-ins. Nothing new starts afterwards.

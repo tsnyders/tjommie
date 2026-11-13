@@ -37,6 +37,13 @@ export const BrowserFrame = z.object({
   controlEpoch: z.number().int().nonnegative().optional(), privateEpoch: z.number().int().nonnegative().optional(),
 });
 export type BrowserFrame = z.infer<typeof BrowserFrame>;
+// A frame of the live stream. `streamId` is required because it names what a client acknowledges.
+export const StreamedBrowserFrame = BrowserFrame.extend({ streamId: z.string().min(1) });
+export type StreamedBrowserFrame = z.infer<typeof StreamedBrowserFrame>;
+// `browser.streamFrame`: sent only to a connection that turned the stream on. `frame: null` means the stream ended (a private
+// interaction began, the browser closed or the desktop stopped it); the client goes back to polling `browser.frame`.
+export const BrowserStreamFrame = z.object({ botId: z.string().min(1), frame: StreamedBrowserFrame.nullable() });
+export type BrowserStreamFrame = z.infer<typeof BrowserStreamFrame>;
 
 const Bot = { botId: z.string().min(1) };
 const Session = { ...Bot, generation: z.string().min(1), controlEpoch: z.number().int().nonnegative().optional() };
@@ -51,4 +58,9 @@ export const browserMethods = {
   "browser.resize": { params: z.object({ ...Page, width: z.number().int().min(240).max(2560), height: z.number().int().min(180).max(1600) }), result: BrowserState },
   "browser.input": { params: z.object({ ...Page, input: BrowserInput, viewportRevision: z.number().int().nonnegative().optional() }), result: z.object({}) },
   "browser.dialog": { params: z.object({ ...Page, accept: z.boolean(), promptText: z.string().max(10_000).optional() }), result: BrowserState },
+  // Additive: an older daemon answers `unknown_method` and the client polls `browser.frame` instead.
+  "browser.stream": { params: z.object({ ...Bot, on: z.boolean(), maxFps: z.number().int().min(1).max(60).optional() }), result: BrowserState },
+  // Each drawn frame is acknowledged; at most two frames per connection are ever unacknowledged.
+  "browser.streamAck": { params: z.object({ ...Bot, sequence: z.number().int().nonnegative() }), result: z.object({}) },
 } as const;
+export const browserEvents = { "browser.streamFrame": BrowserStreamFrame } as const;

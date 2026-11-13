@@ -2,9 +2,9 @@
 
 import { useEffect, useRef, useState, type ClipboardEvent, type KeyboardEvent, type PointerEvent, type ReactNode } from "react";
 import { ArrowLeft, ArrowRight, CornerDownLeft, Loader, Maximize2, Minimize2, Plus, RotateCw, X } from "lucide-react";
-import type { Bot, BrowserInput } from "@tjommie/protocol";
-import { BrowserSession, type BrowserView } from "@/lib/browser-session";
-import { request } from "@/lib/connection";
+import type { Bot, BrowserFrame, BrowserInput } from "@tjommie/protocol";
+import { BrowserSession, type BrowserListen, type BrowserView } from "@/lib/browser-session";
+import { daemon, request } from "@/lib/connection";
 import { useApp } from "@/lib/store";
 import { desktop, type NativeBrowserApi } from "@/lib/desktop";
 import { NativeBrowserSession, nativeView } from "@/lib/native-browser-session";
@@ -16,8 +16,9 @@ import { FIELD } from "../controls";
 import { Pill } from "../pill";
 import { BrowserLogins } from "./browser-logins";
 
-// The toolbar's calls. (Input, release and resize are for the picture-based fallback viewport; the native page needs none.)
+// The toolbar's calls. (Input, release, resize and drawn are for the picture-based fallback viewport; the native page needs none.)
 export type BrowserControls = {
+  drawn?: (frame: BrowserFrame) => void; // the picture is on screen, so the live stream may send the next
   input: (input: BrowserInput) => void;
   releaseAll: () => void;
   setControl: (control: "human" | "bot") => void;
@@ -45,11 +46,22 @@ export function BrowserPanel({ bot, active, expanded, canExpand = true, onToggle
   return <NativePane key={bot.id} bot={bot} api={api} active={active} expanded={expanded} canExpand={canExpand} onToggleExpanded={onToggleExpanded} />;
 }
 
+// The live stream's frames on the connection the remote pane's calls go to. Not connected: none, and browser.stream fails too.
+const streamFrames: BrowserListen = (listener) => {
+  try {
+    return daemon().subscribe((event) => {
+      if (event.event === "browser.streamFrame") listener(event.data);
+    });
+  } catch {
+    return () => {};
+  }
+};
+
 function RemotePane({ bot, active, expanded, canExpand, onToggleExpanded }: { bot: Bot; active: boolean; expanded: boolean; canExpand: boolean; onToggleExpanded: () => void }) {
   const ready = useApp((state) => state.connection.status === "ready");
   const [view, setView] = useState<BrowserView>({ state: null, frame: null, error: null });
   const [text, setText] = useState("");
-  const [session] = useState(() => new BrowserSession(bot.id, request, setView));
+  const [session] = useState(() => new BrowserSession(bot.id, request, setView, streamFrames));
   useEffect(() => { if (ready) session.open(); return () => { void session.close(); }; }, [session, ready]);
   useEffect(() => {
     const visibility = (): void => session.setVisible(active && ready && document.visibilityState !== "hidden");
@@ -317,6 +329,10 @@ function Viewport({ view, human, controls }: { view: BrowserView; human: boolean
   const busy = "busy" in view && view.busy === true;
   const waiting = useAfter(state !== null && !state.privateActive && (frame === null || busy), WAIT_LABEL_MS);
 
+  // Runs once the picture is committed, so the live stream sends the next only after this one is drawn.
+  useEffect(() => {
+    if (frame) controls.drawn?.(frame);
+  }, [frame, controls]);
   useEffect(() => {
     const element = box.current;
     if (!element) return;

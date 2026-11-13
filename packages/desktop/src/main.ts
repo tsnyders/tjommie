@@ -620,6 +620,8 @@ function createWindow(): void {
     onState: (state) => { if (!window.isDestroyed()) window.webContents.send("native-browser:state", state); },
     onFocusReturn: (botId) => { if (!window.isDestroyed()) window.webContents.send("native-browser:focus-return", botId); },
     onNotice: (notice) => { log(`Native browser notice for ${notice.botId}: ${notice.message}`); },
+    // Live frames go to the daemon over the private host bridge, never through the renderer.
+    onStream: (message) => nativeHost ? nativeHost.send(message) : Promise.resolve(false),
   });
   window.on("hide", () => { nativeEngine?.setOccluded(true); void revokeLocalDevice(); });
   window.on("minimize", () => { void revokeLocalDevice(); });
