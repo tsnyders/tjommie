@@ -1,0 +1,138 @@
+<!-- @dsCard group="Foundations" -->
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="shot" content="1280x2330">
+<title>Mission Control: type, space, shape, motion</title>
+<link rel="stylesheet" href="../tokens.css">
+<link rel="stylesheet" href="../kit.css">
+<style>
+  .ramp { display: flex; flex-direction: column; }
+  .rr { display: grid; grid-template-columns: 92px minmax(0, 1fr); align-items: baseline; column-gap: var(--space-3); padding: var(--space-2) 0; border-top: 1px solid var(--line); }
+  .rr .k { font: var(--t-mono-xs); color: var(--text-3); }
+  .rr .spec-t { display: block; margin-top: 2px; font: var(--t-mono-xs); color: var(--text-3); }
+  .scale { display: flex; align-items: flex-end; gap: var(--space-4); }
+  .scale .cell { align-items: flex-start; }
+  .bar { background: var(--text-2); width: 12px; }
+  .rad { width: 64px; height: 48px; border: 1px solid var(--text-2); background: var(--raised); }
+  .el { width: 168px; height: 96px; display: grid; place-items: center; border: 1px solid var(--line-strong); background: var(--surface); font: var(--t-label); color: var(--text-2); }
+  table { border-collapse: collapse; width: 100%; }
+  td, th { text-align: left; height: 32px; padding: 0 var(--space-3) 0 0; border-top: 1px solid var(--line); font: var(--t-body); color: var(--text-2); }
+  th { font: var(--t-label); color: var(--text-3); border-top: 0; }
+  td.m { font: var(--t-mono-sm); color: var(--text); }
+</style>
+</head>
+<body>
+<!--sprite--><svg width="0" height="0" style="position:absolute" aria-hidden="true"></svg><!--/sprite-->
+<div class="sheet" style="width:1280px">
+  <header>
+    <h1>Type, space, shape, motion</h1>
+    <p>Two families. Archivo carries the interface: Semi Condensed for chrome so dense rows still fit, normal width for messages people actually read. Martian Mono Condensed carries every number, time, path, command and quota, so figures line up and read as data.</p>
+  </header>
+  <div class="duo">
+    <div data-theme="dark">
+      <span class="lab">Desktop roles, dark</span>
+      <div class="ramp">
+        <div class="rr"><span class="k">display</span><span><span class="t-display">Agents</span><span class="spec-t">Archivo Semi Condensed 28/32 Semibold</span></span></div>
+        <div class="rr"><span class="k">title</span><span><span class="t-title">Forge wants to run a command</span><span class="spec-t">Archivo Semi Condensed 20/24 Semibold</span></span></div>
+        <div class="rr"><span class="k">title-sm</span><span><span class="t-title-sm">Forge asked Scout</span><span class="spec-t">Archivo Semi Condensed 15/20 Semibold</span></span></div>
+        <div class="rr"><span class="k">body-strong</span><span><span class="t-strong">Scout, Quill, Ledger, Pixel, Atlas, Nova</span><span class="spec-t">Archivo Semi Condensed 13/20 Semibold</span></span></div>
+        <div class="rr"><span class="k">body</span><span><span class="t-body">Researching GPUI docks. Reviewing task 14.</span><span class="spec-t">Archivo Semi Condensed 13/20 Regular</span></span></div>
+        <div class="rr"><span class="k">label</span><span><span class="t-label">Needs you, Working, Limited, Paused</span><span class="spec-t">Archivo Semi Condensed 12/16 Medium</span></span></div>
+        <div class="rr"><span class="k">caption</span><span><span class="t-caption">Sign in to finish setup</span><span class="spec-t">Archivo Semi Condensed 11/16 Medium</span></span></div>
+        <div class="rr"><span class="k">prose</span><span><span class="t-prose">Port the migrations array from packages/daemon/src/db.ts to the Rust daemon.</span><span class="spec-t">Archivo 14/22 Regular</span></span></div>
+        <div class="rr"><span class="k">mono</span><span><span class="mono">cargo test -p daemon</span><span class="spec-t">Martian Mono Condensed 12/20 Regular</span></span></div>
+        <div class="rr"><span class="k">mono-sm</span><span><span class="mono-sm">10:42  +184  42 passed  $4.12</span><span class="spec-t">Martian Mono Condensed 11/16 Regular</span></span></div>
+        <div class="rr"><span class="k">mono-xs</span><span><span class="mono-xs">Ctrl+K  Alt+A  62% used</span><span class="spec-t">Martian Mono Condensed 10/16 Regular</span></span></div>
+        <div class="rr"><span class="k">mono-lg</span><span><span class="mono-lg">$4.12</span><span class="spec-t">Martian Mono Condensed 20/24 Medium</span></span></div>
+      </div>
+    </div>
+    <div data-theme="light">
+      <span class="lab">Desktop roles, light</span>
+      <div class="ramp">
+        <div class="rr"><span class="k">display</span><span><span class="t-display">Agents</span><span class="spec-t">Archivo Semi Condensed 28/32 Semibold</span></span></div>
+        <div class="rr"><span class="k">title</span><span><span class="t-title">Forge wants to run a command</span><span class="spec-t">Archivo Semi Condensed 20/24 Semibold</span></span></div>
+        <div class="rr"><span class="k">title-sm</span><span><span class="t-title-sm">Forge asked Scout</span><span class="spec-t">Archivo Semi Condensed 15/20 Semibold</span></span></div>
+        <div class="rr"><span class="k">body-strong</span><span><span class="t-strong">Scout, Quill, Ledger, Pixel, Atlas, Nova</span><span class="spec-t">Archivo Semi Condensed 13/20 Semibold</span></span></div>
+        <div class="rr"><span class="k">body</span><span><span class="t-body">Researching GPUI docks. Reviewing task 14.</span><span class="spec-t">Archivo Semi Condensed 13/20 Regular</span></span></div>
+        <div class="rr"><span class="k">label</span><span><span class="t-label">Needs you, Working, Limited, Paused</span><span class="spec-t">Archivo Semi Condensed 12/16 Medium</span></span></div>
+        <div class="rr"><span class="k">caption</span><span><span class="t-caption">Sign in to finish setup</span><span class="spec-t">Archivo Semi Condensed 11/16 Medium</span></span></div>
+        <div class="rr"><span class="k">prose</span><span><span class="t-prose">Port the migrations array from packages/daemon/src/db.ts to the Rust daemon.</span><span class="spec-t">Archivo 14/22 Regular</span></span></div>
+        <div class="rr"><span class="k">mono</span><span><span class="mono">cargo test -p daemon</span><span class="spec-t">Martian Mono Condensed 12/20 Regular</span></span></div>
+        <div class="rr"><span class="k">mono-sm</span><span><span class="mono-sm">10:42  +184  42 passed  $4.12</span><span class="spec-t">Martian Mono Condensed 11/16 Regular</span></span></div>
+        <div class="rr"><span class="k">mono-xs</span><span><span class="mono-xs">Ctrl+K  Alt+A  62% used</span><span class="spec-t">Martian Mono Condensed 10/16 Regular</span></span></div>
+        <div class="rr"><span class="k">mono-lg</span><span><span class="mono-lg">$4.12</span><span class="spec-t">Martian Mono Condensed 20/24 Medium</span></span></div>
+      </div>
+    </div>
+  </div>
+
+  <section class="spec">
+    <h2>Phone roles</h2>
+    <p>The phone uses the same families one step larger, so rows stay readable at arm's length and every target reaches 48 dp.</p>
+    <table>
+      <tr><th>Role</th><th>Sample</th><th>Spec</th></tr>
+      <tr><td class="m">title</td><td><span style="font:var(--tp-title);color:var(--text)">Agents</span></td><td>Archivo Semi Condensed 24/28 Semibold</td></tr>
+      <tr><td class="m">title-sm</td><td><span style="font:var(--tp-title-sm);color:var(--text)">Switch PC</span></td><td>Archivo Semi Condensed 17/24 Semibold</td></tr>
+      <tr><td class="m">body-strong</td><td><span style="font:var(--tp-body-strong);color:var(--text)">Forge</span></td><td>Archivo Semi Condensed 15/20 Semibold</td></tr>
+      <tr><td class="m">body</td><td><span style="font:var(--tp-body);color:var(--text)">Wants to run git push</span></td><td>Archivo Semi Condensed 15/20 Regular</td></tr>
+      <tr><td class="m">label</td><td><span style="font:var(--tp-label);color:var(--text)">Needs you</span></td><td>Archivo Semi Condensed 13/16 Medium</td></tr>
+      <tr><td class="m">prose</td><td><span style="font:var(--tp-prose);color:var(--text)">Ported all 12 migrations.</span></td><td>Archivo 15/24 Regular</td></tr>
+      <tr><td class="m">mono</td><td><span style="font:var(--tp-mono);color:var(--text)">git push origin rust-rewrite</span></td><td>Martian Mono Condensed 12/20 Regular</td></tr>
+    </table>
+  </section>
+
+  <section class="spec">
+    <h2>Spacing: a 4 px grid</h2>
+    <div class="scale">
+      <div class="cell"><span class="bar" style="height:2px"></span><span class="lab">0-5</span><span class="mono-xs c3">2</span></div>
+      <div class="cell"><span class="bar" style="height:var(--space-1)"></span><span class="lab">1</span><span class="mono-xs c3">4</span></div>
+      <div class="cell"><span class="bar" style="height:var(--space-2)"></span><span class="lab">2</span><span class="mono-xs c3">8</span></div>
+      <div class="cell"><span class="bar" style="height:var(--space-3)"></span><span class="lab">3</span><span class="mono-xs c3">12</span></div>
+      <div class="cell"><span class="bar" style="height:var(--space-4)"></span><span class="lab">4</span><span class="mono-xs c3">16</span></div>
+      <div class="cell"><span class="bar" style="height:var(--space-5)"></span><span class="lab">5</span><span class="mono-xs c3">20</span></div>
+      <div class="cell"><span class="bar" style="height:var(--space-6)"></span><span class="lab">6</span><span class="mono-xs c3">24</span></div>
+      <div class="cell"><span class="bar" style="height:var(--space-8)"></span><span class="lab">8</span><span class="mono-xs c3">32</span></div>
+      <div class="cell"><span class="bar" style="height:var(--space-10)"></span><span class="lab">10</span><span class="mono-xs c3">40</span></div>
+      <div class="cell"><span class="bar" style="height:var(--space-12)"></span><span class="lab">12</span><span class="mono-xs c3">48</span></div>
+      <div class="cell"><span class="bar" style="height:var(--space-16)"></span><span class="lab">16</span><span class="mono-xs c3">64</span></div>
+    </div>
+    <p>Row heights: 24 dense, 28 default, 44 fleet rows, 52 roster rows. Controls: 24, 28, 32 on desktop; 48 dp on the phone. Desktop icon buttons are never smaller than 28 px.</p>
+  </section>
+
+  <section class="spec">
+    <h2>Radius: tight</h2>
+    <div class="row">
+      <div class="cell"><span class="rad" style="border-radius:var(--r-xs)"></span><span class="lab">xs 2: lamps, pills, key caps</span></div>
+      <div class="cell"><span class="rad" style="border-radius:var(--r-sm)"></span><span class="lab">sm 4: controls, rows</span></div>
+      <div class="cell"><span class="rad" style="border-radius:var(--r-md)"></span><span class="lab">md 6: cards, menus</span></div>
+      <div class="cell"><span class="rad" style="border-radius:var(--r-lg)"></span><span class="lab">lg 8: dialogs, previews</span></div>
+      <div class="cell"><span class="rad" style="border-radius:var(--r-xl) var(--r-xl) 0 0"></span><span class="lab">xl 12: phone sheet top</span></div>
+    </div>
+  </section>
+
+  <section class="spec">
+    <h2>Elevation: only for things that float</h2>
+    <p>Rows, cards and panels sit flat and are separated by hairlines. Shadows appear only on layers above the window: menus, the palette, dialogs, sheets and toasts.</p>
+    <div class="duo">
+      <div data-theme="dark"><div class="row"><span class="el" style="box-shadow:var(--shadow-menu);border-radius:var(--r-md)">menu</span><span class="el" style="box-shadow:var(--shadow-toast);border-radius:var(--r-md)">toast</span><span class="el" style="box-shadow:var(--shadow-dialog);border-radius:var(--r-lg)">dialog</span></div></div>
+      <div data-theme="light"><div class="row"><span class="el" style="box-shadow:var(--shadow-menu);border-radius:var(--r-md)">menu</span><span class="el" style="box-shadow:var(--shadow-toast);border-radius:var(--r-md)">toast</span><span class="el" style="box-shadow:var(--shadow-dialog);border-radius:var(--r-lg)">dialog</span></div></div>
+    </div>
+  </section>
+
+  <section class="spec">
+    <h2>Motion</h2>
+    <table>
+      <tr><th>Token</th><th>Value</th><th>Used for</th><th>Reduced motion</th></tr>
+      <tr><td class="m">fast</td><td class="m">90 ms, out</td><td>Hover and press colour</td><td>Instant</td></tr>
+      <tr><td class="m">base</td><td class="m">150 ms, out</td><td>State pill swaps, menus fading in</td><td>Instant</td></tr>
+      <tr><td class="m">slow</td><td class="m">220 ms, out</td><td>Panel, dialog and phone sheet entering</td><td>Instant</td></tr>
+      <tr><td class="m">spin</td><td class="m">900 ms, linear</td><td>Working glyph, only while a bot works</td><td>Static arc</td></tr>
+      <tr><td class="m">live-pulse</td><td class="m">1600 ms, linear</td><td>Live and recording lamps, only while live</td><td>Steady lamp</td></tr>
+      <tr><td class="m">out</td><td class="m">cubic-bezier(0.2, 0, 0, 1)</td><td>Every eased transition</td><td></td></tr>
+    </table>
+    <p>Nothing animates on keyboard actions: the palette, Ctrl+J, Ctrl+1 to Ctrl+9, Alt+A and Alt+D change state in one frame.</p>
+  </section>
+</div>
+</body>
+</html>

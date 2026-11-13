@@ -1,0 +1,112 @@
+{
+  "_provenance": "Captured 2026-11-13 from the TypeScript 0.4.2 implementation in packages/daemon (kept on the `legacy` branch), by running the former tjommie-rs/tools/acl-probe.ts (windowsAclDriver.runSync) twice over the folder tree built by the Rust test typescript_and_rust_passes_leave_equal_sddl, then reading each node's SDDL with Get-Acl. `results` are the two passes' applied counts and failures (the temp root is {ROOT}); `nodes` are every file and folder after both passes: the DACL flags and, in order, the ACEs that name the CodexSandboxUsers group ({SID}): every explicit one, and the inherited ones whose rights are the pass's own 0x1201bf (RX,W). Machine-specific owners, groups and other inherited ACEs (what %TEMP% grants) are left out, and so is home/.sandbox-bin, whose explicit ACEs are copies of what %TEMP% grants. Do not change this file unless rollback compatibility with 0.4.2 is deliberately dropped.",
+  "results": [
+    {
+      "applied": 9,
+      "failures": []
+    },
+    {
+      "applied": 3,
+      "failures": [
+        "{ROOT}\\allow: expected ACL state was not found"
+      ]
+    }
+  ],
+  "nodes": {
+    "allow": {
+      "daclFlags": "AI",
+      "sandboxAces": [
+        "(A;OICI;0x1201bf;;;{SID})"
+      ]
+    },
+    "allow/child": {
+      "daclFlags": "AI",
+      "sandboxAces": [
+        "(A;OICIID;0x1201bf;;;{SID})"
+      ]
+    },
+    "both": {
+      "daclFlags": "AI",
+      "sandboxAces": [
+        "(D;OICI;0x1201bf;;;{SID})"
+      ]
+    },
+    "both/child": {
+      "daclFlags": "AI",
+      "sandboxAces": [
+        "(D;OICIID;0x1201bf;;;{SID})"
+      ]
+    },
+    "deny": {
+      "daclFlags": "AI",
+      "sandboxAces": [
+        "(D;OICI;0x1201bf;;;{SID})"
+      ]
+    },
+    "deny/child": {
+      "daclFlags": "AI",
+      "sandboxAces": [
+        "(D;OICIID;0x1201bf;;;{SID})"
+      ]
+    },
+    "file.txt": {
+      "daclFlags": "AI",
+      "sandboxAces": [
+        "(D;;0x1201bf;;;{SID})"
+      ]
+    },
+    "home": {
+      "daclFlags": "AI",
+      "sandboxAces": [
+        "(D;OICI;0x1201bf;;;{SID})"
+      ]
+    },
+    "home/.sandbox": {
+      "daclFlags": "AI",
+      "sandboxAces": [
+        "(A;OICI;0x1201bf;;;{SID})",
+        "(D;OICIID;0x1201bf;;;{SID})"
+      ]
+    },
+    "home/.sandbox/child": {
+      "daclFlags": "AI",
+      "sandboxAces": [
+        "(A;OICIID;0x1201bf;;;{SID})",
+        "(D;OICIID;0x1201bf;;;{SID})"
+      ]
+    },
+    "modify": {
+      "daclFlags": "AI",
+      "sandboxAces": [
+        "(D;OICI;0x1201bf;;;{SID})",
+        "(A;OICI;0x110000;;;{SID})"
+      ]
+    },
+    "modify/child": {
+      "daclFlags": "AI",
+      "sandboxAces": [
+        "(D;OICIID;0x1201bf;;;{SID})"
+      ]
+    },
+    "reverse": {
+      "daclFlags": "AI",
+      "sandboxAces": [
+        "(A;OICI;0x1201bf;;;{SID})"
+      ]
+    },
+    "reverse/child": {
+      "daclFlags": "AI",
+      "sandboxAces": [
+        "(A;OICIID;0x1201bf;;;{SID})"
+      ]
+    },
+    "undeny": {
+      "daclFlags": "AI",
+      "sandboxAces": []
+    },
+    "undeny/child": {
+      "daclFlags": "AI",
+      "sandboxAces": []
+    }
+  }
+}

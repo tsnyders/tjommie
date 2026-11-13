@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AttachmentInfo } from "../../protocol/src/attachments.ts";
-import { tempRoot } from "../../daemon/src/testing.ts";
+import { tempRoot } from "./testing.ts";
 import { AttachmentSaves, decodeAttachmentChunk } from "./attachment-save.ts";
 
 const saves = new AttachmentSaves();

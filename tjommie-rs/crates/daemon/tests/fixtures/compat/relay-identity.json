@@ -1,0 +1,7 @@
+{
+  "_provenance": "Captured 2026-11-13 from the TypeScript 0.4.2 implementation in packages/daemon (kept on the `legacy` branch), by loadRelayIdentity over a one-entry in-memory vault (the former remote-probe.ts `relay-identity` command). `saved` is the vault entry 0.4.2 minted; Ed25519 signatures are deterministic, so the same record must give the same publicKey and signature in Rust. Do not change this file unless rollback compatibility with 0.4.2 is deliberately dropped.",
+  "message": "dGpvbW1pZS1yZWxheS1sb2dpbi92MQpzeW50aGV0aWM",
+  "saved": "{\"v\":1,\"privateKey\":\"MC4CAQAwBQYDK2VwBCIEIGgA4YkBdvLe7ecJIGXKeJK5UNpwfm3Vit54JHMHElxv\",\"publicKey\":\"Jpk1gxYaX3VVj8uEe0vHpI75CruEvJU0S5EB_TG_-WQ\"}",
+  "publicKey": "Jpk1gxYaX3VVj8uEe0vHpI75CruEvJU0S5EB_TG_-WQ",
+  "signature": "v4p6lkwLWSUKtYGRr5EjGFI7A0ochCQV3gvzr1QMcAe60ctyxkWhEt5imVI3D7ExiX9IuPNGf80pIE3udLfKBQ"
+}

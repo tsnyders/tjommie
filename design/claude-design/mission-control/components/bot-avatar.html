@@ -1,0 +1,145 @@
+<!-- @dsCard group="Bots" -->
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="shot" content="1280x1500">
+<title>Mission Control: bot avatar</title>
+<link rel="stylesheet" href="../tokens.css">
+<link rel="stylesheet" href="../kit.css">
+<style>
+  .avt { display: grid; grid-template-columns: 128px 64px 64px 72px 96px minmax(0, 1fr); align-items: center; column-gap: var(--space-4); }
+  .avt > * { min-height: 76px; display: flex; align-items: center; border-top: 1px solid var(--line); }
+  .avt .h { min-height: 32px; font: var(--t-label); color: var(--text-3); border-top: 0; }
+  .avt .k { flex-direction: column; align-items: flex-start; justify-content: center; font: var(--t-body); color: var(--text); }
+  .avt .k .mono-xs { display: block; color: var(--text-3); }
+  .avt .cols { gap: var(--space-3); }
+  .badges { display: grid; grid-template-columns: 128px repeat(4, 96px); align-items: center; column-gap: var(--space-4); row-gap: var(--space-3); }
+  .badges .h { font: var(--t-label); color: var(--text-3); }
+</style>
+</head>
+<body>
+<!--sprite--><svg width="0" height="0" style="position:absolute" aria-hidden="true"><symbol id="i-circle-alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/></symbol><symbol id="i-hourglass" viewBox="0 0 24 24"><path d="M5 22h14"/><path d="M5 2h14"/><path d="M17 22v-4.172a2 2 0 0 0-.586-1.414L12 12l-4.414 4.414A2 2 0 0 0 7 17.828V22"/><path d="M7 2v4.172a2 2 0 0 0 .586 1.414L12 12l4.414-4.414A2 2 0 0 0 17 6.172V2"/></symbol><symbol id="i-loader-circle" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></symbol><symbol id="i-pause" viewBox="0 0 24 24"><rect x="14" y="3" width="5" height="18" rx="1"/><rect x="5" y="3" width="5" height="18" rx="1"/></symbol><symbol id="i-plug" viewBox="0 0 24 24"><path d="M12 22v-5"/><path d="M15 8V2"/><path d="M17 8a1 1 0 0 1 1 1v4a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V9a1 1 0 0 1 1-1z"/><path d="M9 8V2"/></symbol><symbol id="a-blob" viewBox="0 0 40 40"><path d="M4 22 C4 12 11.5 6 21 6 C30.5 6 37 12.5 37 21 C37 29.5 30.5 35 21 35 C11 35 4 30.5 4 22 Z" style="fill:currentColor"/><path d="M18 15 L17 21 M25.5 15 L24.5 21" style="fill:none;stroke:var(--bot-eye);stroke-width:3;stroke-linecap:round"/></symbol><symbol id="a-circle" viewBox="0 0 40 40"><path d="M20 2 C29.94 2 38 10.06 38 20 C38 29.94 29.94 38 20 38 C10.06 38 2 29.94 2 20 C2 10.06 10.06 2 20 2 Z" style="fill:currentColor"/><path d="M17 14 L16 20 M24.5 14 L23.5 20" style="fill:none;stroke:var(--bot-eye);stroke-width:3;stroke-linecap:round"/></symbol><symbol id="a-cloud" viewBox="0 0 40 40"><path d="M11 34 C5 34 2 29.5 3.5 25 C2 19 7.5 15 12.5 16.5 C14 10 21 7 26 11 C32 9.5 37 14 35.5 20 C39 23.5 37 32 30.5 34 Z" style="fill:currentColor"/><path d="M17.5 19 L16.7 25 M24.5 19 L23.7 25" style="fill:none;stroke:var(--bot-eye);stroke-width:3;stroke-linecap:round"/></symbol><symbol id="a-droplet" viewBox="0 0 40 40"><path d="M20 3 C20 3 33 16 33 25 C33 32.2 27.2 37 20 37 C12.8 37 7 32.2 7 25 C7 16 20 3 20 3 Z" style="fill:currentColor"/><path d="M17.5 21 L16.8 27 M24 21 L23.3 27" style="fill:none;stroke:var(--bot-eye);stroke-width:3;stroke-linecap:round"/></symbol><symbol id="a-hexagon" viewBox="0 0 40 40"><path d="M17 3.2 C18.9 2.1 21.1 2.1 23 3.2 L33.5 9.3 C35.4 10.4 36.5 12.4 36.5 14.6 V25.4 C36.5 27.6 35.4 29.6 33.5 30.7 L23 36.8 C21.1 37.9 18.9 37.9 17 36.8 L6.5 30.7 C4.6 29.6 3.5 27.6 3.5 25.4 V14.6 C3.5 12.4 4.6 10.4 6.5 9.3 Z" style="fill:currentColor"/><path d="M17 15 L16 21 M24.5 15 L23.5 21" style="fill:none;stroke:var(--bot-eye);stroke-width:3;stroke-linecap:round"/></symbol><symbol id="a-pill" viewBox="0 0 40 40"><path d="M12 10 H28 C33.5 10 38 14.5 38 20 C38 25.5 33.5 30 28 30 H12 C6.5 30 2 25.5 2 20 C2 14.5 6.5 10 12 10 Z" style="fill:currentColor"/><path d="M18 15.5 L17.3 21.5 M24.5 15.5 L23.8 21.5" style="fill:none;stroke:var(--bot-eye);stroke-width:3;stroke-linecap:round"/></symbol><symbol id="a-rounded-square" viewBox="0 0 40 40"><path d="M11 4 H29 C32.9 4 36 7.1 36 11 V29 C36 32.9 32.9 36 29 36 H11 C7.1 36 4 32.9 4 29 V11 C4 7.1 7.1 4 11 4 Z" style="fill:currentColor"/><path d="M17 14 L16 20 M24.5 14 L23.5 20" style="fill:none;stroke:var(--bot-eye);stroke-width:3;stroke-linecap:round"/></symbol><symbol id="a-triangle" viewBox="0 0 40 40"><path d="M20 4 C21.6 4 22.8 4.8 23.7 6.3 L37 29.8 C38.6 32.6 36.6 35 33.5 35 H6.5 C3.4 35 1.4 32.6 3 29.8 L16.3 6.3 C17.2 4.8 18.4 4 20 4 Z" style="fill:currentColor"/><path d="M17.8 20 L17.1 26 M23.8 20 L23.1 26" style="fill:none;stroke:var(--bot-eye);stroke-width:3;stroke-linecap:round"/></symbol></svg><!--/sprite-->
+<div class="sheet" style="width:1280px">
+  <header>
+    <h1>Bot avatar</h1>
+    <p>The eight shapes and their eyes are the app's own paths, unchanged: a 40 by 40 box, the body filled with the bot colour, two white eye strokes. Mission Control adds only the state badge: a square lamp cut out of the avatar by a ring in the colour behind it.</p>
+  </header>
+
+  <section class="spec">
+    <h2>Shapes and sizes</h2>
+    <div class="avt">
+      <span class="h">Shape</span><span class="h">20</span><span class="h">28</span><span class="h">40</span><span class="h">64</span><span class="h">Other colours at 40</span>
+      <span class="k">hexagon<span class="mono-xs">Forge, blue</span></span>
+      <span><svg width="20" height="20" style="color:var(--bot-blue)"><use href="#a-hexagon"/></svg></span><span><svg width="28" height="28" style="color:var(--bot-blue)"><use href="#a-hexagon"/></svg></span><span><svg width="40" height="40" style="color:var(--bot-blue)"><use href="#a-hexagon"/></svg></span><span><svg width="64" height="64" style="color:var(--bot-blue)"><use href="#a-hexagon"/></svg></span>
+      <span class="cols"><svg width="40" height="40" style="color:var(--bot-red)"><use href="#a-hexagon"/></svg><svg width="40" height="40" style="color:var(--bot-teal)"><use href="#a-hexagon"/></svg><svg width="40" height="40" style="color:var(--bot-brown)"><use href="#a-hexagon"/></svg></span>
+
+      <span class="k">blob<span class="mono-xs">Scout, teal</span></span>
+      <span><svg width="20" height="20" style="color:var(--bot-teal)"><use href="#a-blob"/></svg></span><span><svg width="28" height="28" style="color:var(--bot-teal)"><use href="#a-blob"/></svg></span><span><svg width="40" height="40" style="color:var(--bot-teal)"><use href="#a-blob"/></svg></span><span><svg width="64" height="64" style="color:var(--bot-teal)"><use href="#a-blob"/></svg></span>
+      <span class="cols"><svg width="40" height="40" style="color:var(--bot-orange)"><use href="#a-blob"/></svg><svg width="40" height="40" style="color:var(--bot-purple)"><use href="#a-blob"/></svg><svg width="40" height="40" style="color:var(--bot-gray)"><use href="#a-blob"/></svg></span>
+
+      <span class="k">droplet<span class="mono-xs">Quill, purple</span></span>
+      <span><svg width="20" height="20" style="color:var(--bot-purple)"><use href="#a-droplet"/></svg></span><span><svg width="28" height="28" style="color:var(--bot-purple)"><use href="#a-droplet"/></svg></span><span><svg width="40" height="40" style="color:var(--bot-purple)"><use href="#a-droplet"/></svg></span><span><svg width="64" height="64" style="color:var(--bot-purple)"><use href="#a-droplet"/></svg></span>
+      <span class="cols"><svg width="40" height="40" style="color:var(--bot-blue)"><use href="#a-droplet"/></svg><svg width="40" height="40" style="color:var(--bot-green)"><use href="#a-droplet"/></svg><svg width="40" height="40" style="color:var(--bot-pink)"><use href="#a-droplet"/></svg></span>
+
+      <span class="k">rounded-square<span class="mono-xs">Ledger, amber</span></span>
+      <span><svg width="20" height="20" style="color:var(--bot-amber)"><use href="#a-rounded-square"/></svg></span><span><svg width="28" height="28" style="color:var(--bot-amber)"><use href="#a-rounded-square"/></svg></span><span><svg width="40" height="40" style="color:var(--bot-amber)"><use href="#a-rounded-square"/></svg></span><span><svg width="64" height="64" style="color:var(--bot-amber)"><use href="#a-rounded-square"/></svg></span>
+      <span class="cols"><svg width="40" height="40" style="color:var(--bot-green)"><use href="#a-rounded-square"/></svg><svg width="40" height="40" style="color:var(--bot-red)"><use href="#a-rounded-square"/></svg><svg width="40" height="40" style="color:var(--bot-blue)"><use href="#a-rounded-square"/></svg></span>
+
+      <span class="k">cloud<span class="mono-xs">Pixel, pink</span></span>
+      <span><svg width="20" height="20" style="color:var(--bot-pink)"><use href="#a-cloud"/></svg></span><span><svg width="28" height="28" style="color:var(--bot-pink)"><use href="#a-cloud"/></svg></span><span><svg width="40" height="40" style="color:var(--bot-pink)"><use href="#a-cloud"/></svg></span><span><svg width="64" height="64" style="color:var(--bot-pink)"><use href="#a-cloud"/></svg></span>
+      <span class="cols"><svg width="40" height="40" style="color:var(--bot-orange)"><use href="#a-cloud"/></svg><svg width="40" height="40" style="color:var(--bot-teal)"><use href="#a-cloud"/></svg><svg width="40" height="40" style="color:var(--bot-brown)"><use href="#a-cloud"/></svg></span>
+
+      <span class="k">triangle<span class="mono-xs">Atlas, green</span></span>
+      <span><svg width="20" height="20" style="color:var(--bot-green)"><use href="#a-triangle"/></svg></span><span><svg width="28" height="28" style="color:var(--bot-green)"><use href="#a-triangle"/></svg></span><span><svg width="40" height="40" style="color:var(--bot-green)"><use href="#a-triangle"/></svg></span><span><svg width="64" height="64" style="color:var(--bot-green)"><use href="#a-triangle"/></svg></span>
+      <span class="cols"><svg width="40" height="40" style="color:var(--bot-amber)"><use href="#a-triangle"/></svg><svg width="40" height="40" style="color:var(--bot-purple)"><use href="#a-triangle"/></svg><svg width="40" height="40" style="color:var(--bot-red)"><use href="#a-triangle"/></svg></span>
+
+      <span class="k">circle<span class="mono-xs">Nova, gray</span></span>
+      <span><svg width="20" height="20" style="color:var(--bot-gray)"><use href="#a-circle"/></svg></span><span><svg width="28" height="28" style="color:var(--bot-gray)"><use href="#a-circle"/></svg></span><span><svg width="40" height="40" style="color:var(--bot-gray)"><use href="#a-circle"/></svg></span><span><svg width="64" height="64" style="color:var(--bot-gray)"><use href="#a-circle"/></svg></span>
+      <span class="cols"><svg width="40" height="40" style="color:var(--bot-pink)"><use href="#a-circle"/></svg><svg width="40" height="40" style="color:var(--bot-blue)"><use href="#a-circle"/></svg><svg width="40" height="40" style="color:var(--bot-amber)"><use href="#a-circle"/></svg></span>
+
+      <span class="k">pill<span class="mono-xs">orange</span></span>
+      <span><svg width="20" height="20" style="color:var(--bot-orange)"><use href="#a-pill"/></svg></span><span><svg width="28" height="28" style="color:var(--bot-orange)"><use href="#a-pill"/></svg></span><span><svg width="40" height="40" style="color:var(--bot-orange)"><use href="#a-pill"/></svg></span><span><svg width="64" height="64" style="color:var(--bot-orange)"><use href="#a-pill"/></svg></span>
+      <span class="cols"><svg width="40" height="40" style="color:var(--bot-brown)"><use href="#a-pill"/></svg><svg width="40" height="40" style="color:var(--bot-teal)"><use href="#a-pill"/></svg><svg width="40" height="40" style="color:var(--bot-purple)"><use href="#a-pill"/></svg></span>
+    </div>
+  </section>
+
+  <section class="spec">
+    <h2>State badges</h2>
+    <p>Below 40 the badge is a plain lamp; at 40 and 64 it carries the state glyph. Idle has no badge. The badge is never the only signal: rows and headers also carry the state pill or glyph and its words.</p>
+    <div class="duo">
+      <div data-theme="dark">
+        <div class="badges">
+          <span class="h">State</span><span class="h">20</span><span class="h">28</span><span class="h">40</span><span class="h">64</span>
+          <span class="t-body">Needs you</span>
+          <span class="av av-20"><svg width="20" height="20" style="color:var(--bot-blue)"><use href="#a-hexagon"/></svg><span class="bd bd-needs"></span></span>
+          <span class="av av-28"><svg width="28" height="28" style="color:var(--bot-blue)"><use href="#a-hexagon"/></svg><span class="bd bd-needs"></span></span>
+          <span class="av av-40"><svg width="40" height="40" style="color:var(--bot-blue)"><use href="#a-hexagon"/></svg><span class="bd bd-needs"><svg class="ic"><use href="#i-circle-alert"/></svg></span></span>
+          <span class="av av-64"><svg width="64" height="64" style="color:var(--bot-blue)"><use href="#a-hexagon"/></svg><span class="bd bd-needs"><svg class="ic"><use href="#i-circle-alert"/></svg></span></span>
+          <span class="t-body">Working</span>
+          <span class="av av-20"><svg width="20" height="20" style="color:var(--bot-teal)"><use href="#a-blob"/></svg><span class="bd bd-working"></span></span>
+          <span class="av av-28"><svg width="28" height="28" style="color:var(--bot-teal)"><use href="#a-blob"/></svg><span class="bd bd-working"></span></span>
+          <span class="av av-40"><svg width="40" height="40" style="color:var(--bot-teal)"><use href="#a-blob"/></svg><span class="bd bd-working"><svg class="ic"><use href="#i-loader-circle"/></svg></span></span>
+          <span class="av av-64"><svg width="64" height="64" style="color:var(--bot-teal)"><use href="#a-blob"/></svg><span class="bd bd-working"><svg class="ic"><use href="#i-loader-circle"/></svg></span></span>
+          <span class="t-body">Limited</span>
+          <span class="av av-20"><svg width="20" height="20" style="color:var(--bot-pink)"><use href="#a-cloud"/></svg><span class="bd bd-limited"></span></span>
+          <span class="av av-28"><svg width="28" height="28" style="color:var(--bot-pink)"><use href="#a-cloud"/></svg><span class="bd bd-limited"></span></span>
+          <span class="av av-40"><svg width="40" height="40" style="color:var(--bot-pink)"><use href="#a-cloud"/></svg><span class="bd bd-limited"><svg class="ic"><use href="#i-hourglass"/></svg></span></span>
+          <span class="av av-64"><svg width="64" height="64" style="color:var(--bot-pink)"><use href="#a-cloud"/></svg><span class="bd bd-limited"><svg class="ic"><use href="#i-hourglass"/></svg></span></span>
+          <span class="t-body">Paused</span>
+          <span class="av av-20"><svg width="20" height="20" style="color:var(--bot-green)"><use href="#a-triangle"/></svg><span class="bd bd-paused"></span></span>
+          <span class="av av-28"><svg width="28" height="28" style="color:var(--bot-green)"><use href="#a-triangle"/></svg><span class="bd bd-paused"></span></span>
+          <span class="av av-40"><svg width="40" height="40" style="color:var(--bot-green)"><use href="#a-triangle"/></svg><span class="bd bd-paused"><svg class="ic"><use href="#i-pause"/></svg></span></span>
+          <span class="av av-64"><svg width="64" height="64" style="color:var(--bot-green)"><use href="#a-triangle"/></svg><span class="bd bd-paused"><svg class="ic"><use href="#i-pause"/></svg></span></span>
+          <span class="t-body">Needs setup</span>
+          <span class="av av-20"><svg width="20" height="20" style="color:var(--bot-gray)"><use href="#a-circle"/></svg><span class="bd bd-setup"></span></span>
+          <span class="av av-28"><svg width="28" height="28" style="color:var(--bot-gray)"><use href="#a-circle"/></svg><span class="bd bd-setup"></span></span>
+          <span class="av av-40"><svg width="40" height="40" style="color:var(--bot-gray)"><use href="#a-circle"/></svg><span class="bd bd-setup"><svg class="ic"><use href="#i-plug"/></svg></span></span>
+          <span class="av av-64"><svg width="64" height="64" style="color:var(--bot-gray)"><use href="#a-circle"/></svg><span class="bd bd-setup"><svg class="ic"><use href="#i-plug"/></svg></span></span>
+          <span class="t-body">Idle</span>
+          <span class="av av-20"><svg width="20" height="20" style="color:var(--bot-amber)"><use href="#a-rounded-square"/></svg></span>
+          <span class="av av-28"><svg width="28" height="28" style="color:var(--bot-amber)"><use href="#a-rounded-square"/></svg></span>
+          <span class="av av-40"><svg width="40" height="40" style="color:var(--bot-amber)"><use href="#a-rounded-square"/></svg></span>
+          <span class="av av-64"><svg width="64" height="64" style="color:var(--bot-amber)"><use href="#a-rounded-square"/></svg></span>
+        </div>
+      </div>
+      <div data-theme="light">
+        <div class="badges">
+          <span class="h">State</span><span class="h">20</span><span class="h">28</span><span class="h">40</span><span class="h">64</span>
+          <span class="t-body">Needs you</span>
+          <span class="av av-20"><svg width="20" height="20" style="color:var(--bot-blue)"><use href="#a-hexagon"/></svg><span class="bd bd-needs"></span></span>
+          <span class="av av-28"><svg width="28" height="28" style="color:var(--bot-blue)"><use href="#a-hexagon"/></svg><span class="bd bd-needs"></span></span>
+          <span class="av av-40"><svg width="40" height="40" style="color:var(--bot-blue)"><use href="#a-hexagon"/></svg><span class="bd bd-needs"><svg class="ic"><use href="#i-circle-alert"/></svg></span></span>
+          <span class="av av-64"><svg width="64" height="64" style="color:var(--bot-blue)"><use href="#a-hexagon"/></svg><span class="bd bd-needs"><svg class="ic"><use href="#i-circle-alert"/></svg></span></span>
+          <span class="t-body">Working</span>
+          <span class="av av-20"><svg width="20" height="20" style="color:var(--bot-teal)"><use href="#a-blob"/></svg><span class="bd bd-working"></span></span>
+          <span class="av av-28"><svg width="28" height="28" style="color:var(--bot-teal)"><use href="#a-blob"/></svg><span class="bd bd-working"></span></span>
+          <span class="av av-40"><svg width="40" height="40" style="color:var(--bot-teal)"><use href="#a-blob"/></svg><span class="bd bd-working"><svg class="ic"><use href="#i-loader-circle"/></svg></span></span>
+          <span class="av av-64"><svg width="64" height="64" style="color:var(--bot-teal)"><use href="#a-blob"/></svg><span class="bd bd-working"><svg class="ic"><use href="#i-loader-circle"/></svg></span></span>
+          <span class="t-body">Limited</span>
+          <span class="av av-20"><svg width="20" height="20" style="color:var(--bot-pink)"><use href="#a-cloud"/></svg><span class="bd bd-limited"></span></span>
+          <span class="av av-28"><svg width="28" height="28" style="color:var(--bot-pink)"><use href="#a-cloud"/></svg><span class="bd bd-limited"></span></span>
+          <span class="av av-40"><svg width="40" height="40" style="color:var(--bot-pink)"><use href="#a-cloud"/></svg><span class="bd bd-limited"><svg class="ic"><use href="#i-hourglass"/></svg></span></span>
+          <span class="av av-64"><svg width="64" height="64" style="color:var(--bot-pink)"><use href="#a-cloud"/></svg><span class="bd bd-limited"><svg class="ic"><use href="#i-hourglass"/></svg></span></span>
+          <span class="t-body">Paused</span>
+          <span class="av av-20"><svg width="20" height="20" style="color:var(--bot-green)"><use href="#a-triangle"/></svg><span class="bd bd-paused"></span></span>
+          <span class="av av-28"><svg width="28" height="28" style="color:var(--bot-green)"><use href="#a-triangle"/></svg><span class="bd bd-paused"></span></span>
+          <span class="av av-40"><svg width="40" height="40" style="color:var(--bot-green)"><use href="#a-triangle"/></svg><span class="bd bd-paused"><svg class="ic"><use href="#i-pause"/></svg></span></span>
+          <span class="av av-64"><svg width="64" height="64" style="color:var(--bot-green)"><use href="#a-triangle"/></svg><span class="bd bd-paused"><svg class="ic"><use href="#i-pause"/></svg></span></span>
+          <span class="t-body">Needs setup</span>
+          <span class="av av-20"><svg width="20" height="20" style="color:var(--bot-gray)"><use href="#a-circle"/></svg><span class="bd bd-setup"></span></span>
+          <span class="av av-28"><svg width="28" height="28" style="color:var(--bot-gray)"><use href="#a-circle"/></svg><span class="bd bd-setup"></span></span>
+          <span class="av av-40"><svg width="40" height="40" style="color:var(--bot-gray)"><use href="#a-circle"/></svg><span class="bd bd-setup"><svg class="ic"><use href="#i-plug"/></svg></span></span>
+          <span class="av av-64"><svg width="64" height="64" style="color:var(--bot-gray)"><use href="#a-circle"/></svg><span class="bd bd-setup"><svg class="ic"><use href="#i-plug"/></svg></span></span>
+          <span class="t-body">Idle</span>
+          <span class="av av-20"><svg width="20" height="20" style="color:var(--bot-amber)"><use href="#a-rounded-square"/></svg></span>
+          <span class="av av-28"><svg width="28" height="28" style="color:var(--bot-amber)"><use href="#a-rounded-square"/></svg></span>
+          <span class="av av-40"><svg width="40" height="40" style="color:var(--bot-amber)"><use href="#a-rounded-square"/></svg></span>
+          <span class="av av-64"><svg width="64" height="64" style="color:var(--bot-amber)"><use href="#a-rounded-square"/></svg></span>
+        </div>
+      </div>
+    </div>
+  </section>
+</div>
+</body>
+</html>

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { BrowserInput } from "./browser.ts";
+import { BrowserInput, StreamedBrowserFrame } from "./browser.ts";
 
 const Page = { generation: z.string().min(1).max(100), pageId: z.string().min(1).max(100) };
 export const NativeBrowserBounds = z.object({
@@ -34,6 +34,7 @@ export const NativeBrowserRemoteAction = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("state") }).strict(),
   z.object({ kind: z.literal("frame"), thumbnail: z.boolean().optional() }).strict(),
   z.object({ kind: z.literal("disconnect") }).strict(),
+  z.object({ kind: z.literal("stream"), on: z.boolean(), maxFps: z.number().int().min(1).max(60).optional() }).strict(),
   z.object({ kind: z.literal("control"), control: z.enum(["human", "bot"]), generation: Page.generation.optional(), controlEpoch: Controlled.controlEpoch.optional(), releaseOnly: z.boolean().optional() }).strict(),
   z.object({ kind: z.literal("navigate"), ...Controlled, url: z.string().min(1).max(8192) }).strict(),
   z.object({ kind: z.literal("history"), ...Controlled, action: z.enum(["back", "forward", "reload"]) }).strict(),
@@ -45,6 +46,12 @@ export const NativeBrowserRemoteAction = z.discriminatedUnion("kind", [
 export type NativeBrowserRemoteAction = z.infer<typeof NativeBrowserRemoteAction>;
 export const NativeBrowserRemoteCommand = z.object({ kind: z.literal("remote"), controllerId: z.string().min(1).max(256), action: NativeBrowserRemoteAction }).strict();
 export type NativeBrowserRemoteCommand = z.infer<typeof NativeBrowserRemoteCommand>;
+// What the desktop host posts to /browser-host on its own, outside any job: live frames, and the end of a stream.
+export const NativeBrowserStreamMessage = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("stream_frame"), botId: z.string().min(1).max(256), frame: StreamedBrowserFrame }).strict(),
+  z.object({ kind: z.literal("stream_end"), botId: z.string().min(1).max(256), reason: z.enum(["private", "closed", "failed"]) }).strict(),
+]);
+export type NativeBrowserStreamMessage = z.infer<typeof NativeBrowserStreamMessage>;
 export const NativeBrowserCommand = z.union([NativeBrowserUiCommand, NativeBrowserToolCommand,
   NativeBrowserRemoteCommand,
   z.object({ kind: z.literal("close") }).strict(), z.object({ kind: z.literal("delete_profile") }).strict(),

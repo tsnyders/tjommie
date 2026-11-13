@@ -1,0 +1,77 @@
+<!-- @dsCard group="Forms" -->
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="shot" content="1280x960">
+<title>Mission Control: settings rows, buttons, fields</title>
+<link rel="stylesheet" href="../tokens.css">
+<link rel="stylesheet" href="../kit.css">
+<style>
+  .setw { width: 640px; }
+  .sel-btn { display: inline-flex; align-items: center; gap: var(--space-2); height: var(--size-control); padding: 0 var(--space-2) 0 var(--space-3); border: 1px solid var(--line-strong); border-radius: var(--r-sm); background: var(--raised); font: var(--t-body); color: var(--text); }
+  .fw { width: 300px; display: flex; flex-direction: column; gap: var(--space-1); }
+  .btable { display: grid; grid-template-columns: 96px repeat(4, auto); justify-content: start; align-items: center; column-gap: var(--space-4); row-gap: var(--space-3); }
+</style>
+</head>
+<body>
+<!--sprite--><svg width="0" height="0" style="position:absolute" aria-hidden="true"><symbol id="i-arrow-up" viewBox="0 0 24 24"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></symbol><symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol><symbol id="i-chevron-right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol><symbol id="i-copy" viewBox="0 0 24 24"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></symbol><symbol id="i-ellipsis" viewBox="0 0 24 24"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></symbol><symbol id="i-folder-open" viewBox="0 0 24 24"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/></symbol><symbol id="i-log-in" viewBox="0 0 24 24"><path d="m10 17 5-5-5-5"/><path d="M15 12H3"/><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/></symbol><symbol id="i-mic" viewBox="0 0 24 24"><path d="M12 19v3"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><rect x="9" y="2" width="6" height="13" rx="3"/></symbol><symbol id="i-panel-right" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M15 3v18"/></symbol><symbol id="i-pause" viewBox="0 0 24 24"><rect x="14" y="3" width="5" height="18" rx="1"/><rect x="5" y="3" width="5" height="18" rx="1"/></symbol><symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5v14"/></symbol><symbol id="i-trash-2" viewBox="0 0 24 24"><path d="M10 11v6"/><path d="M14 11v6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></symbol></svg><!--/sprite-->
+<div class="sheet" style="width:1280px">
+  <header>
+    <h1>Settings rows, buttons, fields</h1>
+    <p>Settings are rows in a ruled list: the name, one line on what it does, the control at the right edge. One primary per view, in ink. Focus is a double ring, a gap in the background colour then the focus ink, so it shows on every surface.</p>
+  </header>
+
+  <div class="row">
+    <section class="spec setw">
+      <h2>Desktop settings rows</h2>
+      <div class="set">
+        <div class="set-row"><div class="tx"><div class="tt">Start at login</div><div class="nt">Tjommie starts in the tray when you sign in to Windows.</div></div><span class="tog on" role="switch" aria-checked="true"></span></div>
+        <div class="set-row"><div class="tx"><div class="tt">Text size</div><div class="nt">On this device only.</div></div><button class="sel-btn">100%<svg class="ic s14 c2"><use href="#i-chevron-down"/></svg></button></div>
+        <div class="set-row"><div class="tx"><div class="tt">Density</div><div class="nt">Compact fits more rows. Comfortable adds space between them.</div></div><div class="seg"><span class="sel">Compact</span><span>Comfortable</span></div></div>
+        <div class="set-row"><div class="tx"><div class="tt">Theme</div></div><div class="seg"><span class="sel">Dark</span><span>Light</span><span>System</span></div></div>
+        <div class="set-row"><div class="tx"><div class="tt">Spending cap</div><div class="nt">Bots pause for the day when spend reaches the cap.</div></div><div class="field" style="width:120px"><span class="mono-sm c3">$</span><span class="mono-sm">20.00</span></div></div>
+        <div class="set-row"><div class="tx"><div class="tt">Diagnostics report</div><div class="nt">Versions, paths and recent errors. No messages or secrets.</div></div><button class="btn btn-secondary"><svg class="ic"><use href="#i-copy"/></svg>Copy report</button></div>
+      </div>
+    </section>
+
+    <section class="spec">
+      <h2>Phone settings rows: push kinds</h2>
+      <div class="ph" style="height:auto;width:412px;border:1px solid var(--line);border-radius:var(--r-md);padding:var(--space-3) 0">
+        <div class="pcard" style="margin:0 var(--space-3)">
+          <div class="set-row"><div class="tx"><div class="tt">Approvals</div><div class="nt">A bot needs you to allow something.</div></div><span class="tog on"></span></div>
+          <div class="set-row"><div class="tx"><div class="tt">Limits</div><div class="nt">A bot hit a usage limit.</div></div><span class="tog on"></span></div>
+          <div class="set-row"><div class="tx"><div class="tt">Routine failures</div><div class="nt">A scheduled routine did not finish.</div></div><span class="tog on"></span></div>
+          <div class="set-row"><div class="tx"><div class="tt">Done</div><div class="nt">A bot finished what you asked.</div></div><span class="tog"></span></div>
+          <div class="set-row"><div class="tx"><div class="tt">Failed</div><div class="nt">A bot stopped with an error.</div></div><span class="tog on"></span></div>
+        </div>
+      </div>
+      <span class="lab">Rows are 64 dp; the whole row toggles.</span>
+    </section>
+  </div>
+
+  <div class="row">
+    <section class="spec">
+      <h2>Buttons</h2>
+      <div class="btable">
+        <span class="lab">Primary</span><button class="btn btn-primary btn-sm">Send<span class="kbd">Enter</span></button><button class="btn btn-primary">Approve<span class="kbd">Alt+A</span></button><button class="btn btn-primary btn-lg"><svg class="ic"><use href="#i-plus"/></svg>New bot</button><button class="btn btn-primary focus">Approve</button>
+        <span class="lab">Secondary</span><button class="btn btn-secondary btn-sm">Insert transcript</button><button class="btn btn-secondary">Deny<span class="kbd">Alt+D</span></button><button class="btn btn-secondary btn-lg"><svg class="ic"><use href="#i-log-in"/></svg>Sign in</button><button class="btn btn-secondary focus">Deny</button>
+        <span class="lab">Ghost</span><button class="btn btn-ghost btn-sm">View thread<svg class="ic"><use href="#i-chevron-right"/></svg></button><button class="btn btn-ghost">Open chat</button><button class="btn btn-ghost btn-lg">Manage logins</button><button class="btn btn-ghost focus">Open chat</button>
+        <span class="lab">Danger</span><button class="btn btn-danger btn-sm">Delete</button><button class="btn btn-danger"><svg class="ic"><use href="#i-trash-2"/></svg>Delete Atlas</button><button class="btn btn-danger btn-lg">Remove this PC</button><button class="btn btn-danger focus">Delete Atlas</button>
+        <span class="lab">Disabled</span><button class="btn btn-primary btn-sm off">Send<span class="kbd">Enter</span></button><button class="btn off">Fill on host</button><span></span><span></span>
+        <span class="lab">Icon</span><span class="hstack"><button class="ibtn" title="Pause"><svg class="ic"><use href="#i-pause"/></svg></button><button class="ibtn on" title="Bot panel"><svg class="ic"><use href="#i-panel-right"/></svg></button><button class="ibtn focus" title="More"><svg class="ic"><use href="#i-ellipsis"/></svg></button></span><span class="lab">28 px minimum</span><span></span><span></span>
+        <span class="lab">Phone</span><button class="btn btn-secondary btn-touch">Deny</button><button class="btn btn-primary btn-touch">Approve</button><span class="hstack ph" style="width:auto;height:auto;flex-direction:row;background:none"><button class="tbtn"><svg class="ic"><use href="#i-mic"/></svg></button><button class="tbtn off"><svg class="ic"><use href="#i-arrow-up"/></svg></button></span><span class="lab">48 dp</span>
+      </div>
+    </section>
+
+    <section class="spec">
+      <h2>Fields</h2>
+      <div class="fw"><label class="lbl">Bot name</label><div class="field empty">Name your bot</div><span class="help">Shown in chats, rooms and the fleet list.</span></div>
+      <div class="fw"><label class="lbl">Home folder</label><div class="field"><svg class="ic s14"><use href="#i-folder-open"/></svg><span class="mono-sm trunc">C:\Users\tyrel\Bots\forge</span></div></div>
+      <div class="fw"><label class="lbl">Bot name</label><div class="field focus" style="border-color:var(--text-2)">Forge<span style="width:1px;height:16px;background:var(--text)"></span></div><span class="help">Keyboard focus.</span></div>
+      <div class="fw"><label class="lbl">Bot name</label><div class="field err">Scout</div><span class="help err">Another bot is already called Scout.</span></div>
+    </section>
+  </div>
+</div>
+</body>
+</html>

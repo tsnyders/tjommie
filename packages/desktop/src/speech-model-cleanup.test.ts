@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readdirSync } from "node:fs";
 import { expect, it, vi } from "vitest";
-import { tempRoot } from "../../daemon/src/testing.ts";
+import { tempRoot } from "./testing.ts";
 import { SpeechModel } from "./speech-model.ts";
 
 const cleanup = vi.hoisted(() => ({ blocked: true }));

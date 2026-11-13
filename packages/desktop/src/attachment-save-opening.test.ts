@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
-import { tempRoot } from "../../daemon/src/testing.ts";
+import { tempRoot } from "./testing.ts";
 import { AttachmentSaves } from "./attachment-save.ts";
 
 const checkpoint = vi.hoisted(() => ({ ready: undefined as (() => void) | undefined, release: undefined as (() => void) | undefined, failures: 2 }));

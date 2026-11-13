@@ -1,0 +1,84 @@
+<!-- @dsCard group="Chat" -->
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="shot" content="1280x1100">
+<title>Mission Control: message, thinking and tool rows</title>
+<link rel="stylesheet" href="../tokens.css">
+<link rel="stylesheet" href="../kit.css">
+<style>
+  .pane { width: 700px; display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-3) 0; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--bg); }
+  .thought { border-left: 2px solid var(--line-strong); padding: var(--space-1) 0 var(--space-1) var(--space-3); font: var(--t-prose); color: var(--text-2); }
+  .handoff { display: flex; align-items: center; gap: var(--space-2); height: 36px; padding: 0 var(--space-2) 0 var(--space-3); border: 1px solid var(--line); border-radius: var(--r-sm); font: var(--t-body); color: var(--text); align-self: flex-start; }
+  .tool .run { color: var(--working); }
+  .tool .bad { color: var(--danger); }
+  .sumrow { display: flex; align-items: center; gap: var(--space-2); height: 28px; padding: 0 var(--space-2) 0 var(--space-1); border-radius: var(--r-sm); font: var(--t-body); color: var(--text-2); align-self: flex-start; }
+</style>
+</head>
+<body>
+<!--sprite--><svg width="0" height="0" style="position:absolute" aria-hidden="true"><symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol><symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol><symbol id="i-chevron-right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol><symbol id="i-copy" viewBox="0 0 24 24"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></symbol><symbol id="i-list-checks" viewBox="0 0 24 24"><path d="M13 5h8"/><path d="M13 12h8"/><path d="M13 19h8"/><path d="m3 17 2 2 4-4"/><path d="m3 7 2 2 4-4"/></symbol><symbol id="i-loader-circle" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></symbol><symbol id="i-users" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><path d="M16 3.128a4 4 0 0 1 0 7.744"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><circle cx="9" cy="7" r="4"/></symbol><symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></symbol><symbol id="a-hexagon" viewBox="0 0 40 40"><path d="M17 3.2 C18.9 2.1 21.1 2.1 23 3.2 L33.5 9.3 C35.4 10.4 36.5 12.4 36.5 14.6 V25.4 C36.5 27.6 35.4 29.6 33.5 30.7 L23 36.8 C21.1 37.9 18.9 37.9 17 36.8 L6.5 30.7 C4.6 29.6 3.5 27.6 3.5 25.4 V14.6 C3.5 12.4 4.6 10.4 6.5 9.3 Z" style="fill:currentColor"/><path d="M17 15 L16 21 M24.5 15 L23.5 21" style="fill:none;stroke:var(--bot-eye);stroke-width:3;stroke-linecap:round"/></symbol></svg><!--/sprite-->
+<div class="sheet" style="width:1280px">
+  <header>
+    <h1>Message, thinking and tool rows</h1>
+    <p>The chat is a log. A mono time gutter runs down the left; your turns sit on a full-width band so they can't be confused with a bot's. Tool work is a ruled block of one-line rows: verb, mono target, result.</p>
+  </header>
+
+  <div class="row">
+    <section class="spec">
+      <h2>A turn, as in the chat</h2>
+      <div class="pane">
+        <div class="e you"><span class="tm">10:42</span><div class="bd2"><div class="who">You</div><p class="prose">Port the migrations array from packages/daemon/src/db.ts to the Rust daemon. Keep the SQL byte-identical and add the fixture test.</p></div></div>
+        <div class="e"><span class="tm">10:43</span><div class="bd2">
+          <div class="who"><span class="av av-16"><svg width="16" height="16" style="color:var(--bot-blue)"><use href="#a-hexagon"/></svg></span>Forge<button class="think" aria-expanded="false"><svg class="ic s14"><use href="#i-chevron-right"/></svg>Thought for<span class="mono-sm">12s</span></button></div>
+          <div class="tools">
+            <div class="tool"><svg class="ic s14 g-working"><use href="#i-check"/></svg><span class="verb">Read</span><span class="tgt">packages/daemon/src/db.ts</span><span class="res"></span></div>
+            <div class="tool"><svg class="ic s14 g-working"><use href="#i-check"/></svg><span class="verb">Edited</span><span class="tgt">tjommie-rs/crates/daemon/src/db.rs</span><span class="res add">+184</span></div>
+            <div class="tool"><svg class="ic s14 g-working"><use href="#i-check"/></svg><span class="verb">Ran</span><span class="tgt">cargo test -p daemon</span><span class="res add">42 passed</span></div>
+          </div>
+          <p class="prose">Ported all 12 migrations. <code>open_db</code> now runs each one in a transaction and bumps <code>user_version</code>.</p>
+          <div class="code"><div class="code-h">rust<button class="btn btn-ghost btn-sm"><svg class="ic"><use href="#i-copy"/></svg>Copy</button></div>
+<pre><span class="l"><span class="k">for</span> (i, sql) <span class="k">in</span> MIGRATIONS.<span class="f">iter</span>().<span class="f">enumerate</span>().<span class="f">skip</span>(version) {</span><span class="l">    <span class="k">let</span> tx = conn.<span class="f">transaction</span>()?;</span><span class="l">    tx.<span class="f">execute_batch</span>(sql)?;</span><span class="l">    tx.<span class="f">pragma_update</span>(None, <span class="s">"user_version"</span>, i + <span class="s">1</span>)?;</span><span class="l">    tx.<span class="f">commit</span>()?;</span><span class="l">}</span></pre></div>
+        </div></div>
+      </div>
+    </section>
+
+    <section class="spec">
+      <h2>States</h2>
+      <div class="pane" style="width:452px;padding:var(--space-4)">
+        <span class="lab">Thinking, collapsed and open</span>
+        <button class="think"><svg class="ic s14"><use href="#i-chevron-right"/></svg>Thought for<span class="mono-sm">12s</span></button>
+        <button class="think" aria-expanded="true"><svg class="ic s14"><use href="#i-chevron-down"/></svg>Thought for<span class="mono-sm">12s</span></button>
+        <p class="thought">The migrations live in one array in db.ts. Each needs its own transaction, and user_version has to match the TypeScript build so the fixture test can compare the two databases.</p>
+        <span class="lab" style="margin-top:var(--space-2)">Tool rows: running, done, failed</span>
+        <div class="tools">
+          <div class="tool"><svg class="ic s14 g-working"><use href="#i-loader-circle"/></svg><span class="verb">Running</span><span class="tgt">cargo test -p daemon</span><span class="res run">0:09</span></div>
+          <div class="tool"><svg class="ic s14 g-working"><use href="#i-check"/></svg><span class="verb">Edited</span><span class="tgt">tjommie-rs/crates/daemon/src/db.rs</span><span class="res add">+184</span></div>
+          <div class="tool"><svg class="ic s14 g-danger"><use href="#i-x"/></svg><span class="verb">Ran</span><span class="tgt">cargo clippy -- -D warnings</span><span class="res bad">exit 1</span></div>
+        </div>
+        <span class="lab" style="margin-top:var(--space-2)">A finished turn folds to one summary row</span>
+        <button class="sumrow"><svg class="ic s14"><use href="#i-list-checks"/></svg>Read 1 file, edited 1, ran 1 command<svg class="ic s14"><use href="#i-chevron-down"/></svg></button>
+        <span class="lab" style="margin-top:var(--space-2)">Answer posted in a room</span>
+        <button class="handoff"><svg class="ic s14 c2"><use href="#i-users"/></svg>Answered in Launch crew<svg class="ic s14 c3"><use href="#i-chevron-right"/></svg></button>
+      </div>
+    </section>
+  </div>
+
+  <section class="spec">
+    <h2>Phone</h2>
+    <div class="ph" style="height:auto;width:412px;border:1px solid var(--line);border-radius:var(--r-md)">
+      <div class="plog" style="justify-content:flex-start">
+        <div class="e you" style="grid-template-columns:0 minmax(0,1fr);margin:0 calc(var(--space-3) * -1);padding-left:var(--space-3);padding-right:var(--space-3)"><span></span><div class="bd2"><div class="who">You<span class="mono-sm c3">10:42</span></div><p class="prose">Port the migrations array from packages/daemon/src/db.ts to the Rust daemon. Keep the SQL byte-identical and add the fixture test.</p></div></div>
+        <div class="who"><span class="av av-16"><svg width="16" height="16" style="color:var(--bot-blue)"><use href="#a-hexagon"/></svg></span>Forge<span class="mono-sm c3">10:43</span><button class="think"><svg class="ic s14"><use href="#i-chevron-right"/></svg>Thought for<span class="mono-sm">12s</span></button></div>
+        <div class="tools">
+          <div class="tool"><svg class="ic s14 g-working"><use href="#i-check"/></svg><span class="verb">Read</span><span class="tgt">packages/daemon/src/db.ts</span><span class="res"></span></div>
+          <div class="tool"><svg class="ic s14 g-working"><use href="#i-check"/></svg><span class="verb">Edited</span><span class="tgt">tjommie-rs/crates/daemon/src/db.rs</span><span class="res add">+184</span></div>
+          <div class="tool"><svg class="ic s14 g-working"><use href="#i-check"/></svg><span class="verb">Ran</span><span class="tgt">cargo test -p daemon</span><span class="res add">42 passed</span></div>
+        </div>
+        <p class="prose">Ported all 12 migrations. <code>open_db</code> now runs each one in a transaction and bumps <code>user_version</code>.</p>
+      </div>
+    </div>
+  </section>
+</div>
+</body>
+</html>

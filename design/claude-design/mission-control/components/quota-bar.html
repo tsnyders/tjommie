@@ -1,0 +1,73 @@
+<!-- @dsCard group="Bots" -->
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="shot" content="1280x630">
+<title>Mission Control: quota bar</title>
+<link rel="stylesheet" href="../tokens.css">
+<link rel="stylesheet" href="../kit.css">
+<style>
+  .qcol { display: flex; flex-direction: column; gap: var(--space-5); width: 100%; }
+  .mini { display: flex; align-items: center; gap: var(--space-4); }
+  .mini .use { display: flex; flex-direction: column; gap: var(--space-1); width: 128px; font: var(--t-mono-sm); color: var(--text-2); }
+  .mini .meter { height: 6px; }
+</style>
+</head>
+<body>
+<!--sprite--><svg width="0" height="0" style="position:absolute" aria-hidden="true"></svg><!--/sprite-->
+<div class="sheet" style="width:1280px">
+  <header>
+    <h1>Quota bar</h1>
+    <p>A segmented gauge, read like an instrument: one segment per step, the figure beside it in mono. It turns violet near the limit and fills violet at it. Never red: a limit is a pause, not an error.</p>
+  </header>
+  <div class="duo">
+    <div data-theme="dark">
+      <div class="qcol">
+        <div class="quota"><span class="big" style="display:flex;align-items:baseline;gap:var(--space-2)"><span class="mono-lg">$4.12</span><span class="mono-sm c2">of $20.00 cap</span></span><span class="v">21%</span>
+          <div class="meter"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div>
+        <div class="quota"><span class="k">Codex 5-hour window</span><span class="v">62% used</span>
+          <div class="meter"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div>
+        <div class="quota"><span class="k">Claude 7-day window</span><span class="v">38% used</span>
+          <div class="meter"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div>
+        <div class="quota"><span class="k g-limited">Codex 5-hour window, near the limit</span><span class="v">86% used</span>
+          <div class="meter near"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></div></div>
+        <div class="quota"><span class="k g-limited">Claude 5-hour window, limit reached</span><span class="v">Resets 23:40</span>
+          <div class="meter full"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i></div></div>
+        <div class="quota"><span class="k">Claude 7-day window</span><span class="v c3">No reading yet</span>
+          <div class="meter"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div>
+        <div class="mini">
+          <span class="use">5-hour 62%<span class="meter"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i></span></span>
+          <span class="use">7-day 38%<span class="meter"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i><i></i><i></i></span></span>
+          <span class="use"><span class="g-limited">Back at 23:40</span><span class="meter full"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i></span></span>
+        </div>
+        <span class="lab">Compact row meters, ten segments, as in the roster's Usage column.</span>
+      </div>
+    </div>
+    <div data-theme="light">
+      <div class="qcol">
+        <div class="quota"><span class="big" style="display:flex;align-items:baseline;gap:var(--space-2)"><span class="mono-lg">$4.12</span><span class="mono-sm c2">of $20.00 cap</span></span><span class="v">21%</span>
+          <div class="meter"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div>
+        <div class="quota"><span class="k">Codex 5-hour window</span><span class="v">62% used</span>
+          <div class="meter"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div>
+        <div class="quota"><span class="k">Claude 7-day window</span><span class="v">38% used</span>
+          <div class="meter"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div>
+        <div class="quota"><span class="k g-limited">Codex 5-hour window, near the limit</span><span class="v">86% used</span>
+          <div class="meter near"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i></div></div>
+        <div class="quota"><span class="k g-limited">Claude 5-hour window, limit reached</span><span class="v">Resets 23:40</span>
+          <div class="meter full"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i></div></div>
+        <div class="quota"><span class="k">Claude 7-day window</span><span class="v c3">No reading yet</span>
+          <div class="meter"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div>
+        <div class="mini">
+          <span class="use">5-hour 62%<span class="meter"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i></span></span>
+          <span class="use">7-day 38%<span class="meter"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i><i></i><i></i></span></span>
+          <span class="use"><span class="g-limited">Back at 23:40</span><span class="meter full"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i></span></span>
+        </div>
+        <span class="lab">Compact row meters, ten segments, as in the roster's Usage column.</span>
+      </div>
+    </div>
+  </div>
+  <p class="t-body c2">The gauge is a row of plain rectangles, so GPUI draws it as divs and Compose as a Row of Boxes or one Canvas. Screen readers get a meter role with the value text, for example "62% used".</p>
+</div>
+</body>
+</html>

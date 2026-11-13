@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { tempRoot } from "../../daemon/src/testing.ts";
+import { tempRoot } from "./testing.ts";
 import { packagedSpeechDigest, SPEECH_RESOURCE_NAMES, SPEECH_RUNTIME_COMMIT, verifySpeechResources } from "./speech-resources.ts";
 
 function fixture() {

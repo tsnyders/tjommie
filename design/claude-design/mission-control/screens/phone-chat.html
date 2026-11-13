@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>Mission Control: phone chat</title>
+<link rel="stylesheet" href="../tokens.css">
+<link rel="stylesheet" href="../kit.css">
+</head>
+<body>
+<!--sprite--><svg width="0" height="0" style="position:absolute" aria-hidden="true"><symbol id="i-arrow-left" viewBox="0 0 24 24"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></symbol><symbol id="i-arrow-right" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></symbol><symbol id="i-arrow-up" viewBox="0 0 24 24"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></symbol><symbol id="i-at-sign" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8"/></symbol><symbol id="i-battery-medium" viewBox="0 0 24 24"><path d="M10 14v-4"/><path d="M22 14v-4"/><path d="M6 14v-4"/><rect x="2" y="6" width="16" height="12" rx="2"/></symbol><symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol><symbol id="i-chevron-right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol><symbol id="i-circle-alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/></symbol><symbol id="i-copy" viewBox="0 0 24 24"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></symbol><symbol id="i-ellipsis-vertical" viewBox="0 0 24 24"><circle cx="12" cy="12" r="1"/><circle cx="12" cy="5" r="1"/><circle cx="12" cy="19" r="1"/></symbol><symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></symbol><symbol id="i-mic" viewBox="0 0 24 24"><path d="M12 19v3"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><rect x="9" y="2" width="6" height="13" rx="3"/></symbol><symbol id="i-paperclip" viewBox="0 0 24 24"><path d="m16 6-8.414 8.586a2 2 0 0 0 2.829 2.829l8.414-8.586a4 4 0 1 0-5.657-5.657l-8.379 8.551a6 6 0 1 0 8.485 8.485l8.379-8.551"/></symbol><symbol id="i-signal" viewBox="0 0 24 24"><path d="M2 20h.01"/><path d="M7 20v-4"/><path d="M12 20v-8"/><path d="M17 20V8"/><path d="M22 4v16"/></symbol><symbol id="i-terminal" viewBox="0 0 24 24"><path d="M12 19h8"/><path d="m4 17 6-6-6-6"/></symbol><symbol id="i-wifi" viewBox="0 0 24 24"><path d="M12 20h.01"/><path d="M2 8.82a15 15 0 0 1 20 0"/><path d="M5 12.859a10 10 0 0 1 14 0"/><path d="M8.5 16.429a5 5 0 0 1 7 0"/></symbol><symbol id="a-blob" viewBox="0 0 40 40"><path d="M4 22 C4 12 11.5 6 21 6 C30.5 6 37 12.5 37 21 C37 29.5 30.5 35 21 35 C11 35 4 30.5 4 22 Z" style="fill:currentColor"/><path d="M18 15 L17 21 M25.5 15 L24.5 21" style="fill:none;stroke:var(--bot-eye);stroke-width:3;stroke-linecap:round"/></symbol><symbol id="a-hexagon" viewBox="0 0 40 40"><path d="M17 3.2 C18.9 2.1 21.1 2.1 23 3.2 L33.5 9.3 C35.4 10.4 36.5 12.4 36.5 14.6 V25.4 C36.5 27.6 35.4 29.6 33.5 30.7 L23 36.8 C21.1 37.9 18.9 37.9 17 36.8 L6.5 30.7 C4.6 29.6 3.5 27.6 3.5 25.4 V14.6 C3.5 12.4 4.6 10.4 6.5 9.3 Z" style="fill:currentColor"/><path d="M17 15 L16 21 M24.5 15 L23.5 21" style="fill:none;stroke:var(--bot-eye);stroke-width:3;stroke-linecap:round"/></symbol></svg><!--/sprite-->
+<div class="ph">
+  <div class="sb"><span>10:45</span><span class="sys"><svg class="ic s14"><use href="#i-signal"/></svg><svg class="ic s14"><use href="#i-wifi"/></svg><svg class="ic s14"><use href="#i-battery-medium"/></svg></span></div>
+  <header class="ab back">
+    <button class="tbtn" title="Back to Agents"><svg class="ic"><use href="#i-arrow-left"/></svg></button>
+    <button class="who2" title="Forge details">
+      <span class="av av-32"><svg width="32" height="32" style="color:var(--bot-blue)"><use href="#a-hexagon"/></svg></span>
+      <span class="stack"><span class="nm">Forge</span><span class="st sm st-needs"><svg class="ic"><use href="#i-circle-alert"/></svg>Needs you</span></span>
+    </button>
+    <button class="hostpill" title="Switch PC"><span class="lamp lamp-working"></span>This PC</button>
+    <button class="tbtn" title="More"><svg class="ic"><use href="#i-ellipsis-vertical"/></svg></button>
+  </header>
+  <button class="bstrip" title="Watch Forge's browser live">
+    <svg class="ic s20 c2"><use href="#i-globe"/></svg>
+    <span class="url"><b class="c1" style="font-weight:400">docs.rs</b>/rusqlite/latest/rusqlite/struct.Transaction.html</span>
+    <span class="live"><span class="lamp"></span>Live, 58 fps</span>
+    <span class="tbtn"><svg class="ic"><use href="#i-chevron-right"/></svg></span>
+  </button>
+
+  <div class="plog">
+    <div class="who"><span class="av av-16"><svg width="16" height="16" style="color:var(--bot-blue)"><use href="#a-hexagon"/></svg></span>Forge<span class="mono-sm c3">10:43</span><button class="think" aria-expanded="false"><svg class="ic s14"><use href="#i-chevron-right"/></svg>Thought for<span class="mono-sm">12s</span></button></div>
+    <div class="tools">
+      <div class="tool"><svg class="ic s14 g-working"><use href="#i-check"/></svg><span class="verb">Read</span><span class="tgt">packages/daemon/src/db.ts</span><span class="res"></span></div>
+      <div class="tool"><svg class="ic s14 g-working"><use href="#i-check"/></svg><span class="verb">Edited</span><span class="tgt">tjommie-rs/crates/daemon/src/db.rs</span><span class="res add">+184</span></div>
+      <div class="tool"><svg class="ic s14 g-working"><use href="#i-check"/></svg><span class="verb">Ran</span><span class="tgt">cargo test -p daemon</span><span class="res add">42 passed</span></div>
+    </div>
+    <p class="prose">Ported all 12 migrations. <code>open_db</code> now runs each one in a transaction and bumps <code>user_version</code>.</p>
+    <div class="code hscroll">
+      <div class="code-h">rust<button class="btn btn-ghost btn-sm" title="Copy code"><svg class="ic"><use href="#i-copy"/></svg>Copy</button></div>
+<pre><span class="l"><span class="k">for</span> (i, sql) <span class="k">in</span> MIGRATIONS.<span class="f">iter</span>().<span class="f">enumerate</span>().<span class="f">skip</span>(version) {</span><span class="l">    <span class="k">let</span> tx = conn.<span class="f">transaction</span>()?;</span><span class="l">    tx.<span class="f">execute_batch</span>(sql)?;</span><span class="l">    tx.<span class="f">pragma_update</span>(None, <span class="s">"user_version"</span>, i + <span class="s">1</span>)?;</span><span class="l">    tx.<span class="f">commit</span>()?;</span><span class="l">}</span></pre>
+    </div>
+    <div class="xch">
+      <div class="xch-h">
+        <span class="av av-16"><svg width="16" height="16" style="color:var(--bot-blue)"><use href="#a-hexagon"/></svg></span>
+        <svg class="ic s12 c3"><use href="#i-arrow-right"/></svg>
+        <span class="av av-16"><svg width="16" height="16" style="color:var(--bot-teal)"><use href="#a-blob"/></svg></span>
+        <span class="t">Forge asked Scout</span>
+        <span class="meta">2 messages</span>
+        <span class="btn btn-ghost btn-sm">View thread<svg class="ic"><use href="#i-chevron-right"/></svg></span>
+      </div>
+      <div class="xch-b">
+        <span class="av av-16"><svg width="16" height="16" style="color:var(--bot-blue)"><use href="#a-hexagon"/></svg></span><p class="m"><b>Forge</b> Does the bundled SQLite in rusqlite match the version node:sqlite ships?</p>
+        <span class="av av-16"><svg width="16" height="16" style="color:var(--bot-teal)"><use href="#a-blob"/></svg></span><p class="m"><b>Scout</b> Yes, both are 3.50. Safe to compare sqlite_master output.</p>
+      </div>
+    </div>
+    <div class="appr" role="group" aria-label="Needs you">
+      <div class="appr-h">
+        <svg class="ic s14 g-needs"><use href="#i-circle-alert"/></svg>
+        <span class="t">Forge wants to run a command</span>
+        <span class="auto push"><span class="gauge"><i class="on"></i><i></i><i></i></span>Ask</span>
+      </div>
+      <div class="appr-b">
+        <div class="cmd"><svg class="ic s14"><use href="#i-terminal"/></svg><span class="trunc">git push origin rust-rewrite</span></div>
+        <div class="pbtns" style="padding:0"><button class="btn btn-secondary btn-touch">Deny</button><button class="btn btn-primary btn-touch">Approve</button></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="pcomp">
+    <div class="comp-hint needs"><span class="lamp lamp-needs"></span>Forge is waiting for your approval</div>
+    <div class="comp-box">
+      <button class="tbtn" title="Attach files"><svg class="ic"><use href="#i-paperclip"/></svg></button>
+      <span class="comp-in grow">Message Forge</span>
+      <button class="tbtn" title="Mention a bot"><svg class="ic"><use href="#i-at-sign"/></svg></button>
+      <button class="tbtn" title="Dictate"><svg class="ic"><use href="#i-mic"/></svg></button>
+      <button class="tbtn off" title="Send"><svg class="ic"><use href="#i-arrow-up"/></svg></button>
+    </div>
+  </div>
+  <div class="gesture"><i></i></div>
+</div>
+</body>
+</html>

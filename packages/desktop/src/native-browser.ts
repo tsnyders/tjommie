@@ -3,9 +3,9 @@ import { randomUUID } from "node:crypto";
 import { lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { basename, join, relative, resolve } from "node:path";
 import { BROWSER_START_URL, type BrowserFrame, type BrowserState } from "../../protocol/src/browser.ts";
-import { NativeBrowserCommand, NativeBrowserMount, type NativeBrowserUiCommand, type NativeBrowserToolCommand, type NativeBrowserRemoteCommand } from "../../protocol/src/native-browser.ts";
+import { NativeBrowserCommand, NativeBrowserMount, type NativeBrowserUiCommand, type NativeBrowserToolCommand, type NativeBrowserRemoteCommand, type NativeBrowserStreamMessage } from "../../protocol/src/native-browser.ts";
 import { NativeBrowserAccess } from "./native-browser-access.ts";
-import { captureNativeBrowserFrame } from "./native-browser-frame.ts";
+import { captureNativeBrowserFrame, startNativeBrowserStream, type NativeBrowserStream, type NativeBrowserStreamFrame } from "./native-browser-frame.ts";
 import { nativeBrowserBounds, nativeBrowserFrameUrl, nativeBrowserProfile, nativeBrowserUrl } from "./native-browser-policy.ts";
 import { denyNativeBrowserBluetooth, denyNativeBrowserPermissions } from "./native-browser-permissions.ts";
 import { boundedProfileCleanup, checkedNativeProfile, clearNativeProfile, nativeProfileDirectories, removeNativeProfile } from "./native-browser-profiles.ts";
@@ -22,7 +22,11 @@ export type NativeBrowserOptions = {
   onNotice?: (notice: NativeBrowserNotice) => void;
   onFocusReturn?: (botId: string) => void;
   automation?: (engine: NativeBrowserEngine, bot: NativeBrowserBot, command: NativeBrowserToolCommand) => Promise<unknown>;
+  /** Posts a live frame or the end of a stream to the daemon. False means nobody is watching there: the engine stops streaming that bot. */
+  onStream?: (message: NativeBrowserStreamMessage) => Promise<boolean>;
 };
+// A bot's live stream. The screencast runs while any remote controller wants it, on the active page, at the highest rate asked.
+type Streaming = { controllers: Map<string, number>; source: NativeBrowserStream | null; pageId: string | null; chain: Promise<void>; run: number };
 type Tab = {
   id: string; view: WebContentsView; contents: WebContents; ready: Promise<void>;
   fixedViewport: boolean;
@@ -32,6 +36,7 @@ type Browser = {
   bot: NativeBrowserBot; generation: string; session: Session; tabs: Map<string, Tab>; active: string | null;
   access: NativeBrowserAccess; revision: number; viewportRevision: number; busy: number; handover: number; frameSequence: number;
   tail: Promise<void>; closing: boolean; injecting: boolean; dialog: BrowserState["dialog"];
+  stream: Streaming;
   mount: NativeBrowserMount | null;
   downloads: Set<DownloadItem>;
   login?: { fields: NativeLoginFields; privateEpoch: number; controlEpoch: number; pageId: string };
@@ -91,7 +96,7 @@ export class NativeBrowserEngine {
       this.#profiles.set(hash, profile);
       browser = { bot: { ...bot }, generation: randomUUID(), session: profile, tabs: new Map(), active: null,
         access: new NativeBrowserAccess(), revision: 0, viewportRevision: 0, busy: 0, handover: 0, frameSequence: 0, tail: Promise.resolve(), closing: false,
-        injecting: false, dialog: null, mount: null, downloads: new Set() };
+        injecting: false, dialog: null, mount: null, downloads: new Set(), stream: { controllers: new Map(), source: null, pageId: null, chain: Promise.resolve(), run: 0 } };
       this.#browsers.set(bot.id, browser);
       this.#configureSession(browser);
       this.#newTab(browser);
@@ -233,7 +238,12 @@ export class NativeBrowserEngine {
       lifetime.timer = setTimeout(() => this.#controllers.delete(owner), 60_000);
       lifetime.timer.unref();
       const browser = this.#browsers.get(bot.id);
-      if (browser && !browser.closing) await this.control(bot, "bot", owner, false);
+      if (browser && !browser.closing) {
+        // The stream follows its controllers: this one's is over, but the handback must not wait for the screencast to stop.
+        browser.stream.controllers.delete(owner);
+        void this.#syncStream(browser).catch(() => {});
+        await this.control(bot, "bot", owner, false);
+      }
       return {};
     }
     const connection = (): void => { if (lifetime.closed) throw new Error("This browser controller disconnected."); };
@@ -243,6 +253,18 @@ export class NativeBrowserEngine {
     const browser = this.#get(bot.id);
     if (action.kind === "state") return this.state(bot.id, owner);
     if (action.kind === "frame") return this.frame(bot, owner, connection, action.thumbnail);
+    if (action.kind === "stream") {
+      // While a private interaction is on there is nothing to show: no controller is registered, and the state says why.
+      if (!action.on) browser.stream.controllers.delete(owner);
+      else if (!browser.access.privateActive && browser.active !== null) browser.stream.controllers.set(owner, action.maxFps ?? 60);
+      try { await this.#syncStream(browser); connection(); }
+      catch (error) {
+        // A stream that could not start must not keep this controller registered.
+        browser.stream.controllers.delete(owner); void this.#syncStream(browser).catch(() => {});
+        throw error;
+      }
+      return this.state(bot.id, owner);
+    }
     if ("generation" in action && action.generation) this.#generation(browser, action.generation);
     if (action.kind === "control") {
       if (action.control === "bot") {
@@ -316,6 +338,7 @@ export class NativeBrowserEngine {
     };
     return this.#enqueue(browser, async () => {
       check(); const tab = this.#tab(browser, pageId); await tab.ready; check();
+      // A capture takes its turn on the tab's screencast and leaves a running stream's alone (native-browser-frame.ts).
       let data = await captureNativeBrowserFrame(tab.contents.debugger, check);
       const image = nativeImage.createFromBuffer(Buffer.from(data, "base64")); let size = image.getSize();
       if (size.width < 1 || size.height < 1 || size.width > 4096 || size.height > 4096) throw new Error("The browser returned an invalid frame size.");
@@ -515,6 +538,7 @@ export class NativeBrowserEngine {
     browser.closing = true;
     if (this.#mounted === botId) this.#mounted = null;
     const errors: unknown[] = [];
+    try { await this.#stopStream(browser, "closed"); } catch (error) { errors.push(error); }
     for (const item of browser.downloads) { try { item.cancel(); } catch (error) { errors.push(error); } }
     browser.downloads.clear();
     for (const tab of [...browser.tabs.values()]) {
@@ -568,6 +592,63 @@ export class NativeBrowserEngine {
   #changed(browser: Browser): void {
     browser.revision++;
     if (!browser.closing) this.#options.onState?.(this.state(browser.bot.id));
+    // A page switch moves the stream to the new page; a private interaction ends it.
+    if (browser.stream.source || browser.stream.controllers.size > 0) void this.#syncStream(browser).catch(() => {});
+  }
+
+  /** Brings the screencast in line with what is wanted now. Runs one at a time per browser; a failure to start reaches the caller. */
+  #syncStream(browser: Browser): Promise<void> {
+    const stream = browser.stream;
+    const result = stream.chain.then(() => this.#applyStream(browser));
+    stream.chain = result.catch(() => {});
+    return result;
+  }
+
+  async #applyStream(browser: Browser): Promise<void> {
+    const stream = browser.stream;
+    const pageId = browser.active;
+    if (stream.controllers.size === 0 || browser.closing || browser.access.privateActive || pageId === null) {
+      await this.#stopStream(browser, browser.closing ? "closed" : browser.access.privateActive ? "private" : "failed");
+      return;
+    }
+    const maxFps = Math.max(...stream.controllers.values());
+    if (stream.source && stream.pageId === pageId) { stream.source.setMaxFps(maxFps); return; }
+    await stream.source?.stop();
+    stream.source = null; stream.pageId = null;
+    const tab = this.#tab(browser, pageId);
+    await tab.ready;
+    const run = ++stream.run;
+    const source = await startNativeBrowserStream(tab.contents.debugger, {
+      maxFps,
+      check: () => { if (stream.run !== run || browser.closing || browser.access.privateActive) throw new Error("The browser stream is no longer current."); },
+      forward: (frame) => this.#forwardFrame(browser, pageId, frame),
+      onEnd: () => { if (stream.run === run) void this.#stopStream(browser, browser.access.privateActive ? "private" : "failed"); },
+    });
+    // The page, the controllers or the browser may have changed while the screencast started.
+    if (stream.run !== run || browser.closing || browser.access.privateActive || stream.controllers.size === 0) { await source.stop(); return; }
+    stream.source = source; stream.pageId = pageId;
+  }
+
+  /** Stops the screencast and forgets the controllers. Whoever was watching hears of it once, unless nobody was. */
+  async #stopStream(browser: Browser, reason: Extract<NativeBrowserStreamMessage, { kind: "stream_end" }>["reason"]): Promise<void> {
+    const stream = browser.stream, watched = stream.controllers.size > 0;
+    stream.run++; // Frames and callbacks of the source being stopped are ignored from here on.
+    const source = stream.source;
+    stream.source = null; stream.pageId = null; stream.controllers.clear();
+    await source?.stop();
+    if (watched) await this.#options.onStream?.({ kind: "stream_end", botId: browser.bot.id, reason }).catch(() => false);
+  }
+
+  async #forwardFrame(browser: Browser, pageId: string, frame: NativeBrowserStreamFrame): Promise<void> {
+    // A frame of a page that is no longer active, or one taken as privacy began, is dropped here.
+    if (browser.closing || browser.active !== pageId || browser.access.privateActive || !this.#options.onStream) return;
+    const ticket = browser.access.ticket();
+    const accepted = await this.#options.onStream({ kind: "stream_frame", botId: browser.bot.id, frame: {
+      data: frame.data, mime: "image/jpeg", width: frame.width, height: frame.height, viewportWidth: frame.deviceWidth, viewportHeight: frame.deviceHeight,
+      pageId, viewportRevision: browser.viewportRevision, sequence: ++browser.frameSequence,
+      streamId: `${browser.generation}:${pageId}:${ticket.privateEpoch}`, ...ticket } });
+    // Nobody is watching this bot at the daemon (it restarted, or the viewers left): stop sending.
+    if (!accepted && !browser.closing) { browser.stream.controllers.clear(); void this.#syncStream(browser).catch(() => {}); }
   }
   #notice(browser: Browser, message: string): void { if (!browser.access.privateActive) this.#options.onNotice?.({ botId: browser.bot.id, message: message.slice(0, 2000) }); }
 

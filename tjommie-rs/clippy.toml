@@ -1,0 +1,7 @@
+# No console windows: processes are created only by daemon::spawn::command(), which sets CREATE_NO_WINDOW.
+# allow-invalid: the paths don't exist for every target (tokio isn't in every crate; std::os::windows isn't on Android).
+disallowed-methods = [
+  { path = "std::process::Command::new", reason = "use spawn::command() so the child gets CREATE_NO_WINDOW" },
+  { path = "tokio::process::Command::new", reason = "use spawn::command() so the child gets CREATE_NO_WINDOW", allow-invalid = true },
+  { path = "std::os::windows::process::CommandExt::creation_flags", reason = "use NoWindowCommand::creation_flags, which keeps CREATE_NO_WINDOW", allow-invalid = true },
+]

@@ -1,0 +1,69 @@
+<!-- @dsCard group="Chat" -->
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="shot" content="1280x720">
+<title>Mission Control: composer</title>
+<link rel="stylesheet" href="../tokens.css">
+<link rel="stylesheet" href="../kit.css">
+<style>
+  .cw { width: 680px; }
+  .cw .comp { padding: 0; }
+  .comp-box.focused { border-color: var(--text-2); box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--focus); }
+  .chips { display: flex; gap: var(--space-2); padding: var(--space-2) var(--space-2) 0; }
+  .split { display: inline-flex; }
+  .split .btn:first-child { border-radius: var(--r-sm) 0 0 var(--r-sm); }
+  .split .btn:last-child { border-radius: 0 var(--r-sm) var(--r-sm) 0; border-left: 1px solid var(--primary-line); }
+  .dict .tm { font: var(--t-mono-sm); color: var(--text-2); }
+  .transcript { padding: var(--space-3); border-bottom: 1px solid var(--line); }
+  .transcript p { font: var(--t-prose); color: var(--text); }
+</style>
+</head>
+<body>
+<!--sprite--><svg width="0" height="0" style="position:absolute" aria-hidden="true"><symbol id="i-arrow-up" viewBox="0 0 24 24"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></symbol><symbol id="i-at-sign" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8"/></symbol><symbol id="i-loader-circle" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></symbol><symbol id="i-mic" viewBox="0 0 24 24"><path d="M12 19v3"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><rect x="9" y="2" width="6" height="13" rx="3"/></symbol><symbol id="i-paperclip" viewBox="0 0 24 24"><path d="m16 6-8.414 8.586a2 2 0 0 0 2.829 2.829l8.414-8.586a4 4 0 1 0-5.657-5.657l-8.379 8.551a6 6 0 1 0 8.485 8.485l8.379-8.551"/></symbol><symbol id="i-square" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2"/></symbol><symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></symbol></svg><!--/sprite-->
+<div class="sheet" style="width:1280px">
+  <header>
+    <h1>Composer</h1>
+    <p>One line until you type more. The hint above it always says what the bot is doing, in that state's colour. Send is keyed; while a bot works, Send splits into Steer, which reaches it now, and Queue, which waits for its turn to end.</p>
+  </header>
+
+  <div class="row">
+    <div class="spec cw">
+      <span class="lab">Idle, keyboard focus</span>
+      <div class="comp"><div class="comp-hint"><span class="lamp lamp-idle"></span>Ledger is idle</div><div class="comp-box focused"><div class="comp-bar"><button class="ibtn" title="Attach files (Ctrl+U)"><svg class="ic"><use href="#i-paperclip"/></svg></button><span class="comp-in grow">Message Ledger</span><button class="ibtn" title="Mention a bot"><svg class="ic"><use href="#i-at-sign"/></svg></button><button class="ibtn" title="Dictate (Ctrl+M)"><svg class="ic"><use href="#i-mic"/></svg></button><button class="btn btn-primary btn-sm send off">Send<span class="kbd">Enter</span></button></div></div></div>
+
+      <span class="lab">The bot needs you</span>
+      <div class="comp"><div class="comp-hint needs"><span class="lamp lamp-needs"></span>Forge is waiting for your approval</div><div class="comp-box"><div class="comp-bar"><button class="ibtn"><svg class="ic"><use href="#i-paperclip"/></svg></button><span class="comp-in grow">Message Forge</span><button class="ibtn"><svg class="ic"><use href="#i-at-sign"/></svg></button><button class="ibtn"><svg class="ic"><use href="#i-mic"/></svg></button><button class="btn btn-primary btn-sm send off">Send<span class="kbd">Enter</span></button></div></div></div>
+
+      <span class="lab">The bot is working: steer or queue</span>
+      <div class="comp"><div class="comp-hint working"><svg class="ic s14"><use href="#i-loader-circle"/></svg>Scout is working<span class="push">Steer reaches it now. Queue waits for this turn to end.</span></div><div class="comp-box"><div class="comp-bar"><button class="ibtn"><svg class="ic"><use href="#i-paperclip"/></svg></button><span class="comp-in filled grow">Check how the dock panels restore their size</span><button class="ibtn"><svg class="ic"><use href="#i-mic"/></svg></button><button class="btn btn-secondary btn-sm" title="Stop Scout"><svg class="ic"><use href="#i-square"/></svg>Stop<span class="kbd">Ctrl+.</span></button><span class="split"><button class="btn btn-primary btn-sm">Steer<span class="kbd">Enter</span></button><button class="btn btn-primary btn-sm">Queue<span class="kbd">Ctrl+Enter</span></button></span></div></div></div>
+    </div>
+
+    <div class="spec cw" style="width:520px">
+      <span class="lab">Dictating, live level</span>
+      <div class="comp"><div class="comp-hint needs"><span class="lamp lamp-needs"></span>Forge is waiting for your approval</div><div class="comp-box"><div class="dict"><span class="lamp lamp-live"></span><span class="t-strong">Listening</span><span class="tm">0:07</span><div class="meter rec"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div><span class="grow"></span><button class="btn btn-ghost btn-sm">Cancel</button><button class="ibtn rec" title="Stop dictation (Ctrl+M)"><svg class="ic"><use href="#i-square"/></svg></button></div></div></div>
+      <span class="lab">Voice stays on this device. The red lamp and level move only while the microphone is open.</span>
+
+      <span class="lab">Transcript ready to insert</span>
+      <div class="comp"><div class="comp-box"><div class="transcript"><p>Push it once the fixture test passes on CI too.</p></div><div class="comp-bar"><span class="grow"></span><button class="btn btn-ghost btn-sm">Discard</button><button class="btn btn-secondary btn-sm">Insert transcript</button></div></div></div>
+
+      <span class="lab">With an attachment</span>
+      <div class="comp"><div class="comp-box"><div class="chips"><span class="chip"><svg class="ic s14 c2"><use href="#i-paperclip"/></svg>tjommie-v0.4.2.db<span class="sz">2.1 MB</span><button class="ibtn" title="Remove tjommie-v0.4.2.db"><svg class="ic s14"><use href="#i-x"/></svg></button></span></div><div class="comp-bar"><button class="ibtn"><svg class="ic"><use href="#i-paperclip"/></svg></button><span class="comp-in filled grow">Use this as the fixture</span><button class="ibtn"><svg class="ic"><use href="#i-at-sign"/></svg></button><button class="ibtn"><svg class="ic"><use href="#i-mic"/></svg></button><button class="btn btn-primary btn-sm send">Send<span class="kbd">Enter</span></button></div></div></div>
+    </div>
+  </div>
+
+  <section class="spec">
+    <h2>Phone</h2>
+    <div class="row">
+      <div class="ph" style="height:auto;width:412px;padding:var(--space-2) 0;border:1px solid var(--line);border-radius:var(--r-md)">
+        <div class="pcomp"><div class="comp-hint needs"><span class="lamp lamp-needs"></span>Forge is waiting for your approval</div><div class="comp-box"><button class="tbtn"><svg class="ic"><use href="#i-paperclip"/></svg></button><span class="comp-in grow">Message Forge</span><button class="tbtn"><svg class="ic"><use href="#i-at-sign"/></svg></button><button class="tbtn"><svg class="ic"><use href="#i-mic"/></svg></button><button class="tbtn off"><svg class="ic"><use href="#i-arrow-up"/></svg></button></div></div>
+      </div>
+      <div class="ph" style="height:auto;width:412px;padding:var(--space-2) 0;border:1px solid var(--line);border-radius:var(--r-md)">
+        <div class="pcomp"><div class="comp-hint"><span class="lamp lamp-live"></span>Listening<span class="push mono-sm">0:07</span></div><div class="comp-box"><span class="grow" style="padding:0 var(--space-3)"><span class="meter rec" style="height:16px"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i><i></i><i></i></span></span><button class="btn btn-ghost btn-touch">Cancel</button><button class="tbtn" style="background:var(--danger-tint);color:var(--danger)"><svg class="ic"><use href="#i-square"/></svg></button></div></div>
+      </div>
+    </div>
+  </section>
+</div>
+</body>
+</html>

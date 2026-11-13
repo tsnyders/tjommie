@@ -1,7 +1,7 @@
 // Builds the Windows installer: npm run package. It lands in dist-desktop\installer, next to the unpacked app
 // (win-unpacked) that the packaged smoke test runs.
 import { execSync } from "node:child_process";
-import { appendFileSync, cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -31,6 +31,11 @@ const desktop = join(repo, "packages", "desktop");
 const out = testDataRoot ? join(testDataRoot, "dist-desktop") : join(repo, "dist-desktop");
 const app = join(out, "app"); // what goes into app.asar: the main process and the preload
 const resources = join(out, "resources"); // plain files beside app.asar: the daemon, the UI and the icons
+// The Rust daemon, built before packaging (CI: `cargo build --release --locked -p daemon --bin tjommie-daemon` inside tjommie-rs).
+const daemonExe = join(repo, "tjommie-rs", "target", "release", "tjommie-daemon.exe");
+// The daemon's version is the Rust workspace's: [workspace.package] is the first `version =` line in tjommie-rs/Cargo.toml.
+const daemonVersion = /^version\s*=\s*"([^"]+)"/m.exec(readFileSync(join(repo, "tjommie-rs", "Cargo.toml"), "utf8"))?.[1];
+if (!daemonVersion) throw new Error("Could not read the Rust daemon's version from tjommie-rs/Cargo.toml.");
 const appId = testAppId ?? "com.tsnyders.tjommie";
 const productName = testProduct ?? "Tjommie";
 const version = process.env.TJOMMIE_PACKAGE_VERSION ?? (require(join(repo, "package.json")) as { version: string }).version;
@@ -45,18 +50,8 @@ async function bundle(input: string, dir: string, external: string[]): Promise<v
   await build.close();
 }
 
-// Playwright MCP runs as its own process, so it ships as a package beside the daemon, with what it needs. These are
-// the exact copies the daemon resolves in the workspace.
-function copyPlaywrightMcp(target: string): void {
-  const mcp = dirname(createRequire(join(repo, "packages", "daemon", "package.json")).resolve("@playwright/mcp/package.json"));
-  const playwright = dirname(createRequire(join(mcp, "package.json")).resolve("playwright/package.json"));
-  const core = dirname(createRequire(join(playwright, "package.json")).resolve("playwright-core/package.json"));
-  const packages: [string, string][] = [
-    ["@playwright/mcp", mcp],
-    ["playwright", playwright],
-    ["playwright-core", core],
-  ];
-  for (const [name, from] of packages) cpSync(from, join(target, "node_modules", name), { recursive: true });
+if (!existsSync(daemonExe)) {
+  throw new Error("Build the Rust daemon before packaging: cargo build --release --locked -p daemon --bin tjommie-daemon, inside tjommie-rs.");
 }
 
 rmSync(out, { recursive: true, force: true });
@@ -70,14 +65,13 @@ writeFileSync(
   JSON.stringify({ name: testAppId ? testIdentity.packageName : "tjommie", appId, productName, version, ...(testDataRoot ? { testDataRoot } : {}), description: "AI bots on your own PC", author: "TSnyders", license: "Apache-2.0", type: "module", main: "src/main.mjs" }, null, 2),
 );
 
-// ws's optional native helpers stay out; ws uses its own JavaScript without them.
-await bundle(join(repo, "packages", "daemon", "src", "main.ts"), join(resources, "daemon"), ["@playwright/mcp", "bufferutil", "utf-8-validate"]);
-cpSync(join(repo, "packages", "daemon", "src", "windows-worker.ps1"), join(resources, "daemon", "windows-worker.ps1"));
+// The daemon is one exe: no Node bundle, no Playwright MCP and no Noise wasm (the UI keeps its own copy of the wasm in resources/ui).
+mkdirSync(join(resources, "daemon"), { recursive: true });
+cpSync(daemonExe, join(resources, "daemon", "tjommie-daemon.exe"));
+// The vault folder carries the worker setup scripts. The TypeScript worker-acceptance bundle (acceptance\main.mjs) and the
+// windows-worker.ps1 helper beside the daemon went with the TypeScript daemon they ran on.
 cpSync(join(repo, "scripts", "vault"), join(resources, "vault"), { recursive: true });
-await bundle(join(repo, "scripts", "vault", "accept-worker.ts"), join(resources, "vault", "acceptance"), []);
-writeFileSync(join(resources, "daemon", "build-info.json"), JSON.stringify({ appVersion: version, daemonVersion: (require(join(repo, "packages", "daemon", "package.json")) as { version: string }).version }));
-copyPlaywrightMcp(join(resources, "daemon"));
-cpSync(join(repo, "packages", "transport", "wasm", "tjommie_noise_bg.wasm"), join(resources, "daemon", "tjommie_noise_bg.wasm"));
+writeFileSync(join(resources, "daemon", "build-info.json"), JSON.stringify({ appVersion: version, daemonVersion }));
 cpSync(join(repo, "packages", "ui", "out"), join(resources, "ui"), { recursive: true });
 cpSync(join(desktop, "assets"), join(resources, "assets"), { recursive: true });
 mkdirSync(join(resources, "speech"), { recursive: true });

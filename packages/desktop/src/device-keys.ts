@@ -1,6 +1,4 @@
-import { createHash } from "node:crypto";
-import { resolve } from "node:path";
-import { windowsCredentialTransport, type CredentialTransport } from "../../daemon/src/account-credentials.ts";
+import { credentialNamespace, windowsCredentialTransport, type CredentialTransport } from "./credential-transport.ts";
 
 const targetOf = (namespace: string, name: unknown): string => {
   if (typeof name !== "string" || !/^[a-z0-9._-]{1,64}$/.test(name)) throw new Error("Invalid device key.");
@@ -9,7 +7,7 @@ const targetOf = (namespace: string, name: unknown): string => {
 const storageError = () => new Error("Device key storage is unavailable.");
 
 export function createDeviceKeys(dataRoot: string, transport: CredentialTransport = windowsCredentialTransport) {
-  const namespace = createHash("sha256").update(resolve(dataRoot).toLowerCase()).digest("hex").slice(0, 24);
+  const namespace = credentialNamespace(dataRoot);
   return {
     async seal(name: unknown, value: unknown): Promise<void> {
       const target = targetOf(namespace, name);

@@ -1,0 +1,82 @@
+<!-- @dsCard group="Navigation" -->
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="shot" content="1280x760">
+<title>Mission Control: host switcher</title>
+<link rel="stylesheet" href="../tokens.css">
+<link rel="stylesheet" href="../kit.css">
+<style>
+  .menu.host-menu { width: 300px; }
+  .host-menu .mi { height: 44px; }
+  .host-menu .two { display: flex; flex-direction: column; line-height: 16px; }
+  .host-menu .two .sub { font: var(--t-mono-xs); color: var(--text-3); }
+  .host.loading .ic.spin { color: var(--text-2); }
+</style>
+</head>
+<body>
+<!--sprite--><svg width="0" height="0" style="position:absolute" aria-hidden="true"><symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol><symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol><symbol id="i-chevron-up" viewBox="0 0 24 24"><path d="m18 15-6-6-6 6"/></symbol><symbol id="i-loader-circle" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></symbol><symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5v14"/></symbol></svg><!--/sprite-->
+<div class="sheet" style="width:1280px">
+  <header>
+    <h1>Host switcher</h1>
+    <p>Which PC this window works on. The lamp is the connection, the mono tag is the route. On the desktop it sits in the title bar; on the phone it is the host pill in the app bar and opens a bottom sheet.</p>
+  </header>
+
+  <section class="spec">
+    <h2>Desktop trigger</h2>
+    <div class="row mid">
+      <div class="cell"><button class="host"><span class="lamp lamp-working"></span>This PC<span class="via">LAN</span><svg class="ic s14"><use href="#i-chevron-down"/></svg></button><span class="lab">Connected over LAN</span></div>
+      <div class="cell"><button class="host"><span class="lamp lamp-working"></span>Studio PC<span class="via">Relay</span><svg class="ic s14"><use href="#i-chevron-down"/></svg></button><span class="lab">Connected through the relay</span></div>
+      <div class="cell"><button class="host loading"><svg class="ic s12 spin"><use href="#i-loader-circle"/></svg>Studio PC<span class="via">Relay</span><svg class="ic s14"><use href="#i-chevron-down"/></svg></button><span class="lab">Connecting</span></div>
+      <div class="cell"><button class="host"><span class="lamp lamp-danger"></span>Studio PC<span class="via">Offline</span><svg class="ic s14"><use href="#i-chevron-down"/></svg></button><span class="lab">Offline</span></div>
+      <div class="cell"><button class="host focus"><span class="lamp lamp-working"></span>This PC<span class="via">LAN</span><svg class="ic s14"><use href="#i-chevron-down"/></svg></button><span class="lab">Keyboard focus</span></div>
+    </div>
+  </section>
+
+  <section class="spec">
+    <h2>Open</h2>
+    <div class="duo">
+      <div data-theme="dark">
+        <div class="row">
+          <div class="cell">
+            <button class="host" style="background:var(--select)"><span class="lamp lamp-working"></span>This PC<span class="via">LAN</span><svg class="ic s14"><use href="#i-chevron-up"/></svg></button>
+            <div class="menu host-menu" role="menu">
+              <div class="mlabel">Switch PC</div>
+              <div class="mi hl" role="menuitemradio" aria-checked="true"><span class="lamp lamp-working"></span><span class="two">This PC<span class="sub">LAN, connected</span></span><svg class="ic push"><use href="#i-check"/></svg></div>
+              <div class="mi" role="menuitemradio" aria-checked="false"><span class="lamp lamp-working"></span><span class="two">Studio PC<span class="sub">Relay, online</span></span></div>
+              <div class="msep"></div>
+              <div class="mi"><svg class="ic"><use href="#i-plus"/></svg>Connect to another computer</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div data-theme="light">
+        <div class="row">
+          <div class="cell">
+            <button class="host" style="background:var(--select)"><span class="lamp lamp-working"></span>This PC<span class="via">LAN</span><svg class="ic s14"><use href="#i-chevron-up"/></svg></button>
+            <div class="menu host-menu" role="menu">
+              <div class="mlabel">Switch PC</div>
+              <div class="mi hl" role="menuitemradio" aria-checked="true"><span class="lamp lamp-working"></span><span class="two">This PC<span class="sub">LAN, connected</span></span><svg class="ic push"><use href="#i-check"/></svg></div>
+              <div class="mi" role="menuitemradio" aria-checked="false"><span class="lamp lamp-working"></span><span class="two">Studio PC<span class="sub">Relay, online</span></span></div>
+              <div class="msep"></div>
+              <div class="mi"><svg class="ic"><use href="#i-plus"/></svg>Connect to another computer</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="spec">
+    <h2>Phone host pill</h2>
+    <div class="row mid" style="--ring:var(--chrome)">
+      <div class="cell"><div class="ab" style="width:300px;border:1px solid var(--line);border-radius:var(--r-md)"><button class="hostpill"><span class="lamp lamp-working"></span>This PC, LAN<svg class="ic s14"><use href="#i-chevron-down"/></svg></button></div><span class="lab">Agents home</span></div>
+      <div class="cell"><div class="ab" style="width:300px;border:1px solid var(--line);border-radius:var(--r-md)"><button class="hostpill"><span class="lamp lamp-working"></span>Studio PC, relay<svg class="ic s14"><use href="#i-chevron-down"/></svg></button></div><span class="lab">Another PC through the relay</span></div>
+      <div class="cell"><div class="ab" style="width:300px;border:1px solid var(--line);border-radius:var(--r-md)"><button class="hostpill"><span class="lamp lamp-working"></span>This PC</button></div><span class="lab">Compact, in a chat's app bar</span></div>
+    </div>
+    <p>The pill is 36 dp tall inside a 48 dp hit area. Tapping it opens the Switch PC sheet (see Overlays).</p>
+  </section>
+</div>
+</body>
+</html>

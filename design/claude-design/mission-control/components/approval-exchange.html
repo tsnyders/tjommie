@@ -1,0 +1,93 @@
+<!-- @dsCard group="Chat" -->
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="shot" content="1280x960">
+<title>Mission Control: approval and exchange cards</title>
+<link rel="stylesheet" href="../tokens.css">
+<link rel="stylesheet" href="../kit.css">
+<style>
+  .w600 { width: 560px; }
+  .answered .ic { width: 14px; height: 14px; }
+</style>
+</head>
+<body>
+<!--sprite--><svg width="0" height="0" style="position:absolute" aria-hidden="true"><symbol id="i-arrow-right" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></symbol><symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol><symbol id="i-chevron-right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol><symbol id="i-circle-alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/></symbol><symbol id="i-loader-circle" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></symbol><symbol id="i-terminal" viewBox="0 0 24 24"><path d="M12 19h8"/><path d="m4 17 6-6-6-6"/></symbol><symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></symbol><symbol id="a-blob" viewBox="0 0 40 40"><path d="M4 22 C4 12 11.5 6 21 6 C30.5 6 37 12.5 37 21 C37 29.5 30.5 35 21 35 C11 35 4 30.5 4 22 Z" style="fill:currentColor"/><path d="M18 15 L17 21 M25.5 15 L24.5 21" style="fill:none;stroke:var(--bot-eye);stroke-width:3;stroke-linecap:round"/></symbol><symbol id="a-cloud" viewBox="0 0 40 40"><path d="M11 34 C5 34 2 29.5 3.5 25 C2 19 7.5 15 12.5 16.5 C14 10 21 7 26 11 C32 9.5 37 14 35.5 20 C39 23.5 37 32 30.5 34 Z" style="fill:currentColor"/><path d="M17.5 19 L16.7 25 M24.5 19 L23.7 25" style="fill:none;stroke:var(--bot-eye);stroke-width:3;stroke-linecap:round"/></symbol><symbol id="a-hexagon" viewBox="0 0 40 40"><path d="M17 3.2 C18.9 2.1 21.1 2.1 23 3.2 L33.5 9.3 C35.4 10.4 36.5 12.4 36.5 14.6 V25.4 C36.5 27.6 35.4 29.6 33.5 30.7 L23 36.8 C21.1 37.9 18.9 37.9 17 36.8 L6.5 30.7 C4.6 29.6 3.5 27.6 3.5 25.4 V14.6 C3.5 12.4 4.6 10.4 6.5 9.3 Z" style="fill:currentColor"/><path d="M17 15 L16 21 M24.5 15 L23.5 21" style="fill:none;stroke:var(--bot-eye);stroke-width:3;stroke-linecap:round"/></symbol></svg><!--/sprite-->
+<div class="sheet" style="width:1280px">
+  <header>
+    <h1>Approval and exchange cards</h1>
+    <p>An approval is the loudest thing in a chat: an edged yellow frame, the Needs you pill, the exact command in mono and two keyed answers. Once answered it shrinks to one quiet line. An exchange is a bot asking another bot; it stays neutral.</p>
+  </header>
+
+  <div class="duo">
+    <div data-theme="dark">
+      <span class="lab">Pending</span>
+      <div class="appr w600" role="group" aria-label="Needs you">
+        <div class="appr-h"><span class="st st-needs"><svg class="ic"><use href="#i-circle-alert"/></svg>Needs you</span><span class="t">Forge wants to run a command</span><span class="auto push"><span class="c3">Autonomy</span><span class="gauge"><i class="on"></i><i></i><i></i></span>Ask</span></div>
+        <div class="appr-b"><div class="appr-f"><div class="cmd grow"><svg class="ic s14"><use href="#i-terminal"/></svg><span class="trunc">git push origin rust-rewrite</span></div><button class="btn btn-secondary">Deny<span class="kbd">Alt+D</span></button><button class="btn btn-primary focus">Approve<span class="kbd">Alt+A</span></button></div></div>
+      </div>
+      <span class="lab">Approve has keyboard focus here. Alt+A and Alt+D answer the newest request in this chat from anywhere in it.</span>
+      <span class="lab">Answered</span>
+      <span class="answered"><svg class="ic g-working"><use href="#i-check"/></svg>Approved: <span class="mono-sm c1">git push origin rust-rewrite</span><span class="mono-sm c3">10:46</span></span>
+      <span class="answered"><svg class="ic"><use href="#i-x"/></svg>Denied: <span class="mono-sm c1">git push origin rust-rewrite</span><span class="mono-sm c3">10:46</span></span>
+    </div>
+    <div data-theme="light">
+      <span class="lab">Pending</span>
+      <div class="appr w600" role="group" aria-label="Needs you">
+        <div class="appr-h"><span class="st st-needs"><svg class="ic"><use href="#i-circle-alert"/></svg>Needs you</span><span class="t">Forge wants to run a command</span><span class="auto push"><span class="c3">Autonomy</span><span class="gauge"><i class="on"></i><i></i><i></i></span>Ask</span></div>
+        <div class="appr-b"><div class="appr-f"><div class="cmd grow"><svg class="ic s14"><use href="#i-terminal"/></svg><span class="trunc">git push origin rust-rewrite</span></div><button class="btn btn-secondary">Deny<span class="kbd">Alt+D</span></button><button class="btn btn-primary focus">Approve<span class="kbd">Alt+A</span></button></div></div>
+      </div>
+      <span class="lab">Same card on cool paper. The yellow keeps a dark edge so it holds 3:1 on white.</span>
+      <span class="lab">Answered</span>
+      <span class="answered"><svg class="ic g-working"><use href="#i-check"/></svg>Approved: <span class="mono-sm c1">git push origin rust-rewrite</span><span class="mono-sm c3">10:46</span></span>
+      <span class="answered"><svg class="ic"><use href="#i-x"/></svg>Denied: <span class="mono-sm c1">git push origin rust-rewrite</span><span class="mono-sm c3">10:46</span></span>
+    </div>
+  </div>
+
+  <div class="row">
+    <section class="spec">
+      <h2>Exchange, bot to bot</h2>
+      <span class="lab">Replied</span>
+      <div class="xch w600">
+        <div class="xch-h"><span class="av av-20"><svg width="20" height="20" style="color:var(--bot-blue)"><use href="#a-hexagon"/></svg></span><svg class="ic s14 c3"><use href="#i-arrow-right"/></svg><span class="av av-20"><svg width="20" height="20" style="color:var(--bot-teal)"><use href="#a-blob"/></svg></span><span class="t">Forge asked Scout</span><span class="meta">2 messages</span><button class="btn btn-ghost btn-sm">View thread<svg class="ic"><use href="#i-chevron-right"/></svg></button></div>
+        <div class="xch-b">
+          <span class="av av-16"><svg width="16" height="16" style="color:var(--bot-blue)"><use href="#a-hexagon"/></svg></span><span class="n">Forge</span><p class="m">Does the bundled SQLite in rusqlite match the version node:sqlite ships?</p>
+          <span class="av av-16"><svg width="16" height="16" style="color:var(--bot-teal)"><use href="#a-blob"/></svg></span><span class="n">Scout</span><p class="m">Yes, both are 3.50. Safe to compare sqlite_master output.</p>
+        </div>
+      </div>
+      <span class="lab">Waiting for the other bot</span>
+      <div class="xch w600">
+        <div class="xch-h"><span class="av av-20"><svg width="20" height="20" style="color:var(--bot-blue)"><use href="#a-hexagon"/></svg></span><svg class="ic s14 c3"><use href="#i-arrow-right"/></svg><span class="av av-20"><svg width="20" height="20" style="color:var(--bot-teal)"><use href="#a-blob"/></svg></span><span class="t">Forge asked Scout</span><span class="meta g-working">Waiting for a reply</span><svg class="ic s14 g-working"><use href="#i-loader-circle"/></svg><button class="btn btn-ghost btn-sm">View thread<svg class="ic"><use href="#i-chevron-right"/></svg></button></div>
+        <div class="xch-b"><span class="av av-16"><svg width="16" height="16" style="color:var(--bot-blue)"><use href="#a-hexagon"/></svg></span><span class="n">Forge</span><p class="m">Does the bundled SQLite in rusqlite match the version node:sqlite ships?</p></div>
+      </div>
+      <span class="lab">No reply</span>
+      <div class="xch w600">
+        <div class="xch-h"><span class="av av-20"><svg width="20" height="20" style="color:var(--bot-blue)"><use href="#a-hexagon"/></svg></span><svg class="ic s14 c3"><use href="#i-arrow-right"/></svg><span class="av av-20"><svg width="20" height="20" style="color:var(--bot-pink)"><use href="#a-cloud"/></svg></span><span class="t">Forge asked Pixel</span><span class="meta g-danger">No reply</span><button class="btn btn-ghost btn-sm">View thread<svg class="ic"><use href="#i-chevron-right"/></svg></button></div>
+        <div class="xch-b"><span class="av av-16"><svg width="16" height="16" style="color:var(--bot-pink)"><use href="#a-cloud"/></svg></span><span class="n">Pixel</span><p class="m c2">Pixel hit its 5-hour limit before answering.</p></div>
+      </div>
+    </section>
+
+    <section class="spec">
+      <h2>Phone</h2>
+      <div class="ph" style="height:auto;width:412px;border:1px solid var(--line);border-radius:var(--r-md)">
+        <div class="plog" style="justify-content:flex-start">
+          <div class="xch">
+            <div class="xch-h"><span class="av av-16"><svg width="16" height="16" style="color:var(--bot-blue)"><use href="#a-hexagon"/></svg></span><svg class="ic s12 c3"><use href="#i-arrow-right"/></svg><span class="av av-16"><svg width="16" height="16" style="color:var(--bot-teal)"><use href="#a-blob"/></svg></span><span class="t">Forge asked Scout</span><span class="meta">2 messages</span><span class="btn btn-ghost btn-sm">View thread<svg class="ic"><use href="#i-chevron-right"/></svg></span></div>
+            <div class="xch-b">
+              <span class="av av-16"><svg width="16" height="16" style="color:var(--bot-blue)"><use href="#a-hexagon"/></svg></span><p class="m"><b>Forge</b> Does the bundled SQLite in rusqlite match the version node:sqlite ships?</p>
+              <span class="av av-16"><svg width="16" height="16" style="color:var(--bot-teal)"><use href="#a-blob"/></svg></span><p class="m"><b>Scout</b> Yes, both are 3.50. Safe to compare sqlite_master output.</p>
+            </div>
+          </div>
+          <div class="appr" role="group" aria-label="Needs you">
+            <div class="appr-h"><svg class="ic s14 g-needs"><use href="#i-circle-alert"/></svg><span class="t">Forge wants to run a command</span><span class="auto push"><span class="gauge"><i class="on"></i><i></i><i></i></span>Ask</span></div>
+            <div class="appr-b"><div class="cmd"><svg class="ic s14"><use href="#i-terminal"/></svg><span class="trunc">git push origin rust-rewrite</span></div><div class="pbtns" style="padding:0"><button class="btn btn-secondary btn-touch">Deny</button><button class="btn btn-primary btn-touch">Approve</button></div></div>
+          </div>
+        </div>
+      </div>
+      <span class="lab">On the phone the answers are 48 dp and split the width. The same card opens from an approval push.</span>
+    </section>
+  </div>
+</div>
+</body>
+</html>

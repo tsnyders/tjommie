@@ -1,15 +1,15 @@
 import { afterEach, expect, it, vi } from "vitest";
 import type { VaultHostCommand } from "../../protocol/src/vault.ts";
-import { VaultHostBroker } from "../../daemon/src/vault-host-broker.ts";
-import { startServer, type Server } from "../../daemon/src/server.ts";
+import { VaultHostBroker } from "./vault-host-broker-fixture.ts";
+import { startHostServer, type HostServer } from "./host-server-fixture.ts";
 import { startVaultHost } from "./vault-host.ts";
 import type { ServerResponse } from "node:http";
 
 const token = "v".repeat(43), locked = { state: "locked", reason: null, pendingDeletes: 0 };
-let server: Server | undefined, broker: VaultHostBroker | undefined, host: ReturnType<typeof startVaultHost> | undefined;
+let server: HostServer | undefined, broker: VaultHostBroker | undefined, host: ReturnType<typeof startVaultHost> | undefined;
 afterEach(async () => { await host?.close(); host = undefined; broker?.close(); await server?.close(); vi.restoreAllMocks(); });
 async function fixture(execute: (command: VaultHostCommand) => Promise<unknown>) {
-  broker = new VaultHostBroker(token, 1000); server = await startServer({ port: 0, token: "ordinary", handlers: {}, allowedOrigins: [], routes: { "/vault-host": broker.handle } }); host = startVaultHost({ port: server.port, token, execute });
+  broker = new VaultHostBroker(token, 1000); server = await startHostServer({ "/vault-host": broker.handle }); host = startVaultHost({ port: server.port, token, execute });
 }
 it("executes global actions and returns only validated metadata or a fixed failure", async () => {
   await fixture(async ({ action }) => { if (action.kind === "entry") throw new Error("SYNTHETIC_SECRET_ERROR"); return locked; });
@@ -41,7 +41,7 @@ it("rejects an entry job whose body arrives after its controller's newer cancel 
   const oldId = "41f8bac7-358c-48cf-9f48-a3a358804da6", cancelId = "83c70656-e163-478e-a934-6a5801f5ef18";
   let normal: ServerResponse | undefined, sawCancel = false, sawStale = false;
   const commands: string[] = [];
-  server = await startServer({ port: 0, token: "ordinary", handlers: {}, allowedOrigins: [], routes: { "/vault-host": async (req, res) => {
+  server = await startHostServer({ "/vault-host": async (req, res) => {
     if (req.method === "GET") {
       if (req.url?.includes("control=1")) {
         if (sawCancel) return;
@@ -53,7 +53,7 @@ it("rejects an entry job whose body arrives after its controller's newer cancel 
     if (reply.id === cancelId) {
       await vi.waitFor(() => expect(normal).toBeDefined()); normal!.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ id: oldId, sequence: 1, command: { controllerId: "rpc:one", action: { kind: "entry", botId: "one" } } }));
     } else if (reply.id === oldId) { expect(reply.ok).toBe(false); sawStale = true; }
-  } } });
+  } });
   host = startVaultHost({ port: server.port, token, execute: async ({ action }) => { commands.push(action.kind); return action.kind === "cancel" ? {} : locked; } });
   await vi.waitFor(() => expect(sawStale).toBe(true)); expect(commands).toEqual(["cancel"]);
 });

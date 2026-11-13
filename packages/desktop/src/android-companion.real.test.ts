@@ -1,19 +1,11 @@
-import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { Server } from "node:net";
 import { chromium, type Browser, type Page } from "playwright-core";
 import { expect, it } from "vitest";
-import { methods, TEAM_ROOM_ID, type MethodName } from "@tjommie/protocol";
-import { addMessage } from "../../daemon/src/chat.ts";
-import { createApproval } from "../../daemon/src/approvals.ts";
-import { newId, openDb, type Db } from "../../daemon/src/db.ts";
-import { initializeHostNoise, RemoteHost } from "../../daemon/src/remote-host.ts";
-import { loadRemoteIdentity } from "../../daemon/src/remote-identity.ts";
-import { generateKeypair } from "../../transport/src/index.ts";
-import { recordUsage } from "../../daemon/src/usage.ts";
-import { windowsCredentialTransport } from "../../daemon/src/account-credentials.ts";
+import { parsePairingCode, TEAM_ROOM_ID } from "@tjommie/protocol";
+import { credentialNamespace, windowsCredentialTransport } from "./credential-transport.ts";
+import { addMessage, createApproval, newId, openSeedDb, recordUsage } from "./real-seed.ts";
 import { closeRealApp, eventually, launchRealApp, type RealApp } from "./real-app.ts";
 
 const serial = process.env.TJOMMIE_ANDROID_SERIAL;
@@ -90,14 +82,18 @@ async function selectText(page: Page, text: string, screenshot: string): Promise
   expect(page.url()).toBe(route);
 }
 
-// Opt in explicitly: this installs/opens no app itself. The owner authorizes a specific Android device,
-// and root installs this build and forwards only its own WebView before running the test.
-it.skipIf(!serial || !cdp)("keeps the original phone UI usable with real swipe scrolling, bot creation, chat, approvals and reconnect", async () => {
+// NEEDS AN OWNER DECISION, so it is skipped. 0.4.2 paired the phone with a second, in-process TypeScript host on an
+// ephemeral port, which the Rust daemon has no stand-in for. Here the app's own Rust daemon hosts the pairing instead
+// (`pairing.create`), which changes what this test exposes: the daemon's phone listener binds every interface unless
+// TJOMMIE_LAN_BIND says otherwise (a Windows Firewall prompt), and a debug build listens on 47201 (TJOMMIE_LAN_PORT).
+// Nothing below has run against the Rust daemon, and it needs the owner's phone. To enable it: choose the bind, port
+// and firewall policy, set them in launchRealApp's environment, then change `it.skip` to
+// `it.skipIf(!serial || !cdp)`. That form is opt-in: it installs/opens no app itself. The owner authorizes a specific
+// Android device, and root installs this build and forwards only its own WebView before running the test.
+it.skip("keeps the original phone UI usable with real swipe scrolling, bot creation, chat, approvals and reconnect", async () => {
   let app: RealApp | undefined, browser: Browser | undefined, phone: Page | undefined;
-  let remote: RemoteHost | undefined, remoteDb: Db | undefined, off: (() => void) | undefined;
   let code = "", deviceId: string | undefined, hostName: string | undefined;
   const errors: string[] = [];
-  let acceptedConnections = 0;
   mkdirSync(shots, { recursive: true });
   try {
     app = await launchRealApp(undefined, { isolatedAccounts: true });
@@ -112,7 +108,7 @@ it.skipIf(!serial || !cdp)("keeps the original phone UI usable with real swipe s
     }
     const accountId = bot.accountId;
     if (!accountId) throw new Error("The disposable bot has no pinned account.");
-    const db = openDb(join(app.root, "data", "tjommie.db"));
+    const db = openSeedDb(join(app.root, "data", "tjommie.db"));
     const approvalId = newId();
     try {
       addMessage(db, { conversationId: TEAM_ROOM_ID, author: bot.id, kind: "text", body: "Selection proof in the Team room. The toolbar must keep its own surface without blanking the conversation.", status: "done" });
@@ -122,23 +118,10 @@ it.skipIf(!serial || !cdp)("keeps the original phone UI usable with real swipe s
       createApproval(db, { id: approvalId, botId: bot.id, tool: "Read", summary: message.body, detail: "fixture-only.txt", rule: null, messageId: message.id });
       recordUsage(db, { botId: bot.id, accountId, provider: "claude", model: "sonnet", input: 100, cachedInput: 10, output: 20, reasoning: 5, costUsd: 2.5, costSource: "reported" });
     } finally { db.close(); }
-    // The owner's installed host may already hold 47101. Use an isolated ephemeral
-    // listener and the installed fixture's real typed RPC; never stop the owner's app.
-    remoteDb = openDb(join(app.root, "data", "tjommie.db"));
-    const vault = new Map<string, string>();
-    const client = app.client;
-    const credentials = async (input: Parameters<typeof windowsCredentialTransport>[0]) => { if (input.operation === "write" && input.key) vault.set(input.target, input.key); return input.operation === "read" ? vault.get(input.target) ?? null : null; };
-    initializeHostNoise();
-    await loadRemoteIdentity({ db: remoteDb, root: app.root, name: `Mobile UI test PC ${newId().slice(0, 8)}`, credentials, generate: generateKeypair });
-    remote = new RemoteHost({ db: remoteDb, root: app.root, port: 0,
-      credentials,
-      dispatch: async (method, params) => { if (!(method in methods)) throw new Error("Unknown fixture method"); const name = method as MethodName; return client.call(name, methods[name].params.parse(params)); },
-    });
-    off = client.subscribe((event) => remote?.broadcast(event.event, event.data));
-    code = (await remote.createPairing()).code;
-    const handles = (process as unknown as { _getActiveHandles(): unknown[] })._getActiveHandles();
-    const listener = handles.find((handle): handle is Server => handle instanceof Server && typeof handle.address() === "object" && handle.address() !== null && (handle.address() as { port: number }).port === remote!.status().port);
-    listener?.on("connection", () => { acceptedConnections++; });
+    // The app's own Rust daemon hosts the pairing, on the account and data root of this disposable launch.
+    const invite = await app.client.call("pairing.create", {});
+    code = invite.code;
+    hostName = parsePairingCode(code).hostName;
 
     browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdp}`);
     phone = browser.contexts().flatMap((context) => context.pages()).find((page) => page.url().startsWith("https://localhost"));
@@ -161,7 +144,6 @@ it.skipIf(!serial || !cdp)("keeps the original phone UI usable with real swipe s
     await phone.getByRole("heading", { name: "Agents", exact: true }).waitFor();
     const devices = await app.client.call("devices.list", {});
     deviceId = devices.find((device) => device.name === "S25 Ultra test device")?.id;
-    hostName = remote.status().hostName;
     expect(deviceId).toBeTruthy();
     await shot(phone, "android-agents.png");
 
@@ -283,7 +265,7 @@ it.skipIf(!serial || !cdp)("keeps the original phone UI usable with real swipe s
   } catch (error) {
     if (phone) {
       mkdirSync(resolve(".cache"), { recursive: true });
-      writeFileSync(resolve(".cache/android-test-error.txt"), JSON.stringify({ acceptedConnections, page: await phone.evaluate("({path:location.pathname,search:location.search,width:innerWidth,height:innerHeight,socketErrors:window.__socketTestErrors??[],mobile:!!document.querySelector('.android-app'),scrolls:[...document.querySelectorAll('[data-testid$=scroll]')].map(el=>({kind:el.getAttribute('data-testid'),height:el.clientHeight,content:el.scrollHeight,top:el.scrollTop}))})").catch(() => ({ unavailable: true })) }));
+      writeFileSync(resolve(".cache/android-test-error.txt"), JSON.stringify({ page: await phone.evaluate("({path:location.pathname,search:location.search,width:innerWidth,height:innerHeight,socketErrors:window.__socketTestErrors??[],mobile:!!document.querySelector('.android-app'),scrolls:[...document.querySelectorAll('[data-testid$=scroll]')].map(el=>({kind:el.getAttribute('data-testid'),height:el.clientHeight,content:el.scrollHeight,top:el.scrollTop}))})").catch(() => ({ unavailable: true })) }));
     }
     throw new Error((error instanceof Error ? error.message : "Android test failed.").replaceAll(code || "no-code", "[synthetic pairing code]"));
   } finally {
@@ -293,11 +275,10 @@ it.skipIf(!serial || !cdp)("keeps the original phone UI usable with real swipe s
       await phone.getByRole("button", { name: `Forget ${hostName}`, exact: true }).click({ timeout: 5000 }).catch(() => {});
     }
     await browser?.close();
-    off?.();
-    await remote?.close();
-    remoteDb?.close();
     if (app) {
-      const namespace = createHash("sha256").update(resolve(app.root).toLowerCase()).digest("hex").slice(0, 32);
+      // The Rust daemon saved this launch's host identity in Credential Manager, in the disposable root's own namespace
+      // (win/cred.rs `Namespace::long`: the first 32 hex characters of the same digest).
+      const namespace = credentialNamespace(app.root, 32);
       await closeRealApp(app, false);
       await windowsCredentialTransport({ operation: "delete", target: `Tjommie/${namespace}/remote-host` });
     }

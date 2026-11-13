@@ -1,0 +1,321 @@
+/* Aegis tokens for Tjommie. Generated with tokens.json; edit both together.
+   Light is the measured Aegis brand; dark is the warm graphite derivation. Bot colours are shared by both themes. */
+
+:root {
+  /* bot colours (the only colour besides the ochre accent) */
+  --bot-brown: #875F3F;
+  --bot-red: #D03D37;
+  --bot-orange: #CE6225;
+  --bot-amber: #E2A72E;
+  --bot-green: #2E944E;
+  --bot-teal: #159187;
+  --bot-blue: #3C75E5;
+  --bot-purple: #8252D7;
+  --bot-pink: #D54888;
+  --bot-gray: #81807E;
+
+  --font-text: "Archivo", "Segoe UI", system-ui, sans-serif;
+  --font-display: "Archivo", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", Consolas, monospace;
+
+  --space-0: 0px;
+  --space-2: 2px;
+  --space-4: 4px;
+  --space-6: 6px;
+  --space-8: 8px;
+  --space-10: 10px;
+  --space-12: 12px;
+  --space-14: 14px;
+  --space-16: 16px;
+  --space-20: 20px;
+  --space-24: 24px;
+  --space-28: 28px;
+  --space-32: 32px;
+  --space-40: 40px;
+  --space-48: 48px;
+  --space-56: 56px;
+  --space-64: 64px;
+
+  --radius-xs: 6px;
+  --radius-sm: 8px;
+  --radius-field: 12px;
+  --radius-md: 16px;
+  --radius-slot: 20px;
+  --radius-card: 24px;
+  --radius-panel: 28px;
+  --radius-hero: 32px;
+  --radius-pill: 999px;
+
+  --size-titlebar-height: 32px;
+  --size-caption-button-width: 46px;
+  --size-sidebar: 272px;
+  --size-icon-button: 36px;
+  --size-icon-button-min: 28px;
+  --size-touch-min: 48px;
+  --size-control-desktop: 40px;
+  --size-control-phone: 48px;
+  --size-avatar-20: 20px;
+  --size-avatar-28: 28px;
+  --size-avatar-40: 40px;
+  --size-avatar-64: 64px;
+  --size-badge-28: 14px;
+  --size-badge-40: 18px;
+  --size-badge-64: 24px;
+  --size-icon: 20px;
+  --size-icon-sm: 16px;
+  --size-focus-ring: 2px;
+  --size-focus-offset: 2px;
+
+  --duration-instant: 0ms;
+  --duration-press: 140ms;
+  --duration-release: 240ms;
+  --duration-hover: 200ms;
+  --duration-fade: 160ms;
+  --duration-quick: 200ms;
+  --duration-base: 280ms;
+  --duration-settle: 360ms;
+  --duration-slow: 420ms;
+  --duration-entrance: 460ms;
+  --duration-spin: 900ms;
+  --duration-pulse: 1600ms;
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-move: cubic-bezier(0.45, 0, 0.15, 1);
+  --ease-pulse: cubic-bezier(0.37, 0, 0.63, 1);
+  --ease-linear: cubic-bezier(0, 0, 1, 1);
+  --travel-min: 280ms;
+  --travel-max: 450ms;
+  --travel-per-px: 0.45;
+  --stagger-tight: 40ms;
+  --stagger-step: 70ms;
+  --stagger-loose: 90ms;
+  --spring-calm-stiffness: 260;
+  --spring-calm-damping-ratio: 1;
+  --spring-calm: 560ms linear(0, 0.022, 0.0759, 0.1479, 0.2286, 0.3115, 0.3923, 0.4687, 0.5389, 0.6025, 0.6592, 0.7092, 0.753, 0.7909, 0.8236, 0.8516, 0.8755, 0.8958, 0.913, 0.9274, 0.9396, 0.9499, 0.9584, 0.9656, 0.9715, 0.9765, 0.9806, 0.984, 0.9868, 0.9892, 0.9911, 0.9927, 0.994, 0.9951, 0.996, 0.9967, 0.9973, 0.9978, 0.9982, 0.9985, 1);
+  --spring-snappy-stiffness: 520;
+  --spring-snappy-damping-ratio: 0.8;
+  --spring-snappy: 360ms linear(0, 0.0189, 0.0676, 0.136, 0.2162, 0.3019, 0.3887, 0.473, 0.5526, 0.6259, 0.6921, 0.7508, 0.8019, 0.8459, 0.883, 0.914, 0.9393, 0.9597, 0.9759, 0.9884, 0.9978, 1.0047, 1.0094, 1.0125, 1.0143, 1.0151, 1.0151, 1.0146, 1.0137, 1.0125, 1.0113, 1.0099, 1.0086, 1.0074, 1.0062, 1.0052, 1.0042, 1.0034, 1.0027, 1.0021, 1);
+  --spring-playful-stiffness: 380;
+  --spring-playful-damping-ratio: 0.7;
+  --spring-playful: 510ms linear(0, 0.0275, 0.0973, 0.1935, 0.3033, 0.417, 0.5275, 0.6301, 0.7217, 0.8009, 0.8671, 0.9207, 0.9628, 0.9943, 1.017, 1.032, 1.041, 1.0452, 1.0459, 1.0439, 1.0403, 1.0356, 1.0305, 1.0253, 1.0203, 1.0157, 1.0116, 1.0082, 1.0053, 1.003, 1.0012, 0.9999, 0.999, 0.9984, 0.998, 0.9979, 0.9979, 0.998, 0.9982, 0.9984, 1);
+  --press-scale: 0.94;
+  --lift: -2px;
+  --rise: 8px;
+  --enter: 6px;
+  --recede-scale: 0.97;
+  --recede-x: 24px;
+  --press-fill: 0.94;
+  --eyes-scan: 1800ms;
+
+  --type-display-l: 800 34px/34px var(--font-display);
+  --track-display-l: -0.02em;
+  --stretch-display-l: 125%;
+  --type-display-m: 800 24px/24px var(--font-display);
+  --track-display-m: -0.02em;
+  --stretch-display-m: 125%;
+  --type-display-s: 800 18px/20px var(--font-display);
+  --track-display-s: -0.02em;
+  --stretch-display-s: 125%;
+  --type-wordmark: 800 28px/28px var(--font-display);
+  --track-wordmark: -0.02em;
+  --stretch-wordmark: 125%;
+  --type-body: 400 14.5px/22px var(--font-text);
+  --track-body: 0em;
+  --stretch-body: 100%;
+  --type-body-strong: 600 14.5px/22px var(--font-text);
+  --track-body-strong: 0em;
+  --stretch-body-strong: 100%;
+  --type-ui: 400 14px/20px var(--font-text);
+  --track-ui: 0em;
+  --stretch-ui: 100%;
+  --type-ui-strong: 600 14px/20px var(--font-text);
+  --track-ui-strong: 0em;
+  --stretch-ui-strong: 100%;
+  --type-nav: 500 15px/20px var(--font-text);
+  --track-nav: 0em;
+  --stretch-nav: 100%;
+  --type-button: 500 14px/20px var(--font-text);
+  --track-button: 0em;
+  --stretch-button: 100%;
+  --type-small: 400 13px/18px var(--font-text);
+  --track-small: 0em;
+  --stretch-small: 100%;
+  --type-label: 500 12px/16px var(--font-mono);
+  --track-label: 0em;
+  --stretch-label: 100%;
+  --type-meta: 400 12px/16px var(--font-mono);
+  --track-meta: 0em;
+  --stretch-meta: 100%;
+  --type-code: 400 13px/20px var(--font-mono);
+  --track-code: 0em;
+  --stretch-code: 100%;
+  --type-figure: 400 28px/28px var(--font-mono);
+  --track-figure: -0.01em;
+  --stretch-figure: 100%;
+}
+
+:root, [data-theme="light"] {
+  color-scheme: light;
+  --bg: #E6E6E3;
+  --paper: #F2F2EF;
+  --white: #FFFFFF;
+  --ink: #191A1C;
+  --ink-mid: #4A4C50;
+  --ink-muted: #6B6D70;
+  --line: #D6D6D1;
+  --line-soft: #C4C4BF;
+  --accent: #B57A1F;
+  --text-3: #5F6164;
+  --accent-text: #895709;
+  --accent-tint: #F5E8D2;
+  --marker: #AC711F;
+  --line-field: #838588;
+  --on-ink: #F2F2EF;
+  --ink-hover: #2E3033;
+  --on-accent: #FFFFFF;
+  --hover: #191A1C0D;
+  --sunk-hover: #DCDCD8;
+  --panel-hover: #E9E9E5;
+  --pressed: #191A1C17;
+  --scrim: #191A1C61;
+  --highlight: #FFFFFFCC;
+  --avatar-eye: #FFFFFF;
+  --sweep: #FFFFFF;
+  --raised-clear: #FFFFFF00;
+  --stone-1: #5A5C60;
+  --stone-2: #191A1C;
+  --stone-eye: #F2F2EF;
+  --frame: #E6E6E3;
+  --panel: #F2F2EF;
+  --raised: #FFFFFF;
+  --sunk: #E6E6E3;
+  --text: #191A1C;
+  --text-2: #4A4C50;
+  --icon: #4A4C50;
+  --icon-muted: #6B6D70;
+  --primary: #191A1C;
+  --on-primary: #F2F2EF;
+  --focus: #191A1C;
+  --shadow-glass: 0 24px 60px #3C3C3A2E;
+  --shadow-lift: 0 24px 60px #78787440;
+  --shadow-raised: 0 10px 28px -6px #3C3C3A24, 0 2px 6px #3C3C3A0F;
+  --shadow-card: 0 1px 2px #3C3C3A0F, 0 6px 18px -8px #3C3C3A1F;
+  --shadow-card-lift: 0 2px 4px #3C3C3A12, 0 16px 34px -10px #3C3C3A38;
+  --shadow-raised-focus: 0 16px 40px -8px #3C3C3A30, 0 2px 6px #3C3C3A12;
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #141412;
+  --paper: #1D1C1A;
+  --white: #272724;
+  --ink: #EEEEEB;
+  --ink-mid: #C1C1BD;
+  --ink-muted: #9F9E9A;
+  --line: #363533;
+  --line-soft: #4A4945;
+  --accent: #DDA351;
+  --text-3: #9F9E9A;
+  --accent-text: #DDA351;
+  --accent-tint: #3B2C17;
+  --marker: #DDA351;
+  --line-field: #757571;
+  --on-ink: #141412;
+  --ink-hover: #D1D1CD;
+  --on-accent: #141412;
+  --hover: #EEEEEB0F;
+  --sunk-hover: #1E1E1C;
+  --panel-hover: #262523;
+  --pressed: #EEEEEB1A;
+  --scrim: #0000008C;
+  --highlight: #FFFFFF14;
+  --avatar-eye: #FFFFFF;
+  --sweep: #FFFFFF;
+  --raised-clear: #27272400;
+  --stone-1: #F5F5F3;
+  --stone-2: #ABABA7;
+  --stone-eye: #141412;
+  --frame: #141412;
+  --panel: #1D1C1A;
+  --raised: #272724;
+  --sunk: #141412;
+  --text: #EEEEEB;
+  --text-2: #C1C1BD;
+  --icon: #C1C1BD;
+  --icon-muted: #9F9E9A;
+  --primary: #EEEEEB;
+  --on-primary: #141412;
+  --focus: #EEEEEB;
+  --shadow-glass: 0 24px 60px #0000007A;
+  --shadow-lift: 0 24px 60px #00000066;
+  --shadow-raised: 0 12px 32px -6px #00000080, 0 2px 6px #00000052;
+  --shadow-card: 0 1px 2px #00000052, 0 8px 20px -8px #00000066;
+  --shadow-card-lift: 0 2px 4px #0000005C, 0 18px 36px -10px #0000008F;
+  --shadow-raised-focus: 0 18px 44px -8px #00000099, 0 2px 6px #0000005C;
+}
+
+/* Phone type: same roles, larger sizes (dp). */
+[data-device="phone"] {
+  --type-display-l: 800 30px/30px var(--font-display);
+  --track-display-l: -0.02em;
+  --stretch-display-l: 125%;
+  --type-display-m: 800 22px/22px var(--font-display);
+  --track-display-m: -0.02em;
+  --stretch-display-m: 125%;
+  --type-display-s: 800 18px/20px var(--font-display);
+  --track-display-s: -0.02em;
+  --stretch-display-s: 125%;
+  --type-wordmark: 800 30px/30px var(--font-display);
+  --track-wordmark: -0.02em;
+  --stretch-wordmark: 125%;
+  --type-body: 400 16px/24px var(--font-text);
+  --track-body: 0em;
+  --stretch-body: 100%;
+  --type-body-strong: 600 16px/24px var(--font-text);
+  --track-body-strong: 0em;
+  --stretch-body-strong: 100%;
+  --type-ui: 400 15px/22px var(--font-text);
+  --track-ui: 0em;
+  --stretch-ui: 100%;
+  --type-ui-strong: 600 15px/22px var(--font-text);
+  --track-ui-strong: 0em;
+  --stretch-ui-strong: 100%;
+  --type-nav: 400 17px/24px var(--font-text);
+  --track-nav: 0em;
+  --stretch-nav: 100%;
+  --type-button: 500 16px/22px var(--font-text);
+  --track-button: 0em;
+  --stretch-button: 100%;
+  --type-small: 400 14px/20px var(--font-text);
+  --track-small: 0em;
+  --stretch-small: 100%;
+  --type-label: 500 12px/16px var(--font-mono);
+  --track-label: 0em;
+  --stretch-label: 100%;
+  --type-meta: 400 12px/16px var(--font-mono);
+  --track-meta: 0em;
+  --stretch-meta: 100%;
+  --type-code: 400 12px/18px var(--font-mono);
+  --track-code: 0em;
+  --stretch-code: 100%;
+  --type-figure: 400 26px/26px var(--font-mono);
+  --track-figure: -0.01em;
+  --stretch-figure: 100%;
+}
+
+/* Scope a bot: <el class="bot-blue"> sets --bot for its avatar. */
+.bot-brown { --bot: var(--bot-brown); }
+.bot-red { --bot: var(--bot-red); }
+.bot-orange { --bot: var(--bot-orange); }
+.bot-amber { --bot: var(--bot-amber); }
+.bot-green { --bot: var(--bot-green); }
+.bot-teal { --bot: var(--bot-teal); }
+.bot-blue { --bot: var(--bot-blue); }
+.bot-purple { --bot: var(--bot-purple); }
+.bot-pink { --bot: var(--bot-pink); }
+.bot-gray { --bot: var(--bot-gray); }
+
+/* Reduced motion: same timing, zero distance. Movement becomes a cross-fade or a snap. */
+@media (prefers-reduced-motion: reduce) {
+  :root { --press-scale: 1; --press-fill: 1; --lift: 0px; --rise: 0px; --enter: 0px; --recede-scale: 1; --recede-x: 0px; }
+}
+[data-motion="reduced"] { --press-scale: 1; --press-fill: 1; --lift: 0px; --rise: 0px; --enter: 0px; --recede-scale: 1; --recede-x: 0px; }

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { AttachmentNativeRead } from "../../protocol/src/attachments.ts";
 import type { SpeechStatus } from "../../protocol/src/speech.ts";
-import { tempRoot } from "../../daemon/src/testing.ts";
+import { tempRoot } from "./testing.ts";
 import { DesktopDeviceBridge, attachmentSaveName } from "./local-device-bridge.ts";
 
 function fixture(destination: string | null = null) {

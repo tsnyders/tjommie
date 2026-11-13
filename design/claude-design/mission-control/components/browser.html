@@ -1,0 +1,97 @@
+<!-- @dsCard group="Browser" -->
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="shot" content="1280x1230">
+<title>Mission Control: browser panel</title>
+<link rel="stylesheet" href="../tokens.css">
+<link rel="stylesheet" href="../kit.css">
+<style>
+  .pnl { width: 540px; height: 520px; border: 1px solid var(--line); border-radius: var(--r-md); overflow: hidden; }
+  .pnl.short { height: 440px; }
+  .vp .pg-doc { gap: var(--space-2); }
+  .addr.edit { border-color: var(--text-2); background: var(--surface); box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--focus); color: var(--text); }
+  .addr .caret { width: 1px; height: 14px; background: var(--text); }
+  .priv { display: flex; flex-direction: column; align-items: center; gap: var(--space-3); max-width: 360px; text-align: center; font: var(--t-body); color: var(--text-2); }
+  .priv .ic { width: 24px; height: 24px; color: var(--text-3); }
+  .menu.logins { width: 300px; }
+  .menu.logins .note { padding: var(--space-1) var(--space-2) var(--space-2); font: var(--t-label); font-weight: 400; color: var(--text-3); }
+  .lstates { display: flex; flex-direction: column; gap: var(--space-3); }
+</style>
+</head>
+<body>
+<!--sprite--><svg width="0" height="0" style="position:absolute" aria-hidden="true"><symbol id="i-arrow-left" viewBox="0 0 24 24"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></symbol><symbol id="i-arrow-right" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></symbol><symbol id="i-chevrons-right" viewBox="0 0 24 24"><path d="m6 17 5-5-5-5"/><path d="m13 17 5-5-5-5"/></symbol><symbol id="i-eye-off" viewBox="0 0 24 24"><path d="M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49"/><path d="M14.084 14.158a3 3 0 0 1-4.242-4.242"/><path d="M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143"/><path d="m2 2 20 20"/></symbol><symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></symbol><symbol id="i-key-round" viewBox="0 0 24 24"><path d="M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4z"/><circle cx="16.5" cy="7.5" r=".5" fill="currentColor"/></symbol><symbol id="i-loader-circle" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></symbol><symbol id="i-lock" viewBox="0 0 24 24"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></symbol><symbol id="i-lock-open" viewBox="0 0 24 24"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></symbol><symbol id="i-log-in" viewBox="0 0 24 24"><path d="m10 17 5-5-5-5"/><path d="M15 12H3"/><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/></symbol><symbol id="i-maximize-2" viewBox="0 0 24 24"><path d="M15 3h6v6"/><path d="m21 3-7 7"/><path d="m3 21 7-7"/><path d="M9 21H3v-6"/></symbol><symbol id="i-mouse-pointer-2" viewBox="0 0 24 24"><path d="M4.037 4.688a.495.495 0 0 1 .651-.651l16 6.5a.5.5 0 0 1-.063.947l-6.124 1.58a2 2 0 0 0-1.438 1.435l-1.579 6.126a.5.5 0 0 1-.947.063z"/></symbol><symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5v14"/></symbol><symbol id="i-rotate-cw" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></symbol><symbol id="i-search" viewBox="0 0 24 24"><path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/></symbol><symbol id="i-settings" viewBox="0 0 24 24"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/></symbol><symbol id="i-smartphone" viewBox="0 0 24 24"><rect width="14" height="20" x="5" y="2" rx="2" ry="2"/><path d="M12 18h.01"/></symbol><symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></symbol><symbol id="a-hexagon" viewBox="0 0 40 40"><path d="M17 3.2 C18.9 2.1 21.1 2.1 23 3.2 L33.5 9.3 C35.4 10.4 36.5 12.4 36.5 14.6 V25.4 C36.5 27.6 35.4 29.6 33.5 30.7 L23 36.8 C21.1 37.9 18.9 37.9 17 36.8 L6.5 30.7 C4.6 29.6 3.5 27.6 3.5 25.4 V14.6 C3.5 12.4 4.6 10.4 6.5 9.3 Z" style="fill:currentColor"/><path d="M17 15 L16 21 M24.5 15 L23.5 21" style="fill:none;stroke:var(--bot-eye);stroke-width:3;stroke-linecap:round"/></symbol></svg><!--/sprite-->
+<div class="sheet" style="width:1280px">
+  <header>
+    <h1>Browser panel</h1>
+    <p>Each bot has its own browser. While the bot drives, the page is framed in the bot's own colour and the banner names it. Take control and the frame turns to your ink. In private mode nothing is pictured at all.</p>
+  </header>
+
+  <div class="row">
+    <section class="spec">
+      <h2>The bot is driving</h2>
+      <aside class="panel pnl">
+        <div class="panel-h"><div class="seg"><span class="sel"><svg class="ic s14"><use href="#i-globe"/></svg>Browser</span><span>Details</span><span>Routines</span><span>Files</span></div><button class="ibtn push" title="Expand browser"><svg class="ic"><use href="#i-maximize-2"/></svg></button><button class="ibtn" title="Hide panel"><svg class="ic"><use href="#i-chevrons-right"/></svg></button></div>
+        <div class="btabs"><div class="btab sel"><span class="trunc">rusqlite::Transaction - docs.rs</span><button class="ibtn"><svg class="ic s14"><use href="#i-x"/></svg></button></div><div class="btab"><span class="trunc">Actions - tjommie-rs</span><button class="ibtn"><svg class="ic s14"><use href="#i-x"/></svg></button></div><button class="ibtn" title="New tab"><svg class="ic"><use href="#i-plus"/></svg></button></div>
+        <div class="addr-row"><button class="ibtn"><svg class="ic"><use href="#i-arrow-left"/></svg></button><button class="ibtn"><svg class="ic"><use href="#i-arrow-right"/></svg></button><button class="ibtn"><svg class="ic"><use href="#i-rotate-cw"/></svg></button><div class="addr"><svg class="ic s12"><use href="#i-lock"/></svg><span class="trunc"><b>docs.rs</b>/rusqlite/latest/rusqlite/struct.Transaction.html</span></div><button class="ibtn" title="Logins"><svg class="ic"><use href="#i-key-round"/></svg></button></div>
+        <div class="banner"><span class="av av-20"><svg width="20" height="20" style="color:var(--bot-blue)"><use href="#a-hexagon"/></svg></span><span class="who-t">Forge is using this browser</span><span class="live push"><span class="lamp"></span>Live, 58 fps</span><button class="btn btn-primary btn-sm">Take control<span class="kbd">Ctrl+Shift+T</span></button></div>
+        <div class="vp" style="--driver:var(--bot-blue)"><div class="pg"><div class="pg-bar"><b>rusqlite</b><span>0.37.0</span><span class="search">Search rusqlite</span></div><div class="pg-main"><div class="pg-doc"><h1>Struct <a>rusqlite</a>::<a>Transaction</a></h1><div class="sig">pub struct Transaction&lt;'conn&gt; { /* private fields */ }</div><p>Represents a transaction on a database connection.</p></div></div></div></div>
+      </aside>
+    </section>
+
+    <section class="spec">
+      <h2>You are in control</h2>
+      <aside class="panel pnl">
+        <div class="panel-h"><div class="seg"><span class="sel"><svg class="ic s14"><use href="#i-globe"/></svg>Browser</span><span>Details</span><span>Routines</span><span>Files</span></div><button class="ibtn push"><svg class="ic"><use href="#i-maximize-2"/></svg></button><button class="ibtn"><svg class="ic"><use href="#i-chevrons-right"/></svg></button></div>
+        <div class="btabs"><div class="btab sel"><span class="trunc">rusqlite::Transaction - docs.rs</span><button class="ibtn"><svg class="ic s14"><use href="#i-x"/></svg></button></div><div class="btab"><span class="trunc">Actions - tjommie-rs</span><button class="ibtn"><svg class="ic s14"><use href="#i-x"/></svg></button></div><button class="ibtn"><svg class="ic"><use href="#i-plus"/></svg></button></div>
+        <div class="addr-row"><button class="ibtn"><svg class="ic"><use href="#i-arrow-left"/></svg></button><button class="ibtn"><svg class="ic"><use href="#i-arrow-right"/></svg></button><button class="ibtn"><svg class="ic"><use href="#i-rotate-cw"/></svg></button><div class="addr edit"><svg class="ic s12"><use href="#i-search"/></svg>docs.rs/rusqlite/latest/rusqlite/struct.Savepoint.html<span class="caret"></span></div><button class="ibtn"><svg class="ic"><use href="#i-key-round"/></svg></button></div>
+        <div class="banner"><svg class="ic s14 c1"><use href="#i-mouse-pointer-2"/></svg><span class="who-t" title="Shift+Tab leaves the page">You're in control</span><span class="live push"><span class="lamp"></span>Live, 58 fps</span><button class="btn btn-secondary btn-sm">Return to bot<span class="kbd">Ctrl+Shift+T</span></button></div>
+        <div class="vp" style="--driver:var(--text)"><div class="pg"><div class="pg-bar"><b>rusqlite</b><span>0.37.0</span><span class="search">Search rusqlite</span></div><div class="pg-main"><div class="pg-doc"><h1>Struct <a>rusqlite</a>::<a>Transaction</a></h1><div class="sig">pub struct Transaction&lt;'conn&gt; { /* private fields */ }</div><p>Represents a transaction on a database connection.</p></div></div></div></div>
+      </aside>
+    </section>
+  </div>
+
+  <div class="row">
+    <section class="spec">
+      <h2>Private mode: the page is blanked</h2>
+      <aside class="panel pnl short">
+        <div class="panel-h"><div class="seg"><span class="sel"><svg class="ic s14"><use href="#i-globe"/></svg>Browser</span><span>Details</span><span>Routines</span><span>Files</span></div><button class="ibtn push"><svg class="ic"><use href="#i-maximize-2"/></svg></button><button class="ibtn"><svg class="ic"><use href="#i-chevrons-right"/></svg></button></div>
+        <div class="btabs"><div class="btab sel"><span class="trunc">Sign in to GitHub</span><button class="ibtn"><svg class="ic s14"><use href="#i-x"/></svg></button></div></div>
+        <div class="addr-row"><button class="ibtn"><svg class="ic"><use href="#i-arrow-left"/></svg></button><button class="ibtn"><svg class="ic"><use href="#i-arrow-right"/></svg></button><button class="ibtn"><svg class="ic"><use href="#i-rotate-cw"/></svg></button><div class="addr"><svg class="ic s12"><use href="#i-lock"/></svg><span class="trunc"><b>github.com</b>/login</span></div><button class="ibtn"><svg class="ic"><use href="#i-key-round"/></svg></button></div>
+        <div class="banner"><svg class="ic s14 c2"><use href="#i-eye-off"/></svg><span class="who-t">Private interaction</span><span class="live push"><span class="lamp lamp-idle"></span>Not streaming</span></div>
+        <div class="vp private" style="--driver:var(--line-strong)">
+          <div class="priv"><svg class="ic"><use href="#i-eye-off"/></svg><p>Private interaction. Remote fields and pictures are hidden. Clearing fields or closing this browser needs confirming on the host and keeps automation paused.</p><div class="hstack"><button class="btn btn-secondary btn-sm">Clear private fields on host</button><button class="btn btn-secondary btn-sm">Close private browser on host</button></div></div>
+        </div>
+      </aside>
+    </section>
+
+    <section class="spec">
+      <h2>Logins menu</h2>
+      <div class="row">
+        <div class="cell">
+          <div class="addr-row" style="padding:0;width:300px"><div class="addr"><svg class="ic s12"><use href="#i-lock"/></svg><span class="trunc"><b>github.com</b>/tsnyders/tjommie/actions</span></div><button class="ibtn on" title="Logins"><svg class="ic"><use href="#i-key-round"/></svg></button></div>
+          <div class="menu logins" role="menu">
+            <div class="mlabel">Saved logins for github.com</div>
+            <div class="mi hl"><svg class="ic"><use href="#i-key-round"/></svg>tsnyders<span class="end">GitHub</span></div>
+            <div class="mi off"><svg class="ic"><use href="#i-log-in"/></svg>Fill on host</div>
+            <p class="note">Take control of the page before filling a login. The host confirms the exact HTTPS address first.</p>
+            <div class="msep"></div>
+            <div class="mi"><svg class="ic"><use href="#i-lock-open"/></svg>Unlock on host</div>
+            <div class="mi"><svg class="ic"><use href="#i-settings"/></svg>Manage logins</div>
+          </div>
+        </div>
+        <div class="lstates">
+          <span class="lab">Live indicator</span>
+          <span class="live"><span class="lamp"></span>Live, 58 fps</span>
+          <span class="live"><span class="lamp lamp-idle"></span>Stream paused, panel hidden</span>
+          <span class="live"><svg class="ic s12 c2"><use href="#i-loader-circle"/></svg>Reconnecting</span>
+          <span class="lab" style="margin-top:var(--space-3)">Banner, another device</span>
+          <div class="banner" style="margin:0;width:280px"><svg class="ic s14 c2"><use href="#i-smartphone"/></svg><span class="who-t">Another device is controlling this browser. You can watch.</span></div>
+        </div>
+      </div>
+    </section>
+  </div>
+</div>
+</body>
+</html>

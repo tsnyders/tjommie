@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Tjommie: three design directions</title>
+<style>
+  body { margin: 0; background: #b9b9b9; color: #111; font: 15px/1.45 system-ui, "Segoe UI", sans-serif; }
+  header { padding: 28px 32px 8px; }
+  h1 { margin: 0 0 4px; font-size: 26px; }
+  header p { margin: 0; max-width: 980px; }
+  .dirs, .row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; padding: 16px 32px; }
+  .dir { background: #f4f4f4; border-radius: 12px; padding: 16px 18px; }
+  .dir h2 { margin: 0 0 6px; font-size: 18px; }
+  .dir p { margin: 0 0 10px; }
+  .dir a { margin-right: 14px; }
+  h3 { margin: 22px 32px 0; font-size: 16px; }
+  figure { margin: 0; }
+  figure img { display: block; width: 100%; border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,.25); background: #ddd; min-height: 120px; }
+  figcaption { margin-top: 6px; font-size: 13px; }
+  .phone figure img { width: 70%; margin: 0 auto; }
+  .missing { display: grid; place-items: center; min-height: 160px; border-radius: 8px; background: #d4d4d4; color: #444; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Tjommie: three design directions</h1>
+  <p>Same bots, same conversation, same states in all three, so only the design differs. Click any shot to open the live HTML. Direction A's screens are interactive prototypes: drag, click and hover them to feel the motion. Pick one, then upload it to Claude Design with <code>/design-sync</code>.</p>
+</header>
+
+<section class="dirs">
+  <div class="dir">
+    <h2>A. Workbench</h2>
+    <p>Inspired by quiet.md (Rust + GPUI). Cool near-white canvas, grey tree sidebar, live content cards, motion first.</p>
+    <a href="workbench/README.md">README</a><a href="workbench/components/motion.html">Motion gallery</a><a href="workbench/components/">Components</a>
+  </div>
+  <div class="dir">
+    <h2>B. Mission Control</h2>
+    <p>Dark, dense instrument panel. Monospace gauges, loud status, shortcuts printed on the controls.</p>
+    <a href="mission-control/README.md">README</a><a href="mission-control/components/">Components</a>
+  </div>
+  <div class="dir">
+    <h2>C. Aegis</h2>
+    <p>Claude mobile app structure in the Aegis brand: stone and paper, Archivo Expanded, near-black pills, ochre for "Needs you".</p>
+    <a href="aegis/README.md">README</a><a href="aegis/components/">Components</a><a href="aegis/screens/phone-drawer.html">Phone drawer</a>
+  </div>
+</section>
+
+<h3>C. Aegis motion (first UI): clips from the live prototypes</h3>
+<p style="margin: 4px 32px 0">Springs: calm 260/1.0 (surfaces), snappy 520/0.8 (small parts), playful 380/0.7 (Approve, toasts, numbers). <a href="aegis/components/motion.html">Open the motion gallery</a> to replay each one, or open any Aegis screen below to use it.</p>
+<section class="row" id="clips"></section>
+
+<div id="rows"></div>
+
+<script>
+  const clips = ["01-bots-alive", "02-approve", "03-message-arrival", "04-composer", "05-phone-drawer", "06-numbers", "07-mark", "08-first-open", "09-shared-elements", "10-browser-panel"];
+  document.getElementById("clips").innerHTML = clips.map((c) =>
+    `<figure><video src="aegis/motion-clips/${c}.webm" autoplay muted loop playsinline controls style="width:100%;border-radius:8px;box-shadow:0 6px 20px rgba(0,0,0,.25)"></video><figcaption>${c.slice(3).replace(/-/g, " ")}</figcaption></figure>`).join("");
+  const dirs = ["workbench", "mission-control", "aegis"];
+  const screens = [
+    ["desktop-chat", "Desktop: chat with browser panel"],
+    ["desktop-chat-alt", "Desktop: chat, other theme"],
+    ["desktop-agents", "Desktop: agents overview"],
+    ["phone-chat", "Phone: chat", true],
+    ["phone-agents", "Phone: agents home", true],
+  ];
+  const rows = document.getElementById("rows");
+  for (const [id, title, phone] of screens) {
+    rows.insertAdjacentHTML("beforeend", `<h3>${title}</h3><section class="row${phone ? " phone" : ""}"></section>`);
+    const row = rows.lastElementChild;
+    for (const d of dirs) {
+      const fig = document.createElement("figure");
+      fig.innerHTML = `<a href="${d}/screens/${id}.html"><img src="${d}/shots/${id}.png" alt="${d} ${title}"></a><figcaption>${d}</figcaption>`;
+      fig.querySelector("img").onerror = (e) => e.target.replaceWith(Object.assign(document.createElement("div"), { className: "missing", textContent: "Not rendered yet" }));
+      row.append(fig);
+    }
+  }
+</script>
+</body>
+</html>

@@ -17,12 +17,16 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24'
           cache: npm
       - run: npm ci
+      - run: node scripts/protocol-manifest.ts --check
+      - run: node scripts/browser-tools-manifest.ts --check
       - run: npm run typecheck
       - run: npm run lint
       - run: npm test
@@ -31,3 +35,40 @@ jobs:
       - name: Build and verify pinned local speech runtime
         shell: pwsh
         run: ./packages/desktop/scripts/build-speech-runtime.ps1
+
+  rust:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        # Inside tjommie-rs so rustup applies rust-toolchain.toml.
+        working-directory: tjommie-rs
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Node is needed at test time: the M7 interop tests drive the TypeScript client (packages/client) through
+      # tjommie-rs/tools/remote-probe.ts, and the worker and CLI tests run node.exe.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+        working-directory: .
+      - run: rustup toolchain install
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # --no-fail-fast: one run shows every failing test binary, not only the first one cargo stops at.
+      - run: cargo test --workspace --locked --no-fail-fast
+        env:
+          # Hosted service logons can't reliably reach Credential Manager; those tests run on real PCs.
+          TJOMMIE_CI_HOSTED: '1'
+      # The desktop's daemon-process test hosts the Rust exe when TJOMMIE_DAEMON_EXE names it (plan T9.1). Build it here so
+      # that test runs on every change instead of being skipped. It needs the node_modules the step above installed.
+      - run: cargo build --locked -p daemon --bin tjommie-daemon
+      - name: Run the desktop daemon-process test against the Rust exe
+        working-directory: .
+        run: npx vitest run packages/desktop/src/daemon-process.test.ts
+        env:
+          TJOMMIE_DAEMON_EXE: ${{ github.workspace }}\tjommie-rs\target\debug\tjommie-daemon.exe
+          TJOMMIE_CI_HOSTED: '1'

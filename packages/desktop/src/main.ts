@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, net, Notification, protocol, session, shell, Tray } from "electron";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { homedir, userInfo } from "node:os";
+import { userInfo } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { connect, type Client } from "@tjommie/client";
@@ -8,7 +8,7 @@ import { NativeBrowserMount, NativeBrowserUiCommand, type EventData } from "@tjo
 import updater from "electron-updater";
 import { navigationFor, uiFile } from "./app-protocol.ts";
 import { notesFile } from "./bot-files.ts";
-import { daemonLaunchEnv, startDaemonProcess, stopDaemonBeforeQuit, type DaemonConnection, type RunningDaemon } from "./daemon-process.ts";
+import { DEV_PORT, daemonCommand, daemonLaunchEnv, dataRootFor, developmentDaemonMessage, packagedDaemonPath, startDaemonProcess, stopDaemonBeforeQuit, userDataFor, type DaemonConnection, type RunningDaemon } from "./daemon-process.ts";
 import { notificationDelivery, notificationRoute } from "./notification-delivery.ts";
 import { beginGoogleConsent } from "./google-consent.ts";
 import { NativeBrowserEngine } from "./native-browser.ts";
@@ -39,14 +39,19 @@ const packageIdentity = packaged
   ? JSON.parse(readFileSync(join(app.getAppPath(), "package.json"), "utf8")) as { appId?: string; testDataRoot?: string }
   : {};
 const productName = packaged ? app.getName() : "Tjommie";
-// Three ways to run. Development: the development daemon and `npm run dev` run separately. Production from source
-// (TJOMMIE_DESKTOP=production): this process starts the daemon and serves the static export. Installed: the same,
+// Three ways to run. Development: the Rust daemon (`--dev`) and `npm run dev` run separately. Production from source
+// (TJOMMIE_DESKTOP=production): this process starts the Rust daemon and serves the static export. Installed: the same,
 // with the daemon, the UI and the icons as plain files in resources (npm run package).
 const production = packaged || process.env.TJOMMIE_DESKTOP === "production";
-const dataRoot = process.env.TJOMMIE_HOME ?? packageIdentity.testDataRoot ?? join(process.env.LOCALAPPDATA ?? join(homedir(), ".local", "share"), productName);
+// An installed app keeps its data in its Tjommie folder under Local AppData; an unpackaged run in Tjommie-rs, with the debug
+// ports (see dataRootFor). The installed app's data is never the default of a run from source.
+const dataRoot = dataRootFor(process.env, packaged, productName, packageIdentity.testDataRoot);
 const assets = packaged ? join(process.resourcesPath, "assets") : join(here, "..", "assets");
 const uiDir = packaged ? join(process.resourcesPath, "ui") : join(here, "..", "..", "ui", "out");
-const daemonEntry = packaged ? join(process.resourcesPath, "daemon", "main.mjs") : join(here, "..", "..", "daemon", "src", "main.ts");
+// An installed app runs the Rust daemon bundled in resources. A run from source starts the Rust exe named by
+// TJOMMIE_DAEMON_EXE, else tjommie-rs\target\debug\tjommie-daemon.exe under the repo root (see daemonCommand).
+const bundledDaemon = packaged ? packagedDaemonPath(process.resourcesPath) : null;
+const repoRoot = join(here, "..", "..", "..");
 const appIcon = join(assets, "icon-256.png");
 const APP_ID = packageIdentity.appId ?? "com.tsnyders.tjommie";
 // Next needs inline bootstrap scripts; Noise WASM needs wasm-unsafe-eval; Markdown sanitization handles injected content.
@@ -100,10 +105,12 @@ function log(text: string): void {
 }
 
 app.setName(productName);
-if (process.env.TJOMMIE_USER_DATA || packageIdentity.testDataRoot) {
-  const userData = process.env.TJOMMIE_USER_DATA ?? join(dataRoot, "electron");
+// Tests and unpackaged runs get a profile and a single-instance lock of their own, including the update relaunch; an
+// installed app keeps Electron's default. See userDataFor.
+const userData = userDataFor(process.env, packaged, dataRoot, packageIdentity.testDataRoot);
+if (userData !== null) {
   mkdirSync(userData, { recursive: true });
-  app.setPath("userData", userData); // tests: their own profile and lock, including the update relaunch
+  app.setPath("userData", userData);
 }
 protocol.registerSchemesAsPrivileged([{ scheme: "app", privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }]);
 
@@ -206,10 +213,13 @@ function start(): void {
   session.defaultSession.webRequest.onBeforeRequest({ urls: ["app://tjommie/*"] }, (request, callback) => callback({ cancel: isAttachmentUrl(request.url) && !deviceBridge?.permitsAttachmentRequest(request) }));
   session.defaultSession.on("will-download", (event, item) => { if (isAttachmentUrl(item.getURL())) event.preventDefault(); });
   protocol.handle("app", serveUi);
-  // The disposable packaged smoke uses a real app identity, so never register it at Windows sign-in.
+  // The disposable packaged smoke uses a real app identity, so never register it at Windows sign-in. This stays keyed on the
+  // explicit TJOMMIE_USER_DATA, not on the profile an unpackaged run now derives: an unpackaged run is skipped in syncLoginItem already.
   if (!process.env.TJOMMIE_USER_DATA && !packageIdentity.testDataRoot) {
     try { syncLoginItem(app); } catch (error) { log(`Could not set start at login: ${String(error)}`); }
   }
+  // Keyed on the explicit TJOMMIE_USER_DATA too: a packaged smoke run must not update the real install. An unpackaged run is
+  // "unsupported" in createUpdater whatever the profile.
   updates = createUpdater(packaged, autoUpdater, {
     TJOMMIE_UPDATES: (process.env.TJOMMIE_USER_DATA && APP_ID === "com.tsnyders.tjommie") ||
       (packageIdentity.testDataRoot && !process.env.TJOMMIE_UPDATE_FEED) ? "off" : process.env.TJOMMIE_UPDATES,
@@ -283,19 +293,21 @@ async function openConnection(): Promise<DaemonConnection> {
   return connection;
 }
 
+// Development mode is always an unpackaged run, so its default folder and port are the debug daemon's own (see dataRootFor).
 function developmentConnection(): DaemonConnection {
+  const port = Number(process.env.TJOMMIE_PORT ?? DEV_PORT);
   const tokenFile = join(dataRoot, "daemon-token");
-  if (!existsSync(tokenFile)) throw new Error("Start the development daemon first: npm start -w @tjommie/daemon");
-  return { port: Number(process.env.TJOMMIE_PORT ?? 47100), token: readFileSync(tokenFile, "utf8").trim() };
+  if (!existsSync(tokenFile)) throw new Error(developmentDaemonMessage(process.env, dataRoot, port));
+  return { port, token: readFileSync(tokenFile, "utf8").trim() };
 }
 
 async function launchDaemon(): Promise<DaemonConnection> {
   const running = await startDaemonProcess(
     {
-      execPath: process.execPath,
-      args: ["--disable-warning=ExperimentalWarning", daemonEntry],
-      env: daemonLaunchEnv(process.env, dataRoot, !!packageIdentity.testDataRoot),
-      // Only an isolated desktop test may redirect the daemon's account folders.
+      ...daemonCommand(process.env, bundledDaemon, repoRoot),
+      env: daemonLaunchEnv(process.env, dataRoot, !!packageIdentity.testDataRoot, !packaged),
+      // Only an isolated desktop test may redirect the daemon's account folders: an explicit TJOMMIE_USER_DATA (a test
+      // that also names its accounts), never the profile an unpackaged run derives for itself.
       testAccountsDir: packageIdentity.testDataRoot
         ? join(dataRoot, "accounts")
         : process.env.TJOMMIE_USER_DATA ? process.env.TJOMMIE_ACCOUNTS_DIR || undefined : undefined,
@@ -504,7 +516,7 @@ function registerIpc(): void {
   ipcMain.handle("login-item:get", () => getLoginItem(app));
   ipcMain.handle("login-item:set", (_event, on: unknown) => {
     if (typeof on !== "boolean") throw new Error("Invalid start at login setting.");
-    if (process.env.TJOMMIE_USER_DATA && APP_ID === "com.tsnyders.tjommie") return;
+    if (process.env.TJOMMIE_USER_DATA && APP_ID === "com.tsnyders.tjommie") return; // a packaged smoke run; unpackaged is a no-op in setLoginItem
     setLoginItem(app, on);
   });
   ipcMain.handle("updates:state", () => updates?.state() ?? { status: "unsupported" });
@@ -618,6 +630,8 @@ function createWindow(): void {
     onState: (state) => { if (!window.isDestroyed()) window.webContents.send("native-browser:state", state); },
     onFocusReturn: (botId) => { if (!window.isDestroyed()) window.webContents.send("native-browser:focus-return", botId); },
     onNotice: (notice) => { log(`Native browser notice for ${notice.botId}: ${notice.message}`); },
+    // Live frames go to the daemon over the private host bridge, never through the renderer.
+    onStream: (message) => nativeHost ? nativeHost.send(message) : Promise.resolve(false),
   });
   window.on("hide", () => { nativeEngine?.setOccluded(true); void revokeLocalDevice(); });
   window.on("minimize", () => { void revokeLocalDevice(); });

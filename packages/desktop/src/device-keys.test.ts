@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { expect, it } from "vitest";
-import type { CredentialTransport } from "../../daemon/src/account-credentials.ts";
+import type { CredentialTransport } from "./credential-transport.ts";
 import { createDeviceKeys } from "./device-keys.ts";
 
 it("seals, reads and deletes a device key through a synthetic credential transport", async () => {
