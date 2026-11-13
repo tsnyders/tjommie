@@ -7,6 +7,7 @@ use std::time::Duration;
 use daemon::cli::{
     CliCommand, CliHost, CodexPackage, Env, KillTreeError, LaunchOptions, Runtime, SystemCli,
     TaskkillReport, cli_env, confirm_tree_stopped, kill_tree_and_wait, node_env, open_url,
+    system32,
 };
 use daemon::providers::ApiKey;
 use protocol::model::Provider;
@@ -818,4 +819,16 @@ fn recognizes_a_worker_termination_by_type_never_by_its_message() {
     let text = WorkerTermination.to_string();
     assert!(!ProviderError::Failed(text.clone()).is_worker_termination());
     assert!(!ProviderError::from(std::io::Error::other(text)).is_worker_termination());
+}
+
+// Git for Windows puts its own Unix `whoami` (which rejects `/user`) ahead of System32's on PATH, and any folder on PATH
+// could hold a look-alike. The system tools the daemon runs are found in System32 by absolute path.
+#[test]
+fn finds_system_tools_in_system32_by_absolute_path() {
+    for tool in ["whoami.exe", "icacls.exe", "taskkill.exe"] {
+        let path = system32(tool);
+        assert!(path.is_absolute(), "{path:?}");
+        assert!(path.ends_with(Path::new("System32").join(tool)), "{path:?}");
+        assert!(path.exists(), "{path:?}");
+    }
 }
