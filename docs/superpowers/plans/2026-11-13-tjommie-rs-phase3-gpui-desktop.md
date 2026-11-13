@@ -6,6 +6,7 @@
 - **Spec:** `docs/superpowers/specs/2026-11-09-tjommie-rust-rewrite-spec.md`. The parts that matter most here are §1, §2, §3.6, §3.9, §3.10, §4, §5 (Phase 0, the Phase 2 decision record, Phase 3), §6 (the D rows), §7, §8 and §10. Executors read the spec and this plan together.
 - **Evidence:** the spike report, code and scripts at `C:\Users\tyrel\.paseo\worktrees\2cb7zj88\rs-gpui-spike\tjommie-rs\spikes\gpui\` (branch `rs/gpui-spike`, commit `a1b1f59`). The browser memory research is at `C:\Users\tyrel\tmp\orchestrator\webview2-memory-research.md`. Below, "spike `src/x.rs`" means a file in that folder, and "research #n" means the n-th row of the research's ranked recommendations.
 - **Branch:** `rust-rewrite`. Each lane works in its own worktree. The ops agent merges, pushes and tags.
+- **Note:** TypeScript references (`packages/daemon/...`) point at the `legacy` branch since R1.
 
 **Goal:** a Rust desktop app, `Tjommie.exe`, built on GPUI in the Aegis design. It replaces the Electron shell with full desktop parity (every D row in §6) and runs R1's Rust daemon unchanged. It installs over R1 through R1's own electron-updater.
 
