@@ -250,18 +250,35 @@ impl M6 {
         Ok(())
     }
 
-    /// Shutdown, in `daemon.ts`'s order. The server should have stopped taking requests.
-    pub fn close(&self) {
+    /// Shutdown's first step (`daemon.ts:670-671`), before anything waits for the runner: the desktop's worker and Logins
+    /// hosts stop at once. The server should have stopped taking requests.
+    pub fn close_hosts(&self) {
         if let Some(host) = &self.worker_host {
             host.close();
         }
         if let Some(broker) = &self.vault_broker {
             broker.close();
         }
+    }
+
+    /// Shutdown's browser step (`daemon.ts:681-682`), after the runner and the accounts have stopped: while the runner waits
+    /// for its processes a turn can still end, and its hooks still fence the bot's browser tools through these.
+    pub fn close_browser(&self) {
         self.browser_mcp.close_all();
         if let Some(broker) = &self.native_broker {
             broker.close();
         }
+    }
+
+    /// Shutdown's last step (`daemon.ts:685`), after the server: the shared files' transfer leases.
+    pub fn close_files(&self) {
         self.attachments.close();
+    }
+
+    /// All three, in `daemon.ts`'s order, for a caller with nothing to wait for in between.
+    pub fn close(&self) {
+        self.close_hosts();
+        self.close_browser();
+        self.close_files();
     }
 }

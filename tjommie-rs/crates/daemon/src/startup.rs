@@ -282,12 +282,16 @@ impl Daemon {
         &self.root
     }
 
-    /// Stops answering, then closes what the daemon runs, in `daemon.ts`'s order: the phone connection, the M6
-    /// brokers, the project services, the runner (and the CLI processes it owns), the accounts, and last the server.
+    /// Stops answering, then closes what the daemon runs, in `daemon.ts:669-685`'s order: the desktop's worker and Logins
+    /// hosts, the phone connection, the scheduler and the project services, the runner (and the CLI processes it owns),
+    /// the accounts, the native browser and its tool sessions, the server, and last the shared files. The browser steps
+    /// come after the runner on purpose: while it waits for its processes a turn can still end, and its hooks still fence
+    /// the bot's browser tools through them. `runner.shutdown()` and `detach_runner` must stay where they are: the
+    /// accounts' feed and the task service hold the runner until then (see `tests/shutdown.rs`).
     pub async fn close(self) {
         self.server.stop_requests();
+        self.m6.close_hosts();
         self.remote.close().await;
-        self.m6.close();
         self.m4.stop();
         self.m5.shutdown().await;
         if let Err(error) = self.runner.shutdown().await {
@@ -295,8 +299,10 @@ impl Daemon {
         }
         self.accounts.detach_runner();
         self.accounts.runtime.close().await;
+        self.m6.close_browser();
         self.publisher.abort();
         self.server.close().await;
+        self.m6.close_files();
     }
 }
 
