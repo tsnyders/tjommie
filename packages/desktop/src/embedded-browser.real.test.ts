@@ -66,7 +66,9 @@ it("uses a live native guest while retaining details, resize, expansion, cookies
   const create = (name: string) => client.call("bots.create", { name, color: "blue", shape: "circle", provider: "claude", model: "haiku", instructions: "Synthetic native browser fixture", browser: true, autonomy: "ask" });
   const bot = await create("Native browser fixture");
   await openChat(page, bot.name);
-  await page.getByRole("button", { name: "Open browser", exact: true }).click();
+  // "Open browser" is an item of the chat header's More menu, not a button of its own.
+  await page.getByRole("button", { name: "More", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Open browser", exact: true }).click();
   await page.getByRole("button", { name: "Take control", exact: true }).click();
   await page.getByRole("textbox", { name: "Browser address" }).fill(`${origin}/start`);
   await page.getByRole("button", { name: "Go", exact: true }).click();
@@ -111,10 +113,11 @@ it("uses a live native guest while retaining details, resize, expansion, cookies
   expect(String(await guest("document.cookie"))).toContain("native_fixture=signed-in");
   const other = await create("Other native fixture");
   await screenshot("browser-usability-rail.png", 96);
-  const state = await client.call("browser.open", { botId: other.id });
-  await client.call("browser.control", { botId: other.id, control: "human" });
-  if (!state.activePageId) throw new Error("Second guest has no page.");
-  await client.call("browser.navigate", { botId: other.id, generation: state.generation, pageId: state.activePageId, url: `${origin}/other` });
+  await client.call("browser.open", { botId: other.id });
+  // The daemon rejects navigate without the current control epoch, which taking control returns.
+  const controlled = await client.call("browser.control", { botId: other.id, control: "human" });
+  if (!controlled.activePageId || controlled.controlEpoch === undefined) throw new Error("Second guest has no page or control epoch.");
+  await client.call("browser.navigate", { botId: other.id, generation: controlled.generation, pageId: controlled.activePageId, controlEpoch: controlled.controlEpoch, url: `${origin}/other` });
   await eventually(async () => await electronApp.evaluate(({ webContents }, fixtureOrigin) => webContents.getAllWebContents().some((contents) => contents.getURL() === `${fixtureOrigin}/other`), origin) || undefined);
   const cookies = await electronApp.evaluate(async ({ webContents }, fixtureOrigin) => {
     const target = webContents.getAllWebContents().find((contents) => contents.getURL() === `${fixtureOrigin}/other`);
