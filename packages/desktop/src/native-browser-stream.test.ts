@@ -419,7 +419,7 @@ describe("polled capture beside a live stream", () => {
 type FakeHost = {
   port: number;
   posted: { authorization: string | undefined; raw: string }[];
-  reply: { status: number };
+  reply: { status: number; hang: boolean };
   close: () => Promise<void>;
 };
 const closeServer = async (server: Server): Promise<void> => {
@@ -429,7 +429,7 @@ const closeServer = async (server: Server): Promise<void> => {
 /** A stand-in for the daemon's /browser-host: GETs idle with 204 after 100 ms, POSTs are recorded and answered with `reply.status`. */
 async function startFakeHost(): Promise<FakeHost> {
   const posted: FakeHost["posted"] = [];
-  const reply = { status: 204 };
+  const reply = { status: 204, hang: false };
   const server = createServer((request, response) => {
     if (request.method === "POST") {
       let raw = "";
@@ -437,7 +437,8 @@ async function startFakeHost(): Promise<FakeHost> {
       request.on("data", (chunk: string) => { raw += chunk; });
       request.on("end", () => {
         posted.push({ authorization: request.headers.authorization, raw });
-        response.writeHead(reply.status).end();
+        // A hanging daemon has taken the request and never answers it.
+        if (!reply.hang) response.writeHead(reply.status).end();
       });
       return;
     }
@@ -489,6 +490,31 @@ describe("native browser stream through the host bridge", () => {
     host = startNativeBrowserHost({ port: fake.port, token, execute: async () => ({}) });
     await fake.close();
     await expect(host.send(frameMessage(1, 1000))).resolves.toBe(false);
+  }, 15_000);
+
+  it("host.send gives up after 2 s on a daemon that takes the request and never answers", async () => {
+    fake = await startFakeHost();
+    fake.reply.hang = true;
+    host = startNativeBrowserHost({ port: fake.port, token, execute: async () => ({}) });
+    const started = performance.now();
+    await expect(host.send(frameMessage(1, 1000))).resolves.toBe(false);
+    const waited = performance.now() - started;
+    // It was posted, and it waited out the timeout rather than hanging (or giving up at once).
+    expect(fake.posted).toHaveLength(1);
+    expect(waited).toBeGreaterThanOrEqual(1900);
+    expect(waited).toBeLessThan(6000);
+  }, 15_000);
+
+  it("closing the host ends a post that is waiting on a daemon that never answers", async () => {
+    fake = await startFakeHost();
+    fake.reply.hang = true;
+    host = startNativeBrowserHost({ port: fake.port, token, execute: async () => ({}) });
+    const sending = host.send(frameMessage(1, 1000));
+    await vi.waitFor(() => expect(fake?.posted).toHaveLength(1));
+    const started = performance.now();
+    await host.close();
+    await expect(sending).resolves.toBe(false);
+    expect(performance.now() - started).toBeLessThan(1500);
   }, 15_000);
 
   it("host.send resolves false once the host is closed", async () => {
