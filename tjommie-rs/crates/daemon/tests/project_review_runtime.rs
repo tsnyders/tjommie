@@ -893,6 +893,7 @@ mod worker {
         };
         for folder in [
             &config.worker_root,
+            &config.peer_root,
             &config.runtime_root,
             &config.owner_data_root,
             &root.join("daemon"),
@@ -906,6 +907,26 @@ mod worker {
             .owner_data_root
             .join(Purpose::Review.configuration_file());
         fs::write(&configuration_path, serde_json::to_string(&config).unwrap()).unwrap();
+        // `WorkerConfiguration::load` reads this purpose's file and its peer's, and validates the pair (as
+        // `windows-worker.ts:202-211` does); the TypeScript `syntheticWorker` is a fake and skips the files. The provider
+        // is the mirror image: the roots and SIDs swapped, its own account name and credential target.
+        let provider = WorkerConfiguration {
+            purpose: Purpose::Provider,
+            worker_sid: config.peer_sid.clone(),
+            peer_sid: config.worker_sid.clone(),
+            worker_name: "TjWorker-12345678".into(),
+            worker_root: config.peer_root.clone(),
+            peer_root: config.worker_root.clone(),
+            credential_target: format!("Tjommie/{}/isolated-worker", "a".repeat(24)),
+            ..config.clone()
+        };
+        fs::write(
+            config
+                .owner_data_root
+                .join(Purpose::Provider.configuration_file()),
+            serde_json::to_string(&provider).unwrap(),
+        )
+        .unwrap();
 
         let state = Arc::new(WorkerState {
             observations: AtomicUsize::new(0),
