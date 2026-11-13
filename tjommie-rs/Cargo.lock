@@ -317,6 +317,7 @@ dependencies = [
  "ed25519-dalek",
  "futures-util",
  "getrandom 0.4.3",
+ "http-body",
  "jiff",
  "jsonschema",
  "protocol",
