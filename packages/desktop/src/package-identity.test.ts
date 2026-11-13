@@ -7,7 +7,13 @@ import { testIdentity } from "../scripts/update-test-guards.ts";
 import { verifySpeechResources } from "./speech-resources.ts";
 
 vi.mock("node:child_process", async (original) => ({ ...await original<typeof import("node:child_process")>(), execSync: vi.fn() }));
-vi.mock("node:fs", async (original) => ({ ...await original<typeof import("node:fs")>(), appendFileSync: vi.fn(), cpSync: vi.fn(), mkdirSync: vi.fn(), rmSync: vi.fn(), writeFileSync: vi.fn() }));
+// CI and the release workflow run `npm test` before they build the Rust daemon, so the packaging script's check that the release
+// exe exists must not need the file: `existsSync` answers for it, and the copy of it (`cpSync`) is mocked below.
+vi.mock("node:fs", async (original) => {
+  const real = await original<typeof import("node:fs")>();
+  const releaseDaemon = (path: Parameters<typeof real.existsSync>[0]): boolean => String(path).replaceAll("\\", "/").endsWith("tjommie-rs/target/release/tjommie-daemon.exe");
+  return { ...real, existsSync: (path: Parameters<typeof real.existsSync>[0]) => releaseDaemon(path) || real.existsSync(path), appendFileSync: vi.fn(), cpSync: vi.fn(), mkdirSync: vi.fn(), rmSync: vi.fn(), writeFileSync: vi.fn() };
+});
 vi.mock("electron-builder", () => ({ default: { build: vi.fn(), Platform: { WINDOWS: { createTarget: vi.fn() } }, Arch: { x64: 1 } } }));
 vi.mock("rolldown", () => ({ rolldown: async () => ({ write: vi.fn(), close: vi.fn() }) }));
 vi.mock("../../../scripts/prepare-ui.ts", () => ({ prepareUiAssets: vi.fn() }));
