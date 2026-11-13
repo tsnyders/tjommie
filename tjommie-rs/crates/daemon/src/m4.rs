@@ -4,7 +4,7 @@
 //!
 //! **Order.** The runner needs M4's hooks when it is built, and M4's tools and wake-ups need the runner, so M4 is made
 //! first ([`M4::new`]), the runner is built with the hook bodies below, and then [`M4::attach`] gives M4 the runner and
-//! [`M4::install`] registers the handlers and the `/mcp` route. [`M4::start`] comes with the daemon's other starts.
+//! [`M4::install`] registers the handlers and the `/mcp` route. [`M4::start_team`] and [`M4::start_scheduler`] come with the daemon's other starts.
 //!
 //! **Hooks.** The runner calls these with its locks held. The daemon's own `turnEnded` also runs the task hooks first and
 //! the turn notice after, which belong to other tasks, so Core's hooks call these methods inside their own closures:
@@ -25,8 +25,9 @@ use std::time::Duration;
 
 use futures_util::FutureExt;
 use protocol::ErrorCode;
-use protocol::model::Message;
+use protocol::model::{Approval, ApprovalDecision, Autonomy, Message};
 
+use crate::bots::StoredBot;
 use crate::context::{Context, Db};
 use crate::mcp::{McpTokens, McpTool, mcp_route};
 use crate::providers::McpServer;
@@ -36,7 +37,7 @@ use crate::routines::{self, TurnEnded, now_ms};
 use crate::runner::{Broadcast, Core, Log, Runner, TurnResult};
 use crate::scheduler::{self, Scheduler, SchedulerDeps, TICK_MS};
 use crate::server::{Handlers, Routes, RpcError};
-use crate::team::{self, HostAccess, SharedAttachments, Team, TeamDeps};
+use crate::team::{self, BotDeletionHandle, HostAccess, SharedAttachments, Team, TeamDeps};
 
 pub struct M4Deps {
     pub db: Db,
@@ -145,9 +146,13 @@ impl M4 {
         Ok(())
     }
 
-    /// `team.start()` and `scheduler.start()`: after the runner's recovery and before work starts. Inside a tokio runtime.
-    pub fn start(&self) -> Result<(), RpcError> {
+    /// `team.start()`: removes stale file snapshots. `daemon.ts` runs it just before `runner.recover()`.
+    pub fn start_team(&self) {
         self.team.start();
+    }
+
+    /// `scheduler.start()`: `daemon.ts` runs it right after `runner.start()`. Inside a tokio runtime.
+    pub fn start_scheduler(&self) -> Result<(), RpcError> {
         self.scheduler.start()
     }
 
@@ -160,12 +165,19 @@ impl M4 {
     /// The `tjommie` entry of `mcpServers`: this MCP endpoint, with a fresh token for the session.
     pub fn mcp_server(&self, bot_id: &str, mcp_url: &str) -> McpServer {
         let token = self.tokens.issue(bot_id);
-        McpServer::Http {
-            name: "tjommie".to_owned(),
-            url: mcp_url.to_owned(),
-            headers: BTreeMap::from([("Authorization".to_owned(), format!("Bearer {token}"))]),
-            auto_allow: true,
+        http_server("tjommie", mcp_url, &token, true)
+    }
+
+    /// The whole `mcpServers` list of `daemon.ts`: `tjommie`, and `browser` (`mcp_url` + `/browser`, M6's proxy) when the bot's
+    /// browser is on. One token serves both, and it asks nothing for browser tools unless the bot's autonomy is `ask`.
+    pub fn mcp_servers(&self, bot: &StoredBot, mcp_url: &str) -> Vec<McpServer> {
+        let token = self.tokens.issue(&bot.id);
+        let mut servers = vec![http_server("tjommie", mcp_url, &token, true)];
+        if bot.browser {
+            let url = format!("{mcp_url}/browser");
+            servers.push(http_server("browser", &url, &token, bot.autonomy != Autonomy::Ask));
         }
+        servers
     }
 
     /// `sessionClosed`: the session's token stops working, and its autonomous chain ends.
@@ -208,6 +220,32 @@ impl M4 {
         settled.and(answered)
     }
 
+    // ---- what the handlers call, through the runner's host ----
+
+    /// `team.botDeleting(id)`: captures the bot's open exchanges and snapshot folders, before its row goes.
+    pub fn bot_deleting(&self, bot_id: &str) -> Result<BotDeletionHandle, RpcError> {
+        let runner = self.runner()?;
+        team::with_host(&runner, |host| self.team.bot_deleting(host, bot_id))
+    }
+
+    /// `team.botDeleted(handle)`: after the bot's row is gone, answers its open exchanges and frees its snapshots.
+    pub fn bot_deleted(&self, handle: &BotDeletionHandle) -> Result<(), RpcError> {
+        let runner = self.runner()?;
+        team::with_host(&runner, |host| self.team.bot_deleted(host, handle))
+    }
+
+    /// `team.answerRoutineProposal`: `approvals.respond` for a routine proposal. The caller pumps the bot's queue.
+    pub fn answer_routine_proposal(
+        &self,
+        approval_id: &str,
+        decision: ApprovalDecision,
+    ) -> Result<Approval, RpcError> {
+        let runner = self.runner()?;
+        team::with_host(&runner, |host| {
+            self.team.answer_routine_proposal(host, approval_id, decision)
+        })
+    }
+
     /// `retryRoutine`: a manual retry of a routine run, from its label message.
     pub fn retry_routine(
         &self,
@@ -215,5 +253,14 @@ impl M4 {
         message: &Message,
     ) -> Result<Message, RpcError> {
         self.scheduler.retry(core, message)
+    }
+}
+
+fn http_server(name: &str, url: &str, token: &str, auto_allow: bool) -> McpServer {
+    McpServer::Http {
+        name: name.to_owned(),
+        url: url.to_owned(),
+        headers: BTreeMap::from([("Authorization".to_owned(), format!("Bearer {token}"))]),
+        auto_allow,
     }
 }
