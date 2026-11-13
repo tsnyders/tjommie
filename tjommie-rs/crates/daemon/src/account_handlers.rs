@@ -348,6 +348,13 @@ impl Accounts {
         *lock(&self.feed.runner) = Some(runner);
     }
 
+    /// Takes the runner back, and lets the bot view go of it too. The runner holds the accounts, whose callbacks hold
+    /// this feed, so at shutdown neither would otherwise let the other (and the database) go.
+    pub fn detach_runner(&self) {
+        lock(&self.feed.runner).take();
+        self.feed.bot_view.release();
+    }
+
     /// Hands the accounts the folder protection (`protect: () => refreshProtection(true)`). Set once.
     pub fn attach_protection(&self, protection: Arc<FolderProtection>) {
         let _ = self.feed.protection.set(protection);

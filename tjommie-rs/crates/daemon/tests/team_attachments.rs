@@ -380,9 +380,17 @@ fn publishes_explicit_companion_ownership_atomically_and_revokes_it_with_its_par
     });
     let shared = fx.attachments.as_ref().unwrap();
     fx.db(|db| shared.cleanup(db).unwrap());
-    assert!(!attachment_exists(&fx, &companion.attachment_id));
+    // The parent's link to the companion goes with the parent, so a read through it is refused: the TypeScript test checks
+    // that a transfer opened on that link rejects `unavailable` (`team.attachments.test.ts:77-79`).
+    assert_eq!(link_of(&fx, &message.id, companion.attachment_index), None);
+    // The attachment itself stays: `#shareFile` (`team.ts:538-540`) also posts the companion's own file card, which links
+    // it, so deleting only the parent's card does not orphan it.
     assert!(
-        !fx.shared_files()
+        attachment_exists(&fx, &companion.attachment_id),
+        "the companion's own card still holds it"
+    );
+    assert!(
+        fx.shared_files()
             .join("attachments")
             .join(companion_file)
             .exists()

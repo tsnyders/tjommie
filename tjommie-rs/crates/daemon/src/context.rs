@@ -28,6 +28,9 @@ pub type Db = Arc<Mutex<Connection>>;
 /// [`StoredState`] (`runner.ts:194-214`).
 pub trait BotView: Send + Sync {
     fn to_bot(&self, db: &Connection, bot: StoredBot) -> Bot;
+
+    /// Lets go of whatever the view holds, at shutdown. Most views hold nothing.
+    fn release(&self) {}
 }
 
 /// A bot as the database alone knows it: signed in and never busy, but paused, limited or waiting on a routine proposal.
@@ -55,21 +58,35 @@ impl BotView for StoredState {
 /// A [`BotView`] bound after it is handed out: the runner needs the accounts, and the accounts' feed needs the runner's
 /// view. Until bound it is [`StoredState`].
 #[derive(Clone, Default)]
-pub struct LateBotView(Arc<OnceLock<Arc<dyn BotView>>>);
+pub struct LateBotView(Arc<Mutex<Option<Arc<dyn BotView>>>>);
 
 impl LateBotView {
     /// Binds the view. Set once; a second call is ignored.
     pub fn bind(&self, view: Arc<dyn BotView>) {
-        let _ = self.0.set(view);
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get_or_insert(view);
     }
 }
 
 impl BotView for LateBotView {
     fn to_bot(&self, db: &Connection, bot: StoredBot) -> Bot {
-        match self.0.get() {
+        let view = self
+            .0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        match view {
             Some(view) => view.to_bot(db, bot),
             None => StoredState.to_bot(db, bot),
         }
+    }
+
+    /// The bound view is the runner, which holds the accounts whose feed holds this: neither would let the other (and the
+    /// database) go. After this the view is [`StoredState`] again.
+    fn release(&self) {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner).take();
     }
 }
 

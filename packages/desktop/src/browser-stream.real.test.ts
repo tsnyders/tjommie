@@ -33,7 +33,9 @@ it.runIf(Boolean(process.env.TJOMMIE_DAEMON_EXE))("streams the 1280x800 fixture 
     const botId = bot.id;
     // The panel opens as in the embedded test. An unmounted view may never paint, and the stream only sends painted frames.
     await openChat(page, bot.name);
-    await page.getByRole("button", { name: "Open browser", exact: true }).click();
+    // "Open browser" is an item of the chat header's More menu, not a button of its own.
+    await page.getByRole("button", { name: "More", exact: true }).click();
+    await page.getByRole("menuitem", { name: "Open browser", exact: true }).click();
     await client.call("browser.open", { botId });
     const controlled = await client.call("browser.control", { botId, control: "human" });
     // The daemon rejects navigate and resize without the current control epoch.
@@ -43,7 +45,7 @@ it.runIf(Boolean(process.env.TJOMMIE_DAEMON_EXE))("streams the 1280x800 fixture 
       return { botId, generation: state.generation, pageId: state.activePageId, controlEpoch: state.controlEpoch };
     };
     const navigated = await client.call("browser.navigate", { ...target(controlled), url: `${origin}${STREAM_FIXTURE_PATH}` });
-    await client.call("browser.resize", { ...target(navigated), width: 1280, height: 800 });
+    const resized = await client.call("browser.resize", { ...target(navigated), width: 1280, height: 800 });
 
     // The harness client keeps every event it receives; a minute of frames would stay in memory. A stream is per
     // connection anyway, so the viewer is its own connection, opened like the UI's but without recording.
@@ -52,12 +54,15 @@ it.runIf(Boolean(process.env.TJOMMIE_DAEMON_EXE))("streams the 1280x800 fixture 
     viewer = watching;
     const arrivals: number[] = [];
     const endings: number[] = [];
+    // Each frame names its page, so a tab switch can be seen in the frames.
+    const frames: { at: number; pageId: string | undefined }[] = [];
     let firstFrame: { width: number; height: number } | undefined;
     const unsubscribe = watching.subscribe((event) => {
       if (event.event !== "browser.streamFrame" || event.data.botId !== botId) return;
       const { frame } = event.data;
       if (frame === null) { endings.push(performance.now()); return; }
       arrivals.push(performance.now());
+      frames.push({ at: performance.now(), pageId: frame.pageId });
       firstFrame ??= { width: frame.width, height: frame.height };
       // Every frame is acknowledged. The daemon stops sending after two unacknowledged frames.
       void watching.call("browser.streamAck", { botId, sequence: frame.sequence }).catch(() => {});
@@ -66,6 +71,27 @@ it.runIf(Boolean(process.env.TJOMMIE_DAEMON_EXE))("streams the 1280x800 fixture 
     const measureFrom = performance.now() + WARM_UP_MS;
     await sleep(WARM_UP_MS + MEASURE_MS);
     const measureTo = performance.now();
+
+    // A tab switch while streaming: a page switch moves the stream to the new active page (only a private interaction, a close
+    // or a failure ends it, `native-browser.ts` `#syncStream`), so frames keep coming, now from that page, and no end arrives.
+    const endedBefore = endings.length;
+    const framesFrom = async (pageId: string, since: number): Promise<void> => {
+      for (const deadline = performance.now() + 15_000; performance.now() < deadline; await sleep(100)) {
+        if (frames.some((frame) => frame.at >= since && frame.pageId === pageId)) return;
+      }
+      throw new Error(`No frame from page ${pageId} within 15 s of the tab switch.`);
+    };
+    const firstPage = resized.activePageId;
+    if (!firstPage) throw new Error("The browser has no active page.");
+    const openedAt = performance.now();
+    const second = await client.call("browser.tab", { botId, generation: resized.generation, ...(resized.controlEpoch === undefined ? {} : { controlEpoch: resized.controlEpoch }), action: "new" });
+    if (!second.activePageId || second.activePageId === firstPage) throw new Error("The new tab did not become the active page.");
+    await framesFrom(second.activePageId, openedAt);
+    const backAt = performance.now();
+    await client.call("browser.tab", { botId, generation: second.generation, ...(second.controlEpoch === undefined ? {} : { controlEpoch: second.controlEpoch }), action: "select", pageId: firstPage });
+    await framesFrom(firstPage, backAt);
+    expect(endings.length, "the stream ended across a tab switch").toBe(endedBefore);
+
     await watching.call("browser.stream", { botId, on: false });
     unsubscribe();
 

@@ -1518,7 +1518,16 @@ mod scheduler {
             "{:?}",
             logs(&f)
         );
-        assert!(runs(&f.db, &routine.id).is_empty());
+        // `runs` reads through `routines` (`listRuns` joins it for the bot id, `routines.ts:186`), which is offline, so
+        // count the rows straight off `routine_runs`.
+        let recorded: i64 = lock(&f.db)
+            .query_row(
+                "SELECT COUNT(*) FROM routine_runs WHERE routine_id = ?1",
+                [&routine.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(recorded, 0);
         // Due at the next tick, which is the first to see the table again.
         f.clock.store(at("2026-09-20T08:00:00Z"), SeqCst);
         lock(&f.db)

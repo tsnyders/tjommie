@@ -293,6 +293,7 @@ impl Daemon {
         if let Err(error) = self.runner.shutdown().await {
             eprintln!("{error}");
         }
+        self.accounts.detach_runner();
         self.accounts.runtime.close().await;
         self.publisher.abort();
         self.server.close().await;
@@ -310,6 +311,11 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 /// `startDaemon`: check the tokens, hold the port, open the data root and its database, build the daemon's services and
 /// answer.
 pub async fn start(launch: &Launch, auth: &Auth) -> Result<Daemon, StartupError> {
+    start_in(launch, auth, paths::data_root()).await
+}
+
+/// [`start`] on a given data root, which is how a test runs a whole daemon on a temporary one.
+pub async fn start_in(launch: &Launch, auth: &Auth, root: PathBuf) -> Result<Daemon, StartupError> {
     if let Auth::Production {
         token,
         desktop_host_token,
@@ -346,7 +352,6 @@ pub async fn start(launch: &Launch, auth: &Auth) -> Result<Daemon, StartupError>
             )),
             _ => StartupError::Unexpected(error),
         })?;
-    let root = paths::data_root();
     let parts = match assemble(launch, auth, &root, &server) {
         Ok(parts) => parts,
         Err(error) => {
