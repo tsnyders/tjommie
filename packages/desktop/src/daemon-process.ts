@@ -90,6 +90,13 @@ export function dataRootFor(env: NodeJS.ProcessEnv, packaged: boolean, productNa
   return env.TJOMMIE_HOME ?? testDataRoot ?? join(env.LOCALAPPDATA ?? join(home, ".local", "share"), packaged ? productName : DEV_FOLDER);
 }
 
+// The Electron profile of this run (cookies, local storage, the single-instance lock): TJOMMIE_USER_DATA, else an isolated
+// test build's, else, unpackaged, an `electron` folder in the development data folder, so a run from source has a profile and
+// a lock of its own beside an installed Tjommie. null: an installed app keeps Electron's default, %APPDATA%\<product name>.
+export function userDataFor(env: NodeJS.ProcessEnv, packaged: boolean, dataRoot: string, testDataRoot?: string): string | null {
+  return env.TJOMMIE_USER_DATA || (testDataRoot || !packaged ? join(dataRoot, "electron") : null);
+}
+
 // TJOMMIE_HOME always follows the data root. TJOMMIE_PORT is only forced for a disposable test root; an inherited one
 // passes through, so a second install sets both and never contends for port 47100. A development run, when it inherits no
 // port, gets the development ports, whichever daemon exe (debug or release) it starts.

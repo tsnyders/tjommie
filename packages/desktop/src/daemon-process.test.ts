@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import { connect } from "@tjommie/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { credentialNamespace } from "./credential-transport.ts";
-import { BUILD_RUST_DAEMON, DEV_LAN_PORT, DEV_PORT, daemonCommand, daemonEnv, daemonExecutable, daemonLaunchEnv, dataRootFor, developmentDaemonMessage, listeningPort, newToken, packagedDaemonPath, sourceDaemonPath, startDaemonProcess, stopWithin, type DaemonLaunch, type RunningDaemon } from "./daemon-process.ts";
+import { BUILD_RUST_DAEMON, DEV_LAN_PORT, DEV_PORT, daemonCommand, daemonEnv, daemonExecutable, daemonLaunchEnv, dataRootFor, developmentDaemonMessage, listeningPort, newToken, packagedDaemonPath, sourceDaemonPath, startDaemonProcess, stopWithin, userDataFor, type DaemonLaunch, type RunningDaemon } from "./daemon-process.ts";
 
 const repoRoot = resolve(import.meta.dirname, "..", "..", "..");
 // The Rust daemon the process tests start: TJOMMIE_DAEMON_EXE, else the debug build. Build it with
@@ -168,15 +168,43 @@ describe("daemon process", () => {
       expect(developmentDaemonMessage({ TJOMMIE_HOME: "C:\\chosen", TJOMMIE_PORT: "47300" }, "C:\\chosen", 47300)).toBe(`${start}, with the same TJOMMIE_HOME=C:\\chosen and TJOMMIE_PORT=47300 as this app.`);
     });
 
-    // main.ts is the Electron entry and cannot be imported by a test, so check that it takes its folder, port and launch
-    // environment from the functions above instead of deriving its own, which is how a run from source reached the installed app's data.
-    it("takes the data folder, the development port and the launch environment from those functions in main.ts", () => {
-      const main = readFileSync(resolve(import.meta.dirname, "main.ts"), "utf8");
+    it("gives an unpackaged run an Electron profile of its own, never the installed app's, and an installed app Electron's default", () => {
+      const roaming = "C:\\Users\\owner\\AppData\\Roaming";
+      const installedProfile = join(roaming, "Tjommie");
+      const devRoot = dataRootFor({ LOCALAPPDATA: local }, false, "Tjommie");
+      const unpackaged = userDataFor({}, false, devRoot);
+      expect(unpackaged).toBe(join(local, "Tjommie-rs", "electron"));
+      expect(unpackaged).not.toBe(installedProfile);
+      expect(unpackaged?.toLowerCase().startsWith(roaming.toLowerCase())).toBe(false);
+      // null means no override at all: an installed app keeps Electron's default, %APPDATA%\Tjommie, as it always has.
+      expect(userDataFor({}, true, installedFolder)).toBeNull();
+      // An explicit TJOMMIE_USER_DATA wins in both (an empty one is no setting); an isolated test build keeps its own root's profile.
+      for (const packaged of [false, true]) {
+        expect(userDataFor({ TJOMMIE_USER_DATA: "C:\\profile" }, packaged, devRoot, "C:\\test-root")).toBe("C:\\profile");
+        expect(userDataFor({ TJOMMIE_USER_DATA: "" }, packaged, devRoot)).toBe(packaged ? null : join(devRoot, "electron"));
+      }
+      expect(userDataFor({}, true, "C:\\test-root", "C:\\test-root")).toBe(join("C:\\test-root", "electron"));
+      // A development run on an explicit data folder carries its profile with it.
+      expect(userDataFor({}, false, dataRootFor({ TJOMMIE_HOME: "C:\\chosen" }, false, "Tjommie"))).toBe(join("C:\\chosen", "electron"));
+    });
+
+    // main.ts is the Electron entry and cannot be imported by a test, so check that it takes its folder, profile, port and launch
+    // environment from the functions above instead of deriving its own, which is how a run from source reached the installed
+    // app's data, and that the test-only switches stay keyed on the explicit TJOMMIE_USER_DATA, not on a derived profile.
+    it("takes the data folder, profile, development port and launch environment from those functions in main.ts", () => {
+      const main = readFileSync(resolve(import.meta.dirname, "main.ts"), "utf8").replaceAll("\r\n", "\n");
       expect(main).toContain("const dataRoot = dataRootFor(process.env, packaged, productName, packageIdentity.testDataRoot);");
+      expect(main).toContain("const userData = userDataFor(process.env, packaged, dataRoot, packageIdentity.testDataRoot);");
+      expect(main).toContain(`if (userData !== null) {\n  mkdirSync(userData, { recursive: true });\n  app.setPath("userData", userData);`);
+      expect(main.match(/app\.setPath\("userData"/g)).toHaveLength(1);
       expect(main).toContain("daemonLaunchEnv(process.env, dataRoot, !!packageIdentity.testDataRoot, !packaged)");
       expect(main).toContain("Number(process.env.TJOMMIE_PORT ?? DEV_PORT)");
       expect(main).toContain("developmentDaemonMessage(process.env, dataRoot, port)");
       expect(main).not.toMatch(/LOCALAPPDATA|47100|47101/);
+      // The login item, the updater switch and the account-folder hook follow an explicit TJOMMIE_USER_DATA only.
+      expect(main).toContain("if (!process.env.TJOMMIE_USER_DATA && !packageIdentity.testDataRoot) {");
+      expect(main).toContain(`TJOMMIE_UPDATES: (process.env.TJOMMIE_USER_DATA && APP_ID === "com.tsnyders.tjommie")`);
+      expect(main).toContain("process.env.TJOMMIE_USER_DATA ? process.env.TJOMMIE_ACCOUNTS_DIR || undefined : undefined");
     });
   });
 

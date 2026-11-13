@@ -8,7 +8,7 @@ import { NativeBrowserMount, NativeBrowserUiCommand, type EventData } from "@tjo
 import updater from "electron-updater";
 import { navigationFor, uiFile } from "./app-protocol.ts";
 import { notesFile } from "./bot-files.ts";
-import { DEV_PORT, daemonCommand, daemonLaunchEnv, dataRootFor, developmentDaemonMessage, packagedDaemonPath, startDaemonProcess, stopDaemonBeforeQuit, type DaemonConnection, type RunningDaemon } from "./daemon-process.ts";
+import { DEV_PORT, daemonCommand, daemonLaunchEnv, dataRootFor, developmentDaemonMessage, packagedDaemonPath, startDaemonProcess, stopDaemonBeforeQuit, userDataFor, type DaemonConnection, type RunningDaemon } from "./daemon-process.ts";
 import { notificationDelivery, notificationRoute } from "./notification-delivery.ts";
 import { beginGoogleConsent } from "./google-consent.ts";
 import { NativeBrowserEngine } from "./native-browser.ts";
@@ -105,10 +105,12 @@ function log(text: string): void {
 }
 
 app.setName(productName);
-if (process.env.TJOMMIE_USER_DATA || packageIdentity.testDataRoot) {
-  const userData = process.env.TJOMMIE_USER_DATA ?? join(dataRoot, "electron");
+// Tests and unpackaged runs get a profile and a single-instance lock of their own, including the update relaunch; an
+// installed app keeps Electron's default. See userDataFor.
+const userData = userDataFor(process.env, packaged, dataRoot, packageIdentity.testDataRoot);
+if (userData !== null) {
   mkdirSync(userData, { recursive: true });
-  app.setPath("userData", userData); // tests: their own profile and lock, including the update relaunch
+  app.setPath("userData", userData);
 }
 protocol.registerSchemesAsPrivileged([{ scheme: "app", privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }]);
 
@@ -211,10 +213,13 @@ function start(): void {
   session.defaultSession.webRequest.onBeforeRequest({ urls: ["app://tjommie/*"] }, (request, callback) => callback({ cancel: isAttachmentUrl(request.url) && !deviceBridge?.permitsAttachmentRequest(request) }));
   session.defaultSession.on("will-download", (event, item) => { if (isAttachmentUrl(item.getURL())) event.preventDefault(); });
   protocol.handle("app", serveUi);
-  // The disposable packaged smoke uses a real app identity, so never register it at Windows sign-in.
+  // The disposable packaged smoke uses a real app identity, so never register it at Windows sign-in. This stays keyed on the
+  // explicit TJOMMIE_USER_DATA, not on the profile an unpackaged run now derives: an unpackaged run is skipped in syncLoginItem already.
   if (!process.env.TJOMMIE_USER_DATA && !packageIdentity.testDataRoot) {
     try { syncLoginItem(app); } catch (error) { log(`Could not set start at login: ${String(error)}`); }
   }
+  // Keyed on the explicit TJOMMIE_USER_DATA too: a packaged smoke run must not update the real install. An unpackaged run is
+  // "unsupported" in createUpdater whatever the profile.
   updates = createUpdater(packaged, autoUpdater, {
     TJOMMIE_UPDATES: (process.env.TJOMMIE_USER_DATA && APP_ID === "com.tsnyders.tjommie") ||
       (packageIdentity.testDataRoot && !process.env.TJOMMIE_UPDATE_FEED) ? "off" : process.env.TJOMMIE_UPDATES,
@@ -301,7 +306,8 @@ async function launchDaemon(): Promise<DaemonConnection> {
     {
       ...daemonCommand(process.env, bundledDaemon, repoRoot),
       env: daemonLaunchEnv(process.env, dataRoot, !!packageIdentity.testDataRoot, !packaged),
-      // Only an isolated desktop test may redirect the daemon's account folders.
+      // Only an isolated desktop test may redirect the daemon's account folders: an explicit TJOMMIE_USER_DATA (a test
+      // that also names its accounts), never the profile an unpackaged run derives for itself.
       testAccountsDir: packageIdentity.testDataRoot
         ? join(dataRoot, "accounts")
         : process.env.TJOMMIE_USER_DATA ? process.env.TJOMMIE_ACCOUNTS_DIR || undefined : undefined,
@@ -510,7 +516,7 @@ function registerIpc(): void {
   ipcMain.handle("login-item:get", () => getLoginItem(app));
   ipcMain.handle("login-item:set", (_event, on: unknown) => {
     if (typeof on !== "boolean") throw new Error("Invalid start at login setting.");
-    if (process.env.TJOMMIE_USER_DATA && APP_ID === "com.tsnyders.tjommie") return;
+    if (process.env.TJOMMIE_USER_DATA && APP_ID === "com.tsnyders.tjommie") return; // a packaged smoke run; unpackaged is a no-op in setLoginItem
     setLoginItem(app, on);
   });
   ipcMain.handle("updates:state", () => updates?.state() ?? { status: "unsupported" });
