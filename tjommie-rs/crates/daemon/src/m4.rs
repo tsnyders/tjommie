@@ -20,7 +20,7 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use futures_util::FutureExt;
@@ -33,7 +33,7 @@ use crate::mcp::{McpTokens, McpTool, mcp_route};
 use crate::providers::McpServer;
 use crate::queue::WorkItem;
 use crate::rooms;
-use crate::routines::{self, TurnEnded, now_ms};
+use crate::routines::{self, now_ms};
 use crate::runner::{Broadcast, Core, Log, Runner, TurnResult};
 use crate::scheduler::{self, Scheduler, SchedulerDeps, TICK_MS};
 use crate::server::{Handlers, Routes, RpcError};
@@ -50,8 +50,21 @@ pub struct M4Deps {
     /// `cleanupSharedFiles()`: runs after a room is deleted.
     pub cleanup_shared: Arc<dyn Fn() + Send + Sync>,
     /// The daemon's composed `turnEnded` (task hooks, M4's [`M4::turn_ended`], the turn notice). `routines.delete` ends
-    /// the work its routine had queued through it.
-    pub turn_ended: TurnEnded,
+    /// the work its routine had queued through it. It is given the M4 to call rather than capturing it: M4 holds this
+    /// closure, so a closure holding M4 would keep both alive for ever.
+    pub turn_ended: DaemonTurnEnded,
+}
+
+/// [`M4Deps::turn_ended`]: the daemon's `turnEnded`, run with the M4 and the runner's [`Core`].
+pub type DaemonTurnEnded =
+    Arc<dyn Fn(&M4, &mut Core<'_>, &WorkItem, &TurnResult) -> Result<(), String> + Send + Sync>;
+
+/// The runner M4 works with, once [`M4::attach`] gives it and until [`M4::stop`] takes it back. The runner's hooks hold
+/// M4, so M4 must let go of the runner or the two keep each other (and the database handle) alive after shutdown.
+type RunnerSlot = Arc<Mutex<Option<Runner>>>;
+
+fn current(slot: &RunnerSlot) -> Option<Runner> {
+    slot.lock().unwrap_or_else(PoisonError::into_inner).clone()
 }
 
 pub struct M4 {
@@ -59,14 +72,15 @@ pub struct M4 {
     pub tokens: McpTokens,
     pub team: Arc<Team>,
     pub scheduler: Scheduler,
-    runner: Arc<OnceLock<Runner>>,
+    runner: RunnerSlot,
     cleanup_shared: Arc<dyn Fn() + Send + Sync>,
-    turn_ended: TurnEnded,
+    daemon_turn_ended: DaemonTurnEnded,
+    log: Log,
 }
 
 impl M4 {
     pub fn new(deps: M4Deps) -> M4 {
-        let runner: Arc<OnceLock<Runner>> = Arc::new(OnceLock::new());
+        let runner: RunnerSlot = Arc::default();
         let team = Arc::new(Team::new(TeamDeps {
             broadcast: deps.broadcast.clone(),
             log: deps.log.clone(),
@@ -74,18 +88,19 @@ impl M4 {
             attachments: deps.attachments,
         }));
         let (delivering, stopping) = (runner.clone(), runner.clone());
+        let log = deps.log.clone();
         let scheduler = Scheduler::new(SchedulerDeps {
             db: deps.db,
             broadcast: deps.broadcast,
             deliver: Arc::new(move |item: &WorkItem| {
-                let runner = delivering.get().ok_or("The runner is not ready")?;
+                let runner = current(&delivering).ok_or("The runner is not ready")?;
                 runner
                     .deliver(item.clone())
                     .map(|_| ())
                     .map_err(|error| error.to_string())
             }),
             stop_item: Arc::new(move |item_id: &str, notice: &str| {
-                match stopping.get() {
+                match current(&stopping) {
                     Some(runner) => {
                         let stopped = runner.stop_item(item_id, notice);
                         async move { stopped.await.map_err(|error| error.to_string()) }.boxed()
@@ -103,13 +118,15 @@ impl M4 {
             scheduler,
             runner,
             cleanup_shared: deps.cleanup_shared,
-            turn_ended: deps.turn_ended,
+            daemon_turn_ended: deps.turn_ended,
+            log,
         }
     }
 
-    /// Gives M4 the runner it was built before. Call once, before [`M4::install`] and [`M4::start`].
+    /// Gives M4 the runner it was built before. Call once, before [`M4::install`] and [`M4::start_scheduler`]; a second
+    /// call replaces it.
     pub fn attach(&self, runner: Runner) {
-        let _ = self.runner.set(runner);
+        *self.runner.lock().unwrap_or_else(PoisonError::into_inner) = Some(runner);
     }
 
     /// Gives the team its shared-file links, when the real `Attachments` is made after M4 (as in startup, where M6
@@ -119,25 +136,40 @@ impl M4 {
     }
 
     fn runner(&self) -> Result<Runner, RpcError> {
-        self.runner
-            .get()
-            .cloned()
-            .ok_or_else(|| RpcError::new(ErrorCode::Internal, "M4 has no runner: call attach first"))
+        current(&self.runner).ok_or_else(|| {
+            RpcError::new(
+                ErrorCode::Internal,
+                "M4 has no runner: it is not attached yet, or has stopped",
+            )
+        })
     }
 
     /// Registers the handlers (`rooms.*`, `room.*`, `exchanges.get`, `routines.*`, `notifications.*`) and mounts `/mcp`
     /// with the team's tools followed by `extra_tools` (the Google tools, when there is a Google login).
     pub fn install(
-        &self,
+        self: &Arc<Self>,
         handlers: &mut Handlers,
         routes: &mut Routes,
         context: &Context,
         extra_tools: Vec<McpTool>,
     ) -> Result<(), RpcError> {
         let access: Arc<dyn HostAccess> = Arc::new(self.runner()?);
+        // `routines.delete` ends the work its routine had queued through the daemon's `turnEnded`, outside any lock. These
+        // closures belong to the handlers, so holding M4 here is no cycle.
+        let ended = {
+            let (m4, slot) = (self.clone(), self.runner.clone());
+            Arc::new(move |item: &WorkItem, result: &TurnResult| {
+                if let Some(runner) = current(&slot)
+                    && let Err(error) =
+                        runner.with(|core| (m4.daemon_turn_ended)(&m4, core, item, result))
+                {
+                    (m4.log)("turnEnded", &error);
+                }
+            })
+        };
         let table = std::mem::take(handlers);
         let table = rooms::register(table, context, self.cleanup_shared.clone());
-        let table = routines::register(table, context, self.turn_ended.clone());
+        let table = routines::register(table, context, ended);
         let table = scheduler::register(table, context);
         *handlers = team::register(table, context, self.team.clone(), access.clone());
         let mut tools = self.team.tools(access);
@@ -156,8 +188,11 @@ impl M4 {
         self.scheduler.start()
     }
 
+    /// Stops the scheduler and lets go of the runner, which breaks the loop the runner's hooks make with M4. Work the
+    /// runner still ends while it shuts down reaches the team through the hooks' own `Core`, not through the runner.
     pub fn stop(&self) {
         self.scheduler.stop();
+        self.runner.lock().unwrap_or_else(PoisonError::into_inner).take();
     }
 
     // ---- the runner's hook bodies ----

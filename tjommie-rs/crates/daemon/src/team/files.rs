@@ -62,8 +62,9 @@ fn io_message(error: std::io::Error) -> String {
 /// `staging`. A later rename, link swap, deletion or growth of the source cannot change the file card or the delivered
 /// bytes.
 ///
-/// ponytail: std has no stable file id for an open handle, so "the handle is the file at the path" is checked by the
-/// path's identity (lane B's `fsid`) plus size and modification time, where TypeScript compares device and inode.
+/// The handle must still be the file at the path: the same volume serial and 128-bit file id (`fsid::is_open_file`),
+/// where TypeScript compares device and inode. A different file copied into its place, even with the same size and
+/// times, is refused.
 pub fn snapshot_file(
     roots: &[PathBuf],
     target: &Path,
@@ -74,12 +75,7 @@ pub fn snapshot_file(
     let mut source = File::open(&file).map_err(io_message)?;
     let opened = source.metadata().map_err(io_message)?;
     let checked_path = file_inside(roots, &file)?;
-    let checked = fs::metadata(&checked_path).map_err(io_message)?;
-    if !opened.is_file()
-        || !matches!(fsid::same_location(&checked_path, &file), Ok(true))
-        || opened.len() != checked.len()
-        || opened.modified().ok() != checked.modified().ok()
-    {
+    if !opened.is_file() || !matches!(fsid::is_open_file(&source, &checked_path), Ok(true)) {
         return Err(CHANGED.to_owned());
     }
     if opened.len() > MAX_SHARE_BYTES {

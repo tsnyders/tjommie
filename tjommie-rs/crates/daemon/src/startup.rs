@@ -511,9 +511,7 @@ fn assemble(
     // runner right after (`m4.attach`). M5 adds its task hooks beside these, running first in `turn_started`/`turn_ended`.
     let mcp_url = format!("http://127.0.0.1:{}/mcp", server.port());
     let m4 = {
-        let (sent, cleanup) = (events.clone(), late.m6.clone());
-        let (ended_m4, ended_runner, notices) =
-            (late.m4.clone(), late.runner.clone(), events.clone());
+        let (sent, cleanup, notices) = (events.clone(), late.m6.clone(), events.clone());
         Arc::new(M4::new(M4Deps {
             db: db.clone(),
             broadcast: Arc::new(move |event| {
@@ -533,14 +531,13 @@ fn assemble(
                     );
                 }
             }),
-            // `routines.delete` ends the work its routine had queued through the daemon's own `turnEnded`.
-            turn_ended: Arc::new(move |item: &WorkItem, result: &TurnResult| {
-                if let (Some(m4), Some(runner)) = (ended_m4.get(), ended_runner.get())
-                    && let Err(error) = runner.with(|core| turn_ended(m4, &notices, core, item, result))
-                {
-                    eprintln!("turnEnded: {error}");
-                }
-            }),
+            // `routines.delete` ends the work its routine had queued through the daemon's own `turnEnded`. M4 is handed
+            // in, not captured: M4 holds this closure.
+            turn_ended: Arc::new(
+                move |m4: &M4, core: &mut Core<'_>, item: &WorkItem, result: &TurnResult| {
+                    turn_ended(m4, &notices, core, item, result)
+                },
+            ),
         }))
     };
     let hooks = {

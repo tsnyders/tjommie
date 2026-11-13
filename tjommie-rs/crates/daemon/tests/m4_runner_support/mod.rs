@@ -24,14 +24,15 @@ use daemon::bots::{StoredBot, create_bot, update_bot};
 use daemon::chat::history;
 use daemon::cli::{CliChild, CliCommand, CliHost, LaunchOptions};
 use daemon::context::Db;
-use daemon::m4::{M4, M4Deps};
+use daemon::m4::{DaemonTurnEnded, M4, M4Deps};
 use daemon::providers::{
     ApprovalAnswer, ProviderError, ProviderEvent, ProviderSession, StartOptions,
     TurnResult as ProviderTurn,
 };
 use daemon::queue::{WorkItem, WorkStatus, get_work_item};
-use daemon::routines::TurnEnded;
-use daemon::runner::{Broadcast, Log, Runner, RunnerDeps, RunnerHooks, SessionFactory, TurnResult};
+use daemon::runner::{
+    Broadcast, Core, Log, Runner, RunnerDeps, RunnerHooks, SessionFactory, TurnResult,
+};
 use daemon::setup::Setup;
 use futures_util::future::BoxFuture;
 use protocol::Event;
@@ -259,7 +260,10 @@ pub fn harness(signed_in: bool) -> Harness {
     };
 
     // M4 is made first: its hooks are part of the runner, and it gets the runner afterwards.
-    let turn_ended: TurnEnded = Arc::new(|_: &WorkItem, _: &TurnResult| {});
+    // Nothing here calls `M4::install`, so `routines.delete` never reaches this.
+    let turn_ended: DaemonTurnEnded = Arc::new(
+        |_: &M4, _: &mut Core<'_>, _: &WorkItem, _: &TurnResult| Ok(()),
+    );
     let m4 = Arc::new(M4::new(M4Deps {
         db: db.clone(),
         broadcast: broadcast.clone(),
@@ -455,10 +459,11 @@ impl Drop for Harness {
         if std::thread::panicking() {
             return;
         }
-        // The TypeScript `afterEach` stops the runner. M4 and the runner hold each other (M4 keeps the runner, the hooks
-        // keep M4), so the database can outlive the test and the folder removal is best effort on Windows.
+        // The TypeScript `afterEach` stops the runner. The runner's hooks hold M4, so M4 lets go of the runner first
+        // (`stop`); otherwise the pair keeps the database open and the temp folder can't be removed on Windows.
         // `shutdown` does its work in the call and returns only the wait for the CLI processes to exit, which a sync drop
         // can't await.
+        self.m4.stop();
         drop(self.runner.shutdown());
         let invalid = recorded(&self.invalid).clone();
         assert!(
