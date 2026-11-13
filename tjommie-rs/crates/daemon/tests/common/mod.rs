@@ -780,3 +780,20 @@ impl daemon::account_runtime::AccountOps for HealthyOps {
         daemon::cli::Env::from([(key.to_owned(), account.folder.clone())])
     }
 }
+
+/// What the file system says `path` is, without the `\\?\` prefix `canonicalize` adds: the spelling the daemon's own path
+/// resolution returns (`plain(fs::canonicalize(..))`). A test that compares a path built from the temp folder with one the
+/// daemon resolved builds the expected one from this. The two spellings differ wherever the temp folder is reached through
+/// something the file system sees through: the 8.3 form `C:\Users\RUNNER~1\...` on a hosted runner (which `C:\Users\runneradmin\...`
+/// resolves to), a junction or a `subst` drive. The path must exist.
+pub fn canonical(path: &std::path::Path) -> PathBuf {
+    let real = std::fs::canonicalize(path).expect("the path exists");
+    let text = real.to_string_lossy();
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    match text.strip_prefix(r"\\?\") {
+        Some(rest) if rest.as_bytes().get(1) == Some(&b':') => PathBuf::from(rest),
+        _ => real,
+    }
+}

@@ -1,6 +1,8 @@
 //! Port of `packages/daemon/src/cli.test.ts`. Process tests run Node, as the TypeScript ones do; nothing runs a real
 //! Claude or Codex.
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -69,7 +71,10 @@ struct CodexInstall {
 
 fn codex_install(arch: &str, layout: &str) -> CodexInstall {
     let temp = dir();
-    let bin = temp.path().to_path_buf();
+    // Resolving the npm install goes through the file system, so the daemon returns canonical paths. Build the expected ones
+    // from the canonical folder: a hosted runner's TEMP is the 8.3 form of its user folder (RUNNER~1), which resolves to a
+    // different spelling.
+    let bin = common::canonical(temp.path());
     let root = bin.join("node_modules").join("@openai").join("codex");
     let entry = root.join("bin").join("codex.js");
     let triple = if arch == "x64" {
@@ -233,9 +238,14 @@ fn prefers_a_native_executable_on_path() {
 
 #[test]
 fn ignores_relative_path_entries_so_the_lookup_never_depends_on_the_working_directory() {
-    let bin = dir();
+    // In cargo's per-target temp folder, not the system one: a relative spelling needs the folder on the same drive as the
+    // working directory, and a hosted runner checks out to D: but keeps TEMP on C:.
+    let bin = tempfile::Builder::new()
+        .prefix("tjommie test ñ-")
+        .tempdir_in(env!("CARGO_TARGET_TMPDIR"))
+        .unwrap();
     std::fs::write(bin.path().join("codex.exe"), "").unwrap();
-    // The same folder, spelled relative to this process's current directory (same drive).
+    // The same folder, spelled relative to this process's current directory.
     let cwd = std::env::current_dir().unwrap();
     let normal = |path: &Path| {
         path.components()
@@ -249,7 +259,10 @@ fn ignores_relative_path_entries_so_the_lookup_never_depends_on_the_working_dire
             .components()
             .filter(|part| matches!(part, std::path::Component::Normal(_))),
     );
-    assert!(relative.is_relative() && relative.join("codex.exe").exists());
+    assert!(
+        relative.is_relative() && relative.join("codex.exe").exists(),
+        "needs the target folder on the working directory's drive: {relative:?} from {cwd:?}"
+    );
     assert_eq!(
         SystemCli::new().resolve_cli(
             Provider::Codex,
