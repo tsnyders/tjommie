@@ -19,7 +19,7 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering::SeqCst};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::Duration;
 
 use daemon::bots::{create_bot, set_paused};
@@ -300,6 +300,17 @@ fn work_of(db: &Db, id: &str) -> WorkItem {
 
 fn open_run(db: &Db, routine_id: &str) -> bool {
     has_open_run(&lock(db), routine_id).unwrap()
+}
+
+/// How many work items for routine runs are still queued.
+fn queued_work_for_runs(f: &Fixture) -> i64 {
+    lock(&f.db)
+        .query_row(
+            "SELECT COUNT(*) FROM work_items WHERE routine_run_id IS NOT NULL AND status = 'queued'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
 }
 
 fn pending(db: &Db) -> Vec<PendingNotification> {
@@ -1535,6 +1546,94 @@ mod scheduler {
             .unwrap();
         settle_until(|| delivered_items(&f).len() == 1).await;
         assert_eq!(statuses(&f.db, &routine.id), vec![Queued]);
+        assert_eq!(delivered_items(&f).len(), 1);
+        s.stop();
+    }
+
+    /// Not a TS case. A stored zone this build can't resolve (one Node's `Intl` took) makes that routine unschedulable, not
+    /// the tick: it stays due and is logged, and the other due routines still fire, as when a routine fails to persist.
+    #[test]
+    fn a_routine_whose_zone_cannot_be_resolved_stays_due_while_the_others_still_fire() {
+        let f = fixture();
+        let fine = digest(&f);
+        let odd = digest_with(&f, json!({"name": "Odd"}));
+        lock(&f.db)
+            .execute(
+                "UPDATE routines SET time_zone = 'Mars/Olympus' WHERE id = ?1",
+                params![odd.id],
+            )
+            .unwrap();
+        let s = scheduler(&f);
+        s.tick(at("2026-09-20T08:00:10Z")).unwrap();
+        assert_eq!(statuses(&f.db, &fine.id), vec![Queued]);
+        assert!(statuses(&f.db, &odd.id).is_empty());
+        assert_eq!(delivered_items(&f).len(), 1);
+        assert!(logged_error(
+            &f,
+            &format!("Routine scheduler failed for {}.", odd.id),
+            "Unknown time zone Mars/Olympus"
+        ));
+        assert_eq!(
+            next_run(&f.db, &odd.id),
+            Some("2026-09-20T08:00:00.000Z".to_owned())
+        );
+    }
+
+    /// Not a TS case. `M4::stop` stops the scheduler and then lets go of the runner. A tick already running on the
+    /// blocking pool can't be cancelled (TypeScript's `clearInterval` leaves none), so its delivery is refused after the
+    /// stop; that must not fail the run or leave a failure notice nobody can clear.
+    #[test]
+    fn leaves_a_run_queued_when_the_scheduler_stops_while_its_tick_delivers() {
+        let f = fixture();
+        let routine = digest(&f);
+        let slot: Arc<OnceLock<Scheduler>> = Arc::default();
+        let deliver: Deliver = {
+            let slot = slot.clone();
+            Arc::new(move |_work: &WorkItem| -> Result<(), String> {
+                slot.get().expect("the scheduler is set").stop();
+                Err("The runner is not ready".to_owned())
+            })
+        };
+        let s = Scheduler::new(SchedulerDeps {
+            deliver,
+            ..deps(&f)
+        });
+        slot.set(s.clone()).ok();
+        s.tick(at("2026-09-20T08:00:10Z")).unwrap();
+        assert_eq!(statuses(&f.db, &routine.id), vec![Queued]);
+        assert!(open_run(&f.db, &routine.id));
+        assert_eq!(queued_work_for_runs(&f), 1);
+        assert!(pending_failures(&lock(&f.db)).unwrap().is_empty());
+        assert!(notices(&f).is_empty());
+        assert!(f.logs.lock().unwrap().is_empty());
+        // The run's time was still used up, so the next tick doesn't fire it again.
+        assert_eq!(
+            next_run(&f.db, &routine.id),
+            Some("2026-09-20T17:00:00.000Z".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_stopped_scheduler_leaves_due_work_queued_without_waking_the_runner() {
+        let f = fixture();
+        let routine = digest(&f);
+        let s = scheduler(&f);
+        s.stop();
+        s.tick(at("2026-09-20T08:00:10Z")).unwrap();
+        assert!(delivered_items(&f).is_empty());
+        assert_eq!(statuses(&f.db, &routine.id), vec![Queued]);
+        assert_eq!(queued_work_for_runs(&f), 1);
+        assert!(pending_failures(&lock(&f.db)).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn start_after_stop_wakes_the_runner_again() {
+        let f = fixture();
+        digest(&f);
+        let s = scheduler(&f);
+        s.stop();
+        s.start().unwrap();
+        s.tick(at("2026-09-20T08:00:10Z")).unwrap();
         assert_eq!(delivered_items(&f).len(), 1);
         s.stop();
     }

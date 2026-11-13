@@ -308,6 +308,16 @@ refined_string!(
     TimeZone, time_zone, "not an IANA time zone"
 );
 
+impl TimeZone {
+    /// A zone read back from storage, kept as it was saved. It was checked when it was saved (by Node's `Intl`, for a
+    /// database an older daemon wrote), so it isn't checked again: a zone this build's database can't resolve must not make
+    /// its row unreadable, as it must not in TypeScript. Resolving it fails where it is used, which is how a routine that
+    /// can't be scheduled shows up. Anything that takes a zone from a person or the wire still goes through [`TimeZone::new`].
+    pub fn from_stored(value: impl Into<String>) -> Self {
+        TimeZone(value.into())
+    }
+}
+
 /// Days are 0 (Sunday) to 6 (Saturday). Times are 24-hour "HH:MM" wall-clock times in the routine's time zone.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

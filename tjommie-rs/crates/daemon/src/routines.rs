@@ -233,8 +233,11 @@ fn json_column<T: serde::de::DeserializeOwned>(
     serde_json::from_str(&stored).map_err(|error| invalid_column(column, error))
 }
 
+/// `rowToRoutine`. The stored zone is not checked again (it was when the routine was saved, and `routines.ts` reads it
+/// as it is): one this build's zone database can't resolve, though Node's `Intl` took it, must not make `routines.list`
+/// fail for every routine. [`next_run_after`] refuses it when the scheduler tries to use it, so that routine just doesn't
+/// run (the tick logs it), and it can still be deleted or given a new zone.
 fn to_routine(row: &Row<'_>) -> rusqlite::Result<Routine> {
-    let zone: String = row.get(6)?;
     Ok(Routine {
         id: row.get(0)?,
         bot_id: row.get(1)?,
@@ -242,7 +245,7 @@ fn to_routine(row: &Row<'_>) -> rusqlite::Result<Routine> {
         prompt: row.get(3)?,
         days: json_column(row, 4)?,
         times: json_column(row, 5)?,
-        time_zone: TimeZone::new(&zone).map_err(|error| invalid_column(6, error))?,
+        time_zone: TimeZone::from_stored(row.get::<_, String>(6)?),
         time_limit_minutes: row.get(7)?,
         enabled: row.get::<_, i64>(8)? == 1,
         next_run_at: row.get(9)?,

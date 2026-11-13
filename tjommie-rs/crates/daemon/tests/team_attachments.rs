@@ -11,7 +11,8 @@
 //! - The broadcast's metadata lookup at the moment of each file announcement reads the links `DbAttachments` has recorded,
 //!   because a broadcast must not take the host's database lock.
 //! - `closeTransfer`, `close` and `backfillLegacy`: `DbAttachments` has no transfers or legacy rows. The restart is a fresh
-//!   `DbAttachments` over the same folder, whose `cleanup` runs as the service's does at start.
+//!   `DbAttachments` over the same folder, whose `cleanup` runs as the service's does at start. It sweeps an unlinked
+//!   attachment and keeps every linked one (row, bytes and sha256); lane D's `Attachments` tests cover the real service.
 mod team_support;
 use team_support::*;
 
@@ -452,13 +453,43 @@ fn remaps_room_companion_indexes_without_changing_ids_across_delivery_and_restar
         link_of(&fx, &room.id, 1),
         Some(companion.attachment_id.clone())
     );
-    // A restart: a new attachments service over the same folder, which sweeps what no message links.
+    // A restart: a new attachments service over the same folder, which sweeps what no message links. An attachment that
+    // nothing links (a snapshot whose message never arrived) must go, and everything a message links must stay, with its
+    // row, its stored bytes and its sha256 as they were.
+    let shared = fx.attachments.as_ref().unwrap();
+    let orphan_source = folder.join("orphan.txt");
+    fs::write(&orphan_source, "nobody links this").unwrap();
+    let orphan = fx.db(|db| {
+        shared
+            .register_snapshot(db, &orphan_source, "orphan.txt")
+            .unwrap()
+    });
+    let stored_dir = fx.shared_files().join("attachments");
+    let orphan_file = stored_dir.join(stored(&fx, &orphan.id).storage_name);
+    assert!(orphan_file.exists());
+    let parent_id = file_data(&original).attachment_id.unwrap();
+    let kept: Vec<(String, PathBuf, String)> = [&parent_id, &companion.attachment_id]
+        .into_iter()
+        .map(|id| {
+            let row = stored(&fx, id);
+            (id.clone(), stored_dir.join(&row.storage_name), row.sha256)
+        })
+        .collect();
     let restarted = DbAttachments {
-        root: fx.shared_files().join("attachments"),
+        root: stored_dir.clone(),
         host_id: "host".to_owned(),
         linked: Arc::default(),
     };
     fx.db(|db| restarted.cleanup(db).unwrap());
+    assert!(!attachment_exists(&fx, &orphan.id));
+    assert!(!orphan_file.exists());
+    for (id, file, sha256) in &kept {
+        assert!(attachment_exists(&fx, id), "{id} keeps its row");
+        assert!(file.exists(), "{id} keeps its stored file");
+        assert_eq!(&stored(&fx, id).sha256, sha256, "{id} keeps its sha256");
+    }
+    assert_eq!(stored_bytes(&fx, &parent_id), b"![Chart](chart.png)");
+    assert_eq!(stored_bytes(&fx, &companion.attachment_id), png());
     assert_eq!(
         link_of(&fx, &room.id, room_companion.attachment_index),
         Some(companion.attachment_id.clone())
