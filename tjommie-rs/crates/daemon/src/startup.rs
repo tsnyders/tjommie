@@ -17,6 +17,7 @@ use crate::account_handlers::{Accounts, AccountsOptions};
 use crate::account_quota::HttpsFetch;
 use crate::cli::{InstalledWorkers, SystemCli, WorkerInstall, WorkerPurpose};
 use crate::context::{self, Context, Db, Late, LateBotView};
+use crate::m5::{self, LateTasks, M5, M5Deps};
 use crate::m6::{self, M6, M6Deps};
 use crate::relay_client::default_connector;
 use crate::remote::{Remote, RemoteOptions};
@@ -237,6 +238,7 @@ pub struct Daemon {
     runner: Runner,
     accounts: Accounts,
     remote: Arc<Remote>,
+    m5: Arc<M5>,
     m6: Arc<M6>,
     /// Delivers every broadcast event to paired devices, in order.
     publisher: JoinHandle<()>,
@@ -255,11 +257,12 @@ impl Daemon {
     }
 
     /// Stops answering, then closes what the daemon runs, in `daemon.ts`'s order: the phone connection, the M6
-    /// brokers, the runner (and the CLI processes it owns), the accounts, and last the server.
+    /// brokers, the project services, the runner (and the CLI processes it owns), the accounts, and last the server.
     pub async fn close(self) {
         self.server.stop_requests();
         self.remote.close().await;
         self.m6.close();
+        self.m5.shutdown().await;
         if let Err(error) = self.runner.shutdown().await {
             eprintln!("{error}");
         }
@@ -331,6 +334,7 @@ pub async fn start(launch: &Launch, auth: &Auth) -> Result<Daemon, StartupError>
         runner,
         accounts,
         remote,
+        m5,
         m6,
         publisher,
         workers,
@@ -350,6 +354,7 @@ pub async fn start(launch: &Launch, auth: &Auth) -> Result<Daemon, StartupError>
         runner,
         accounts,
         remote,
+        m5,
         m6,
         publisher,
         _workers: workers,
@@ -377,6 +382,7 @@ struct Parts {
     runner: Runner,
     accounts: Accounts,
     remote: Arc<Remote>,
+    m5: Arc<M5>,
     m6: Arc<M6>,
     publisher: JoinHandle<()>,
     workers: Option<InstalledWorkers>,
@@ -384,12 +390,13 @@ struct Parts {
 
 /// The provider and review worker boundaries (`startDaemon`'s `WindowsWorkerBoundary` pair), installed as the daemon's
 /// launch path when provider isolation is set up. Returns the provider boundary, which `SystemCli` and M6 use even
-/// when isolation is off: a boundary that isn't required launches nothing.
+/// when isolation is off (a boundary that isn't required launches nothing), and the review boundary, which M5's
+/// reviews use the same way.
 fn install_workers(
     root: &Path,
     exe_dir: &Path,
     install: &Arc<WorkerInstall>,
-) -> Result<(WorkerBoundary, Option<InstalledWorkers>), StartupError> {
+) -> Result<(WorkerBoundary, Arc<WorkerBoundary>, Option<InstalledWorkers>), StartupError> {
     let boundary = |file: &str, purpose: Purpose, kind: WorkerPurpose| {
         let install = install.clone();
         WorkerBoundary::new(BoundaryOptions {
@@ -402,7 +409,11 @@ fn install_workers(
         })
     };
     let provider = boundary("worker.json", Purpose::Provider, WorkerPurpose::Provider);
-    let review = boundary("review-worker.json", Purpose::Review, WorkerPurpose::Review);
+    let review = Arc::new(boundary(
+        "review-worker.json",
+        Purpose::Review,
+        WorkerPurpose::Review,
+    ));
     let installed = if provider.required() {
         // Pairing runs the rest of `validateWorkerPair` and lets each identity see the other's receipts.
         provider
@@ -411,13 +422,13 @@ fn install_workers(
             .map_err(|error| plain(error.to_string()))?;
         Some(
             install
-                .install(Arc::new(provider.clone()), Arc::new(review))
+                .install(Arc::new(provider.clone()), review.clone())
                 .map_err(plain)?,
         )
     } else {
         None
     };
-    Ok((provider, installed))
+    Ok((provider, review, installed))
 }
 
 /// `initializeDaemon` as far as the port has come, up to activating the server: open the data root and database, bring
@@ -450,7 +461,8 @@ fn assemble(
 
     // How CLIs launch: inside the Windows worker when it is set up, else directly.
     let install = Arc::new(WorkerInstall::default());
-    let (provider_worker, workers) = install_workers(&paths.root, &exe_dir, &install)?;
+    let (provider_worker, review_worker, workers) =
+        install_workers(&paths.root, &exe_dir, &install)?;
     let cli = Arc::new(
         SystemCli::with_worker(Arc::new(provider_worker.clone())).reporting_to(install),
     );
@@ -475,6 +487,7 @@ fn assemble(
 
     // 2. The runner, on those accounts.
     let late = Late::default();
+    let late_tasks = LateTasks::default();
     let (held, issue) = (late.switching.clone(), late.switching.clone());
     let (broadcast, notices) = (events.clone(), events.clone());
     let deps = RunnerDeps {
@@ -487,8 +500,9 @@ fn assemble(
                 .then(|| "This bot is changing provider. Try again shortly.".to_owned())
         }),
         kill_tree: Arc::new(crate::cli::kill_tree),
-        hooks: RunnerHooks {
-            // M4 and M5 run their own turn hooks first (`tasks.turnEnded`, `scheduler.runEnded`, `team.turnEnded`).
+        // M5's task hooks run first (`tasks.turnEnded`, then the rest). M4 adds `scheduler.runEnded` and
+        // `team.turnEnded` ahead of the notice.
+        hooks: late_tasks.hooks(RunnerHooks {
             turn_ended: Some(Arc::new(move |core: &mut Core<'_>, item: &WorkItem, result: &TurnResult| {
                 if let Some(notice) = turn_notice(core.db(), item, result).map_err(|e| e.message)? {
                     notices.send(Event::Notify(notice));
@@ -496,14 +510,14 @@ fn assemble(
                 Ok(())
             })),
             ..RunnerHooks::default()
-        },
+        }),
         ..RunnerDeps::new(
             db.clone(),
             Arc::new(move |event| {
                 broadcast.send(event);
                 Ok(())
             }),
-            cli_session_factory(cli),
+            cli_session_factory(cli.clone()),
             setup.clone(),
         )
     };
@@ -593,8 +607,28 @@ fn assemble(
     );
     let _ = context.late.m6.set(m6.clone());
 
+    // 5b. Projects, tasks and reviews (M5). The runner's task hooks reach the service through `late_tasks`.
+    let m5 = Arc::new(
+        m5::install(
+            &mut handlers,
+            M5Deps {
+                db: db.clone(),
+                root: paths.root.clone(),
+                events: events.clone(),
+                switching: context.late.switching.clone(),
+                runner: runner.clone(),
+                accounts: accounts.runtime.clone(),
+                host: cli,
+                review_worker: Some(review_worker),
+                late: late_tasks,
+            },
+        )
+        .map_err(rpc)?,
+    );
+
     // 6. What a restart cut off is settled before anything listens (`runner.start()` then runs the queue).
     runner.recover().map_err(rpc)?;
+    m5.recover(&lock(&db)).map_err(rpc)?;
     Ok(Parts {
         token,
         handlers,
@@ -602,6 +636,7 @@ fn assemble(
         runner,
         accounts,
         remote,
+        m5,
         m6,
         publisher,
         workers,
