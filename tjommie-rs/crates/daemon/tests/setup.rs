@@ -13,7 +13,7 @@ use std::time::Duration;
 use daemon::account_quota::{AccountUsageRead, UsageFetch, UsageResponse};
 use daemon::cli::{
     BoxFuture, ChildExit, CliChild, CliCommand, CliExit, CliHost, CliOutput, Env, KillTree,
-    LaunchOptions,
+    LaunchOptions, WorkerTermination,
 };
 use daemon::providers::codex_rpc::{CodexServer, JsonRpcLines};
 use daemon::providers::{LimitState, LimitWindow, ProviderError};
@@ -74,6 +74,9 @@ struct Host {
     servers: Mutex<VecDeque<StartServer>>,
     server_starts: Mutex<Vec<(CliCommand, Env, String)>>,
     kills: Arc<Mutex<Vec<u32>>>,
+    /// A command whose first argument is this ends in a worker termination: `run_cli` returns the error, as a worker
+    /// boundary does when it can't confirm a tree has stopped (`WorkerLaunchTerminationError`).
+    terminate_on: Mutex<Option<String>>,
     /// Kills that finished verifying the tree after the root exited.
     contained: Arc<AtomicUsize>,
     fail_kill_once: Arc<Mutex<bool>>,
@@ -232,6 +235,15 @@ impl CliHost for Host {
             .lock()
             .unwrap()
             .push((cmd.clone(), args.to_vec(), env.clone()));
+        let terminated = self
+            .terminate_on
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|first| args.first() == Some(first));
+        if terminated {
+            return Box::pin(async { Err(io::Error::other(WorkerTermination)) });
+        }
         let once = self.run_once.lock().unwrap().pop_front();
         let run = once.or_else(|| self.run.lock().unwrap().clone());
         Box::pin(async move {
@@ -1082,6 +1094,84 @@ async fn fails_the_codex_check_when_its_account_read_has_no_account() {
         (
             false,
             Some("Codex account check failed."),
+            CodexSandboxReadiness::Unavailable
+        )
+    );
+}
+
+// `runCli` rejects only for a worker termination, and TypeScript lets that rejection leave `claudeSetup` and `codexSetup`
+// (the account runtime then reports "could not be checked"). It is not an ordinary failed check.
+const COULD_NOT_BE_CHECKED: &str = "This account could not be checked. Try again in Accounts.";
+
+#[tokio::test]
+async fn lets_a_worker_termination_during_a_check_leave_it_as_an_error() {
+    for (provider, first) in [
+        (Provider::Claude, "--version"),
+        (Provider::Claude, "auth"),
+        (Provider::Codex, "--version"),
+    ] {
+        let f = Fixture::new();
+        f.ensure();
+        *f.host.terminate_on.lock().unwrap() = Some(first.into());
+        let error = f
+            .setup
+            .check_account_setup(&f.account(provider))
+            .await
+            .unwrap_err();
+        assert!(
+            error.is_worker_termination(),
+            "{provider:?} {first}: {error:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn keeps_an_ordinary_failed_command_a_failed_check_not_an_error() {
+    let f = Fixture::new();
+    f.ensure();
+    f.host.set_run(|cmd, args| match args[0].as_str() {
+        "--version" => CliOutput {
+            code: Some(4),
+            stdout: String::new(),
+            stderr: "failed".into(),
+        },
+        _ => successful(cmd, args),
+    });
+    let setup = f
+        .setup
+        .check_account_setup(&f.account(Provider::Claude))
+        .await
+        .unwrap();
+    assert_eq!(
+        setup,
+        claude_setup(None, Some("Claude Code version check failed"))
+    );
+}
+
+#[tokio::test]
+async fn reports_a_check_cut_off_by_a_worker_termination_as_could_not_be_checked() {
+    let f = Fixture::new();
+    f.ensure();
+    *f.host.terminate_on.lock().unwrap() = Some("--version".into());
+    let setups = f.setup.check_setup(&f.db).await;
+    // The CLIs are installed (the fake finds them), so that is what the outcome says, as `resolveCli` does in TypeScript.
+    assert_eq!(setups[0], claude_setup(None, Some(COULD_NOT_BE_CHECKED)));
+    let ProviderSetup::Codex(codex) = &setups[1] else {
+        panic!()
+    };
+    assert_eq!(
+        (
+            codex.setup.installed,
+            codex.setup.version.clone(),
+            codex.setup.signed_in,
+            codex.setup.error.as_deref(),
+            codex.sandbox
+        ),
+        (
+            true,
+            None,
+            false,
+            Some(COULD_NOT_BE_CHECKED),
             CodexSandboxReadiness::Unavailable
         )
     );

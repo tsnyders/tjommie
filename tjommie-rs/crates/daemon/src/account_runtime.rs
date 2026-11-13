@@ -34,7 +34,7 @@ use crate::cli::{BoxFuture, Env};
 use crate::ids::new_id;
 use crate::providers::{ApiKey, Limit, LimitState, LimitWindow, js_iso};
 use crate::server::RpcError;
-use crate::setup::{Account, OnDone, SANDBOX_SETUP_TIMEOUT, Setup};
+use crate::setup::{Account, OnDone, SANDBOX_SETUP_TIMEOUT, Setup, could_not_check};
 use crate::win::cred::{CredentialError, Namespace};
 
 /// Where API keys live. Keys never reach the database, metadata or events.
@@ -80,7 +80,9 @@ impl CredentialStore for Namespace {
 /// The provider side of accounts: read-only probes and the owned sign-in lifecycle. `Setup` in production; synthetic
 /// tests inject fakes.
 pub trait AccountOps: Send + Sync {
-    fn check(&self, account: &Account) -> BoxFuture<'_, ProviderSetup>;
+    /// The setup probe. An error (a worker termination during a command, say) is what a throwing probe is in TypeScript:
+    /// the runtime reports "could not be checked", with `installed` from [`AccountOps::installed`].
+    fn check(&self, account: &Account) -> BoxFuture<'_, Result<ProviderSetup, RpcError>>;
     /// Whether the provider's CLI is installed, for a check that failed before its probe answered.
     fn installed(&self, _provider: Provider) -> bool {
         false
@@ -115,9 +117,13 @@ pub trait AccountOps: Send + Sync {
 }
 
 impl AccountOps for Setup {
-    fn check(&self, account: &Account) -> BoxFuture<'_, ProviderSetup> {
+    fn check(&self, account: &Account) -> BoxFuture<'_, Result<ProviderSetup, RpcError>> {
         let account = account.clone();
-        Box::pin(async move { self.check_account_setup(&account).await })
+        Box::pin(async move {
+            self.check_account_setup(&account)
+                .await
+                .map_err(|error| RpcError::new(ErrorCode::Internal, error.to_string()))
+        })
     }
 
     fn installed(&self, provider: Provider) -> bool {
@@ -409,24 +415,6 @@ fn stored_window(window: &AccountLimitWindow) -> LimitWindow {
     }
 }
 
-fn failed_setup(provider: Provider, installed: bool) -> ProviderSetup {
-    let fields = SetupFields {
-        installed,
-        version: None,
-        signed_in: false,
-        account: None,
-        plan: None,
-        error: Some("This account could not be checked. Try again in Accounts.".into()),
-    };
-    match provider {
-        Provider::Claude => ProviderSetup::Claude(fields),
-        Provider::Codex => ProviderSetup::Codex(CodexSetup {
-            setup: fields,
-            sandbox: CodexSandboxReadiness::Unavailable,
-        }),
-    }
-}
-
 /// `#quotaMark`: changes whenever a limit snapshot is stored or a quota event arrives.
 type QuotaMark = (u64, Vec<(String, String)>);
 
@@ -574,7 +562,7 @@ impl AccountRuntime {
     ) -> Result<ProviderSetup, RpcError> {
         let ops = &self.0.options.ops;
         ops.prepare_folder(account, &self.0.options.root)?;
-        let mut setup = ops.check(account).await;
+        let mut setup = ops.check(account).await?;
         if stored.kind == AccountKind::ApiKey {
             let configured = stored.credential_ref.is_some()
                 && self.0.options.credentials.read(&stored.id).await?.is_some();
@@ -598,7 +586,7 @@ impl AccountRuntime {
         let account = account_of(&stored);
         let setup = match self.probe(&stored, &account).await {
             Ok(setup) => setup,
-            Err(_) => failed_setup(
+            Err(_) => could_not_check(
                 stored.provider,
                 self.0.options.ops.installed(stored.provider),
             ),
