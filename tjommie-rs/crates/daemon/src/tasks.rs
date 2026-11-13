@@ -95,7 +95,9 @@ type SettlePlan = (TaskAttempt, Result<(Repository, ManagedWorktree), RpcError>)
 
 pub struct Tasks {
     pub projects: Arc<Projects>,
-    runner: Arc<dyn TaskRunner>,
+    /// The runner holds the task hooks, and the hooks hold this service, so neither would ever let the other (and the
+    /// database) go. `shutdown` takes the runner, which ends the loop.
+    runner: Mutex<Option<Arc<dyn TaskRunner>>>,
     options: TasksOptions,
     handle: Handle,
     state: Mutex<State>,
@@ -188,7 +190,7 @@ impl Tasks {
     ) -> Arc<Self> {
         Arc::new(Self {
             projects,
-            runner,
+            runner: Mutex::new(Some(runner)),
             options,
             handle: Handle::current(),
             state: Mutex::default(),
@@ -206,6 +208,15 @@ impl Tasks {
 
     pub fn closing(&self) -> bool {
         self.state().closing
+    }
+
+    /// The runner, until `shutdown` has let go of it.
+    fn runner(&self) -> Result<Arc<dyn TaskRunner>, RpcError> {
+        self.runner
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+            .ok_or_else(|| RpcError::new(ErrorCode::Unavailable, "Tjommie is stopping."))
     }
 
     /// The database, for a caller that runs several steps in one lock section.
@@ -758,7 +769,7 @@ impl Tasks {
             let db = self.lock();
             self.enqueue_attempt(&db, attempt)?
         };
-        self.runner.deliver(item)?;
+        self.runner()?.deliver(item)?;
         self.attempt(&self.lock(), &attempt.id)
     }
 
@@ -1034,7 +1045,11 @@ impl Tasks {
             .task_attempt_id
             .clone()
             .ok_or_else(|| internal("A task turn needs its attempt."))?;
-        self.runner.retired(&item.bot_id).await.map_err(internal)?;
+        // Without the runner this service has shut down, which is what the check below ends on.
+        let Ok(runner) = self.runner() else {
+            return Ok(());
+        };
+        runner.retired(&item.bot_id).await.map_err(internal)?;
         if self.closing() {
             return Ok(());
         }
@@ -1254,14 +1269,12 @@ impl Tasks {
             match item.status {
                 WorkStatus::Queued => set_status(&self.lock(), &item.id, WorkStatus::Interrupted)?,
                 WorkStatus::Running => {
-                    self.runner
+                    let runner = self.runner()?;
+                    runner
                         .stop_item(&item.id, "Task stopped; its worktree is retained.")
                         .await
                         .map_err(internal)?;
-                    self.runner
-                        .retired(&attempt.bot_id)
-                        .await
-                        .map_err(internal)?;
+                    runner.retired(&attempt.bot_id).await.map_err(internal)?;
                 }
                 _ => {}
             }
@@ -1614,7 +1627,7 @@ impl Tasks {
 
     /// `confirmedExited`: the host proved the process is gone, so the lease goes. Call with the lock released.
     pub fn confirmed_exited(&self, bot_id: &str, owner_id: &str) -> Result<(), RpcError> {
-        if self.runner.current_work(bot_id).is_some() {
+        if self.runner()?.current_work(bot_id).is_some() {
             return Err(RpcError::new(
                 ErrorCode::Busy,
                 "This bot still has a live turn.",
@@ -1633,6 +1646,11 @@ impl Tasks {
         }
         let mut idle = self.settling.subscribe();
         let _ = idle.wait_for(|count| *count == 0).await;
+        // Nothing settles from here on, so the runner can go (see the field).
+        self.runner
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
         if self.state().termination_unknown {
             return Err("An owned check process could not be confirmed stopped; retain its task state for reconciliation.".into());
         }

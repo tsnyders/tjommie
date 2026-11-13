@@ -382,6 +382,14 @@ impl Server {
         self.stop_requests();
         self.shared.shutdown.cancel();
         let _ = self.task.await;
+        // The handlers hold the runner and the handlers' context, and the runner holds the broadcaster, which holds this
+        // state: let go of them, so none of them (nor the database) outlives the server.
+        let mut gate = self.shared.gate.write().unwrap();
+        gate.config = Arc::new(Config {
+            token: gate.config.token.clone(),
+            handlers: Handlers::default(),
+            routes: Routes::default(),
+        });
     }
 }
 
