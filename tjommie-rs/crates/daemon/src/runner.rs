@@ -3397,7 +3397,9 @@ pub fn register(handlers: Handlers, context: &Context, runner: &Runner) -> Handl
                 .and_then(|approval| match approval.kind {
                     // `team.answerRoutineProposal` adds the routine on Allow. Without M4 (handler tests) it can't.
                     ApprovalKind::Routine => match approvals.late.m4.get() {
-                        Some(m4) => m4.answer_routine_proposal(&params.approval_id, params.decision),
+                        Some(m4) => {
+                            m4.answer_routine_proposal(&params.approval_id, params.decision)
+                        }
                         None => Err(RpcError::new(
                             ErrorCode::Unavailable,
                             "Routine proposals can't be answered yet.",

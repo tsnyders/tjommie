@@ -22,9 +22,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use daemon::approvals::get_approval;
 use daemon::bots::{StoredBot, delete_bot};
 use daemon::chat::get_message;
-use daemon::queue::{
-    NewWork, WorkItem, WorkSource, WorkStatus, enqueue, get_work_item, new_chain,
-};
+use daemon::queue::{NewWork, WorkItem, WorkSource, WorkStatus, enqueue, get_work_item, new_chain};
 use daemon::routines::list_routines;
 use daemon::runner::{TurnOutcome, TurnResult};
 use daemon::server::RpcError;
@@ -272,8 +270,22 @@ fn chat_turn(fx: &Fixture, researcher: &StoredBot) -> WorkItem {
 /// `beforeEach`: a writer and a researcher, each able to message the other.
 fn setup() -> (Fixture, StoredBot, StoredBot) {
     let fx = fixture();
-    let writer = fx.bot("Writer", "blue", "circle", "Writes summaries.", "codex", "gpt-5.6-sol");
-    let researcher = fx.bot("Researcher", "teal", "droplet", "Finds sources.", "claude", "sonnet");
+    let writer = fx.bot(
+        "Writer",
+        "blue",
+        "circle",
+        "Writes summaries.",
+        "codex",
+        "gpt-5.6-sol",
+    );
+    let researcher = fx.bot(
+        "Researcher",
+        "teal",
+        "droplet",
+        "Finds sources.",
+        "claude",
+        "sonnet",
+    );
     let researcher = fx.set_can_message(&researcher.id, &[writer.id.as_str()]);
     let writer = fx.set_can_message(&writer.id, &[researcher.id.as_str()]);
     (fx, writer, researcher)
@@ -404,9 +416,18 @@ mod routine_transactions {
     #[test]
     fn rolls_back_approval_routine_and_card_when_a_stage_fails() {
         let stages = [
-            ("routine creation", "CREATE TRIGGER reject_answer BEFORE INSERT ON routines BEGIN SELECT RAISE(ABORT, 'answer failed'); END"),
-            ("routine scheduling", "CREATE TRIGGER reject_answer BEFORE UPDATE ON routines BEGIN SELECT RAISE(ABORT, 'answer failed'); END"),
-            ("card update", "CREATE TRIGGER reject_answer BEFORE UPDATE ON messages BEGIN SELECT RAISE(ABORT, 'answer failed'); END"),
+            (
+                "routine creation",
+                "CREATE TRIGGER reject_answer BEFORE INSERT ON routines BEGIN SELECT RAISE(ABORT, 'answer failed'); END",
+            ),
+            (
+                "routine scheduling",
+                "CREATE TRIGGER reject_answer BEFORE UPDATE ON routines BEGIN SELECT RAISE(ABORT, 'answer failed'); END",
+            ),
+            (
+                "card update",
+                "CREATE TRIGGER reject_answer BEFORE UPDATE ON messages BEGIN SELECT RAISE(ABORT, 'answer failed'); END",
+            ),
         ];
         for (stage, trigger) in stages {
             let (fx, writer, _) = setup();
@@ -415,10 +436,18 @@ mod routine_transactions {
             let card = fx.db(|db| get_message(db, &pending.message_id).unwrap());
             fx.clear_events();
             fx.db(|db| db.execute_batch(trigger).unwrap());
-            let error = answer(&fx, &Hooks::none(), &pending.id, ApprovalDecision::Once)
-                .unwrap_err();
-            assert!(error.message.contains("answer failed"), "{stage}: {}", error.message);
-            assert_eq!(fx.db(|db| get_approval(db, &pending.id).unwrap()), pending, "{stage}");
+            let error =
+                answer(&fx, &Hooks::none(), &pending.id, ApprovalDecision::Once).unwrap_err();
+            assert!(
+                error.message.contains("answer failed"),
+                "{stage}: {}",
+                error.message
+            );
+            assert_eq!(
+                fx.db(|db| get_approval(db, &pending.id).unwrap()),
+                pending,
+                "{stage}"
+            );
             assert_eq!(
                 fx.db(|db| get_message(db, &pending.message_id).unwrap()),
                 card,
@@ -449,9 +478,10 @@ mod routine_transactions {
             card.data.as_ref().and_then(|data| data.get("status")),
             Some(&json!("pending"))
         );
-        assert!(fx
-            .db(|db| list_routines(db, Some(writer.id.as_str())).unwrap())
-            .is_empty());
+        assert!(
+            fx.db(|db| list_routines(db, Some(writer.id.as_str())).unwrap())
+                .is_empty()
+        );
         assert!(fx.event_names().is_empty());
     }
 
@@ -484,16 +514,23 @@ mod routine_transactions {
         names.sort();
         assert_eq!(
             names,
-            ["approval.resolved", "bot.updated", "message.updated", "routine.updated"]
+            [
+                "approval.resolved",
+                "bot.updated",
+                "message.updated",
+                "routine.updated"
+            ]
         );
         assert_eq!(
             *recorded(&observed),
             vec![(ApprovalStatus::Allowed, Some("allowed".to_owned()), 1); 4]
         );
-        assert!(answer(&fx, &Hooks::none(), &pending.id, ApprovalDecision::Once)
-            .unwrap_err()
-            .message
-            .contains("already answered"));
+        assert!(
+            answer(&fx, &Hooks::none(), &pending.id, ApprovalDecision::Once)
+                .unwrap_err()
+                .message
+                .contains("already answered")
+        );
         assert_eq!(
             fx.db(|db| list_routines(db, Some(writer.id.as_str())).unwrap().len()),
             1
@@ -512,7 +549,10 @@ mod routine_transactions {
             let label = format!("{corruption}/{decision:?}");
             let (mut fx, writer, _) = setup();
             let pending = proposal(&fx, &writer);
-            assert!(bot_updated_with(&fx, &writer.id, "waiting"), "{label}: the proposal sets Waiting");
+            assert!(
+                bot_updated_with(&fx, &writer.id, "waiting"),
+                "{label}: the proposal sets Waiting"
+            );
             let stored = data.as_ref().map(Value::to_string);
             fx.db(|db| {
                 db.execute(
@@ -572,25 +612,37 @@ mod routine_transactions {
                     .contains(&serde_json::to_value(&result).unwrap()),
                 "{label}"
             );
-            assert!(bot_updated_with(&fx, &writer.id, "idle"), "{label}: the answer clears Waiting");
+            assert!(
+                bot_updated_with(&fx, &writer.id, "idle"),
+                "{label}: the answer clears Waiting"
+            );
             let expected_rows = if once { 4 } else { 3 };
             assert_eq!(
                 *recorded(&observed),
                 vec![(status, expected_card.clone(), routines); expected_rows],
                 "{label}"
             );
-            assert!(answer(&fx, &Hooks::none(), &pending.id, decision)
-                .unwrap_err()
-                .message
-                .contains("already answered"), "{label}");
+            assert!(
+                answer(&fx, &Hooks::none(), &pending.id, decision)
+                    .unwrap_err()
+                    .message
+                    .contains("already answered"),
+                "{label}"
+            );
         }
     }
 
     #[test]
     fn leaves_a_pending_proposal_intact_when_it_has_a_malformed_payload_or_wrong_kind() {
         let cases = [
-            ("malformed payload", "UPDATE approvals SET payload = '{}' WHERE id = ?1"),
-            ("wrong approval kind", "UPDATE approvals SET kind = 'tool' WHERE id = ?1"),
+            (
+                "malformed payload",
+                "UPDATE approvals SET payload = '{}' WHERE id = ?1",
+            ),
+            (
+                "wrong approval kind",
+                "UPDATE approvals SET kind = 'tool' WHERE id = ?1",
+            ),
         ];
         for (reason, sql) in cases {
             let (fx, writer, _) = setup();
@@ -608,9 +660,11 @@ mod routine_transactions {
             );
             let card = fx.db(|db| card_data(db, &pending.message_id));
             assert_eq!(card["status"], "pending", "{reason}");
-            assert!(fx
-                .db(|db| list_routines(db, Some(writer.id.as_str())).unwrap())
-                .is_empty(), "{reason}");
+            assert!(
+                fx.db(|db| list_routines(db, Some(writer.id.as_str())).unwrap())
+                    .is_empty(),
+                "{reason}"
+            );
             assert!(fx.event_names().is_empty(), "{reason}");
         }
     }
@@ -679,8 +733,15 @@ mod request_transactions {
             team.turn_ended(host, &request, &result)
         })
         .unwrap_err();
-        assert!(error.message.contains("failure notice failed"), "{}", error.message);
-        assert_eq!(fx.db(|db| get_exchange(db, &exchange_id).unwrap()), exchange);
+        assert!(
+            error.message.contains("failure notice failed"),
+            "{}",
+            error.message
+        );
+        assert_eq!(
+            fx.db(|db| get_exchange(db, &exchange_id).unwrap()),
+            exchange
+        );
         assert_eq!(
             fx.db(|db| rows(db, "SELECT * FROM messages WHERE kind = 'handoff'")),
             handoffs
@@ -766,10 +827,7 @@ mod request_transactions {
             fx.db(|db| get_exchange(db, &exchange_id).unwrap().status),
             ExchangeStatus::Waiting
         );
-        assert_eq!(
-            fx.db(|db| request_count(db, work.chain_id.as_deref())),
-            1
-        );
+        assert_eq!(fx.db(|db| request_count(db, work.chain_id.as_deref())), 1);
         assert_eq!(
             *recorded(&fx.logs),
             vec![
@@ -785,10 +843,22 @@ mod request_transactions {
     #[test]
     fn rolls_back_quota_and_all_request_state_when_a_stage_fails() {
         let stages = [
-            ("exchange insertion", "CREATE TRIGGER reject_request BEFORE INSERT ON exchanges BEGIN SELECT RAISE(ABORT, 'request failed'); END"),
-            ("conversation insertion", "CREATE TRIGGER reject_request BEFORE INSERT ON conversations WHEN NEW.kind = 'exchange' BEGIN SELECT RAISE(ABORT, 'request failed'); END"),
-            ("handoff insertion", "CREATE TRIGGER reject_request BEFORE INSERT ON messages WHEN NEW.kind = 'handoff' BEGIN SELECT RAISE(ABORT, 'request failed'); END"),
-            ("queue insertion", "CREATE TRIGGER reject_request BEFORE INSERT ON work_items WHEN NEW.source = 'bot_request' BEGIN SELECT RAISE(ABORT, 'request failed'); END"),
+            (
+                "exchange insertion",
+                "CREATE TRIGGER reject_request BEFORE INSERT ON exchanges BEGIN SELECT RAISE(ABORT, 'request failed'); END",
+            ),
+            (
+                "conversation insertion",
+                "CREATE TRIGGER reject_request BEFORE INSERT ON conversations WHEN NEW.kind = 'exchange' BEGIN SELECT RAISE(ABORT, 'request failed'); END",
+            ),
+            (
+                "handoff insertion",
+                "CREATE TRIGGER reject_request BEFORE INSERT ON messages WHEN NEW.kind = 'handoff' BEGIN SELECT RAISE(ABORT, 'request failed'); END",
+            ),
+            (
+                "queue insertion",
+                "CREATE TRIGGER reject_request BEFORE INSERT ON work_items WHEN NEW.source = 'bot_request' BEGIN SELECT RAISE(ABORT, 'request failed'); END",
+            ),
         ];
         for (stage, trigger) in stages {
             let (fx, _, researcher) = setup();
@@ -858,10 +928,7 @@ mod request_transactions {
         assert_eq!(fx.db(state_counts), expected);
         assert_eq!(fx.event_names(), ["message.added"; 4]);
         assert_eq!(*recorded(&observed), vec![expected.clone(); 4]);
-        assert_eq!(
-            fx.db(|db| request_count(db, work.chain_id.as_deref())),
-            1
-        );
+        assert_eq!(fx.db(|db| request_count(db, work.chain_id.as_deref())), 1);
         assert_eq!(recorded(&fx.delivered).len(), 1);
     }
 
@@ -892,15 +959,15 @@ mod request_transactions {
             .unwrap()
             .clone()
             .expect("Delivery was not attempted");
-        let exchange_id = request.exchange_id.clone().expect("Request has no exchange");
+        let exchange_id = request
+            .exchange_id
+            .clone()
+            .expect("Request has no exchange");
         assert_eq!(
             fx.db(|db| get_exchange(db, &exchange_id).unwrap().status),
             ExchangeStatus::Failed
         );
-        assert_eq!(
-            fx.db(|db| request_count(db, work.chain_id.as_deref())),
-            0
-        );
+        assert_eq!(fx.db(|db| request_count(db, work.chain_id.as_deref())), 0);
         let open: Vec<String> = fx.db(|db| {
             let mut statement = db
                 .prepare("SELECT id FROM work_items WHERE exchange_id = ?1 AND status IN ('queued', 'running')")
@@ -934,10 +1001,7 @@ mod request_transactions {
             .unwrap(),
             "Sent. Writer will reply."
         );
-        assert_eq!(
-            fx.db(|db| request_count(db, work.chain_id.as_deref())),
-            1
-        );
+        assert_eq!(fx.db(|db| request_count(db, work.chain_id.as_deref())), 1);
     }
 
     #[test]

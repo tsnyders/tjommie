@@ -167,7 +167,9 @@ pub fn fixture_with(attachments: bool) -> Fixture {
             recorded(&log_sink).push((context.to_owned(), error.to_owned()));
         }),
         shared_files: root.path().join("shared-files"),
-        attachments: shared.clone().map(|shared| shared as Arc<dyn SharedAttachments>),
+        attachments: shared
+            .clone()
+            .map(|shared| shared as Arc<dyn SharedAttachments>),
     }));
     let host = Arc::new(Mutex::new(FakeHost {
         db,

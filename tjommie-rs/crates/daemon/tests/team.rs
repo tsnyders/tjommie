@@ -20,8 +20,8 @@ use daemon::server::RpcError;
 use daemon::settings::set_settings;
 use daemon::team::{file_inside, get_exchange};
 use protocol::model::{
-    ApprovalDecision, ApprovalStatus, BotPatch, Exchange, ExchangeStatus, Message, MessageKind, MessageStatus, Room,
-    RoomInput, SettingsPatch, TEAM_ROOM_ID,
+    ApprovalDecision, ApprovalStatus, BotPatch, Exchange, ExchangeStatus, Message, MessageKind,
+    MessageStatus, Room, RoomInput, SettingsPatch, TEAM_ROOM_ID,
 };
 use serde_json::{Value, json};
 
@@ -39,7 +39,14 @@ fn setup() -> (Fixture, StoredBot, StoredBot) {
         "codex",
         "gpt-5.6-sol",
     );
-    let researcher = fx.bot("Researcher", "teal", "droplet", "Finds sources.", "claude", "sonnet");
+    let researcher = fx.bot(
+        "Researcher",
+        "teal",
+        "droplet",
+        "Finds sources.",
+        "claude",
+        "sonnet",
+    );
     let researcher = fx.set_can_message(&researcher.id, &[writer.id.as_str()]);
     let writer = fx.set_can_message(&writer.id, &[researcher.id.as_str()]);
     (fx, writer, researcher)
@@ -68,7 +75,10 @@ fn newest(fx: &Fixture, conversation: &str) -> Message {
 }
 
 fn bodies(fx: &Fixture, conversation: &str, limit: u32) -> Vec<String> {
-    chat(fx, conversation, limit).into_iter().map(|message| message.body).collect()
+    chat(fx, conversation, limit)
+        .into_iter()
+        .map(|message| message.body)
+        .collect()
 }
 
 /// A message's `data` as JSON; `Null` when it has none.
@@ -176,9 +186,11 @@ fn set_chain_limit(fx: &Fixture, limit: u32) {
 /// `SELECT status FROM work_items WHERE id = ?`.
 fn status_of(fx: &Fixture, item_id: &str) -> String {
     fx.db(|db| {
-        db.query_row("SELECT status FROM work_items WHERE id = ?1", [item_id], |row| {
-            row.get::<_, String>(0)
-        })
+        db.query_row(
+            "SELECT status FROM work_items WHERE id = ?1",
+            [item_id],
+            |row| row.get::<_, String>(0),
+        )
         .unwrap()
     })
 }
@@ -224,10 +236,21 @@ mod team_tools {
     #[test]
     fn records_a_named_login_request_in_its_current_conversation_without_accessing_a_vault() {
         let (fx, writer, _researcher) = setup();
-        let writer = patch_bot(&fx, &writer.id, BotPatch { browser: Some(true), ..Default::default() });
+        let writer = patch_bot(
+            &fx,
+            &writer.id,
+            BotPatch {
+                browser: Some(true),
+                ..Default::default()
+            },
+        );
         let work = chat_turn(&fx, &writer.id);
         let reply = fx
-            .run_tool("request_login", &writer.id, json!({ "name": "Example website" }))
+            .run_tool(
+                "request_login",
+                &writer.id,
+                json!({ "name": "Example website" }),
+            )
             .unwrap();
         assert!(reply.contains("No credential was read or filled"));
         let message = newest(&fx, &work.conversation_id);
@@ -239,7 +262,14 @@ mod team_tools {
     #[test]
     fn refuses_login_requests_from_paused_bots_or_with_secret_bearing_parameters() {
         let (fx, writer, _researcher) = setup();
-        patch_bot(&fx, &writer.id, BotPatch { browser: Some(true), ..Default::default() });
+        patch_bot(
+            &fx,
+            &writer.id,
+            BotPatch {
+                browser: Some(true),
+                ..Default::default()
+            },
+        );
         // `toThrow()`: any refusal, here an unknown key.
         fx.run_tool(
             "request_login",
@@ -248,7 +278,8 @@ mod team_tools {
         )
         .unwrap_err();
         fx.db(|db| set_paused(db, &writer.id, true).unwrap());
-        let message = refused(fx.run_tool("request_login", &writer.id, json!({ "name": "Example" })));
+        let message =
+            refused(fx.run_tool("request_login", &writer.id, json!({ "name": "Example" })));
         assert!(message.contains("Resume this bot"));
     }
 
@@ -265,7 +296,8 @@ mod team_tools {
     }
 
     #[test]
-    fn delivers_a_request_shows_it_in_both_chats_and_the_room_and_sends_the_answer_and_files_back() {
+    fn delivers_a_request_shows_it_in_both_chats_and_the_room_and_sends_the_answer_and_files_back()
+    {
         let (fx, writer, researcher) = setup();
         let chat_item = chat_turn(&fx, &researcher.id);
         assert_eq!(
@@ -301,9 +333,14 @@ mod team_tools {
 
         // Writer's turn: it shares a file, then answers. The runner writes the answer into the exchange.
         set_current(&fx, &writer.id, request.clone());
-        fs::write(Path::new(&writer.home_folder).join("summary.md"), "# Summary").unwrap();
+        fs::write(
+            Path::new(&writer.home_folder).join("summary.md"),
+            "# Summary",
+        )
+        .unwrap();
         assert_eq!(
-            fx.run_tool("share_file", &writer.id, json!({ "path": "summary.md" })).unwrap(),
+            fx.run_tool("share_file", &writer.id, json!({ "path": "summary.md" }))
+                .unwrap(),
             "Shared summary.md."
         );
         add_text(&fx, &exchange_id, &writer.id, "Here's the summary.");
@@ -321,7 +358,9 @@ mod team_tools {
         assert!(reply.text.contains("Writer replied"));
         assert!(reply.text.contains("Here's the summary."));
         assert!(reply.text.contains("summary.md"));
-        let inbox_copy = Path::new(&researcher.home_folder).join("inbox").join("summary.md");
+        let inbox_copy = Path::new(&researcher.home_folder)
+            .join("inbox")
+            .join("summary.md");
         assert_eq!(fs::read_to_string(inbox_copy).unwrap(), "# Summary");
         let handoff = chat(&fx, &researcher.id, 5)
             .into_iter()
@@ -340,11 +379,23 @@ mod team_tools {
     fn refuses_unknown_bots_bots_off_the_list_and_the_caller_itself() {
         let (fx, _writer, researcher) = setup();
         fx.bot("Loner", "gray", "pill", "", "claude", "haiku");
-        let message = refused(fx.run_tool("message_bot", &researcher.id, json!({ "bot": "Nobody", "message": "hi" })));
+        let message = refused(fx.run_tool(
+            "message_bot",
+            &researcher.id,
+            json!({ "bot": "Nobody", "message": "hi" }),
+        ));
         assert!(message.contains("no bot called Nobody"));
-        let message = refused(fx.run_tool("message_bot", &researcher.id, json!({ "bot": "Loner", "message": "hi" })));
+        let message = refused(fx.run_tool(
+            "message_bot",
+            &researcher.id,
+            json!({ "bot": "Loner", "message": "hi" }),
+        ));
         assert!(message.contains("not allowed to message Loner"));
-        let message = refused(fx.run_tool("message_bot", &researcher.id, json!({ "bot": "Researcher", "message": "hi" })));
+        let message = refused(fx.run_tool(
+            "message_bot",
+            &researcher.id,
+            json!({ "bot": "Researcher", "message": "hi" }),
+        ));
         assert!(message.contains("can't message yourself"));
         assert!(delivered_items(&fx).is_empty());
     }
@@ -403,7 +454,11 @@ mod team_tools {
         let items = delivered_items(&fx);
         assert_eq!(items[1].bot_id, researcher.id);
         assert_eq!(items[1].source, WorkSource::BotReply);
-        assert!(items[1].text.contains("Writer couldn't finish your request"));
+        assert!(
+            items[1]
+                .text
+                .contains("Writer couldn't finish your request")
+        );
         assert!(items[1].text.contains("Codex exited with code 1"));
         assert_eq!(
             exchange_of(&fx, asked.exchange_id.as_deref().unwrap()).status,
@@ -415,10 +470,18 @@ mod team_tools {
     fn ends_a_deleted_askers_exchanges_without_errors_requester_deleted() {
         let (fx, writer, researcher) = setup();
         chat_turn(&fx, &researcher.id);
-        fx.run_tool("message_bot", &researcher.id, json!({ "bot": "Writer", "message": "First." }))
-            .unwrap();
-        fx.run_tool("message_bot", &researcher.id, json!({ "bot": "Writer", "message": "Second." }))
-            .unwrap();
+        fx.run_tool(
+            "message_bot",
+            &researcher.id,
+            json!({ "bot": "Writer", "message": "First." }),
+        )
+        .unwrap();
+        fx.run_tool(
+            "message_bot",
+            &researcher.id,
+            json!({ "bot": "Writer", "message": "Second." }),
+        )
+        .unwrap();
         let items = delivered_items(&fx);
         let (started, waiting) = (items[0].clone(), items[1].clone());
         fx.db(|db| set_status(db, &started.id, WorkStatus::Running).unwrap());
@@ -472,7 +535,10 @@ mod team_tools {
         fs::create_dir(&outside).unwrap();
         fs::write(outside.join("secret.txt"), "no").unwrap();
         fs::write(home.join("ok.txt"), "yes").unwrap();
-        assert!(make_junction(&home.join("link"), &outside), "mklink /J refused");
+        assert!(
+            make_junction(&home.join("link"), &outside),
+            "mklink /J refused"
+        );
         assert_eq!(
             fx.run_tool(
                 "share_file",
@@ -488,15 +554,24 @@ mod team_tools {
         assert_eq!(data_of(&card)["name"], "ok.txt");
         assert_eq!(data_of(&card)["size"], 3);
         let escapes = [
-            path_arg(&Path::new("..").join("..").join("outside").join("secret.txt")),
+            path_arg(
+                &Path::new("..")
+                    .join("..")
+                    .join("outside")
+                    .join("secret.txt"),
+            ),
             path_arg(&outside.join("secret.txt")),
             path_arg(&Path::new("link").join("secret.txt")),
         ];
         for path in &escapes {
             let message = refused(fx.run_tool("share_file", &writer.id, json!({ "path": path })));
-            assert!(message.contains("only share files from your own folders"), "{path}: {message}");
+            assert!(
+                message.contains("only share files from your own folders"),
+                "{path}: {message}"
+            );
         }
-        let message = refused(fx.run_tool("share_file", &writer.id, json!({ "path": "missing.txt" })));
+        let message =
+            refused(fx.run_tool("share_file", &writer.id, json!({ "path": "missing.txt" })));
         assert!(message.contains("no file"));
     }
 
@@ -524,8 +599,14 @@ mod team_tools {
             "Add a routine: Morning check, weekdays at 08:48, stop after 1 hour."
         );
         let first_id = first["id"].as_str().unwrap().to_owned();
-        assert!(fx.db(|db| list_routines(db, Some(writer.id.as_str())).unwrap()).is_empty());
-        fx.team_call(|team, host| team.answer_routine_proposal(host, &first_id, ApprovalDecision::Once).unwrap());
+        assert!(
+            fx.db(|db| list_routines(db, Some(writer.id.as_str())).unwrap())
+                .is_empty()
+        );
+        fx.team_call(|team, host| {
+            team.answer_routine_proposal(host, &first_id, ApprovalDecision::Once)
+                .unwrap()
+        });
         let routines = fx.db(|db| list_routines(db, Some(writer.id.as_str())).unwrap());
         assert_eq!(routines.len(), 1);
         assert_eq!(routines[0].name, "Morning check");
@@ -539,9 +620,19 @@ mod team_tools {
             json!({ "name": "Other", "days": ["sat"], "times": ["10:00"], "prompt": "Tidy the inbox" }),
         )
         .unwrap();
-        let second_id = fx.events_named("approval.added")[1]["id"].as_str().unwrap().to_owned();
-        fx.team_call(|team, host| team.answer_routine_proposal(host, &second_id, ApprovalDecision::Deny).unwrap());
-        assert_eq!(fx.db(|db| list_routines(db, Some(writer.id.as_str())).unwrap()).len(), 1);
+        let second_id = fx.events_named("approval.added")[1]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        fx.team_call(|team, host| {
+            team.answer_routine_proposal(host, &second_id, ApprovalDecision::Deny)
+                .unwrap()
+        });
+        assert_eq!(
+            fx.db(|db| list_routines(db, Some(writer.id.as_str())).unwrap())
+                .len(),
+            1
+        );
         assert_eq!(
             fx.db(|db| get_approval(db, &second_id).unwrap()).status,
             ApprovalStatus::Denied
@@ -556,7 +647,11 @@ mod team_room {
     fn mentions_only_custom_room_members() {
         let (fx, writer, researcher) = setup();
         let outsider = fx.bot("Outsider", "gray", "pill", "", "claude", "haiku");
-        let room = make_room(&fx, "Planning", &[writer.id.as_str(), researcher.id.as_str()]);
+        let room = make_room(
+            &fx,
+            "Planning",
+            &[writer.id.as_str(), researcher.id.as_str()],
+        );
         post(&fx, &room.id, "@everyone plan together");
         let items = delivered_items(&fx);
         let mut bot_ids: Vec<String> = items.iter().map(|item| item.bot_id.clone()).collect();
@@ -564,7 +659,10 @@ mod team_room {
         let mut expected = vec![writer.id.clone(), researcher.id.clone()];
         expected.sort();
         assert_eq!(bot_ids, expected);
-        let conversations: Vec<String> = items.iter().map(|item| item.conversation_id.clone()).collect();
+        let conversations: Vec<String> = items
+            .iter()
+            .map(|item| item.conversation_id.clone())
+            .collect();
         assert_eq!(conversations, vec![room.id.clone(), room.id.clone()]);
         assert!(items[0].text.contains("Team room \"Planning\""));
         recorded(&fx.delivered).clear();
@@ -573,7 +671,8 @@ mod team_room {
     }
 
     #[test]
-    fn reads_mentions_against_every_bots_name_so_a_members_name_inside_a_non_members_doesnt_start_the_member() {
+    fn reads_mentions_against_every_bots_name_so_a_members_name_inside_a_non_members_doesnt_start_the_member()
+     {
         let (fx, _writer, _researcher) = setup();
         let bot = fx.bot("Bot", "gray", "pill", "", "claude", "haiku");
         fx.bot("Bot 2", "gray", "pill", "", "claude", "haiku");
@@ -581,7 +680,10 @@ mod team_room {
         post(&fx, &room.id, "@Bot 2 please help");
         assert!(delivered_items(&fx).is_empty());
         post(&fx, &room.id, "@Bot please help");
-        let bot_ids: Vec<String> = delivered_items(&fx).iter().map(|item| item.bot_id.clone()).collect();
+        let bot_ids: Vec<String> = delivered_items(&fx)
+            .iter()
+            .map(|item| item.bot_id.clone())
+            .collect();
         assert_eq!(bot_ids, vec![bot.id.clone()]);
     }
 
@@ -618,7 +720,10 @@ mod team_room {
         let item = delivered_items(&fx).remove(0);
         finish(&fx, &item, done("The report", None)).unwrap();
         for room_id in [TEAM_ROOM_ID, shared.id.as_str()] {
-            assert_eq!(bodies(&fx, room_id, 5), vec!["Write a report", "The report"]);
+            assert_eq!(
+                bodies(&fx, room_id, 5),
+                vec!["Write a report", "The report"]
+            );
         }
         assert!(chat(&fx, &solo.id, 5).is_empty());
     }
@@ -661,8 +766,12 @@ mod team_room {
         assert_eq!(bot_ids, expected);
         assert_eq!(items[0].source, WorkSource::Room);
         assert_eq!(items[0].conversation_id, TEAM_ROOM_ID);
-        let message_ids: Vec<Option<String>> = items.iter().map(|item| item.message_id.clone()).collect();
-        assert_eq!(message_ids, vec![Some(posted.id.clone()), Some(posted.id.clone())]);
+        let message_ids: Vec<Option<String>> =
+            items.iter().map(|item| item.message_id.clone()).collect();
+        assert_eq!(
+            message_ids,
+            vec![Some(posted.id.clone()), Some(posted.id.clone())]
+        );
         assert_eq!(items[0].chain_id, items[1].chain_id);
         assert!(items[0].text.contains("Person: Morning all."));
         assert!(items[0].text.contains("what's new?"));
@@ -700,12 +809,19 @@ mod shared_file_snapshots {
         fs::create_dir(&outside).unwrap();
         fs::write(folder.join("answer.txt"), "safe original").unwrap();
         fs::write(outside.join("answer.txt"), "private replacement").unwrap();
-        fx.run_tool("share_file", &writer.id, json!({ "path": "output/answer.txt" }))
-            .unwrap();
+        fx.run_tool(
+            "share_file",
+            &writer.id,
+            json!({ "path": "output/answer.txt" }),
+        )
+        .unwrap();
         fs::remove_dir_all(&folder).unwrap();
         assert!(make_junction(&folder, &outside), "mklink /J refused");
         finish(&fx, &item, done("Here it is.", None)).unwrap();
-        assert_eq!(fs::read_to_string(inbox_file(&researcher, "answer.txt")).unwrap(), "safe original");
+        assert_eq!(
+            fs::read_to_string(inbox_file(&researcher, "answer.txt")).unwrap(),
+            "safe original"
+        );
     }
 
     #[test]
@@ -714,11 +830,18 @@ mod shared_file_snapshots {
         let item = request(&fx, &researcher.id, &writer.id);
         let source = Path::new(&writer.home_folder).join("answer.txt");
         fs::write(&source, "safe original").unwrap();
-        fx.run_tool("share_file", &writer.id, json!({ "path": path_arg(&source) }))
-            .unwrap();
+        fx.run_tool(
+            "share_file",
+            &writer.id,
+            json!({ "path": path_arg(&source) }),
+        )
+        .unwrap();
         fs::remove_file(&source).unwrap();
         finish(&fx, &item, done("Here it is.", None)).unwrap();
-        assert_eq!(fs::read_to_string(inbox_file(&researcher, "answer.txt")).unwrap(), "safe original");
+        assert_eq!(
+            fs::read_to_string(inbox_file(&researcher, "answer.txt")).unwrap(),
+            "safe original"
+        );
     }
 
     #[test]
@@ -727,8 +850,12 @@ mod shared_file_snapshots {
         let item = request(&fx, &researcher.id, &writer.id);
         let source = Path::new(&writer.home_folder).join("answer.txt");
         fs::write(&source, "safe original").unwrap();
-        fx.run_tool("share_file", &writer.id, json!({ "path": path_arg(&source) }))
-            .unwrap();
+        fx.run_tool(
+            "share_file",
+            &writer.id,
+            json!({ "path": path_arg(&source) }),
+        )
+        .unwrap();
         grow_to(&source, OVER_LIMIT);
         finish(&fx, &item, done("Here it is.", None)).unwrap();
         let copy = inbox_file(&researcher, "answer.txt");
@@ -748,13 +875,25 @@ mod shared_file_snapshots {
         fs::write(&inbox, "blocks copying").unwrap();
         fx.clear_events();
         finish(&fx, &item, done("The answer.", None)).unwrap();
-        assert_eq!(exchange_of(&fx, item.exchange_id.as_deref().unwrap()).status, ExchangeStatus::Failed);
-        assert!(!bodies(&fx, TEAM_ROOM_ID, 10).iter().any(|body| body == "The answer."));
-        assert!(delivered_items(&fx)[1].text.contains("couldn't finish your request"));
-        assert!(!fx
-            .event_json()
-            .iter()
-            .any(|event| event["data"]["body"] == "The answer."));
+        assert_eq!(
+            exchange_of(&fx, item.exchange_id.as_deref().unwrap()).status,
+            ExchangeStatus::Failed
+        );
+        assert!(
+            !bodies(&fx, TEAM_ROOM_ID, 10)
+                .iter()
+                .any(|body| body == "The answer.")
+        );
+        assert!(
+            delivered_items(&fx)[1]
+                .text
+                .contains("couldn't finish your request")
+        );
+        assert!(
+            !fx.event_json()
+                .iter()
+                .any(|event| event["data"]["body"] == "The answer.")
+        );
     }
 
     #[test]
@@ -766,18 +905,24 @@ mod shared_file_snapshots {
         let source = home.join("large.bin");
         fs::write(&source, "").unwrap();
         grow_to(&source, OVER_LIMIT);
-        let message = refused(fx.run_tool("share_file", &writer.id, json!({ "path": path_arg(&source) })));
+        let message = refused(fx.run_tool(
+            "share_file",
+            &writer.id,
+            json!({ "path": path_arg(&source) }),
+        ));
         assert!(message.contains("200 MB"));
     }
 
     #[test]
-    fn copies_every_snapshot_before_replying_and_removes_partial_deliveries_on_a_later_copy_failure() {
+    fn copies_every_snapshot_before_replying_and_removes_partial_deliveries_on_a_later_copy_failure()
+     {
         let (fx, writer, researcher) = setup();
         let item = request(&fx, &researcher.id, &writer.id);
         let home = PathBuf::from(&writer.home_folder);
         for name in ["first.txt", "second.txt"] {
             fs::write(home.join(name), name).unwrap();
-            fx.run_tool("share_file", &writer.id, json!({ "path": name })).unwrap();
+            fx.run_tool("share_file", &writer.id, json!({ "path": name }))
+                .unwrap();
         }
         let card = newest(&fx, &item.conversation_id);
         let card_path = data_of(&card)["path"].as_str().unwrap().to_owned();
@@ -785,10 +930,17 @@ mod shared_file_snapshots {
         // Force the second copy to fail after the first succeeds.
         fs::remove_file(&card_path).unwrap();
         finish(&fx, &item, done("Both files.", None)).unwrap();
-        assert_eq!(exchange_of(&fx, item.exchange_id.as_deref().unwrap()).status, ExchangeStatus::Failed);
+        assert_eq!(
+            exchange_of(&fx, item.exchange_id.as_deref().unwrap()).status,
+            ExchangeStatus::Failed
+        );
         let inbox = Path::new(&researcher.home_folder).join("inbox");
         assert_eq!(fs::read_dir(&inbox).unwrap().count(), 0);
-        assert!(!bodies(&fx, TEAM_ROOM_ID, 10).iter().any(|body| body == "Both files."));
+        assert!(
+            !bodies(&fx, TEAM_ROOM_ID, 10)
+                .iter()
+                .any(|body| body == "Both files.")
+        );
     }
 
     #[test]
@@ -796,8 +948,12 @@ mod shared_file_snapshots {
         let (fx, writer, _researcher) = setup();
         let source = Path::new(&writer.home_folder).join("answer.txt");
         fs::write(&source, "card contents").unwrap();
-        fx.run_tool("share_file", &writer.id, json!({ "path": path_arg(&source) }))
-            .unwrap();
+        fx.run_tool(
+            "share_file",
+            &writer.id,
+            json!({ "path": path_arg(&source) }),
+        )
+        .unwrap();
         fs::remove_file(&source).unwrap();
         let card = newest(&fx, &writer.id);
         let card_path = data_of(&card)["path"].as_str().unwrap().to_owned();
@@ -807,14 +963,19 @@ mod shared_file_snapshots {
     #[test]
     fn removes_the_snapshot_when_the_file_card_cannot_be_saved() {
         let (fx, writer, _researcher) = setup();
-        fs::write(Path::new(&writer.home_folder).join("answer.txt"), "card contents").unwrap();
+        fs::write(
+            Path::new(&writer.home_folder).join("answer.txt"),
+            "card contents",
+        )
+        .unwrap();
         fx.db(|db| {
             db.execute_batch(
                 "CREATE TRIGGER reject_file BEFORE INSERT ON messages WHEN NEW.kind = 'file' BEGIN SELECT RAISE(ABORT, 'card failed'); END",
             )
             .unwrap();
         });
-        let message = refused(fx.run_tool("share_file", &writer.id, json!({ "path": "answer.txt" })));
+        let message =
+            refused(fx.run_tool("share_file", &writer.id, json!({ "path": "answer.txt" })));
         assert!(message.contains("card failed"));
         assert!(chat(&fx, &writer.id, 10).is_empty());
         assert_eq!(fs::read_dir(fx.shared_files()).unwrap().count(), 0);
@@ -834,7 +995,8 @@ mod shared_file_snapshots {
             },
         );
         assert_eq!(
-            fx.run_tool("share_file", &writer.id, json!({ "path": "notes.txt" })).unwrap(),
+            fx.run_tool("share_file", &writer.id, json!({ "path": "notes.txt" }))
+                .unwrap(),
             "Shared notes.txt."
         );
         // Simulate a legacy project selection that predates the project-folder guard.
@@ -847,7 +1009,11 @@ mod shared_file_snapshots {
             .unwrap();
         });
         let other = Path::new(&researcher.home_folder).join("notes.md");
-        let message = refused(fx.run_tool("share_file", &writer.id, json!({ "path": path_arg(&other) })));
+        let message = refused(fx.run_tool(
+            "share_file",
+            &writer.id,
+            json!({ "path": path_arg(&other) }),
+        ));
         assert!(message.contains("only share files from your own folders"));
     }
 
@@ -867,15 +1033,23 @@ mod shared_file_snapshots {
         fx.clear_events();
         let error = finish(&fx, &item, done("Reply text.", None)).unwrap_err();
         assert!(error.message.contains("reply failed"));
-        assert_eq!(exchange_of(&fx, item.exchange_id.as_deref().unwrap()).status, ExchangeStatus::Failed);
+        assert_eq!(
+            exchange_of(&fx, item.exchange_id.as_deref().unwrap()).status,
+            ExchangeStatus::Failed
+        );
         assert!(!inbox_file(&researcher, "answer.txt").exists());
-        assert!(!bodies(&fx, TEAM_ROOM_ID, 10).iter().any(|body| body == "Reply text."));
+        assert!(
+            !bodies(&fx, TEAM_ROOM_ID, 10)
+                .iter()
+                .any(|body| body == "Reply text.")
+        );
         let notice = newest(&fx, TEAM_ROOM_ID);
         assert_eq!(notice.kind, MessageKind::Notice);
         assert!(notice.body.contains("the reply could not be saved"));
-        assert!(!fx
-            .event_json()
-            .iter()
-            .any(|event| event["data"]["body"] == "Reply text."));
+        assert!(
+            !fx.event_json()
+                .iter()
+                .any(|event| event["data"]["body"] == "Reply text.")
+        );
     }
 }

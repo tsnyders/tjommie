@@ -15,7 +15,7 @@ use protocol::attachments::{
 };
 use protocol::model::{
     ApprovalKind, ApprovalStatus, ExchangeHandoffData, ExchangePostData, ExchangeStatus,
-    RoutineApprovalData, RoutineKind, RoutineInput, TimeZone,
+    RoutineApprovalData, RoutineInput, RoutineKind, TimeZone,
 };
 use serde_json::{Map, Value, json};
 
@@ -79,7 +79,10 @@ fn object_of<'a>(
     let Some(object) = arguments.as_object() else {
         issues.push(issue(
             &[],
-            format!("Invalid input: expected object, received {}", received(Some(arguments))),
+            format!(
+                "Invalid input: expected object, received {}",
+                received(Some(arguments))
+            ),
         ));
         return None;
     };
@@ -112,7 +115,10 @@ fn string_at(
     let Some(Value::String(raw)) = value else {
         issues.push(issue(
             path,
-            format!("Invalid input: expected string, received {}", received(value)),
+            format!(
+                "Invalid input: expected string, received {}",
+                received(value)
+            ),
         ));
         return None;
     };
@@ -149,7 +155,10 @@ fn array_at<'a>(
     let Some(Value::Array(items)) = value else {
         issues.push(issue(
             path,
-            format!("Invalid input: expected array, received {}", received(value)),
+            format!(
+                "Invalid input: expected array, received {}",
+                received(value)
+            ),
         ));
         return None;
     };
@@ -192,7 +201,14 @@ fn parse_request_login(arguments: &Value) -> Result<String, String> {
     let mut issues = Vec::new();
     let object = object_of(arguments, Some(&["name"]), &mut issues);
     let name = object.and_then(|object| {
-        let name = string_at(object.get("name"), &["name"], true, 1, Some(100), &mut issues)?;
+        let name = string_at(
+            object.get("name"),
+            &["name"],
+            true,
+            1,
+            Some(100),
+            &mut issues,
+        )?;
         if name.chars().any(|c| c.is_ascii_control()) {
             issues.push(issue(
                 &["name"],
@@ -216,7 +232,14 @@ fn parse_message_bot(arguments: &Value) -> Result<(String, String), String> {
     let object = object_of(arguments, None, &mut issues);
     let parsed = object.and_then(|object| {
         let bot = string_at(object.get("bot"), &["bot"], true, 1, None, &mut issues);
-        let message = string_at(object.get("message"), &["message"], true, 1, Some(20_000), &mut issues);
+        let message = string_at(
+            object.get("message"),
+            &["message"],
+            true,
+            1,
+            Some(20_000),
+            &mut issues,
+        );
         Some((bot?, message?))
     });
     finished(issues, parsed)
@@ -236,7 +259,13 @@ fn parse_share_file(arguments: &Value) -> Result<ShareArgs, String> {
         let companions = match object.get("companions") {
             None => Some(Vec::new()),
             value => {
-                let items = array_at(value, &["companions"], 0, MAX_ATTACHMENT_COMPANIONS, &mut issues);
+                let items = array_at(
+                    value,
+                    &["companions"],
+                    0,
+                    MAX_ATTACHMENT_COMPANIONS,
+                    &mut issues,
+                );
                 items.and_then(|items| {
                     let mut parsed = Vec::new();
                     let before = issues.len();
@@ -255,12 +284,22 @@ fn parse_share_file(arguments: &Value) -> Result<ShareArgs, String> {
                                 other => {
                                     issues.push(issue(
                                         &[&at, "name"],
-                                        format!("Invalid input: expected string, received {}", received(other)),
+                                        format!(
+                                            "Invalid input: expected string, received {}",
+                                            received(other)
+                                        ),
                                     ));
                                     None
                                 }
                             };
-                            let path = string_at(entry.get("path"), &[&at, "path"], false, 1, Some(32_767), &mut issues);
+                            let path = string_at(
+                                entry.get("path"),
+                                &[&at, "path"],
+                                false,
+                                1,
+                                Some(32_767),
+                                &mut issues,
+                            );
                             if let (Some(name), Some(path)) = (name, path) {
                                 parsed.push(CompanionArg { name, path });
                             }
@@ -284,7 +323,10 @@ fn object_of_item<'a>(
     let Some(object) = item.as_object() else {
         issues.push(issue(
             &[at],
-            format!("Invalid input: expected object, received {}", received(Some(item))),
+            format!(
+                "Invalid input: expected object, received {}",
+                received(Some(item))
+            ),
         ));
         return None;
     };
@@ -295,7 +337,10 @@ fn object_of_item<'a>(
         .collect();
     if !unknown.is_empty() {
         let label = if unknown.len() == 1 { "key" } else { "keys" };
-        issues.push(issue(&[at], format!("Unrecognized {label}: {}", unknown.join(", "))));
+        issues.push(issue(
+            &[at],
+            format!("Unrecognized {label}: {}", unknown.join(", ")),
+        ));
     }
     Some(object)
 }
@@ -394,17 +439,23 @@ fn host_tool<A: Send + 'static>(
     run: fn(&Team, &mut dyn TeamHost, &str, A) -> Result<String, RpcError>,
 ) -> McpTool {
     let (team, access) = (team.clone(), access.clone());
-    McpTool::define(name, description, schema, parse, move |bot_id: String, args: A| -> ToolFuture {
-        let (team, access) = (team.clone(), access.clone());
-        Box::pin(async move {
-            tokio::task::spawn_blocking(move || {
-                with_host(&*access, |host| run(&team, host, &bot_id, args))
+    McpTool::define(
+        name,
+        description,
+        schema,
+        parse,
+        move |bot_id: String, args: A| -> ToolFuture {
+            let (team, access) = (team.clone(), access.clone());
+            Box::pin(async move {
+                tokio::task::spawn_blocking(move || {
+                    with_host(&*access, |host| run(&team, host, &bot_id, args))
+                })
+                .await
+                .map_err(|error| error.to_string())?
+                .map_err(|error| error.message)
             })
-            .await
-            .map_err(|error| error.to_string())?
-            .map_err(|error| error.message)
-        })
-    })
+        },
+    )
 }
 
 impl Team {
@@ -550,7 +601,11 @@ impl Team {
             let description = first_line(&bot.instructions, 120);
             let name = bot.name.clone();
             let state = host.to_bot(bot).state;
-            let description = if description.is_empty() { "No description.".to_owned() } else { description };
+            let description = if description.is_empty() {
+                "No description.".to_owned()
+            } else {
+                description
+            };
             lines.push(format!("- {name} ({}): {description}", state_word(state)));
         }
         Ok(lines.join("\n"))
@@ -742,15 +797,19 @@ impl Team {
             .unwrap_or_else(|| bot.home_folder.clone());
         let roots = [PathBuf::from(&effective), PathBuf::from(&bot.home_folder)];
         let staging = &self.deps.shared_files;
-        let canonical = |path: &Path| fs::canonicalize(path).map_err(|error| plain(error.to_string()));
+        let canonical =
+            |path: &Path| fs::canonicalize(path).map_err(|error| plain(error.to_string()));
         let managed = canonical(staging.parent().unwrap_or(staging))?;
-        let on_a_task = work.as_ref().is_some_and(|work| work.task_attempt_id.is_some());
+        let on_a_task = work
+            .as_ref()
+            .is_some_and(|work| work.task_attempt_id.is_some());
         let checked = |relative: &str| -> Result<PathBuf, RpcError> {
             let file = file_inside(&roots, &roots[0].join(relative)).map_err(plain)?;
             if within(&managed, &file) {
                 let home = canonical(Path::new(&bot.home_folder))?;
                 if !within(&home, &file) {
-                    let task_folder = on_a_task && within(&canonical(Path::new(&effective))?, &file);
+                    let task_folder =
+                        on_a_task && within(&canonical(Path::new(&effective))?, &file);
                     if !task_folder {
                         return Err(plain("You can only share files from your own folders."));
                     }
@@ -758,7 +817,10 @@ impl Team {
             }
             Ok(file)
         };
-        let names: HashSet<&str> = companions.iter().map(|companion| companion.name.as_str()).collect();
+        let names: HashSet<&str> = companions
+            .iter()
+            .map(|companion| companion.name.as_str())
+            .collect();
         if names.len() != companions.len() {
             return Err(plain("Companion names must be unique."));
         }
@@ -774,9 +836,9 @@ impl Team {
             None => None,
         };
         let needs_reply = match &exchange {
-            Some(exchange) if exchange.to_bot_id == bot_id => {
-                self.bot_or_null(host.db(), &exchange.from_bot_id)?.is_some()
-            }
+            Some(exchange) if exchange.to_bot_id == bot_id => self
+                .bot_or_null(host.db(), &exchange.from_bot_id)?
+                .is_some(),
             _ => false,
         };
         let conversation = work
@@ -789,8 +851,11 @@ impl Team {
                 snapshots.push(snapshot_file(&roots, source, staging, bot_id).map_err(plain)?);
                 if let Some(attachments) = self.attachments.get() {
                     let last = snapshots.last_mut().expect("a snapshot was just pushed");
-                    let info =
-                        attachments.register_snapshot(host.db(), Path::new(&last.path), &last.name)?;
+                    let info = attachments.register_snapshot(
+                        host.db(),
+                        Path::new(&last.path),
+                        &last.name,
+                    )?;
                     last.attachment_id = Some(info.id);
                     last.content_type = Some(info.content_type);
                 }
@@ -804,19 +869,25 @@ impl Team {
                     )
                 });
                 if !markdown || !images {
-                    return Err(plain("Only a Markdown document and explicitly shared raster images can form a companion bundle."));
+                    return Err(plain(
+                        "Only a Markdown document and explicitly shared raster images can form a companion bundle.",
+                    ));
                 }
                 let listed: Vec<AttachmentCompanion> = companions
                     .iter()
                     .enumerate()
                     .map(|(index, companion)| AttachmentCompanion {
                         name: companion.name.clone(),
-                        attachment_id: snapshots[index + 1].attachment_id.clone().unwrap_or_default(),
+                        attachment_id: snapshots[index + 1]
+                            .attachment_id
+                            .clone()
+                            .unwrap_or_default(),
                         attachment_index: index as u64 + 1,
                     })
                     .collect();
-                snapshots[0].companions =
-                    Some(AttachmentCompanions::new(listed).map_err(|error| plain(error.to_string()))?);
+                snapshots[0].companions = Some(
+                    AttachmentCompanions::new(listed).map_err(|error| plain(error.to_string()))?,
+                );
             }
             if !needs_reply {
                 for snapshot in &snapshots {
@@ -867,11 +938,17 @@ impl Team {
             if let Some(attachments) = self.attachments.get()
                 && let Err(cleanup) = attachments.cleanup(host.db())
             {
-                self.log("Tjommie: shared attachment cleanup failed", &cleanup.to_string());
+                self.log(
+                    "Tjommie: shared attachment cleanup failed",
+                    &cleanup.to_string(),
+                );
             }
             return Err(error);
         }
-        let shared: Vec<PathBuf> = snapshots.iter().map(|snapshot| PathBuf::from(&snapshot.path)).collect();
+        let shared: Vec<PathBuf> = snapshots
+            .iter()
+            .map(|snapshot| PathBuf::from(&snapshot.path))
+            .collect();
         match &work {
             Some(work) if needs_reply => {
                 self.state()
@@ -909,7 +986,9 @@ impl Team {
         let limit = proposal
             .time_limit_minutes
             .filter(|&minutes| minutes > 0)
-            .map_or_else(String::new, |minutes| format!(", stop after {}", duration(minutes)));
+            .map_or_else(String::new, |minutes| {
+                format!(", stop after {}", duration(minutes))
+            });
         let summary = format!(
             "Add a routine: {}, {} at {}{limit}.",
             proposal.name,
@@ -983,6 +1062,9 @@ impl Team {
             self.emit(Event::BotUpdated(view));
             Ok(())
         })?;
-        Ok("Proposed. The person sees a card and decides; nothing is saved until they approve it.".to_owned())
+        Ok(
+            "Proposed. The person sees a card and decides; nothing is saved until they approve it."
+                .to_owned(),
+        )
     }
 }

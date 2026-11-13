@@ -187,7 +187,11 @@ fn ask(fx: &Fixture, b: &Bots) -> WorkItem {
 
 /// `share(conversationId, name)`: Writer writes `name` in its home and shares it. Returns the card.
 fn share(fx: &Fixture, b: &Bots, conversation_id: &str, name: &str) -> Message {
-    fs::write(Path::new(&b.writer.home_folder).join(name), "snapshot contents").unwrap();
+    fs::write(
+        Path::new(&b.writer.home_folder).join(name),
+        "snapshot contents",
+    )
+    .unwrap();
     fx.run_tool("share_file", &b.writer.id, json!({ "path": name }))
         .unwrap();
     newest(fx, conversation_id)
@@ -204,7 +208,11 @@ fn refuses_a_share_if_the_protected_staging_folder_was_removed() {
     let staging = fx.shared_files();
     fs::remove_dir_all(&staging).unwrap();
     let error = fx
-        .run_tool("share_file", &b.writer.id, json!({ "path": as_text(&source) }))
+        .run_tool(
+            "share_file",
+            &b.writer.id,
+            json!({ "path": as_text(&source) }),
+        )
         .unwrap_err();
     assert!(
         error.contains("The protected shared-files folder is unavailable."),
@@ -289,7 +297,11 @@ fn still_tells_the_asker_about_a_failed_or_interrupted_turn_when_saving_shared_f
             ),
             "{label}"
         );
-        assert_eq!(data_path(&stored_message(&fx, &card.id)), snapshot, "{label}");
+        assert_eq!(
+            data_path(&stored_message(&fx, &card.id)),
+            snapshot,
+            "{label}"
+        );
         assert!(Path::new(&snapshot).exists(), "{label}");
     }
 }
@@ -358,7 +370,11 @@ fn delivers_and_releases_a_snapshot_shared_while_retrying_a_failed_exchange() {
     let b = bots(&fx);
     let request = ask(&fx, &b);
     fx.team_call(|team, host| {
-        team.turn_ended(host, &request, &turn(TurnOutcome::Failed, Some("Try again")))
+        team.turn_ended(
+            host,
+            &request,
+            &turn(TurnOutcome::Failed, Some("Try again")),
+        )
     })
     .unwrap();
     let retry = fx.db(|db| {
@@ -386,15 +402,13 @@ fn delivers_and_releases_a_snapshot_shared_while_retrying_a_failed_exchange() {
         data_path(&stored_message(&fx, &card.id)),
         as_text(&expected)
     );
-    assert_eq!(
-        fs::read_to_string(&expected).unwrap(),
-        "snapshot contents"
-    );
+    assert_eq!(fs::read_to_string(&expected).unwrap(), "snapshot contents");
     assert!(!stage.exists());
 }
 
 #[test]
-fn removes_staging_after_all_copies_succeed_and_points_cards_and_room_files_at_the_recipient_inbox() {
+fn removes_staging_after_all_copies_succeed_and_points_cards_and_room_files_at_the_recipient_inbox()
+{
     let fx = fixture();
     let b = bots(&fx);
     let request = ask(&fx, &b);
@@ -404,7 +418,11 @@ fn removes_staging_after_all_copies_succeed_and_points_cards_and_room_files_at_t
     ];
     let stages: Vec<PathBuf> = cards.iter().map(staging_of).collect();
     // TypeScript's `stages` are the snapshot files; `stages` here are their folders, so check the files too.
-    assert!(cards.iter().all(|card| Path::new(&data_path(card)).exists()));
+    assert!(
+        cards
+            .iter()
+            .all(|card| Path::new(&data_path(card)).exists())
+    );
     assert!(stages.iter().all(|stage| stage.exists()));
     fx.team_call(|team, host| team.turn_ended(host, &request, &done()))
         .unwrap();
@@ -448,10 +466,7 @@ fn uses_a_durable_inbox_copy_and_immediately_removes_staging_for_a_share_in_the_
     let expected = writer_home.join("inbox").join("answer.txt");
     assert_eq!(data_path(&card), as_text(&expected));
     fs::remove_file(writer_home.join("answer.txt")).unwrap();
-    assert_eq!(
-        fs::read_to_string(&expected).unwrap(),
-        "snapshot contents"
-    );
+    assert_eq!(fs::read_to_string(&expected).unwrap(), "snapshot contents");
     assert!(names(&fx.shared_files()).is_empty());
 }
 
@@ -533,15 +548,18 @@ fn restores_moved_snapshots_and_database_state_when_a_later_cleanup_rename_fails
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
         .open(&folders[1])
         .unwrap();
-    assert!(fx
-        .team_call(|team, host| team.bot_deleted(host, &handle))
-        .is_err());
+    assert!(
+        fx.team_call(|team, host| team.bot_deleted(host, &handle))
+            .is_err()
+    );
     assert_eq!(exchange_rows(&fx), before);
     assert_eq!(recorded(&fx.delivered).len(), sent_before);
     assert!(folders.iter().all(|folder| folder.exists()));
-    assert!(names(&fx.shared_files())
-        .iter()
-        .all(|name| name.starts_with("share-")));
+    assert!(
+        names(&fx.shared_files())
+            .iter()
+            .all(|name| name.starts_with("share-"))
+    );
     drop(lock);
     fx.team_call(|team, host| team.bot_deleted(host, &handle).unwrap());
     assert!(!folders.iter().any(|folder| folder.exists()));

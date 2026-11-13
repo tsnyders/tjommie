@@ -160,9 +160,7 @@ fn rejects_unknown_members_duplicate_names_including_everyone_and_edits_to_every
         ErrorCode::BadParams
     );
     assert_eq!(
-        create_room(db, &input("Empty id", &[""]))
-            .unwrap_err()
-            .code,
+        create_room(db, &input("Empty id", &[""])).unwrap_err().code,
         ErrorCode::BadParams
     );
     let room = create_room(db, &input("Planning", &[&alice.id])).unwrap();
@@ -229,20 +227,14 @@ fn refuses_deletion_while_a_room_turn_is_queued() {
         },
     )
     .unwrap();
-    assert_eq!(
-        delete_room(db, &room.id).unwrap_err().code,
-        ErrorCode::Busy
-    );
+    assert_eq!(delete_room(db, &room.id).unwrap_err().code, ErrorCode::Busy);
     assert_eq!(get_room(db, &room.id).unwrap().name, "Planning");
     db.execute(
         "UPDATE work_items SET status = 'running' WHERE id = ?1",
         [&item.id],
     )
     .unwrap();
-    assert_eq!(
-        delete_room(db, &room.id).unwrap_err().code,
-        ErrorCode::Busy
-    );
+    assert_eq!(delete_room(db, &room.id).unwrap_err().code, ErrorCode::Busy);
     db.execute(
         "UPDATE work_items SET status = 'done' WHERE id = ?1",
         [&item.id],

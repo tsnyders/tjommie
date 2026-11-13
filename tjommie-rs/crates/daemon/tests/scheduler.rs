@@ -42,11 +42,11 @@ use daemon::server::RpcError;
 use futures_util::future::BoxFuture;
 use protocol::ErrorCode;
 use protocol::Event;
+use protocol::model::RoutineRunStatus::{Done, Failed, Missed, Queued, Running, Skipped, Stopped};
 use protocol::model::{
     BotInput, Message, MessageData, MessageKind, Routine, RoutineInput, RoutineLabelData,
     RoutinePatch, RoutineRun, RoutineRunStatus, message_data,
 };
-use protocol::model::RoutineRunStatus::{Done, Failed, Missed, Queued, Running, Skipped, Stopped};
 use protocol::wire::{Notify, PendingNotification};
 use rusqlite::{Connection, Row, params};
 use serde_json::{Value, json};
@@ -146,13 +146,15 @@ fn recording_deliver(delivered: &Arc<Mutex<Vec<WorkItem>>>) -> Deliver {
 
 fn recording_stop(stopped: &Arc<Mutex<Vec<(String, String)>>>) -> StopItem {
     let stopped = stopped.clone();
-    Arc::new(move |item: &str, notice: &str| -> BoxFuture<'static, Result<(), String>> {
-        stopped
-            .lock()
-            .unwrap()
-            .push((item.to_owned(), notice.to_owned()));
-        futures_util::FutureExt::boxed(async { Ok::<(), String>(()) })
-    })
+    Arc::new(
+        move |item: &str, notice: &str| -> BoxFuture<'static, Result<(), String>> {
+            stopped
+                .lock()
+                .unwrap()
+                .push((item.to_owned(), notice.to_owned()));
+            futures_util::FutureExt::boxed(async { Ok::<(), String>(()) })
+        },
+    )
 }
 
 fn recording_log(logs: &Arc<Mutex<Vec<(String, String)>>>) -> Log {
@@ -240,7 +242,11 @@ impl SchedulerHost for Host<'_> {
 
 /// `s.retry(message)`. The database is locked only for the call, so the caller can read afterwards. Returns what the
 /// retry did and what it handed to the runner.
-fn retry(s: &Scheduler, f: &Fixture, message: &Message) -> (Result<Message, RpcError>, Vec<WorkItem>) {
+fn retry(
+    s: &Scheduler,
+    f: &Fixture,
+    message: &Message,
+) -> (Result<Message, RpcError>, Vec<WorkItem>) {
     let guard = lock(&f.db);
     let mut host = Host {
         db: &guard,
@@ -256,7 +262,10 @@ fn runs(db: &Db, routine_id: &str) -> Vec<RoutineRun> {
 }
 
 fn statuses(db: &Db, routine_id: &str) -> Vec<RoutineRunStatus> {
-    runs(db, routine_id).into_iter().map(|run| run.status).collect()
+    runs(db, routine_id)
+        .into_iter()
+        .map(|run| run.status)
+        .collect()
 }
 
 fn status_due(db: &Db, routine_id: &str) -> Vec<(RoutineRunStatus, String)> {
@@ -309,11 +318,7 @@ fn label_data(message: &Message) -> RoutineLabelData {
 }
 
 /// `SELECT ... FROM <table>`-style reads: every row, read by `read`.
-fn rows<T>(
-    db: &Connection,
-    sql: &str,
-    read: impl Fn(&Row<'_>) -> rusqlite::Result<T>,
-) -> Vec<T> {
+fn rows<T>(db: &Connection, sql: &str, read: impl Fn(&Row<'_>) -> rusqlite::Result<T>) -> Vec<T> {
     let mut statement = db.prepare(sql).unwrap();
     statement
         .query_map([], |row| read(row))
@@ -324,7 +329,9 @@ fn rows<T>(
 
 fn count(db: &Db, table: &str) -> i64 {
     lock(db)
-        .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0))
+        .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+            row.get(0)
+        })
         .unwrap()
 }
 
@@ -690,9 +697,7 @@ mod scheduler {
             broadcast: Arc::new(|_event: Event| -> Result<(), String> {
                 panic!("process stopped")
             }),
-            deliver: Arc::new(|_work: &WorkItem| -> Result<(), String> {
-                panic!("must not wake")
-            }),
+            deliver: Arc::new(|_work: &WorkItem| -> Result<(), String> { panic!("must not wake") }),
             ..deps(&f)
         });
         let crashed = catch_unwind(AssertUnwindSafe(|| {
@@ -712,7 +717,10 @@ mod scheduler {
         let restarted = scheduler(&f);
         restarted.recover().unwrap();
         restarted.tick(at("2026-09-20T08:00:30Z")).unwrap();
-        assert_eq!(next_queued(&lock(&f.db), &f.bot_id).unwrap(), Some(item.clone()));
+        assert_eq!(
+            next_queued(&lock(&f.db), &f.bot_id).unwrap(),
+            Some(item.clone())
+        );
         let listed = runs(&f.db, &routine.id);
         assert_eq!(listed.len(), 1);
         assert_eq!(Some(listed[0].id.clone()), item.routine_run_id);
@@ -741,7 +749,11 @@ mod scheduler {
             assert_eq!(settled.status, Failed, "{status:?}");
             assert!(settled.ended_at.is_some(), "{status:?}");
             assert!(
-                settled.note.as_deref().unwrap_or_default().contains("restarted"),
+                settled
+                    .note
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains("restarted"),
                 "{status:?}"
             );
             assert!(!open_run(&f.db, &routine.id), "{status:?}");
@@ -756,14 +768,22 @@ mod scheduler {
             assert!(events_of(&f).is_empty(), "{status:?}");
             s.tick(at("2026-09-20T08:00:10Z")).unwrap();
             assert_eq!(delivered_items(&f).len(), 1, "{status:?}");
-            assert_eq!(statuses(&f.db, &routine.id), vec![Queued, Failed], "{status:?}");
+            assert_eq!(
+                statuses(&f.db, &routine.id),
+                vec![Queued, Failed],
+                "{status:?}"
+            );
             s.stop();
         }
     }
 
     #[test]
     fn settles_an_open_run_left_behind_after_its_work_became_done_failed_or_interrupted() {
-        for status in [WorkStatus::Done, WorkStatus::Failed, WorkStatus::Interrupted] {
+        for status in [
+            WorkStatus::Done,
+            WorkStatus::Failed,
+            WorkStatus::Interrupted,
+        ] {
             let f = fixture();
             let routine = digest(&f);
             let s = scheduler(&f);
@@ -846,7 +866,12 @@ mod scheduler {
                 "The PC was off or asleep, or Tjommie wasn't running.",
                 "2026-09-20T08:03:00Z",
             ),
-            ("paused", Skipped, "Night Shift was paused.", "2026-09-20T08:00:10Z"),
+            (
+                "paused",
+                Skipped,
+                "Night Shift was paused.",
+                "2026-09-20T08:00:10Z",
+            ),
             (
                 "running",
                 Skipped,
@@ -886,9 +911,7 @@ mod scheduler {
             assert_eq!(data.note.as_deref(), Some(note), "{reason}");
             let label_events: Vec<Event> = events_of(&f)
                 .into_iter()
-                .filter(|event| {
-                    matches!(event, Event::MessageAdded(_) | Event::MessageUpdated(_))
-                })
+                .filter(|event| matches!(event, Event::MessageAdded(_) | Event::MessageUpdated(_)))
                 .collect();
             assert_eq!(
                 label_events,
@@ -969,7 +992,8 @@ mod scheduler {
             let item = work_of(&f.db, &delivered_item(&f, 0).id);
             s.run_started(&lock(&f.db), &item).unwrap();
             let error = (outcome == TurnOutcome::Failed).then_some("CLI exited");
-            s.run_ended(&lock(&f.db), &item, &turn(outcome, error)).unwrap();
+            s.run_ended(&lock(&f.db), &item, &turn(outcome, error))
+                .unwrap();
             let (status, note) = match outcome {
                 TurnOutcome::Done => (Done, None),
                 TurnOutcome::Interrupted => (Stopped, Some("Stopped by you.")),
@@ -1094,7 +1118,10 @@ mod scheduler {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].bot_id, f.bot_id);
         assert_eq!(items[0].source, WorkSource::Routine);
-        assert_eq!(items[0].routine_run_id.as_deref(), Some(listed[0].id.as_str()));
+        assert_eq!(
+            items[0].routine_run_id.as_deref(),
+            Some(listed[0].id.as_str())
+        );
         assert_eq!(
             next_run(&f.db, &routine.id),
             Some("2026-09-21T08:00:00.000Z".to_owned())
@@ -1128,7 +1155,10 @@ mod scheduler {
         assert_eq!(
             status_notes(&f.db, &routine.id),
             vec![
-                (Skipped, Some("The previous run was still going.".to_owned())),
+                (
+                    Skipped,
+                    Some("The previous run was still going.".to_owned())
+                ),
                 (Running, None),
                 (Skipped, Some("Night Shift was paused.".to_owned())),
             ]
@@ -1183,11 +1213,18 @@ mod scheduler {
         settle_until(|| stopped(&f).len() == 1).await;
         assert_eq!(
             stopped(&f),
-            vec![(item.id.clone(), "Stopped at the time limit (3 hours).".to_owned())]
+            vec![(
+                item.id.clone(),
+                "Stopped at the time limit (3 hours).".to_owned()
+            )]
         );
         let current = work_of(&f.db, &item.id);
-        s.run_ended(&lock(&f.db), &current, &turn(TurnOutcome::Interrupted, None))
-            .unwrap();
+        s.run_ended(
+            &lock(&f.db),
+            &current,
+            &turn(TurnOutcome::Interrupted, None),
+        )
+        .unwrap();
         let run = run_of(&f.db, &run_id).unwrap();
         assert_eq!(run.status, Stopped);
         assert_eq!(run.note.as_deref(), Some("Stopped at the time limit."));
@@ -1339,7 +1376,10 @@ mod scheduler {
         assert_eq!(
             status_notes(&f.db, &routine.id),
             vec![
-                (Skipped, Some("The previous run was still going.".to_owned())),
+                (
+                    Skipped,
+                    Some("The previous run was still going.".to_owned())
+                ),
                 (Queued, None),
             ]
         );
@@ -1546,8 +1586,8 @@ mod scheduler {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn clears_the_limit_while_requeued_rearms_the_full_limit_on_restart_and_clears_it_on_completion(
-    ) {
+    async fn clears_the_limit_while_requeued_rearms_the_full_limit_on_restart_and_clears_it_on_completion()
+     {
         let f = fixture();
         let routine = digest_with(&f, json!({ "timeLimitMinutes": 2 }));
         let s = scheduler(&f);
@@ -1600,12 +1640,19 @@ mod scheduler {
         settle_until(|| stopped(&f).len() == 1).await;
         assert_eq!(
             stopped(&f),
-            vec![(item.id.clone(), "Stopped at the time limit (1 minute).".to_owned())]
+            vec![(
+                item.id.clone(),
+                "Stopped at the time limit (1 minute).".to_owned()
+            )]
         );
         // Two statements: the database lock is not reentrant, so the work is read before the lock is taken.
         let current = work_of(&f.db, &item.id);
-        s.run_ended(&lock(&f.db), &current, &turn(TurnOutcome::Interrupted, None))
-            .unwrap();
+        s.run_ended(
+            &lock(&f.db),
+            &current,
+            &turn(TurnOutcome::Interrupted, None),
+        )
+        .unwrap();
         let run = run_of(&f.db, &run_id).unwrap();
         assert_eq!(run.status, Stopped);
         assert_eq!(run.note.as_deref(), Some("Stopped at the time limit."));
@@ -1624,8 +1671,12 @@ mod scheduler {
         f.events.lock().unwrap().clear();
         s.run_started(&lock(&f.db), &item).unwrap();
         s.run_requeued(&item);
-        s.run_ended(&lock(&f.db), &item, &turn(TurnOutcome::Failed, Some("Deleted")))
-            .unwrap();
+        s.run_ended(
+            &lock(&f.db),
+            &item,
+            &turn(TurnOutcome::Failed, Some("Deleted")),
+        )
+        .unwrap();
         assert!(run_of(&f.db, &run_id).is_none());
         let labels = chat(&f.db, &f.bot_id);
         assert_eq!(labels.len(), 1);
@@ -1640,7 +1691,8 @@ mod scheduler {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn does_not_stop_or_notify_a_running_item_when_its_routine_was_deleted_before_the_limit() {
+    async fn does_not_stop_or_notify_a_running_item_when_its_routine_was_deleted_before_the_limit()
+    {
         let f = fixture();
         let routine = digest_with(&f, json!({ "timeLimitMinutes": 1 }));
         let s = scheduler(&f);
@@ -1656,8 +1708,12 @@ mod scheduler {
         assert!(stopped(&f).is_empty());
         s.run_requeued(&item);
         s.run_started(&lock(&f.db), &item).unwrap();
-        s.run_ended(&lock(&f.db), &item, &turn(TurnOutcome::Failed, Some("Deleted")))
-            .unwrap();
+        s.run_ended(
+            &lock(&f.db),
+            &item,
+            &turn(TurnOutcome::Failed, Some("Deleted")),
+        )
+        .unwrap();
         assert_eq!(event_names(&f), vec!["message.updated".to_owned()]);
         let labels = chat(&f.db, &f.bot_id);
         assert_eq!(labels.len(), 1);
@@ -1684,7 +1740,8 @@ mod scheduler {
             let item = work_of(&f.db, &delivered_item(&f, 0).id);
             let run_id = item.routine_run_id.clone().unwrap();
             s.run_started(&lock(&f.db), &item).unwrap();
-            s.run_ended(&lock(&f.db), &item, &turn(outcome, None)).unwrap();
+            s.run_ended(&lock(&f.db), &item, &turn(outcome, None))
+                .unwrap();
             let ended = run_of(&f.db, &run_id).unwrap();
             assert_eq!(ended.status, status, "{outcome:?}");
             assert_eq!(ended.note.as_deref(), note, "{outcome:?}");
@@ -1697,7 +1754,11 @@ mod scheduler {
             advance(minutes(1)).await;
             let_runtime_run(50).await;
             assert!(stopped(&f).is_empty(), "{outcome:?}");
-            let expected = if outcome == TurnOutcome::Interrupted { 0 } else { 1 };
+            let expected = if outcome == TurnOutcome::Interrupted {
+                0
+            } else {
+                1
+            };
             assert_eq!(notices(&f).len(), expected, "{outcome:?}");
             s.stop();
         }
@@ -1732,8 +1793,12 @@ mod scheduler {
         .unwrap();
         s.run_started(&lock(&f.db), &item).unwrap();
         s.run_requeued(&item);
-        s.run_ended(&lock(&f.db), &item, &turn(TurnOutcome::Failed, Some("Failed")))
-            .unwrap();
+        s.run_ended(
+            &lock(&f.db),
+            &item,
+            &turn(TurnOutcome::Failed, Some("Failed")),
+        )
+        .unwrap();
         assert!(events_of(&f).is_empty());
         assert!(stopped(&f).is_empty());
         // The TS checks that no timer is armed; a stop would show here if one were.

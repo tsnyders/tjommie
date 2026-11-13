@@ -19,7 +19,14 @@ const REJECTION: &str = "You can only share files from your own folders.";
 /// `beforeEach`: one bot, Writer, in a fresh fixture.
 fn setup() -> (Fixture, StoredBot) {
     let fx = fixture();
-    let bot = fx.bot("Writer", "blue", "circle", "Write summaries.", "codex", "gpt-5.6-sol");
+    let bot = fx.bot(
+        "Writer",
+        "blue",
+        "circle",
+        "Write summaries.",
+        "codex",
+        "gpt-5.6-sol",
+    );
     (fx, bot)
 }
 
@@ -133,7 +140,10 @@ mod shared_file_containment_with_existing_outside_files {
     #[test]
     fn rejects_an_existing_sibling_file_reached_through_parent_traversal() {
         let (fx, bot) = setup();
-        let outside = Path::new(&bot.home_folder).parent().unwrap().join("private");
+        let outside = Path::new(&bot.home_folder)
+            .parent()
+            .unwrap()
+            .join("private");
         fs::create_dir(&outside).unwrap();
         fs::write(outside.join("secret.txt"), "private contents").unwrap();
         let path = Path::new("..").join("private").join("secret.txt");
@@ -150,13 +160,17 @@ mod shared_file_containment_with_existing_outside_files {
             eprintln!("skipped: No accessible additional drive provides an existing test file.");
             return;
         };
-        assert_ne!(drive_letter(&file), drive_letter(Path::new(&bot.home_folder)));
+        assert_ne!(
+            drive_letter(&file),
+            drive_letter(Path::new(&bot.home_folder))
+        );
         expect_outside_file(&fx, &bot, &file);
     }
 
     #[cfg(windows)]
     #[test]
-    fn rejects_an_existing_file_reached_through_an_inside_junction_or_symlink_to_an_outside_folder() {
+    fn rejects_an_existing_file_reached_through_an_inside_junction_or_symlink_to_an_outside_folder()
+    {
         let (fx, bot) = setup();
         let outside = fx.root.path().join("private");
         fs::create_dir(&outside).unwrap();

@@ -54,7 +54,10 @@ fn refuses() -> McpTool {
 }
 
 /// A tool named `record` that counts its runs and answers `ran`. `parse` runs first, as zod's parse would.
-fn counted(calls: Arc<AtomicUsize>, parse: impl Fn(&Value) -> Result<(), String> + Send + Sync + 'static) -> McpTool {
+fn counted(
+    calls: Arc<AtomicUsize>,
+    parse: impl Fn(&Value) -> Result<(), String> + Send + Sync + 'static,
+) -> McpTool {
     McpTool::define(
         "record",
         "Records a call.",
@@ -121,19 +124,31 @@ struct Upload {
 
 impl Upload {
     /// Connects and prepares the head, declaring `length` body bytes.
-    async fn open(port: u16, method: &str, path: &str, headers: &[(&str, &str)], length: usize) -> Upload {
+    async fn open(
+        port: u16,
+        method: &str,
+        path: &str,
+        headers: &[(&str, &str)],
+        length: usize,
+    ) -> Upload {
         let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
         let mut head = format!(
             "{method} {path} HTTP/1.1\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {length}\r\n"
         );
-        if !headers.iter().any(|(name, _)| name.eq_ignore_ascii_case("host")) {
+        if !headers
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("host"))
+        {
             head.push_str(&format!("Host: 127.0.0.1:{port}\r\n"));
         }
         for (name, value) in headers {
             head.push_str(&format!("{name}: {value}\r\n"));
         }
         head.push_str("\r\n");
-        Upload { stream, head: head.into_bytes() }
+        Upload {
+            stream,
+            head: head.into_bytes(),
+        }
     }
 
     /// A refused request may close before every byte is sent, so a failed write is left for the reply to show.
@@ -157,7 +172,14 @@ async fn send(port: u16, method: &str, path: &str, headers: &[(&str, &str)], bod
 }
 
 async fn post(port: u16, body: &Value, headers: &[(&str, &str)]) -> Reply {
-    send(port, "POST", "/mcp", headers, &serde_json::to_vec(body).unwrap()).await
+    send(
+        port,
+        "POST",
+        "/mcp",
+        headers,
+        &serde_json::to_vec(body).unwrap(),
+    )
+    .await
 }
 
 /// The head, then `Content-Length` bytes. Reading stops there, so an open request body can't hold the reply back.
@@ -286,7 +308,12 @@ async fn echoes_the_clients_protocol_version_lists_tools_and_runs_them_as_the_to
         json!({ "status": 200, "body": { "jsonrpc": "2.0", "id": 0, "result": { "protocolVersion": "2025-11-25", "capabilities": { "tools": {} }, "serverInfo": { "name": "tjommie", "version": "0.1.0" } } } })
     );
 
-    let list = post(port, &json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {} }), &auth).await;
+    let list = post(
+        port,
+        &json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {} }),
+        &auth,
+    )
+    .await;
     assert_eq!(
         list.as_json(),
         json!({ "status": 200, "body": { "jsonrpc": "2.0", "id": 1, "result": { "tools": [
@@ -322,11 +349,19 @@ async fn initializes_without_jsonrpc_and_preserves_protocol_behavior() {
 
     let cases = [
         (json!({ "protocolVersion": "2025-06-18" }), "2025-06-18"),
-        (json!({ "protocolVersion": "future-client-version" }), "future-client-version"),
+        (
+            json!({ "protocolVersion": "future-client-version" }),
+            "future-client-version",
+        ),
         (json!({}), "2025-06-18"),
     ];
     for (params, expected) in cases {
-        let reply = post(port, &json!({ "id": "init", "method": "initialize", "params": params }), &auth).await;
+        let reply = post(
+            port,
+            &json!({ "id": "init", "method": "initialize", "params": params }),
+            &auth,
+        )
+        .await;
         assert_match(
             &reply.as_json(),
             &json!({ "status": 200, "body": { "id": "init", "result": { "protocolVersion": expected } } }),
@@ -346,8 +381,13 @@ async fn turns_bad_arguments_and_refusals_into_failed_calls_the_bot_can_read() {
     let bad = post(port, &json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": { "name": "echo", "arguments": {} } }), &auth).await;
     assert_eq!(bad.status, 200);
     assert_eq!(bad.body["result"]["isError"], json!(true));
-    assert_eq!(bad.body["result"]["content"].as_array().map(Vec::len), Some(1));
-    let text = bad.body["result"]["content"][0]["text"].as_str().unwrap_or_default();
+    assert_eq!(
+        bad.body["result"]["content"].as_array().map(Vec::len),
+        Some(1)
+    );
+    let text = bad.body["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default();
     assert!(text.contains("text"), "bad-argument message was {text:?}");
 
     let refused = post(port, &json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": { "name": "refuses", "arguments": {} } }), &auth).await;
@@ -357,7 +397,13 @@ async fn turns_bad_arguments_and_refusals_into_failed_calls_the_bot_can_read() {
     );
 
     assert_match(
-        &post(port, &json!({ "id": 3, "method": "tools/call", "params": { "name": "missing" } }), &auth).await.as_json(),
+        &post(
+            port,
+            &json!({ "id": 3, "method": "tools/call", "params": { "name": "missing" } }),
+            &auth,
+        )
+        .await
+        .as_json(),
         &json!({ "status": 200, "body": { "error": { "code": -32602, "message": "Unknown tool missing" } } }),
     );
     server.close().await;
@@ -393,7 +439,13 @@ async fn awaits_tool_results_and_reports_rejected_promises() {
     let auth = [("authorization", bearer.as_str())];
 
     assert_match(
-        &post(port, &json!({ "id": 1, "method": "tools/call", "params": { "name": "async" } }), &auth).await.as_json(),
+        &post(
+            port,
+            &json!({ "id": 1, "method": "tools/call", "params": { "name": "async" } }),
+            &auth,
+        )
+        .await
+        .as_json(),
         &json!({ "body": { "result": { "content": [{ "type": "text", "text": "bot-1" }], "isError": false } } }),
     );
     assert_match(
@@ -412,12 +464,24 @@ async fn accepts_notifications_with_202_refuses_unknown_methods_and_answers_batc
     let auth = [("authorization", bearer.as_str())];
 
     assert_eq!(
-        post(port, &json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }), &auth).await.as_json(),
+        post(
+            port,
+            &json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }),
+            &auth
+        )
+        .await
+        .as_json(),
         json!({ "status": 202, "body": null })
     );
     // Claude omits jsonrpc on this probe.
     assert_match(
-        &post(port, &json!({ "id": 3, "method": "server/discover", "params": {} }), &auth).await.as_json(),
+        &post(
+            port,
+            &json!({ "id": 3, "method": "server/discover", "params": {} }),
+            &auth,
+        )
+        .await
+        .as_json(),
         &json!({ "body": { "error": { "code": -32601 } } }),
     );
     let batch = post(
@@ -426,13 +490,24 @@ async fn accepts_notifications_with_202_refuses_unknown_methods_and_answers_batc
         &auth,
     )
     .await;
-    assert_eq!(batch.body, json!([{ "jsonrpc": "2.0", "id": 4, "result": {} }]));
     assert_eq!(
-        post(port, &json!([{ "method": "notifications/initialized" }, {}]), &auth).await.as_json(),
+        batch.body,
+        json!([{ "jsonrpc": "2.0", "id": 4, "result": {} }])
+    );
+    assert_eq!(
+        post(
+            port,
+            &json!([{ "method": "notifications/initialized" }, {}]),
+            &auth
+        )
+        .await
+        .as_json(),
         json!({ "status": 202, "body": null })
     );
     assert_eq!(
-        send(port, "POST", "/mcp", &auth, b"{not json").await.as_json(),
+        send(port, "POST", "/mcp", &auth, b"{not json")
+            .await
+            .as_json(),
         json!({ "status": 400, "body": { "jsonrpc": "2.0", "id": null, "error": { "code": -32700, "message": "Parse error" } } })
     );
     server.close().await;
@@ -502,21 +577,45 @@ async fn refuses_browsers_other_hosts_bad_tokens_revoked_tokens_and_huge_bodies(
 
     for origin in ["https://evil.example", "app://tjommie", ""] {
         let headers = [("authorization", bearer.as_str()), ("origin", origin)];
-        assert_eq!(post(port, &ping, &headers).await.status, 403, "origin {origin:?}");
+        assert_eq!(
+            post(port, &ping, &headers).await.status,
+            403,
+            "origin {origin:?}"
+        );
     }
-    for host in [format!("evil.example:{port}"), "127.0.0.1:1".to_owned(), "localhost".to_owned()] {
+    for host in [
+        format!("evil.example:{port}"),
+        "127.0.0.1:1".to_owned(),
+        "localhost".to_owned(),
+    ] {
         let headers = [("authorization", bearer.as_str()), ("host", host.as_str())];
         assert_eq!(post(port, &ping, &headers).await.status, 403, "host {host}");
     }
     let local = format!("localhost:{port}");
     assert_eq!(
-        post(port, &ping, &[("authorization", bearer.as_str()), ("host", local.as_str())]).await.status,
+        post(
+            port,
+            &ping,
+            &[("authorization", bearer.as_str()), ("host", local.as_str())]
+        )
+        .await
+        .status,
         200
     );
     assert_eq!(post(port, &ping, &[]).await.status, 401);
-    assert_eq!(post(port, &ping, &[("authorization", "Bearer nope")]).await.status, 401);
+    assert_eq!(
+        post(port, &ping, &[("authorization", "Bearer nope")])
+            .await
+            .status,
+        401
+    );
     let basic = format!("Basic {token}");
-    assert_eq!(post(port, &ping, &[("authorization", basic.as_str())]).await.status, 401);
+    assert_eq!(
+        post(port, &ping, &[("authorization", basic.as_str())])
+            .await
+            .status,
+        401
+    );
 
     let auth = [("authorization", bearer.as_str())];
     assert_eq!(send(port, "GET", "/mcp", &auth, b"").await.status, 405);
@@ -545,7 +644,13 @@ async fn caps_the_body_in_bytes_and_accepts_exactly_1_mb() {
     assert_eq!(send(port, "POST", "/mcp", &auth, &exact).await.status, 200);
 
     // The same, with one 2-byte "ñ" in place of an "x": one byte over the limit, though the JS string is still LIMIT long.
-    let over = [PREFIX, vec![b'x'; filler - 1].as_slice(), "ñ".as_bytes(), SUFFIX].concat();
+    let over = [
+        PREFIX,
+        vec![b'x'; filler - 1].as_slice(),
+        "ñ".as_bytes(),
+        SUFFIX,
+    ]
+    .concat();
     assert_eq!(over.len(), LIMIT + 1);
     assert_eq!(send(port, "POST", "/mcp", &auth, &over).await.status, 413);
     server.close().await;
@@ -562,7 +667,10 @@ async fn answers_an_oversized_streaming_upload_before_the_client_finishes_the_bo
     // Declares twice the limit, sends one byte past it, and never finishes the body.
     let mut upload = Upload::open(port, "POST", "/mcp", &auth, 2 * LIMIT).await;
     upload.write(&vec![b'x'; LIMIT + 1]).await;
-    assert_eq!(upload.reply().await.as_json(), json!({ "status": 413, "body": null }));
+    assert_eq!(
+        upload.reply().await.as_json(),
+        json!({ "status": 413, "body": null })
+    );
     drop(upload);
     server.close().await;
 }
@@ -576,7 +684,9 @@ fn gives_each_session_a_new_token_and_forgets_the_old_one() {
     assert_ne!(second, first);
     assert_eq!(second.len(), 32);
     assert!(
-        second.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_'),
+        second
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_'),
         "token {second:?} is not base64url"
     );
     assert_eq!(tokens.bot_for(&first), None);
@@ -587,7 +697,8 @@ fn gives_each_session_a_new_token_and_forgets_the_old_one() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn refuses_a_tool_call_when_the_token_is_revoked_after_authentication_but_before_the_body_finishes() {
+async fn refuses_a_tool_call_when_the_token_is_revoked_after_authentication_but_before_the_body_finishes()
+ {
     let calls = Arc::new(AtomicUsize::new(0));
     let tokens = McpTokens::default();
     let server = start(&tokens, vec![record(calls.clone())]).await;
@@ -596,7 +707,14 @@ async fn refuses_a_tool_call_when_the_token_is_revoked_after_authentication_but_
     let first: &[u8] = br#"{"id":1,"method":"tools/call","#;
     let second: &[u8] = br#""params":{"name":"record","arguments":{}}}"#;
 
-    let mut upload = Upload::open(port, "POST", "/mcp", &[("authorization", bearer.as_str())], first.len() + second.len()).await;
+    let mut upload = Upload::open(
+        port,
+        "POST",
+        "/mcp",
+        &[("authorization", bearer.as_str())],
+        first.len() + second.len(),
+    )
+    .await;
     upload.write(first).await;
     // The TS test spies on `botFor` to learn when authentication ran. Rust has no such seam, so this waits for the
     // server to read the head, which happens before the body is read. Revoking after that is what the test is about.
@@ -668,9 +786,13 @@ async fn requires_the_token_to_still_identify_the_same_bot_before_a_tool_runs() 
     let bearer = bearer_for(&tokens, "bot-1");
 
     assert_match(
-        &post(port, &json!({ "id": 1, "method": "tools/call", "params": { "name": "record" } }), &[("authorization", bearer.as_str())])
-            .await
-            .as_json(),
+        &post(
+            port,
+            &json!({ "id": 1, "method": "tools/call", "params": { "name": "record" } }),
+            &[("authorization", bearer.as_str())],
+        )
+        .await
+        .as_json(),
         &json!({ "status": 200, "body": { "error": { "code": -32001 } } }),
     );
     assert_eq!(calls.load(Ordering::SeqCst), 0);
@@ -687,7 +809,9 @@ async fn routes_query_strings_and_keeps_the_health_and_missing_route_responses()
 
     let ping = serde_json::to_vec(&json!({ "id": 1, "method": "ping" })).unwrap();
     assert_eq!(
-        send(port, "POST", "/mcp?client=codex", &auth, &ping).await.as_json(),
+        send(port, "POST", "/mcp?client=codex", &auth, &ping)
+            .await
+            .as_json(),
         json!({ "status": 200, "body": { "jsonrpc": "2.0", "id": 1, "result": {} } })
     );
     assert_eq!(

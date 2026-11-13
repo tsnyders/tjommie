@@ -228,7 +228,9 @@ pub fn register(
         .on::<method::RoomsDelete, _>(move |Id { id }, _| {
             let deleted = delete.with_db(|db| delete_room(db, &id)).map(|()| {
                 cleanup_shared();
-                delete.events.send(Event::RoomDeleted(Id { id: id.clone() }));
+                delete
+                    .events
+                    .send(Event::RoomDeleted(Id { id: id.clone() }));
                 Empty {}
             });
             async move { deleted }

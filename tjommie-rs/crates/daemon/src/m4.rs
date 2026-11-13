@@ -99,15 +99,15 @@ impl M4 {
                     .map(|_| ())
                     .map_err(|error| error.to_string())
             }),
-            stop_item: Arc::new(move |item_id: &str, notice: &str| {
-                match current(&stopping) {
+            stop_item: Arc::new(
+                move |item_id: &str, notice: &str| match current(&stopping) {
                     Some(runner) => {
                         let stopped = runner.stop_item(item_id, notice);
                         async move { stopped.await.map_err(|error| error.to_string()) }.boxed()
                     }
                     None => async { Err("The runner is not ready".to_owned()) }.boxed(),
-                }
-            }),
+                },
+            ),
             log: deps.log,
             clock: Arc::new(now_ms),
             tick_every: Duration::from_millis(TICK_MS),
@@ -192,7 +192,10 @@ impl M4 {
     /// runner still ends while it shuts down reaches the team through the hooks' own `Core`, not through the runner.
     pub fn stop(&self) {
         self.scheduler.stop();
-        self.runner.lock().unwrap_or_else(PoisonError::into_inner).take();
+        self.runner
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
     }
 
     // ---- the runner's hook bodies ----
@@ -205,7 +208,12 @@ impl M4 {
         let mut servers = vec![http_server("tjommie", mcp_url, &token, true)];
         if bot.browser {
             let url = format!("{mcp_url}/browser");
-            servers.push(http_server("browser", &url, &token, bot.autonomy != Autonomy::Ask));
+            servers.push(http_server(
+                "browser",
+                &url,
+                &token,
+                bot.autonomy != Autonomy::Ask,
+            ));
         }
         servers
     }
@@ -272,7 +280,8 @@ impl M4 {
     ) -> Result<Approval, RpcError> {
         let runner = self.runner()?;
         team::with_host(&runner, |host| {
-            self.team.answer_routine_proposal(host, approval_id, decision)
+            self.team
+                .answer_routine_proposal(host, approval_id, decision)
         })
     }
 

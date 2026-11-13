@@ -261,9 +261,8 @@ pub fn harness(signed_in: bool) -> Harness {
 
     // M4 is made first: its hooks are part of the runner, and it gets the runner afterwards.
     // Nothing here calls `M4::install`, so `routines.delete` never reaches this.
-    let turn_ended: DaemonTurnEnded = Arc::new(
-        |_: &M4, _: &mut Core<'_>, _: &WorkItem, _: &TurnResult| Ok(()),
-    );
+    let turn_ended: DaemonTurnEnded =
+        Arc::new(|_: &M4, _: &mut Core<'_>, _: &WorkItem, _: &TurnResult| Ok(()));
     let m4 = Arc::new(M4::new(M4Deps {
         db: db.clone(),
         broadcast: broadcast.clone(),
@@ -294,10 +293,12 @@ pub fn harness(signed_in: bool) -> Harness {
             requeue_m4.turn_requeued(item);
             Ok(())
         })),
-        turn_ended: Some(Arc::new(move |core, item: &WorkItem, result: &TurnResult| {
-            recorded(&ended_log).push(item.clone());
-            end_m4.turn_ended(core, item, result)
-        })),
+        turn_ended: Some(Arc::new(
+            move |core, item: &WorkItem, result: &TurnResult| {
+                recorded(&ended_log).push(item.clone());
+                end_m4.turn_ended(core, item, result)
+            },
+        )),
         retry_routine: Some(Arc::new(move |core, message: &Message| {
             retry_m4.retry_routine(core, message)
         })),
@@ -371,7 +372,9 @@ impl Harness {
     pub fn all_work(&self) -> Vec<WorkItem> {
         let ids: Vec<String> = {
             let db = self.conn();
-            let mut statement = db.prepare("SELECT id FROM work_items ORDER BY rowid").unwrap();
+            let mut statement = db
+                .prepare("SELECT id FROM work_items ORDER BY rowid")
+                .unwrap();
             let rows: Vec<String> = statement
                 .query_map([], |row| row.get(0))
                 .unwrap()
