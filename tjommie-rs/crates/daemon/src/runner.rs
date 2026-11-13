@@ -1618,10 +1618,16 @@ impl Core<'_> {
         self.flush_text(detached.live, MessageStatus::Interrupted)?;
         self.close_activity(detached.live, ActivityStatus::Failed)?;
         // A new object, so pending callbacks from the closed session cannot change resumed work. Settled means the
-        // process exited, so nothing is retiring and the old run's account lease is gone. `close_session`'s own exit
-        // wait may not have run yet: on a multi-thread runtime nothing orders it before ours, where TypeScript's
-        // promise reactions ran first-in, first-out.
+        // process exited, so nothing is retiring. `close_session`'s own exit wait may not have run yet: on a
+        // multi-thread runtime nothing orders it before ours, where TypeScript's promise reactions ran first-in,
+        // first-out (`runner.ts:1080-1083`).
         let old = self.live(detached.live).clone();
+        // That wait is what releases the old run's account lease, so release it here too: the restored bot's first lease
+        // would otherwise see the old run and refuse ("Another turn is using this API account."). `release` goes by run
+        // id, so the wait's own release later changes nothing, and can never release the new run's.
+        if let (Some(context), Some(accounts)) = (&old.context, self.deps().accounts.clone()) {
+            accounts.release(context);
+        }
         let live = self.next_serial();
         let restored = Live {
             session: None,
