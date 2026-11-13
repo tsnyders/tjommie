@@ -57,7 +57,9 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 
 [dev-dependencies]
-tokio = { version = "1.54.1", features = ["process", "io-util", "macros", "test-util"] }
+# `team_atomicity` raises an error from inside a statement with a SQL function, as TypeScript's `db.prepare` spy does.
+rusqlite = { version = "0.41.1", features = ["functions"] }
+tokio ={ version = "1.54.1", features = ["process", "io-util", "macros", "test-util"] }
 tokio-tungstenite = "0.29"
 # Tests spell roots with 8.3 short names.
 windows = { version = "0.62.2", features = ["Win32_Storage_FileSystem"] }

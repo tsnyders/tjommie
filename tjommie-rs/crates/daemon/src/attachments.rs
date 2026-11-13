@@ -219,6 +219,24 @@ fn closed_transfer() -> RpcError {
     error(ErrorCode::Forbidden, "This file transfer was closed.")
 }
 
+/// The database for one operation: the caller's connection when it already holds the lock (the team's code runs inside
+/// the runner's locks, and locking again here would deadlock), else this store's own, locked.
+enum Handle<'a> {
+    Given(&'a Connection),
+    Own(MutexGuard<'a, Connection>),
+}
+
+impl std::ops::Deref for Handle<'_> {
+    type Target = Connection;
+
+    fn deref(&self) -> &Connection {
+        match self {
+            Handle::Given(db) => db,
+            Handle::Own(guard) => guard,
+        }
+    }
+}
+
 pub struct Attachments {
     db: Db,
     host_id: String,
@@ -269,6 +287,12 @@ impl Attachments {
         self.db.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    fn handle<'a>(&'a self, given: Option<&'a Connection>) -> Handle<'a> {
+        match given {
+            Some(db) => Handle::Given(db),
+            None => Handle::Own(self.db()),
+        }
+    }
     fn leases(&self) -> MutexGuard<'_, HashMap<String, Arc<Lease>>> {
         self.leases.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -337,6 +361,25 @@ impl Attachments {
     }
 
     pub fn register_snapshot(&self, path: &Path, name: &str) -> Result<AttachmentInfo, RpcError> {
+        self.register_snapshot_with(None, path, name)
+    }
+
+    /// [`Attachments::register_snapshot`] for a caller that holds the database lock already, and passes its connection.
+    pub fn register_snapshot_in(
+        &self,
+        db: &Connection,
+        path: &Path,
+        name: &str,
+    ) -> Result<AttachmentInfo, RpcError> {
+        self.register_snapshot_with(Some(db), path, name)
+    }
+
+    fn register_snapshot_with(
+        &self,
+        db: Option<&Connection>,
+        path: &Path,
+        name: &str,
+    ) -> Result<AttachmentInfo, RpcError> {
         self.check_root()?;
         let safe = self.snapshot_path(path).ok_or_else(|| {
             error(
@@ -344,10 +387,15 @@ impl Attachments {
                 "Only a protected shared snapshot can be registered.",
             )
         })?;
-        self.copy(&safe, name)
+        self.copy(db, &safe, name)
     }
 
-    fn copy(&self, source: &Path, name: &str) -> Result<AttachmentInfo, RpcError> {
+    fn copy(
+        &self,
+        given: Option<&Connection>,
+        source: &Path,
+        name: &str,
+    ) -> Result<AttachmentInfo, RpcError> {
         let id = new_id();
         let storage = format!("{id}.bin");
         let destination = self.root.join(&storage);
@@ -429,7 +477,7 @@ impl Attachments {
                 )
             })?;
             fs::rename(&temporary, &destination).map_err(|_| published())?;
-            self.db()
+            self.handle(given)
                 .execute(
                     "INSERT INTO attachments(id,host_id,storage_name,original_name,byte_length,content_type,sha256,created_at) VALUES(?,?,?,?,?,?,?,?)",
                     params![id, info.host_id, storage, info.name, info.size as i64, info.content_type, info.sha256, now_iso()],
@@ -458,12 +506,33 @@ impl Attachments {
     }
 
     pub fn link(&self, message_id: &str, index: u64, attachment_id: &str) -> Result<(), RpcError> {
+        self.link_with(None, message_id, index, attachment_id)
+    }
+
+    /// [`Attachments::link`] for a caller that holds the database lock already, and passes its connection.
+    pub fn link_in(
+        &self,
+        db: &Connection,
+        message_id: &str,
+        index: u64,
+        attachment_id: &str,
+    ) -> Result<(), RpcError> {
+        self.link_with(Some(db), message_id, index, attachment_id)
+    }
+
+    fn link_with(
+        &self,
+        given: Option<&Connection>,
+        message_id: &str,
+        index: u64,
+        attachment_id: &str,
+    ) -> Result<(), RpcError> {
         // `AttachmentRef.parse`
         let bounded = |text: &str| (1..=128).contains(&text.encode_utf16().count());
         if !bounded(message_id) || !bounded(attachment_id) {
             return Err(error(ErrorCode::BadParams, "Invalid attachment reference."));
         }
-        let db = self.db();
+        let db = self.handle(given);
         let known: Option<i64> = db
             .query_row(
                 "SELECT 1 FROM attachments WHERE id=? AND host_id=?",
@@ -539,7 +608,7 @@ impl Attachments {
                 result.unavailable += 1;
                 continue;
             }
-            let info = match self.copy(&source, name) {
+            let info = match self.copy(None, &source, name) {
                 Ok(info) => info,
                 Err(failure)
                     if matches!(
@@ -955,6 +1024,15 @@ impl Attachments {
 
     /// Removes attachments no message links (unless a transfer still holds them) and stray copies older than a day.
     pub fn cleanup(&self) -> Result<(), RpcError> {
+        self.cleanup_with(None)
+    }
+
+    /// [`Attachments::cleanup`] for a caller that holds the database lock already, and passes its connection.
+    pub fn cleanup_in(&self, db: &Connection) -> Result<(), RpcError> {
+        self.cleanup_with(Some(db))
+    }
+
+    fn cleanup_with(&self, given: Option<&Connection>) -> Result<(), RpcError> {
         self.check_root()?;
         let now = Instant::now();
         let leased: Vec<String> = {
@@ -969,7 +1047,7 @@ impl Attachments {
             leases.values().map(|lease| lease.info.id.clone()).collect()
         };
         let orphans: Vec<Row> = {
-            let db = self.db();
+            let db = self.handle(given);
             let mut statement = db
                 .prepare("SELECT a.* FROM attachments a WHERE NOT EXISTS(SELECT 1 FROM message_attachments m WHERE m.attachment_id=a.id)")
                 .map_err(database)?;
@@ -987,12 +1065,12 @@ impl Attachments {
                 Err(failure) if failure.kind() != io::ErrorKind::NotFound => continue,
                 _ => {}
             }
-            self.db()
+            self.handle(given)
                 .execute("DELETE FROM attachments WHERE id=?", [&row.id])
                 .map_err(database)?;
         }
         let known: Vec<String> = {
-            let db = self.db();
+            let db = self.handle(given);
             let mut statement = db
                 .prepare("SELECT storage_name FROM attachments")
                 .map_err(database)?;

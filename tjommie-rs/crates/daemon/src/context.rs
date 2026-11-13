@@ -13,6 +13,7 @@ use rusqlite::{Connection, OptionalExtension};
 use crate::account_handlers::{self, Accounts};
 use crate::bots::{BotStatus, StoredBot, bot_state_of};
 use crate::ids::now_iso;
+use crate::m4::M4;
 use crate::m6::M6;
 use crate::remote::Remote;
 use crate::runner::Runner;
@@ -78,6 +79,7 @@ pub struct Late {
     pub runner: Arc<OnceLock<Runner>>,
     pub remote: Arc<OnceLock<Arc<Remote>>>,
     pub m6: Arc<OnceLock<Arc<M6>>>,
+    pub m4: Arc<OnceLock<Arc<M4>>>,
     /// Bots whose provider or account is changing: the runner holds their work and reports "changing provider"
     /// (`switchingBots`).
     pub switching: Arc<Mutex<HashSet<String>>>,

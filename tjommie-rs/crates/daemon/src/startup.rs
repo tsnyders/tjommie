@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
 
 use futures_util::FutureExt;
 use protocol::Event;
+use protocol::model::Message;
 use serde::Deserialize;
 use serde_json::Value;
 use tokio::task::JoinHandle;
@@ -18,13 +19,15 @@ use crate::account_handlers::{Accounts, AccountsOptions};
 use crate::account_quota::HttpsFetch;
 use crate::cli::{InstalledWorkers, SystemCli, WorkerInstall, WorkerPurpose};
 use crate::context::{self, Context, Db, Late, LateBotView};
+use crate::bots::StoredBot;
+use crate::m4::{M4, M4Deps};
 use crate::m6::{self, M6, M6Deps};
 use crate::queue::WorkItem;
 use crate::relay_client::default_connector;
 use crate::remote::{Remote, RemoteOptions};
 use crate::remote_host::{Dispatch, RemoteHostOptions};
 use crate::runner::{Core, Runner, RunnerDeps, RunnerHooks, TurnResult, cli_session_factory};
-use crate::server::{Handlers, RequestContext, Routes, RpcError, Server, ServerOptions};
+use crate::server::{Broadcaster, Handlers, RequestContext, Routes, RpcError, Server, ServerOptions};
 use crate::setup::Setup;
 use crate::turn_notices::turn_notice;
 use crate::win::boundary::{BoundaryOptions, WindowsNative, WorkerBoundary};
@@ -242,6 +245,7 @@ pub struct Daemon {
     runner: Runner,
     accounts: Accounts,
     remote: Arc<Remote>,
+    m4: Arc<M4>,
     m6: Arc<M6>,
     /// Delivers every broadcast event to paired devices, in order.
     publisher: JoinHandle<()>,
@@ -265,6 +269,7 @@ impl Daemon {
         self.server.stop_requests();
         self.remote.close().await;
         self.m6.close();
+        self.m4.stop();
         if let Err(error) = self.runner.shutdown().await {
             eprintln!("{error}");
         }
@@ -336,13 +341,15 @@ pub async fn start(launch: &Launch, auth: &Auth) -> Result<Daemon, StartupError>
         runner,
         accounts,
         remote,
+        m4,
         m6,
         publisher,
         workers,
     } = parts;
-    // `runner.start()` runs before the server answers, as in `daemon.ts:646-648`.
+    // `runner.start()` then `scheduler.start()` run before the server answers, as in `daemon.ts:646-648`.
     let activated = runner
         .start()
+        .and_then(|()| m4.start_scheduler())
         .map_err(rpc)
         .and_then(|()| server.activate_with(token, handlers, routes).map_err(rpc));
     let daemon = Daemon {
@@ -351,6 +358,7 @@ pub async fn start(launch: &Launch, auth: &Auth) -> Result<Daemon, StartupError>
         runner,
         accounts,
         remote,
+        m4,
         m6,
         publisher,
         _workers: workers,
@@ -372,6 +380,26 @@ pub async fn start(launch: &Launch, auth: &Auth) -> Result<Daemon, StartupError>
     Ok(daemon)
 }
 
+/// `daemon.ts`'s `turnEnded` for what M4 hears: a routine run is settled, the team answers, and the turn notice goes
+/// out, each even if the one before failed. The first error is the one reported. (M5's task hook runs first.)
+fn turn_ended(
+    m4: &M4,
+    notices: &Broadcaster,
+    core: &mut Core<'_>,
+    item: &WorkItem,
+    result: &TurnResult,
+) -> Result<(), String> {
+    let settled = m4.turn_ended(core, item, result);
+    let noticed = turn_notice(core.db(), item, result)
+        .map_err(|error| error.message)
+        .map(|notice| {
+            if let Some(notice) = notice {
+                notices.send(Event::Notify(notice));
+            }
+        });
+    settled.and(noticed)
+}
+
 /// Everything `start` builds before the server answers.
 struct Parts {
     token: String,
@@ -380,6 +408,7 @@ struct Parts {
     runner: Runner,
     accounts: Accounts,
     remote: Arc<Remote>,
+    m4: Arc<M4>,
     m6: Arc<M6>,
     publisher: JoinHandle<()>,
     workers: Option<InstalledWorkers>,
@@ -478,8 +507,83 @@ fn assemble(
     // 2. The runner, on those accounts.
     let late = Late::default();
     let (held, issue) = (late.switching.clone(), late.switching.clone());
-    let (broadcast, notices) = (events.clone(), events.clone());
+    let broadcast = events.clone();
     let native_browser = late.m6.clone();
+
+    // M4 (the team, routines, the scheduler and `/mcp`) is made first because the runner's hooks call it; it gets the
+    // runner right after (`m4.attach`). M5 adds its task hooks beside these, running first in `turn_started`/`turn_ended`.
+    let mcp_url = format!("http://127.0.0.1:{}/mcp", server.port());
+    let m4 = {
+        let (sent, cleanup, notices) = (events.clone(), late.m6.clone(), events.clone());
+        Arc::new(M4::new(M4Deps {
+            db: db.clone(),
+            broadcast: Arc::new(move |event| {
+                sent.send(event);
+                Ok(())
+            }),
+            log: Arc::new(|context, error| eprintln!("{context}: {error}")),
+            shared_files: paths.shared_files.clone(),
+            // M6 makes the real `Attachments` after the runner: `m4.attach_attachments` gives them over.
+            attachments: None,
+            cleanup_shared: Arc::new(move || {
+                if let Some(m6) = cleanup.get()
+                    && m6.attachments.cleanup().is_err()
+                {
+                    eprintln!(
+                        "Unused shared files could not be removed. Cleanup will retry after restart."
+                    );
+                }
+            }),
+            // `routines.delete` ends the work its routine had queued through the daemon's own `turnEnded`. M4 is handed
+            // in, not captured: M4 holds this closure.
+            turn_ended: Arc::new(
+                move |m4: &M4, core: &mut Core<'_>, item: &WorkItem, result: &TurnResult| {
+                    turn_ended(m4, &notices, core, item, result)
+                },
+            ),
+        }))
+    };
+    let hooks = {
+        let (servers, closed, started, requeued, retry, ended) = (
+            m4.clone(),
+            m4.clone(),
+            m4.clone(),
+            m4.clone(),
+            m4.clone(),
+            m4.clone(),
+        );
+        let (browser, notices) = (late.m6.clone(), events.clone());
+        RunnerHooks {
+            mcp_servers: Some(Arc::new(
+                move |_core: &mut Core<'_>, bot: &StoredBot, _item: &WorkItem| {
+                    Ok(servers.mcp_servers(bot, &mcp_url))
+                },
+            )),
+            session_closed: Some(Arc::new(move |_core: &mut Core<'_>, bot_id: &str| {
+                closed.session_closed(bot_id);
+                if let Some(m6) = browser.get() {
+                    m6.browser_mcp.close(bot_id);
+                }
+                Ok(())
+            })),
+            turn_started: Some(Arc::new(move |core: &mut Core<'_>, item: &WorkItem| {
+                started.turn_started(core, item)
+            })),
+            turn_requeued: Some(Arc::new(move |_core: &mut Core<'_>, item: &WorkItem| {
+                requeued.turn_requeued(item);
+                Ok(())
+            })),
+            turn_ended: Some(Arc::new(
+                move |core: &mut Core<'_>, item: &WorkItem, result: &TurnResult| {
+                    turn_ended(&ended, &notices, core, item, result)
+                },
+            )),
+            retry_routine: Some(Arc::new(move |core: &mut Core<'_>, message: &Message| {
+                retry.retry_routine(core, message)
+            })),
+            ..RunnerHooks::default()
+        }
+    };
     let deps = RunnerDeps {
         accounts: Some(Arc::new(accounts.runtime.clone())),
         // TypeScript's `closeBrowser` is the headless registry, which the desktop host leaves empty and this port has no
@@ -502,20 +606,7 @@ fn assemble(
                 .then(|| "This bot is changing provider. Try again shortly.".to_owned())
         }),
         kill_tree: Arc::new(crate::cli::kill_tree),
-        hooks: RunnerHooks {
-            // M4 and M5 run their own turn hooks first (`tasks.turnEnded`, `scheduler.runEnded`, `team.turnEnded`).
-            turn_ended: Some(Arc::new(
-                move |core: &mut Core<'_>, item: &WorkItem, result: &TurnResult| {
-                    if let Some(notice) =
-                        turn_notice(core.db(), item, result).map_err(|e| e.message)?
-                    {
-                        notices.send(Event::Notify(notice));
-                    }
-                    Ok(())
-                },
-            )),
-            ..RunnerHooks::default()
-        },
+        hooks,
         ..RunnerDeps::new(
             db.clone(),
             Arc::new(move |event| {
@@ -529,6 +620,7 @@ fn assemble(
     let runner = Runner::new(deps);
     view.bind(Arc::new(runner.clone()));
     accounts.attach_runner(runner.clone());
+    m4.attach(runner.clone());
     let _ = late.runner.set(runner.clone());
 
     // 3. The handlers.
@@ -603,8 +695,11 @@ fn assemble(
                 db: db.clone(),
                 data_root: paths.root.clone(),
                 desktop_host_token,
-                // M4: `McpTokens::bot_for`, shared with `/mcp`. Until then no tool session token names a bot.
-                bot_for: Arc::new(|_token| None),
+                // `McpTokens::bot_for`, shared with `/mcp`: the bot a tool session token was issued to.
+                bot_for: {
+                    let tokens = m4.tokens.clone();
+                    Arc::new(move |token| tokens.bot_for(token))
+                },
                 worker: Some(Arc::new(provider_worker)),
             },
         )
@@ -614,7 +709,14 @@ fn assemble(
     // `browser.stream` frames go to the connection that asked, over the local WebSocket or a paired device's channel.
     m6.connect_events(events.clone(), remote.clone());
 
+    // 5b. The team, routines, the scheduler's handlers and `/mcp` (M4). The team takes M6's shared-file links.
+    m4.attach_attachments(m6.attachments.clone());
+    let _ = context.late.m4.set(m4.clone());
+    m4.install(&mut handlers, &mut routes, &context, Vec::new())
+        .map_err(rpc)?;
+
     // 6. What a restart cut off is settled before anything listens (`runner.start()` then runs the queue).
+    m4.start_team();
     runner.recover().map_err(rpc)?;
     Ok(Parts {
         token,
@@ -623,6 +725,7 @@ fn assemble(
         runner,
         accounts,
         remote,
+        m4,
         m6,
         publisher,
         workers,
