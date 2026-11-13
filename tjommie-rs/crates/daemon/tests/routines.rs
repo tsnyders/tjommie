@@ -701,6 +701,63 @@ mod routines_store_tests {
         );
     }
 
+    /// Not a TS case. `routines.ts` reads the stored zone as it is, so a zone that Node's `Intl` took when an older daemon
+    /// saved it never makes a row unreadable. A zone this build's database can't resolve must not fail the whole list
+    /// either: that routine just can't be scheduled, and it can still be deleted or given a zone that resolves.
+    #[test]
+    fn reads_a_stored_zone_this_build_cannot_resolve_without_failing_the_list() {
+        let f = fixture();
+        let db = &f.db;
+        let fine = create_routine(db, &input(&f.bot_id), now_ms()).unwrap();
+        let odd =
+            create_routine(db, &input_with(&f.bot_id, json!({"name": "Odd"})), now_ms()).unwrap();
+        db.execute(
+            "UPDATE routines SET time_zone = 'Mars/Olympus' WHERE id = ?1",
+            [&odd.id],
+        )
+        .unwrap();
+        let listed = list_routines(db, None).unwrap();
+        assert_eq!(listed.len(), 2);
+        assert!(listed.contains(&fine));
+        let stored = get_routine(db, &odd.id).unwrap();
+        assert_eq!(stored.time_zone.as_str(), "Mars/Olympus");
+        assert!(listed.contains(&stored));
+        // Scheduling is what refuses it.
+        let error = next_run_after(&Schedule::from(&stored), now_ms()).unwrap_err();
+        assert_eq!(error.code, ErrorCode::BadParams);
+        assert!(
+            error.message.contains("Unknown time zone"),
+            "{}",
+            error.message
+        );
+        // An update that leaves the zone alone is refused as `checkTimeZone` refuses it, and changes nothing.
+        let error =
+            update_routine(db, &odd.id, &patch(json!({"name": "Renamed"})), now_ms()).unwrap_err();
+        assert!(
+            error.message.contains("Unknown time zone"),
+            "{}",
+            error.message
+        );
+        assert_eq!(get_routine(db, &odd.id).unwrap().name, "Odd");
+        // A zone that resolves repairs it, and it gets a next run again.
+        let repaired =
+            update_routine(db, &odd.id, &patch(json!({"timeZone": "UTC"})), now_ms()).unwrap();
+        assert_eq!(repaired.time_zone.as_str(), "UTC");
+        assert!(repaired.next_run_at.is_some());
+        // And a routine with such a zone can be deleted.
+        db.execute(
+            "UPDATE routines SET time_zone = 'Mars/Olympus' WHERE id = ?1",
+            [&odd.id],
+        )
+        .unwrap();
+        delete_routine(db, &odd.id).unwrap();
+        assert_eq!(
+            get_routine(db, &odd.id).unwrap_err().code,
+            ErrorCode::NotFound
+        );
+        assert_eq!(list_routines(db, None).unwrap(), vec![fine]);
+    }
+
     #[test]
     fn lists_only_the_bots_routines_in_insertion_order_when_creation_times_tie() {
         let f = fixture();

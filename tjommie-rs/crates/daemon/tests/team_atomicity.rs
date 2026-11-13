@@ -5,9 +5,10 @@
 //! - `makeTeam`'s `deliver` and `stateOf`: [`Checked`] wraps the fixture's host. `deliver` runs [`Hooks::on_deliver`]
 //!   before the fixture records the work, and `to_bot` derives the state the way `stateOf` does (`waiting` while the bot
 //!   has an unanswered routine proposal).
-//! - `vi.spyOn(db, "prepare")` (nested transactions): [`Hooks::on_to_bot`]. `Team` calls `TeamHost::to_bot` inside its
-//!   transaction, so the hook makes the nested `bot_deleted` call there. `to_bot` returns a `Bot`, not a `Result`, so the
-//!   refusal can't fail the outer proposal. The test checks the refusal message and that the refused call wrote nothing.
+//! - `vi.spyOn(db, "prepare")` (nested transactions): a trigger on the approvals insert calls a SQL function
+//!   (rusqlite's `functions` feature, a dev-dependency), which makes the nested `bot_deleted` call on a second host and
+//!   fails the insert with the refusal, as the spy's throw failed `prepare`. [`Hooks::on_to_bot`] is for the cases that
+//!   only need to run something inside the transaction; `to_bot` returns a `Bot`, not a `Result`, so it can't fail it.
 //! - `vi.spyOn(console, "error")`: the fixture's `logs`, which record each `(context, error)` the team logs.
 //! - `makeTeam(undefined, observe)`: [`observe_broadcasts`] and [`team_with`] replace the fixture's team (a public field)
 //!   with one whose broadcast runs a check after recording each event.
@@ -17,6 +18,7 @@ mod team_support;
 use team_support::*;
 
 use std::collections::BTreeMap;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use daemon::approvals::get_approval;
@@ -747,6 +749,39 @@ mod request_transactions {
             handoffs
         );
         assert!(fx.event_names().is_empty());
+    }
+
+    /// Not a TS case (TypeScript's `transaction()` rolls back in a `catch`). A panic in a transaction's work must not leave
+    /// its `BEGIN` open: its writes are rolled back, the panic goes on, and a later transaction on the same connection
+    /// works instead of failing with "cannot start a transaction within a transaction".
+    #[test]
+    fn rolls_a_transaction_back_when_its_work_panics_and_later_transactions_still_work() {
+        let (fx, writer, _) = setup();
+        let pending = proposal(&fx, &writer);
+        let before = fx.db(state_counts);
+        fx.clear_events();
+        // `to_bot` runs inside the transaction, after the approval is resolved and the routine made.
+        let panicking = Hooks {
+            on_to_bot: Arc::new(|| panic!("the host panicked")),
+            ..Hooks::none()
+        };
+        let outcome = catch_unwind(AssertUnwindSafe(|| {
+            answer(&fx, &panicking, &pending.id, ApprovalDecision::Once)
+        }));
+        assert!(outcome.is_err(), "the panic goes on");
+        assert!(
+            fx.db(|db| db.is_autocommit()),
+            "no transaction is left open"
+        );
+        assert_eq!(
+            fx.db(|db| get_approval(db, &pending.id).unwrap().status),
+            ApprovalStatus::Pending
+        );
+        assert_eq!(fx.db(state_counts), before);
+        assert!(fx.event_names().is_empty());
+        let answered = answer(&fx, &Hooks::none(), &pending.id, ApprovalDecision::Once).unwrap();
+        assert_eq!(answered.status, ApprovalStatus::Allowed);
+        assert_eq!(fx.db(|db| list_routines(db, None).unwrap().len()), 1);
     }
 
     #[test]

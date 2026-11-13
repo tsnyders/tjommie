@@ -512,15 +512,22 @@ impl Team {
         let _reset = Reset(self);
         let result = (|| -> Result<T, RpcError> {
             host.db().execute_batch("BEGIN")?;
-            match work(host) {
-                Ok(value) => match host.db().execute_batch("COMMIT") {
+            // A panic in the work would leave the `BEGIN` open, and every later transaction on this connection would fail
+            // with "cannot start a transaction within a transaction": roll it back, then let the panic go on.
+            let worked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(host)));
+            match worked {
+                Err(panic) => {
+                    let _ = host.db().execute_batch("ROLLBACK");
+                    std::panic::resume_unwind(panic)
+                }
+                Ok(Ok(value)) => match host.db().execute_batch("COMMIT") {
                     Ok(()) => Ok(value),
                     Err(error) => {
                         let _ = host.db().execute_batch("ROLLBACK");
                         Err(error.into())
                     }
                 },
-                Err(error) => {
+                Ok(Err(error)) => {
                     let _ = host.db().execute_batch("ROLLBACK");
                     Err(error)
                 }

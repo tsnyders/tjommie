@@ -11,6 +11,7 @@
 //! under a timer runs on the blocking pool.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -120,6 +121,10 @@ struct State {
 struct Inner {
     deps: SchedulerDeps,
     state: Mutex<State>,
+    /// Set by [`Scheduler::stop`], cleared by [`Scheduler::start`]. A tick already running on the blocking pool can't be
+    /// cancelled (TypeScript's `clearInterval` leaves none in flight), so it checks this before it wakes the runner, and
+    /// before it fails a run the runner refused. Work it queued stays queued for the next start.
+    stopped: AtomicBool,
 }
 
 /// Starts routine runs when they are due, and records how each one went. Cheap to clone: every clone is the same
@@ -244,7 +249,12 @@ impl Scheduler {
         Scheduler(Arc::new(Inner {
             deps,
             state: Mutex::default(),
+            stopped: AtomicBool::new(false),
         }))
+    }
+
+    fn is_stopped(&self) -> bool {
+        self.0.stopped.load(Ordering::SeqCst)
     }
 
     fn state(&self) -> std::sync::MutexGuard<'_, State> {
@@ -281,6 +291,7 @@ impl Scheduler {
         if self.state().timer.is_some() {
             return Ok(());
         }
+        self.0.stopped.store(false, Ordering::SeqCst);
         self.recover()?;
         self.tick_safely();
         let scheduler = self.clone();
@@ -300,6 +311,8 @@ impl Scheduler {
     }
 
     pub fn stop(&self) {
+        // First: `M4::stop` lets go of the runner right after this, and a tick in flight must see why its delivery fails.
+        self.0.stopped.store(true, Ordering::SeqCst);
         let mut state = self.state();
         if let Some(timer) = state.timer.take() {
             timer.abort();
@@ -379,6 +392,9 @@ impl Scheduler {
     }
 
     fn tick_safely(&self) {
+        if self.is_stopped() {
+            return;
+        }
         if let Err(error) = self.tick((self.0.deps.clock)()) {
             self.log("Routine scheduler tick failed.", &error.to_string());
         }
@@ -738,7 +754,15 @@ impl Scheduler {
 
     /// Hands queued work to the runner from the timer, which holds no lock.
     fn wake_direct(&self, item: &WorkItem) {
+        // Stopped: the work stays queued, and the runner of the next start takes it up.
+        if self.is_stopped() {
+            return;
+        }
         if let Err(error) = (self.0.deps.deliver)(item) {
+            // `stop` sets the flag before the runner goes, so a refusal after it is the shutdown and not a failed run.
+            if self.is_stopped() {
+                return;
+            }
             self.log("Routine delivery failed.", &error);
             self.with_db(|db| self.delivery_failed(db, item));
         }
