@@ -635,6 +635,40 @@ impl Drop for Switching {
     }
 }
 
+fn already_changing() -> RpcError {
+    RpcError::new(
+        ErrorCode::Busy,
+        "This bot is already changing provider. Try again shortly.",
+    )
+}
+
+/// The set is a leaf lock, taken after the database everywhere else (the runner's `is_held`, the projects'
+/// `bot_available`). So nothing here may take the database, or anything else, while it is locked: a handler that held the
+/// set across a database call would lock against them, and freeze the daemon.
+impl Switching {
+    /// `switchingBots.has(id)`.
+    fn is_changing(ids: &Mutex<HashSet<String>>, id: &str) -> bool {
+        ids.lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains(id)
+    }
+
+    /// `switchingBots.add(id)`; Busy when another change got in after `is_changing` was asked.
+    fn begin(ids: &Arc<Mutex<HashSet<String>>>, id: &str) -> Result<Switching, RpcError> {
+        let added = ids
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(id.to_owned());
+        if !added {
+            return Err(already_changing());
+        }
+        Ok(Switching {
+            ids: ids.clone(),
+            id: id.to_owned(),
+        })
+    }
+}
+
 fn provider_error(error: ProviderError) -> RpcError {
     RpcError::new(ErrorCode::Internal, error.message())
 }
@@ -725,23 +759,14 @@ pub fn register(handlers: Handlers, context: &Context) -> Handlers {
                             .accounts
                             .check_available(db, provider, requested.as_deref())
                     })?;
-                    let mut ids = update
-                        .late
-                        .switching
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner);
-                    if ids.contains(&params.id) {
-                        return Err(RpcError::new(
-                            ErrorCode::Busy,
-                            "This bot is already changing provider. Try again shortly.",
-                        ));
+                    // `daemon.ts:458-460`'s check, validate, add, with the set locked only inside each helper: it is
+                    // never held across `with_db` (see `Switching`).
+                    let ids = &update.late.switching;
+                    if Switching::is_changing(ids, &params.id) {
+                        return Err(already_changing());
                     }
                     update.with_db(|db| validate_bot_patch(db, &before, patch))?;
-                    ids.insert(params.id.clone());
-                    switching = Some(Switching {
-                        ids: update.late.switching.clone(),
-                        id: params.id.clone(),
-                    });
+                    switching = Some(Switching::begin(ids, &params.id)?);
                 }
                 Ok::<_, RpcError>((before, switching))
             })();
