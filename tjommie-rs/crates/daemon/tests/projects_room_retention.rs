@@ -1,9 +1,5 @@
-//! The first test of `projects.test.ts`. It needs lane A's `rooms.rs` (M4), which is not in this branch yet. It
-//! assumes `daemon::rooms::{delete_room, get_room}` as they are in lane A's worktree:
-//! `delete_room(&Connection, &str) -> Result<(), RpcError>` and `get_room(&Connection, &str) -> Result<Room, RpcError>`.
-// TODO(M5-integration): `daemon::rooms` is lane A's (M4) and is not in `rs/core` yet, so this file compiles to nothing.
-// When it lands: delete the `cfg(any())` line, and check the two signatures above.
-#![cfg(any())]
+//! The first test of `projects.test.ts`, against lane A's `rooms.rs`: `delete_room(&Connection, &str)` and
+//! `get_room(&Connection, &str) -> Result<Room, RpcError>`.
 
 mod common;
 mod project_support;

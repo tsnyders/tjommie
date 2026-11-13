@@ -1,12 +1,7 @@
-#![cfg(any())]
 //! Port of `packages/daemon/src/task-continuation.test.ts`: the real runner (Core's `runner.rs`) driven by synthetic
-//! provider sessions, with the task service and the team service, over the `project_support` fixture.
+//! provider sessions, with the task service and lane A's team service, over the `project_support` fixture.
 //!
 //! The TypeScript file has 6 `it` blocks, 3 of them `it.each`; expanded, that is 12 cases. All 12 are ported, in order.
-//!
-//! Compiled out until lane A's `team.rs` and `team/tools.rs` land, and until the `TODO(M5-integration)` assumptions are
-//! checked against them, against the merged runner (Core's `runner.rs` and `providers/mod.rs`) and against
-//! `common::no_cli_setup`. Then delete the `cfg(any())` line.
 //!
 //! Timing. The TypeScript runs a provider's events synchronously. Here they reach the runner through a channel, so an
 //! assertion made right after an event waits (`eventually`) or lets the runtime run (`settle`). `vi.spyOn(console,
@@ -23,11 +18,8 @@ use std::time::Duration;
 
 use daemon::bots::{StoredBot, delete_bot, get_stored_bot, update_bot};
 use daemon::cli::BoxFuture;
-// TODO(M5-integration): `daemon::mcp::McpTool` is lane A's (mcp.rs:32); it is not in this branch yet.
 use daemon::mcp::McpTool;
-// TODO(M5-integration): the runner and its provider-session seam are Core's (rs-core runner.rs, providers/mod.rs),
-// read-only from this lane. `ProviderSession` here is Core's: `wait_for_exit` returns `Result<(), ProviderError>`.
-// Lane B's providers/mod.rs has `BoxFuture<'static, ()>` instead; the merge must pick Core's.
+// `ProviderSession` is Core's: `wait_for_exit` returns `Result<(), ProviderError>`.
 use daemon::providers::{
     ApprovalAnswer, ProviderError, ProviderEvent, ProviderSession, StartOptions,
     TurnResult as ProviderTurn,
@@ -38,8 +30,6 @@ use daemon::runner::{
     SessionClosedHook, SessionFactory, TurnEndedHook, TurnResult,
 };
 use daemon::tasks::{Tasks, TasksOptions};
-// TODO(M5-integration): lane A's `daemon::team` is in progress (team.rs). Assumed: `Team::new(TeamDeps)` (team.rs:378),
-// `TeamDeps` (team.rs:154), `HostAccess` (team.rs:112), `with_host` (team.rs:124), `get_exchange` (team.rs:253).
 use daemon::team::{HostAccess, Team, TeamDeps, get_exchange, with_host};
 use futures_util::FutureExt;
 use futures_util::future::{Shared, ready};
@@ -208,8 +198,8 @@ impl ProviderSession for SyntheticSession {
     }
 
     /// TypeScript `interrupt()` ends the turn itself with `turn_done(ok: false)`.
-    // TODO(M5-integration): assumed `Ok(true)` means "handled" (Core runner.rs:1965-1968, 2372-2386): a `false` would make
-    // the runner call `stop` again, which the TypeScript does not do.
+    // `Ok(true)` means "handled" (Core's `turn_stop_checked`): a `false` would make the runner call `stop` again, which
+    // the TypeScript does not do.
     fn interrupt(&self) -> BoxFuture<'static, Result<bool, ProviderError>> {
         self.emit(ProviderEvent::TurnDone(ProviderTurn {
             ok: false,
@@ -293,8 +283,7 @@ fn turn_ended_hook(tasks: TasksCell, team: Arc<Team>) -> TurnEndedHook {
             tasks_of(&tasks)
                 .turn_ended(core.db(), item, result)
                 .map_err(|error| error.message)?;
-            // TODO(M5-integration): assumed `Team::turn_ended(&self, host: &mut dyn TeamHost, item, result)` returning
-            // `Result<(), RpcError>` (lane A team.rs:740), with the runner's `Core` as the host.
+            // The team's hook runs with the runner's `Core` as its host, as `M4::turn_ended` does.
             team.turn_ended(core, item, result)
                 .map_err(|error| error.message)
         },
@@ -304,7 +293,6 @@ fn turn_ended_hook(tasks: TasksCell, team: Arc<Team>) -> TurnEndedHook {
 /// `hooks.sessionClosed`: `team.sessionClosed(id)`.
 fn session_closed_hook(team: Arc<Team>) -> SessionClosedHook {
     Arc::new(move |_core: &mut Core<'_>, bot_id: &str| {
-        // TODO(M5-integration): assumed `Team::session_closed(&self, bot_id: &str)` (lane A team.rs:398).
         team.session_closed(bot_id);
         Ok::<(), String>(())
     })
@@ -382,8 +370,7 @@ fn fixture(helper_outside_project: bool) -> Harness {
     // sits in the fixture root, so the folder is `<root>/shared-files`.
     let shared_files = f.root.0.join("shared-files");
     fs::create_dir_all(&shared_files).unwrap();
-    // TODO(M5-integration): assumed lane A's `TeamDeps` fields (team.rs:154). The TypeScript passes the runner's
-    // closures; here the runner's hooks pass their `Core` as the host instead.
+    // The TypeScript passes the runner's closures; here the runner's hooks pass their `Core` as the host instead.
     let team = Arc::new(Team::new(TeamDeps {
         broadcast: broadcast.clone(),
         log: log.clone(),
@@ -417,7 +404,6 @@ fn fixture(helper_outside_project: bool) -> Harness {
         ..RunnerHooks::default()
     };
     // `new Runner({ db, broadcast, isSignedIn: () => true, createSession, hooks })`: the other deps are the defaults.
-    // TODO(M5-integration): assumed `common::no_cli_setup()` (Core's tests/common/mod.rs:589); lane B's common lacks it.
     let runner = Runner::new(RunnerDeps {
         hooks,
         log,
@@ -437,8 +423,7 @@ fn fixture(helper_outside_project: bool) -> Harness {
     );
     let _ = tasks_cell.set(Arc::downgrade(&tasks));
     runner.start().unwrap();
-    // TODO(M5-integration): assumed `Team::tools(&self, host: Arc<dyn HostAccess>) -> Vec<McpTool>` (the TypeScript
-    // `team.tools()`, team.ts:241). Lane A's tools.rs is not written yet.
+    // The TypeScript `team.tools()` (team.ts:241).
     let tools = team.tools(Arc::new(runner.clone()) as Arc<dyn HostAccess>);
 
     let task = tasks
@@ -518,9 +503,8 @@ impl Harness {
             .iter()
             .find(|tool| tool.name == "message_bot")
             .expect("the message_bot tool");
-        // TODO(M5-integration): assumed `McpTool::call(&self, bot_id: &str, arguments: &Value) -> ToolFuture`, which
-        // parses the arguments with the tool's schema and then runs it (TypeScript `tool.input.parse` then `tool.run`).
-        // Lane A's mcp.rs keeps `prepare` private, so there is no public way to run a tool yet.
+        // `McpTool::call` parses the arguments with the tool's schema and then runs it (TypeScript `tool.input.parse`
+        // then `tool.run`).
         tool.call(
             &self.developer.id,
             &json!({ "bot": self.helper.name, "message": "Give me synthetic feedback." }),
@@ -718,9 +702,8 @@ async fn continues_in_the_task_worktree_after_deleting_an_external_helper(cascad
     within(h.runner.close_for_deletion(&h.helper.id).unwrap())
         .await
         .unwrap();
-    // TODO(M5-integration): assumed lane A's `Team::bot_deleting(&self, host, bot_id) -> Result<BotDeletionHandle, _>`
-    // (team.rs:1130), run through `with_host` because the test is outside a runner hook (TypeScript team.ts:345, test
-    // line 123).
+    // `Team::bot_deleting` runs through `with_host` because the test is outside a runner hook (TypeScript team.ts:345,
+    // test line 123).
     let handle = with_host(&h.runner, |host| h.team.bot_deleting(host, &h.helper.id)).unwrap();
     if cascade {
         h.f.db
@@ -734,12 +717,10 @@ async fn continues_in_the_task_worktree_after_deleting_an_external_helper(cascad
     delete_bot(&h.f.db.lock().unwrap(), &h.helper.id).unwrap();
     assert!(get_stored_bot(&h.f.db.lock().unwrap(), &h.helper.id).is_err());
     if cascade {
-        // TODO(M5-integration): assumed `get_exchange(&Connection, &str)` (team.rs:253, TypeScript team.ts:109).
         let error = get_exchange(&h.f.db.lock().unwrap(), &exchange_id).unwrap_err();
         assert_eq!(error.message, "No such exchange");
     }
-    // TODO(M5-integration): assumed `Team::bot_deleted(&self, host, &BotDeletionHandle) -> Result<(), RpcError>`
-    // (team.rs:1190, TypeScript team.ts:379, test line 128).
+    // TypeScript team.ts:379, test line 128.
     with_host(&h.runner, |host| h.team.bot_deleted(host, &handle)).unwrap();
     h.runner.forget(&h.helper.id);
 
