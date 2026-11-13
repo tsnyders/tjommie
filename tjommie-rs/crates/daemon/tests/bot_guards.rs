@@ -6,7 +6,9 @@ mod common;
 mod project_support;
 
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use daemon::account_handlers::{Accounts, AccountsOptions};
 use daemon::bots;
@@ -296,4 +298,74 @@ async fn protects_a_bot_as_its_new_provider_before_saving_the_change_and_refuses
     .unwrap();
     assert_eq!(passes.calls(), 3);
     server.close().await;
+}
+
+/// The lock order is the database, then the leaf sets (`switching`, `deleting`): the runner (`is_held`) and the projects'
+/// `bot_available` take them that way. A bot change that held `switching` while it took the database would lock against
+/// them and freeze the daemon. One thread takes the database and then asks `bot_available`, over and over, as the runner
+/// does; another changes a bot's account over and over. On the old code the two lock each other within a few rounds.
+/// Both run on plain threads and the test waits with a timeout, so a deadlock fails it instead of hanging the run.
+#[tokio::test]
+async fn changing_a_bots_account_never_waits_for_the_database_while_holding_the_switching_set() {
+    let h = fixture(TasksOptions::default());
+    let bot = {
+        let db = h.db.lock().unwrap();
+        let folder = h.root.0.join("accounts").join("claude-second");
+        std::fs::create_dir_all(&folder).unwrap();
+        common::insert_account(&db, "claude-second", "claude", &folder);
+        common::new_bot(&db, &h.root.0.join("bots"), "Switcher", "claude")
+    };
+    let (protection, _) = protection(&h);
+    let (server, context) = serve(&h, protection).await;
+    let server = Arc::new(server);
+    let available = bot_available(
+        context.late.switching.clone(),
+        context.late.deleting.clone(),
+    );
+    let stop = Arc::new(AtomicBool::new(false));
+
+    let runner_order = {
+        let (db, stop) = (h.db.clone(), stop.clone());
+        std::thread::spawn(move || {
+            while !stop.load(Ordering::SeqCst) {
+                {
+                    let _db = db.lock().unwrap();
+                    available("another bot").unwrap();
+                }
+                std::thread::yield_now();
+            }
+        })
+    };
+    let (done, finished) = std::sync::mpsc::channel();
+    let changes = {
+        let (server, id, stop) = (server.clone(), bot.id.clone(), stop.clone());
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            for round in 0..50 {
+                let account = if round % 2 == 0 {
+                    "claude-second"
+                } else {
+                    "claude-main"
+                };
+                let change = json!({ "id": id, "patch": { "accountId": account } });
+                runtime
+                    .block_on(server.dispatch("bots.update", change, Some(local())))
+                    .unwrap();
+            }
+            stop.store(true, Ordering::SeqCst);
+            let _ = done.send(());
+        })
+    };
+    finished
+        .recv_timeout(Duration::from_secs(30))
+        .expect("the account changes finished while another thread took the database, then the switching set");
+    runner_order.join().unwrap();
+    changes.join().unwrap();
+    Arc::into_inner(server)
+        .expect("both threads are done with the server")
+        .close()
+        .await;
 }
