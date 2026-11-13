@@ -1,10 +1,11 @@
 //! `runner.test.ts`, split by its `describe` blocks. Events reach the runner through each session's channel, so a test
 //! settles the runtime after emitting where TypeScript's listener ran synchronously. The "account-bound runner" cases
-//! drive T3.4's `AccountRuntime` and are ported with it.
+//! drive T3.4's `AccountRuntime` and live in `accounts.rs`.
 
 #[path = "../common/mod.rs"]
 mod common;
 
+mod accounts;
 mod approvals;
 mod deletion;
 mod delivery;
