@@ -275,7 +275,8 @@ pub struct RunnerDeps {
     pub hooks: RunnerHooks,
     /// `killTree(pid)`: stops a CLI's whole process tree without waiting.
     pub kill_tree: Arc<dyn Fn(Option<u32>) + Send + Sync>,
-    /// `closeBrowser(botId)`: resolves once the bot's browser tools are closed.
+    /// `closeBrowser(botId)`: resolves once the bot's browser tools are closed. Deletion awaits it with the process's
+    /// exit. The call itself is made with the runner's locks held, so do the work in the returned future.
     pub close_browser: CloseBrowser,
     pub log: Log,
 }

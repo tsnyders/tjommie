@@ -8,6 +8,7 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
 
+use futures_util::FutureExt;
 use protocol::Event;
 use serde::Deserialize;
 use serde_json::Value;
@@ -478,8 +479,22 @@ fn assemble(
     let late = Late::default();
     let (held, issue) = (late.switching.clone(), late.switching.clone());
     let (broadcast, notices) = (events.clone(), events.clone());
+    let native_browser = late.m6.clone();
     let deps = RunnerDeps {
         accounts: Some(Arc::new(accounts.runtime.clone())),
+        // TypeScript's `closeBrowser` is the headless registry, which the desktop host leaves empty and this port has no
+        // equivalent of. The native tools are fenced there by the `sessionClosed` hook, so a deleting bot's are fenced
+        // here, in the returned future: `native_request` reads the database as it is called, and this call is made
+        // with the runner holding it. M6 unbound (the handler tests): nothing to close.
+        close_browser: Arc::new(move |bot_id| {
+            let (m6, bot_id) = (native_browser.get().cloned(), bot_id.to_owned());
+            async move {
+                if let Some(m6) = m6 {
+                    m6.browser_mcp.close(&bot_id);
+                }
+            }
+            .boxed()
+        }),
         is_held: Arc::new(move |bot_id| lock(&held).contains(bot_id)),
         // T2.2 adds the folder protection's reason here.
         setup_issue: Arc::new(move |bot| {
