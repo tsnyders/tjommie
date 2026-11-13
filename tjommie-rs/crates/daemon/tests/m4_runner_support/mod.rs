@@ -280,7 +280,7 @@ pub fn harness(signed_in: bool) -> Harness {
     let (started_log, ended_log) = (started.clone(), ended.clone());
     let hooks = RunnerHooks {
         mcp_servers: Some(Arc::new(move |_core, bot: &StoredBot, _item: &WorkItem| {
-            Ok(vec![mcp_m4.mcp_server(&bot.id, MCP_URL)])
+            Ok(mcp_m4.mcp_servers(bot, MCP_URL))
         })),
         session_closed: Some(Arc::new(move |_core, bot_id: &str| {
             closed_m4.session_closed(bot_id);

@@ -316,13 +316,14 @@ async fn fails_a_deleted_requesters_queued_and_running_exchanges_without_revivin
     let settled = exchange(&h, exchange_id(&running));
     assert_eq!(settled.status, ExchangeStatus::Failed);
     assert_eq!(settled.reply.as_deref(), Some("Alice was deleted"));
-    // TypeScript's `delivered` held the two requests the team delivered. The submit was the person's, not the team's.
-    let requests = h
+    // TypeScript's `delivered` held every delivery the team made, replies included, so a revived reply would show here.
+    // The person's own submit (`You`) is not a team delivery.
+    let delivered = h
         .all_work()
         .iter()
-        .filter(|item| item.source == WorkSource::BotRequest)
+        .filter(|item| item.source != WorkSource::You)
         .count();
-    assert_eq!(requests, 2);
+    assert_eq!(delivered, 2);
     assert_eq!(bob_session.sent().len(), 1);
     assert!(
         !h.chat(TEAM_ROOM_ID, 20)

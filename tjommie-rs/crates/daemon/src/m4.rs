@@ -11,7 +11,7 @@
 //!
 //! | `RunnerHooks` field | call |
 //! |---|---|
-//! | `mcp_servers` | [`M4::mcp_server`] for the `tjommie` entry |
+//! | `mcp_servers` | [`M4::mcp_servers`] (the `tjommie` and `browser` entries) |
 //! | `session_closed` | [`M4::session_closed`] |
 //! | `turn_started` | [`M4::turn_started`] |
 //! | `turn_requeued` | [`M4::turn_requeued`] |
@@ -197,14 +197,9 @@ impl M4 {
 
     // ---- the runner's hook bodies ----
 
-    /// The `tjommie` entry of `mcpServers`: this MCP endpoint, with a fresh token for the session.
-    pub fn mcp_server(&self, bot_id: &str, mcp_url: &str) -> McpServer {
-        let token = self.tokens.issue(bot_id);
-        http_server("tjommie", mcp_url, &token, true)
-    }
-
-    /// The whole `mcpServers` list of `daemon.ts`: `tjommie`, and `browser` (`mcp_url` + `/browser`, M6's proxy) when the bot's
-    /// browser is on. One token serves both, and it asks nothing for browser tools unless the bot's autonomy is `ask`.
+    /// The `mcpServers` list of `daemon.ts`: `tjommie` (this MCP endpoint), and `browser` (`mcp_url` + `/browser`, M6's
+    /// proxy) when the bot's browser is on. A fresh token serves both, and browser tools ask nothing unless the bot's
+    /// autonomy is `ask`.
     pub fn mcp_servers(&self, bot: &StoredBot, mcp_url: &str) -> Vec<McpServer> {
         let token = self.tokens.issue(&bot.id);
         let mut servers = vec![http_server("tjommie", mcp_url, &token, true)];

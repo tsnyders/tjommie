@@ -8,8 +8,8 @@
 //! beyond what the team checks) is lane D's and is not ported here.
 //!
 //! Not ported literally:
-//! - The broadcast that looked up each announced file's metadata at the moment of the announcement. The recorder keeps
-//!   events only, so the first case checks that the one file announcement names the linked attachment.
+//! - The broadcast's metadata lookup at the moment of each file announcement reads the links `DbAttachments` has recorded,
+//!   because a broadcast must not take the host's database lock.
 //! - `closeTransfer`, `close` and `backfillLegacy`: `DbAttachments` has no transfers or legacy rows. The restart is a fresh
 //!   `DbAttachments` over the same folder, whose `cleanup` runs as the service's does at start.
 mod team_support;
@@ -24,7 +24,8 @@ use daemon::bots::StoredBot;
 use daemon::chat::history;
 use daemon::queue::{NewWork, WorkItem, WorkSource, enqueue};
 use daemon::runner::{TurnOutcome, TurnResult};
-use daemon::team::SharedAttachments;
+use daemon::team::{SharedAttachments, Team, TeamDeps};
+use protocol::Event;
 use protocol::attachments::AttachmentCompanion;
 use protocol::model::{ExchangePostData, FileData, Message, MessageKind};
 use rusqlite::{OptionalExtension, params};
@@ -185,7 +186,39 @@ fn task_item(fx: &Fixture, bot_id: &str, revision: i64, context_key: &str) -> Wo
 
 #[test]
 fn publishes_linked_immutable_bytes_before_announcing_a_delivered_file() {
-    let fx = fixture_with(true);
+    let mut fx = fixture_with(true);
+    // TypeScript's broadcast looks each announced file's metadata up at the moment of the announcement, and throws if the
+    // link isn't there yet. The same check here reads the links the attachments have made so far (the broadcast must not
+    // take the host's database lock).
+    let published: Recorded<String> = Arc::default();
+    {
+        let linked = fx.attachments.as_ref().unwrap().linked.clone();
+        let (events, logs, seen) = (fx.events.clone(), fx.logs.clone(), published.clone());
+        fx.team = Arc::new(Team::new(TeamDeps {
+            broadcast: Arc::new(move |event: Event| {
+                if let Event::MessageAdded(message) = &event
+                    && message.kind == MessageKind::File
+                {
+                    let link = recorded(&linked)
+                        .iter()
+                        .find(|(id, index, _)| *id == message.id && *index == 0)
+                        .map(|(_, _, attachment)| attachment.clone());
+                    recorded(&seen)
+                        .push(link.unwrap_or_else(|| format!("{} has no link yet", message.id)));
+                }
+                recorded(&events).push(event);
+                Ok(())
+            }),
+            log: Arc::new(move |context: &str, error: &str| {
+                recorded(&logs).push((context.to_owned(), error.to_owned()));
+            }),
+            shared_files: fx.shared_files(),
+            attachments: fx
+                .attachments
+                .clone()
+                .map(|shared| shared as Arc<dyn SharedAttachments>),
+        }));
+    }
     let b = bots(&fx);
     let folder = PathBuf::from(&b.writer.home_folder);
     fs::write(folder.join("answer.md"), "# Answer").unwrap();
@@ -193,6 +226,7 @@ fn publishes_linked_immutable_bytes_before_announcing_a_delivered_file() {
         .unwrap();
     let message = history_of(&fx, &b.writer.id, 200).remove(0);
     let metadata_id = link_of(&fx, &message.id, 0).expect("the card links its file");
+    assert_eq!(*recorded(&published), std::slice::from_ref(&metadata_id));
     let announced: Vec<String> = fx
         .events_named("message.added")
         .iter()
@@ -312,10 +346,9 @@ fn publishes_explicit_companion_ownership_atomically_and_revokes_it_with_its_par
     assert_eq!(stored_bytes(&fx, &companion.attachment_id), png());
     // The lookups `metadata` would refuse as unavailable: another index, or the parent's id at the companion's index.
     assert_eq!(link_of(&fx, &message.id, 42), None);
-    assert_ne!(
-        link_of(&fx, &message.id, companion.attachment_index),
-        Some(parent_id)
-    );
+    let linked = link_of(&fx, &message.id, companion.attachment_index);
+    assert_eq!(linked, Some(companion.attachment_id.clone()));
+    assert_ne!(linked, Some(parent_id));
     // Deleting the parent message revokes the companion with it.
     let companion_file = stored(&fx, &companion.attachment_id).storage_name;
     fx.db(|db| {

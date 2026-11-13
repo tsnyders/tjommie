@@ -403,6 +403,8 @@ fn removes_staging_after_all_copies_succeed_and_points_cards_and_room_files_at_t
         share(&fx, &b, &request.conversation_id, "two.txt"),
     ];
     let stages: Vec<PathBuf> = cards.iter().map(staging_of).collect();
+    // TypeScript's `stages` are the snapshot files; `stages` here are their folders, so check the files too.
+    assert!(cards.iter().all(|card| Path::new(&data_path(card)).exists()));
     assert!(stages.iter().all(|stage| stage.exists()));
     fx.team_call(|team, host| team.turn_ended(host, &request, &done()))
         .unwrap();

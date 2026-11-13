@@ -34,6 +34,7 @@ use protocol::Event;
 use protocol::model::{
     Approval, ApprovalDecision, ApprovalStatus, Bot, BotState, ExchangeStatus, SettingsPatch,
 };
+use rusqlite::functions::FunctionFlags;
 use rusqlite::types::Value as SqlValue;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
@@ -695,8 +696,10 @@ mod request_transactions {
         })
         .unwrap();
         fx.db(|db| delete_bot(db, &researcher.id).unwrap());
-        // The hook runs inside the proposal's transaction, where TypeScript's spy ran. It makes the nested call on a
-        // second host with its own connection, so the refused call never touches the proposal's transaction.
+        // TypeScript's spy on `db.prepare` makes the nested call when the proposal inserts its approval, and its throw
+        // fails that call. Here a trigger on that insert calls a SQL function, which makes the nested call on a second
+        // host with its own connection (so the refused call never touches the proposal's transaction) and fails the
+        // insert with the refusal.
         let second = Arc::new(Mutex::new(FakeHost {
             db: connect(&fx),
             delivered: Arc::default(),
@@ -706,36 +709,34 @@ mod request_transactions {
             effective: Arc::default(),
             deliver_fails: Arc::default(),
         }));
-        type Counts = BTreeMap<&'static str, i64>;
-        let refusals: Recorded<(Option<String>, Counts, Counts)> = Arc::default();
-        let (team, seen) = (fx.team.clone(), refusals.clone());
-        let hooks = Hooks {
-            on_to_bot: Arc::new(move || {
-                let mut host = second.lock().unwrap_or_else(PoisonError::into_inner);
-                let before = state_counts(&host.db);
-                let refused = team.bot_deleted(&mut *host, &handle);
-                let after = state_counts(&host.db);
-                recorded(&seen).push((refused.err().map(|error| error.message), before, after));
-            }),
-            ..Hooks::none()
-        };
-        let outcome = call_with(
-            &fx,
-            &hooks,
-            &writer.id,
-            "add_routine",
-            json!({ "name": "Morning check", "days": ["mon", "wed"], "times": ["08:30"], "prompt": "Summarize the inbox." }),
+        let team = fx.team.clone();
+        fx.db(|db| {
+            db.create_scalar_function(
+                "nested_after_commit",
+                0,
+                FunctionFlags::SQLITE_UTF8,
+                move |_| {
+                    let mut host = second.lock().unwrap_or_else(PoisonError::into_inner);
+                    match team.bot_deleted(&mut *host, &handle) {
+                        Ok(()) => Ok(0_i64),
+                        Err(error) => Err(rusqlite::Error::UserFunctionError(error.message.into())),
+                    }
+                },
+            )
+            .unwrap();
+            db.execute_batch(
+                "CREATE TRIGGER nested_after_commit_on_approval BEFORE INSERT ON approvals BEGIN SELECT nested_after_commit(); END",
+            )
+            .unwrap();
+        });
+        let before = fx.db(state_counts);
+        let error = propose(&fx, &writer).unwrap_err();
+        assert!(
+            error.contains("An after-commit action cannot run inside another Team transaction."),
+            "{error}"
         );
-        // TypeScript's `toThrow` has no port here: the refusal reaches the hook, not the caller, so the outer proposal
-        // commits. The refused call itself is what the test can check.
-        assert!(outcome.is_ok(), "{outcome:?}");
-        let seen = recorded(&refusals).clone();
-        assert_eq!(seen.len(), 1);
-        assert_eq!(
-            seen[0].0.as_deref(),
-            Some("An after-commit action cannot run inside another Team transaction.")
-        );
-        assert_eq!(seen[0].1, seen[0].2, "the refused call wrote nothing");
+        assert_eq!(fx.db(state_counts), before);
+        assert!(fx.event_names().is_empty());
     }
 
     #[test]
