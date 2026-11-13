@@ -1,6 +1,8 @@
 //! T1.4 `tjommie-daemon import --from <root>` (spec §4). Every source and target is a temp root; nothing here reads
 //! or writes the real `%LOCALAPPDATA%\Tjommie`.
 
+mod common;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -44,8 +46,14 @@ const PROJECT_TABLES: [&str; 9] = [
     "task_requests",
 ];
 
+/// A temp folder under the canonical temp path. The importer names files by their resolved paths (in errors, in the folders
+/// it stores), and a runner's TEMP is an 8.3 spelling that resolves to a different one, so expected paths built from the
+/// spelled TEMP never match. The 8.3 and other alternate spellings the tests want are derived from this canonical path.
 fn temp(prefix: &str) -> TempDir {
-    tempfile::Builder::new().prefix(prefix).tempdir().unwrap()
+    tempfile::Builder::new()
+        .prefix(prefix)
+        .tempdir_in(common::canonical(&std::env::temp_dir()))
+        .unwrap()
 }
 
 fn text(path: &Path) -> &str {

@@ -3,6 +3,8 @@
 //! Not ported here: "refuses review launches outside policy", which belongs to the launch orchestration.
 #![cfg(windows)]
 
+mod common;
+
 use daemon::spawn;
 use daemon::win::logon;
 use daemon::win::worker::{
@@ -329,7 +331,11 @@ fn requires_both_purpose_sid_configuration_hashes_and_every_actual_peer_denial_i
 /// The native grant (the C# `TjWorkerDirectoryGrant` in `windows-worker.ts`): a Modify allow, inherited below.
 #[test]
 fn grants_modify_on_the_exact_folder_and_refuses_a_junction() {
-    let dir = TempDir::new().unwrap();
+    // The grant refuses a folder whose path isn't its canonical one ("Directory target changed"), as it must for a link.
+    // A runner's TEMP is an 8.3 spelling, so the test's own folders live under the canonical temp path.
+    let dir = tempfile::Builder::new()
+        .tempdir_in(common::canonical(&std::env::temp_dir()))
+        .unwrap();
     let (folder, elsewhere) = (dir.path().join("work"), dir.path().join("elsewhere"));
     fs::create_dir_all(folder.join("child")).unwrap();
     fs::create_dir(&elsewhere).unwrap();
