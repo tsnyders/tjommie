@@ -1,20 +1,14 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
-import type { BotInput } from "@tjommie/protocol";
-import { createBot } from "../packages/daemon/src/bots.ts";
-import { addMessage } from "../packages/daemon/src/chat.ts";
-import { openDb } from "../packages/daemon/src/db.ts";
-import { ensureAccounts } from "../packages/daemon/src/setup.ts";
-import { recordUsage } from "../packages/daemon/src/usage.ts";
 import { packagedDaemonPath, startDaemonProcess, type DaemonLaunch } from "../packages/desktop/src/daemon-process.ts";
 
 // The R1 acceptance run (.github/workflows/r1-acceptance.yml): the Rust daemon takes over a data root that a 0.4.2 install
 // seeded, and 0.4.2 must still open it afterwards (spec §5, release R1).
 //
-//   seed    --root <dir> --install <0.4.2 dir> --counts <file>    a 0.4.2 data root (0.4.2's own daemon starts on it once), and its row counts
+//   seed    --root <dir> --install <0.4.2 dir> --counts <file>    a 0.4.2 data root from the committed 0.4.2 database (0.4.2's own daemon starts on it once), and its row counts
 //   install --installer <file>               installs silently, prints the install folder
 //   start   --install <dir> --root <dir>     runs the installed app's own daemon on the root, then stops it
 //   verify  --root <dir> --counts <file> --stage upgraded|rolledback [--version <v>]
@@ -92,36 +86,42 @@ export function diffCounts(label: string, expected: Counts, found: Counts): stri
 
 // ---- Seeding ----
 
-const botInput = (name: string, provider: BotInput["provider"], model: string): BotInput => ({
-  name, color: "blue", shape: "circle", instructions: `You are ${name}. Answer briefly.`, provider, model, autonomy: "ask", browser: false,
-});
+// A real 0.4.2 database (user_version 12: an account, a bot, its chat, an approval, work items and a saved session), the
+// one the Rust daemon's own fixture tests use. The Rust side owns it now; this only copies it.
+const fixtureDb = fileURLToPath(new URL("../tjommie-rs/crates/daemon/tests/fixtures/fixture.db", import.meta.url));
 
-// A 0.4.2 data root as the TypeScript daemon leaves it: accounts, bots with their folders, chats and recorded usage, then
-// 0.4.2's own daemon started on it once (`firstStart`) and stopped cleanly. That start adds rows nobody seeds (the
-// `attachmentHostId` setting, perhaps a `remote_host` identity), and any later daemon finds them already there. The counts
-// are taken after it, so they are what 0.4.2 leaves, and the R1 check compares R1 against exactly that.
-// Every message is finished and no work is queued, so a daemon's start-up recovery has nothing to change.
+// The fixture was saved mid-turn, to test the Rust daemon's recovery. Settle it, so a daemon's start-up recovery has nothing
+// to change and no queued work starts a provider CLI (the runner has none): finished messages and work, no pending approval.
+const settleSql = `
+  UPDATE messages SET status = 'done' WHERE status IN ('streaming', 'queued');
+  UPDATE messages SET data = json_set(data, '$.status', 'denied') WHERE kind = 'approval';
+  UPDATE work_items SET status = 'done', ended_at = '2026-09-25T10:05:00.000Z' WHERE status IN ('running', 'queued');
+  UPDATE approvals SET status = 'denied', decided_at = '2026-09-25T10:05:00.000Z' WHERE status = 'pending';
+`;
+
+// A 0.4.2 data root as the TypeScript daemon leaves it: the 0.4.2 database above with its account and bot folders under
+// `root`, then 0.4.2's own daemon started on it once (`firstStart`) and stopped cleanly. That start adds rows nobody seeds
+// (the `attachmentHostId` setting, the Codex account, perhaps a `remote_host` identity), and any later daemon finds them
+// already there. The counts are taken after it, so they are what 0.4.2 leaves, and the R1 check compares R1 against
+// exactly that.
 export async function seedRoot(root: string, firstStart: (root: string) => Promise<void>): Promise<Counts> {
   const dataDir = join(root, "data");
   const dbFile = join(dataDir, "tjommie.db");
   if (existsSync(dbFile)) throw new Error("Refusing to seed a data root that already has a database.");
   mkdirSync(dataDir, { recursive: true });
+  // fixture.db is complete on its own: closing its last connection checkpointed the WAL into it.
+  copyFileSync(fixtureDb, dbFile);
   const botsDir = join(root, "bots");
-  mkdirSync(botsDir, { recursive: true });
-  const db = openDb(dbFile);
+  const botFolder = join(botsDir, "legacy-bot");
+  const accountFolder = join(root, "accounts", "claude-main");
+  mkdirSync(botFolder, { recursive: true });
+  mkdirSync(accountFolder, { recursive: true });
+  writeFileSync(join(botFolder, "notes.md"), "Seeded notes for Writer.\n");
+  const db = new DatabaseSync(dbFile);
   try {
-    ensureAccounts(db, join(root, "accounts"), root);
-    const bots = [
-      createBot(db, botsDir, botInput("Writer", "claude", "haiku")),
-      createBot(db, botsDir, botInput("Researcher", "claude", "sonnet")),
-      createBot(db, botsDir, botInput("Coder", "codex", "gpt-5.3-codex")),
-    ];
-    for (const bot of bots) {
-      for (let turn = 1; turn <= 5; turn++) {
-        addMessage(db, { conversationId: bot.id, author: turn % 2 === 1 ? "you" : bot.id, kind: "text", body: `Seeded message ${turn} for ${bot.name}`, status: turn % 2 === 1 ? "sent" : "done" });
-      }
-      recordUsage(db, { botId: bot.id, accountId: `${bot.provider}-main`, provider: bot.provider, model: bot.model, input: 120, cachedInput: 40, output: 60, reasoning: 0, costUsd: 0.01, costSource: "reported" });
-    }
+    db.prepare("UPDATE accounts SET folder = ?").run(accountFolder); // The fixture's folders name a PC that does not exist.
+    db.prepare("UPDATE bots SET home_folder = ?").run(botFolder);
+    db.exec(settleSql);
   } finally {
     db.close(); // Close before the daemon opens the file, so nothing here holds it.
   }

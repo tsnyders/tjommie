@@ -1,6 +1,7 @@
-//! `database-upgrade.test.ts` and the fixture database test (spec §5 Phase 1). `scripts/make-fixture-db.ts` writes
-//! `fixtures/fixture.db` (a v0.4.2 database seeded as in `database-upgrade.test.ts`, upgraded by the TypeScript `openDb`)
-//! and `fixtures/schema.json` (`sqlite_master` of a fresh TypeScript database). The first case, which ends in the
+//! `database-upgrade.test.ts` and the fixture database test (spec §5 Phase 1). `fixtures/fixture.db` is a v0.4.2
+//! database (seeded as in `database-upgrade.test.ts`, upgraded by the TypeScript `openDb`) and `fixtures/schema.json` is
+//! `sqlite_master` of a fresh TypeScript database. Both were generated once from the 0.4.2 daemon (the `legacy` branch)
+//! and are now owned here: change them only to follow a deliberate Rust migration. The first case, which ends in the
 //! runner's recovery, is in `tests/runner/upgrade.rs`.
 
 use std::fs;
@@ -34,7 +35,7 @@ fn user_version(db: &Connection) -> i64 {
         .unwrap()
 }
 
-/// Same query and order as `freshSchema` in `make-fixture-db.ts`.
+/// Same query and order as the one that wrote `fixtures/schema.json`.
 fn schema(db: &Connection) -> Vec<SchemaObject> {
     db.prepare("SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name")
         .unwrap()

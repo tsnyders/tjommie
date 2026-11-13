@@ -1,9 +1,8 @@
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, expect, it, vi } from "vitest";
-import { migrations } from "../packages/daemon/src/db.ts";
 import { assertCi, diffFiles, findInstalledApp, firstStartByOldDaemon, installedDaemon, listFiles, main, readCounts, seedRoot, verifyRoot } from "./r1-acceptance.ts";
 
 const folders: string[] = [];
@@ -42,14 +41,30 @@ function sql(file: string, statement: string): void {
   try { db.exec(statement); } finally { db.close(); }
 }
 
-it("seeds a 0.4.2 data root with accounts, bots and their folders, chats and usage", async () => {
+it("seeds a 0.4.2 data root from the committed 0.4.2 database, its folders moved under the root", async () => {
   const root = temp();
   const counts = await seedRoot(root, noStart);
-  expect(counts.userVersion).toBe(migrations.length);
-  // Four conversations: one per bot, and the team room a migration creates (db.ts:155).
-  expect(counts.tables).toMatchObject({ accounts: 2, bots: 3, conversations: 4, messages: 15, usage: 3 });
-  expect(counts.botFiles).toBe(3); // One notes.md in each bot's folder.
+  expect(counts.userVersion).toBe(12); // 0.4.2's last migration, which the Rust daemon also ends at (spec §5).
+  // Two conversations: the bot's, and the team room a migration creates.
+  expect(counts.tables).toMatchObject({ accounts: 1, bots: 1, conversations: 2, messages: 4, approvals: 1, work_items: 2, sessions: 1 });
+  expect(counts.botFiles).toBe(1); // One notes.md in the bot's folder.
   expect(readCounts(join(root, "data", "tjommie.db"), join(root, "bots"))).toEqual(counts);
+  const db = new DatabaseSync(join(root, "data", "tjommie.db"));
+  try {
+    expect(db.prepare("SELECT home_folder AS folder FROM bots").all()).toEqual([{ folder: join(root, "bots", "legacy-bot") }]);
+    expect(db.prepare("SELECT folder FROM accounts").all()).toEqual([{ folder: join(root, "accounts", "claude-main") }]);
+    // Settled: a daemon's start-up recovery has nothing to change, and no queued work would start a provider CLI.
+    expect(db.prepare("SELECT COUNT(*) AS n FROM messages WHERE status IN ('streaming', 'queued')").get()).toEqual({ n: 0 });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM work_items WHERE status IN ('running', 'queued')").get()).toEqual({ n: 0 });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM approvals WHERE status = 'pending'").get()).toEqual({ n: 0 });
+  } finally { db.close(); }
+});
+
+it("never changes the committed database it copies", async () => {
+  const fixture = new URL("../tjommie-rs/crates/daemon/tests/fixtures/fixture.db", import.meta.url);
+  const before = readFileSync(fixture);
+  await seedRoot(temp(), noStart);
+  expect(readFileSync(fixture).equals(before)).toBe(true);
 });
 
 it("starts a daemon on the seeded root before it counts, so the counts include what that start adds", async () => {
@@ -61,8 +76,8 @@ it("starts a daemon on the seeded root before it counts, so the counts include w
     bootstrap(join(seeded, "data", "tjommie.db"));
   });
   // The daemon sees the finished seed, not a half-built one, and starts exactly once.
-  expect(started).toEqual([{ root, bots: 3, settings: 0 }]);
-  expect(counts.tables).toMatchObject({ bots: 3, messages: 15, settings: 1 });
+  expect(started).toEqual([{ root, bots: 1, settings: 0 }]);
+  expect(counts.tables).toMatchObject({ bots: 1, messages: 4, settings: 1 });
 });
 
 it("passes the upgrade check when R1 only finds the rows 0.4.2's first start left, and fails on them when nothing ever started", async () => {
@@ -117,18 +132,18 @@ it("reports a changed row count in the live database, a changed user_version and
   sql(dbFile, "PRAGMA user_version = 13");
   rmSync(join(root, "bots", readCountsBotFolder(root), "notes.md"));
   const problems = verifyRoot(root, "upgraded", expected, "9.9.9").join("\n");
-  expect(problems).toContain("live: table messages has 14 rows, expected 15");
+  expect(problems).toContain("live: table messages has 3 rows, expected 4");
   expect(problems).toContain("live: user_version is 13");
-  expect(problems).toContain("live: the bots folder has 2 files, expected 3");
+  expect(problems).toContain("live: the bots folder has 0 files, expected 1");
   expect(problems).not.toContain("backup:");
 });
 
 it("reports a backup that does not match the seed, and an unfinished backup copy", async () => {
   const { root, expected, backup } = await seededWithBackup();
-  sql(backup, "DELETE FROM usage");
+  sql(backup, "DELETE FROM work_items");
   put(join(root, "data", "backup", "tjommie-9.9.9.db.partial"));
   const problems = verifyRoot(root, "upgraded", expected, "9.9.9").join("\n");
-  expect(problems).toContain("backup: table usage has 0 rows, expected 3");
+  expect(problems).toContain("backup: table work_items has 0 rows, expected 2");
   expect(problems).toContain("A backup copy was left unfinished");
 });
 

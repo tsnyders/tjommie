@@ -1,7 +1,7 @@
 import { DEFAULT_RELAY_URL } from "@tjommie/protocol";
 import { afterAll, afterEach, expect } from "vitest";
 
-afterAll(async () => (await import("../packages/daemon/src/testing.ts")).cleanupTempRoots());
+afterAll(async () => (await import("../packages/desktop/src/testing.ts")).cleanupTempRoots());
 
 if (DEFAULT_RELAY_URL === null) throw new Error("The public relay URL must be set before running tests.");
 const normalizedHostname = (hostname: string): string => hostname.toLowerCase().replace(/\.$/, "");

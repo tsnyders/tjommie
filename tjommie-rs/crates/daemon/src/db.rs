@@ -8,8 +8,8 @@ use std::time::Duration;
 use rusqlite::backup::NO_PROGRESS;
 use rusqlite::{Connection, MAIN_DB};
 
-/// `migrations` from `db.ts`, exported byte for byte by `scripts/export-migrations.ts`. Append-only, and no
-/// migration 13 until one release after R1, so 0.4.2 can still open the database (spec §5).
+/// `migrations` from `db.ts` in 0.4.2, copied byte for byte (SQLite keeps their text in `sqlite_master`, and 0.4.2 reads
+/// it back). Append-only, and no migration 13 until one release after R1, so 0.4.2 can still open the database (spec §5).
 pub const MIGRATIONS: [&str; 12] = [
     include_str!("../migrations/01.sql"),
     include_str!("../migrations/02.sql"),
