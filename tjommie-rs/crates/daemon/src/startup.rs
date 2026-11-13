@@ -484,8 +484,7 @@ fn assemble(
         accounts: Some(Arc::new(accounts.runtime.clone())),
         // TypeScript's `closeBrowser` is the headless registry, which the desktop host leaves empty and this port has no
         // equivalent of. The native tools are fenced there by the `sessionClosed` hook, so a deleting bot's are fenced
-        // here, in the returned future: `native_request` reads the database as it is called, and this call is made
-        // with the runner holding it. M6 unbound (the handler tests): nothing to close.
+        // here, in the future deletion awaits with the process's exit. M6 unbound (the handler tests): nothing to close.
         close_browser: Arc::new(move |bot_id| {
             let (m6, bot_id) = (native_browser.get().cloned(), bot_id.to_owned());
             async move {

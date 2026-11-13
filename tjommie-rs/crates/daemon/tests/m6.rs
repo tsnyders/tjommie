@@ -223,3 +223,23 @@ async fn development_has_no_host_routes_and_browser_tools_answer_that_the_deskto
     assert_eq!(shown.code, ErrorCode::Unavailable);
     f.close().await;
 }
+
+/// `NativeRequest`'s rule: never lock at call time. The runner makes its browser fence (and any hook that closes a
+/// session) with the database locked, and that mutex is not reentrant, so a request that read the database as it was
+/// made would wait forever on its own caller's lock. The close runs on its own thread so a hang fails this test
+/// instead of stopping the run.
+#[tokio::test]
+async fn closing_a_bots_browser_tools_does_not_wait_on_a_database_lock_its_caller_holds() {
+    let f = fixture(Some(host_token())).await;
+    let (db, tools, bot) = (f.db.clone(), f.m6.browser_mcp.clone(), f.bot.clone());
+    let (done, finished) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _held = db.lock().unwrap();
+        tools.close(&bot);
+        let _ = done.send(());
+    });
+    finished
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("close returned while its caller held the database lock");
+    f.close().await;
+}

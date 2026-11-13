@@ -152,13 +152,14 @@ fn attachment_host_id(db: &Db) -> Result<String, RpcError> {
     Ok(id)
 }
 
-/// `nativeRequest`: the stored bot's command to the desktop, refused while its browser is off.
+/// `nativeRequest`: the stored bot's command to the desktop, refused while its browser is off. Calling it only builds
+/// the request: the database is read when the future first runs, never at the call (see [`NativeRequest`]).
 fn native_request(db: Db, broker: Option<Arc<NativeBrowserBroker>>) -> NativeRequest {
     Arc::new(move |id: String, command: Value, authorized| {
-        let bot = get_stored_bot(&db.lock().unwrap_or_else(PoisonError::into_inner), &id);
-        let broker = broker.clone();
+        let (db, broker) = (db.clone(), broker.clone());
         Box::pin(async move {
-            let bot = bot?;
+            // The guard is a temporary of this statement: it is gone before the first await.
+            let bot = get_stored_bot(&db.lock().unwrap_or_else(PoisonError::into_inner), &id)?;
             let teardown = matches!(
                 command["kind"].as_str(),
                 Some("close" | "cancel_tools" | "delete_profile")

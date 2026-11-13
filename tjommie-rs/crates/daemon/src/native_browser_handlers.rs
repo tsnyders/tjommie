@@ -20,6 +20,9 @@ use crate::native_browser_broker::Authorized;
 use crate::server::{Handlers, RequestContext, RpcError};
 
 /// `request(botId, command, authorized)`: the daemon's `nativeRequest`, which checks the bot and uses the broker.
+///
+/// Never lock at call time: callers may hold the database lock (the runner's hooks and its `close_browser` do, and the
+/// mutex is not reentrant). Read the database inside the returned future, with no guard held across an await.
 pub type NativeRequest = Arc<
     dyn Fn(String, Value, Option<Authorized>) -> BoxFuture<'static, Result<Value, RpcError>>
         + Send
