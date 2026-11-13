@@ -15,9 +15,7 @@ use crate::bots::get_stored_bot;
 use crate::cli::BoxFuture;
 use crate::context::Db;
 use crate::project_review::ReviewContext;
-use crate::project_review_runtime::{
-    ReviewAccount, ReviewAccountResolver, ReviewAccountSelection,
-};
+use crate::project_review_runtime::{ReviewAccount, ReviewAccountResolver, ReviewAccountSelection};
 use crate::providers::{ApiKey, ProviderEvent, Usage};
 use crate::server::Broadcaster;
 use crate::usage::{CostSource, UsageInput, record_usage};
@@ -204,7 +202,9 @@ impl Lease {
         };
         let inserted = {
             let db = self.db.lock().unwrap_or_else(PoisonError::into_inner);
-            let transaction = db.unchecked_transaction().map_err(|error| error.to_string())?;
+            let transaction = db
+                .unchecked_transaction()
+                .map_err(|error| error.to_string())?;
             let inserted = record_usage(&transaction, &input).map_err(|error| error.message)?;
             transaction.commit().map_err(|error| error.to_string())?;
             inserted

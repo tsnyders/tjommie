@@ -22,12 +22,25 @@ fn git_environment(config: &Path) -> Vec<(&'static str, OsString)> {
         ("GIT_CONFIG_NOSYSTEM", OsString::from("1")),
         ("GIT_CONFIG_GLOBAL", config.as_os_str().to_owned()),
         ("GIT_AUTHOR_NAME", OsString::from("Synthetic fixture")),
-        ("GIT_AUTHOR_EMAIL", OsString::from("fixture@example.invalid")),
+        (
+            "GIT_AUTHOR_EMAIL",
+            OsString::from("fixture@example.invalid"),
+        ),
         ("GIT_COMMITTER_NAME", OsString::from("Synthetic fixture")),
-        ("GIT_COMMITTER_EMAIL", OsString::from("fixture@example.invalid")),
+        (
+            "GIT_COMMITTER_EMAIL",
+            OsString::from("fixture@example.invalid"),
+        ),
     ];
     for key in [
-        "PATH", "SystemRoot", "SystemDrive", "WINDIR", "PATHEXT", "TEMP", "TMP", "COMSPEC",
+        "PATH",
+        "SystemRoot",
+        "SystemDrive",
+        "WINDIR",
+        "PATHEXT",
+        "TEMP",
+        "TMP",
+        "COMSPEC",
     ] {
         if let Some(value) = env::var_os(key) {
             environment.push((key, value));
@@ -108,7 +121,10 @@ fn fixture() -> Fixture {
     let git = |path: &Path, args: &[&str]| git_in(&root, &config, path, args);
     git(&repo_path, &["init", "-b", "main"]);
     git(&repo_path, &["config", "user.name", "Synthetic fixture"]);
-    git(&repo_path, &["config", "user.email", "fixture@example.invalid"]);
+    git(
+        &repo_path,
+        &["config", "user.email", "fixture@example.invalid"],
+    );
     git(&repo_path, &["config", "commit.gpgsign", "false"]);
     fs::create_dir(repo_path.join("src")).expect("the src folder is made");
     fs::write(repo_path.join("src/a.txt"), "A0\n").expect("a.txt is written");
@@ -157,7 +173,11 @@ fn materializes_independent_exact_git_objects_without_running_repository_checkou
         &h.repo_path,
         &["config", "filter.untrusted.smudge", "touch ../filter-ran"],
     );
-    fs::write(h.repo_path.join(".gitattributes"), "src/* filter=untrusted\n").unwrap();
+    fs::write(
+        h.repo_path.join(".gitattributes"),
+        "src/* filter=untrusted\n",
+    )
+    .unwrap();
     h.git(&h.repo_path, &["add", ".gitattributes"]);
     h.git(&h.repo_path, &["commit", "-m", "Synthetic attributes"]);
     let sha = h.git(&h.repo_path, &["rev-parse", "HEAD"]);
@@ -208,7 +228,11 @@ fn merges_an_exact_accepted_commit_in_an_owned_candidate_and_blocks_a_users_chec
         .unwrap();
     assert!(!merged.conflict);
     let sha = merged.sha.expect("a clean merge has a commit");
-    assert!(!h.worktrees.dirty(&h.repository, &candidate, None, false).unwrap());
+    assert!(
+        !h.worktrees
+            .dirty(&h.repository, &candidate, None, false)
+            .unwrap()
+    );
     assert_eq!(
         h.worktrees
             .promote(&h.repository, "refs/heads/main", &h.base, &sha)
@@ -281,7 +305,12 @@ fn offers_immutable_source_only_review_and_fails_on_incomplete_binary_coverage()
     let snapshot = review_snapshot(&h.worktrees, &h.repository, &h.base, &h.base).unwrap();
     assert_eq!(snapshot.read("src/a.txt").unwrap(), "A0\n");
     // `Object.isFrozen(snapshot)` has no Rust counterpart: the snapshot offers only `read`, so nothing can change it.
-    assert!(snapshot.read("../owner-note").unwrap_err().contains("outside"));
+    assert!(
+        snapshot
+            .read("../owner-note")
+            .unwrap_err()
+            .contains("outside")
+    );
     fs::write(h.repo_path.join("src/a.txt"), "new uncommitted bytes\n").unwrap();
     assert_eq!(snapshot.read("src/a.txt").unwrap(), "A0\n");
     fs::write(h.repo_path.join("binary.bin"), [0u8, 1, 2]).unwrap();
@@ -326,10 +355,7 @@ fn rejects_hostile_git_tree_names_before_creating_a_worktree() {
             .worktrees
             .describe(&format!("unsafe-{index}"), &commit, None)
             .unwrap();
-        let error = h
-            .worktrees
-            .create(&h.repository, &work, false)
-            .unwrap_err();
+        let error = h.worktrees.create(&h.repository, &work, false).unwrap_err();
         assert!(
             error.message.contains("unsupported_tree_path"),
             "{}",
@@ -350,7 +376,10 @@ fn materializes_a_directory_to_file_change_without_retaining_deleted_tracked_fil
     fs::remove_dir(task_path.join("src")).unwrap();
     fs::write(task_path.join("src"), "replacement file\n").unwrap();
     h.git(&task_path, &["add", "-A"]);
-    h.git(&task_path, &["commit", "-m", "Synthetic directory refactor"]);
+    h.git(
+        &task_path,
+        &["commit", "-m", "Synthetic directory refactor"],
+    );
     let candidate = h
         .worktrees
         .describe("refactor-candidate", &h.base, None)
@@ -366,7 +395,11 @@ fn materializes_a_directory_to_file_change_without_retaining_deleted_tracked_fil
         fs::read_to_string(candidate_path.join("src")).unwrap(),
         "replacement file\n"
     );
-    assert!(!h.worktrees.dirty(&h.repository, &candidate, None, false).unwrap());
+    assert!(
+        !h.worktrees
+            .dirty(&h.repository, &candidate, None, false)
+            .unwrap()
+    );
     assert!(h.repo_path.join("src/a.txt").exists());
 }
 
@@ -387,17 +420,21 @@ fn uses_actual_git_object_bytes_even_when_the_repository_has_replacement_refs() 
         &h.repo_path,
         &["replace", original.as_str(), replacement.as_str()],
     );
-    assert_eq!(
-        h.git(&h.repo_path, &["show", "HEAD:src/a.txt"]),
-        "REPLACED"
-    );
-    let work = h.worktrees.describe("actual-objects", &h.base, None).unwrap();
+    assert_eq!(h.git(&h.repo_path, &["show", "HEAD:src/a.txt"]), "REPLACED");
+    let work = h
+        .worktrees
+        .describe("actual-objects", &h.base, None)
+        .unwrap();
     h.worktrees.create(&h.repository, &work, false).unwrap();
     assert_eq!(
         fs::read_to_string(Path::new(&work.path).join("src/a.txt")).unwrap(),
         "A0\n"
     );
-    assert!(!h.worktrees.dirty(&h.repository, &work, None, false).unwrap());
+    assert!(
+        !h.worktrees
+            .dirty(&h.repository, &work, None, false)
+            .unwrap()
+    );
 }
 
 #[test]
@@ -412,7 +449,10 @@ fn preserves_ignored_target_files_when_a_later_accepted_commit_starts_tracking_t
     let first_path = first.path.expect("the target worktree is reported");
     let retained = PathBuf::from(&first_path).join("check-output.txt");
     fs::write(&retained, "owner bytes\n").unwrap();
-    let task = h.worktrees.describe("track-ignored", &h.base, None).unwrap();
+    let task = h
+        .worktrees
+        .describe("track-ignored", &h.base, None)
+        .unwrap();
     h.worktrees.create(&h.repository, &task, false).unwrap();
     let task_path = PathBuf::from(&task.path);
     fs::write(task_path.join("check-output.txt"), "candidate bytes\n").unwrap();

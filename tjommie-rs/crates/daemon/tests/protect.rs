@@ -31,7 +31,12 @@ struct Fixture {
 fn fixture() -> Fixture {
     let root = TempRoot::new();
     let db = daemon::db::open(&root.0.join("t.db")).unwrap();
-    insert_account(&db, "claude-main", "claude", &root.0.join("accounts").join("claude-main"));
+    insert_account(
+        &db,
+        "claude-main",
+        "claude",
+        &root.0.join("accounts").join("claude-main"),
+    );
     make_default_account(&db, "claude-main");
     let input: BotInput = serde_json::from_value(json!({
         "name": "Researcher", "color": "teal", "shape": "droplet", "instructions": "Find sources.",
@@ -67,7 +72,9 @@ fn recording(seen: &Seen, status: Protection) -> Pass {
             .iter()
             .map(|home| (home.id.clone(), home.home_folder.clone(), home.provider))
             .collect();
-        seen.lock().unwrap().push((homes, accounts.map_or(0, <[_]>::len)));
+        seen.lock()
+            .unwrap()
+            .push((homes, accounts.map_or(0, <[_]>::len)));
         status
     })
 }
@@ -80,10 +87,21 @@ fn service(f: &Fixture, pass: Pass, initial: Protection) -> Arc<FolderProtection
 async fn an_unforced_pass_waits_out_the_throttle_and_a_forced_one_does_not() {
     let f = fixture();
     let seen: Seen = Arc::default();
-    let protection = service(&f, recording(&seen, Protection::Ready), Protection::NotConfigured);
-    assert_eq!(protection.status(), Protection::NotConfigured, "the pre-SQLite pass result is kept");
+    let protection = service(
+        &f,
+        recording(&seen, Protection::Ready),
+        Protection::NotConfigured,
+    );
+    assert_eq!(
+        protection.status(),
+        Protection::NotConfigured,
+        "the pre-SQLite pass result is kept"
+    );
     protection.refresh(false, None).await.unwrap();
-    assert_eq!((seen.lock().unwrap().len(), protection.status()), (1, Protection::Ready));
+    assert_eq!(
+        (seen.lock().unwrap().len(), protection.status()),
+        (1, Protection::Ready)
+    );
     // Within 60 s nothing runs unless it is forced.
     tokio::time::advance(Duration::from_secs(59)).await;
     protection.refresh(false, None).await.unwrap();
@@ -107,7 +125,10 @@ async fn the_pass_gets_every_bot_home_and_the_account_folders() {
     protection.refresh(true, None).await.unwrap();
     let passes = seen.lock().unwrap();
     assert_eq!(passes.len(), 1);
-    assert_eq!(passes[0].0, vec![(f.bot_id.clone(), f.bot_home.clone(), Provider::Claude)]);
+    assert_eq!(
+        passes[0].0,
+        vec![(f.bot_id.clone(), f.bot_home.clone(), Provider::Claude)]
+    );
     assert_eq!(passes[0].1, 1);
 }
 
@@ -130,9 +151,19 @@ async fn an_override_replaces_that_bots_home_and_provider_for_one_pass_only() {
     protection.refresh(true, Some(stranger)).await.unwrap();
     protection.refresh(true, None).await.unwrap();
     let passes = seen.lock().unwrap();
-    assert_eq!(passes[0].0, vec![(f.bot_id.clone(), PathBuf::from("moved-home"), Provider::Codex)]);
+    assert_eq!(
+        passes[0].0,
+        vec![(
+            f.bot_id.clone(),
+            PathBuf::from("moved-home"),
+            Provider::Codex
+        )]
+    );
     // An override only replaces a bot that exists; it never adds one, and it isn't remembered.
-    assert_eq!(passes[1].0, vec![(f.bot_id.clone(), f.bot_home.clone(), Provider::Claude)]);
+    assert_eq!(
+        passes[1].0,
+        vec![(f.bot_id.clone(), f.bot_home.clone(), Provider::Claude)]
+    );
     assert_eq!(passes[2].0, passes[1].0);
 }
 
@@ -147,7 +178,10 @@ async fn passes_never_overlap_and_run_in_the_order_they_were_asked_for() {
             if running.fetch_add(1, Ordering::SeqCst) > 0 {
                 overlapped.fetch_add(1, Ordering::SeqCst);
             }
-            order.lock().unwrap().push(homes[0].home_folder.to_string_lossy().into_owned());
+            order
+                .lock()
+                .unwrap()
+                .push(homes[0].home_folder.to_string_lossy().into_owned());
             std::thread::sleep(Duration::from_millis(40));
             running.fetch_sub(1, Ordering::SeqCst);
             Protection::Ready
@@ -165,7 +199,11 @@ async fn passes_never_overlap_and_run_in_the_order_they_were_asked_for() {
         protection.refresh(true, Some(home("third"))),
     );
     first.and(second).and(third).unwrap();
-    assert_eq!(overlapped.load(Ordering::SeqCst), 0, "two passes ran at once");
+    assert_eq!(
+        overlapped.load(Ordering::SeqCst),
+        0,
+        "two passes ran at once"
+    );
     assert_eq!(*order.lock().unwrap(), ["first", "second", "third"]);
 }
 
@@ -178,7 +216,10 @@ async fn a_failed_pass_reports_its_error_and_the_queue_keeps_working() {
         let failing = failing.clone();
         Arc::new(move |_| {
             if failing.swap(0, Ordering::SeqCst) == 1 {
-                Err(RpcError::new(ErrorCode::Internal, "the accounts store is unavailable"))
+                Err(RpcError::new(
+                    ErrorCode::Internal,
+                    "the accounts store is unavailable",
+                ))
             } else {
                 Ok(Vec::new())
             }
@@ -193,12 +234,22 @@ async fn a_failed_pass_reports_its_error_and_the_queue_keeps_working() {
     );
     let error = protection.refresh(true, None).await.unwrap_err();
     assert_eq!(error.message, "the accounts store is unavailable");
-    assert_eq!(seen.lock().unwrap().len(), 0, "no pass ran without its accounts");
-    assert_eq!(protection.status(), Protection::Ready, "the old status stays");
+    assert_eq!(
+        seen.lock().unwrap().len(),
+        0,
+        "no pass ran without its accounts"
+    );
+    assert_eq!(
+        protection.status(),
+        Protection::Ready,
+        "the old status stays"
+    );
     protection.refresh(true, None).await.unwrap();
     assert_eq!(protection.status(), Protection::CheckFailed);
     assert_eq!(
         protection.reason(),
-        Some("Tjommie couldn't check Codex's sandbox. If Codex was updated, run its sandbox setup again.")
+        Some(
+            "Tjommie couldn't check Codex's sandbox. If Codex was updated, run its sandbox setup again."
+        )
     );
 }

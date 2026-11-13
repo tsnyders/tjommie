@@ -8,7 +8,7 @@ use std::sync::{Arc, MutexGuard, PoisonError};
 
 use protocol::model::{Room, TEAM_ROOM_ID};
 use protocol::projects::{
-    Project, ProjectHeads, ProjectPatch, ProjectInput, ProjectRepository, ProjectState,
+    Project, ProjectHeads, ProjectInput, ProjectPatch, ProjectRepository, ProjectState,
 };
 use protocol::{ErrorCode, Event};
 use rusqlite::{Connection, OptionalExtension, Params, params};
@@ -54,7 +54,10 @@ impl RoomPort for SqlRooms {
         let (name, created_at) =
             row.ok_or_else(|| RpcError::new(ErrorCode::NotFound, "No such room"))?;
         let bot_ids = if id == TEAM_ROOM_ID {
-            list_stored_bots(db)?.into_iter().map(|bot| bot.id).collect()
+            list_stored_bots(db)?
+                .into_iter()
+                .map(|bot| bot.id)
+                .collect()
         } else {
             let mut statement = db.prepare(
                 "SELECT b.id FROM bots b JOIN room_members m ON m.bot_id = b.id WHERE m.room_id = ?1 ORDER BY b.created_at, b.rowid",
@@ -98,7 +101,10 @@ impl RoomPort for SqlRooms {
             let unique: Vec<&String> = bot_ids.iter().filter(|bot| seen.insert(*bot)).collect();
             for bot in &unique {
                 if !exists(db, "SELECT 1 FROM bots WHERE id = ?1", [bot.as_str()])? {
-                    return Err(RpcError::new(ErrorCode::BadParams, "Room member: no such bot"));
+                    return Err(RpcError::new(
+                        ErrorCode::BadParams,
+                        "Room member: no such bot",
+                    ));
                 }
             }
             for bot in unique {
@@ -142,7 +148,8 @@ pub fn exists(db: &Connection, sql: &str, params: impl Params) -> Result<bool, R
 /// `storedJson` plus the schema parse: the stored `data` column as `T`, or `not_found`.
 pub fn stored<T: DeserializeOwned>(row: Option<String>) -> Result<T, RpcError> {
     let data = row.ok_or_else(|| RpcError::new(ErrorCode::NotFound, "No such project record."))?;
-    serde_json::from_str(&data).map_err(|error| RpcError::new(ErrorCode::Internal, error.to_string()))
+    serde_json::from_str(&data)
+        .map_err(|error| RpcError::new(ErrorCode::Internal, error.to_string()))
 }
 
 /// One `data` column, parsed (`SELECT data FROM ...`).
@@ -180,7 +187,8 @@ pub fn wire_text<T: Serialize>(value: &T) -> String {
 
 /// `JSON.stringify(record)`.
 pub fn to_json<T: Serialize>(value: &T) -> Result<String, RpcError> {
-    serde_json::to_string(value).map_err(|error| RpcError::new(ErrorCode::Internal, error.to_string()))
+    serde_json::to_string(value)
+        .map_err(|error| RpcError::new(ErrorCode::Internal, error.to_string()))
 }
 
 /// `text.slice(0, units)`: JavaScript counts UTF-16 code units.
@@ -234,8 +242,8 @@ impl Projects {
     }
 
     pub fn repositories(&self, db: &Connection) -> Result<Vec<ProjectRepository>, RpcError> {
-        let mut statement = db
-            .prepare("SELECT id, name, created_at FROM project_repositories ORDER BY rowid")?;
+        let mut statement =
+            db.prepare("SELECT id, name, created_at FROM project_repositories ORDER BY rowid")?;
         let rows = statement
             .query_map([], |row| {
                 Ok(ProjectRepository {
@@ -307,7 +315,10 @@ impl Projects {
     pub fn active(&self, db: &Connection, id: &str) -> Result<Project, RpcError> {
         let project = self.get(db, id)?;
         if project.state != ProjectState::Active {
-            return Err(RpcError::new(ErrorCode::BadState, "This project is archived."));
+            return Err(RpcError::new(
+                ErrorCode::BadState,
+                "This project is archived.",
+            ));
         }
         Ok(project)
     }
@@ -317,7 +328,9 @@ impl Projects {
         let repo = self.repository(db, &project.input.repository_id)?;
         Ok(ProjectHeads {
             base_sha: self.worktrees.resolve_ref(&repo, &project.input.base_ref)?,
-            target_sha: self.worktrees.resolve_ref(&repo, &project.input.target_ref)?,
+            target_sha: self
+                .worktrees
+                .resolve_ref(&repo, &project.input.target_ref)?,
         })
     }
 
@@ -349,7 +362,10 @@ impl Projects {
             "SELECT 1 FROM work_items WHERE bot_id = ?1 AND status IN ('queued', 'running') LIMIT 1",
             [bot_id],
         )? {
-            return Err(RpcError::new(ErrorCode::Busy, "This bot has queued or running work."));
+            return Err(RpcError::new(
+                ErrorCode::Busy,
+                "This bot has queued or running work.",
+            ));
         }
         if exists(
             db,
@@ -395,7 +411,10 @@ impl Projects {
         }
         let checks: HashSet<_> = project.input.checks.iter().map(|check| &check.id).collect();
         if checks.len() != project.input.checks.len() {
-            return Err(RpcError::new(ErrorCode::BadParams, "Project check IDs must be unique."));
+            return Err(RpcError::new(
+                ErrorCode::BadParams,
+                "Project check IDs must be unique.",
+            ));
         }
         Ok(())
     }
@@ -450,9 +469,9 @@ impl Projects {
                     .iter()
                     .map(|member| member.bot_id.clone())
                     .collect();
-                let room = self
-                    .rooms
-                    .create_room(db, &slice_units(&project.input.name, 60), &bot_ids)?;
+                let room =
+                    self.rooms
+                        .create_room(db, &slice_units(&project.input.name, 60), &bot_ids)?;
                 project.input.room_id = Some(room.id);
             }
         }
@@ -521,7 +540,8 @@ impl Projects {
         self.members(db, &project, Some(id))?;
         let repo = self.repository(db, &project.input.repository_id)?;
         self.worktrees.resolve_ref(&repo, &project.input.base_ref)?;
-        self.worktrees.resolve_ref(&repo, &project.input.target_ref)?;
+        self.worktrees
+            .resolve_ref(&repo, &project.input.target_ref)?;
         if let Some(room_id) = &project.input.room_id {
             self.rooms.get_room(db, room_id)?;
         }

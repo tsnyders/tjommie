@@ -8,11 +8,11 @@ use std::io;
 use std::sync::{Arc, Mutex};
 
 use daemon::cli::{BoxFuture, CliChild, CliCommand, CliExit, CliHost, LaunchOptions, Retirement};
-use futures_util::FutureExt;
 use daemon::project_checks::CheckError;
 use daemon::project_review_cli::{ReviewCliOptions, run_review_cli};
 use daemon::providers::ProviderEvent;
 use daemon::win::boundary::BoundaryError;
+use futures_util::FutureExt;
 use providers_fakes::{command, fake_child, temp_root};
 use regex::Regex;
 use tempfile::TempDir;
@@ -28,12 +28,7 @@ impl CliHost for ScriptedLaunch {
         _args: Vec<String>,
         _options: LaunchOptions,
     ) -> BoxFuture<'a, io::Result<CliChild>> {
-        let outcome = self
-            .0
-            .lock()
-            .unwrap()
-            .take()
-            .expect("one scripted launch");
+        let outcome = self.0.lock().unwrap().take().expect("one scripted launch");
         Box::pin(async move { outcome })
     }
 }
@@ -127,7 +122,8 @@ async fn waits_for_worker_job_proof_and_records_unknown_spending_without_final_u
     let (mut child, fake) = fake_child(4242);
     drop(fake.stdout);
     drop(fake.stderr);
-    fake.exit.fire(CliExit::Failed(BoundaryError::Termination.to_string()));
+    fake.exit
+        .fire(CliExit::Failed(BoundaryError::Termination.to_string()));
     child.retirement = Some(unconfirmed_retirement());
     let launch = scripted(Ok(child));
     match run_review_cli(options(launch, &cwd(&root), &record)).await {

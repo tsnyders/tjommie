@@ -258,11 +258,7 @@ pub fn review_snapshot(
     let repo_path = Path::new(&repo.path);
     // Every failure of the listing, git or decoding alike, reports the file-name error (project-review.ts:47-48).
     let listing = worktrees
-        .git(
-            repo_path,
-            &["ls-tree", "-r", "-z", source_sha],
-            None,
-        )
+        .git(repo_path, &["ls-tree", "-r", "-z", source_sha], None)
         .map_err(|_| UNSUPPORTED_FILE_NAME.to_string())?;
     let tree = std::str::from_utf8(&listing).map_err(|_| UNSUPPORTED_FILE_NAME.to_string())?;
 

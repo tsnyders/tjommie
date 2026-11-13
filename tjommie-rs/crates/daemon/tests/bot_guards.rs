@@ -109,7 +109,11 @@ async fn serve(h: &Fixture, protection: Arc<FolderProtection>) -> (Server, Conte
     (server, context)
 }
 
-async fn call(server: &Server, method: &str, params: Value) -> Result<Value, daemon::server::RpcError> {
+async fn call(
+    server: &Server,
+    method: &str,
+    params: Value,
+) -> Result<Value, daemon::server::RpcError> {
     server.dispatch(method, params, Some(local())).await
 }
 
@@ -121,7 +125,9 @@ async fn refuses_to_delete_a_bot_in_a_project_and_to_change_a_bot_with_a_running
     let developer = h.bots[0].id.clone();
 
     // `projects.botInUse`: every fixture bot is a member of the active project.
-    let error = call(&server, "bots.delete", json!({ "id": developer })).await.unwrap_err();
+    let error = call(&server, "bots.delete", json!({ "id": developer }))
+        .await
+        .unwrap_err();
     assert_eq!(error.code, ErrorCode::Busy);
     assert_eq!(
         error.message,
@@ -130,15 +136,23 @@ async fn refuses_to_delete_a_bot_in_a_project_and_to_change_a_bot_with_a_running
 
     // A member without a task can still be changed; one that holds a task lease cannot (`tasks.botBusy`).
     let idle = h.bots[1].id.clone();
-    let renamed = call(&server, "bots.update", json!({ "id": idle, "patch": { "name": "Developer B2" } }))
-        .await
-        .unwrap();
+    let renamed = call(
+        &server,
+        "bots.update",
+        json!({ "id": idle, "patch": { "name": "Developer B2" } }),
+    )
+    .await
+    .unwrap();
     assert_eq!(renamed["name"], "Developer B2");
     let task = h.new_task(0);
     h.tasks.start(&task.id, task.revision, "guard").unwrap();
-    let error = call(&server, "bots.update", json!({ "id": developer, "patch": { "name": "Busy" } }))
-        .await
-        .unwrap_err();
+    let error = call(
+        &server,
+        "bots.update",
+        json!({ "id": developer, "patch": { "name": "Busy" } }),
+    )
+    .await
+    .unwrap_err();
     assert_eq!(error.code, ErrorCode::Busy);
     assert_eq!(
         error.message,
@@ -157,7 +171,9 @@ async fn deletes_a_bot_that_is_in_no_project() {
         let db = h.db.lock().unwrap();
         common::new_bot(&db, &h.root.0.join("bots"), "Outsider", "claude").id
     };
-    call(&server, "bots.delete", json!({ "id": outsider })).await.unwrap();
+    call(&server, "bots.delete", json!({ "id": outsider }))
+        .await
+        .unwrap();
     assert!(
         bots::get_stored_bot(&h.db.lock().unwrap(), &outsider).is_err(),
         "the bot is gone"
@@ -167,7 +183,10 @@ async fn deletes_a_bot_that_is_in_no_project() {
 
 #[test]
 fn counts_a_bot_being_switched_or_deleted_as_unavailable_to_projects() {
-    let (switching, deleting) = (Arc::new(Mutex::new(HashSet::new())), Arc::new(Mutex::new(HashSet::new())));
+    let (switching, deleting) = (
+        Arc::new(Mutex::new(HashSet::new())),
+        Arc::new(Mutex::new(HashSet::new())),
+    );
     let available = bot_available(switching.clone(), deleting.clone());
     available("bot").unwrap();
     for set in [&switching, &deleting] {
@@ -201,13 +220,18 @@ async fn refreshes_the_folder_protection_after_a_bot_is_made() {
     // The pass saw the new bot's home among the bots it protects.
     {
         let homes = passes.homes.lock().unwrap();
-        assert!(homes[0].iter().any(|home| home.id == created["id"].as_str().unwrap()));
+        assert!(
+            homes[0]
+                .iter()
+                .any(|home| home.id == created["id"].as_str().unwrap())
+        );
     }
     server.close().await;
 }
 
 #[tokio::test]
-async fn protects_a_bot_as_its_new_provider_before_saving_the_change_and_refuses_when_the_check_fails() {
+async fn protects_a_bot_as_its_new_provider_before_saving_the_change_and_refuses_when_the_check_fails()
+ {
     let h = fixture(TasksOptions::default());
     {
         let db = h.db.lock().unwrap();
@@ -225,20 +249,35 @@ async fn protects_a_bot_as_its_new_provider_before_saving_the_change_and_refuses
 
     // The check fails: the bot stays on its old provider, and the pass runs again without the override.
     passes.set(Protection::CheckFailed);
-    let error = call(&server, "bots.update", switch.clone()).await.unwrap_err();
+    let error = call(&server, "bots.update", switch.clone())
+        .await
+        .unwrap_err();
     assert_eq!(error.code, ErrorCode::BadState);
     assert_eq!(
         error.message,
         "Could not update the bot folder protection. Try again after checking Codex's sandbox setup."
     );
-    assert_eq!(bots::get_stored_bot(&h.db.lock().unwrap(), &bot.id).unwrap().provider, Provider::Claude);
+    assert_eq!(
+        bots::get_stored_bot(&h.db.lock().unwrap(), &bot.id)
+            .unwrap()
+            .provider,
+        Provider::Claude
+    );
     assert_eq!(passes.calls(), 2);
     {
         let homes = passes.homes.lock().unwrap();
         let first = homes[0].iter().find(|home| home.id == bot.id).unwrap();
-        assert_eq!(first.provider, Provider::Codex, "the first pass saw the new provider");
+        assert_eq!(
+            first.provider,
+            Provider::Codex,
+            "the first pass saw the new provider"
+        );
         let second = homes[1].iter().find(|home| home.id == bot.id).unwrap();
-        assert_eq!(second.provider, Provider::Claude, "the retry saw what is saved");
+        assert_eq!(
+            second.provider,
+            Provider::Claude,
+            "the retry saw what is saved"
+        );
     }
 
     // The check passes: the change is saved after one pass.
@@ -248,9 +287,13 @@ async fn protects_a_bot_as_its_new_provider_before_saving_the_change_and_refuses
     assert_eq!(passes.calls(), 3);
 
     // A change that keeps the provider needs no pass.
-    call(&server, "bots.update", json!({ "id": bot.id, "patch": { "name": "Switcher 2" } }))
-        .await
-        .unwrap();
+    call(
+        &server,
+        "bots.update",
+        json!({ "id": bot.id, "patch": { "name": "Switcher 2" } }),
+    )
+    .await
+    .unwrap();
     assert_eq!(passes.calls(), 3);
     server.close().await;
 }

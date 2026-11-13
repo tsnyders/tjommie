@@ -12,7 +12,9 @@ use daemon::server::RpcError;
 use daemon::tasks::{Tasks, TasksOptions};
 use project_support::fixture;
 use protocol::ErrorCode;
-use protocol::projects::{AttemptState, ProjectInput, ProjectPatch, ProjectState, TaskInput, TaskState};
+use protocol::projects::{
+    AttemptState, ProjectInput, ProjectPatch, ProjectState, TaskInput, TaskState,
+};
 
 fn rename(name: &str) -> ProjectPatch {
     ProjectPatch {
@@ -29,19 +31,28 @@ async fn blocks_membership_and_task_leases_while_a_bot_lifecycle_change_holds_it
         let held = held.clone();
         Arc::new(move |_| {
             if held.load(Ordering::SeqCst) {
-                Err(RpcError::new(ErrorCode::Internal, "Bot lifecycle is changing"))
+                Err(RpcError::new(
+                    ErrorCode::Internal,
+                    "Bot lifecycle is changing",
+                ))
             } else {
                 Ok(())
             }
         })
     };
     let projects = Arc::new(
-        Projects::new(h.db.clone(), h.worktrees.clone(), Arc::new(SqlRooms)).with_assert_available(available),
+        Projects::new(h.db.clone(), h.worktrees.clone(), Arc::new(SqlRooms))
+            .with_assert_available(available),
     );
     let tasks = Tasks::new(projects.clone(), h.runner.clone(), TasksOptions::default());
     let task = h.new_task(0);
     let error = projects
-        .update(&projects.lock(), &h.project.id, h.project.revision, rename("Changed"))
+        .update(
+            &projects.lock(),
+            &h.project.id,
+            h.project.revision,
+            rename("Changed"),
+        )
         .unwrap_err();
     assert!(error.message.contains("lifecycle"), "{}", error.message);
     let error = tasks.start(&task.id, task.revision, "held").unwrap_err();
@@ -49,7 +60,12 @@ async fn blocks_membership_and_task_leases_while_a_bot_lifecycle_change_holds_it
     assert!(h.runner.delivered().is_empty());
     held.store(false, Ordering::SeqCst);
     let changed = projects
-        .update(&projects.lock(), &h.project.id, h.project.revision, rename("Changed"))
+        .update(
+            &projects.lock(),
+            &h.project.id,
+            h.project.revision,
+            rename("Changed"),
+        )
         .unwrap();
     assert_eq!(changed.input.name, "Changed");
 }
@@ -59,11 +75,17 @@ async fn registers_canonical_host_repositories_once_creates_a_normal_room_and_st
     let h = fixture(TasksOptions::default());
     {
         let db = h.db.lock().unwrap();
-        let again = h.projects.register(&db, h.repo_path.to_str().unwrap()).unwrap();
+        let again = h
+            .projects
+            .register(&db, h.repo_path.to_str().unwrap())
+            .unwrap();
         assert_eq!(again.id, h.repository.id);
         assert_eq!(h.projects.repositories(&db).unwrap().len(), 1);
         let inside = h.repo_path.join("src");
-        let error = h.projects.register(&db, inside.to_str().unwrap()).unwrap_err();
+        let error = h
+            .projects
+            .register(&db, inside.to_str().unwrap())
+            .unwrap_err();
         assert!(error.message.contains("root folder"), "{}", error.message);
     }
     assert!(h.project.input.room_id.is_some());
@@ -73,7 +95,8 @@ async fn registers_canonical_host_repositories_once_creates_a_normal_room_and_st
 }
 
 #[tokio::test]
-async fn rejects_duplicate_membership_assignment_outside_a_role_stale_edits_and_busy_project_changes() {
+async fn rejects_duplicate_membership_assignment_outside_a_role_stale_edits_and_busy_project_changes()
+ {
     let h = fixture(TasksOptions::default());
     let task = h.new_task(0);
     {
@@ -88,7 +111,11 @@ async fn rejects_duplicate_membership_assignment_outside_a_role_stale_edits_and_
             checks: h.project.input.checks.clone(),
         };
         let error = h.projects.create(&db, other).unwrap_err();
-        assert!(error.message.contains("another active project"), "{}", error.message);
+        assert!(
+            error.message.contains("another active project"),
+            "{}",
+            error.message
+        );
         let wrong = TaskInput {
             project_id: task.input.project_id.clone(),
             title: "Wrong role".into(),
@@ -100,12 +127,18 @@ async fn rejects_duplicate_membership_assignment_outside_a_role_stale_edits_and_
         };
         let error = h.tasks.create(&db, wrong).unwrap_err();
         assert!(error.message.contains("developer"), "{}", error.message);
-        let error = h.projects.update(&db, &h.project.id, 9, rename("Changed")).unwrap_err();
+        let error = h
+            .projects
+            .update(&db, &h.project.id, 9, rename("Changed"))
+            .unwrap_err();
         assert!(error.message.contains("changed"), "{}", error.message);
     }
     h.tasks.start(&task.id, task.revision, "start").unwrap();
     let db = h.db.lock().unwrap();
-    let error = h.projects.update(&db, &h.project.id, 1, rename("Busy")).unwrap_err();
+    let error = h
+        .projects
+        .update(&db, &h.project.id, 1, rename("Busy"))
+        .unwrap_err();
     assert!(error.message.contains("Stop project"), "{}", error.message);
     let error = h.projects.archive(&db, &h.project.id, 1).unwrap_err();
     assert!(error.message.contains("Stop project"), "{}", error.message);
@@ -117,11 +150,17 @@ async fn archives_a_team_without_deleting_its_repository_tasks_room_or_worktree_
     let task = h.new_task(0);
     {
         let db = h.db.lock().unwrap();
-        let archived = h.projects.archive(&db, &h.project.id, h.project.revision).unwrap();
+        let archived = h
+            .projects
+            .archive(&db, &h.project.id, h.project.revision)
+            .unwrap();
         assert_eq!(archived.state, ProjectState::Archived);
         assert_eq!(h.tasks.task(&db, &task.id).unwrap(), task);
         let repository = h.projects.repository(&db, &h.repository.id).unwrap();
-        assert_eq!(repository.path, real_path(&h.repo_path).unwrap().to_string_lossy());
+        assert_eq!(
+            repository.path,
+            real_path(&h.repo_path).unwrap().to_string_lossy()
+        );
         let room: String = db
             .query_row(
                 "SELECT id FROM conversations WHERE id = ?1",
@@ -131,7 +170,10 @@ async fn archives_a_team_without_deleting_its_repository_tasks_room_or_worktree_
             .unwrap();
         assert_eq!(Some(room), h.project.input.room_id);
     }
-    let error = h.tasks.start(&task.id, task.revision, "after-archive").unwrap_err();
+    let error = h
+        .tasks
+        .start(&task.id, task.revision, "after-archive")
+        .unwrap_err();
     assert!(error.message.contains("archived"), "{}", error.message);
 }
 
@@ -141,10 +183,17 @@ async fn retains_persistent_tasks_after_a_new_service_instance_without_rerunning
     let task = h.new_task(0);
     let attempt = h.tasks.start(&task.id, task.revision, "start").unwrap();
     let complete = h.complete(&attempt, "src/a.txt", "A1\n").await;
-    let next = Tasks::new(h.projects.clone(), h.runner.clone(), TasksOptions::default());
+    let next = Tasks::new(
+        h.projects.clone(),
+        h.runner.clone(),
+        TasksOptions::default(),
+    );
     let db = h.db.lock().unwrap();
     next.recover(&db).unwrap();
-    assert_eq!(next.attempt(&db, &complete.id).unwrap().state, AttemptState::Completed);
+    assert_eq!(
+        next.attempt(&db, &complete.id).unwrap().state,
+        AttemptState::Completed
+    );
     assert_eq!(h.runner.delivered().len(), 1);
     assert_eq!(next.task(&db, &task.id).unwrap().state, TaskState::Review);
 }
@@ -199,10 +248,15 @@ async fn does_not_let_a_removed_members_new_project_lease_block_its_former_proje
             .unwrap();
         (previous, next, task)
     };
-    h.tasks.start(&task.id, task.revision, "start-moved-member").unwrap();
+    h.tasks
+        .start(&task.id, task.revision, "start-moved-member")
+        .unwrap();
     let db = h.db.lock().unwrap();
     assert!(h.projects.busy(&db, &next.id).unwrap());
     assert!(!h.projects.busy(&db, &previous.id).unwrap());
-    let archived = h.projects.archive(&db, &previous.id, previous.revision).unwrap();
+    let archived = h
+        .projects
+        .archive(&db, &previous.id, previous.revision)
+        .unwrap();
     assert_eq!(archived.state, ProjectState::Archived);
 }

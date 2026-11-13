@@ -15,7 +15,9 @@ use daemon::cli::{BoxFuture, Env};
 use daemon::context::Db;
 use daemon::project_review::{ReviewContext, ReviewInstructions};
 use daemon::project_review_account::review_account_resolver;
-use daemon::project_review_runtime::{ReviewAccount, ReviewAccountResolver, ReviewAccountSelection};
+use daemon::project_review_runtime::{
+    ReviewAccount, ReviewAccountResolver, ReviewAccountSelection,
+};
 use daemon::providers::{ProviderEvent, TokenUsage, Usage};
 use daemon::server::{Handlers, RpcError, Server, ServerOptions};
 use daemon::setup::Account;
@@ -69,10 +71,19 @@ impl AccountOps for Healthy {
         _account: &Account,
         _on_done: Arc<dyn Fn(bool, String) + Send + Sync>,
     ) -> BoxFuture<'_, Result<SignInStart, RpcError>> {
-        Box::pin(async { Err(RpcError::new(ErrorCode::BadState, "no sign-in in this fixture")) })
+        Box::pin(async {
+            Err(RpcError::new(
+                ErrorCode::BadState,
+                "no sign-in in this fixture",
+            ))
+        })
     }
 
-    fn cancel_sign_in(&self, _account: &Account, _attempt: &str) -> BoxFuture<'_, Result<(), RpcError>> {
+    fn cancel_sign_in(
+        &self,
+        _account: &Account,
+        _attempt: &str,
+    ) -> BoxFuture<'_, Result<(), RpcError>> {
         Box::pin(async { Ok(()) })
     }
 
@@ -112,7 +123,10 @@ impl CredentialStore for Keys {
     }
 
     fn write(&self, account_id: &str, key: &str) -> BoxFuture<'_, Result<(), RpcError>> {
-        self.keys.lock().unwrap().insert(account_id.into(), key.into());
+        self.keys
+            .lock()
+            .unwrap()
+            .insert(account_id.into(), key.into());
         Box::pin(async { Ok(()) })
     }
 
@@ -150,7 +164,10 @@ async fn fixture(api: bool) -> Fixture {
                 provider: Provider::Claude,
                 label: "Review fixture".into(),
                 kind: AccountKind::ApiKey,
-                folder: accounts_dir.join("review-api").to_string_lossy().into_owned(),
+                folder: accounts_dir
+                    .join("review-api")
+                    .to_string_lossy()
+                    .into_owned(),
                 credential_ref: None,
                 is_default: false,
                 is_fallback: false,
@@ -173,7 +190,10 @@ async fn fixture(api: bool) -> Fixture {
         now: Arc::new(now_ms),
     });
     if api {
-        accounts.set_api_key("review-api", "synthetic-fixture").await.unwrap();
+        accounts
+            .set_api_key("review-api", "synthetic-fixture")
+            .await
+            .unwrap();
     }
     accounts.check_all().await.unwrap();
     keys.reads.store(0, Ordering::SeqCst);
@@ -299,12 +319,11 @@ async fn charges_review_events_once_refreshes_the_remaining_cap_and_releases_the
     account.on_event(event).unwrap();
     let remaining = account.max_budget_usd().unwrap().unwrap();
     assert!((remaining - 0.8).abs() < 1e-9, "{remaining}");
-    let rows: i64 = h
-        .db
-        .lock()
-        .unwrap()
-        .query_row("SELECT COUNT(*) FROM usage", [], |row| row.get(0))
-        .unwrap();
+    let rows: i64 =
+        h.db.lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM usage", [], |row| row.get(0))
+            .unwrap();
     assert_eq!(rows, 1);
     assert_eq!(h.usage_changed.load(Ordering::SeqCst), 1);
     account.release();

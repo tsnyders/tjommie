@@ -272,7 +272,12 @@ impl Tasks {
     pub fn save_task(&self, db: &Connection, task: &ProjectTask) -> Result<(), RpcError> {
         db.execute(
             "UPDATE project_tasks SET state = ?1, revision = ?2, data = ?3 WHERE id = ?4",
-            params![wire_text(&task.state), task.revision as i64, to_json(task)?, task.id],
+            params![
+                wire_text(&task.state),
+                task.revision as i64,
+                to_json(task)?,
+                task.id
+            ],
         )?;
         self.emit(Event::TaskUpdated(task.clone()));
         Ok(())
@@ -438,14 +443,22 @@ impl Tasks {
         Ok(work)
     }
 
-    pub fn repository(&self, db: &Connection, attempt: &TaskAttempt) -> Result<Repository, RpcError> {
+    pub fn repository(
+        &self,
+        db: &Connection,
+        attempt: &TaskAttempt,
+    ) -> Result<Repository, RpcError> {
         let task = self.task(db, &attempt.task_id)?;
         let project = self.projects.get(db, &task.input.project_id)?;
         self.projects.repository(db, &project.input.repository_id)
     }
 
     pub fn bot_busy(&self, db: &Connection, bot_id: &str) -> Result<bool, RpcError> {
-        exists(db, "SELECT 1 FROM project_bot_leases WHERE bot_id = ?1", [bot_id])
+        exists(
+            db,
+            "SELECT 1 FROM project_bot_leases WHERE bot_id = ?1",
+            [bot_id],
+        )
     }
 
     pub fn lease(
@@ -485,13 +498,12 @@ impl Tasks {
         operation: &str,
         task_id: &str,
     ) -> Result<Option<String>, RpcError> {
-        let row: Option<(String, String, String)> = rusqlite::OptionalExtension::optional(
-            db.query_row(
+        let row: Option<(String, String, String)> =
+            rusqlite::OptionalExtension::optional(db.query_row(
                 "SELECT operation, task_id, result_id FROM task_requests WHERE id = ?1",
                 [id],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            ),
-        )?;
+            ))?;
         match row {
             None => Ok(None),
             Some((used, task, result)) if used == operation && task == task_id => Ok(Some(result)),
@@ -503,7 +515,11 @@ impl Tasks {
     }
 
     /// `#context`: the instructions and identity of a developer attempt's next turn.
-    fn context(&self, db: &Connection, attempt: &TaskAttempt) -> Result<TaskExecutionContext, RpcError> {
+    fn context(
+        &self,
+        db: &Connection,
+        attempt: &TaskAttempt,
+    ) -> Result<TaskExecutionContext, RpcError> {
         let task = self.task(db, &attempt.task_id)?;
         let project = self.projects.active(db, &task.input.project_id)?;
         let member = project
@@ -526,12 +542,23 @@ impl Tasks {
                     "{} {}:{}: {}",
                     wire_text(&finding.severity),
                     finding.path,
-                    finding.line.map(|line| line.to_string()).unwrap_or_default(),
+                    finding
+                        .line
+                        .map(|line| line.to_string())
+                        .unwrap_or_default(),
                     finding.message
                 ));
             }
-            for check in evaluation.checks.iter().filter(|check| check.exit_code != Some(0)) {
-                lines.push(format!("{}: {}", check.command, slice_units(&check.output, 4000)));
+            for check in evaluation
+                .checks
+                .iter()
+                .filter(|check| check.exit_code != Some(0))
+            {
+                lines.push(format!(
+                    "{}: {}",
+                    check.command,
+                    slice_units(&check.output, 4000)
+                ));
             }
         }
         let feedback = slice_units(
@@ -543,10 +570,18 @@ impl Tasks {
             12_000,
         );
         let mut parts = vec![
-            format!("Project: {}. Task: {}.", project.input.name, task.input.title),
+            format!(
+                "Project: {}. Task: {}.",
+                project.input.name, task.input.title
+            ),
             task.input.instructions.clone(),
         ];
-        parts.extend(task.input.acceptance.iter().map(|item| format!("Acceptance: {item}")));
+        parts.extend(
+            task.input
+                .acceptance
+                .iter()
+                .map(|item| format!("Acceptance: {item}")),
+        );
         parts.push(member.instructions.clone());
         if !feedback.is_empty() {
             parts.push(format!("Previous independent feedback:\n{feedback}"));
@@ -584,18 +619,20 @@ impl Tasks {
         item: &WorkItem,
     ) -> Result<bool, RpcError> {
         let task = self.task(db, &attempt.task_id)?;
-        Ok(task.current_attempt_id.as_deref() == Some(attempt.id.as_str())
-            && self.projects.get(db, &task.input.project_id)?.state
-                == protocol::projects::ProjectState::Active
-            && matches!(attempt.state, AttemptState::Queued | AttemptState::Running)
-            && attempt.bot_id == item.bot_id
-            && Some(attempt.revision as i64) == item.task_revision
-            && item.execution_context_key.as_deref() == Some(attempt.context_key.as_str())
-            && exists(
-                db,
-                "SELECT 1 FROM project_bot_leases WHERE bot_id = ?1 AND owner_id = ?2 AND kind = 'develop'",
-                params![item.bot_id, attempt.id],
-            )?)
+        Ok(
+            task.current_attempt_id.as_deref() == Some(attempt.id.as_str())
+                && self.projects.get(db, &task.input.project_id)?.state
+                    == protocol::projects::ProjectState::Active
+                && matches!(attempt.state, AttemptState::Queued | AttemptState::Running)
+                && attempt.bot_id == item.bot_id
+                && Some(attempt.revision as i64) == item.task_revision
+                && item.execution_context_key.as_deref() == Some(attempt.context_key.as_str())
+                && exists(
+                    db,
+                    "SELECT 1 FROM project_bot_leases WHERE bot_id = ?1 AND owner_id = ?2 AND kind = 'develop'",
+                    params![item.bot_id, attempt.id],
+                )?,
+        )
     }
 
     /// `#pendingReplies`: the developer is waiting on another bot's reply for this attempt.
@@ -663,7 +700,9 @@ impl Tasks {
             return Err(bad_state("This task attempt is no longer active."));
         }
         let repo = self.repository(db, &attempt)?;
-        self.projects.worktrees.assert_owned(&repo, &self.work(&attempt)?)?;
+        self.projects
+            .worktrees
+            .assert_owned(&repo, &self.work(&attempt)?)?;
         let context = self.context(db, &attempt)?;
         if Some(&context.key) != item.execution_context_key.as_ref()
             || context.key != attempt.context_key
@@ -674,7 +713,11 @@ impl Tasks {
     }
 
     /// The database half of `#queue`: the work item and the `queued` attempt, in one transaction.
-    fn enqueue_attempt(&self, db: &Connection, attempt: &TaskAttempt) -> Result<WorkItem, RpcError> {
+    fn enqueue_attempt(
+        &self,
+        db: &Connection,
+        attempt: &TaskAttempt,
+    ) -> Result<WorkItem, RpcError> {
         let context = self.context(db, attempt)?;
         let task = self.task(db, &attempt.task_id)?;
         let project = self.projects.active(db, &task.input.project_id)?;
@@ -721,7 +764,12 @@ impl Tasks {
 
     // -- lifecycle ---------------------------------------------------------------------------------------------------
 
-    pub fn start(&self, id: &str, revision: u64, request_id: &str) -> Result<TaskAttempt, RpcError> {
+    pub fn start(
+        &self,
+        id: &str,
+        revision: u64,
+        request_id: &str,
+    ) -> Result<TaskAttempt, RpcError> {
         if self.closing() {
             return Err(bad_state("The task service is closing."));
         }
@@ -741,13 +789,18 @@ impl Tasks {
                     "This task already has an active attempt.",
                 ));
             }
-            let repo = self.projects.repository(&db, &project.input.repository_id)?;
+            let repo = self
+                .projects
+                .repository(&db, &project.input.repository_id)?;
             let base_sha = self
                 .projects
                 .worktrees
                 .resolve_ref(&repo, &project.input.base_ref)?;
             let attempt_id = new_id();
-            let work = self.projects.worktrees.describe(&attempt_id, &base_sha, None)?;
+            let work = self
+                .projects
+                .worktrees
+                .describe(&attempt_id, &base_sha, None)?;
             let timestamp = now_iso();
             let ordinal: i64 = db.query_row(
                 "SELECT COALESCE(MAX(ordinal), 0) + 1 FROM task_attempts WHERE task_id = ?1",
@@ -825,7 +878,12 @@ impl Tasks {
         }
     }
 
-    pub fn resume(&self, id: &str, revision: u64, request_id: &str) -> Result<TaskAttempt, RpcError> {
+    pub fn resume(
+        &self,
+        id: &str,
+        revision: u64,
+        request_id: &str,
+    ) -> Result<TaskAttempt, RpcError> {
         if self.closing() {
             return Err(bad_state("The task service is closing."));
         }
@@ -841,10 +899,15 @@ impl Tasks {
             };
             let old = self.attempt(&db, &current)?;
             if active_attempt(&old) {
-                return Err(RpcError::new(ErrorCode::Busy, "This attempt is still active."));
+                return Err(RpcError::new(
+                    ErrorCode::Busy,
+                    "This attempt is still active.",
+                ));
             }
             let repo = self.repository(&db, &old)?;
-            self.projects.worktrees.assert_owned(&repo, &self.work(&old)?)?;
+            self.projects
+                .worktrees
+                .assert_owned(&repo, &self.work(&old)?)?;
             let next = TaskAttempt {
                 state: AttemptState::Queued,
                 revision: old.revision + 1,
@@ -962,7 +1025,11 @@ impl Tasks {
     }
 
     /// The `settle` closure of `turnEnded`.
-    async fn settle(self: &Arc<Self>, item: &WorkItem, outcome: TurnOutcome) -> Result<(), RpcError> {
+    async fn settle(
+        self: &Arc<Self>,
+        item: &WorkItem,
+        outcome: TurnOutcome,
+    ) -> Result<(), RpcError> {
         let attempt_id = item
             .task_attempt_id
             .clone()
@@ -991,7 +1058,11 @@ impl Tasks {
                     } else {
                         "The developer turn failed. Inspect the retained work."
                     },
-                    if interrupted { AttemptState::Interrupted } else { AttemptState::Failed },
+                    if interrupted {
+                        AttemptState::Interrupted
+                    } else {
+                        AttemptState::Failed
+                    },
                 )?;
                 return Ok(None);
             }
@@ -1155,7 +1226,11 @@ impl Tasks {
             let task = self.expected(&db, id, revision)?;
             let Some(current) = task.current_attempt_id.clone() else {
                 let next = ProjectTask {
-                    state: if cancel { TaskState::Cancelled } else { TaskState::Blocked },
+                    state: if cancel {
+                        TaskState::Cancelled
+                    } else {
+                        TaskState::Blocked
+                    },
                     revision: task.revision + 1,
                     updated_at: now_iso(),
                     ..task
@@ -1183,7 +1258,10 @@ impl Tasks {
                         .stop_item(&item.id, "Task stopped; its worktree is retained.")
                         .await
                         .map_err(internal)?;
-                    self.runner.retired(&attempt.bot_id).await.map_err(internal)?;
+                    self.runner
+                        .retired(&attempt.bot_id)
+                        .await
+                        .map_err(internal)?;
                 }
                 _ => {}
             }
@@ -1193,10 +1271,18 @@ impl Tasks {
         self.save_attempt(
             &db,
             &TaskAttempt {
-                state: if cancel { AttemptState::Cancelled } else { AttemptState::Interrupted },
+                state: if cancel {
+                    AttemptState::Cancelled
+                } else {
+                    AttemptState::Interrupted
+                },
                 reason: Some(
-                    if cancel { "Cancelled; work retained." } else { "Stopped; resume explicitly." }
-                        .into(),
+                    if cancel {
+                        "Cancelled; work retained."
+                    } else {
+                        "Stopped; resume explicitly."
+                    }
+                    .into(),
                 ),
                 updated_at: now_iso(),
                 ..current_attempt
@@ -1205,7 +1291,11 @@ impl Tasks {
         self.release(&db, &attempt.bot_id, &attempt.id)?;
         let current = self.task(&db, &task.id)?;
         let next = ProjectTask {
-            state: if cancel { TaskState::Cancelled } else { TaskState::Blocked },
+            state: if cancel {
+                TaskState::Cancelled
+            } else {
+                TaskState::Blocked
+            },
             revision: current.revision + 1,
             updated_at: now_iso(),
             ..current
@@ -1239,7 +1329,10 @@ impl Tasks {
     pub fn refresh(&self, db: &Connection, id: &str) -> Result<TaskAttempt, RpcError> {
         let attempt = self.attempt(db, id)?;
         if active_attempt(&attempt)
-            || matches!(attempt.state, AttemptState::Cancelled | AttemptState::Cleaned)
+            || matches!(
+                attempt.state,
+                AttemptState::Cancelled | AttemptState::Cleaned
+            )
         {
             return Ok(attempt);
         }
@@ -1249,7 +1342,10 @@ impl Tasks {
             let repo = self.repository(db, &attempt)?;
             let work = self.work(&attempt)?;
             let head = self.projects.worktrees.head(&repo, &work)?;
-            let dirty = self.projects.worktrees.dirty(&repo, &work, Some(&head), false)?;
+            let dirty = self
+                .projects
+                .worktrees
+                .dirty(&repo, &work, Some(&head), false)?;
             if Some(&head) != attempt.head_sha.as_ref()
                 || dirty && attempt.reason.as_deref() != Some(CHANGED)
             {
@@ -1289,7 +1385,9 @@ impl Tasks {
             || attempt.head_sha.as_deref() != Some(sha)
             || attempt.state != AttemptState::Completed
         {
-            return Err(bad_state("The exact task commit is changed, dirty or still running."));
+            return Err(bad_state(
+                "The exact task commit is changed, dirty or still running.",
+            ));
         }
         Ok(attempt)
     }
@@ -1299,7 +1397,10 @@ impl Tasks {
         let repo = self.repository(db, &attempt)?;
         let work = self.work(&attempt)?;
         let sha = self.projects.worktrees.head(&repo, &work)?;
-        let diff = self.projects.worktrees.diff(&repo, &attempt.base_sha, &sha)?;
+        let diff = self
+            .projects
+            .worktrees
+            .diff(&repo, &attempt.base_sha, &sha)?;
         Ok(TaskDiff {
             attempt_id: id.to_owned(),
             revision: attempt.revision,
@@ -1307,11 +1408,18 @@ impl Tasks {
             base_sha: attempt.base_sha.clone(),
             text: diff.text,
             truncated: diff.truncated,
-            dirty: self.projects.worktrees.dirty(&repo, &work, Some(&sha), false)?,
+            dirty: self
+                .projects
+                .worktrees
+                .dirty(&repo, &work, Some(&sha), false)?,
         })
     }
 
-    pub fn cleanup_preview(&self, db: &Connection, id: &str) -> Result<TaskCleanupPreview, RpcError> {
+    pub fn cleanup_preview(
+        &self,
+        db: &Connection,
+        id: &str,
+    ) -> Result<TaskCleanupPreview, RpcError> {
         let attempt = self.attempt(db, id)?;
         let blocked = active_attempt(&attempt)
             || self.bot_busy(db, &attempt.bot_id)?
@@ -1376,7 +1484,9 @@ impl Tasks {
         let preview = self.cleanup_preview(db, id)?;
         let attempt = self.attempt(db, id)?;
         if !preview.can_remove || preview.head_sha.as_deref() != Some(expected_head_sha) {
-            return Err(bad_state("The cleanup preview is stale or contains retained work."));
+            return Err(bad_state(
+                "The cleanup preview is stale or contains retained work.",
+            ));
         }
         self.projects.worktrees.remove(
             &self.repository(db, &attempt)?,
@@ -1385,7 +1495,9 @@ impl Tasks {
         )?;
         let cleaned = TaskAttempt {
             state: AttemptState::Cleaned,
-            reason: Some("Worktree removed explicitly. The branch and history are retained.".into()),
+            reason: Some(
+                "Worktree removed explicitly. The branch and history are retained.".into(),
+            ),
             updated_at: now_iso(),
             ..attempt
         };
@@ -1503,7 +1615,10 @@ impl Tasks {
     /// `confirmedExited`: the host proved the process is gone, so the lease goes. Call with the lock released.
     pub fn confirmed_exited(&self, bot_id: &str, owner_id: &str) -> Result<(), RpcError> {
         if self.runner.current_work(bot_id).is_some() {
-            return Err(RpcError::new(ErrorCode::Busy, "This bot still has a live turn."));
+            return Err(RpcError::new(
+                ErrorCode::Busy,
+                "This bot still has a live turn.",
+            ));
         }
         self.release(&self.lock(), bot_id, owner_id)
     }
@@ -1586,7 +1701,9 @@ impl Tasks {
             {
                 let next_state = match evaluation.state {
                     EvaluationState::Findings | EvaluationState::Failed => Some(TaskState::Blocked),
-                    EvaluationState::Passed if this.accepted(&db, &run.attempt)? => Some(TaskState::Done),
+                    EvaluationState::Passed if this.accepted(&db, &run.attempt)? => {
+                        Some(TaskState::Done)
+                    }
                     _ => None,
                 };
                 if let Some(state) = next_state {
@@ -1641,13 +1758,18 @@ impl Tasks {
             created_at: timestamp.clone(),
             updated_at: timestamp,
         };
-        let unavailable = |reason: &str, evaluation: &mut TaskEvaluation| -> Result<Begin, RpcError> {
-            evaluation.state = EvaluationState::Unavailable;
-            evaluation.reason = Some(reason.to_owned());
-            self.save_evaluation(&db, evaluation)?;
-            Ok(Begin::Done(Box::new(evaluation.clone())))
+        let unavailable =
+            |reason: &str, evaluation: &mut TaskEvaluation| -> Result<Begin, RpcError> {
+                evaluation.state = EvaluationState::Unavailable;
+                evaluation.reason = Some(reason.to_owned());
+                self.save_evaluation(&db, evaluation)?;
+                Ok(Begin::Done(Box::new(evaluation.clone())))
+            };
+        let role = if kind == EvaluationKind::Review {
+            "reviewer"
+        } else {
+            "tester"
         };
-        let role = if kind == EvaluationKind::Review { "reviewer" } else { "tester" };
         let Some(bot_id) = bot_id else {
             return unavailable(&format!("Assign a {role} first."), &mut evaluation);
         };
@@ -1655,7 +1777,10 @@ impl Tasks {
             return unavailable("review_isolation_unavailable", &mut evaluation);
         }
         if kind == EvaluationKind::Test && project.input.checks.is_empty() {
-            return unavailable("Configure and accept project checks first.", &mut evaluation);
+            return unavailable(
+                "Configure and accept project checks first.",
+                &mut evaluation,
+            );
         }
         let bot = get_stored_bot(&db, &bot_id)?;
         let checks = self.options.checks.clone().or_else(|| {
@@ -1675,9 +1800,19 @@ impl Tasks {
             self.lease(&db, &bot_id, &evaluation.id, &wire_text(&kind))?;
             self.save_evaluation(&db, &evaluation)
         })?;
-        self.state().operations.insert(key.clone(), controller.clone());
+        self.state()
+            .operations
+            .insert(key.clone(), controller.clone());
         Ok(Begin::Run(Box::new((
-            EvaluationRun { attempt, task, project, bot, checks, controller, key },
+            EvaluationRun {
+                attempt,
+                task,
+                project,
+                bot,
+                checks,
+                controller,
+                key,
+            },
             evaluation,
         ))))
     }
@@ -1736,12 +1871,17 @@ impl Tasks {
                 .review
                 .clone()
                 .ok_or_else(|| CheckError::Failed("review_isolation_unavailable".into()))?;
-            let result = reviewer.review(&snapshot, &run.controller, &context).await?;
+            let result = reviewer
+                .review(&snapshot, &run.controller, &context)
+                .await?;
             evaluation.state = result.state;
             evaluation.reason = result.reason;
             evaluation.findings = result.findings;
             evaluation.review_coverage = Some(result.coverage);
-            if matches!(evaluation.state, EvaluationState::Passed | EvaluationState::Findings) {
+            if matches!(
+                evaluation.state,
+                EvaluationState::Passed | EvaluationState::Findings
+            ) {
                 let expected = review_coverage(&snapshot).map_err(CheckError::Failed)?;
                 if evaluation.review_coverage.clone().flatten() != Some(expected) {
                     return Err(CheckError::Failed("review_coverage_incomplete".into()));
@@ -1760,10 +1900,16 @@ impl Tasks {
                 return Err(CheckError::Failed("Invalid review result.".into()));
             }
             let this = self.clone();
-            let (task_id, project_id, bot_id) =
-                (run.task.id.clone(), run.project.id.clone(), run.bot.id.clone());
-            let (task_revision, project_revision, instructions) =
-                (run.task.revision, run.project.revision, run.bot.instructions.clone());
+            let (task_id, project_id, bot_id) = (
+                run.task.id.clone(),
+                run.project.id.clone(),
+                run.bot.id.clone(),
+            );
+            let (task_revision, project_revision, instructions) = (
+                run.task.revision,
+                run.project.revision,
+                run.bot.instructions.clone(),
+            );
             let changed = blocking(move || -> Result<bool, RpcError> {
                 let db = this.lock();
                 Ok(this.task(&db, &task_id)?.revision != task_revision
@@ -1800,8 +1946,15 @@ impl Tasks {
                 }
             }
             let passed = evaluation.checks.len() == run.project.input.checks.len()
-                && evaluation.checks.iter().all(|result| result.exit_code == Some(0));
-            evaluation.state = if passed { EvaluationState::Passed } else { EvaluationState::Failed };
+                && evaluation
+                    .checks
+                    .iter()
+                    .all(|result| result.exit_code == Some(0));
+            evaluation.state = if passed {
+                EvaluationState::Passed
+            } else {
+                EvaluationState::Failed
+            };
             let (repo_d, work_d, sha_d) = (repo.clone(), work.clone(), sha.clone());
             let dirty = blocking(move || worktrees.dirty(&repo_d, &work_d, Some(&sha_d), true))
                 .await
@@ -1810,7 +1963,8 @@ impl Tasks {
             if dirty {
                 evaluation.state = EvaluationState::Failed;
                 evaluation.reason = Some(
-                    "Checks changed the isolated source. Preserve and inspect the check worktree.".into(),
+                    "Checks changed the isolated source. Preserve and inspect the check worktree."
+                        .into(),
                 );
             }
         }

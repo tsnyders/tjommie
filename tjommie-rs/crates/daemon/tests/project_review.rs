@@ -13,9 +13,9 @@ use daemon::project_review::{
 use daemon::project_review_policy::{
     ReviewEffectivePolicy, review_cli_args, review_effective_policy, review_environment,
 };
+use daemon::project_review_runtime::validate_review_reply;
 use daemon::spawn;
 use daemon::worktrees::{Repository, Worktrees};
-use daemon::project_review_runtime::validate_review_reply;
 use protocol::projects::EvaluationState;
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -121,7 +121,11 @@ fn project_fixture() -> Fixture {
     let env = git_environment(&empty_config);
 
     git(&repo_path, &env, &["init", "-b", "main"]);
-    git(&repo_path, &env, &["config", "user.name", "Synthetic fixture"]);
+    git(
+        &repo_path,
+        &env,
+        &["config", "user.name", "Synthetic fixture"],
+    );
     git(
         &repo_path,
         &env,
@@ -144,9 +148,7 @@ fn project_fixture() -> Fixture {
     let managed = root.path().join("managed");
     fs::create_dir(&managed).unwrap();
     let worktrees = Worktrees::new(&managed).unwrap();
-    let info = worktrees
-        .repository(&repo_path.to_string_lossy())
-        .unwrap();
+    let info = worktrees.repository(&repo_path.to_string_lossy()).unwrap();
     let repository = Repository {
         id: new_id(),
         path: info.path,
@@ -241,7 +243,7 @@ fn freezes_the_trusted_criteria_and_binds_every_instruction_and_record_revision(
 
 #[test]
 fn reviews_exact_git_objects_without_reading_changed_worktree_files_and_fails_closed_on_binary_coverage()
-{
+ {
     let h = project_fixture();
     let frozen = review_snapshot(&h.worktrees, &h.repository, &h.base, &h.base).unwrap();
     let before = review_coverage(&frozen).unwrap();
@@ -332,8 +334,7 @@ fn json_escapes_exactly_as_javascript_json_stringify_does() {
     assert_eq!(frozen_review_input(&snapshot).unwrap().0, expected);
 }
 
-const INSTRUCTIONS_SHA: &str =
-    "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+const INSTRUCTIONS_SHA: &str = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
 
 fn reply(snapshot: &ReviewSnapshot) -> Value {
     json!({
@@ -407,8 +408,7 @@ fn requires_the_nullable_reason_and_line_keys_to_be_present() {
     let text = with_patch(reply(&snapshot), json!({ "findings": no_line })).to_string();
     assert!(validate_review_reply(&text, &snapshot, INSTRUCTIONS_SHA).is_err());
 
-    let null_line =
-        json!([{"severity": "high", "path": EXAMPLE_PATH, "line": null, "message": "File-level finding"}]);
+    let null_line = json!([{"severity": "high", "path": EXAMPLE_PATH, "line": null, "message": "File-level finding"}]);
     let text = with_patch(reply(&snapshot), json!({ "findings": null_line })).to_string();
     assert_eq!(
         validate_review_reply(&text, &snapshot, INSTRUCTIONS_SHA)
@@ -420,7 +420,8 @@ fn requires_the_nullable_reason_and_line_keys_to_be_present() {
 
 #[test]
 fn inspects_effective_tool_and_plugin_exposure_and_pins_a_tool_free_hook_free_api_policy() {
-    let base = json!({"type": "system", "subtype": "init", "tools": [], "mcp_servers": [], "plugins": []});
+    let base =
+        json!({"type": "system", "subtype": "init", "tools": [], "mcp_servers": [], "plugins": []});
     assert_eq!(
         review_effective_policy(&base).unwrap(),
         ReviewEffectivePolicy {

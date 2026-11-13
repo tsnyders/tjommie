@@ -27,7 +27,12 @@ async fn runs_an_explicit_argument_array_with_a_scrubbed_environment_and_bounded
     // the same. PowerShell starts more slowly than node, so the timeout is 10 s instead of 2 s. The sentinel is
     // set in this process first: the scrub is only shown if the child still doesn't see it.
     // SAFETY: edition 2024; this test file has one test that touches the environment, and nothing else reads it.
-    unsafe { std::env::set_var("ANTHROPIC_API_KEY", "synthetic-secret-must-not-reach-a-check") };
+    unsafe {
+        std::env::set_var(
+            "ANTHROPIC_API_KEY",
+            "synthetic-secret-must-not-reach-a-check",
+        )
+    };
     let script = "if ($env:ANTHROPIC_API_KEY) { exit 3 }; [Console]::Out.Write('x' * 300000)";
     let mut check = synthetic_check(
         "powershell",

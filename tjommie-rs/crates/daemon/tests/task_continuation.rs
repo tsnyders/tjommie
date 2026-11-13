@@ -69,8 +69,7 @@ async fn settle() {
 
 /// A promise the test settles: TypeScript's `new Promise` with its `resolve` or `reject`. It stays pending if its
 /// sender is dropped, like a promise nobody settles.
-fn gate<T: Clone + Send + Sync + 'static>()
--> (Shared<BoxFuture<'static, T>>, oneshot::Sender<T>) {
+fn gate<T: Clone + Send + Sync + 'static>() -> (Shared<BoxFuture<'static, T>>, oneshot::Sender<T>) {
     let (sender, receiver) = oneshot::channel::<T>();
     let pending: BoxFuture<'static, T> = Box::pin(async move {
         match receiver.await {
@@ -137,9 +136,14 @@ impl SyntheticSession {
 
     /// TypeScript `finish(text)`: the text, its end, then a successful `turn_done`.
     fn finish(&self, text: &str) {
-        self.emit(ProviderEvent::Text { delta: text.to_owned() });
+        self.emit(ProviderEvent::Text {
+            delta: text.to_owned(),
+        });
         self.emit(ProviderEvent::TextEnd);
-        self.emit(ProviderEvent::TurnDone(ProviderTurn { ok: true, error: None }));
+        self.emit(ProviderEvent::TurnDone(ProviderTurn {
+            ok: true,
+            error: None,
+        }));
     }
 
     /// TypeScript `holdExit()`.
@@ -207,7 +211,10 @@ impl ProviderSession for SyntheticSession {
     // TODO(M5-integration): assumed `Ok(true)` means "handled" (Core runner.rs:1965-1968, 2372-2386): a `false` would make
     // the runner call `stop` again, which the TypeScript does not do.
     fn interrupt(&self) -> BoxFuture<'static, Result<bool, ProviderError>> {
-        self.emit(ProviderEvent::TurnDone(ProviderTurn { ok: false, error: None }));
+        self.emit(ProviderEvent::TurnDone(ProviderTurn {
+            ok: false,
+            error: None,
+        }));
         Box::pin(async { Ok::<bool, ProviderError>(true) })
     }
 
@@ -252,11 +259,13 @@ fn tasks_of(cell: &TasksCell) -> Arc<Tasks> {
 
 /// `hooks.executionContext`: the task service's `executionContext`.
 fn execution_context_hook(tasks: TasksCell) -> ExecutionContextHook {
-    Arc::new(move |core: &mut Core<'_>, bot: &StoredBot, item: &WorkItem| {
-        tasks_of(&tasks)
-            .execution_context(core.db(), bot, item)
-            .map_err(|error| error.message)
-    })
+    Arc::new(
+        move |core: &mut Core<'_>, bot: &StoredBot, item: &WorkItem| {
+            tasks_of(&tasks)
+                .execution_context(core.db(), bot, item)
+                .map_err(|error| error.message)
+        },
+    )
 }
 
 /// `hooks.turnStarted`: the task service's `turnStarted`.
@@ -279,15 +288,17 @@ fn turn_requeued_hook(tasks: TasksCell) -> ItemHook {
 
 /// `hooks.turnEnded`: `tasks.turnEnded(item, result)`, then `team.turnEnded(item, result)`.
 fn turn_ended_hook(tasks: TasksCell, team: Arc<Team>) -> TurnEndedHook {
-    Arc::new(move |core: &mut Core<'_>, item: &WorkItem, result: &TurnResult| -> Result<(), String> {
-        tasks_of(&tasks)
-            .turn_ended(core.db(), item, result)
-            .map_err(|error| error.message)?;
-        // TODO(M5-integration): assumed `Team::turn_ended(&self, host: &mut dyn TeamHost, item, result)` returning
-        // `Result<(), RpcError>` (lane A team.rs:740), with the runner's `Core` as the host.
-        team.turn_ended(core, item, result)
-            .map_err(|error| error.message)
-    })
+    Arc::new(
+        move |core: &mut Core<'_>, item: &WorkItem, result: &TurnResult| -> Result<(), String> {
+            tasks_of(&tasks)
+                .turn_ended(core.db(), item, result)
+                .map_err(|error| error.message)?;
+            // TODO(M5-integration): assumed `Team::turn_ended(&self, host: &mut dyn TeamHost, item, result)` returning
+            // `Result<(), RpcError>` (lane A team.rs:740), with the runner's `Core` as the host.
+            team.turn_ended(core, item, result)
+                .map_err(|error| error.message)
+        },
+    )
 }
 
 /// `hooks.sessionClosed`: `team.sessionClosed(id)`.
@@ -337,7 +348,10 @@ fn fixture(helper_outside_project: bool) -> Harness {
                 &db,
                 &f.project.id,
                 f.project.revision,
-                ProjectPatch { members: Some(members), ..ProjectPatch::default() },
+                ProjectPatch {
+                    members: Some(members),
+                    ..ProjectPatch::default()
+                },
             )
             .unwrap()
     } else {
@@ -346,7 +360,10 @@ fn fixture(helper_outside_project: bool) -> Harness {
     update_bot(
         &f.db.lock().unwrap(),
         &developer.id,
-        &BotPatch { can_message: Some(vec![helper.id.clone()]), ..BotPatch::default() },
+        &BotPatch {
+            can_message: Some(vec![helper.id.clone()]),
+            ..BotPatch::default()
+        },
     )
     .unwrap();
 
@@ -355,7 +372,9 @@ fn fixture(helper_outside_project: bool) -> Harness {
     let log: Log = {
         let logs = logs.clone();
         Arc::new(move |context: &str, error: &str| {
-            logs.lock().unwrap().push((context.to_owned(), error.to_owned()));
+            logs.lock()
+                .unwrap()
+                .push((context.to_owned(), error.to_owned()));
         })
     };
     let broadcast: Broadcast = Arc::new(|_event: Event| -> Result<(), String> { Ok(()) });
@@ -376,7 +395,9 @@ fn fixture(helper_outside_project: bool) -> Harness {
     let create_session: SessionFactory = {
         let sessions = sessions.clone();
         Arc::new(
-            move |bot: &StoredBot, options: StartOptions| -> Result<Arc<dyn ProviderSession>, String> {
+            move |bot: &StoredBot,
+                  options: StartOptions|
+                  -> Result<Arc<dyn ProviderSession>, String> {
                 let session = SyntheticSession::new();
                 sessions.lock().unwrap().push(SessionEntry {
                     bot_id: bot.id.clone(),
@@ -400,11 +421,20 @@ fn fixture(helper_outside_project: bool) -> Harness {
     let runner = Runner::new(RunnerDeps {
         hooks,
         log,
-        ..RunnerDeps::new(f.db.clone(), broadcast, create_session, common::no_cli_setup())
+        ..RunnerDeps::new(
+            f.db.clone(),
+            broadcast,
+            create_session,
+            common::no_cli_setup(),
+        )
     });
 
     // `new Tasks(h.projects, {deliver, currentWork, stopItem, retired})`: over the real runner, which is a TaskRunner.
-    let tasks = Tasks::new(f.projects.clone(), Arc::new(runner.clone()), TasksOptions::default());
+    let tasks = Tasks::new(
+        f.projects.clone(),
+        Arc::new(runner.clone()),
+        TasksOptions::default(),
+    );
     let _ = tasks_cell.set(Arc::downgrade(&tasks));
     runner.start().unwrap();
     // TODO(M5-integration): assumed `Team::tools(&self, host: Arc<dyn HostAccess>) -> Vec<McpTool>` (the TypeScript
@@ -425,7 +455,9 @@ fn fixture(helper_outside_project: bool) -> Harness {
             },
         )
         .unwrap();
-    let attempt = tasks.start(&task.id, task.revision, "synthetic-start").unwrap();
+    let attempt = tasks
+        .start(&task.id, task.revision, "synthetic-start")
+        .unwrap();
     Harness {
         f,
         project,
@@ -465,12 +497,15 @@ impl Harness {
 
     /// `vi.waitFor(() => expect(own()[index]?.session.sent).toHaveLength(1))` for the bot's session at `index`.
     async fn sent_one(&self, bot_id: &str, index: usize) -> SessionEntry {
-        eventually(&format!("{bot_id}'s session {index} to get its message"), || {
-            self.sessions_of(bot_id)
-                .get(index)
-                .filter(|entry| entry.session.sent().len() == 1)
-                .cloned()
-        })
+        eventually(
+            &format!("{bot_id}'s session {index} to get its message"),
+            || {
+                self.sessions_of(bot_id)
+                    .get(index)
+                    .filter(|entry| entry.session.sent().len() == 1)
+                    .cloned()
+            },
+        )
         .await
     }
 
@@ -516,7 +551,9 @@ impl Harness {
     /// `vi.waitFor(() => expect(reply().status).toBe(status))`.
     async fn reply_reaches(&self, status: WorkStatus) {
         eventually(&format!("the reply to be {status:?}"), || {
-            self.reply_opt().filter(|reply| reply.status == status).map(|_| ())
+            self.reply_opt()
+                .filter(|reply| reply.status == status)
+                .map(|_| ())
         })
         .await;
     }
@@ -546,11 +583,16 @@ impl Harness {
     }
 
     fn bot_busy(&self, bot_id: &str) -> bool {
-        self.tasks.bot_busy(&self.f.db.lock().unwrap(), bot_id).unwrap()
+        self.tasks
+            .bot_busy(&self.f.db.lock().unwrap(), bot_id)
+            .unwrap()
     }
 
     fn bot_in_use(&self, bot_id: &str) -> bool {
-        self.f.projects.bot_in_use(&self.f.db.lock().unwrap(), bot_id).unwrap()
+        self.f
+            .projects
+            .bot_in_use(&self.f.db.lock().unwrap(), bot_id)
+            .unwrap()
     }
 
     fn git(&self, path: &str, args: &[&str]) -> String {
@@ -585,7 +627,10 @@ async fn retains_the_lease_after_an_asking_turn_and_completes_after_the_helper_c
     let second = h.sent_one(&h.developer.id, 1).await;
     assert!(second.session.sent()[0].contains("Synthetic feedback: change the task file."));
     assert_eq!(second.options.cwd, h.attempt.worktree_path);
-    assert_eq!(h.runner.effective_folder(&h.developer.id).unwrap(), h.attempt.worktree_path);
+    assert_eq!(
+        h.runner.effective_folder(&h.developer.id).unwrap(),
+        h.attempt.worktree_path
+    );
     let reply = h.reply();
     let now = h.stored_attempt(&h.attempt.id);
     assert_eq!(now.work_item_id.as_deref(), Some(reply.id.as_str()));
@@ -593,15 +638,27 @@ async fn retains_the_lease_after_an_asking_turn_and_completes_after_the_helper_c
     assert_eq!(now.revision, h.attempt.revision);
 
     let worktree = h.attempt.worktree_path.clone();
-    fs::write(Path::new(&worktree).join("src").join("a.txt"), "Used synthetic feedback\n").unwrap();
+    fs::write(
+        Path::new(&worktree).join("src").join("a.txt"),
+        "Used synthetic feedback\n",
+    )
+    .unwrap();
     h.git(&worktree, &["add", "--", "src/a.txt"]);
-    h.git(&worktree, &["commit", "-m", "Synthetic continuation result"]);
-    second.session.finish("Committed the task after reading the helper reply.");
+    h.git(
+        &worktree,
+        &["commit", "-m", "Synthetic continuation result"],
+    );
+    second
+        .session
+        .finish("Committed the task after reading the helper reply.");
     h.attempt_reaches(AttemptState::Completed).await;
     assert_eq!(h.stored_task(&h.task.id).state, TaskState::Review);
     assert!(!h.bot_busy(&h.developer.id));
     let head = h.git(&worktree, &["rev-parse", "HEAD"]);
-    assert_eq!(h.stored_attempt(&h.attempt.id).head_sha.as_deref(), Some(head.as_str()));
+    assert_eq!(
+        h.stored_attempt(&h.attempt.id).head_sha.as_deref(),
+        Some(head.as_str())
+    );
     assert_eq!(h.f.owner(), owner_before);
     h.close().await;
 }
@@ -639,14 +696,28 @@ async fn continues_in_the_task_worktree_after_deleting_an_external_helper(cascad
     h.asking().await;
     assert!(!h.bot_in_use(&h.helper.id));
     assert!(!h.bot_busy(&h.helper.id));
-    assert_eq!(h.first_session_of(&h.helper.id).unwrap().options.cwd, h.helper.home_folder);
-    let request = h.runner.current_work(&h.helper.id).expect("the helper works on the request");
-    let exchange_id = request.exchange_id.clone().expect("the request belongs to an exchange");
-    h.own()[0].session.finish("The external helper will answer later.");
-    h.attempt_reason_is("Waiting for requested bot replies.").await;
+    assert_eq!(
+        h.first_session_of(&h.helper.id).unwrap().options.cwd,
+        h.helper.home_folder
+    );
+    let request = h
+        .runner
+        .current_work(&h.helper.id)
+        .expect("the helper works on the request");
+    let exchange_id = request
+        .exchange_id
+        .clone()
+        .expect("the request belongs to an exchange");
+    h.own()[0]
+        .session
+        .finish("The external helper will answer later.");
+    h.attempt_reason_is("Waiting for requested bot replies.")
+        .await;
     assert!(h.bot_busy(&h.developer.id));
 
-    within(h.runner.close_for_deletion(&h.helper.id).unwrap()).await.unwrap();
+    within(h.runner.close_for_deletion(&h.helper.id).unwrap())
+        .await
+        .unwrap();
     // TODO(M5-integration): assumed lane A's `Team::bot_deleting(&self, host, bot_id) -> Result<BotDeletionHandle, _>`
     // (team.rs:1130), run through `with_host` because the test is outside a runner hook (TypeScript team.ts:345, test
     // line 123).
@@ -677,13 +748,22 @@ async fn continues_in_the_task_worktree_after_deleting_an_external_helper(cascad
     let deleted = format!("{} was deleted", h.helper.name);
     assert!(second.session.sent()[0].contains(&deleted));
     assert_eq!(second.options.cwd, h.attempt.worktree_path);
-    assert_eq!(h.runner.effective_folder(&h.developer.id).unwrap(), h.attempt.worktree_path);
+    assert_eq!(
+        h.runner.effective_folder(&h.developer.id).unwrap(),
+        h.attempt.worktree_path
+    );
     assert_eq!(reply.source, WorkSource::BotReply);
     assert_eq!(reply.status, WorkStatus::Running);
     assert_eq!(reply.exchange_id.as_deref(), Some(exchange_id.as_str()));
-    assert_eq!(reply.task_attempt_id.as_deref(), Some(h.attempt.id.as_str()));
+    assert_eq!(
+        reply.task_attempt_id.as_deref(),
+        Some(h.attempt.id.as_str())
+    );
     assert_eq!(reply.task_revision, Some(h.attempt.revision as i64));
-    assert_eq!(reply.execution_context_key.as_deref(), Some(h.attempt.context_key.as_str()));
+    assert_eq!(
+        reply.execution_context_key.as_deref(),
+        Some(h.attempt.context_key.as_str())
+    );
     let now = h.stored_attempt(&h.attempt.id);
     assert_eq!(now.state, AttemptState::Running);
     assert_eq!(now.work_item_id.as_deref(), Some(reply.id.as_str()));
@@ -713,15 +793,23 @@ async fn continues_in_the_task_worktree_after_deleting_an_external_helper(cascad
         )
     );
 
-    second.session.finish("Handled the deleted helper and finished the task.");
+    second
+        .session
+        .finish("Handled the deleted helper and finished the task.");
     h.attempt_reaches(AttemptState::Completed).await;
-    assert_eq!(h.stored_attempt(&h.attempt.id).work_item_id.as_deref(), Some(reply.id.as_str()));
+    assert_eq!(
+        h.stored_attempt(&h.attempt.id).work_item_id.as_deref(),
+        Some(reply.id.as_str())
+    );
     h.reply_reaches(WorkStatus::Done).await;
     assert_eq!(h.stored_task(&h.task.id).state, TaskState::Review);
     assert!(!h.bot_busy(&h.developer.id));
     let worktree = h.attempt.worktree_path.clone();
     let head = h.git(&worktree, &["rev-parse", "HEAD"]);
-    assert_eq!(h.stored_attempt(&h.attempt.id).head_sha.as_deref(), Some(head.as_str()));
+    assert_eq!(
+        h.stored_attempt(&h.attempt.id).head_sha.as_deref(),
+        Some(head.as_str())
+    );
     assert_eq!(h.f.owner(), owner_before);
     h.close().await;
 }
@@ -748,7 +836,10 @@ async fn does_not_create_another_turn_when_a_helper_reply_was_steered_into_the_t
     })
     .await;
     h.reply_reaches(WorkStatus::Done).await;
-    assert_eq!(h.stored_attempt(&h.attempt.id).work_item_id, h.attempt.work_item_id);
+    assert_eq!(
+        h.stored_attempt(&h.attempt.id).work_item_id,
+        h.attempt.work_item_id
+    );
 
     first.finish("Used the steered helper reply.");
     h.attempt_reaches(AttemptState::Completed).await;
@@ -774,7 +865,10 @@ async fn retains_the_task_while_a_delayed_steer_is(outcome: SteerOutcome) {
     h.logs.lock().unwrap().clear();
     first.hold_exit();
     helper.finish("Feedback whose steering acknowledgment is delayed.");
-    eventually("the reply to be steered", || (first.steered().len() == 1).then_some(())).await;
+    eventually("the reply to be steered", || {
+        (first.steered().len() == 1).then_some(())
+    })
+    .await;
     first.finish("The original turn ended before steering resolved.");
     first.release_exit();
     settle().await;
@@ -800,12 +894,16 @@ async fn retains_the_task_while_a_delayed_steer_is(outcome: SteerOutcome) {
 
     let second = h.sent_one(&h.developer.id, 1).await;
     assert_eq!(second.options.cwd, h.attempt.worktree_path);
-    assert!(second.session.sent()[0].contains("Feedback whose steering acknowledgment is delayed."));
+    assert!(
+        second.session.sent()[0].contains("Feedback whose steering acknowledgment is delayed.")
+    );
     let now = h.stored_attempt(&h.attempt.id);
     assert_eq!(now.state, AttemptState::Running);
     assert_eq!(now.work_item_id.as_deref(), Some(h.reply().id.as_str()));
 
-    second.session.finish("Completed after the delayed helper reply.");
+    second
+        .session
+        .finish("Completed after the delayed helper reply.");
     h.attempt_reaches(AttemptState::Completed).await;
     assert!(!h.bot_busy(&h.developer.id));
     let logs = h.logs.lock().unwrap().clone();
@@ -848,8 +946,11 @@ enum LateOperation {
 async fn fences_a_late_task_helper_reply_after_an_explicit_operation(operation: LateOperation) {
     let h = fixture(false);
     let helper = h.asking().await;
-    h.own()[0].session.finish("The helper reply will arrive later.");
-    h.attempt_reason_is("Waiting for requested bot replies.").await;
+    h.own()[0]
+        .session
+        .finish("The helper reply will arrive later.");
+    h.attempt_reason_is("Waiting for requested bot replies.")
+        .await;
     let cancel = matches!(operation, LateOperation::Cancel | LateOperation::Archive);
     let stopped = h
         .tasks
@@ -859,7 +960,10 @@ async fn fences_a_late_task_helper_reply_after_an_explicit_operation(operation: 
     match operation {
         LateOperation::Cancel => {}
         LateOperation::Resume => {
-            let resumed = h.tasks.resume(&h.task.id, stopped.revision, "explicit-resume").unwrap();
+            let resumed = h
+                .tasks
+                .resume(&h.task.id, stopped.revision, "explicit-resume")
+                .unwrap();
             assert_eq!(resumed.revision, h.attempt.revision + 1);
             h.sent_one(&h.developer.id, 1).await;
         }
@@ -870,30 +974,53 @@ async fn fences_a_late_task_helper_reply_after_an_explicit_operation(operation: 
                     &db,
                     &h.task.id,
                     stopped.revision,
-                    TaskPatch { title: Some("Revised task".into()), ..TaskPatch::default() },
+                    TaskPatch {
+                        title: Some("Revised task".into()),
+                        ..TaskPatch::default()
+                    },
                 )
                 .unwrap();
         }
         LateOperation::Archive => {
             let db = h.f.db.lock().unwrap();
-            h.f.projects.archive(&db, &h.project.id, h.project.revision).unwrap();
+            h.f.projects
+                .archive(&db, &h.project.id, h.project.revision)
+                .unwrap();
         }
     }
 
     helper.finish("This answer belongs to the old immutable task context.");
     if operation == LateOperation::Resume {
         h.reply_reaches(WorkStatus::Queued).await;
-        h.own()[1].session.finish("Completed the explicitly resumed task.");
+        h.own()[1]
+            .session
+            .finish("Completed the explicitly resumed task.");
         h.attempt_reaches(AttemptState::Completed).await;
     }
     h.reply_reaches(WorkStatus::Failed).await;
     let own = h.own();
-    assert_eq!(own.len(), if operation == LateOperation::Resume { 2 } else { 1 });
-    assert!(own.iter().all(|entry| entry.options.cwd == h.attempt.worktree_path));
+    assert_eq!(
+        own.len(),
+        if operation == LateOperation::Resume {
+            2
+        } else {
+            1
+        }
+    );
+    assert!(
+        own.iter()
+            .all(|entry| entry.options.cwd == h.attempt.worktree_path)
+    );
     let reply = h.reply();
-    assert_eq!(reply.task_attempt_id.as_deref(), Some(h.attempt.id.as_str()));
+    assert_eq!(
+        reply.task_attempt_id.as_deref(),
+        Some(h.attempt.id.as_str())
+    );
     assert_eq!(reply.task_revision, Some(h.attempt.revision as i64));
-    assert_eq!(reply.execution_context_key.as_deref(), Some(h.attempt.context_key.as_str()));
+    assert_eq!(
+        reply.execution_context_key.as_deref(),
+        Some(h.attempt.context_key.as_str())
+    );
     let (attempt_state, task_state) = match operation {
         LateOperation::Resume => (AttemptState::Completed, TaskState::Review),
         LateOperation::Edit => (AttemptState::Interrupted, TaskState::Todo),

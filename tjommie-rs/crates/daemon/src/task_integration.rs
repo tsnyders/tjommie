@@ -99,7 +99,8 @@ impl TaskIntegrations {
             "UPDATE task_integrations SET state = ?1, data = ?2 WHERE id = ?3",
             params![wire_text(&record.state), to_json(record)?, record.id],
         )?;
-        self.tasks.emit(Event::TaskIntegrationUpdated(record.clone()));
+        self.tasks
+            .emit(Event::TaskIntegrationUpdated(record.clone()));
         Ok(record.clone())
     }
 
@@ -152,7 +153,10 @@ impl TaskIntegrations {
                 &input.source_sha,
             )?;
             let project = self.tasks.projects.active(&db, &task.input.project_id)?;
-            let repo = self.tasks.projects.repository(&db, &project.input.repository_id)?;
+            let repo = self
+                .tasks
+                .projects
+                .repository(&db, &project.input.repository_id)?;
             if exists(
                 &db,
                 "SELECT 1 FROM task_integrations WHERE repository_id = ?1 AND target_ref = ?2 AND state IN ('preparing', 'checking', 'ready')",
@@ -207,7 +211,8 @@ impl TaskIntegrations {
                 )?;
                 Ok(())
             })?;
-            self.tasks.emit(Event::TaskIntegrationUpdated(record.clone()));
+            self.tasks
+                .emit(Event::TaskIntegrationUpdated(record.clone()));
             record
         };
         // `setImmediate`: the response goes out first; counted now so `shutdown` waits for it.
@@ -273,9 +278,12 @@ impl TaskIntegrations {
             )?;
             return Ok(None);
         }
-        let attempt =
-            self.tasks
-                .exact(&db, &record.attempt_id, record.revision, &record.accepted_sha)?;
+        let attempt = self.tasks.exact(
+            &db,
+            &record.attempt_id,
+            record.revision,
+            &record.accepted_sha,
+        )?;
         let task = self.tasks.task(&db, &attempt.task_id)?;
         let project = self.tasks.projects.active(&db, &task.input.project_id)?;
         if !self.tasks.accepted(&db, &attempt)? {
@@ -286,7 +294,10 @@ impl TaskIntegrations {
             )?;
             return Ok(None);
         }
-        let repo = self.tasks.projects.repository(&db, &project.input.repository_id)?;
+        let repo = self
+            .tasks
+            .projects
+            .repository(&db, &project.input.repository_id)?;
         let trees = &self.tasks.projects.worktrees;
         if trees.resolve_ref(&repo, &record.target_ref)? != record.expected_target_sha {
             self.blocked(&db, record, "target_head_moved")?;
@@ -310,7 +321,8 @@ impl TaskIntegrations {
             self.blocked(&db, record, "check_isolation_unavailable")?;
             return Ok(None);
         }
-        self.tasks.lease(&db, &tester.id, &record.id, "integration")?;
+        self.tasks
+            .lease(&db, &tester.id, &record.id, "integration")?;
         let controller = CancellationToken::new();
         self.state()
             .running
@@ -364,13 +376,16 @@ impl TaskIntegrations {
                 Some(&record.branch),
             )
             .map_err(failed)?;
-        let (merge_trees, repo, merge_work) =
-            (trees.clone(), prepared.repo.clone(), work.clone());
-        let (target, accepted) = (record.expected_target_sha.clone(), record.accepted_sha.clone());
-        let merged = blocking(move || merge_trees.merge_candidate(&repo, &merge_work, &target, &accepted))
-            .await
-            .map_err(failed)?
-            .map_err(failed)?;
+        let (merge_trees, repo, merge_work) = (trees.clone(), prepared.repo.clone(), work.clone());
+        let (target, accepted) = (
+            record.expected_target_sha.clone(),
+            record.accepted_sha.clone(),
+        );
+        let merged =
+            blocking(move || merge_trees.merge_candidate(&repo, &merge_work, &target, &accepted))
+                .await
+                .map_err(failed)?
+                .map_err(failed)?;
         if merged.conflict {
             return self
                 .block_record(
@@ -402,13 +417,19 @@ impl TaskIntegrations {
             prepared.attempt_revision,
             record.accepted_sha.clone(),
         );
-        blocking(move || this.tasks.exact(&this.tasks.lock(), &attempt_id, revision, &accepted))
-            .await
-            .map_err(failed)?
-            .map_err(failed)?;
+        blocking(move || {
+            this.tasks
+                .exact(&this.tasks.lock(), &attempt_id, revision, &accepted)
+        })
+        .await
+        .map_err(failed)?
+        .map_err(failed)?;
         if prepared.controller.is_cancelled() {
             return self
-                .block_record(&record, "Integration stopped; retained candidate is unchanged.")
+                .block_record(
+                    &record,
+                    "Integration stopped; retained candidate is unchanged.",
+                )
                 .await;
         }
         let candidate = record.candidate_sha.clone();
@@ -454,16 +475,22 @@ impl TaskIntegrations {
         if record.state == IntegrationState::Integrated {
             return Ok(record);
         }
-        let verified = matches!(record.state, IntegrationState::Ready | IntegrationState::Blocked)
-            && record.candidate_sha.is_some()
+        let verified = matches!(
+            record.state,
+            IntegrationState::Ready | IntegrationState::Blocked
+        ) && record.candidate_sha.is_some()
             && record.checks_completed
             && !record.checks.is_empty()
             && record.checks.iter().all(|check| check.exit_code == Some(0));
         if !verified {
-            return Err(bad_state("This integration has no verified candidate to promote."));
+            return Err(bad_state(
+                "This integration has no verified candidate to promote.",
+            ));
         }
         if expected_target_sha != record.expected_target_sha {
-            return Err(bad_state("Prepare a new integration for the changed target head."));
+            return Err(bad_state(
+                "Prepare a new integration for the changed target head.",
+            ));
         }
         let attempt = self.tasks.exact(
             db,
@@ -476,7 +503,10 @@ impl TaskIntegrations {
         }
         let task = self.tasks.task(db, &attempt.task_id)?;
         let project = self.tasks.projects.active(db, &task.input.project_id)?;
-        let repo = self.tasks.projects.repository(db, &project.input.repository_id)?;
+        let repo = self
+            .tasks
+            .projects
+            .repository(db, &project.input.repository_id)?;
         let trees = &self.tasks.projects.worktrees;
         if project.input.target_ref != record.target_ref
             || project.revision != record.project_revision
@@ -489,11 +519,14 @@ impl TaskIntegrations {
         }
         let configured = &project.input.checks;
         let mismatch = record.checks.len() != configured.len()
-            || configured.iter().zip(&record.checks).any(|(check, result)| {
-                result.check_id != check.id
-                    || result.command != check.command
-                    || result.args != check.args
-            });
+            || configured
+                .iter()
+                .zip(&record.checks)
+                .any(|(check, result)| {
+                    result.check_id != check.id
+                        || result.command != check.command
+                        || result.args != check.args
+                });
         if mismatch {
             return Err(bad_state(
                 "The candidate has not passed every configured combined check.",

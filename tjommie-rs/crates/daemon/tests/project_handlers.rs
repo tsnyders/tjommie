@@ -52,7 +52,8 @@ async fn serve(h: &Fixture) -> Server {
 }
 
 #[tokio::test]
-async fn requires_an_authenticated_live_local_context_to_register_host_paths_and_refuses_paid_starts_from_a_closed_connection() {
+async fn requires_an_authenticated_live_local_context_to_register_host_paths_and_refuses_paid_starts_from_a_closed_connection()
+ {
     let h = fixture(TasksOptions::default());
     let server = serve(&h).await;
     let signal = CancellationToken::new();
@@ -78,7 +79,11 @@ async fn requires_an_authenticated_live_local_context_to_register_host_paths_and
     let closed = Some(local(&signal));
     assert!(!local_and_live(&closed));
     let error = live(&closed).unwrap_err();
-    assert!(error.message.contains("connection closed"), "{}", error.message);
+    assert!(
+        error.message.contains("connection closed"),
+        "{}",
+        error.message
+    );
     let error = server
         .dispatch(
             "tasks.start",
@@ -132,7 +137,10 @@ async fn keeps_executable_check_configuration_host_local_while_allowing_remote_t
         .await
         .unwrap();
     assert_eq!(renamed["name"], "Remote edit");
-    assert_eq!(renamed["checks"], serde_json::to_value(&h.project.input.checks).unwrap());
+    assert_eq!(
+        renamed["checks"],
+        serde_json::to_value(&h.project.input.checks).unwrap()
+    );
     let edited = server
         .dispatch(
             "projects.update",

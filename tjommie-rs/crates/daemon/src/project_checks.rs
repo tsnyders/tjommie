@@ -277,7 +277,9 @@ async fn pump(mut stream: Box<dyn AsyncRead + Send + Unpin>, capture: &Mutex<Cap
 }
 
 /// Awaits the stop attempt once it exists. Before it starts, and after it has finished, this never completes.
-async fn await_stop(stop: &mut Option<BoxFuture<'static, Result<(), String>>>) -> Result<(), String> {
+async fn await_stop(
+    stop: &mut Option<BoxFuture<'static, Result<(), String>>>,
+) -> Result<(), String> {
     match stop {
         Some(pending) => pending.await,
         None => std::future::pending().await,

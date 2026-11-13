@@ -39,7 +39,7 @@ fn seed_legacy_evaluation(db: &Connection) {
 
 #[test]
 fn upgrades_legacy_evaluation_json_to_explicit_null_coverage_without_changing_settled_source_results()
-{
+ {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("test.sqlite");
     let db = open(&path).unwrap();

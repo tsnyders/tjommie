@@ -27,9 +27,8 @@ fn refusing_child(pid: u32) -> RefusingChild {
     let (stdin, stdin_test) = duplex(1 << 20);
     let (stdout, stdout_test) = duplex(1 << 20);
     let (stderr, stderr_test) = duplex(1 << 20);
-    let kill_tree: KillTree = Arc::new(|| {
-        Box::pin(async { Err("Synthetic termination refusal".to_string()) })
-    });
+    let kill_tree: KillTree =
+        Arc::new(|| Box::pin(async { Err("Synthetic termination refusal".to_string()) }));
     RefusingChild {
         child: CliChild {
             pid: Some(pid),
@@ -99,7 +98,9 @@ async fn reports_a_child_that_failed_to_start_as_a_plain_failure_not_a_terminati
 #[tokio::test]
 async fn reports_a_worker_that_could_not_confirm_its_retirement_as_a_termination() {
     let RefusingChild { child, .. } = refusing_child(4242422);
-    child.exit.fire(CliExit::Failed(BoundaryError::Termination.to_string()));
+    child
+        .exit
+        .fire(CliExit::Failed(BoundaryError::Termination.to_string()));
     let runtime = HostCheckRuntime::new(Arc::new(OneChild(Mutex::new(Some(child)))));
     let controller = CancellationToken::new();
 

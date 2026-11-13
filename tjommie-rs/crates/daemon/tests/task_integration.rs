@@ -177,12 +177,18 @@ async fn accepted(h: &Fixture, index: usize) -> TaskAttempt {
         .unwrap();
     let attempt = h.complete(&begun, file, bytes).await;
     let sha = attempt.head_sha.clone().unwrap();
-    within(h.tasks.evaluate(&attempt.id, attempt.revision, &sha, EvaluationKind::Review))
-        .await
-        .unwrap();
-    within(h.tasks.evaluate(&attempt.id, attempt.revision, &sha, EvaluationKind::Test))
-        .await
-        .unwrap();
+    within(
+        h.tasks
+            .evaluate(&attempt.id, attempt.revision, &sha, EvaluationKind::Review),
+    )
+    .await
+    .unwrap();
+    within(
+        h.tasks
+            .evaluate(&attempt.id, attempt.revision, &sha, EvaluationKind::Test),
+    )
+    .await
+    .unwrap();
     attempt
 }
 
@@ -190,8 +196,11 @@ async fn accepted(h: &Fixture, index: usize) -> TaskAttempt {
 async fn finished(h: &Fixture, service: &TaskIntegrations, id: &str) -> TaskIntegration {
     eventually("the integration to finish", || {
         let record = service.get(&h.db.lock().unwrap(), id).unwrap();
-        matches!(record.state, IntegrationState::Integrated | IntegrationState::Blocked)
-            .then_some(record)
+        matches!(
+            record.state,
+            IntegrationState::Integrated | IntegrationState::Blocked
+        )
+        .then_some(record)
     })
     .await
 }
@@ -246,7 +255,8 @@ async fn refuses_to_promote_a_passing_prefix_after_a_later_combined_check_fails_
 }
 
 #[tokio::test]
-async fn integrates_two_exact_accepted_tasks_with_combined_checks_while_preserving_a_dirty_user_checkout() {
+async fn integrates_two_exact_accepted_tasks_with_combined_checks_while_preserving_a_dirty_user_checkout()
+ {
     let h = integration_fixture();
     h.git(&h.repo_path, &["branch", "delivery", h.base.as_str()]);
     h.projects
@@ -288,7 +298,12 @@ async fn integrates_two_exact_accepted_tasks_with_combined_checks_while_preservi
     assert_eq!(
         h.git(
             &h.repo_path,
-            &["merge-base", "--is-ancestor", first_head.as_str(), candidate.as_str()]
+            &[
+                "merge-base",
+                "--is-ancestor",
+                first_head.as_str(),
+                candidate.as_str()
+            ]
         ),
         ""
     );
@@ -296,7 +311,12 @@ async fn integrates_two_exact_accepted_tasks_with_combined_checks_while_preservi
     assert_eq!(
         h.git(
             &h.repo_path,
-            &["merge-base", "--is-ancestor", second_head.as_str(), candidate.as_str()]
+            &[
+                "merge-base",
+                "--is-ancestor",
+                second_head.as_str(),
+                candidate.as_str()
+            ]
         ),
         ""
     );
@@ -306,7 +326,7 @@ async fn integrates_two_exact_accepted_tasks_with_combined_checks_while_preservi
 
 #[tokio::test]
 async fn retains_a_verified_candidate_when_the_user_has_the_target_checked_out_and_rejects_stale_source_promotion()
-{
+ {
     let h = integration_fixture();
     let attempt = accepted(&h, 0).await;
     let before = h.owner();
@@ -331,14 +351,18 @@ async fn retains_a_verified_candidate_when_the_user_has_the_target_checked_out_a
     let stale = service
         .promote(&h.db.lock().unwrap(), &record.id, &h.base)
         .unwrap_err();
-    assert!(Regex::new("changed|dirty").unwrap().is_match(&stale.message));
+    assert!(
+        Regex::new("changed|dirty")
+            .unwrap()
+            .is_match(&stale.message)
+    );
     assert!(Path::new(&blocked.worktree_path).exists());
     close(&h, &service).await;
 }
 
 #[tokio::test]
 async fn blocks_failed_combined_checks_and_target_head_drift_without_promoting_or_discarding_candidates()
-{
+ {
     let h = integration_fixture();
     let attempt = accepted(&h, 0).await;
     let service = integrations(&h, Arc::new(FailingChecks));

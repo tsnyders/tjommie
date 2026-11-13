@@ -43,7 +43,10 @@ pub async fn eventually<T>(what: &str, mut check: impl FnMut() -> Option<T>) -> 
         if let Some(value) = check() {
             return value;
         }
-        assert!(std::time::Instant::now() < deadline, "timed out waiting for {what}");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for {what}"
+        );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
@@ -87,7 +90,10 @@ impl FakeRunner {
 impl TaskRunner for FakeRunner {
     fn deliver(&self, item: WorkItem) -> Result<WorkItem, RpcError> {
         self.delivered.lock().unwrap().push(item.clone());
-        self.active.lock().unwrap().insert(item.bot_id.clone(), item.clone());
+        self.active
+            .lock()
+            .unwrap()
+            .insert(item.bot_id.clone(), item.clone());
         let db = self.db.lock().unwrap();
         set_status(&db, &item.id, WorkStatus::Running)?;
         if let Some(tasks) = self.tasks() {
@@ -144,13 +150,37 @@ fn git_env(root: &Path) -> Vec<(String, String)> {
     fs::write(&config, "").unwrap();
     let mut env = vec![
         ("GIT_CONFIG_NOSYSTEM".to_string(), "1".to_string()),
-        ("GIT_CONFIG_GLOBAL".to_string(), config.to_string_lossy().into_owned()),
-        ("GIT_AUTHOR_NAME".to_string(), "Synthetic fixture".to_string()),
-        ("GIT_AUTHOR_EMAIL".to_string(), "fixture@example.invalid".to_string()),
-        ("GIT_COMMITTER_NAME".to_string(), "Synthetic fixture".to_string()),
-        ("GIT_COMMITTER_EMAIL".to_string(), "fixture@example.invalid".to_string()),
+        (
+            "GIT_CONFIG_GLOBAL".to_string(),
+            config.to_string_lossy().into_owned(),
+        ),
+        (
+            "GIT_AUTHOR_NAME".to_string(),
+            "Synthetic fixture".to_string(),
+        ),
+        (
+            "GIT_AUTHOR_EMAIL".to_string(),
+            "fixture@example.invalid".to_string(),
+        ),
+        (
+            "GIT_COMMITTER_NAME".to_string(),
+            "Synthetic fixture".to_string(),
+        ),
+        (
+            "GIT_COMMITTER_EMAIL".to_string(),
+            "fixture@example.invalid".to_string(),
+        ),
     ];
-    for key in ["PATH", "SystemRoot", "SystemDrive", "WINDIR", "PATHEXT", "TEMP", "TMP", "COMSPEC"] {
+    for key in [
+        "PATH",
+        "SystemRoot",
+        "SystemDrive",
+        "WINDIR",
+        "PATHEXT",
+        "TEMP",
+        "TMP",
+        "COMSPEC",
+    ] {
         if let Ok(value) = std::env::var(key) {
             env.push((key.to_string(), value));
         }
@@ -204,7 +234,11 @@ impl Fixture {
             .collect();
         let db: Db = Arc::new(Mutex::new(db));
         let worktrees = Arc::new(Worktrees::new(&managed).unwrap());
-        let projects = Arc::new(Projects::new(db.clone(), worktrees.clone(), Arc::new(SqlRooms)));
+        let projects = Arc::new(Projects::new(
+            db.clone(),
+            worktrees.clone(),
+            Arc::new(SqlRooms),
+        ));
         let runner = Arc::new(FakeRunner {
             db: db.clone(),
             delivered: Mutex::default(),
@@ -287,7 +321,11 @@ impl Fixture {
             path.display()
         );
         let mut command = spawn::command("git");
-        command.args(args).current_dir(path).env_clear().envs(self.git_env.clone());
+        command
+            .args(args)
+            .current_dir(path)
+            .env_clear()
+            .envs(self.git_env.clone());
         let output = command.output().unwrap();
         assert!(
             output.status.success(),
@@ -338,12 +376,18 @@ impl Fixture {
         fs::write(work.join(file), bytes).unwrap();
         self.git(&work, &["add", "--", file]);
         self.git(&work, &["commit", "-m", "Synthetic task commit"]);
-        let item = get_work_item(&self.db.lock().unwrap(), attempt.work_item_id.as_deref().unwrap()).unwrap();
-        self.runner.end_turn(&item, WorkStatus::Done, TurnOutcome::Done);
+        let item = get_work_item(
+            &self.db.lock().unwrap(),
+            attempt.work_item_id.as_deref().unwrap(),
+        )
+        .unwrap();
+        self.runner
+            .end_turn(&item, WorkStatus::Done, TurnOutcome::Done);
         let id = attempt.id.clone();
         eventually("the attempt to settle", || {
             let current = self.attempt(&id);
-            (!matches!(current.state, AttemptState::Queued | AttemptState::Running)).then_some(current)
+            (!matches!(current.state, AttemptState::Queued | AttemptState::Running))
+                .then_some(current)
         })
         .await
     }

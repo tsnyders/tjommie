@@ -51,8 +51,16 @@ impl LateTasks {
         let next_ended = base.turn_ended.clone();
         RunnerHooks {
             execution_context: Some(execution_context),
-            turn_started: Some(item_hook(self, base.turn_started.clone(), Tasks::turn_started)),
-            turn_requeued: Some(item_hook(self, base.turn_requeued.clone(), Tasks::turn_requeued)),
+            turn_started: Some(item_hook(
+                self,
+                base.turn_started.clone(),
+                Tasks::turn_started,
+            )),
+            turn_requeued: Some(item_hook(
+                self,
+                base.turn_requeued.clone(),
+                Tasks::turn_requeued,
+            )),
             // The `finally`: whatever follows (the team's hook and the notice) runs even if the task's hook failed,
             // and the task's own error is the one reported.
             turn_ended: Some(Arc::new(
@@ -178,10 +186,12 @@ pub fn install(handlers: &mut Handlers, deps: M5Deps) -> Result<M5, RpcError> {
             host_checks: Some(Arc::new(HostCheckRuntime::new(deps.host))),
         },
     );
-    deps.late
-        .0
-        .set(tasks.clone())
-        .map_err(|_| RpcError::new(ErrorCode::Internal, "The task service was already installed."))?;
+    deps.late.0.set(tasks.clone()).map_err(|_| {
+        RpcError::new(
+            ErrorCode::Internal,
+            "The task service was already installed.",
+        )
+    })?;
     let integrations = TaskIntegrations::new(tasks.clone(), None, None);
     *handlers = register(
         std::mem::take(handlers),
@@ -208,7 +218,10 @@ impl M5 {
 
     /// `integrations.shutdown()` then `tasks.shutdown()` (`daemon.ts:290`), both before the runner stops.
     pub async fn shutdown(&self) {
-        for stopped in [self.integrations.shutdown().await, self.tasks.shutdown().await] {
+        for stopped in [
+            self.integrations.shutdown().await,
+            self.tasks.shutdown().await,
+        ] {
             if let Err(error) = stopped {
                 eprintln!("{error}");
             }

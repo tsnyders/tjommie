@@ -19,8 +19,9 @@ use crate::win::acl::{BotHome, ProtectedAccount, ProtectedPaths, Protection, pro
 const THROTTLE: Duration = Duration::from_secs(60);
 
 /// One pass over the protected folders. [`FolderProtection::new`] uses the real, native one; tests substitute their own.
-pub type Pass =
-    Arc<dyn Fn(&ProtectedPaths, &[BotHome], Option<&[ProtectedAccount]>) -> Protection + Send + Sync>;
+pub type Pass = Arc<
+    dyn Fn(&ProtectedPaths, &[BotHome], Option<&[ProtectedAccount]>) -> Protection + Send + Sync,
+>;
 
 /// `listAccounts(db)` as the pass wants it: every account folder and its provider. The accounts store supplies it.
 pub type ListAccounts =
@@ -140,7 +141,10 @@ impl FolderProtection {
 async fn blocking<T: Send + 'static>(
     work: impl FnOnce() -> T + Send + 'static,
 ) -> Result<T, RpcError> {
-    tokio::task::spawn_blocking(work)
-        .await
-        .map_err(|_| RpcError::new(ErrorCode::Internal, "Folder protection stopped unexpectedly."))
+    tokio::task::spawn_blocking(work).await.map_err(|_| {
+        RpcError::new(
+            ErrorCode::Internal,
+            "Folder protection stopped unexpectedly.",
+        )
+    })
 }

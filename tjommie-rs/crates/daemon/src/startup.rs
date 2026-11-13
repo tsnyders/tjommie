@@ -408,7 +408,14 @@ fn install_workers(
     root: &Path,
     exe_dir: &Path,
     install: &Arc<WorkerInstall>,
-) -> Result<(WorkerBoundary, Arc<WorkerBoundary>, Option<InstalledWorkers>), StartupError> {
+) -> Result<
+    (
+        WorkerBoundary,
+        Arc<WorkerBoundary>,
+        Option<InstalledWorkers>,
+    ),
+    StartupError,
+> {
     let boundary = |file: &str, purpose: Purpose, kind: WorkerPurpose| {
         let install = install.clone();
         WorkerBoundary::new(BoundaryOptions {

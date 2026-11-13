@@ -60,11 +60,9 @@ const MERGE_UNAVAILABLE: &str = "merge_unavailable";
 
 static BRANCH_REF: LazyLock<Regex> =
     LazyLock::new(|| fixed(r"^refs/heads/[A-Za-z0-9][A-Za-z0-9/._-]*$"));
-static COMMIT_SHA: LazyLock<Regex> =
-    LazyLock::new(|| fixed(r"^(?:[a-f0-9]{40}|[a-f0-9]{64})$"));
+static COMMIT_SHA: LazyLock<Regex> = LazyLock::new(|| fixed(r"^(?:[a-f0-9]{40}|[a-f0-9]{64})$"));
 static WORKTREE_ID: LazyLock<Regex> = LazyLock::new(|| fixed(r"^[A-Za-z0-9_-]{1,100}$"));
-static INVALID_NAME_CHARS: LazyLock<Regex> =
-    LazyLock::new(|| fixed(r#"[<>:"|?*\x00-\x1f]"#));
+static INVALID_NAME_CHARS: LazyLock<Regex> = LazyLock::new(|| fixed(r#"[<>:"|?*\x00-\x1f]"#));
 static TRAILING_DOT_OR_SPACE: LazyLock<Regex> = LazyLock::new(|| fixed(r"[. ]$"));
 /// The 8.3 alias `GIT~1` of `.git`, which a volume with short names makes point at the same file (a hardening over the
 /// TypeScript, which lacks it).
@@ -323,19 +321,13 @@ impl Worktrees {
             .split('\0')
             .filter(|record| !record.is_empty())
         {
-            let tab = record
-                .find('\t')
-                .ok_or_else(|| reason(UNSUPPORTED_ENTRY))?;
+            let tab = record.find('\t').ok_or_else(|| reason(UNSUPPORTED_ENTRY))?;
             let mut fields = record[..tab]
                 .trim()
                 .split(' ')
                 .filter(|field| !field.is_empty());
-            let (mode, kind, oid, raw_size) = (
-                fields.next(),
-                fields.next(),
-                fields.next(),
-                fields.next(),
-            );
+            let (mode, kind, oid, raw_size) =
+                (fields.next(), fields.next(), fields.next(), fields.next());
             let path = &record[tab + 1..];
             let key = path.to_lowercase();
             if kind != Some("blob") || !matches!(mode, Some("100644" | "100755")) {
@@ -485,12 +477,7 @@ impl Worktrees {
         if existing_branch {
             args.extend([work.path.as_str(), name]);
         } else {
-            args.extend([
-                "-b",
-                name,
-                work.path.as_str(),
-                work.base_sha.as_str(),
-            ]);
+            args.extend(["-b", name, work.path.as_str(), work.base_sha.as_str()]);
         }
         self.git(Path::new(&repo.path), &args, None)?;
         self.materialize(repo, work, &work.base_sha, &entries)?;
@@ -780,11 +767,7 @@ impl Worktrees {
         let work = self.describe(&id, expected, Some(target_ref))?;
         let work_path = Path::new(&work.path);
         let repo_path = Path::new(&repo.path);
-        let records = self.git(
-            repo_path,
-            &["worktree", "list", "--porcelain", "-z"],
-            None,
-        )?;
+        let records = self.git(repo_path, &["worktree", "list", "--porcelain", "-z"], None)?;
         let records = String::from_utf8_lossy(&records).into_owned();
         let branch = format!("branch {target_ref}");
         for record in records.split("\0\0") {
@@ -856,8 +839,8 @@ impl Worktrees {
             ));
         }
         let work_path = Path::new(&work.path);
-        let tracked = String::from_utf8_lossy(&self.git(work_path, &["ls-files", "-z"], None)?)
-            .into_owned();
+        let tracked =
+            String::from_utf8_lossy(&self.git(work_path, &["ls-files", "-z"], None)?).into_owned();
         let attributes = self.git(
             work_path,
             &["check-attr", "--cached", "-z", "--stdin", "filter"],
@@ -875,16 +858,8 @@ impl Worktrees {
             }
         }
         let repo_path = Path::new(&repo.path);
-        self.git(
-            repo_path,
-            &["worktree", "unlock", work.path.as_str()],
-            None,
-        )?;
-        self.git(
-            repo_path,
-            &["worktree", "remove", work.path.as_str()],
-            None,
-        )?;
+        self.git(repo_path, &["worktree", "unlock", work.path.as_str()], None)?;
+        self.git(repo_path, &["worktree", "remove", work.path.as_str()], None)?;
         let marker = self.owner_path(&work.id);
         if is_within(&marker, &self.root)? {
             fs::remove_file(&marker)?;
@@ -927,11 +902,8 @@ impl Worktrees {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         let mut child = command.spawn()?;
-        let (stdin, stdout, stderr) = (
-            child.stdin.take(),
-            child.stdout.take(),
-            child.stderr.take(),
-        );
+        let (stdin, stdout, stderr) =
+            (child.stdin.take(), child.stdout.take(), child.stderr.take());
         thread::scope(|scope| -> io::Result<GitOutput> {
             let writer = scope.spawn(move || match (stdin, input) {
                 (Some(mut stdin), Some(bytes)) => stdin.write_all(bytes),
@@ -983,7 +955,8 @@ fn read_capped(pipe: Option<impl Read>, limit: u64) -> io::Result<(Vec<u8>, bool
             if count == 0 {
                 break;
             }
-            let room = usize::try_from(limit.saturating_sub(bytes.len() as u64)).unwrap_or(usize::MAX);
+            let room =
+                usize::try_from(limit.saturating_sub(bytes.len() as u64)).unwrap_or(usize::MAX);
             if count > room {
                 over = true;
             }
@@ -1043,12 +1016,18 @@ fn blob_id(sha: &str, bytes: &[u8]) -> String {
     if sha.len() == 64 {
         format!(
             "{:x}",
-            Sha256::new().chain_update(&header).chain_update(bytes).finalize()
+            Sha256::new()
+                .chain_update(&header)
+                .chain_update(bytes)
+                .finalize()
         )
     } else {
         format!(
             "{:x}",
-            Sha1::new().chain_update(&header).chain_update(bytes).finalize()
+            Sha1::new()
+                .chain_update(&header)
+                .chain_update(bytes)
+                .finalize()
         )
     }
 }

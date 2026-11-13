@@ -56,8 +56,11 @@ impl CheckRuntime for PassingChecks {
         _signal: &'a CancellationToken,
     ) -> BoxFuture<'a, Result<CheckResult, CheckError>> {
         Box::pin(async move {
-            fs::write(Path::new(cwd).join("check-output.txt"), "synthetic output\n")
-                .expect("write the synthetic check output");
+            fs::write(
+                Path::new(cwd).join("check-output.txt"),
+                "synthetic output\n",
+            )
+            .expect("write the synthetic check output");
             Ok(CheckRun {
                 check_id: check.id.clone(),
                 command: check.command.clone(),
@@ -193,7 +196,7 @@ impl CheckRuntime for HangingChecks {
 
 #[tokio::test]
 async fn creates_independent_persisted_task_contexts_only_after_explicit_start_and_rejects_busy_bot_dispatch()
-{
+ {
     let h = fixture(TasksOptions::default());
     let first = h.new_task(0);
     let second = h.new_task(1);
@@ -202,27 +205,41 @@ async fn creates_independent_persisted_task_contexts_only_after_explicit_start_a
     let b = h.tasks.start(&second.id, second.revision, "b").unwrap();
     assert_ne!(a.worktree_path, b.worktree_path);
     assert_ne!(a.context_key, b.context_key);
-    assert_eq!(h.tasks.start(&first.id, first.revision, "a").unwrap().id, a.id);
+    assert_eq!(
+        h.tasks.start(&first.id, first.revision, "a").unwrap().id,
+        a.id
+    );
     let delivered = h.runner.delivered();
     assert_eq!(delivered.len(), 2);
     let context = h
         .tasks
         .execution_context(&h.db.lock().unwrap(), &h.bots[0], &delivered[0])
         .unwrap();
-    assert_eq!(context.map(|context| context.cwd), Some(a.worktree_path.clone()));
+    assert_eq!(
+        context.map(|context| context.cwd),
+        Some(a.worktree_path.clone())
+    );
     let wrong_bot = h
         .tasks
         .execution_context(&h.db.lock().unwrap(), &h.bots[1], &delivered[0])
         .unwrap_err();
     assert!(wrong_bot.message.contains("no longer active"));
     let third = h.new_task(0);
-    let busy = h.tasks.start(&third.id, third.revision, "busy").unwrap_err();
-    assert!(Regex::new("queued or running|owns").unwrap().is_match(&busy.message));
+    let busy = h
+        .tasks
+        .start(&third.id, third.revision, "busy")
+        .unwrap_err();
+    assert!(
+        Regex::new("queued or running|owns")
+            .unwrap()
+            .is_match(&busy.message)
+    );
     assert_eq!(h.owner(), before);
 }
 
 #[tokio::test]
-async fn keeps_project_room_and_bot_request_discussions_in_the_bot_home_instead_of_the_user_checkout() {
+async fn keeps_project_room_and_bot_request_discussions_in_the_bot_home_instead_of_the_user_checkout()
+ {
     let h = fixture(TasksOptions::default());
     let repo = h.repo_path.to_string_lossy().into_owned();
     h.db.lock()
@@ -252,16 +269,15 @@ async fn keeps_project_room_and_bot_request_discussions_in_the_bot_home_instead_
         assert_eq!(context.cwd, h.bots[0].home_folder);
         assert_ne!(context.cwd, repo);
     }
-    let stored: Option<String> = h
-        .db
-        .lock()
-        .unwrap()
-        .query_row(
-            "SELECT project_folder FROM bots WHERE id=?1",
-            [&h.bots[0].id],
-            |row| row.get(0),
-        )
-        .unwrap();
+    let stored: Option<String> =
+        h.db.lock()
+            .unwrap()
+            .query_row(
+                "SELECT project_folder FROM bots WHERE id=?1",
+                [&h.bots[0].id],
+                |row| row.get(0),
+            )
+            .unwrap();
     assert_eq!(stored.as_deref(), Some(repo.as_str()));
     assert!(h.runner.delivered().is_empty());
 }
@@ -281,7 +297,10 @@ async fn persists_reviewer_unavailable_without_launching_a_normal_provider_or_ac
     .await
     .unwrap();
     assert_eq!(review.state, EvaluationState::Unavailable);
-    assert_eq!(review.reason.as_deref(), Some("review_isolation_unavailable"));
+    assert_eq!(
+        review.reason.as_deref(),
+        Some("review_isolation_unavailable")
+    );
     assert!(!h.tasks.accepted(&h.db.lock().unwrap(), &a).unwrap());
     assert_eq!(h.runner.delivered().len(), 1);
     assert_eq!(h.task(&task.id).state, TaskState::Review);
@@ -295,7 +314,10 @@ async fn refuses_a_passing_review_without_complete_coverage_and_hydrates_legacy_
         ..TasksOptions::default()
     });
     let task = h.new_task(0);
-    let begun = h.tasks.start(&task.id, task.revision, "missing-coverage").unwrap();
+    let begun = h
+        .tasks
+        .start(&task.id, task.revision, "missing-coverage")
+        .unwrap();
     let attempt = h.complete(&begun, "src/a.txt", "A1\n").await;
     let result = within(h.tasks.evaluate(
         &attempt.id,
@@ -320,7 +342,8 @@ async fn refuses_a_passing_review_without_complete_coverage_and_hydrates_legacy_
 }
 
 #[tokio::test]
-async fn supplies_frozen_server_owned_reviewer_role_task_and_checklist_criteria_with_their_revisions() {
+async fn supplies_frozen_server_owned_reviewer_role_task_and_checklist_criteria_with_their_revisions()
+ {
     let review = Arc::new(RecordingReview::default());
     let h = fixture(TasksOptions {
         review: Some(review.clone()),
@@ -391,7 +414,8 @@ async fn supplies_frozen_server_owned_reviewer_role_task_and_checklist_criteria_
 }
 
 #[tokio::test]
-async fn keeps_a_completed_model_reply_stale_if_trusted_reviewer_instructions_changed_during_review() {
+async fn keeps_a_completed_model_reply_stale_if_trusted_reviewer_instructions_changed_during_review()
+ {
     let started = Arc::new(Notify::new());
     let release = Arc::new(Notify::new());
     let h = fixture(TasksOptions {
@@ -402,7 +426,10 @@ async fn keeps_a_completed_model_reply_stale_if_trusted_reviewer_instructions_ch
         ..TasksOptions::default()
     });
     let task = h.new_task(0);
-    let begun = h.tasks.start(&task.id, task.revision, "criteria-drift").unwrap();
+    let begun = h
+        .tasks
+        .start(&task.id, task.revision, "criteria-drift")
+        .unwrap();
     let attempt = h.complete(&begun, "src/a.txt", "A1\n").await;
     let tasks = h.tasks.clone();
     let (id, revision, sha) = (
@@ -411,7 +438,9 @@ async fn keeps_a_completed_model_reply_stale_if_trusted_reviewer_instructions_ch
         attempt.head_sha.clone().unwrap(),
     );
     let operation = tokio::spawn(async move {
-        tasks.evaluate(&id, revision, &sha, EvaluationKind::Review).await
+        tasks
+            .evaluate(&id, revision, &sha, EvaluationKind::Review)
+            .await
     });
     within(started.notified()).await;
     h.db.lock()
@@ -431,13 +460,17 @@ async fn keeps_a_completed_model_reply_stale_if_trusted_reviewer_instructions_ch
     let detail = h.tasks.detail(&h.db.lock().unwrap(), &task.id).unwrap();
     assert_eq!(detail.evaluations[0].state, EvaluationState::Stale);
     assert!(!h.tasks.accepted(&h.db.lock().unwrap(), &attempt).unwrap());
-    assert!(!h.tasks.bot_busy(&h.db.lock().unwrap(), &h.bots[2].id).unwrap());
+    assert!(
+        !h.tasks
+            .bot_busy(&h.db.lock().unwrap(), &h.bots[2].id)
+            .unwrap()
+    );
     close(&h).await;
 }
 
 #[tokio::test]
 async fn binds_review_and_isolated_checks_to_exact_commit_and_revision_and_invalidates_them_when_code_changes()
-{
+ {
     let h = fixture(TasksOptions {
         checks: Some(Arc::new(PassingChecks)),
         review: Some(Arc::new(PassingReview)),
@@ -447,13 +480,19 @@ async fn binds_review_and_isolated_checks_to_exact_commit_and_revision_and_inval
     let begun = h.tasks.start(&task.id, task.revision, "start").unwrap();
     let a = h.complete(&begun, "src/a.txt", "A1\n").await;
     let sha = a.head_sha.clone().unwrap();
-    let review = within(h.tasks.evaluate(&a.id, a.revision, &sha, EvaluationKind::Review))
-        .await
-        .unwrap();
+    let review = within(
+        h.tasks
+            .evaluate(&a.id, a.revision, &sha, EvaluationKind::Review),
+    )
+    .await
+    .unwrap();
     assert_eq!(review.state, EvaluationState::Passed);
-    let tests = within(h.tasks.evaluate(&a.id, a.revision, &sha, EvaluationKind::Test))
-        .await
-        .unwrap();
+    let tests = within(
+        h.tasks
+            .evaluate(&a.id, a.revision, &sha, EvaluationKind::Test),
+    )
+    .await
+    .unwrap();
     assert_eq!(tests.state, EvaluationState::Passed);
     let check_worktree = tests.worktree_path.clone().unwrap();
     assert_ne!(check_worktree, a.worktree_path);
@@ -475,7 +514,11 @@ async fn binds_review_and_isolated_checks_to_exact_commit_and_revision_and_inval
             .iter()
             .all(|evaluation| evaluation.state == EvaluationState::Stale)
     );
-    assert!(h.tasks.exact(&h.db.lock().unwrap(), &a.id, a.revision, &sha).is_err());
+    assert!(
+        h.tasks
+            .exact(&h.db.lock().unwrap(), &a.id, a.revision, &sha)
+            .is_err()
+    );
     close(&h).await;
 }
 
@@ -495,7 +538,10 @@ async fn stop_preserves_edits_and_only_explicit_resume_requeues_an_attempt() {
     assert_eq!(h.attempt(&a.id).state, AttemptState::Interrupted);
     let kept = fs::read_to_string(Path::new(&a.worktree_path).join("src").join("a.txt")).unwrap();
     assert!(kept.contains("retained"));
-    let resumed = h.tasks.resume(&task.id, stopped.revision, "resume").unwrap();
+    let resumed = h
+        .tasks
+        .resume(&task.id, stopped.revision, "resume")
+        .unwrap();
     assert_eq!(resumed.id, a.id);
     assert_eq!(resumed.revision, a.revision + 1);
     assert_eq!(h.runner.delivered().len(), 2);
@@ -518,7 +564,7 @@ async fn blocks_an_interrupted_running_attempt_on_recovery_and_never_reruns_comp
 
 #[tokio::test]
 async fn previews_and_refuses_cleanup_of_all_untracked_files_including_ignored_output_and_retains_branches_after_clean_cleanup()
-{
+ {
     let h = fixture(TasksOptions::default());
     let task = h.new_task(0);
     let begun = h.tasks.start(&task.id, task.revision, "start").unwrap();
@@ -562,18 +608,27 @@ async fn previews_and_refuses_cleanup_of_all_untracked_files_including_ignored_o
 async fn does_not_wait_for_or_interrupt_a_different_live_task_when_cancelling_completed_work() {
     let h = fixture(TasksOptions::default());
     let old_task = h.new_task(0);
-    let begun = h.tasks.start(&old_task.id, old_task.revision, "old").unwrap();
+    let begun = h
+        .tasks
+        .start(&old_task.id, old_task.revision, "old")
+        .unwrap();
     let old = h.complete(&begun, "src/a.txt", "A1\n").await;
     let next_task = h.new_task(0);
-    let next = h.tasks.start(&next_task.id, next_task.revision, "next").unwrap();
-    h.runner.hang_retired.store(true, Ordering::SeqCst);
-    let cancelled = within(h.tasks.stop(&old_task.id, h.task(&old_task.id).revision, true))
-        .await
+    let next = h
+        .tasks
+        .start(&next_task.id, next_task.revision, "next")
         .unwrap();
+    h.runner.hang_retired.store(true, Ordering::SeqCst);
+    let cancelled = within(
+        h.tasks
+            .stop(&old_task.id, h.task(&old_task.id).revision, true),
+    )
+    .await
+    .unwrap();
     assert_eq!(cancelled.state, TaskState::Cancelled);
     assert_eq!(h.attempt(&next.id).state, AttemptState::Running);
-    let next_item = get_work_item(&h.db.lock().unwrap(), next.work_item_id.as_deref().unwrap())
-        .unwrap();
+    let next_item =
+        get_work_item(&h.db.lock().unwrap(), next.work_item_id.as_deref().unwrap()).unwrap();
     assert_eq!(next_item.status, WorkStatus::Running);
     assert_eq!(h.attempt(&old.id).state, AttemptState::Cancelled);
     close(&h).await;
@@ -598,14 +653,24 @@ async fn cancels_and_awaits_owned_evaluations_during_shutdown_before_releasing_t
         attempt.head_sha.clone().unwrap(),
     );
     let evaluation = tokio::spawn(async move {
-        tasks.evaluate(&id, revision, &sha, EvaluationKind::Test).await
+        tasks
+            .evaluate(&id, revision, &sha, EvaluationKind::Test)
+            .await
     });
     within(started.notified()).await;
-    assert!(h.tasks.bot_busy(&h.db.lock().unwrap(), &h.bots[3].id).unwrap());
+    assert!(
+        h.tasks
+            .bot_busy(&h.db.lock().unwrap(), &h.bots[3].id)
+            .unwrap()
+    );
     within(h.tasks.shutdown()).await.unwrap();
     let result = within(evaluation).await.unwrap().unwrap();
     assert_eq!(result.state, EvaluationState::Stale);
-    assert!(!h.tasks.bot_busy(&h.db.lock().unwrap(), &h.bots[3].id).unwrap());
+    assert!(
+        !h.tasks
+            .bot_busy(&h.db.lock().unwrap(), &h.bots[3].id)
+            .unwrap()
+    );
     let closed = h
         .tasks
         .start(&task.id, h.task(&task.id).revision, "closed")

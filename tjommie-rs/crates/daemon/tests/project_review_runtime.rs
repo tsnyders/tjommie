@@ -11,7 +11,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use daemon::cli::{BoxFuture, ChildExit, CliChild, CliCommand, CliExit, CliHost, KillTree, LaunchOptions};
+use daemon::cli::{
+    BoxFuture, ChildExit, CliChild, CliCommand, CliExit, CliHost, KillTree, LaunchOptions,
+};
 use daemon::project_checks::CheckError;
 use daemon::project_review::{
     ReviewContext, ReviewInstructions, ReviewRuntime, ReviewSnapshot, review_coverage,
@@ -63,7 +65,10 @@ fn snapshot() -> ReviewSnapshot {
         "a".repeat(40),
         vec!["source.ts".into()],
         "+return 1;".into(),
-        BTreeMap::from([("source.ts".to_string(), "export const source = 1;\n".to_string())]),
+        BTreeMap::from([(
+            "source.ts".to_string(),
+            "export const source = 1;\n".to_string(),
+        )]),
     )
 }
 
@@ -112,7 +117,9 @@ fn stub_child(state: Arc<StubState>, args: Vec<String>, cwd: PathBuf) -> CliChil
 }
 
 async fn say(out: &mut DuplexStream, line: &Value) {
-    out.write_all(format!("{line}\n").as_bytes()).await.expect("the runner reads stdout");
+    out.write_all(format!("{line}\n").as_bytes())
+        .await
+        .expect("the runner reads stdout");
 }
 
 /// The TypeScript synthetic script's body (project-review-runtime.test.ts:21-33).
@@ -125,7 +132,10 @@ async fn run_stub(
     exit: ChildExit,
     kill: Arc<Notify>,
 ) {
-    let exited = |code: i32| CliExit::Exited { code: Some(code), signal: None };
+    let exited = |code: i32| CliExit::Exited {
+        code: Some(code),
+        signal: None,
+    };
     if args.iter().any(|arg| arg == "--version") {
         stdout.write_all(b"2.1.314 (Claude Code)\n").await.ok();
         exit.fire(exited(0));
@@ -136,13 +146,17 @@ async fn run_stub(
         .position(|arg| arg == "--tools")
         .and_then(|index| args.get(index + 1))
         .is_some_and(String::is_empty);
-    let bare = args.iter().any(|arg| arg == "--bare") && args.iter().any(|arg| arg == "--safe-mode");
+    let bare =
+        args.iter().any(|arg| arg == "--bare") && args.iter().any(|arg| arg == "--safe-mode");
     if !bare || !tools_empty {
         exit.fire(exited(2));
         return;
     }
     let mut text = String::new();
-    stdin.read_to_string(&mut text).await.expect("the runner writes the prompt");
+    stdin
+        .read_to_string(&mut text)
+        .await
+        .expect("the runner writes the prompt");
     let input: Value = serde_json::from_str(&text).expect("the prompt is JSON");
     let budget = args
         .iter()
@@ -156,7 +170,11 @@ async fn run_stub(
         "criteria": input.get("criteria"),
         "instructionsSha256": input.get("instructionsSha256"),
     }));
-    let tools = if state.mode == "tools" { json!(["Bash"]) } else { json!([]) };
+    let tools = if state.mode == "tools" {
+        json!(["Bash"])
+    } else {
+        json!([])
+    };
     say(&mut stdout, &json!({ "type": "system", "subtype": "init", "tools": tools, "mcp_servers": [], "plugins": [] })).await;
     if matches!(state.mode, "tools" | "wait") {
         // The runner must stop this child: its kill fires the exit.
@@ -168,10 +186,15 @@ async fn run_stub(
         fs::write(marker, "mutated").expect("the fixture folder exists");
     }
     let result = if input.get("requests").is_some() {
-        let mut attempts = input["output"]["attempts"].as_array().cloned().unwrap_or_default();
+        let mut attempts = input["output"]["attempts"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
         if state.mode == "incomplete" {
             let first = attempts.first().cloned().unwrap_or(Value::Null);
-            attempts.iter_mut().for_each(|attempt| *attempt = first.clone());
+            attempts
+                .iter_mut()
+                .for_each(|attempt| *attempt = first.clone());
         }
         json!({ "nonce": input["nonce"], "attempts": attempts })
     } else {
@@ -283,7 +306,11 @@ impl ReviewAccount for FakeAccount {
 
     fn max_budget_usd(&self) -> Result<Option<f64>, String> {
         let remaining = if self.stop_when_charged {
-            if self.events.lock().unwrap().is_empty() { 0.01 } else { 0.0 }
+            if self.events.lock().unwrap().is_empty() {
+                0.01
+            } else {
+                0.0
+            }
         } else {
             0.1 - *self.spent.lock().unwrap()
         };
@@ -348,7 +375,10 @@ impl Harness {
         fs::write(&cli, b"").unwrap();
         Harness {
             temp,
-            stub: Arc::new(StubState { mode, log: Mutex::new(Vec::new()) }),
+            stub: Arc::new(StubState {
+                mode,
+                log: Mutex::new(Vec::new()),
+            }),
             account: Arc::new(account),
             cli,
         }
@@ -402,7 +432,10 @@ impl Harness {
     fn review_folders(&self) -> usize {
         read_names(&self.reviews())
             .iter()
-            .filter(|path| path.file_name().is_some_and(|name| name.to_string_lossy().starts_with(".review-")))
+            .filter(|path| {
+                path.file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with(".review-"))
+            })
             .count()
     }
 }
@@ -432,7 +465,10 @@ async fn copies_the_server_criteria_into_the_frozen_prompt_before_resolving_an_a
         acceptance: acceptance.clone(),
         ..instructions()
     };
-    let supplied = ReviewContext { instructions: frozen.clone(), ..context() };
+    let supplied = ReviewContext {
+        instructions: frozen.clone(),
+        ..context()
+    };
     let digest = review_instructions_hash(&supplied);
     // Rust takes the context by reference, so a late edit by the resolver cannot reach the frozen copy. The resolver
     // checks the criteria it is handed are the supplied ones, before it returns the account.
@@ -448,13 +484,20 @@ async fn copies_the_server_criteria_into_the_frozen_prompt_before_resolving_an_a
             Box::pin(async move { Ok(ReviewAccountSelection::Ready(account)) })
         }
     }
-    let resolver = Arc::new(Checking(h.account.clone(), frozen.clone(), Mutex::new(false)));
+    let resolver = Arc::new(Checking(
+        h.account.clone(),
+        frozen.clone(),
+        Mutex::new(false),
+    ));
     let runtime = create_project_review_runtime(ProjectReviewOptions {
         resolve: resolver.clone(),
         ..h.options()
     })
     .unwrap();
-    let result = runtime.review(&snapshot(), &token(), &supplied).await.unwrap();
+    let result = runtime
+        .review(&snapshot(), &token(), &supplied)
+        .await
+        .unwrap();
     assert_eq!(result.state, EvaluationState::Passed);
     assert!(*resolver.2.lock().unwrap());
     let turns = h.log();
@@ -464,10 +507,14 @@ async fn copies_the_server_criteria_into_the_frozen_prompt_before_resolving_an_a
 }
 
 #[tokio::test]
-async fn derives_its_own_acceptance_charges_both_turns_refreshes_the_budget_and_retains_exact_coverage() {
+async fn derives_its_own_acceptance_charges_both_turns_refreshes_the_budget_and_retains_exact_coverage()
+ {
     let h = Harness::new("good");
     let runtime = h.runtime();
-    let result = runtime.review(&snapshot(), &token(), &context()).await.unwrap();
+    let result = runtime
+        .review(&snapshot(), &token(), &context())
+        .await
+        .unwrap();
     assert_eq!(result.state, EvaluationState::Passed);
     assert_eq!(result.coverage, Some(review_coverage(&snapshot()).unwrap()));
     assert_eq!(h.account.usages().len(), 2);
@@ -476,7 +523,12 @@ async fn derives_its_own_acceptance_charges_both_turns_refreshes_the_budget_and_
     assert_eq!(budgets[0], 0.1);
     assert!((budgets[1] - 0.09).abs() < 1e-9);
     assert_eq!(h.account.released(), 1);
-    let ids: std::collections::BTreeSet<_> = h.account.usages().into_iter().filter_map(|usage| usage.event_id).collect();
+    let ids: std::collections::BTreeSet<_> = h
+        .account
+        .usages()
+        .into_iter()
+        .filter_map(|usage| usage.event_id)
+        .collect();
     assert_eq!(ids.len(), 2);
     let receipts = h.receipts();
     assert_eq!(receipts.len(), 1);
@@ -484,13 +536,34 @@ async fn derives_its_own_acceptance_charges_both_turns_refreshes_the_budget_and_
     assert_eq!(receipt["identity"]["version"], json!("2.1.314"));
     assert_eq!(receipt["attempts"].as_array().unwrap().len(), 6);
     assert_eq!(h.review_folders(), 0);
-    assert!(!serde_json::to_string(&h.log()).unwrap().contains("synthetic-api-key-not-real"));
-    runtime.review(&snapshot(), &token(), &ReviewContext { evaluation_id: "second".into(), ..context() }).await.unwrap();
+    assert!(
+        !serde_json::to_string(&h.log())
+            .unwrap()
+            .contains("synthetic-api-key-not-real")
+    );
+    runtime
+        .review(
+            &snapshot(),
+            &token(),
+            &ReviewContext {
+                evaluation_id: "second".into(),
+                ..context()
+            },
+        )
+        .await
+        .unwrap();
     assert_eq!(h.account.usages().len(), 3);
     // A persisted or forged receipt cannot enable a new daemon process: acceptance runs again.
     create_project_review_runtime(h.options())
         .unwrap()
-        .review(&snapshot(), &token(), &ReviewContext { evaluation_id: "restart".into(), ..context() })
+        .review(
+            &snapshot(),
+            &token(),
+            &ReviewContext {
+                evaluation_id: "restart".into(),
+                ..context()
+            },
+        )
         .await
         .unwrap();
     assert_eq!(h.account.usages().len(), 5);
@@ -500,7 +573,11 @@ async fn derives_its_own_acceptance_charges_both_turns_refreshes_the_budget_and_
 async fn never_mints_a_passing_acceptance_receipt_when_the_fixture_mutates_or_is_incomplete() {
     for mode in ["mutate", "incomplete"] {
         let h = Harness::new(mode);
-        let result = h.runtime().review(&snapshot(), &token(), &context()).await.unwrap();
+        let result = h
+            .runtime()
+            .review(&snapshot(), &token(), &context())
+            .await
+            .unwrap();
         assert_eq!(result.state, EvaluationState::Unavailable);
         assert!(result.coverage.is_none());
         assert!(h.receipts().is_empty(), "{mode}: a receipt was written");
@@ -510,9 +587,14 @@ async fn never_mints_a_passing_acceptance_receipt_when_the_fixture_mutates_or_is
 }
 
 #[tokio::test]
-async fn stops_exposed_tools_and_a_cancelled_owned_process_before_releasing_its_lease_and_profile() {
+async fn stops_exposed_tools_and_a_cancelled_owned_process_before_releasing_its_lease_and_profile()
+{
     let exposed = Harness::new("tools");
-    let result = exposed.runtime().review(&snapshot(), &token(), &context()).await.unwrap();
+    let result = exposed
+        .runtime()
+        .review(&snapshot(), &token(), &context())
+        .await
+        .unwrap();
     assert_eq!(result.state, EvaluationState::Unavailable);
     assert_eq!(exposed.account.released(), 1);
     assert!(exposed.receipts().is_empty());
@@ -540,23 +622,48 @@ async fn stops_exposed_tools_and_a_cancelled_owned_process_before_releasing_its_
     assert_eq!(usages.len(), 1);
     assert_eq!(usages[0].model, "test");
     assert!(usages[0].cost_usd.is_none());
-    assert_eq!((usages[0].tokens.input, usages[0].tokens.output), (0.0, 0.0));
+    assert_eq!(
+        (usages[0].tokens.input, usages[0].tokens.output),
+        (0.0, 0.0)
+    );
     assert_eq!(waiting.review_folders(), 0);
 }
 
 #[tokio::test]
-async fn denies_unsupported_subscription_and_codex_accounts_before_any_cli_turn_and_stops_when_acceptance_consumes_the_allowance() {
-    let codex = FakeAccount { provider: Provider::Codex, ..FakeAccount::api() };
-    let subscription = FakeAccount { kind: AccountKind::Subscription, key: None, ..FakeAccount::api() };
+async fn denies_unsupported_subscription_and_codex_accounts_before_any_cli_turn_and_stops_when_acceptance_consumes_the_allowance()
+ {
+    let codex = FakeAccount {
+        provider: Provider::Codex,
+        ..FakeAccount::api()
+    };
+    let subscription = FakeAccount {
+        kind: AccountKind::Subscription,
+        key: None,
+        ..FakeAccount::api()
+    };
     for account in [codex, subscription] {
         let h = Harness::with_account("good", account);
-        let result = h.runtime().review(&snapshot(), &token(), &context()).await.unwrap();
+        let result = h
+            .runtime()
+            .review(&snapshot(), &token(), &context())
+            .await
+            .unwrap();
         assert_eq!(result.state, EvaluationState::Unavailable);
         assert!(h.log().is_empty());
         assert_eq!(h.account.released(), 1);
     }
-    let h = Harness::with_account("good", FakeAccount { stop_when_charged: true, ..FakeAccount::api() });
-    let result = h.runtime().review(&snapshot(), &token(), &context()).await.unwrap();
+    let h = Harness::with_account(
+        "good",
+        FakeAccount {
+            stop_when_charged: true,
+            ..FakeAccount::api()
+        },
+    );
+    let result = h
+        .runtime()
+        .review(&snapshot(), &token(), &context())
+        .await
+        .unwrap();
     assert_eq!(result.state, EvaluationState::Unavailable);
     assert_eq!(h.account.usages().len(), 1);
     assert_eq!(h.account.released(), 1);
@@ -577,14 +684,23 @@ async fn invalidates_an_acceptance_if_machine_policy_changes_during_the_paid_tur
         ..h.options()
     })
     .unwrap();
-    let result = runtime.review(&snapshot(), &token(), &context()).await.unwrap();
-    assert!(result.reason.unwrap_or_default().contains("review_policy_changed"));
+    let result = runtime
+        .review(&snapshot(), &token(), &context())
+        .await
+        .unwrap();
+    assert!(
+        result
+            .reason
+            .unwrap_or_default()
+            .contains("review_policy_changed")
+    );
     assert!(h.receipts().is_empty());
 }
 
 #[tokio::test]
 #[ignore = "M5-integration: needs the project task services (projectFixture, TaskIntegrations), not yet ported"]
-async fn runs_the_synthetic_developer_enforced_reviewer_real_host_check_and_exact_integration_through_the_task_services() {
+async fn runs_the_synthetic_developer_enforced_reviewer_real_host_check_and_exact_integration_through_the_task_services()
+ {
     // TypeScript (project-review-runtime.test.ts:175-191): a synthetic developer commits a change; this enforced
     // reviewer (mode "good") and the test and review evaluations pass; TaskIntegrations integrates the accepted
     // attempt into the delivery branch; the owner's working bytes are unchanged. Port with the task services.
@@ -596,13 +712,13 @@ mod worker {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
+    use super::*;
     use daemon::cli::{BoxFuture, CliChild, CliCommand, CliExit};
     use daemon::win::boundary::{
         BoundaryError, BoundaryOptions, LaunchFailure, NativeLaunch, Observer, PolicyReceipt,
         Receipt, Running, WorkerBoundary, WorkerNative,
     };
     use daemon::win::worker::{Purpose, WorkerConfiguration};
-    use super::*;
 
     /// The worker's policy observations and failure switches (the TypeScript `syntheticWorker` state).
     pub struct WorkerState {
@@ -640,7 +756,14 @@ mod worker {
 
     fn frame_args(frame: &[u8]) -> Vec<String> {
         let body: Value = serde_json::from_slice(&frame[4..]).expect("the launch frame is JSON");
-        body["args"].as_array().map(|args| args.iter().map(|arg| arg.as_str().unwrap_or_default().to_string()).collect()).unwrap_or_default()
+        body["args"]
+            .as_array()
+            .map(|args| {
+                args.iter()
+                    .map(|arg| arg.as_str().unwrap_or_default().to_string())
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     struct StubLaunch {
@@ -660,7 +783,10 @@ mod worker {
             }
         }
 
-        fn resume(self: Box<Self>, frame: Vec<u8>) -> BoxFuture<'static, Result<Running, LaunchFailure>> {
+        fn resume(
+            self: Box<Self>,
+            frame: Vec<u8>,
+        ) -> BoxFuture<'static, Result<Running, LaunchFailure>> {
             let args = frame_args(&frame);
             let paid = args.iter().any(|arg| arg == "--output-format");
             if paid {
@@ -674,7 +800,14 @@ mod worker {
                     });
                 }
                 let child: CliChild = stub_child(self.stub.clone(), args, self.cwd.clone());
-                let CliChild { stdin, stdout, stderr, exit, kill_tree, .. } = child;
+                let CliChild {
+                    stdin,
+                    stdout,
+                    stderr,
+                    exit,
+                    kill_tree,
+                    ..
+                } = child;
                 Ok(Running {
                     stdin,
                     stdout,
@@ -699,16 +832,28 @@ mod worker {
     }
 
     impl WorkerNative for StubNative {
-        fn verify<'a>(&'a self, _config: &'a WorkerConfiguration, _known: &'a [Receipt]) -> BoxFuture<'a, Result<(), String>> {
+        fn verify<'a>(
+            &'a self,
+            _config: &'a WorkerConfiguration,
+            _known: &'a [Receipt],
+        ) -> BoxFuture<'a, Result<(), String>> {
             Box::pin(async { Ok(()) })
         }
 
-        fn read_credential<'a>(&'a self, _target: &'a str) -> BoxFuture<'a, Result<Option<String>, String>> {
-            let saved = json!({ "username": "TjReview-12345678", "password": "synthetic-worker-password" });
+        fn read_credential<'a>(
+            &'a self,
+            _target: &'a str,
+        ) -> BoxFuture<'a, Result<Option<String>, String>> {
+            let saved =
+                json!({ "username": "TjReview-12345678", "password": "synthetic-worker-password" });
             Box::pin(async move { Ok(Some(saved.to_string())) })
         }
 
-        fn grant_directory<'a>(&'a self, _config: &'a WorkerConfiguration, _path: &'a std::path::Path) -> BoxFuture<'a, Result<(), String>> {
+        fn grant_directory<'a>(
+            &'a self,
+            _config: &'a WorkerConfiguration,
+            _path: &'a std::path::Path,
+        ) -> BoxFuture<'a, Result<(), String>> {
             Box::pin(async { Ok(()) })
         }
 
@@ -746,13 +891,20 @@ mod worker {
             provisioned_at: "2026-11-03T00:00:00.000Z".into(),
             credential_target: format!("Tjommie/{}/isolated-review", "a".repeat(24)),
         };
-        for folder in [&config.worker_root, &config.runtime_root, &config.owner_data_root, &root.join("daemon")] {
+        for folder in [
+            &config.worker_root,
+            &config.runtime_root,
+            &config.owner_data_root,
+            &root.join("daemon"),
+        ] {
             fs::create_dir_all(folder).unwrap();
         }
         // The CLI executable must sit inside the worker's runtime root.
         let cli = config.runtime_root.join("claude.exe");
         fs::write(&cli, b"").unwrap();
-        let configuration_path = config.owner_data_root.join(Purpose::Review.configuration_file());
+        let configuration_path = config
+            .owner_data_root
+            .join(Purpose::Review.configuration_file());
         fs::write(&configuration_path, serde_json::to_string(&config).unwrap()).unwrap();
 
         let state = Arc::new(WorkerState {
@@ -767,7 +919,9 @@ mod worker {
             let state = observed.clone();
             Box::pin(async move {
                 state.observations.fetch_add(1, Ordering::SeqCst);
-                if state.fail_after.load(Ordering::SeqCst) && state.paid_launches.load(Ordering::SeqCst) >= 2 {
+                if state.fail_after.load(Ordering::SeqCst)
+                    && state.paid_launches.load(Ordering::SeqCst) >= 2
+                {
                     return Err(BoundaryError::Termination);
                 }
                 Ok(state.receipt.lock().unwrap().clone())
@@ -786,7 +940,12 @@ mod worker {
             native,
             observer: Some(observer),
         });
-        Worker { boundary: Arc::new(boundary), state, config, cli }
+        Worker {
+            boundary: Arc::new(boundary),
+            state,
+            config,
+            cli,
+        }
     }
 
     /// The review runs through the worker: its CLI is the one in the runtime root, and its policy is observed for real.
@@ -806,21 +965,36 @@ mod worker {
 
     /// Whether the worker's review lease is free: a second review scope can start.
     pub async fn lease_free(worker: &Worker) -> bool {
-        worker.boundary.with_review_policy(|_| async { Ok(()) }).await.is_ok()
+        worker
+            .boundary
+            .with_review_policy(|_| async { Ok(()) })
+            .await
+            .is_ok()
     }
 
     pub fn scratch_entries(worker: &Worker) -> usize {
-        read_names(&worker.config.worker_root.join("accounts").join("reviewer-scratch")).len()
+        read_names(
+            &worker
+                .config
+                .worker_root
+                .join("accounts")
+                .join("reviewer-scratch"),
+        )
+        .len()
     }
 }
 
 #[cfg(windows)]
 #[tokio::test]
-async fn requires_fresh_worker_evidence_before_each_paid_turn_and_releases_only_after_the_final_policy_observation() {
+async fn requires_fresh_worker_evidence_before_each_paid_turn_and_releases_only_after_the_final_policy_observation()
+ {
     let h = Harness::new("good");
     let worker = worker::worker(&h);
     let runtime = create_project_review_runtime(worker::options(&h, &worker)).unwrap();
-    let result = runtime.review(&snapshot(), &token(), &context()).await.unwrap();
+    let result = runtime
+        .review(&snapshot(), &token(), &context())
+        .await
+        .unwrap();
     assert_eq!(result.state, EvaluationState::Passed);
     assert!(worker.state.observations.load(Ordering::SeqCst) >= 7);
     assert!(worker::lease_free(&worker).await);
@@ -858,9 +1032,17 @@ async fn blocks_the_review_turn_when_fresh_worker_evidence_changes_after_accepta
     let worker = worker::worker(&h);
     *policy_state.lock().unwrap() = Some(worker.state.clone());
     let runtime = create_project_review_runtime(worker::options(&h, &worker)).unwrap();
-    let result = runtime.review(&snapshot(), &token(), &context()).await.unwrap();
+    let result = runtime
+        .review(&snapshot(), &token(), &context())
+        .await
+        .unwrap();
     assert_eq!(result.state, EvaluationState::Unavailable);
-    assert!(result.reason.unwrap_or_default().contains("review_policy_changed"));
+    assert!(
+        result
+            .reason
+            .unwrap_or_default()
+            .contains("review_policy_changed")
+    );
     assert_eq!(h.account.usages().len(), 1);
     assert!(!h.reviews().join("receipts").exists());
     assert!(worker::lease_free(&worker).await);
@@ -869,18 +1051,40 @@ async fn blocks_the_review_turn_when_fresh_worker_evidence_changes_after_accepta
 
 #[cfg(windows)]
 #[tokio::test]
-async fn retains_worker_account_and_scratch_leases_after_unconfirmed_paid_start_or_final_observer_retirement() {
+async fn retains_worker_account_and_scratch_leases_after_unconfirmed_paid_start_or_final_observer_retirement()
+ {
     for failure in ["paidStart", "after"] {
         let h = Harness::new("good");
         let worker = worker::worker(&h);
-        worker.state.fail_paid_start.store(failure == "paidStart", Ordering::SeqCst);
-        worker.state.fail_after.store(failure == "after", Ordering::SeqCst);
+        worker
+            .state
+            .fail_paid_start
+            .store(failure == "paidStart", Ordering::SeqCst);
+        worker
+            .state
+            .fail_after
+            .store(failure == "after", Ordering::SeqCst);
         let runtime = create_project_review_runtime(worker::options(&h, &worker)).unwrap();
         let first = runtime.review(&snapshot(), &token(), &context()).await;
-        assert!(matches!(first, Err(CheckError::Termination(_))), "{failure}: {first:?}");
-        let second = runtime.review(&snapshot(), &token(), &context()).await.unwrap();
-        assert!(second.reason.unwrap_or_default().contains("review_worker_busy"), "{failure}");
-        assert!(!worker::lease_free(&worker).await, "{failure}: the worker lease was released");
+        assert!(
+            matches!(first, Err(CheckError::Termination(_))),
+            "{failure}: {first:?}"
+        );
+        let second = runtime
+            .review(&snapshot(), &token(), &context())
+            .await
+            .unwrap();
+        assert!(
+            second
+                .reason
+                .unwrap_or_default()
+                .contains("review_worker_busy"),
+            "{failure}"
+        );
+        assert!(
+            !worker::lease_free(&worker).await,
+            "{failure}: the worker lease was released"
+        );
         assert_eq!(worker::scratch_entries(&worker), 1, "{failure}");
         assert!(h.evaluations().is_empty(), "{failure}");
         assert_eq!(h.account.released(), 0, "{failure}");
@@ -893,4 +1097,3 @@ async fn retains_worker_account_and_scratch_leases_after_unconfirmed_paid_start_
         }
     }
 }
-

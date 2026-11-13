@@ -396,15 +396,8 @@ fn policy_key_present() -> Result<bool, String> {
     for hive in [HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER] {
         let mut key = HKEY(std::ptr::null_mut());
         // SAFETY: `key` is a valid out-pointer, and `subkey` is a NUL-terminated wide string that outlives the call.
-        let status = unsafe {
-            RegOpenKeyExW(
-                hive,
-                PCWSTR(subkey.as_ptr()),
-                None,
-                KEY_READ,
-                &mut key,
-            )
-        };
+        let status =
+            unsafe { RegOpenKeyExW(hive, PCWSTR(subkey.as_ptr()), None, KEY_READ, &mut key) };
         if status == ERROR_SUCCESS {
             found = true;
             // SAFETY: `key` was opened above and is closed once.

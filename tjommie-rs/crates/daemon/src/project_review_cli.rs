@@ -209,9 +209,14 @@ impl Turn<'_> {
         }
         self.result_seen = true;
         let usage = parsed.usage;
-        let counts_safe = [usage.input, usage.cached_input, usage.output, usage.reasoning]
-            .into_iter()
-            .all(safe_count);
+        let counts_safe = [
+            usage.input,
+            usage.cached_input,
+            usage.output,
+            usage.reasoning,
+        ]
+        .into_iter()
+        .all(safe_count);
         let cost = parsed
             .total_cost_usd
             .filter(|cost| cost.is_finite() && *cost >= 0.0);
@@ -371,7 +376,11 @@ async fn review_turn(
     if let Some(message) = &turn.failure {
         return Err(CheckError::Failed(message.clone()));
     }
-    match (exit_code(&child.exit), turn.answer.take(), turn.policy.take()) {
+    match (
+        exit_code(&child.exit),
+        turn.answer.take(),
+        turn.policy.take(),
+    ) {
         (Some(0), Some(answer), Some(policy)) => Ok(ReviewCliResult {
             text: answer.text,
             policy,

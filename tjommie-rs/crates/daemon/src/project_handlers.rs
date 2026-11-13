@@ -3,8 +3,8 @@
 
 use std::sync::Arc;
 
-use protocol::wire::method;
 use protocol::ErrorCode;
+use protocol::wire::method;
 
 use crate::projects::Projects;
 use crate::server::{Handlers, Principal, RequestContext, RpcError};
@@ -21,9 +21,9 @@ pub struct ProjectServices {
 
 /// `context.principal.kind === "local"` on a live connection.
 pub fn local_and_live(context: &Option<RequestContext>) -> bool {
-    context
-        .as_ref()
-        .is_some_and(|context| context.principal == Principal::Local && !context.signal.is_cancelled())
+    context.as_ref().is_some_and(|context| {
+        context.principal == Principal::Local && !context.signal.is_cancelled()
+    })
 }
 
 /// `live`: a connection that closed can no longer start paid work. Public so the closed-connection case can be tested

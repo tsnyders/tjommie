@@ -29,7 +29,9 @@ use crate::project_review::{
     ReviewContext, ReviewResult, ReviewRuntime, ReviewSnapshot, frozen_review_context,
     frozen_review_input, review_hash, review_instructions_hash,
 };
-use crate::project_review_cli::{ReviewCliOptions, ReviewCliResult, review_cli_version, run_review_cli};
+use crate::project_review_cli::{
+    ReviewCliOptions, ReviewCliResult, review_cli_version, run_review_cli,
+};
 use crate::project_review_policy::{
     REVIEW_POLICY, REVIEW_SETTINGS, ReviewEffectivePolicy, WorkerPolicyObserver,
     canonical_review_command, review_cli_args, review_command_hash, review_environment,
@@ -54,10 +56,12 @@ const MUTATION: &str = "review_acceptance_mutation_detected";
 const GIT_UNAVAILABLE: &str = "review_acceptance_fixture_git_unavailable";
 const CANCELLED: &str = "review_cancelled";
 /// `WorkerLaunchTerminationError`'s message when no `CheckTerminationError` was retained.
-const RETIREMENT: &str = "Reviewer startup retirement is unconfirmed; its account and scratch profile are retained.";
+const RETIREMENT: &str =
+    "Reviewer startup retirement is unconfirmed; its account and scratch profile are retained.";
 /// Stands in for zod's error text. Like it, it matches no `review_*` code, so the reason is `GENERIC_REASON`.
 const INVALID_REPLY: &str = "The reviewer reply does not match its schema.";
-const CODEX_REASON: &str = "Codex has no verified tool-free reviewer policy for the installed runtime.";
+const CODEX_REASON: &str =
+    "Codex has no verified tool-free reviewer policy for the installed runtime.";
 const SUBSCRIPTION_REASON: &str = "Claude subscription review needs isolated authentication and an independently accepted policy; configure a dedicated API account in Accounts.";
 const MAX_PROMPT_BYTES: usize = 4_194_304;
 
@@ -231,7 +235,10 @@ fn io_failure(error: io::Error) -> Failure {
 /// `^review_[a-z_]+$`: the reasons TypeScript reports as they are.
 fn is_review_code(message: &str) -> bool {
     message.strip_prefix("review_").is_some_and(|rest| {
-        !rest.is_empty() && rest.bytes().all(|byte| byte.is_ascii_lowercase() || byte == b'_')
+        !rest.is_empty()
+            && rest
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte == b'_')
     })
 }
 
@@ -416,9 +423,7 @@ fn run_git(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    let mut child = command
-        .spawn()
-        .map_err(|_| GIT_UNAVAILABLE.to_string())?;
+    let mut child = command.spawn().map_err(|_| GIT_UNAVAILABLE.to_string())?;
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         match child.try_wait() {
@@ -452,7 +457,11 @@ fn acceptance_fixture(root: &Path, cwd: &Path) -> Result<AcceptanceFixture, Stri
         ("GIT_COMMITTER_NAME", "Tjommie reviewer acceptance".into()),
         ("GIT_COMMITTER_EMAIL", "reviewer@example.invalid".into()),
     ];
-    env.extend(identity.into_iter().map(|(key, value)| (key.to_string(), value)));
+    env.extend(
+        identity
+            .into_iter()
+            .map(|(key, value)| (key.to_string(), value)),
+    );
     let git = resolve_cli_git()?;
     let hooks_arg = format!("core.hooksPath={}", hooks.to_string_lossy());
     run_git(&git, &repository, &hooks_arg, &env, &["init", "-b", "main"])?;
@@ -461,7 +470,13 @@ fn acceptance_fixture(root: &Path, cwd: &Path) -> Result<AcceptanceFixture, Stri
     let nonce = new_id();
     fs::write(&source, format!("Immutable acceptance source {nonce}\n"))
         .map_err(|error| error.to_string())?;
-    run_git(&git, &repository, &hooks_arg, &env, &["add", "--", "review.txt"])?;
+    run_git(
+        &git,
+        &repository,
+        &hooks_arg,
+        &env,
+        &["add", "--", "review.txt"],
+    )?;
     run_git(
         &git,
         &repository,
@@ -487,7 +502,8 @@ fn acceptance_fixture(root: &Path, cwd: &Path) -> Result<AcceptanceFixture, Stri
     );
     let utf16: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
     let encoded = base64::engine::general_purpose::STANDARD.encode(utf16);
-    let hook_command = format!("\"{powershell}\" -NoProfile -NonInteractive -EncodedCommand {encoded}");
+    let hook_command =
+        format!("\"{powershell}\" -NoProfile -NonInteractive -EncodedCommand {encoded}");
 
     fs::create_dir(cwd.join(".claude")).map_err(|error| error.to_string())?;
     let settings = json!({
@@ -495,8 +511,11 @@ fn acceptance_fixture(root: &Path, cwd: &Path) -> Result<AcceptanceFixture, Stri
         "permissions": { "allow": ["Bash(*)", "Edit", "Write"] },
         "enableAllProjectMcpServers": true,
     });
-    fs::write(cwd.join(".claude").join("settings.local.json"), settings.to_string())
-        .map_err(|error| error.to_string())?;
+    fs::write(
+        cwd.join(".claude").join("settings.local.json"),
+        settings.to_string(),
+    )
+    .map_err(|error| error.to_string())?;
     let mcp = json!({
         "mcpServers": { "forbidden": { "command": powershell, "args": ["-NoProfile", "-NonInteractive", "-EncodedCommand", encoded] } }
     });
@@ -563,11 +582,14 @@ impl AcceptanceReply {
     /// The schema part: six attempts, each a known case reporting `unavailable`.
     fn check(&self) -> Result<(), String> {
         let valid = self.attempts.len() == CASES.len()
-            && self
-                .attempts
-                .iter()
-                .all(|attempt| CASES.contains(&attempt.id.as_str()) && attempt.result == "unavailable");
-        if valid { Ok(()) } else { Err(INVALID_REPLY.into()) }
+            && self.attempts.iter().all(|attempt| {
+                CASES.contains(&attempt.id.as_str()) && attempt.result == "unavailable"
+            });
+        if valid {
+            Ok(())
+        } else {
+            Err(INVALID_REPLY.into())
+        }
     }
 }
 
@@ -633,9 +655,16 @@ impl ReviewReply {
             });
         let valid = hex
             && self.reviewed_files.len() <= 2048
-            && self.reason.as_deref().is_none_or(|reason| utf16_len(reason) <= 2000)
+            && self
+                .reason
+                .as_deref()
+                .is_none_or(|reason| utf16_len(reason) <= 2000)
             && findings_valid;
-        if valid { Ok(()) } else { Err(INVALID_REPLY.into()) }
+        if valid {
+            Ok(())
+        } else {
+            Err(INVALID_REPLY.into())
+        }
     }
 }
 
@@ -647,8 +676,7 @@ pub fn validate_review_reply(
     instructions_sha256: &str,
 ) -> Result<ReviewResult, String> {
     let (_, coverage) = frozen_review_input(snapshot)?;
-    let reply: ReviewReply =
-        serde_json::from_str(text).map_err(|_| INVALID_REPLY.to_string())?;
+    let reply: ReviewReply = serde_json::from_str(text).map_err(|_| INVALID_REPLY.to_string())?;
     reply.check()?;
     let mut expected = snapshot.files.clone();
     expected.sort();
@@ -766,7 +794,12 @@ fn default_claude_cli(worker: Option<Arc<WorkerBoundary>>) -> Option<CliCommand>
 }
 
 /// `writeFileSync` of `receipts/` or `evaluations/`, with its folder.
-fn write_under(root: &Path, folder: &str, name: &str, value: &impl Serialize) -> Result<(), String> {
+fn write_under(
+    root: &Path,
+    folder: &str,
+    name: &str,
+    value: &impl Serialize,
+) -> Result<(), String> {
     let directory = root.join(folder);
     fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
     write_new(&directory.join(name), json_text(value).as_bytes()).map_err(|error| error.to_string())
@@ -787,7 +820,9 @@ pub struct ProjectReviewRuntime {
 }
 
 /// `createProjectReviewRuntime` (project-review-runtime.ts:114).
-pub fn create_project_review_runtime(options: ProjectReviewOptions) -> io::Result<ProjectReviewRuntime> {
+pub fn create_project_review_runtime(
+    options: ProjectReviewOptions,
+) -> io::Result<ProjectReviewRuntime> {
     fs::create_dir_all(&options.root)?;
     let root = fsid::real_path(&options.root)?;
     Ok(ProjectReviewRuntime {
@@ -841,7 +876,9 @@ impl ProjectReviewRuntime {
             return Ok(seam());
         }
         let observer = self.review_worker().map(ReviewObserver);
-        let observer = observer.as_ref().map(|observer| observer as &dyn WorkerPolicyObserver);
+        let observer = observer
+            .as_ref()
+            .map(|observer| observer as &dyn WorkerPolicyObserver);
         review_machine_policy_hash(observer).await.map_err(classify)
     }
 
@@ -901,7 +938,11 @@ impl ProjectReviewRuntime {
     }
 
     /// `run(text)` (project-review-runtime.ts:155): a paid review turn in its own folder, checked before and after.
-    async fn run_turn(&self, session: &Session<'_>, prompt: String) -> Result<ReviewCliResult, Failure> {
+    async fn run_turn(
+        &self,
+        session: &Session<'_>,
+        prompt: String,
+    ) -> Result<ReviewCliResult, Failure> {
         self.current(session).await?;
         let allowance = session.account.max_budget_usd().map_err(Failure::Review)?;
         let turn = create_unique(&session.scratch, "turn-").map_err(io_failure)?;
@@ -930,7 +971,14 @@ impl ProjectReviewRuntime {
         fs::write(&settings, REVIEW_SETTINGS).map_err(io_failure)?;
         let env = review_environment(&root.join("profile")).map_err(Failure::Review)?;
         let accepted = self
-            .cli_turn(session, cwd, env, &settings, allowance, fixture.prompt.clone())
+            .cli_turn(
+                session,
+                cwd,
+                env,
+                &settings,
+                allowance,
+                fixture.prompt.clone(),
+            )
             .await?;
         let fixture_sha256 = fixture.verify().map_err(Failure::Review)?;
         self.current(session).await?;
@@ -958,8 +1006,13 @@ impl ProjectReviewRuntime {
             cost_usd: accepted.cost_usd,
             resolved_model: accepted.model.clone(),
         };
-        write_under(&self.root, "receipts", &format!("{}.json", receipt.id), &receipt)
-            .map_err(Failure::Review)?;
+        write_under(
+            &self.root,
+            "receipts",
+            &format!("{}.json", receipt.id),
+            &receipt,
+        )
+        .map_err(Failure::Review)?;
         self.receipts
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -1035,7 +1088,8 @@ impl ProjectReviewRuntime {
         let scratch = create_unique(&run.scratch_parent, ".review-").map_err(io_failure)?;
         run.scratch = Some(scratch.clone());
 
-        let version_env = review_environment(&scratch.join("version-profile")).map_err(Failure::Review)?;
+        let version_env =
+            review_environment(&scratch.join("version-profile")).map_err(Failure::Review)?;
         let version = review_cli_version(
             &host,
             &command,
@@ -1048,7 +1102,8 @@ impl ProjectReviewRuntime {
         let machine_policy_sha256 = self.machine_policy().await?;
         let mismatch = match &policy {
             Some(receipt) => {
-                review_worker_policy_hash(receipt).map_err(Failure::Review)? != machine_policy_sha256
+                review_worker_policy_hash(receipt).map_err(Failure::Review)?
+                    != machine_policy_sha256
             }
             None => worker_root.is_some(),
         };
@@ -1063,7 +1118,9 @@ impl ProjectReviewRuntime {
             cli_sha256: review_command_hash(&command).map_err(Failure::Review)?,
             source_sha256: review_source_hash().map_err(Failure::Review)?,
             machine_policy_sha256,
-            worker_root: worker_root.as_ref().map(|root| root.to_string_lossy().into_owned()),
+            worker_root: worker_root
+                .as_ref()
+                .map(|root| root.to_string_lossy().into_owned()),
             worker_policy: policy.as_ref().map(WorkerPolicyJson::from),
             model: account.model().to_string(),
         };
@@ -1241,9 +1298,14 @@ impl ProjectReviewRuntime {
         };
         // The audit is written after the lease is released, as in TypeScript, and a write failure is a failed review.
         let attempted = attempted.and_then(|result| match run.audit.take() {
-            Some(audit) => write_under(&self.root, "evaluations", &format!("{}.json", new_id()), &audit)
-                .map(|()| result)
-                .map_err(Failure::Review),
+            Some(audit) => write_under(
+                &self.root,
+                "evaluations",
+                &format!("{}.json", new_id()),
+                &audit,
+            )
+            .map(|()| result)
+            .map_err(Failure::Review),
             None => Ok(result),
         });
         let value = match attempted {
@@ -1278,4 +1340,3 @@ impl ReviewRuntime for ProjectReviewRuntime {
         Box::pin(self.review_once(snapshot, signal, context))
     }
 }
-
