@@ -180,8 +180,47 @@ fn passes_awkward_instructions_through_process_arguments_unchanged_argument_roun
 
 // describe("ClaudeSession folder permissions")
 
-/// TypeScript counts the whoami and icacls calls. This checks their effect: each session folder ends up with one
-/// non-inherited ACE, full control for the user.
+/// What `icacls /inheritance:r /grant:r *<sid>:(OI)(CI)F` leaves on a session folder, read as SDDL so principals are SIDs and
+/// not display names: the DACL is protected, nothing is inherited, the user has full control of the folder and below, and
+/// nobody else is trusted except SYSTEM and Administrators. The owner's non-elevated account ends up with its own entry
+/// only, but the hosted runner's elevated administrator also keeps explicit SYSTEM and Administrators entries. Those two can
+/// take ownership of any folder anyway, so they don't weaken it; an entry for Everyone, Users or Authenticated Users would.
+fn assert_private_folder(folder: &Path, user: &str) {
+    let sddl = daemon::win::logon::sddl(folder).unwrap();
+    let (head, aces) = sddl.split_at(sddl.find('(').expect("the DACL has entries"));
+    let flags = &head[head.rfind("D:").expect("a DACL") + 2..];
+    assert!(flags.contains('P'), "inheritance is still on: {sddl}");
+    // SDDL spells the machine's built-in Administrator (RID 500) as `LA`, not as its SID.
+    let is_user = |trustee: &str| trustee == user || (trustee == "LA" && user.ends_with("-500"));
+    let mut user_has_full_control = false;
+    for ace in aces.split(')').filter(|ace| !ace.is_empty()) {
+        let parts: Vec<&str> = ace.trim_start_matches('(').split(';').collect();
+        let &[kind, ace_flags, rights, _, _, trustee] = parts.as_slice() else {
+            panic!("an ACE this test can't read: {ace}) in {sddl}");
+        };
+        assert_eq!(kind, "A", "only allow entries: {sddl}");
+        assert!(
+            !ace_flags.as_bytes().chunks(2).any(|flag| flag == b"ID"),
+            "an inherited entry: {sddl}"
+        );
+        if is_user(trustee) {
+            user_has_full_control |= ace_flags == "OICI" && rights == "FA";
+        } else {
+            let system_or_administrators = ["SY", "S-1-5-18", "BA", "S-1-5-32-544"];
+            assert!(
+                system_or_administrators.contains(&trustee),
+                "{trustee} can reach the folder: {sddl}"
+            );
+        }
+    }
+    assert!(
+        user_has_full_control,
+        "{user} lacks (OI)(CI) full control: {sddl}"
+    );
+}
+
+/// TypeScript counts the whoami and icacls calls (its `spawnSync` is a mock that never reads an ACL back). This checks their
+/// effect on each session folder.
 #[tokio::test]
 async fn applies_a_private_acl_to_every_new_session_folder() {
     let host = Arc::new(FakeHost::default());
@@ -196,21 +235,60 @@ async fn applies_a_private_acl_to_every_new_session_folder() {
         claude.start().await.unwrap();
         sessions.push(claude);
     }
+    let user = daemon::win::logon::current_user_sid().unwrap();
     for (_, args, _) in host.launches.lock().unwrap().iter() {
         let folder = PathBuf::from(arg_after(args, "--append-system-prompt-file"))
             .parent()
             .unwrap()
             .to_path_buf();
-        let acl = daemon::spawn::command("icacls")
-            .arg(&folder)
-            .output()
-            .unwrap();
-        let acl = String::from_utf8_lossy(&acl.stdout);
-        assert!(acl.contains("(OI)(CI)(F)") && !acl.contains("(I)"), "{acl}");
-        assert_eq!(acl.matches(":(").count(), 1, "{acl}");
+        assert_private_folder(&folder, &user);
     }
     sessions.iter().for_each(ProviderSession::close);
     fakes.iter().for_each(|fake| fake.exit_with(Some(0), None));
+}
+
+/// A folder locked down the way the session folders are, plus the extra grants a test wants. Not an elevated administrator,
+/// so SYSTEM and Administrators entries have to be added by hand to stand in for the hosted runner's.
+fn locked_down_folder(grants: &[&str]) -> (tempfile::TempDir, PathBuf, String) {
+    let root = temp_root();
+    let folder = root.path().join("session");
+    std::fs::create_dir(&folder).unwrap();
+    let user = daemon::win::logon::current_user_sid().unwrap();
+    let icacls = |args: Vec<String>| {
+        let out = daemon::spawn::command(daemon::cli::system32("icacls.exe"))
+            .arg(&folder)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+    };
+    icacls(vec![
+        "/inheritance:r".into(),
+        "/grant:r".into(),
+        format!("*{user}:(OI)(CI)F"),
+    ]);
+    for grant in grants {
+        icacls(vec!["/grant".into(), (*grant).into()]);
+    }
+    (root, folder, user)
+}
+
+#[test]
+fn the_private_folder_check_tolerates_system_and_administrators_next_to_the_user() {
+    let grants = ["*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F"];
+    let (_root, folder, user) = locked_down_folder(&grants);
+    assert_private_folder(&folder, &user);
+}
+
+#[test]
+#[should_panic(expected = "can reach the folder")]
+fn the_private_folder_check_refuses_a_broad_group() {
+    let (_root, folder, user) = locked_down_folder(&["*S-1-5-32-545:(OI)(CI)RX"]);
+    assert_private_folder(&folder, &user);
 }
 
 // describe("ClaudeSession activity")
