@@ -45,7 +45,8 @@ Auto-update stays working through every release (§3.10).
 | `daemon` | Binary `tjommie-daemon.exe`. Includes SQLite and Win32 |
 | `client` | Shared by desktop and Android |
 | `ffi` | UniFFI bindings for Android |
-| `desktop` | Desktop UI |
+| `desktop` | Desktop UI (GPUI) |
+| `desktop-host` | The desktop app's non-GPUI parts: WebView2 browser engine and tools, broker clients, login vault, speech, updater, tray, notifications, login item, crash handling, daemon process. Split from `desktop` so its tests build without GPUI and the browser work runs in parallel (Phase 3 plan) |
 
 Split further only when a crate needs it.
 
@@ -157,9 +158,13 @@ Split further only when a crate needs it.
 - **Ports:** daemon 47100 (`paths.ts:6`, `TJOMMIE_PORT` at `main.ts:26`), LAN 47101.
 - **Per-bot folders:** `bots/<id>/`.
 - **Browser profiles:** `data/native-browser/<sha256(botId)>` (`desktop/src/main.ts:617`).
+  - **Desktop-UI phase:** a single WebView2 user data folder, `data/webview2`, with one profile per bot named by the full 64-hex `sha256(botId)`.
+  - Electron's cookies can't be carried into WebView2, because each engine encrypts them with its own key, so bots sign in to sites again. Saved logins are unaffected. Owner-accepted 2026-11-13.
+  - The old `data/native-browser/` folders are kept for one release so a rollback to R1 keeps them.
+- **Desktop page storage:** Electron's `localStorage` at `app://tjommie` also holds per-device settings on the desktop: paired other PCs (`ui/lib/remote-hosts.ts`), theme, text size and density. The desktop-UI app keeps them in `data/desktop-ui.json`. It imports them once from `data/desktop-ui-export.json`, which a 0.5.x Electron patch writes on every start (owner decision, 2026-11-13; Phase 3 plan T1.5 and T1.6). An install that skipped 0.5.x starts with the defaults. App zoom is not carried over.
 - **Account folders:** `accounts/`.
 - **Worktrees:** `workspaces/`.
-- **Speech models:** Electron userData `speech/` (`main.ts:195`).
+- **Speech models:** Electron userData `speech/` (`main.ts:198`), i.e. `%APPDATA%\Tjommie\speech`. The desktop-UI app keeps this production path, so the model isn't downloaded again and a rollback still finds it.
 - **Paired devices:** tables `devices`, `remote_host` and `pairing_codes` (`db.ts:210-221`).
 
 ### 3.7 Secrets
@@ -239,6 +244,9 @@ Provisioning keeps today's elevation flow.
 - **The updater exists today.** It is electron-updater (`desktop/package.json`; `updater.ts:29-45`). First check after 60 s, then every 6 h. It downloads automatically and installs on quit. The feed is GitHub Releases `latest.yml` (`package.ts:112`), checked in `release.yml:66-84`.
   - **R1:** unchanged. The Rust daemon is bundled as a resource.
   - **Desktop-UI release:** a Rust updater reads the same `latest.yml`. It checks the version, verifies the sha512, downloads to a temp folder and runs the NSIS installer with `/S` on quit. This works unsigned.
+    - The desktop-UI installer is a hand-written NSIS script. electron-builder can't package a non-Electron app.
+    - It reproduces R1's install facts exactly (folder, GUID, registry keys, shortcut AUMID, login-item entry). Those facts are recorded from a real R1 install on a runner, not assumed.
+    - It accepts electron-updater's `--updated` and `--force-run` arguments, so R1's updater can install it.
   - **Why not Velopack:** it uses its own installer and install folder. Moving from 0.4.x would need a bridge release that removes the NSIS install, and an uninstaller once deleted the owner's install.
   - **Dev builds** are compiled with no feed URL. CI asserts that the dev binary contains no `github.com/tsnyders/tjommie` feed. The updater also refuses any installer whose embedded appId differs from its own.
 - **Speech:** CPU `whisper-cli.exe`, built from a pinned commit in CI (`scripts/build-speech-runtime.ps1`). The model is `ggml-base.en.bin`, downloaded at runtime and checked by sha256 (`speech-model.ts:7-11`, `:81-151`).
@@ -405,6 +413,43 @@ Pin `gpui` and `gpui-component` to exact git commits. Pass criteria, all measure
 
 The decision is recorded here before Phase 3 starts.
 
+**Decision (owner, 2026-11-13): GPUI**, with engine (a), a WebView2 child window per bot with the snapshot shield.
+
+**Evidence** (`tjommie-rs/spikes/gpui/REPORT.md` on `rs/gpui-spike`, `a1b1f59`):
+- Criteria 1, 2, 3, 6, 7 and 8 pass:
+  - the 10k list p95 is 11.3–12.8 ms;
+  - one WebView2 environment with a profile per bot;
+  - the stream runs at 95–100 fps median;
+  - Recents, approval, flight and 30 living avatars pass on every run;
+  - the panel passes on a quiet PC (snapshot 12.6–13.1 ms, live 14.3–16.2 ms);
+  - real reduced motion passes 4 of 4.
+- Criterion 4 fails 1 of 9 hand steps: Shift+Tab doesn't hand focus back from the page.
+- Criterion 5 holds for the page window, but the script rule missed 3 of 6 runs at 125% and 150%: a 2 px rounding case and the page's own scrollbar.
+- **Baseline:** Electron 0.4.2 takes 3,837.5 ms to its first present and idles at 496.1 MiB summed working set with no bot browser open. The spike takes 353 ms, and idles at 65.8 MiB alone or 443.0 MiB with two live pages (summed working set, which overcounts shared pages).
+- The owner prefers the live panel variant ("I love the Live Variant").
+
+**Conditions** (built into `docs/superpowers/plans/2026-11-13-tjommie-rs-phase3-gpui-desktop.md`):
+1. **Browser memory.**
+   - Bot browsers start lazily (`open(bot)`, as Electron does).
+   - Hidden idle bots get `SetIsVisible(false)` plus `TrySuspend`, and stay awake while a tool runs or a stream is on. Nothing is parked off-screen unless it needs to render.
+   - Only the safe `--disable-features` set is used, and site isolation is never weakened.
+   - `MemoryUsageTargetLevel` Low and idle-controller close are optional.
+   - The exit criteria get a memory budget measured as private working set and private commit, not summed working set. The measurement script is fixed first.
+2. **Focus and shortcuts.** WebView2's `MoveFocusRequested` handles Tab and Shift+Tab out of the page, and Shift+Tab always leaves the page, as in Electron. Every app-wide shortcut is forwarded from `AcceleratorKeyPressed`.
+3. **The browser panel motion** uses the live variant by default. It falls back automatically, per motion, to the snapshot variant when the measured frame time goes over 16.7 ms. The fallback cannot rescue a saturated CPU.
+4. **Crash safety.** UI code follows a no-panic discipline (clippy lints, `catch_unwind` at handlers), with crash logging and an automatic restart.
+5. **Unfocused windows** keep GPUI's ~30 fps throttle, except while a live stream or the live panel is showing.
+6. **The other GPUI limits** each have a chosen workaround:
+   - inline text runs;
+   - the "Archivo Expanded Tight" display face;
+   - baked icons;
+   - re-entrancy (`PrintWindow` and Win32 calls outside updates);
+   - the shield over native child windows;
+   - rem-based app zoom;
+   - the single UI thread.
+7. **The fallback:** if the browser engine blocks Phase 3, the "Electron shell restyled to Aegis" option applies. The plan defines the decision point and what carries over (daemon, protocol, design tokens).
+8. **Pins:** `gpui` and `gpui-component` (gpui-kit) stay pinned to exact commits, with an upgrade policy.
+
 ### Phase 3: desktop UI (gate outcome, chosen design)
 Includes:
 - The browser host (broker clients, private mode, stream source)
@@ -413,11 +458,19 @@ Includes:
 - Notifications, tray, start at login
 - The §3.10 updater
 
-Built under the dev identity until release.
+Built under the dev identity until release. Plan: `docs/superpowers/plans/2026-11-13-tjommie-rs-phase3-gpui-desktop.md`.
 
 **Exit criteria:**
 - Every desktop (D) row passes on the owner's PC.
 - No worse than the baseline.
+- **Memory budget.** It is measured as private working set (primary) and private commit, summed over the app's process tree, by the fixed `tools/perf/measure-memory.ps1`. Summed working set is reported only for continuity. The targets, accepted by the owner on 2026-11-13 (§10 item 5):
+  - no bot browser open: at most 120 MiB;
+  - one bot page shown: at most 280 MiB;
+  - in both states, at most 50% of the installed Electron app's private working set in the same state.
+
+  The suspend and idle-close deltas and the leak check are in the plan.
+- **Full keyboard navigation:** every interactive element is reachable and usable from the keyboard, proven by an automated test and an owner keyboard-only pass. This is the condition for shipping without a screen reader (§10 item 8).
+- **The 0.5.x export patch** was published at least 7 days before this release (§10 item 7).
 - **Release:** production appId, GUID, install folder and artifact name, published with `latest.yml` so R1's electron-updater installs it.
 - The installer is tested first on a runner with R1 installed.
 - Rollback means reinstalling R1. No new migrations in this release.
@@ -505,7 +558,7 @@ D = desktop, M = phone. "Auto" means a Rust, TypeScript black-box or Gradle test
 - All §6 rows pass.
 - Stream on LAN: median ≥ 55 fps, p95 gap ≤ 34 ms.
 - Spike: p95 frame time ≤ 16.7 ms.
-- Desktop UI is no worse than the R1 baseline (cold start, idle working set, installer size).
+- Desktop UI is no worse than the R1 baseline (cold start, idle memory, installer size). Idle memory is compared as private working set and private commit, because summed working set double counts pages shared between processes (Phase 2 finding).
 - Zero console windows.
 - Aegis motions: p95 frame time ≤ 16.7 ms on the owner's PC and S25.
 - Reduced motion makes every motion instant.
@@ -519,9 +572,32 @@ D = desktop, M = phone. "Auto" means a Rust, TypeScript black-box or Gradle test
 - Google OAuth and the Gmail tools (not shipped today).
 - `EncryptedSharedPreferences` (reuse the existing Keystore scheme).
 - Themes Workbench and Mission Control, and a theme switcher, come after the Aegis UI ships.
+- Screen-reader support (UI Automation) in the GPUI desktop app. Deferred past 0.6.0 by the owner (2026-11-13) on the condition that full keyboard navigation works; it is a tracked follow-up.
 - The Playwright browser fallback (`daemon/src/browser.ts`, `browser-manager.ts`) is not ported. Production always uses the desktop-host browser (`daemon.ts:187-192`).
 
 ## 10. Owner decisions (resolved 2026-11-09)
 1. **Bot colour amber** keeps its light value (`#E2A72E`, 1.9:1 on paper) as an accepted exception, so it is never mistaken for the ochre Needs-you accent. An amber avatar always appears with the bot's name.
 2. **The stone-shield mark** proposed in `aegis/README.md` is kept.
 3. **The app name shown in the UI is Tjommie.** The Aegis design's "Aegis Orchestrator" wordmark becomes "Tjommie" in the same display face. Install identity is unchanged: appId, applicationId, data root and exe (§3.10, §3.11).
+
+**Resolved 2026-11-13 (Phase 2 gate):**
+
+4. **The desktop UI is GPUI**, with engine (a), WebView2 child windows plus the shield. The conditions and evidence are in §5 Phase 2 "Decision". The panel motion defaults to the live variant, with an automatic per-motion snapshot fallback. The fallback to an Electron shell restyled to Aegis stays available at the decision points the Phase 3 plan defines.
+
+**Resolved 2026-11-13 (owner, on the Phase 3 plan's questions):**
+
+5. **Memory budget: accepted as proposed** (§5 Phase 3 exit criteria). The private working set targets are:
+   - S0 ≤ 120 MiB;
+   - S1 ≤ 280 MiB;
+   - S2 ≤ S1 + 40 MiB;
+   - S3 ≤ S1 − 20 MiB;
+   - S4 ≤ S1 + 10 MiB.
+
+   It is at most 50% of Electron's in the same state. The table is revised if the D2 re-measure differs from the estimates by more than 30%.
+6. **Bots sign in to sites again** after the switch to the GPUI app. There is no cookie migration; saved logins still fill (§3.6).
+7. **Paired PCs and appearance carry over through a 0.5.x Electron patch.** It exports them to `data\desktop-ui-export.json`, and the GPUI app imports them once. It ships at least 7 days before 0.6.0, with its own CHANGELOG line (§3.6).
+8. **No screen reader in the first GPUI release, provided full keyboard navigation works** (an exit criterion). Screen-reader support is a tracked follow-up (§9).
+9. **Audio and video previews** on the desktop use a built-in WebView2 player.
+10. **The five design deviations are accepted:** inline code without a chip, square page corners, shadows that don't scale with zoom, the 60–100 ms late overlay over the page, and a still page during the snapshot slide.
+11. **The desktop-UI release is 0.6.0** (R1 is 0.5.0).
+12. **The fallback decision points are accepted:** the end of the browser milestone plus 5 working days, and the end of the motion exit runs.
