@@ -93,6 +93,22 @@ fn probes_the_provider_clis_at_start_unless_a_test_says_not_to() {
 }
 
 #[test]
+fn runs_the_codex_data_acl_pass_unless_a_test_says_not_to() {
+    assert!(!parse(&["--dev"], &[]).unwrap().skip_folder_protection);
+    // Only an exact "1" skips it, like the account-check hook.
+    assert!(
+        !parse(&["--dev"], &[("TJOMMIE_SKIP_FOLDER_PROTECTION", "true")])
+            .unwrap()
+            .skip_folder_protection
+    );
+    assert!(
+        parse(&["--dev"], &[("TJOMMIE_SKIP_FOLDER_PROTECTION", "1")])
+            .unwrap()
+            .skip_folder_protection
+    );
+}
+
+#[test]
 fn binds_the_phone_connection_to_every_interface_unless_told_otherwise() {
     let every: std::net::IpAddr = [0, 0, 0, 0].into();
     let loopback: std::net::IpAddr = [127, 0, 0, 1].into();

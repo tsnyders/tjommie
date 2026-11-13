@@ -291,6 +291,8 @@ pub fn launch(args: &[&str], root: TempRoot, env: &[(&str, &str)]) -> Daemon {
     command.env("TJOMMIE_LAN_BIND", "127.0.0.1");
     // Nor a real Claude or Codex: the daemon probes the provider CLIs at start unless told not to.
     command.env("TJOMMIE_SKIP_ACCOUNT_CHECK", "1");
+    // Nor the owner's real `~/.codex/.sandbox`: the Codex data ACL pass reads and changes it at every start.
+    command.env("TJOMMIE_SKIP_FOLDER_PROTECTION", "1");
     command.env("TJOMMIE_LAN_PORT", "0");
     command.envs(env.iter().copied());
     command
