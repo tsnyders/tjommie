@@ -52,7 +52,10 @@ fn lets_a_remote_controller_turn_the_live_stream_on_or_off_but_not_the_renderer(
         json!({ "kind": "stream", "on": true, "extra": 1 }),
     ] {
         let command = with(stream.clone(), json!({ "action": action }));
-        assert!(parse::<NativeBrowserCommand>(command.clone()).is_err(), "{command}");
+        assert!(
+            parse::<NativeBrowserCommand>(command.clone()).is_err(),
+            "{command}"
+        );
     }
 }
 

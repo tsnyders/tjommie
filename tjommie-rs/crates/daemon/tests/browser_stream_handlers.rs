@@ -159,7 +159,10 @@ async fn does_not_watch_when_the_desktop_refuses_or_a_private_interaction_is_on(
         .stream("conn", json!({ "botId": "one", "on": true }))
         .await
         .unwrap();
-    assert_eq!(result["privateActive"], true, "the state says why nothing streams");
+    assert_eq!(
+        result["privateActive"], true,
+        "the state says why nothing streams"
+    );
     assert_eq!(private.streams.watching("one"), 0);
     private.server.close().await;
 }
@@ -212,7 +215,10 @@ async fn needs_an_active_connection_for_both_methods() {
     let f = fixture(answering(false)).await;
     for (method, params) in [
         ("browser.stream", json!({ "botId": "one", "on": true })),
-        ("browser.streamAck", json!({ "botId": "one", "sequence": 1 })),
+        (
+            "browser.streamAck",
+            json!({ "botId": "one", "sequence": 1 }),
+        ),
     ] {
         let error = f.server.dispatch(method, params, None).await.unwrap_err();
         assert_eq!(error.code, ErrorCode::BadState, "{method}");
@@ -225,9 +231,7 @@ async fn needs_an_active_connection_for_both_methods() {
 #[tokio::test]
 async fn is_not_a_method_without_the_streaming_install() {
     let request: NativeRequest =
-        Arc::new(|_bot: String, _command: Value, _authorized| {
-            Box::pin(async { Ok(state(false)) })
-        });
+        Arc::new(|_bot: String, _command: Value, _authorized| Box::pin(async { Ok(state(false)) }));
     let server = Server::start(ServerOptions {
         port: 0,
         token: "synthetic-token".into(),
@@ -239,7 +243,10 @@ async fn is_not_a_method_without_the_streaming_install() {
     .unwrap();
     for (method, params) in [
         ("browser.stream", json!({ "botId": "one", "on": true })),
-        ("browser.streamAck", json!({ "botId": "one", "sequence": 1 })),
+        (
+            "browser.streamAck",
+            json!({ "botId": "one", "sequence": 1 }),
+        ),
     ] {
         let error = server
             .dispatch(method, params, Some(context("conn")))

@@ -1067,7 +1067,10 @@ mod tests {
     #[test]
     fn a_copy_swapped_in_with_the_same_size_and_times_is_not_the_opened_snapshot() {
         let dir = tempfile::tempdir().unwrap();
-        let (source, moved) = (dir.path().join("snapshot.bin"), dir.path().join("moved.bin"));
+        let (source, moved) = (
+            dir.path().join("snapshot.bin"),
+            dir.path().join("moved.bin"),
+        );
         fs::write(&source, b"synthetic snapshot").unwrap();
         let input = File::open(&source).unwrap();
         let initial = input.metadata().unwrap();
@@ -1077,10 +1080,21 @@ mod tests {
         let times = FileTimes::new()
             .set_modified(initial.modified().unwrap())
             .set_created(initial.created().unwrap());
-        File::options().write(true).open(&source).unwrap().set_times(times).unwrap();
+        File::options()
+            .write(true)
+            .open(&source)
+            .unwrap()
+            .set_times(times)
+            .unwrap();
         let copy = fs::metadata(&source).unwrap();
-        assert!(same_file(&initial, &copy), "size and times alone can't tell them apart");
-        assert!(!unchanged(&initial, &input, &source), "only the file identity can");
+        assert!(
+            same_file(&initial, &copy),
+            "size and times alone can't tell them apart"
+        );
+        assert!(
+            !unchanged(&initial, &input, &source),
+            "only the file identity can"
+        );
         assert!(unchanged(&initial, &input, &moved));
     }
 }

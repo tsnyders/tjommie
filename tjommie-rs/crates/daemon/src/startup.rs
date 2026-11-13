@@ -18,10 +18,10 @@ use crate::account_quota::HttpsFetch;
 use crate::cli::{InstalledWorkers, SystemCli, WorkerInstall, WorkerPurpose};
 use crate::context::{self, Context, Db, Late, LateBotView};
 use crate::m6::{self, M6, M6Deps};
+use crate::queue::WorkItem;
 use crate::relay_client::default_connector;
 use crate::remote::{Remote, RemoteOptions};
 use crate::remote_host::{Dispatch, RemoteHostOptions};
-use crate::queue::WorkItem;
 use crate::runner::{Core, Runner, RunnerDeps, RunnerHooks, TurnResult, cli_session_factory};
 use crate::server::{Handlers, RequestContext, Routes, RpcError, Server, ServerOptions};
 use crate::setup::Setup;
@@ -343,11 +343,7 @@ pub async fn start(launch: &Launch, auth: &Auth) -> Result<Daemon, StartupError>
     let activated = runner
         .start()
         .map_err(rpc)
-        .and_then(|()| {
-            server
-                .activate_with(token, handlers, routes)
-                .map_err(rpc)
-        });
+        .and_then(|()| server.activate_with(token, handlers, routes).map_err(rpc));
     let daemon = Daemon {
         server,
         root,
@@ -457,9 +453,8 @@ fn assemble(
     // How CLIs launch: inside the Windows worker when it is set up, else directly.
     let install = Arc::new(WorkerInstall::default());
     let (provider_worker, workers) = install_workers(&paths.root, &exe_dir, &install)?;
-    let cli = Arc::new(
-        SystemCli::with_worker(Arc::new(provider_worker.clone())).reporting_to(install),
-    );
+    let cli =
+        Arc::new(SystemCli::with_worker(Arc::new(provider_worker.clone())).reporting_to(install));
     let setup = Setup::new(cli.clone(), Arc::new(HttpsFetch::new().map_err(plain)?));
 
     // 1. One account per provider, then the accounts runtime.
@@ -495,12 +490,16 @@ fn assemble(
         kill_tree: Arc::new(crate::cli::kill_tree),
         hooks: RunnerHooks {
             // M4 and M5 run their own turn hooks first (`tasks.turnEnded`, `scheduler.runEnded`, `team.turnEnded`).
-            turn_ended: Some(Arc::new(move |core: &mut Core<'_>, item: &WorkItem, result: &TurnResult| {
-                if let Some(notice) = turn_notice(core.db(), item, result).map_err(|e| e.message)? {
-                    notices.send(Event::Notify(notice));
-                }
-                Ok(())
-            })),
+            turn_ended: Some(Arc::new(
+                move |core: &mut Core<'_>, item: &WorkItem, result: &TurnResult| {
+                    if let Some(notice) =
+                        turn_notice(core.db(), item, result).map_err(|e| e.message)?
+                    {
+                        notices.send(Event::Notify(notice));
+                    }
+                    Ok(())
+                },
+            )),
             ..RunnerHooks::default()
         },
         ..RunnerDeps::new(

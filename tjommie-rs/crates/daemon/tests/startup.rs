@@ -98,7 +98,9 @@ fn binds_the_phone_connection_to_every_interface_unless_told_otherwise() {
     let loopback: std::net::IpAddr = [127, 0, 0, 1].into();
     assert_eq!(parse(&["--dev"], &[]).unwrap().lan_bind, every);
     assert_eq!(
-        parse(&["--dev"], &[("TJOMMIE_LAN_BIND", "")]).unwrap().lan_bind,
+        parse(&["--dev"], &[("TJOMMIE_LAN_BIND", "")])
+            .unwrap()
+            .lan_bind,
         every
     );
     assert_eq!(

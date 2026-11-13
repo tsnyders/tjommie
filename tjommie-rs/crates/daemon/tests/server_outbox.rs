@@ -35,7 +35,9 @@ fn recording(ids: Arc<Mutex<Vec<String>>>) -> Handlers {
 #[tokio::test]
 async fn sends_an_event_to_the_named_connection_only() {
     let ids: Arc<Mutex<Vec<String>>> = Arc::default();
-    let server = Server::start(options(recording(ids.clone()))).await.unwrap();
+    let server = Server::start(options(recording(ids.clone())))
+        .await
+        .unwrap();
     let (mut first, mut second) = (connect(server.port()).await, connect(server.port()).await);
     for client in [&mut first, &mut second] {
         client.hello("t").await;

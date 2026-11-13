@@ -161,8 +161,10 @@ fn carries_a_frame_with_its_stream_id_and_ends_the_stream_with_a_null_frame() {
         (frame.stream_id.as_deref(), frame.sequence),
         (Some("stream"), 9)
     );
-    let ended: BrowserStreamFrame =
-        round_trip("browser.streamFrame", json!({ "botId": "b1", "frame": null }));
+    let ended: BrowserStreamFrame = round_trip(
+        "browser.streamFrame",
+        json!({ "botId": "b1", "frame": null }),
+    );
     assert_eq!(ended.frame, None);
     invalid("browser.streamFrame", json!({ "botId": "b1" }));
     invalid(

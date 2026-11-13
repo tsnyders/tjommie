@@ -89,8 +89,8 @@ impl Broadcaster {
     /// Sends an event to one authenticated connection only, named by the id its handlers see in [`RequestContext`].
     /// False when no such connection is open, or it has fallen too far behind and is being disconnected.
     pub fn send_to(&self, connection_id: &str, event: &Event) -> bool {
-        let text = serde_json::to_string(&ServerMessage::Event(event.clone()))
-            .expect("events serialize");
+        let text =
+            serde_json::to_string(&ServerMessage::Event(event.clone())).expect("events serialize");
         self.0
             .clients
             .lock()

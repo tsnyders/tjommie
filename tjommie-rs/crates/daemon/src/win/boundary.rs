@@ -9,8 +9,8 @@
 //! stand in for Windows the way the TypeScript tests stand in for the helper process.
 
 use crate::cli::{
-    BoxFuture, ChildExit, CliChild, CliCommand, CliExit, CliHost, Env, LaunchOptions, WorkerPurpose,
-    WorkerTermination,
+    BoxFuture, ChildExit, CliChild, CliCommand, CliExit, CliHost, Env, LaunchOptions,
+    WorkerPurpose, WorkerTermination,
 };
 use crate::win::cred;
 use crate::win::logon::{self, WorkerProcess};

@@ -104,18 +104,31 @@ async fn sends_a_frame_only_to_the_connections_watching_that_bot() {
 }
 
 #[tokio::test]
-async fn holds_at_most_two_frames_unacknowledged_and_sends_the_newest_waiting_one_when_one_is_acknowledged() {
+async fn holds_at_most_two_frames_unacknowledged_and_sends_the_newest_waiting_one_when_one_is_acknowledged()
+ {
     let hub = hub();
     hub.streams.watch("bot", &context("a")).unwrap();
     for sequence in 1..=6 {
         hub.streams.frame("bot", frame(sequence));
     }
     assert_eq!(MAX_UNACKED, 2);
-    assert_eq!(hub.sequences("a"), [1, 2], "3 to 5 were replaced by 6, which waits");
+    assert_eq!(
+        hub.sequences("a"),
+        [1, 2],
+        "3 to 5 were replaced by 6, which waits"
+    );
     hub.streams.ack("bot", "a", 1);
-    assert_eq!(hub.sequences("a"), [1, 2, 6], "the waiting frame is the newest");
+    assert_eq!(
+        hub.sequences("a"),
+        [1, 2, 6],
+        "the waiting frame is the newest"
+    );
     hub.streams.ack("bot", "a", 2);
-    assert_eq!(hub.sequences("a"), [1, 2, 6], "nothing waits, so nothing more goes out");
+    assert_eq!(
+        hub.sequences("a"),
+        [1, 2, 6],
+        "nothing waits, so nothing more goes out"
+    );
     hub.streams.frame("bot", frame(7));
     assert_eq!(hub.sequences("a"), [1, 2, 6, 7]);
     for sequence in [8, 9] {
@@ -167,9 +180,16 @@ async fn tells_watchers_once_when_the_stream_ends_and_sends_nothing_after() {
     hub.streams.ended("bot");
     assert_eq!(hub.received("a"), [Some(1), None]);
     assert_eq!(hub.streams.watching("bot"), 0);
-    assert!(!hub.streams.frame("bot", frame(2)), "the desktop is told nobody is watching");
+    assert!(
+        !hub.streams.frame("bot", frame(2)),
+        "the desktop is told nobody is watching"
+    );
     hub.streams.ended("bot");
-    assert_eq!(hub.received("a"), [Some(1), None], "a second end says nothing");
+    assert_eq!(
+        hub.received("a"),
+        [Some(1), None],
+        "a second end says nothing"
+    );
 }
 
 #[tokio::test]

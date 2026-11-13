@@ -676,7 +676,9 @@ impl daemon::account_runtime::AccountOps for HealthyOps {
         &self,
         account: &daemon::setup::Account,
     ) -> daemon::cli::BoxFuture<'_, protocol::model::ProviderSetup> {
-        use protocol::model::{CodexSandboxReadiness, CodexSetup, Provider, ProviderSetup, SetupFields};
+        use protocol::model::{
+            CodexSandboxReadiness, CodexSetup, Provider, ProviderSetup, SetupFields,
+        };
         let fields = |version: &str| SetupFields {
             installed: true,
             version: Some(version.into()),
@@ -707,9 +709,13 @@ impl daemon::account_runtime::AccountOps for HealthyOps {
         &self,
         _: &daemon::setup::Account,
         _: daemon::setup::OnDone,
-    ) -> daemon::cli::BoxFuture<'_, Result<protocol::accounts::SignInStart, daemon::server::RpcError>> {
+    ) -> daemon::cli::BoxFuture<'_, Result<protocol::accounts::SignInStart, daemon::server::RpcError>>
+    {
         Box::pin(async {
-            Ok(protocol::accounts::SignInStart { url: None, attempt: "synthetic-attempt".into() })
+            Ok(protocol::accounts::SignInStart {
+                url: None,
+                attempt: "synthetic-attempt".into(),
+            })
         })
     }
 
@@ -735,7 +741,11 @@ impl daemon::account_runtime::AccountOps for HealthyOps {
         Box::pin(async { Ok(()) })
     }
 
-    fn prepare_folder(&self, account: &daemon::setup::Account, _: &std::path::Path) -> std::io::Result<()> {
+    fn prepare_folder(
+        &self,
+        account: &daemon::setup::Account,
+        _: &std::path::Path,
+    ) -> std::io::Result<()> {
         std::fs::create_dir_all(&account.folder)
     }
 

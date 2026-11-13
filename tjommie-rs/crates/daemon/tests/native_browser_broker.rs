@@ -339,7 +339,10 @@ async fn takes_a_live_frame_or_the_end_of_a_stream_from_the_desktop_without_a_jo
         ));
         assert!(matches!(
             &taken[2],
-            NativeBrowserStreamMessage::StreamEnd { reason: StreamEnd::Private, .. }
+            NativeBrowserStreamMessage::StreamEnd {
+                reason: StreamEnd::Private,
+                ..
+            }
         ));
     }
     // Malformed posts never reach the sink.

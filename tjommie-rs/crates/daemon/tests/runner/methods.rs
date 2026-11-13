@@ -21,16 +21,17 @@ async fn api(h: &Harness) -> Api {
     };
     let server = Server::start(options).await.unwrap();
     let setup = common::no_cli_setup();
-    let accounts = daemon::account_handlers::Accounts::new(daemon::account_handlers::AccountsOptions {
-        db: h.db.clone(),
-        root: h.root.0.clone(),
-        accounts_dir: h.root.0.join("accounts"),
-        events: server.broadcaster(),
-        bot_view: Arc::new(h.runner.clone()),
-        setup: setup.clone(),
-        ops: Arc::new(setup),
-        credentials: Arc::new(common::MemoryKeys::default()),
-    });
+    let accounts =
+        daemon::account_handlers::Accounts::new(daemon::account_handlers::AccountsOptions {
+            db: h.db.clone(),
+            root: h.root.0.clone(),
+            accounts_dir: h.root.0.join("accounts"),
+            events: server.broadcaster(),
+            bot_view: Arc::new(h.runner.clone()),
+            setup: setup.clone(),
+            ops: Arc::new(setup),
+            credentials: Arc::new(common::MemoryKeys::default()),
+        });
     let context = Context {
         db: h.db.clone(),
         bots_dir: h.root.0.join("bots"),

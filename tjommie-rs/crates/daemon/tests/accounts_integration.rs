@@ -40,7 +40,11 @@ struct Behaviour {
 
 impl Default for Behaviour {
     fn default() -> Self {
-        Behaviour { limit_first_turn: false, cost: Some(1.0), hold_exit: false }
+        Behaviour {
+            limit_first_turn: false,
+            cost: Some(1.0),
+            hold_exit: false,
+        }
     }
 }
 
@@ -88,12 +92,20 @@ impl ProviderSession for Synthetic {
             self.emit(ProviderEvent::TextEnd);
             self.emit(ProviderEvent::Usage(Usage {
                 model: self.model.clone(),
-                tokens: TokenUsage { input: 10.0, cached_input: 5.0, output: 2.0, reasoning: 1.0 },
+                tokens: TokenUsage {
+                    input: 10.0,
+                    cached_input: 5.0,
+                    output: 2.0,
+                    reasoning: 1.0,
+                },
                 cost_usd: self.cost,
                 total_cost_usd: None,
                 event_id: None,
             }));
-            self.emit(ProviderEvent::TurnDone(TurnResult { ok: true, error: None }));
+            self.emit(ProviderEvent::TurnDone(TurnResult {
+                ok: true,
+                error: None,
+            }));
         }
         Box::pin(async { Ok(()) })
     }
@@ -179,25 +191,33 @@ async fn fixture(behaviour: Behaviour) -> Fixture {
     let (exit, process): (Option<oneshot::Sender<()>>, Shared<BoxFuture<'static, ()>>) =
         if behaviour.hold_exit {
             // A sender dropped without sending also lets the process go, so a failed test doesn't hang.
-            (Some(exit), async move { let _ = exited.await; }.boxed().shared())
+            (
+                Some(exit),
+                async move {
+                    let _ = exited.await;
+                }
+                .boxed()
+                .shared(),
+            )
         } else {
             (None, futures_util::future::ready(()).boxed().shared())
         };
     let starts: Arc<Mutex<Vec<StartOptions>>> = Arc::default();
     let (record, sequence) = (starts.clone(), Arc::new(AtomicUsize::new(0)));
-    let create_session: SessionFactory = Arc::new(move |_bot: &StoredBot, options: StartOptions| {
-        let number = sequence.fetch_add(1, Ordering::SeqCst) + 1;
-        let session = Synthetic {
-            sequence: number,
-            model: options.model.clone(),
-            limited: behaviour.limit_first_turn && number == 1,
-            cost: behaviour.cost,
-            exit: process.clone(),
-            subscribers: Mutex::default(),
-        };
-        record.lock().unwrap().push(options);
-        Ok(Arc::new(session) as Arc<dyn ProviderSession>)
-    });
+    let create_session: SessionFactory =
+        Arc::new(move |_bot: &StoredBot, options: StartOptions| {
+            let number = sequence.fetch_add(1, Ordering::SeqCst) + 1;
+            let session = Synthetic {
+                sequence: number,
+                model: options.model.clone(),
+                limited: behaviour.limit_first_turn && number == 1,
+                cost: behaviour.cost,
+                exit: process.clone(),
+                subscribers: Mutex::default(),
+            };
+            record.lock().unwrap().push(options);
+            Ok(Arc::new(session) as Arc<dyn ProviderSession>)
+        });
 
     let late = Late::default();
     let (held, issue) = (late.switching.clone(), late.switching.clone());
@@ -315,7 +335,9 @@ impl Fixture {
                     message["author"] == id.as_str()
                         && message["kind"] == "text"
                         && message["status"] == "done"
-                        && message["body"].as_str().is_some_and(|body| body.contains(&text))
+                        && message["body"]
+                            .as_str()
+                            .is_some_and(|body| body.contains(&text))
                 })
                 .cloned()
         })
@@ -323,7 +345,8 @@ impl Fixture {
     }
 
     async fn send(&mut self, bot_id: &str, text: &str) {
-        self.ok("chat.send", json!({ "botId": bot_id, "text": text })).await;
+        self.ok("chat.send", json!({ "botId": bot_id, "text": text }))
+            .await;
     }
 
     /// `usage.query` over the last and next minute, narrowed by `filter` (`botId` or `accountId`).
@@ -400,10 +423,14 @@ fn id_of(value: &Value) -> String {
 // accounts-integration.test.ts
 
 #[tokio::test]
-async fn switches_a_bot_to_another_subscription_and_attributes_each_completed_turn_to_its_actual_account() {
+async fn switches_a_bot_to_another_subscription_and_attributes_each_completed_turn_to_its_actual_account()
+ {
     let mut f = fixture(Behaviour::default()).await;
     let other = f
-        .ok("accounts.create", json!({ "provider": "claude", "label": "Other", "kind": "subscription" }))
+        .ok(
+            "accounts.create",
+            json!({ "provider": "claude", "label": "Other", "kind": "subscription" }),
+        )
         .await;
     f.ok("accounts.check", json!({ "id": other["id"] })).await;
     let bot = f.ok("bots.create", input()).await;
@@ -411,7 +438,11 @@ async fn switches_a_bot_to_another_subscription_and_attributes_each_completed_tu
     f.send(&id, "First account").await;
     f.replied(&id, "First account").await;
     f.idle(&id).await;
-    f.ok("bots.update", json!({ "id": id, "patch": { "accountId": other["id"] } })).await;
+    f.ok(
+        "bots.update",
+        json!({ "id": id, "patch": { "accountId": other["id"] } }),
+    )
+    .await;
     f.send(&id, "Other account").await;
     f.replied(&id, "Other account").await;
     f.idle(&id).await;
@@ -428,11 +459,17 @@ async fn switches_a_bot_to_another_subscription_and_attributes_each_completed_tu
     expected.sort();
     assert_eq!(accounts, expected);
     assert_eq!(usage["summary"]["records"], 2);
-    assert_eq!(usage["summary"]["costs"]["apiValue"]["usd"].as_f64(), Some(2.0));
+    assert_eq!(
+        usage["summary"]["costs"]["apiValue"]["usd"].as_f64(),
+        Some(2.0)
+    );
     assert_eq!(usage["summary"]["costs"]["apiSpend"]["knownRecords"], 0);
     assert_eq!(f.started(), 2);
     let (first, second) = (f.start_options(0), f.start_options(1));
-    assert_ne!(first.env["CLAUDE_CONFIG_DIR"], second.env["CLAUDE_CONFIG_DIR"]);
+    assert_ne!(
+        first.env["CLAUDE_CONFIG_DIR"],
+        second.env["CLAUDE_CONFIG_DIR"]
+    );
     assert_eq!(second.resume_id, None);
     let history = f.ok("chat.history", json!({ "botId": id })).await;
     let bodies: Vec<&str> = history["messages"]
@@ -447,7 +484,8 @@ async fn switches_a_bot_to_another_subscription_and_attributes_each_completed_tu
 }
 
 #[tokio::test]
-async fn blocks_another_api_key_turn_at_its_lifetime_cap_then_resumes_queued_work_after_the_cap_is_raised() {
+async fn blocks_another_api_key_turn_at_its_lifetime_cap_then_resumes_queued_work_after_the_cap_is_raised()
+ {
     let mut f = fixture(Behaviour::default()).await;
     let account = f
         .ok("accounts.create", json!({ "provider": "claude", "label": "Capped synthetic API", "kind": "api_key", "apiKey": "synthetic-cap-only", "spendingCapUsd": 1 }))
@@ -461,25 +499,38 @@ async fn blocks_another_api_key_turn_at_its_lifetime_cap_then_resumes_queued_wor
         accounts
             .as_array()?
             .iter()
-            .find(|entry| entry["id"] == account_id.as_str() && entry["spending"]["blocked"] == true)
+            .find(|entry| {
+                entry["id"] == account_id.as_str() && entry["spending"]["blocked"] == true
+            })
             .cloned()
     })
     .await;
     f.send(&id, "Wait for a higher cap").await;
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert_eq!(f.started(), 1);
-    f.ok("accounts.update", json!({ "id": account["id"], "patch": { "spendingCapUsd": 3 } })).await;
+    f.ok(
+        "accounts.update",
+        json!({ "id": account["id"], "patch": { "spendingCapUsd": 3 } }),
+    )
+    .await;
     f.replied(&id, "Wait for a higher cap").await;
     assert_eq!(f.started(), 2);
     let report = f.usage(json!({ "accountId": account["id"] })).await;
-    assert_eq!(report["summary"]["costs"]["apiSpend"]["usd"].as_f64(), Some(2.0));
+    assert_eq!(
+        report["summary"]["costs"]["apiSpend"]["usd"].as_f64(),
+        Some(2.0)
+    );
     assert_eq!(report["summary"]["costs"]["apiValue"]["knownRecords"], 0);
     f.finish().await;
 }
 
 #[tokio::test]
 async fn waits_for_an_owned_account_process_to_exit_before_teardown_closes_its_database() {
-    let mut f = fixture(Behaviour { hold_exit: true, ..Behaviour::default() }).await;
+    let mut f = fixture(Behaviour {
+        hold_exit: true,
+        ..Behaviour::default()
+    })
+    .await;
     let bot = f.ok("bots.create", input()).await;
     let id = id_of(&bot);
     f.send(&id, "Synthetic process still alive").await;
@@ -494,7 +545,10 @@ async fn waits_for_an_owned_account_process_to_exit_before_teardown_closes_its_d
         })
     };
     tokio::time::sleep(Duration::from_millis(30)).await;
-    assert!(!closed.load(Ordering::SeqCst), "teardown finished while the process was alive");
+    assert!(
+        !closed.load(Ordering::SeqCst),
+        "teardown finished while the process was alive"
+    );
     f.release_exit();
     waiting.await.unwrap();
     assert!(closed.load(Ordering::SeqCst));
@@ -502,8 +556,13 @@ async fn waits_for_an_owned_account_process_to_exit_before_teardown_closes_its_d
 }
 
 #[tokio::test]
-async fn reports_unknown_cost_honestly_instead_of_claiming_the_account_spent_100_percent_of_its_cap() {
-    let mut f = fixture(Behaviour { cost: None, ..Behaviour::default() }).await;
+async fn reports_unknown_cost_honestly_instead_of_claiming_the_account_spent_100_percent_of_its_cap()
+ {
+    let mut f = fixture(Behaviour {
+        cost: None,
+        ..Behaviour::default()
+    })
+    .await;
     let account = f
         .ok("accounts.create", json!({ "provider": "claude", "label": "Unpriced synthetic API", "kind": "api_key", "apiKey": "synthetic-unpriced-only", "spendingCapUsd": 10 }))
         .await;
@@ -516,34 +575,56 @@ async fn reports_unknown_cost_honestly_instead_of_claiming_the_account_spent_100
             accounts
                 .as_array()?
                 .iter()
-                .find(|entry| entry["id"] == account_id.as_str() && entry["spending"]["unknownRows"] == 1)
+                .find(|entry| {
+                    entry["id"] == account_id.as_str() && entry["spending"]["unknownRows"] == 1
+                })
                 .cloned()
         })
         .await;
     assert_eq!(blocked["spending"]["blocked"], true);
     // The notice follows the usage row by a task hop; each poll of `accounts.list` also collects what has arrived.
     for _ in 0..150 {
-        if f.notices().iter().any(|title| title == "Unpriced synthetic API has unpriced usage") {
+        if f.notices()
+            .iter()
+            .any(|title| title == "Unpriced synthetic API has unpriced usage")
+        {
             break;
         }
         f.ok("accounts.list", json!({})).await;
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     let notices = f.notices();
-    assert!(notices.contains(&"Unpriced synthetic API has unpriced usage".to_owned()), "{notices:?}");
-    assert!(!notices.iter().any(|title| title.contains("100%")), "{notices:?}");
+    assert!(
+        notices.contains(&"Unpriced synthetic API has unpriced usage".to_owned()),
+        "{notices:?}"
+    );
+    assert!(
+        !notices.iter().any(|title| title.contains("100%")),
+        "{notices:?}"
+    );
     f.finish().await;
 }
 
 #[tokio::test]
 async fn retries_queued_subscription_work_only_after_the_explicit_unknown_reset_action() {
-    let mut f = fixture(Behaviour { limit_first_turn: true, ..Behaviour::default() }).await;
+    let mut f = fixture(Behaviour {
+        limit_first_turn: true,
+        ..Behaviour::default()
+    })
+    .await;
     let bot = f.ok("bots.create", input()).await;
-    let (id, account_id) = (id_of(&bot), bot["accountId"].as_str().expect("the bot has an account pin").to_owned());
+    let (id, account_id) = (
+        id_of(&bot),
+        bot["accountId"]
+            .as_str()
+            .expect("the bot has an account pin")
+            .to_owned(),
+    );
     f.send(&id, "Explicitly retry this queued work").await;
     f.state(&id, "limited").await;
     assert_eq!(f.started(), 1);
-    f.ok("accounts.retryLimit", json!({ "id": account_id })).await;
+    f.ok("accounts.retryLimit", json!({ "id": account_id }))
+        .await;
     f.replied(&id, "Explicitly retry this queued work").await;
     let pinned = account_id.clone();
     f.eventually("accounts.list", json!({}), move |accounts| {
@@ -552,16 +633,19 @@ async fn retries_queued_subscription_work_only_after_the_explicit_unknown_reset_
             .iter()
             .find(|entry| {
                 entry["id"] == pinned.as_str()
-                    && entry["limits"]
-                        .as_array()
-                        .is_some_and(|windows| windows.iter().all(|window| window["state"] != "reached"))
+                    && entry["limits"].as_array().is_some_and(|windows| {
+                        windows.iter().all(|window| window["state"] != "reached")
+                    })
             })
             .cloned()
     })
     .await;
     assert_eq!(f.started(), 2);
     let report = f.usage(json!({ "botId": id })).await;
-    assert_eq!(report["summary"]["costs"]["apiValue"]["usd"].as_f64(), Some(1.0));
+    assert_eq!(
+        report["summary"]["costs"]["apiValue"]["usd"].as_f64(),
+        Some(1.0)
+    );
     assert_eq!(report["summary"]["costs"]["apiSpend"]["knownRecords"], 0);
     f.finish().await;
 }
