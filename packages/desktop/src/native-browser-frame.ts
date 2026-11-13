@@ -8,8 +8,26 @@ const IMAGE_LIMIT = 2 * 1024 * 1024;
 const SCREENCAST = { format: "jpeg", quality: 60, maxWidth: 2560, maxHeight: 1600, everyNthFrame: 1 };
 const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
 
-/** A scoped screencast makes a hidden native view paint; no screencast image is retained. */
-export async function captureNativeBrowserFrame(debuggerApi: Debugger, check: () => void, parameters: Record<string, unknown> = { format: "jpeg", quality: 60, captureBeyondViewport: false }, streaming = false): Promise<string> {
+// A tab has one screencast, and Chromium's Page.stopScreencast is not counted: whoever stops it stops it for everyone.
+// A live stream owns it while it runs. A capture (a polled browser.frame, a bot's screenshot tool) borrows it only when no
+// stream does. Starting, borrowing and stopping the screencast therefore take turns per debugger session, and the stream
+// count is read only inside a turn, so a capture can neither stop a stream that is starting nor begin on one that is stopping.
+type ScreencastSession = { streams: number; turn: Promise<void> };
+const screencasts = new WeakMap<object, ScreencastSession>();
+function inTurn<T>(debuggerApi: Debugger, task: (session: ScreencastSession) => Promise<T>): Promise<T> {
+  let session = screencasts.get(debuggerApi);
+  if (!session) { session = { streams: 0, turn: Promise.resolve() }; screencasts.set(debuggerApi, session); }
+  const shared = session, result = shared.turn.then(() => task(shared));
+  shared.turn = result.then(() => {}, () => {});
+  return result;
+}
+
+/** A scoped screencast makes a hidden native view paint; no screencast image is retained. While a live stream runs on this tab, the stream's screencast is used and left running. */
+export function captureNativeBrowserFrame(debuggerApi: Debugger, check: () => void, parameters: Record<string, unknown> = { format: "jpeg", quality: 60, captureBeyondViewport: false }): Promise<string> {
+  return inTurn(debuggerApi, (session) => capture(debuggerApi, check, parameters, session.streams > 0));
+}
+
+async function capture(debuggerApi: Debugger, check: () => void, parameters: Record<string, unknown>, streaming: boolean): Promise<string> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const expired = new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error("The native browser frame timed out.")), 5000); });
   const send = async (method: string, args?: Record<string, unknown>): Promise<Record<string, unknown>> => {
@@ -86,9 +104,13 @@ export async function startNativeBrowserStream(debuggerApi: Debugger, options: N
   const halt = async (): Promise<void> => {
     if (stopped) return;
     stopped = true; waiting = null; debuggerApi.removeListener("message", listener);
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try { await Promise.race([debuggerApi.sendCommand("Page.stopScreencast").catch(() => {}), new Promise<void>((resolve) => { timer = setTimeout(resolve, 500); })]); }
-    finally { clearTimeout(timer); }
+    // The screencast is stopped on this stream's turn, after any capture that was borrowing it has finished, and only if no other stream still owns it.
+    await inTurn(debuggerApi, async (session) => {
+      if (--session.streams > 0) return;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try { await Promise.race([debuggerApi.sendCommand("Page.stopScreencast").catch(() => {}), new Promise<void>((resolve) => { timer = setTimeout(resolve, 500); })]); }
+      finally { clearTimeout(timer); }
+    });
   };
   const end = (error: Error): void => { if (!stopped) void halt().then(() => options.onEnd(error)); };
   const deliver = async (first: NativeBrowserStreamFrame): Promise<void> => {
@@ -120,8 +142,14 @@ export async function startNativeBrowserStream(debuggerApi: Debugger, options: N
     if (busy) waiting = frame; else void deliver(frame);
   };
   options.check();
-  debuggerApi.on("message", listener);
-  try { await debuggerApi.sendCommand("Page.startScreencast", SCREENCAST); }
-  catch (error) { debuggerApi.removeListener("message", listener); throw error; }
+  // The start takes its turn, so a capture that began first has stopped its own screencast before this one starts, and
+  // one that begins later sees the stream and leaves the screencast alone. The count rises before anyone else's turn.
+  await inTurn(debuggerApi, async (session) => {
+    options.check(); // The stream may have been replaced while a capture held the turn.
+    debuggerApi.on("message", listener);
+    session.streams++;
+    try { await debuggerApi.sendCommand("Page.startScreencast", SCREENCAST); }
+    catch (error) { session.streams--; debuggerApi.removeListener("message", listener); throw error; }
+  });
   return { setMaxFps: (value) => { maxFps = value; }, stop: halt };
 }

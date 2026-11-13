@@ -338,8 +338,8 @@ export class NativeBrowserEngine {
     };
     return this.#enqueue(browser, async () => {
       check(); const tab = this.#tab(browser, pageId); await tab.ready; check();
-      // A running stream owns this tab's screencast; a polled frame must not stop it.
-      let data = await captureNativeBrowserFrame(tab.contents.debugger, check, undefined, browser.stream.source !== null && browser.stream.pageId === pageId);
+      // A capture takes its turn on the tab's screencast and leaves a running stream's alone (native-browser-frame.ts).
+      let data = await captureNativeBrowserFrame(tab.contents.debugger, check);
       const image = nativeImage.createFromBuffer(Buffer.from(data, "base64")); let size = image.getSize();
       if (size.width < 1 || size.height < 1 || size.width > 4096 || size.height > 4096) throw new Error("The browser returned an invalid frame size.");
       if (thumbnail) {
