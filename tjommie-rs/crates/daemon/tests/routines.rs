@@ -1204,7 +1204,7 @@ mod routines_store_tests {
 /// `BadParams`, with a message containing "Unknown time zone".
 #[test]
 fn unknown_zone_is_refused_by_next_run_after_and_wall_time_to_utc() {
-    let times = vec!["08:48".to_owned()];
+    let times = ["08:48".to_owned()];
     let schedule = Schedule {
         days: &WEEKDAYS,
         times: &times[..],

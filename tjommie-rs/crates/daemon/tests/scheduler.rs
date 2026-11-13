@@ -2,7 +2,7 @@
 //! titles in snake_case; each `describe` is a module, and each `it.each` is a loop with the row in its messages.
 //!
 //! Where the TS cannot be copied literally:
-//! - The case that drives the real `Runner` is a placeholder (`#[ignore]`); the lead ports it after Core's merge.
+//! - The case that drives the real `Runner` is in `scheduler_runner.rs`, with the M4 harness it needs.
 //! - `vi.useFakeTimers` / `vi.setSystemTime`: the clock is an `AtomicI64` the test sets (`SchedulerDeps::clock`). Cases
 //!   that advance timers use `#[tokio::test(start_paused = true)]` and `tokio::time::advance`. Work under a timer runs on
 //!   the blocking pool, so after an advance the test waits, bounded, for its effect (`settle_until`).
@@ -315,12 +315,11 @@ fn rows<T>(
     read: impl Fn(&Row<'_>) -> rusqlite::Result<T>,
 ) -> Vec<T> {
     let mut statement = db.prepare(sql).unwrap();
-    let found = statement
+    statement
         .query_map([], |row| read(row))
         .unwrap()
         .collect::<rusqlite::Result<Vec<T>>>()
-        .unwrap();
-    found
+        .unwrap()
 }
 
 fn count(db: &Db, table: &str) -> i64 {
@@ -800,10 +799,6 @@ mod scheduler {
             assert!(events_of(&f).is_empty(), "{status:?}");
         }
     }
-
-    #[test]
-    #[ignore = "needs the real Runner; the lead ports it after Core's merge"]
-    fn hands_persisted_work_to_the_real_runner_once_and_integrates_interrupted_run_recovery() {}
 
     #[test]
     fn rolls_back_a_manual_retry_when_queue_persistence_fails() {
