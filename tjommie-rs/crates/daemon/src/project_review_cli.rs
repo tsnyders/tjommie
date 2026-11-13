@@ -597,11 +597,10 @@ fn exit_code(exit: &ChildExit) -> Option<i32> {
 }
 
 /// Whether a launch failed because the worker boundary could not confirm that a tree had stopped
-/// (`WorkerLaunchTerminationError`).
-// TODO(M5-integration): the boundary returns `io::Error::other(BoundaryError::Termination)`, and Core's `cli.rs`
-// checks for its own `WorkerTermination` type. Both carry the same message, so the message is the test here.
+/// (`WorkerLaunchTerminationError`). Through `SystemCli` it is Core's `WorkerTermination`; a boundary used directly as
+/// the host returns its own `BoundaryError::Termination`, which has the same text.
 fn is_launch_termination(error: &io::Error) -> bool {
-    is_termination_message(&error.to_string())
+    crate::cli::is_worker_termination(error) || is_termination_message(&error.to_string())
 }
 
 /// The `usage` record for spending that could not be measured (`costUsd: null`).

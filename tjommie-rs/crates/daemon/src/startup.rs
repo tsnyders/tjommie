@@ -93,11 +93,11 @@ pub struct Launch {
     /// this PC; tests and manual runs set `TJOMMIE_LAN_BIND=127.0.0.1`, which keeps Windows Firewall from prompting.
     pub lan_bind: IpAddr,
     /// A test hook (`TJOMMIE_SKIP_ACCOUNT_CHECK=1`): don't probe the provider CLIs when the daemon starts, so tests
-    /// never run a real `claude` or `codex`.
+    /// never run a real `claude` or `codex`. Only a debug build honours it (see [`test_hook`]).
     pub skip_account_check: bool,
     /// A test hook (`TJOMMIE_SKIP_FOLDER_PROTECTION=1`): don't run the Codex data ACL pass, at start or later. The pass
     /// reads and changes the real `~/.codex/.sandbox` permissions, which no test may touch; skipped, the protection
-    /// reads as ready.
+    /// reads as ready. Only a debug build honours it (see [`test_hook`]).
     pub skip_folder_protection: bool,
     /// A test hook: the desktop's real-CLI tests point a disposable root at signed-in account folders.
     pub accounts_dir: Option<PathBuf>,
@@ -137,12 +137,20 @@ pub fn parse_launch(
             "TJOMMIE_LAN_PORT",
         )?,
         lan_bind: lan_bind(env("TJOMMIE_LAN_BIND"))?,
-        skip_account_check: env("TJOMMIE_SKIP_ACCOUNT_CHECK").as_deref() == Some("1"),
-        skip_folder_protection: env("TJOMMIE_SKIP_FOLDER_PROTECTION").as_deref() == Some("1"),
+        skip_account_check: test_hook(&env, "TJOMMIE_SKIP_ACCOUNT_CHECK"),
+        skip_folder_protection: test_hook(&env, "TJOMMIE_SKIP_FOLDER_PROTECTION"),
         accounts_dir: env("TJOMMIE_ACCOUNTS_DIR")
             .filter(|dir| !dir.is_empty())
             .map(PathBuf::from),
     })
+}
+
+/// A test hook that switches off a real check: on only when `name` is exactly `1`, and only in a debug build. Tests
+/// build debug executables; a release build (what the owner installs) ignores the variable, so one left in a PC's
+/// environment, or forwarded by an app that doesn't strip it, can never silently turn off the folder protection while
+/// setup reports it ready.
+fn test_hook(env: &impl Fn(&str) -> Option<String>, name: &str) -> bool {
+    cfg!(debug_assertions) && env(name).as_deref() == Some("1")
 }
 
 /// `TJOMMIE_LAN_BIND`: unset or empty is every interface.

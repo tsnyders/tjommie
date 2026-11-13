@@ -338,12 +338,31 @@ fn collect(
 
 pub const LISTENING: &str = "Tjommie daemon listening on http://127.0.0.1:";
 
+/// The start of the stderr line the daemon prints for each test hook it honours.
+pub const HOOK_NOTICE: &str = "Test hook TJOMMIE_SKIP_";
+
 impl Daemon {
     pub fn stdout(&self) -> String {
         self.out.lock().unwrap().clone()
     }
 
+    /// What the daemon wrote to stderr, without the lines that say a test hook is on: every launch here sets two, and
+    /// the tests that compare stderr exactly are about something else. [`Daemon::stderr_raw`] has them.
     pub fn stderr(&self) -> String {
+        let mut text: String = self
+            .stderr_raw()
+            .lines()
+            .filter(|line| !line.starts_with(HOOK_NOTICE))
+            .collect::<Vec<_>>()
+            .join("\n");
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        text
+    }
+
+    /// Everything the daemon wrote to stderr.
+    pub fn stderr_raw(&self) -> String {
         self.err.lock().unwrap().clone()
     }
 
