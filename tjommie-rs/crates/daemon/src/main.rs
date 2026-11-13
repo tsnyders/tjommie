@@ -26,6 +26,9 @@ fn run(args: &[String]) -> Result<(), StartupError> {
     if args.first().is_some_and(|arg| arg == "import") {
         return import(&args[1..]);
     }
+    if args.first().is_some_and(|arg| arg == "provision") {
+        return provision(&args[1..]);
+    }
     let launch = startup::parse_launch(args, |key| std::env::var(key).ok())?;
     let (auth, stdin) = match launch.mode {
         Mode::Development => (Auth::Development, None),
@@ -49,6 +52,17 @@ fn run(args: &[String]) -> Result<(), StartupError> {
     };
     if launch.accounts_dir.is_some() {
         eprintln!("Using account folders from TJOMMIE_ACCOUNTS_DIR.");
+    }
+    // A test hook that switches off a real check says so, so a log shows it. `test_hook` honours them in debug builds only.
+    if launch.skip_account_check {
+        eprintln!(
+            "Test hook TJOMMIE_SKIP_ACCOUNT_CHECK is on: the provider CLIs are not probed at start."
+        );
+    }
+    if launch.skip_folder_protection {
+        eprintln!(
+            "Test hook TJOMMIE_SKIP_FOLDER_PROTECTION is on: the Codex data ACL pass is skipped."
+        );
     }
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async {
@@ -97,6 +111,28 @@ fn import(args: &[String]) -> Result<(), StartupError> {
         "Routines are paused and queued or running work was marked failed, so nothing runs in both installs."
     );
     println!("Bots' browser profiles weren't copied, so this install's browser starts signed out.");
+    Ok(())
+}
+
+/// `provision`: `provision-worker.ps1`, run once by the owner from an elevated window. Creates the isolated provider and
+/// review Windows accounts for this build's data root, saves their passwords in Credential Manager, locks down their
+/// folders and writes `worker.json` and `review-worker.json` there. It refuses a root that already has them, and undoes
+/// what it did if anything fails. Restart Windows afterwards, before the daemon accepts the boundary.
+fn provision(args: &[String]) -> Result<(), StartupError> {
+    if !args.is_empty() {
+        return Err(StartupError::Plain(
+            "Usage: tjommie-daemon provision (from an elevated window, as the Tjommie owner)"
+                .into(),
+        ));
+    }
+    let root = daemon::paths::data_root();
+    // The owner sees which install is about to get worker accounts before anything is created.
+    println!(
+        "Setting up the Windows worker accounts for {}",
+        root.display()
+    );
+    let done = daemon::win::logon::provision(&root).map_err(StartupError::Plain)?;
+    println!("{done}");
     Ok(())
 }
 

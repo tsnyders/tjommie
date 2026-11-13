@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::Wire;
-use crate::browser::{BrowserControl, BrowserInput, HistoryAction, TabAction};
+use crate::browser::{BrowserControl, BrowserFrame, BrowserInput, HistoryAction, TabAction};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NativeBrowserBounds {
@@ -119,6 +119,12 @@ pub enum NativeBrowserRemoteAction {
         thumbnail: Option<bool>,
     },
     Disconnect,
+    /// Turns this controller's live stream on or off. `max_fps` is 1 to 60.
+    Stream {
+        on: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_fps: Option<u32>,
+    },
     Control {
         control: BrowserControl,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -176,6 +182,32 @@ pub enum NativeBrowserRemoteAction {
 pub struct NativeBrowserRemoteCommand {
     pub controller_id: String,
     pub action: NativeBrowserRemoteAction,
+}
+
+/// Why the desktop stopped a bot's stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StreamEnd {
+    /// A private interaction began.
+    Private,
+    Closed,
+    Failed,
+}
+
+/// What the desktop host posts to `/browser-host` on its own, outside any job. A frame's `stream_id` is required.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum NativeBrowserStreamMessage {
+    StreamFrame { bot_id: String, frame: BrowserFrame },
+    StreamEnd { bot_id: String, reason: StreamEnd },
+}
+
+impl Wire for NativeBrowserStreamMessage {
+    const NAME: &'static str = "NativeBrowserStreamMessage";
 }
 
 /// Commands only the desktop-host bridge accepts, never renderer IPC.

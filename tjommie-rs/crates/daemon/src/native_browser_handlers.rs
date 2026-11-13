@@ -10,15 +10,19 @@ use std::sync::{Arc, Mutex};
 use futures_util::FutureExt;
 use futures_util::future::{BoxFuture, Shared};
 use protocol::ErrorCode;
-use protocol::browser::{BrowserFrame, BrowserFrameResult, BrowserState};
+use protocol::browser::{BrowserFrame, BrowserFrameResult, BrowserState, BrowserStreamParams};
 use protocol::native_browser::NativeBrowserRemoteAction as Action;
 use protocol::wire::{Empty, method};
 use serde_json::{Value, json};
 
+use crate::browser_stream::BrowserStreams;
 use crate::native_browser_broker::Authorized;
 use crate::server::{Handlers, RequestContext, RpcError};
 
 /// `request(botId, command, authorized)`: the daemon's `nativeRequest`, which checks the bot and uses the broker.
+///
+/// Never lock at call time: callers may hold the database lock (the runner's hooks and its `close_browser` do, and the
+/// mutex is not reentrant). Read the database inside the returned future, with no guard held across an await.
 pub type NativeRequest = Arc<
     dyn Fn(String, Value, Option<Authorized>) -> BoxFuture<'static, Result<Value, RpcError>>
         + Send
@@ -43,6 +47,8 @@ fn browser_state(value: Value) -> Result<BrowserState, RpcError> {
 
 struct Inner {
     request: NativeRequest,
+    /// Present when live streaming is installed; without it `browser.stream` is not a method here.
+    streams: Option<Arc<BrowserStreams>>,
     /// Connection and bot pairs whose end already disconnects the controller.
     watched: Mutex<HashSet<(String, String)>>,
     frames: Mutex<HashMap<String, (u64, Frame)>>,
@@ -101,6 +107,37 @@ impl Browser {
         context: Option<RequestContext>,
     ) -> Result<BrowserState, RpcError> {
         browser_state(self.send(bot, action, context).await?)
+    }
+
+    /// `browser.stream`: turns this connection's live stream of a bot on or off, answering the browser state.
+    async fn stream(
+        self,
+        params: BrowserStreamParams,
+        context: Option<RequestContext>,
+    ) -> Result<BrowserState, RpcError> {
+        let streams = self
+            .0
+            .streams
+            .clone()
+            .ok_or_else(|| RpcError::new(ErrorCode::UnknownMethod, "Unknown method"))?;
+        let context = Self::live(context)?;
+        let bot = params.bot_id;
+        if params.on {
+            // Watching starts first, so a frame that arrives at once is not lost.
+            streams.watch(&bot, &context)?;
+        } else {
+            streams.unwatch(&bot, &context.connection_id);
+        }
+        let action = Action::Stream {
+            on: params.on,
+            max_fps: params.on.then(|| params.max_fps.unwrap_or(60)),
+        };
+        let outcome = self.state(bot.clone(), action, Some(context.clone())).await;
+        // Nothing to watch if the desktop refused, or a private interaction is on (the state says so).
+        if params.on && !matches!(&outcome, Ok(state) if state.private_active != Some(true)) {
+            streams.unwatch(&bot, &context.connection_id);
+        }
+        outcome
     }
 
     async fn frame(
@@ -190,14 +227,32 @@ impl Browser {
 
 /// Adds `browser.*`, sending through `request`.
 pub fn register(handlers: Handlers, request: NativeRequest) -> Handlers {
+    build(handlers, request, None)
+}
+
+/// [`register`], and `browser.stream` and `browser.streamAck` for the live stream, fanned out by `streams`.
+pub fn register_streaming(
+    handlers: Handlers,
+    request: NativeRequest,
+    streams: Arc<BrowserStreams>,
+) -> Handlers {
+    build(handlers, request, Some(streams))
+}
+
+fn build(
+    handlers: Handlers,
+    request: NativeRequest,
+    streams: Option<Arc<BrowserStreams>>,
+) -> Handlers {
     let browser = Browser(Arc::new(Inner {
         request,
+        streams: streams.clone(),
         watched: Mutex::default(),
         frames: Mutex::default(),
         next_frame: AtomicU64::new(0),
     }));
     let b = || browser.clone();
-    handlers
+    let handlers = handlers
         .on::<method::BrowserOpen, _>({
             let browser = b();
             move |target, context| browser.clone().state(target.bot_id, Action::State, context)
@@ -325,5 +380,20 @@ pub fn register(handlers: Handlers, request: NativeRequest) -> Handlers {
                         .map(|_| Empty {})
                 }
             }
+        });
+    let Some(streams) = streams else {
+        return handlers;
+    };
+    handlers
+        .on::<method::BrowserStream, _>({
+            let browser = b();
+            move |params, context| browser.clone().stream(params, context)
+        })
+        .on::<method::BrowserStreamAck, _>(move |params, context| {
+            // An acknowledgement needs no desktop round trip: it frees a slot for the next frame.
+            std::future::ready(Browser::live(context).map(|context| {
+                streams.ack(&params.bot_id, &context.connection_id, params.sequence);
+                Empty {}
+            }))
         })
 }

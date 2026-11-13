@@ -52,7 +52,10 @@ pub fn duration(minutes: u32) -> String {
         let hours = minutes / 60;
         format!("{hours} {}", if minutes == 60 { "hour" } else { "hours" })
     } else {
-        format!("{minutes} {}", if minutes == 1 { "minute" } else { "minutes" })
+        format!(
+            "{minutes} {}",
+            if minutes == 1 { "minute" } else { "minutes" }
+        )
     }
 }
 
@@ -92,8 +95,7 @@ impl SchedulerHost for Core<'_> {
 /// `runner.deliver` for the timer: work already in the queue. It takes the runner's locks itself.
 pub type Deliver = Arc<dyn Fn(&WorkItem) -> Result<(), String> + Send + Sync>;
 /// `runner.stopItem`: stops one work item, saying why. Resolves when it has stopped.
-pub type StopItem =
-    Arc<dyn Fn(&str, &str) -> BoxFuture<'static, Result<(), String>> + Send + Sync>;
+pub type StopItem = Arc<dyn Fn(&str, &str) -> BoxFuture<'static, Result<(), String>> + Send + Sync>;
 
 pub struct SchedulerDeps {
     pub db: Db,
@@ -250,7 +252,14 @@ impl Scheduler {
     }
 
     fn with_db<T>(&self, work: impl FnOnce(&Connection) -> T) -> T {
-        work(&self.0.deps.db.lock().unwrap_or_else(PoisonError::into_inner))
+        work(
+            &self
+                .0
+                .deps
+                .db
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+        )
     }
 
     fn log(&self, context: &str, error: &str) {
@@ -429,7 +438,10 @@ impl Scheduler {
                 // Deleted or already finished.
                 Ok(Some(run)) if run.status == RoutineRunStatus::Running => {
                     checking.state().timed_out.insert(check_run.clone());
-                    Ok(Some((checking.0.deps.stop_item)(&check_item, &check_notice)))
+                    Ok(Some((checking.0.deps.stop_item)(
+                        &check_item,
+                        &check_notice,
+                    )))
                 }
                 Ok(_) => Ok(None),
                 Err(error) => Err(error.to_string()),
@@ -559,8 +571,7 @@ impl Scheduler {
                 note: Some("The routine was deleted.".to_owned()),
                 ..data
             };
-            let Value::Object(map) = serde_json::to_value(data).expect("a label serializes")
-            else {
+            let Value::Object(map) = serde_json::to_value(data).expect("a label serializes") else {
                 unreachable!("a routine label is an object");
             };
             let updated = update_message(
@@ -596,8 +607,12 @@ impl Scheduler {
             .next_run_at
             .clone()
             .ok_or_else(|| internal(format!("Routine {} has no next run", routine.id)))?;
-        let due_ms = parse_iso(&due_at)
-            .ok_or_else(|| internal(format!("Routine {} has a bad next run {due_at}", routine.id)))?;
+        let due_ms = parse_iso(&due_at).ok_or_else(|| {
+            internal(format!(
+                "Routine {} has a bad next run {due_at}",
+                routine.id
+            ))
+        })?;
         let bot = get_stored_bot(db, &routine.bot_id)?;
         let run = if now_ms - due_ms > GRACE_MS {
             add_run(

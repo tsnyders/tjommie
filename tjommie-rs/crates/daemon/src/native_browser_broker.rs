@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use axum::http::{Method, StatusCode};
 use axum::response::{IntoResponse, Response};
+use protocol::native_browser::NativeBrowserStreamMessage;
 use serde::Serialize;
 use serde_json::{Value, json};
 use tokio::sync::oneshot;
@@ -26,6 +27,9 @@ pub const BROWSER_TIMEOUT: Duration = Duration::from_secs(45);
 
 /// Re-checked before a job is sent and when its result arrives.
 pub type Authorized = Arc<dyn Fn() -> bool + Send + Sync>;
+
+/// Takes what the desktop posts on its own (live frames, the end of a stream). False means nobody is listening for it.
+pub type StreamSink = Arc<dyn Fn(NativeBrowserStreamMessage) -> bool + Send + Sync>;
 
 /// What the desktop needs to find the bot's browser profile and folders.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -113,6 +117,8 @@ struct State {
     pending: Vec<Pending>,
     polls: Polls,
     closed: bool,
+    /// Where live frames go. None until the daemon installs one: then the desktop is told nobody is watching.
+    stream: Option<StreamSink>,
 }
 
 impl State {
@@ -276,6 +282,10 @@ impl NativeBrowserBroker {
         let Ok(value) = serde_json::from_slice::<Value>(&bytes) else {
             return StatusCode::BAD_REQUEST.into_response();
         };
+        // A post with a `kind` is the desktop's own (a live frame, the end of a stream), not the answer to a job.
+        if value.get("kind").is_some() {
+            return self.stream_message(value);
+        }
         let (Some(id), Some(ok)) = (
             value.get("id").and_then(Value::as_str),
             value.get("ok").and_then(Value::as_bool),
@@ -309,6 +319,24 @@ impl NativeBrowserBroker {
         };
         item.settle(result);
         StatusCode::NO_CONTENT.into_response()
+    }
+
+    /// Where the desktop's live frames and stream ends go.
+    pub fn on_stream(&self, sink: StreamSink) {
+        self.state().stream = Some(sink);
+    }
+
+    /// 204 when taken, 404 when nobody is watching (the desktop stops sending), 400 for anything malformed.
+    fn stream_message(&self, value: Value) -> Response {
+        let Ok(message) = protocol::parse::<NativeBrowserStreamMessage>(value) else {
+            return StatusCode::BAD_REQUEST.into_response();
+        };
+        let sink = self.state().stream.clone();
+        if sink.is_some_and(|sink| sink(message)) {
+            StatusCode::NO_CONTENT.into_response()
+        } else {
+            StatusCode::NOT_FOUND.into_response()
+        }
     }
 
     /// Ends every job of a bot whose browser closed.

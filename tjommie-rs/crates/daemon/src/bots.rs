@@ -19,6 +19,7 @@ use crate::context::Context;
 use crate::ids::{new_id, now_iso};
 use crate::providers::ProviderError;
 use crate::server::{Handlers, RpcError};
+use crate::win::acl::{BotHome, Protection};
 
 /// A bot as stored: everything but its live state.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -634,6 +635,40 @@ impl Drop for Switching {
     }
 }
 
+fn already_changing() -> RpcError {
+    RpcError::new(
+        ErrorCode::Busy,
+        "This bot is already changing provider. Try again shortly.",
+    )
+}
+
+/// The set is a leaf lock, taken after the database everywhere else (the runner's `is_held`, the projects'
+/// `bot_available`). So nothing here may take the database, or anything else, while it is locked: a handler that held the
+/// set across a database call would lock against them, and freeze the daemon.
+impl Switching {
+    /// `switchingBots.has(id)`.
+    fn is_changing(ids: &Mutex<HashSet<String>>, id: &str) -> bool {
+        ids.lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains(id)
+    }
+
+    /// `switchingBots.add(id)`; Busy when another change got in after `is_changing` was asked.
+    fn begin(ids: &Arc<Mutex<HashSet<String>>>, id: &str) -> Result<Switching, RpcError> {
+        let added = ids
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(id.to_owned());
+        if !added {
+            return Err(already_changing());
+        }
+        Ok(Switching {
+            ids: ids.clone(),
+            id: id.to_owned(),
+        })
+    }
+}
+
 fn provider_error(error: ProviderError) -> RpcError {
     RpcError::new(ErrorCode::Internal, error.message())
 }
@@ -642,7 +677,8 @@ fn provider_error(error: ProviderError) -> RpcError {
 const CLOSE_WAIT: Duration = Duration::from_secs(15);
 
 pub fn register(handlers: Handlers, context: &Context) -> Handlers {
-    let deleting: Arc<Mutex<HashSet<String>>> = Arc::default();
+    // Shared with the project services, which refuse a bot being deleted (`deletionRequests`).
+    let deleting = context.late.deleting.clone();
     let (list, create, update, delete, pause, show, notes) = (
         context.clone(),
         context.clone(),
@@ -663,15 +699,21 @@ pub fn register(handlers: Handlers, context: &Context) -> Handlers {
             async move { bots }
         })
         .on::<method::BotsCreate, _>(move |input, _| {
-            // T2.2 refreshes folder protection after the bot is made, whether or not it was.
-            let created = (|| {
+            let prefix = (|| {
                 create.with_db(|db| {
                     let requested = input.account_id.clone().flatten();
                     create
                         .accounts
                         .check_available(db, input.provider, requested.as_deref())
                 })?;
-                let made = create.with_db(|db| create_bot(db, &create.bots_dir, &input));
+                Ok::<_, RpcError>(create.with_db(|db| create_bot(db, &create.bots_dir, &input)))
+            })();
+            let create = create.clone();
+            async move {
+                let made = prefix?;
+                // `refreshProtection(true)` runs whether or not the bot was made, and a failure of the pass is
+                // what's reported then (`daemon.ts:442-445`).
+                create.accounts.protect(true, None).await?;
                 if let Some(runner) = create.late.runner.get() {
                     runner.setup_changed();
                 }
@@ -679,12 +721,18 @@ pub fn register(handlers: Handlers, context: &Context) -> Handlers {
                 let bot = create.with_db(|db| Ok(create.bot_view.to_bot(db, stored)))?;
                 create.events.send(Event::BotUpdated(bot.clone()));
                 Ok::<_, RpcError>(bot)
-            })();
-            async move { created }
+            }
         })
         .on::<method::BotsUpdate, _>(move |params, _| {
-            // M5 refuses while the bot has a project task running (`tasks.botBusy`).
             let prefix = (|| {
+                if let Some(m5) = update.late.m5.get()
+                    && update.with_db(|db| m5.tasks.bot_busy(db, &params.id))?
+                {
+                    return Err(RpcError::new(
+                        ErrorCode::Busy,
+                        "Stop this bot's project task or check before changing its settings.",
+                    ));
+                }
                 let (before, patch) = (
                     update.with_db(|db| get_stored_bot(db, &params.id))?,
                     &params.patch,
@@ -711,23 +759,14 @@ pub fn register(handlers: Handlers, context: &Context) -> Handlers {
                             .accounts
                             .check_available(db, provider, requested.as_deref())
                     })?;
-                    let mut ids = update
-                        .late
-                        .switching
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner);
-                    if ids.contains(&params.id) {
-                        return Err(RpcError::new(
-                            ErrorCode::Busy,
-                            "This bot is already changing provider. Try again shortly.",
-                        ));
+                    // `daemon.ts:458-460`'s check, validate, add, with the set locked only inside each helper: it is
+                    // never held across `with_db` (see `Switching`).
+                    let ids = &update.late.switching;
+                    if Switching::is_changing(ids, &params.id) {
+                        return Err(already_changing());
                     }
                     update.with_db(|db| validate_bot_patch(db, &before, patch))?;
-                    ids.insert(params.id.clone());
-                    switching = Some(Switching {
-                        ids: update.late.switching.clone(),
-                        id: params.id.clone(),
-                    });
+                    switching = Some(Switching::begin(ids, &params.id)?);
                 }
                 Ok::<_, RpcError>((before, switching))
             })();
@@ -736,15 +775,46 @@ pub fn register(handlers: Handlers, context: &Context) -> Handlers {
                 let (before, switching) = prefix?;
                 let identity_changed = switching.is_some();
                 let runner = update.late.runner.get().cloned();
+                let provider_changed = params
+                    .patch
+                    .provider
+                    .is_some_and(|provider| provider != before.provider);
+                let mut pass_attempted = false;
                 let changed = async {
                     if identity_changed && let Some(runner) = &runner {
                         runner.stop(&params.id).await.map_err(provider_error)?;
                         runner.bot_changed(&params.id, true)?;
                     }
-                    // T2.2 refreshes folder protection first when the provider changed.
+                    if provider_changed {
+                        // The pass sees the new provider before it is saved (`daemon.ts:469-473`).
+                        pass_attempted = true;
+                        let over = BotHome {
+                            id: params.id.clone(),
+                            home_folder: PathBuf::from(&before.home_folder),
+                            provider: params.patch.provider.unwrap_or(before.provider),
+                        };
+                        update.accounts.protect(true, Some(over)).await?;
+                        if update.accounts.protection_status() == Protection::CheckFailed {
+                            return Err(RpcError::new(
+                                ErrorCode::BadState,
+                                "Could not update the bot folder protection. Try again after checking Codex's sandbox setup.",
+                            ));
+                        }
+                    }
                     update.with_db(|db| update_bot(db, &params.id, &params.patch))
                 }
                 .await;
+                // The `catch`: a pass that was attempted is run again without the override, and if that fails too its
+                // error replaces the original.
+                let changed = match changed {
+                    Err(error) if provider_changed && pass_attempted => {
+                        match update.accounts.protect(true, None).await {
+                            Ok(()) => Err(error),
+                            Err(refresh) => Err(refresh),
+                        }
+                    }
+                    other => other,
+                };
                 if identity_changed {
                     drop(switching);
                     if let Some(runner) = &runner {
@@ -768,8 +838,17 @@ pub fn register(handlers: Handlers, context: &Context) -> Handlers {
             }
         })
         .on::<method::BotsDelete, _>(move |Id { id }, _| {
-            // M5 refuses while the bot is in a project or task (`projects.botInUse`, `tasks.botBusy`).
             let started = (|| {
+                if let Some(m5) = delete.late.m5.get()
+                    && delete.with_db(|db| {
+                        Ok(m5.projects.bot_in_use(db, &id)? || m5.tasks.bot_busy(db, &id)?)
+                    })?
+                {
+                    return Err(RpcError::new(
+                        ErrorCode::Busy,
+                        "Remove this bot from its project and finish its task or check before deleting it.",
+                    ));
+                }
                 delete.with_db(|db| get_stored_bot(db, &id))?;
                 let mut ids = deleting.lock().unwrap_or_else(PoisonError::into_inner);
                 if !ids.insert(id.clone()) {

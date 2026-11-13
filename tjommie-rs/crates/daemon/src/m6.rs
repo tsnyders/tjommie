@@ -13,12 +13,14 @@ use serde_json::{Value, json};
 
 use crate::attachments::Attachments;
 use crate::bots::get_stored_bot;
+use crate::browser_stream::BrowserStreams;
 use crate::context::Db;
 use crate::ids::new_id;
 use crate::native_browser_broker::{BROWSER_TIMEOUT, BrowserError, NativeBrowserBroker};
 use crate::native_browser_handlers::{self, NativeRequest};
 use crate::native_browser_mcp::{ForBot, NativeBrowserMcp, NativeBrowserMcpOptions};
-use crate::server::{Handlers, Routes, RpcError};
+use crate::remote::Remote;
+use crate::server::{Broadcaster, Handlers, Routes, RpcError};
 use crate::vault_handlers;
 use crate::vault_host_broker::VaultHostBroker;
 use crate::worker_boundary_host::{WorkerBoundary, WorkerBoundaryHost};
@@ -44,6 +46,8 @@ pub struct M6 {
     pub attachments: Arc<Attachments>,
     /// `close(bot)` when the bot's CLI session token is revoked.
     pub browser_mcp: Arc<NativeBrowserMcp>,
+    /// The live browser stream (M8). Until [`M6::connect_events`] runs it is off: `browser.stream` answers `unknown_method`.
+    pub streams: Arc<BrowserStreams>,
     native_broker: Option<Arc<NativeBrowserBroker>>,
     native_request: NativeRequest,
     vault_broker: Option<Arc<VaultHostBroker>>,
@@ -93,10 +97,17 @@ pub fn install(handlers: &mut Handlers, routes: &mut Routes, deps: M6Deps) -> Re
         })),
     });
 
+    let streams = BrowserStreams::new();
     let mut table = attachments.handlers(std::mem::take(handlers));
     let mut mounted = std::mem::take(routes).route("/mcp/browser", browser_mcp.route());
     if let Some(broker) = &native_broker {
-        table = native_browser_handlers::register(table, native_request.clone());
+        table = native_browser_handlers::register_streaming(
+            table,
+            native_request.clone(),
+            streams.clone(),
+        );
+        let watchers = streams.clone();
+        broker.on_stream(Arc::new(move |message| watchers.ingest(message)));
         mounted = mounted.route("/browser-host", broker.route());
     }
     if let Some(broker) = &vault_broker {
@@ -111,6 +122,7 @@ pub fn install(handlers: &mut Handlers, routes: &mut Routes, deps: M6Deps) -> Re
     Ok(M6 {
         attachments,
         browser_mcp,
+        streams,
         native_broker,
         native_request,
         vault_broker,
@@ -140,13 +152,14 @@ fn attachment_host_id(db: &Db) -> Result<String, RpcError> {
     Ok(id)
 }
 
-/// `nativeRequest`: the stored bot's command to the desktop, refused while its browser is off.
+/// `nativeRequest`: the stored bot's command to the desktop, refused while its browser is off. Calling it only builds
+/// the request: the database is read when the future first runs, never at the call (see [`NativeRequest`]).
 fn native_request(db: Db, broker: Option<Arc<NativeBrowserBroker>>) -> NativeRequest {
     Arc::new(move |id: String, command: Value, authorized| {
-        let bot = get_stored_bot(&db.lock().unwrap_or_else(PoisonError::into_inner), &id);
-        let broker = broker.clone();
+        let (db, broker) = (db.clone(), broker.clone());
         Box::pin(async move {
-            let bot = bot?;
+            // The guard is a temporary of this statement: it is gone before the first await.
+            let bot = get_stored_bot(&db.lock().unwrap_or_else(PoisonError::into_inner), &id)?;
             let teardown = matches!(
                 command["kind"].as_str(),
                 Some("close" | "cancel_tools" | "delete_profile")
@@ -190,6 +203,7 @@ impl M6 {
     /// `bots.update` turned the browser off: fence its tool session and close the desktop's browser.
     pub async fn browser_off(&self, id: &str) -> Result<(), RpcError> {
         self.browser_mcp.close(id);
+        self.streams.ended(id);
         let Some(broker) = &self.native_broker else {
             return Ok(());
         };
@@ -207,6 +221,7 @@ impl M6 {
 
     /// `bots.delete`, before the row goes: the desktop deletes the bot's browser profile.
     pub async fn bot_deleting(&self, id: &str) -> Result<(), RpcError> {
+        self.streams.ended(id);
         if let Some(broker) = &self.native_broker {
             (self.native_request)(id.to_owned(), json!({ "kind": "delete_profile" }), None).await?;
             broker.close_bot(id);
@@ -219,6 +234,14 @@ impl M6 {
         if let Some(broker) = &self.native_broker {
             cancel_tools(broker, &self.native_request, &self.runtime, id);
         }
+    }
+
+    /// Turns the live stream on: frames go to the connection that asked, by its id, over the local server's WebSocket or
+    /// a paired device's channel. Call once, after the server and `Remote` exist.
+    pub fn connect_events(&self, events: Broadcaster, remote: Arc<Remote>) {
+        self.streams.connect(Arc::new(move |connection, event| {
+            events.send_to(connection, event) || remote.host().send_to(connection, event)
+        }));
     }
 
     /// `bots.showBrowser`, after it checked the browser is on.

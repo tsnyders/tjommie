@@ -1,7 +1,9 @@
 //! `native-browser.test.ts`
 
-use super::with;
-use protocol::native_browser::{NativeBrowserCommand, NativeBrowserMount, NativeBrowserUiCommand};
+use super::{with, without};
+use protocol::native_browser::{
+    NativeBrowserCommand, NativeBrowserMount, NativeBrowserStreamMessage, NativeBrowserUiCommand,
+};
 use protocol::parse;
 use serde_json::{Value, json};
 
@@ -29,6 +31,63 @@ fn accepts_internal_automation_and_cleanup_but_excludes_both_from_renderer_comma
         .unwrap()
         .remove("controlEpoch");
     assert!(parse::<NativeBrowserCommand>(without_epoch).is_err());
+}
+
+#[test]
+fn lets_a_remote_controller_turn_the_live_stream_on_or_off_but_not_the_renderer() {
+    let stream = json!({ "kind": "remote", "controllerId": "rpc:one", "action": { "kind": "stream", "on": true, "maxFps": 30 } });
+    assert!(parse::<NativeBrowserCommand>(stream.clone()).is_ok());
+    assert!(
+        parse::<NativeBrowserCommand>(with(
+            stream.clone(),
+            json!({ "action": { "kind": "stream", "on": false } })
+        ))
+        .is_ok()
+    );
+    assert!(parse::<NativeBrowserUiCommand>(stream["action"].clone()).is_err());
+    for action in [
+        json!({ "kind": "stream" }),
+        json!({ "kind": "stream", "on": true, "maxFps": 0 }),
+        json!({ "kind": "stream", "on": true, "maxFps": 61 }),
+        json!({ "kind": "stream", "on": true, "extra": 1 }),
+    ] {
+        let command = with(stream.clone(), json!({ "action": action }));
+        assert!(
+            parse::<NativeBrowserCommand>(command.clone()).is_err(),
+            "{command}"
+        );
+    }
+}
+
+#[test]
+fn accepts_only_a_streamed_frame_or_an_end_from_the_desktop_hosts_own_posts() {
+    let frame = json!({ "data": "image", "mime": "image/jpeg", "width": 1280, "height": 800, "sequence": 4, "streamId": "stream" });
+    assert!(
+        parse::<NativeBrowserStreamMessage>(
+            json!({ "kind": "stream_frame", "botId": "b1", "frame": frame })
+        )
+        .is_ok()
+    );
+    for reason in ["private", "closed", "failed"] {
+        let message = json!({ "kind": "stream_end", "botId": "b1", "reason": reason });
+        assert!(
+            parse::<NativeBrowserStreamMessage>(message.clone()).is_ok(),
+            "{message}"
+        );
+    }
+    for message in [
+        json!({ "kind": "stream_frame", "botId": "b1", "frame": without(frame.clone(), "streamId") }),
+        json!({ "kind": "stream_frame", "botId": "", "frame": frame }),
+        json!({ "kind": "stream_frame", "botId": "b1", "frame": frame, "extra": 1 }),
+        json!({ "kind": "stream_end", "botId": "b1", "reason": "bored" }),
+        json!({ "kind": "stream_end", "botId": "b1" }),
+        json!({ "kind": "frame", "botId": "b1", "frame": frame }),
+    ] {
+        assert!(
+            parse::<NativeBrowserStreamMessage>(message.clone()).is_err(),
+            "{message}"
+        );
+    }
 }
 
 #[test]

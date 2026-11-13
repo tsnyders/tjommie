@@ -4,7 +4,7 @@
 
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
 use futures_util::future::try_join_all;
 use protocol::accounts::{
@@ -27,10 +27,12 @@ use crate::accounts_store::{
 use crate::bots::list_stored_bots;
 use crate::context::{BotView, Context, Db};
 use crate::ids::new_id;
+use crate::protect::FolderProtection;
 use crate::runner::Runner;
 use crate::server::{Broadcaster, Handlers, RequestContext, RpcError};
 use crate::setup::Setup;
 use crate::usage::query_usage;
+use crate::win::acl::{BotHome, Protection};
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
@@ -63,7 +65,15 @@ struct Feed {
     /// The runner, once built: it needs the accounts, and the accounts' feed needs it (`runner.setupChanged()`, the
     /// stop at a spending cap).
     runner: Arc<Mutex<Option<Runner>>>,
+    /// The folder protection, once startup has built it (`refreshProtection`). Unset in the handler tests, which then
+    /// protect nothing.
+    protection: Arc<OnceLock<Arc<FolderProtection>>>,
+    /// `loggedCodexVersion`: the last Codex version reported as different from the measured recipe.
+    logged_codex_version: Arc<Mutex<Option<String>>>,
 }
+
+/// The Codex version the ACL recipe was measured against (`daemon.ts:151`).
+const MEASURED_CODEX_VERSION: &str = "0.155.1";
 
 impl Feed {
     fn runner(&self) -> Option<Runner> {
@@ -103,16 +113,44 @@ impl Feed {
         self.bots_updated();
     }
 
-    /// `refreshSetup`: checks the default accounts and reports their setup.
+    /// `refreshProtection(force, override)`. Nothing to protect until startup attaches the service.
+    async fn protect(&self, force: bool, over: Option<BotHome>) -> Result<(), RpcError> {
+        match self.protection.get() {
+            Some(protection) => protection.refresh(force, over).await,
+            None => Ok(()),
+        }
+    }
+
+    /// `logVersionDrift`: says so, once per version, when Codex isn't the version the ACL recipe was measured on.
+    fn log_version_drift(&self, setup: &[ProviderSetup]) {
+        let version = setup.iter().find_map(|status| match status {
+            ProviderSetup::Codex(codex) => codex.setup.version.clone(),
+            _ => None,
+        });
+        let Some(version) = version else {
+            return;
+        };
+        let mut logged = lock(&self.logged_codex_version);
+        if version != MEASURED_CODEX_VERSION && logged.as_deref() != Some(version.as_str()) {
+            println!(
+                "Codex CLI {version} differs from the measured ACL recipe version {MEASURED_CODEX_VERSION}."
+            );
+            *logged = Some(version);
+        }
+    }
+
+    /// `refreshSetup(forceAcl)`: refreshes the folder protection, checks the default accounts and reports their setup.
     async fn refresh_setup(
         &self,
         runtime: &AccountRuntime,
+        force_acl: bool,
     ) -> Result<Vec<ProviderSetup>, RpcError> {
-        // T2.2 refreshes folder protection first, and logs a Codex version that differs from its measured ACL recipe.
+        self.protect(force_acl, None).await?;
         let accounts = list_accounts(&lock(&self.db), false)?;
         let defaults = accounts.iter().filter(|account| account.is_default);
         try_join_all(defaults.map(|account| runtime.check(&account.id))).await?;
         let setup = default_setups(&runtime.list()?);
+        self.log_version_drift(&setup);
         *lock(&self.provider_setup) = setup.clone();
         self.events.send(Event::SetupChanged(setup.clone()));
         self.bots_updated();
@@ -140,7 +178,7 @@ impl Feed {
         // because one that failed or was abandoned changes nothing a client could notice.
         let (feed, runtime, attempt) = (self.clone(), runtime.clone(), attempt.to_string());
         tokio::spawn(async move {
-            if feed.refresh_setup(&runtime).await.is_err() {
+            if feed.refresh_setup(&runtime, true).await.is_err() {
                 eprintln!("Failed to refresh provider setup.");
             }
             feed.events.send(Event::SetupSignInEnded(SetupSignInEnded {
@@ -266,6 +304,8 @@ impl Accounts {
             bot_view: options.bot_view,
             provider_setup: Arc::default(),
             runner: Arc::default(),
+            protection: Arc::default(),
+            logged_codex_version: Arc::default(),
         };
         let (changed, ended, cap) = (feed.clone(), feed.clone(), feed.clone());
         let runtime = AccountRuntime::new(AccountRuntimeOptions {
@@ -306,6 +346,31 @@ impl Accounts {
     /// Gives the feed the runner (built after the accounts it uses).
     pub fn attach_runner(&self, runner: Runner) {
         *lock(&self.feed.runner) = Some(runner);
+    }
+
+    /// Takes the runner back, and lets the bot view go of it too. The runner holds the accounts, whose callbacks hold
+    /// this feed, so at shutdown neither would otherwise let the other (and the database) go.
+    pub fn detach_runner(&self) {
+        lock(&self.feed.runner).take();
+        self.feed.bot_view.release();
+    }
+
+    /// Hands the accounts the folder protection (`protect: () => refreshProtection(true)`). Set once.
+    pub fn attach_protection(&self, protection: Arc<FolderProtection>) {
+        let _ = self.feed.protection.set(protection);
+    }
+
+    /// What the last protection pass found; `Ready` until a pass says otherwise, and when none is attached.
+    pub fn protection_status(&self) -> Protection {
+        self.feed
+            .protection
+            .get()
+            .map_or(Protection::Ready, |protection| protection.status())
+    }
+
+    /// `refreshProtection(force, override)`, for the bot and account handlers.
+    pub async fn protect(&self, force: bool, over: Option<BotHome>) -> Result<(), RpcError> {
+        self.feed.protect(force, over).await
     }
 
     /// The default accounts' latest setup checks.
@@ -418,7 +483,7 @@ impl Accounts {
         create_account(&self.db(), input)?;
         let _change = self.enter(&id, false, true)?;
         let made = async {
-            // T2.2 refreshes folder protection here (`protect()`).
+            self.protect(true, None).await?;
             if let Some(key) = &key {
                 self.runtime.set_api_key(&id, key.as_str()).await?;
             }
@@ -512,7 +577,7 @@ impl Accounts {
     async fn sign_in(&self, id: String) -> Result<SignInStart, RpcError> {
         let _change = self.enter(&id, true, true)?;
         self.not_running(&id)?;
-        // T2.2 refreshes folder protection here (`protect()`).
+        self.protect(true, None).await?;
         self.runtime.sign_in(&id).await
     }
 
@@ -528,8 +593,12 @@ impl Accounts {
     async fn prepare_codex_sandbox(&self, id: String) -> Result<AccountInfo, RpcError> {
         let _change = self.enter(&id, true, true)?;
         self.not_running(&id)?;
-        // T2.2 refreshes folder protection after this, whether or not it worked (`protect()`).
-        self.runtime.prepare_sandbox(&id).await?;
+        // `try { prepareSandbox } finally { protect() }`: the pass runs whether or not it worked, and its own failure
+        // is the one reported.
+        let prepared = self.runtime.prepare_sandbox(&id).await;
+        let protected = self.protect(true, None).await;
+        protected?;
+        prepared?;
         self.runtime.info(&id)
     }
 
@@ -542,7 +611,7 @@ impl Accounts {
             Ok(id) => self.prepare_codex_sandbox(id).await.map(drop),
             Err(error) => Err(error),
         };
-        let refreshed = self.feed.refresh_setup(&self.runtime).await;
+        let refreshed = self.feed.refresh_setup(&self.runtime, true).await;
         prepared?;
         refreshed?
             .into_iter()
@@ -598,7 +667,7 @@ pub fn register(handlers: Handlers, context: &Context) -> Handlers {
             query_usage(&a.db(), &query)
         }))
         .on::<method::SetupStatus, _>(serve(accounts, |a, _: Empty| async move {
-            a.feed.refresh_setup(&a.runtime).await
+            a.feed.refresh_setup(&a.runtime, false).await
         }))
         .on::<method::SetupSignIn, _>(serve(
             accounts,

@@ -145,9 +145,7 @@ impl Endpoint {
         };
         let params = object.get("params").and_then(Value::as_object);
         let ok = |result: Value| json!({ "jsonrpc": "2.0", "id": id, "result": result });
-        let error = |code: i64, detail: String| {
-            json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": detail } })
-        };
+        let error = |code: i64, detail: String| json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": detail } });
         let answer = match method {
             "initialize" => ok(json!({
                 "protocolVersion": params
@@ -169,7 +167,9 @@ impl Endpoint {
                 ok(json!({ "tools": listed }))
             }
             "tools/call" => {
-                let name = params.and_then(|params| params.get("name")).and_then(Value::as_str);
+                let name = params
+                    .and_then(|params| params.get("name"))
+                    .and_then(Value::as_str);
                 let Some(tool) =
                     name.and_then(|name| self.tools.iter().find(|tool| tool.name == name))
                 else {
@@ -204,7 +204,12 @@ impl Endpoint {
     async fn handle(self: Arc<Self>, request: Request) -> Response {
         let (parts, body) = request.into_parts();
         if parts.method != Method::POST {
-            return (StatusCode::METHOD_NOT_ALLOWED, [(header::ALLOW, "POST")], "").into_response();
+            return (
+                StatusCode::METHOD_NOT_ALLOWED,
+                [(header::ALLOW, "POST")],
+                "",
+            )
+                .into_response();
         }
         let token = parts
             .headers
@@ -293,5 +298,10 @@ fn parse_error() -> Response {
 }
 
 fn json_reply(status: StatusCode, body: &Value) -> Response {
-    (status, [(header::CONTENT_TYPE, "application/json")], body.to_string()).into_response()
+    (
+        status,
+        [(header::CONTENT_TYPE, "application/json")],
+        body.to_string(),
+    )
+        .into_response()
 }

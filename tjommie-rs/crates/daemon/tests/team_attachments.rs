@@ -129,14 +129,22 @@ fn attachment_exists(fx: &Fixture, attachment_id: &str) -> bool {
 /// The bytes `open` and `read` would give: the stored copy, checked against the row's sha256.
 fn stored_bytes(fx: &Fixture, attachment_id: &str) -> Vec<u8> {
     let row = stored(fx, attachment_id);
-    let bytes = fs::read(fx.shared_files().join("attachments").join(&row.storage_name)).unwrap();
+    let bytes = fs::read(
+        fx.shared_files()
+            .join("attachments")
+            .join(&row.storage_name),
+    )
+    .unwrap();
     assert_eq!(format!("{:x}", Sha256::digest(&bytes)), row.sha256);
     bytes
 }
 
 /// The `FileData` of a file card.
 fn file_data(message: &Message) -> FileData {
-    serde_json::from_value(Value::Object(message.data.clone().expect("a file card has data"))).unwrap()
+    serde_json::from_value(Value::Object(
+        message.data.clone().expect("a file card has data"),
+    ))
+    .unwrap()
 }
 
 fn name_is(message: &Message, name: &str) -> bool {
@@ -254,19 +262,24 @@ fn shares_from_the_validated_task_folder_and_refuses_a_sibling_managed_folder() 
     fs::create_dir(&sibling).unwrap();
     fs::write(sibling.join("private.md"), "private").unwrap();
     use_folder(&fx, &b.writer.id, &folder);
-    set_current(&fx, &b.writer.id, task_item(&fx, &b.writer.id, 1, "context"));
+    set_current(
+        &fx,
+        &b.writer.id,
+        task_item(&fx, &b.writer.id, 1, "context"),
+    );
     fs::write(folder.join("answer.md"), "task result").unwrap();
     assert_eq!(
         fx.run_tool("share_file", &b.writer.id, json!({ "path": "answer.md" })),
         Ok("Shared answer.md.".to_owned())
     );
-    assert!(fx
-        .run_tool(
+    assert!(
+        fx.run_tool(
             "share_file",
             &b.writer.id,
             json!({ "path": sibling.join("private.md").to_string_lossy() }),
         )
-        .is_err());
+        .is_err()
+    );
 }
 
 #[test]
@@ -301,7 +314,10 @@ fn preserves_task_reply_context_and_attachment_identity_in_exchange_room_copies(
     assert_eq!(reply.source, WorkSource::BotReply);
     assert_eq!(reply.task_attempt_id.as_deref(), Some("attempt"));
     assert_eq!(reply.task_revision, Some(3));
-    assert_eq!(reply.execution_context_key.as_deref(), Some("exact-context"));
+    assert_eq!(
+        reply.execution_context_key.as_deref(),
+        Some("exact-context")
+    );
     let room = history_of(&fx, "team", 200)
         .into_iter()
         .find(has_files)
@@ -317,7 +333,11 @@ fn publishes_explicit_companion_ownership_atomically_and_revokes_it_with_its_par
     let fx = fixture_with(true);
     let b = bots(&fx);
     let folder = PathBuf::from(&b.writer.home_folder);
-    fs::write(folder.join("answer.md"), "# Answer\n![Chart](images/chart.png)").unwrap();
+    fs::write(
+        folder.join("answer.md"),
+        "# Answer\n![Chart](images/chart.png)",
+    )
+    .unwrap();
     fs::write(folder.join("chart.png"), png()).unwrap();
     fx.run_tool(
         "share_file",
@@ -342,7 +362,10 @@ fn publishes_explicit_companion_ownership_atomically_and_revokes_it_with_its_par
     let text = serde_json::to_string(&companion).unwrap();
     assert!(!text.contains(&root));
     assert!(!text.contains(&root.replace('\\', "\\\\")));
-    assert_eq!(stored(&fx, &companion.attachment_id).content_type, "image/png");
+    assert_eq!(
+        stored(&fx, &companion.attachment_id).content_type,
+        "image/png"
+    );
     assert_eq!(stored_bytes(&fx, &companion.attachment_id), png());
     // The lookups `metadata` would refuse as unavailable: another index, or the parent's id at the companion's index.
     assert_eq!(link_of(&fx, &message.id, 42), None);
@@ -357,12 +380,21 @@ fn publishes_explicit_companion_ownership_atomically_and_revokes_it_with_its_par
     });
     let shared = fx.attachments.as_ref().unwrap();
     fx.db(|db| shared.cleanup(db).unwrap());
-    assert!(!attachment_exists(&fx, &companion.attachment_id));
-    assert!(!fx
-        .shared_files()
-        .join("attachments")
-        .join(companion_file)
-        .exists());
+    // The parent's link to the companion goes with the parent, so a read through it is refused: the TypeScript test checks
+    // that a transfer opened on that link rejects `unavailable` (`team.attachments.test.ts:77-79`).
+    assert_eq!(link_of(&fx, &message.id, companion.attachment_index), None);
+    // The attachment itself stays: `#shareFile` (`team.ts:538-540`) also posts the companion's own file card, which links
+    // it, so deleting only the parent's card does not orphan it.
+    assert!(
+        attachment_exists(&fx, &companion.attachment_id),
+        "the companion's own card still holds it"
+    );
+    assert!(
+        fx.shared_files()
+            .join("attachments")
+            .join(companion_file)
+            .exists()
+    );
 }
 
 #[test]
@@ -434,7 +466,8 @@ fn remaps_room_companion_indexes_without_changing_ids_across_delivery_and_restar
 }
 
 #[test]
-fn refuses_companion_escape_duplicate_names_and_active_formats_without_publishing_a_partial_bundle() {
+fn refuses_companion_escape_duplicate_names_and_active_formats_without_publishing_a_partial_bundle()
+{
     let fx = fixture_with(true);
     let b = bots(&fx);
     let folder = PathBuf::from(&b.writer.home_folder);
@@ -462,7 +495,10 @@ fn refuses_companion_escape_duplicate_names_and_active_formats_without_publishin
             .is_err(),
             "{companions}"
         );
-        assert!(history_of(&fx, &b.writer.id, 200).is_empty(), "{companions}");
+        assert!(
+            history_of(&fx, &b.writer.id, 200).is_empty(),
+            "{companions}"
+        );
         assert_eq!(
             fx.count("SELECT COUNT(*) FROM attachments"),
             0,

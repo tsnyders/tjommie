@@ -163,6 +163,35 @@ fn subst_drives_and_volume_guid_paths_reach_the_same_folder() {
 }
 
 #[test]
+fn real_path_drops_the_verbatim_prefix_and_resolves_links() {
+    let (dir, root) = tree();
+    let link = dir.path().join("link");
+    junction(&link, &root);
+    let real = daemon::fsid::real_path(&link.join("child")).unwrap();
+    assert!(
+        !real.to_string_lossy().starts_with(r"\\?\"),
+        "{}",
+        real.display()
+    );
+    assert!(
+        real.to_string_lossy()
+            .to_lowercase()
+            .ends_with(r"root\child"),
+        "{}",
+        real.display()
+    );
+    for alias in loopback(&root) {
+        let real = daemon::fsid::real_path(&alias).unwrap();
+        assert!(
+            !real.to_string_lossy().starts_with(r"\\?\"),
+            "{}",
+            real.display()
+        );
+    }
+    assert!(daemon::fsid::real_path(&root.join("missing")).is_err());
+}
+
+#[test]
 fn is_open_file_names_the_held_file_through_aliases_and_refuses_a_lookalike_or_a_missing_path() {
     let (dir, root) = tree();
     let held = root.join("held.bin");

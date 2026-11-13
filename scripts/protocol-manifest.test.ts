@@ -14,8 +14,8 @@ it("names every protocol method and event, in order", () => {
   const manifest = protocolManifest();
   expect(manifest.methods.map((entry) => entry.name)).toEqual(Object.keys(methods));
   expect(manifest.events.map((entry) => entry.name)).toEqual(Object.keys(events));
-  expect(manifest.methods).toHaveLength(101);
-  expect(manifest.events).toHaveLength(26);
+  expect(manifest.methods).toHaveLength(103);
+  expect(manifest.events).toHaveLength(27);
 });
 
 it("describes params as the wire sends them, before defaults fill in", () => {
@@ -34,7 +34,7 @@ it("marks strings zod trims before it checks their length", () => {
 
 it("exports the standalone schemas parsed outside method calls", () => {
   const names = protocolManifest().types.map((entry) => entry.name);
-  for (const name of ["ClientMessage", "MessageData", "PairingCode", "RelayToHost", "NativeBrowserCommand", "VaultHostJob", "DiagnosticReport"]) expect(names).toContain(name);
+  for (const name of ["ClientMessage", "MessageData", "PairingCode", "RelayToHost", "NativeBrowserCommand", "NativeBrowserStreamMessage", "VaultHostJob", "DiagnosticReport"]) expect(names).toContain(name);
   expect(protocolManifest().types.every((entry) => entry.schema !== "custom")).toBe(true);
 });
 

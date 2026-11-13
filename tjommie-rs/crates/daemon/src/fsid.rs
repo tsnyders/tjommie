@@ -17,6 +17,20 @@ use windows::Win32::Storage::FileSystem::{
 };
 use windows::core::HSTRING;
 
+/// `realpathSync.native`: `path` resolved through links and short names, without the `\\?\` (or `\\?\UNC\`) prefix
+/// that `canonicalize` adds on Windows. The path must exist.
+pub fn real_path(path: &Path) -> io::Result<PathBuf> {
+    let real = std::fs::canonicalize(path)?;
+    let text = real.to_string_lossy();
+    Ok(if let Some(share) = text.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{share}"))
+    } else if let Some(rest) = text.strip_prefix(r"\\?\") {
+        PathBuf::from(rest)
+    } else {
+        real
+    })
+}
+
 /// A volume serial and file id.
 type Identity = (u64, [u8; 16]);
 

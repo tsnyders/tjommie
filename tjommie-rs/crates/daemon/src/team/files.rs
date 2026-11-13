@@ -165,7 +165,10 @@ pub fn sweep_stale(staging: &Path, now: SystemTime) {
             continue;
         }
         let folder = entry.path();
-        let stale = match (fs::symlink_metadata(&folder).and_then(|stats| stats.modified()), cutoff) {
+        let stale = match (
+            fs::symlink_metadata(&folder).and_then(|stats| stats.modified()),
+            cutoff,
+        ) {
             (Ok(modified), Some(cutoff)) => modified < cutoff,
             _ => false,
         };

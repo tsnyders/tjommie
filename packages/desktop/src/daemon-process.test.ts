@@ -1,10 +1,10 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { connect } from "@tjommie/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { daemonCommand, daemonEnv, daemonLaunchEnv, listeningPort, newToken, startDaemonProcess, stopWithin, type DaemonLaunch, type RunningDaemon } from "./daemon-process.ts";
+import { daemonCommand, daemonEnv, daemonExecutable, daemonLaunchEnv, listeningPort, newToken, packagedDaemonPath, startDaemonProcess, stopWithin, type DaemonLaunch, type RunningDaemon } from "./daemon-process.ts";
 
 const entry = fileURLToPath(new URL("../../daemon/src/main.ts", import.meta.url));
 const roots: string[] = [];
@@ -61,18 +61,53 @@ describe("daemon process", () => {
 
   it("starts the exe named by TJOMMIE_DAEMON_EXE in unpackaged runs, with no Node arguments", () => {
     const exe = "C:\\tjommie-rs\\tjommie-daemon.exe";
-    const node = { execPath: "C:\\node.exe", args: ["--disable-warning=ExperimentalWarning", "C:\\daemon\\main.ts"] };
-    const command = (env: NodeJS.ProcessEnv, packaged: boolean) => daemonCommand(env, packaged, node.execPath, "C:\\daemon\\main.ts");
-    expect(command({}, false)).toEqual(node);
-    expect(command({ TJOMMIE_DAEMON_EXE: exe }, false)).toEqual({ execPath: exe, args: [] });
-    expect(command({ TJOMMIE_DAEMON_EXE: "" }, false)).toEqual(node);
-    expect(command({ TJOMMIE_DAEMON_EXE: exe }, true)).toEqual(node); // The packaged switch is T9.1's.
+    const node = { execPath: "C:\\node.exe", args: ["--disable-warning=ExperimentalWarning", "C:\\daemon\\main.ts"], runAsNode: true };
+    const command = (env: NodeJS.ProcessEnv) => daemonCommand(env, null, node.execPath, "C:\\daemon\\main.ts");
+    expect(command({})).toEqual(node);
+    expect(command({ TJOMMIE_DAEMON_EXE: exe })).toEqual({ execPath: exe, args: [], runAsNode: false });
+    expect(command({ TJOMMIE_DAEMON_EXE: "" })).toEqual(node);
+  });
+
+  it("runs the bundled Rust daemon in an installed app, with no Node arguments and whatever the environment says", () => {
+    const resources = "C:\\Users\\owner\\AppData\\Local\\Programs\\Tjommie\\resources";
+    const bundled = packagedDaemonPath(resources);
+    expect(bundled).toBe(join(resources, "daemon", "tjommie-daemon.exe"));
+    const command = (env: NodeJS.ProcessEnv) => daemonCommand(env, bundled, "C:\\Tjommie.exe", "C:\\daemon\\main.ts");
+    expect(command({})).toEqual({ execPath: bundled, args: [], runAsNode: false });
+    // An installed app never runs an override, and never the Node daemon.
+    expect(command({ TJOMMIE_DAEMON_EXE: "C:\\elsewhere\\daemon.exe" })).toEqual({ execPath: bundled, args: [], runAsNode: false });
+  });
+
+  it("sets ELECTRON_RUN_AS_NODE only for the Node daemon, and never lets the Rust exe inherit it", () => {
+    const inherited = { TJOMMIE_HOME: "C:\\x", ELECTRON_RUN_AS_NODE: "1", TJOMMIE_DEV: "1" };
+    expect(daemonEnv(inherited, undefined, true)).toEqual({ TJOMMIE_HOME: "C:\\x", ELECTRON_RUN_AS_NODE: "1" });
+    expect(daemonEnv(inherited, undefined, false)).toEqual({ TJOMMIE_HOME: "C:\\x" });
+    expect(daemonEnv({ electron_run_as_node: "1" }, undefined, false)).toEqual({}); // Whatever its case.
+    expect(daemonEnv(inherited, "C:\\disposable", false)).toEqual({ TJOMMIE_HOME: "C:\\x", TJOMMIE_ACCOUNTS_DIR: "C:\\disposable" });
+  });
+
+  it("names the process that owns the daemon's port for an installed app, an exe-hosted source run and the Node daemon", () => {
+    const app = "C:\\Tjommie\\Tjommie.exe";
+    expect(daemonExecutable(app, true, {})).toBe(join("C:\\Tjommie", "resources", "daemon", "tjommie-daemon.exe"));
+    // The override is for source runs only; an installed app ignores it, as daemonCommand does.
+    expect(daemonExecutable(app, true, { TJOMMIE_DAEMON_EXE: "C:\\elsewhere\\daemon.exe" })).toBe(join("C:\\Tjommie", "resources", "daemon", "tjommie-daemon.exe"));
+    expect(daemonExecutable("C:\\electron.exe", false, { TJOMMIE_DAEMON_EXE: "C:\\rs\\tjommie-daemon.exe" })).toBe(resolve("C:\\rs\\tjommie-daemon.exe"));
+    expect(daemonExecutable("C:\\electron.exe", false, {})).toBe("C:\\electron.exe");
+    expect(daemonExecutable("C:\\electron.exe", false, { TJOMMIE_DAEMON_EXE: "" })).toBe("C:\\electron.exe");
+  });
+
+  it("keeps an inherited TJOMMIE_PORT next to TJOMMIE_HOME, so a second install sets both and never contends for 47100", () => {
+    expect(daemonLaunchEnv({ TJOMMIE_PORT: "47200", TJOMMIE_LAN_PORT: "47201" }, "C:\\Users\\owner\\AppData\\Local\\Tjommie-rs")).toEqual({
+      TJOMMIE_PORT: "47200", TJOMMIE_LAN_PORT: "47201", TJOMMIE_HOME: "C:\\Users\\owner\\AppData\\Local\\Tjommie-rs",
+    });
+    // A disposable test root always gets a free port, whatever was inherited.
+    expect(daemonLaunchEnv({ TJOMMIE_PORT: "47200" }, "C:\\disposable", true).TJOMMIE_PORT).toBe("0");
   });
 
   // Build the Rust daemon and set TJOMMIE_DAEMON_EXE to run this against it.
   it.runIf(process.env.TJOMMIE_DAEMON_EXE)("runs the TJOMMIE_DAEMON_EXE daemon with the same token-stdin contract", async () => {
     let output = "";
-    const daemon = await startDaemonProcess({ ...launch(), ...daemonCommand(process.env, false, process.execPath, entry) }, (text) => { output += text; });
+    const daemon = await startDaemonProcess({ ...launch(), ...daemonCommand(process.env, null, process.execPath, entry) }, (text) => { output += text; });
     running.push(daemon);
     const { port, token } = daemon.connection;
     const client = await connect(port, token);
@@ -83,6 +118,21 @@ describe("daemon process", () => {
     expect((await daemon.exited).code).toBe(0);
     await client.disconnected;
   }, 60_000);
+
+  it("does not forward an inherited test hook that turns off a check or a protection", () => {
+    const parentEnv = {
+      ...process.env,
+      TJOMMIE_SKIP_FOLDER_PROTECTION: "1",
+      tjommie_skip_account_check: "1", // Whatever its case.
+      TJOMMIE_SKIP_SOMETHING_NEW: "1", // Every TJOMMIE_SKIP_* switch, not only the ones that exist today.
+      TJOMMIE_HOME: "C:\\x",
+    };
+    for (const runAsNode of [true, false]) {
+      const env = daemonEnv(parentEnv, undefined, runAsNode);
+      expect(Object.keys(env).filter((key) => key.toUpperCase().startsWith("TJOMMIE_SKIP_"))).toEqual([]);
+      expect(env.TJOMMIE_HOME).toBe("C:\\x"); // Other settings still pass through.
+    }
+  });
 
   it("does not forward an inherited accounts-folder hook", () => {
     const parentEnv = { ...process.env, TJOMMIE_ACCOUNTS_DIR: "C:\\private-accounts" };

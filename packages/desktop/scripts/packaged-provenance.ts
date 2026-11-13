@@ -4,6 +4,8 @@ import { lstatSync, readdirSync, readFileSync, writeFileSync, type Stats } from 
 import { basename, join } from "node:path";
 
 export const packagedExecutable = "dist-desktop/installer/win-unpacked/Tjommie.exe";
+// The Rust daemon the installer carries (resources/daemon/tjommie-daemon.exe).
+export const packagedDaemon = "dist-desktop/installer/win-unpacked/resources/daemon/tjommie-daemon.exe";
 export const provenanceFile = "dist-desktop/provenance.json";
 const rebuild = "Run npm run package before npm run test:packaged.";
 const generated = new Set(["node_modules", ".next", "out", "dist", "dist-desktop", "coverage", ".cache", ".turbo", "test-results", "playwright-report"]);
@@ -16,6 +18,9 @@ function isBuildInput(path: string): boolean {
     return !parts.includes("docs") && !(parts.length === 3 && path.endsWith(".md"));
   }
   if (parts[0] === "scripts") return true;
+  // The shipped daemon is built from these sources, so a change to one makes an older package stale. Cargo's output and
+  // the documents beside the code feed nothing.
+  if (parts[0] === "tjommie-rs") return !parts.includes("target") && !path.endsWith(".md");
   return parts.length === 1 && (path === "package.json" || path === "package-lock.json" || path === ".npmrc" ||
     /^tsconfig(?:\.[^/]+)?\.json$/.test(path) || /^[^/]+\.config\.[^/]+$/.test(path));
 }
@@ -72,6 +77,7 @@ function artifactHashes(repo: string): Artifact[] {
   }
   entries.sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
   if (!entries.some(([path]) => path === packagedExecutable)) throw new Error(`Packaged executable is missing. ${rebuild}`);
+  if (!entries.some(([path]) => path === packagedDaemon)) throw new Error(`Packaged daemon is missing. ${rebuild}`);
   const installers = entries.filter(([path]) => /^dist-desktop\/installer\/Tjommie-Setup-[^/]+\.exe$/.test(path));
   if (installers.length !== 1) throw new Error(`Exactly one packaged NSIS installer is required. ${rebuild}`);
   return entries;

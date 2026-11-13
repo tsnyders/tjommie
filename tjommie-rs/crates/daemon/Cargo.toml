@@ -20,6 +20,7 @@ reqwest = { version = "0.12.28", default-features = false, features = ["native-t
 rusqlite = { version = "0.41.1", features = ["bundled", "backup"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.154", features = ["preserve_order"] }
+sha1 = "0.10.7"
 sha2 = "0.10.9"
 socket2 = "0.6.5"
 tempfile = "3.27.0"

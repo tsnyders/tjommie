@@ -28,7 +28,10 @@ fn submit(h: &Harness, bot: &StoredBot, text: &str) {
 
 /// `team.postToRoom`, run on the runner's host.
 fn post_to_room(h: &Harness, room_id: &str, text: &str) -> Message {
-    with_host(&h.runner, |host| h.m4.team.post_to_room(host, room_id, text)).unwrap()
+    with_host(&h.runner, |host| {
+        h.m4.team.post_to_room(host, room_id, text)
+    })
+    .unwrap()
 }
 
 /// `ask(from, to, message)`: the `message_bot` tool, called as `from`. The tool wakes the runner for the request it
@@ -103,7 +106,10 @@ async fn does_not_queue_a_retry_for_a_deleted_custom_room() {
     h.await_status(&turn.id, WorkStatus::Failed).await;
     delete_room(&h.conn(), &room.id).unwrap();
     let before = h.count_work_for(&post.id);
-    let error = h.runner.retry(&post.id, Some(alice.id.as_str())).unwrap_err();
+    let error = h
+        .runner
+        .retry(&post.id, Some(alice.id.as_str()))
+        .unwrap_err();
     assert_eq!(error.code, ErrorCode::NotFound);
     assert_eq!(h.count_work_for(&post.id), before);
     assert!(h.runner.current_work(&alice.id).is_none());
@@ -138,7 +144,8 @@ async fn writes_a_custom_room_reply_there_and_links_to_it_from_the_bot_chat() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn routes_nested_replies_into_the_asking_exchange_and_sends_its_later_answer_as_a_follow_up() {
+async fn routes_nested_replies_into_the_asking_exchange_and_sends_its_later_answer_as_a_follow_up()
+{
     let h = harness(true);
     let (alice, bob, carol) = three_bots(&h);
     submit(&h, &alice, "Prepare a report");
@@ -238,7 +245,10 @@ async fn answers_the_original_requester_when_failed_exchange_work_is_retried_on_
     })
     .await;
 
-    let message_id = request.message_id.clone().expect("the request has a message");
+    let message_id = request
+        .message_id
+        .clone()
+        .expect("the request has a message");
     h.runner.retry(&message_id, None).unwrap();
     let retry = h
         .runner
@@ -281,7 +291,7 @@ async fn answers_the_original_requester_when_failed_exchange_work_is_retried_on_
 
 #[tokio::test(flavor = "multi_thread")]
 async fn fails_a_deleted_requesters_queued_and_running_exchanges_without_reviving_them_on_late_output()
-{
+ {
     let h = harness(true);
     let (alice, bob, _carol) = three_bots(&h);
     submit(&h, &alice, "Prepare reports");
@@ -292,10 +302,7 @@ async fn fails_a_deleted_requesters_queued_and_running_exchanges_without_revivin
     assert_eq!(h.status(&running.id), WorkStatus::Running);
     assert_eq!(h.status(&queued.id), WorkStatus::Queued);
 
-    let deleting = with_host(&h.runner, |host| {
-        h.m4.team.bot_deleting(host, &alice.id)
-    })
-    .unwrap();
+    let deleting = with_host(&h.runner, |host| h.m4.team.bot_deleting(host, &alice.id)).unwrap();
     delete_bot(&h.conn(), &alice.id).unwrap();
     with_host(&h.runner, |host| h.m4.team.bot_deleted(host, &deleting)).unwrap();
     h.runner.forget(&alice.id);
@@ -334,7 +341,7 @@ async fn fails_a_deleted_requesters_queued_and_running_exchanges_without_revivin
 
 #[tokio::test(flavor = "multi_thread")]
 async fn routes_help_requested_from_the_team_room_back_there_and_records_the_later_room_answer_in_the_bots_chat()
-{
+ {
     let h = harness(true);
     let (alice, bob, _carol) = three_bots(&h);
     let room_post = post_to_room(&h, TEAM_ROOM_ID, "@Alice prepare a report");
@@ -399,7 +406,11 @@ async fn steers_a_nested_reply_without_a_separate_turn_hook_or_duplicate_upstrea
     );
     h.await_status(&steered.id, WorkStatus::Done).await;
     assert_eq!(bob_session.steered().len(), 1);
-    assert!(!recorded(&h.started).iter().any(|item| item.id == steered.id));
+    assert!(
+        !recorded(&h.started)
+            .iter()
+            .any(|item| item.id == steered.id)
+    );
     assert!(!recorded(&h.ended).iter().any(|item| item.id == steered.id));
     let alice_replies = |h: &Harness| -> Vec<WorkItem> {
         h.all_work()

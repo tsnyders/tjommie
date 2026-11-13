@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { browserMethods } from "./browser.ts";
+import { browserEvents, browserMethods } from "./browser.ts";
 
 const target = { botId: "b1", generation: "generation", pageId: "page" };
 describe("browser wire bounds", () => {
@@ -19,5 +19,33 @@ describe("browser wire bounds", () => {
     const result = browserMethods["browser.frame"].result.parse({ state: { botId: "b1", generation: "generation", control: "bot", activePageId: "page", tabs: [], dialog: null, revision: 7, viewportRevision: 4, busy: true }, frame: { data: "image", mime: "image/jpeg", width: 1280, height: 800, viewportWidth: 2560, viewportHeight: 1600, pageId: "page", viewportRevision: 4, streamId: "stream", sequence: 3 } });
     expect(result.frame).toMatchObject({ width: 1280, viewportWidth: 2560, viewportRevision: 4 });
     expect(result.state).toMatchObject({ revision: 7, busy: true });
+  });
+});
+
+const frame = { data: "image", mime: "image/jpeg", width: 1280, height: 800, viewportWidth: 1280, viewportHeight: 800, pageId: "page", viewportRevision: 4, streamId: "stream", sequence: 9 };
+describe("browser live stream wire", () => {
+  it("turns the stream on or off for a bot, with an optional frame rate cap of 1 to 60", () => {
+    expect(browserMethods["browser.stream"].params.parse({ botId: "b1", on: true })).toEqual({ botId: "b1", on: true });
+    expect(browserMethods["browser.stream"].params.parse({ botId: "b1", on: true, maxFps: 60 })).toHaveProperty("maxFps", 60);
+    for (const maxFps of [0, 61, 29.5, -1]) expect(browserMethods["browser.stream"].params.safeParse({ botId: "b1", on: true, maxFps }).success).toBe(false);
+    for (const params of [{ botId: "b1" }, { botId: "", on: true }, { botId: "b1", on: "yes" }]) expect(browserMethods["browser.stream"].params.safeParse(params).success).toBe(false);
+  });
+  it("answers a stream request with the browser state, as every browser method does", () => {
+    const state = { botId: "b1", generation: "generation", control: "bot", activePageId: "page", tabs: [], dialog: null, privateActive: false };
+    expect(browserMethods["browser.stream"].result.parse(state)).toMatchObject({ botId: "b1", privateActive: false });
+  });
+  it("acknowledges a frame by bot and sequence", () => {
+    expect(browserMethods["browser.streamAck"].params.parse({ botId: "b1", sequence: 9 })).toEqual({ botId: "b1", sequence: 9 });
+    for (const sequence of [-1, 1.5, "9"]) expect(browserMethods["browser.streamAck"].params.safeParse({ botId: "b1", sequence }).success).toBe(false);
+    expect(browserMethods["browser.streamAck"].params.safeParse({ sequence: 9 }).success).toBe(false);
+    expect(browserMethods["browser.streamAck"].result.parse({})).toEqual({});
+  });
+  it("carries a frame with its stream id and ends the stream with a null frame", () => {
+    expect(browserEvents["browser.streamFrame"].parse({ botId: "b1", frame })).toMatchObject({ botId: "b1", frame: { streamId: "stream", sequence: 9 } });
+    expect(browserEvents["browser.streamFrame"].parse({ botId: "b1", frame: null })).toEqual({ botId: "b1", frame: null });
+    expect(browserEvents["browser.streamFrame"].safeParse({ botId: "b1" }).success).toBe(false);
+    const { streamId: _streamId, ...unnamed } = frame;
+    expect(browserEvents["browser.streamFrame"].safeParse({ botId: "b1", frame: unnamed }).success).toBe(false);
+    expect(browserEvents["browser.streamFrame"].safeParse({ botId: "b1", frame: { ...frame, mime: "image/png" } }).success).toBe(false);
   });
 });

@@ -22,14 +22,13 @@ use std::time::SystemTime;
 
 use protocol::ErrorCode;
 use protocol::Event;
-use protocol::attachments::{
-    AttachmentCompanion, AttachmentCompanions, AttachmentInfo,
-};
+use protocol::attachments::{AttachmentCompanion, AttachmentCompanions, AttachmentInfo};
 use protocol::mentions::find_mentions;
 use protocol::model::{
-    Approval, ApprovalDecision, ApprovalKind, ApprovalStatus, Bot, BotState, Exchange, ExchangeFile,
-    ExchangeHandoffData, ExchangePostData, ExchangeStatus, FileData, Message, MessageKind,
-    MessageStatus, NoticeData, RoomHandoffData, RoutineApprovalData, RoutineInput, TEAM_ROOM_ID,
+    Approval, ApprovalDecision, ApprovalKind, ApprovalStatus, Bot, BotState, Exchange,
+    ExchangeFile, ExchangeHandoffData, ExchangePostData, ExchangeStatus, FileData, Message,
+    MessageKind, MessageStatus, NoticeData, RoomHandoffData, RoutineApprovalData, RoutineInput,
+    TEAM_ROOM_ID,
 };
 use protocol::wire::{ExchangeView, Id, method};
 use rusqlite::{Connection, OptionalExtension, Row, params};
@@ -568,7 +567,12 @@ impl Team {
     }
 
     /// `#roomsFor`: Everyone, and each other room that holds both bots.
-    fn rooms_for(&self, db: &Connection, from_id: &str, to_id: &str) -> Result<Vec<String>, RpcError> {
+    fn rooms_for(
+        &self,
+        db: &Connection,
+        from_id: &str,
+        to_id: &str,
+    ) -> Result<Vec<String>, RpcError> {
         let mut rooms = vec![TEAM_ROOM_ID.to_owned()];
         let others = db
             .prepare("SELECT room_id FROM room_members WHERE room_id <> ?1 AND bot_id IN (?2, ?3) GROUP BY room_id HAVING COUNT(*) = 2")?
@@ -653,7 +657,8 @@ impl Team {
                     })
                     .collect();
                 **companions = Some(
-                    AttachmentCompanions::new(remapped).map_err(|error| plain(error.to_string()))?,
+                    AttachmentCompanions::new(remapped)
+                        .map_err(|error| plain(error.to_string()))?,
                 );
             }
         }
@@ -727,11 +732,19 @@ impl Team {
             let bots = list_stored_bots(db)?;
             let members = room_members(db, room_id)?;
             let pairs = |bots: &[StoredBot]| -> Vec<(String, String)> {
-                bots.iter().map(|bot| (bot.id.clone(), bot.name.clone())).collect()
+                bots.iter()
+                    .map(|bot| (bot.id.clone(), bot.name.clone()))
+                    .collect()
             };
             let (all, inside) = (pairs(&bots), pairs(&members));
-            let all: Vec<(&str, &str)> = all.iter().map(|(id, name)| (id.as_str(), name.as_str())).collect();
-            let inside: Vec<(&str, &str)> = inside.iter().map(|(id, name)| (id.as_str(), name.as_str())).collect();
+            let all: Vec<(&str, &str)> = all
+                .iter()
+                .map(|(id, name)| (id.as_str(), name.as_str()))
+                .collect();
+            let inside: Vec<(&str, &str)> = inside
+                .iter()
+                .map(|(id, name)| (id.as_str(), name.as_str()))
+                .collect();
             (room, context, find_mentions(text, &all, &inside))
         };
         let mut queued: Vec<WorkItem> = Vec::new();
@@ -1040,12 +1053,18 @@ impl Team {
             return Ok(None);
         }
         let known = db
-            .query_row("SELECT 1 FROM conversations WHERE id = ?1", [&row.reply_to], |_| {
-                Ok(())
-            })
+            .query_row(
+                "SELECT 1 FROM conversations WHERE id = ?1",
+                [&row.reply_to],
+                |_| Ok(()),
+            )
             .optional()?
             .is_some();
-        let reply_to = if known { &row.reply_to } else { &row.from_bot_id };
+        let reply_to = if known {
+            &row.reply_to
+        } else {
+            &row.from_bot_id
+        };
         Ok(Some(enqueue(
             db,
             &NewWork {
@@ -1117,7 +1136,9 @@ impl Team {
         durable: &Path,
     ) -> Result<(), RpcError> {
         let ids = db
-            .prepare("SELECT id FROM messages WHERE kind = 'file' AND json_extract(data, '$.path') = ?1")?
+            .prepare(
+                "SELECT id FROM messages WHERE kind = 'file' AND json_extract(data, '$.path') = ?1",
+            )?
             .query_map([snapshot.to_string_lossy().into_owned()], |row| {
                 row.get::<_, String>(0)
             })?

@@ -63,9 +63,8 @@ use crate::ids::{new_id, now_iso};
 use crate::providers::claude::ClaudeSession;
 use crate::providers::codex::CodexSession;
 use crate::providers::{
-    Approval as ProviderApproval, ApprovalAnswer, Limit, LimitState, McpServer,
-    ProviderError, ProviderEvent, ProviderSession, StartOptions, TurnResult as ProviderTurn, Usage,
-    js,
+    Approval as ProviderApproval, ApprovalAnswer, Limit, LimitState, McpServer, ProviderError,
+    ProviderEvent, ProviderSession, StartOptions, TurnResult as ProviderTurn, Usage, js,
 };
 use crate::queue::{
     NewWork, WorkItem, WorkSource, WorkStatus, enqueue, get_work_item, last_item_for_message,
@@ -147,7 +146,8 @@ pub trait Accounts: Send + Sync {
     ) -> BoxFuture<'static, Result<PreparedAccount, String>>;
     fn release(&self, context: &AccountRunContext);
     fn assert_current(&self, db: &Connection, context: &AccountRunContext) -> Result<(), String>;
-    fn complete_turn(&self, db: &Connection, context: &AccountRunContext, successful: bool) -> bool;
+    fn complete_turn(&self, db: &Connection, context: &AccountRunContext, successful: bool)
+    -> bool;
     fn observe_limit(&self, db: &Connection, context: &AccountRunContext, limit: &Limit);
     fn usage_changed(&self, db: &Connection, account_id: &str);
 }
@@ -176,7 +176,12 @@ impl Accounts for AccountRuntime {
             .map_err(|error| error.message)
     }
 
-    fn complete_turn(&self, db: &Connection, context: &AccountRunContext, successful: bool) -> bool {
+    fn complete_turn(
+        &self,
+        db: &Connection,
+        context: &AccountRunContext,
+        successful: bool,
+    ) -> bool {
         self.complete_turn_with(db, context, successful)
     }
 
@@ -270,19 +275,15 @@ pub struct RunnerDeps {
     pub hooks: RunnerHooks,
     /// `killTree(pid)`: stops a CLI's whole process tree without waiting.
     pub kill_tree: Arc<dyn Fn(Option<u32>) + Send + Sync>,
-    /// `closeBrowser(botId)`: resolves once the bot's browser tools are closed.
+    /// `closeBrowser(botId)`: resolves once the bot's browser tools are closed. Deletion awaits it with the process's
+    /// exit. The call itself is made with the runner's locks held, so do the work in the returned future.
     pub close_browser: CloseBrowser,
     pub log: Log,
 }
 
 impl RunnerDeps {
     /// The TypeScript defaults: signed out of nothing, no setup issue, nothing held, Codex's sandbox not ready.
-    pub fn new(
-        db: Db,
-        broadcast: Broadcast,
-        create_session: SessionFactory,
-        setup: Setup,
-    ) -> Self {
+    pub fn new(db: Db, broadcast: Broadcast, create_session: SessionFactory, setup: Setup) -> Self {
         RunnerDeps {
             db,
             broadcast,
@@ -1167,7 +1168,10 @@ impl Core<'_> {
                 .push(sender);
             return receiver.map(|_| Ok(())).boxed();
         }
-        let (retiring, steering) = (live.retiring.clone(), live.steering_done.as_ref().map(|(_, done)| done.clone()));
+        let (retiring, steering) = (
+            live.retiring.clone(),
+            live.steering_done.as_ref().map(|(_, done)| done.clone()),
+        );
         async move {
             if let Some(steering) = steering {
                 steering.await;
@@ -1526,7 +1530,8 @@ impl Core<'_> {
             };
             // Like `Promise.all`, an unconfirmed exit fails this at once. It never settles: the bot can't be restored
             // onto a process tree that may still run.
-            let both = futures_util::future::try_join(process, browser.map(Ok::<(), ProviderError>));
+            let both =
+                futures_util::future::try_join(process, browser.map(Ok::<(), ProviderError>));
             if let Err(error) = both.await {
                 let _ = done.send(Err(error));
                 return;
@@ -1591,7 +1596,10 @@ impl Core<'_> {
                     let closed = closed.await;
                     runner.with(|core| {
                         if let Err(error) = closed {
-                            return core.log("Tjommie: restoring a bot after deletion failed", error.message());
+                            return core.log(
+                                "Tjommie: restoring a bot after deletion failed",
+                                error.message(),
+                            );
                         }
                         if core
                             .st
@@ -1813,8 +1821,12 @@ impl Core<'_> {
         }
         self.st.ready = false;
         let lives = std::mem::take(&mut self.st.live);
-        let mut pending: Vec<Exit> =
-            self.st.launches.values().map(|launch| launch.clone().map(Ok).boxed().shared()).collect();
+        let mut pending: Vec<Exit> = self
+            .st
+            .launches
+            .values()
+            .map(|launch| launch.clone().map(Ok).boxed().shared())
+            .collect();
         let deleting: Vec<Deleting> = self
             .st
             .deleting
@@ -2064,15 +2076,24 @@ impl Core<'_> {
         }
         let context = self.live(turn.live).context.clone();
         let account = match &context {
-            Some(context) => get_account(self.db, &context.effective_account_id, false)
-                .map(|stored| Account { id: stored.id, folder: stored.folder, kind: stored.kind }),
+            Some(context) => {
+                get_account(self.db, &context.effective_account_id, false).map(|stored| Account {
+                    id: stored.id,
+                    folder: stored.folder,
+                    kind: stored.kind,
+                })
+            }
             None => self
                 .deps()
                 .setup
                 .account_for(self.db, turn.bot.provider)
                 .and_then(|account| {
                     let kind = get_account(self.db, &account.id, false)?.kind;
-                    Ok(Account { id: account.id, folder: account.folder, kind })
+                    Ok(Account {
+                        id: account.id,
+                        folder: account.folder,
+                        kind,
+                    })
                 }),
         };
         match account {
@@ -3108,7 +3129,11 @@ impl Core<'_> {
             }
             if item.task_attempt_id.is_some() {
                 let retiring = self.live(live).retiring.clone();
-                let steering = self.live(live).steering_done.as_ref().map(|(_, done)| done.clone());
+                let steering = self
+                    .live(live)
+                    .steering_done
+                    .as_ref()
+                    .map(|(_, done)| done.clone());
                 let runner = self.runner.clone();
                 let bot = bot_id.to_owned();
                 self.spawn(async move {
@@ -3372,7 +3397,9 @@ pub fn register(handlers: Handlers, context: &Context, runner: &Runner) -> Handl
                 .and_then(|approval| match approval.kind {
                     // `team.answerRoutineProposal` adds the routine on Allow. Without M4 (handler tests) it can't.
                     ApprovalKind::Routine => match approvals.late.m4.get() {
-                        Some(m4) => m4.answer_routine_proposal(&params.approval_id, params.decision),
+                        Some(m4) => {
+                            m4.answer_routine_proposal(&params.approval_id, params.decision)
+                        }
                         None => Err(RpcError::new(
                             ErrorCode::Unavailable,
                             "Routine proposals can't be answered yet.",

@@ -45,7 +45,9 @@ pub fn iso_from_ms(ms: i64) -> String {
 
 /// `Date.parse` for the ISO times this daemon writes. `None` when the text is not a time.
 pub fn parse_iso(text: &str) -> Option<i64> {
-    text.parse::<Timestamp>().ok().map(Timestamp::as_millisecond)
+    text.parse::<Timestamp>()
+        .ok()
+        .map(Timestamp::as_millisecond)
 }
 
 /// `hostTimeZone`: the PC's IANA zone name.
@@ -154,16 +156,16 @@ pub fn wall_time_to_utc(
     time_zone: &str,
 ) -> Result<i64, RpcError> {
     let zone = zone_of(time_zone)?;
-    let wall = wall_ms(year, month, day, hour, minute)
-        .ok_or_else(|| bad_params(format!("{year}-{month}-{day} {hour}:{minute} is not a time")))?;
+    let wall = wall_ms(year, month, day, hour, minute).ok_or_else(|| {
+        bad_params(format!(
+            "{year}-{month}-{day} {hour}:{minute} is not a time"
+        ))
+    })?;
     Ok(to_utc(&zone, wall))
 }
 
 /// `nextRunAfter`: the first run time strictly after `after_ms`, or `None` when the schedule has no days or no times.
-pub fn next_run_after(
-    schedule: &Schedule<'_>,
-    after_ms: i64,
-) -> Result<Option<i64>, RpcError> {
+pub fn next_run_after(schedule: &Schedule<'_>, after_ms: i64) -> Result<Option<i64>, RpcError> {
     let zone = zone_of(schedule.time_zone)?;
     let local = Timestamp::from_millisecond(after_ms + offset_at(after_ms, &zone))
         .map_err(|error| bad_params(error.to_string()))?;
@@ -223,7 +225,10 @@ fn invalid_column(column: usize, message: impl std::fmt::Display) -> rusqlite::E
     )
 }
 
-fn json_column<T: serde::de::DeserializeOwned>(row: &Row<'_>, column: usize) -> rusqlite::Result<T> {
+fn json_column<T: serde::de::DeserializeOwned>(
+    row: &Row<'_>,
+    column: usize,
+) -> rusqlite::Result<T> {
     let stored: String = row.get(column)?;
     serde_json::from_str(&stored).map_err(|error| invalid_column(column, error))
 }
@@ -451,11 +456,8 @@ pub fn add_run(
     note: Option<&str>,
 ) -> Result<RoutineRun, RpcError> {
     let id = new_id();
-    let ended = matches!(
-        status,
-        RoutineRunStatus::Missed | RoutineRunStatus::Skipped
-    )
-    .then(now_iso);
+    let ended =
+        matches!(status, RoutineRunStatus::Missed | RoutineRunStatus::Skipped).then(now_iso);
     db.execute(
         "INSERT INTO routine_runs (id, routine_id, due_at, ended_at, status, note) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         params![id, routine_id, due_at, ended, text(&status), note],
@@ -516,11 +518,7 @@ pub fn has_open_run(db: &Connection, routine_id: &str) -> Result<bool, RpcError>
 /// The `routines.*` methods (`daemon.ts:588-613`). `turn_ended` is the daemon's `turnEnded`: it ends the work a deleted
 /// routine had queued, so the runner's hooks, the scheduler and the team hear about it. It runs after the database
 /// work, outside the lock.
-pub fn register(
-    handlers: Handlers,
-    context: &Context,
-    turn_ended: TurnEnded,
-) -> Handlers {
+pub fn register(handlers: Handlers, context: &Context, turn_ended: TurnEnded) -> Handlers {
     let (list, create, update, delete, runs) = (
         context.clone(),
         context.clone(),

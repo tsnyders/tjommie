@@ -14,6 +14,7 @@ use crate::account_handlers::{self, Accounts};
 use crate::bots::{BotStatus, StoredBot, bot_state_of};
 use crate::ids::now_iso;
 use crate::m4::M4;
+use crate::m5::M5;
 use crate::m6::M6;
 use crate::remote::Remote;
 use crate::runner::Runner;
@@ -27,6 +28,9 @@ pub type Db = Arc<Mutex<Connection>>;
 /// [`StoredState`] (`runner.ts:194-214`).
 pub trait BotView: Send + Sync {
     fn to_bot(&self, db: &Connection, bot: StoredBot) -> Bot;
+
+    /// Lets go of whatever the view holds, at shutdown. Most views hold nothing.
+    fn release(&self) {}
 }
 
 /// A bot as the database alone knows it: signed in and never busy, but paused, limited or waiting on a routine proposal.
@@ -54,21 +58,35 @@ impl BotView for StoredState {
 /// A [`BotView`] bound after it is handed out: the runner needs the accounts, and the accounts' feed needs the runner's
 /// view. Until bound it is [`StoredState`].
 #[derive(Clone, Default)]
-pub struct LateBotView(Arc<OnceLock<Arc<dyn BotView>>>);
+pub struct LateBotView(Arc<Mutex<Option<Arc<dyn BotView>>>>);
 
 impl LateBotView {
     /// Binds the view. Set once; a second call is ignored.
     pub fn bind(&self, view: Arc<dyn BotView>) {
-        let _ = self.0.set(view);
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get_or_insert(view);
     }
 }
 
 impl BotView for LateBotView {
     fn to_bot(&self, db: &Connection, bot: StoredBot) -> Bot {
-        match self.0.get() {
+        let view = self
+            .0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        match view {
             Some(view) => view.to_bot(db, bot),
             None => StoredState.to_bot(db, bot),
         }
+    }
+
+    /// The bound view is the runner, which holds the accounts whose feed holds this: neither would let the other (and the
+    /// database) go. After this the view is [`StoredState`] again.
+    fn release(&self) {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner).take();
     }
 }
 
@@ -80,9 +98,14 @@ pub struct Late {
     pub remote: Arc<OnceLock<Arc<Remote>>>,
     pub m6: Arc<OnceLock<Arc<M6>>>,
     pub m4: Arc<OnceLock<Arc<M4>>>,
+    /// The project services: a bot in a project, or with a task running, can't be changed or deleted (`daemon.ts:451`,
+    /// `:494`).
+    pub m5: Arc<OnceLock<Arc<M5>>>,
     /// Bots whose provider or account is changing: the runner holds their work and reports "changing provider"
     /// (`switchingBots`).
     pub switching: Arc<Mutex<HashSet<String>>>,
+    /// Bots being deleted (`deletionRequests`). Projects refuse to take one on.
+    pub deleting: Arc<Mutex<HashSet<String>>>,
 }
 
 #[derive(Clone)]

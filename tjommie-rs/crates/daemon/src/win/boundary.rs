@@ -9,11 +9,9 @@
 //! stand in for Windows the way the TypeScript tests stand in for the helper process.
 
 use crate::cli::{
-    BoxFuture, ChildExit, CliChild, CliCommand, CliExit, CliHost, Env, LaunchOptions, Retirement,
+    BoxFuture, ChildExit, CliChild, CliCommand, CliExit, CliHost, Env, LaunchOptions,
     WorkerPurpose, WorkerTermination,
 };
-use futures_util::FutureExt;
-
 use crate::win::cred;
 use crate::win::logon::{self, WorkerProcess};
 use crate::win::policy_observer::WORKER_POLICY_OBSERVER;
@@ -21,6 +19,7 @@ use crate::win::worker::{
     BOOTSTRAP, FAILURE, Purpose, WorkerConfiguration, command_line, grant_target,
     launch_environment, launch_frame, ready, required, validate_pair,
 };
+use futures_util::FutureExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -672,18 +671,16 @@ impl WorkerBoundary {
             }
         });
         let (stop, waiting) = (running.retire.clone(), exit.clone());
-        // The exit fires only after the job's stop is confirmed (or fails), so it is the retirement proof: an
-        // unconfirmed stop is an error the providers report as `WorkerTermination`.
-        let retirement: Retirement = {
+        // `workerProcessRetired`: the exit above fires `Exited` only once the whole tree is confirmed gone and `Failed`
+        // when it is not, so that outcome is the proof. Providers use it to keep an unconfirmed tree's account reserved.
+        let retirement: BoxFuture<'static, Result<(), String>> = {
             let exit = exit.clone();
-            async move {
+            Box::pin(async move {
                 match exit.wait().await {
                     CliExit::Exited { .. } => Ok(()),
                     CliExit::Failed(message) => Err(message),
                 }
-            }
-            .boxed()
-            .shared()
+            })
         };
         Ok(Some(CliChild {
             pid: Some(pid),
@@ -691,6 +688,7 @@ impl WorkerBoundary {
             stdout: running.stdout,
             stderr: running.stderr,
             exit,
+            retirement: Some(retirement.shared()),
             kill_tree: Arc::new(move || {
                 let (stop, waiting) = (stop.clone(), waiting.clone());
                 Box::pin(async move {
@@ -701,7 +699,6 @@ impl WorkerBoundary {
                     }
                 })
             }),
-            retirement: Some(retirement),
         }))
     }
 

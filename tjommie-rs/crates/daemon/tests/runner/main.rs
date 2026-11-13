@@ -1,10 +1,11 @@
 //! `runner.test.ts`, split by its `describe` blocks. Events reach the runner through each session's channel, so a test
 //! settles the runtime after emitting where TypeScript's listener ran synchronously. The "account-bound runner" cases
-//! drive T3.4's `AccountRuntime` and are ported with it.
+//! drive T3.4's `AccountRuntime` and live in `accounts.rs`.
 
 #[path = "../common/mod.rs"]
 mod common;
 
+mod accounts;
 mod approvals;
 mod deletion;
 mod delivery;
@@ -526,7 +527,12 @@ fn base_deps(
             logs.lock().unwrap().push(format!("{context}: {error}"))
         }),
         kill_tree: Arc::new(move |pid| kills.lock().unwrap().push(pid)),
-        ..RunnerDeps::new(db.clone(), broadcast, create_session, common::no_cli_setup())
+        ..RunnerDeps::new(
+            db.clone(),
+            broadcast,
+            create_session,
+            common::no_cli_setup(),
+        )
     }
 }
 

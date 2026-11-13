@@ -581,7 +581,9 @@ mod routines_store_tests {
             .unwrap();
         assert_eq!(work_items, 0);
         let routine_runs: i64 = db
-            .query_row("SELECT COUNT(*) AS n FROM routine_runs", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) AS n FROM routine_runs", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(routine_runs, 0);
     }
@@ -693,7 +695,10 @@ mod routines_store_tests {
         ))
         .unwrap_err();
         assert!(error.to_string().contains("time zone"), "{error}");
-        assert_eq!(list_routines(db, Some(f.bot_id.as_str())).unwrap(), vec![routine]);
+        assert_eq!(
+            list_routines(db, Some(f.bot_id.as_str())).unwrap(),
+            vec![routine]
+        );
     }
 
     #[test]
@@ -774,8 +779,12 @@ mod routines_store_tests {
         let f = fixture();
         let db = &f.db;
         let routine = create_routine(db, &input(&f.bot_id), now_ms()).unwrap();
-        let other = create_routine(db, &input_with(&f.bot_id, json!({"name": "Other"})), now_ms())
-            .unwrap();
+        let other = create_routine(
+            db,
+            &input_with(&f.bot_id, json!({"name": "Other"})),
+            now_ms(),
+        )
+        .unwrap();
         assert!(!has_open_run(db, &routine.id).unwrap());
         let run = add_run(
             db,
@@ -866,8 +875,12 @@ mod routines_store_tests {
         let f = fixture();
         let db = &f.db;
         let routine = create_routine(db, &input(&f.bot_id), now_ms()).unwrap();
-        let other = create_routine(db, &input_with(&f.bot_id, json!({"name": "Other"})), now_ms())
-            .unwrap();
+        let other = create_routine(
+            db,
+            &input_with(&f.bot_id, json!({"name": "Other"})),
+            now_ms(),
+        )
+        .unwrap();
         let independent = add_run(
             db,
             &other.id,
@@ -1128,8 +1141,12 @@ mod routines_store_tests {
         let f = fixture();
         let db = &f.db;
         let routine = create_routine(db, &input(&f.bot_id), now_ms()).unwrap();
-        let other = create_routine(db, &input_with(&f.bot_id, json!({"name": "Other"})), now_ms())
-            .unwrap();
+        let other = create_routine(
+            db,
+            &input_with(&f.bot_id, json!({"name": "Other"})),
+            now_ms(),
+        )
+        .unwrap();
         let run = add_run(
             db,
             &routine.id,
@@ -1212,8 +1229,16 @@ fn unknown_zone_is_refused_by_next_run_after_and_wall_time_to_utc() {
     };
     let error = next_run_after(&schedule, parse_iso("2026-09-25T07:00:00Z").unwrap()).unwrap_err();
     assert_eq!(error.code, ErrorCode::BadParams);
-    assert!(error.message.contains("Unknown time zone"), "{}", error.message);
+    assert!(
+        error.message.contains("Unknown time zone"),
+        "{}",
+        error.message
+    );
     let error = wall_time_to_utc(2026, 9, 25, 8, 48, "Mars/Olympus").unwrap_err();
     assert_eq!(error.code, ErrorCode::BadParams);
-    assert!(error.message.contains("Unknown time zone"), "{}", error.message);
+    assert!(
+        error.message.contains("Unknown time zone"),
+        "{}",
+        error.message
+    );
 }
