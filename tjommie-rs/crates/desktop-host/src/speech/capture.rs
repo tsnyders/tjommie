@@ -278,12 +278,20 @@ impl CaptureSource for CpalSource {
     }
 }
 
+/// What the pump is told: audio from the device, or that the person is done (`Finish`) or has thrown it away (`Abort`).
+enum Heard {
+    Chunk(Vec<u8>),
+    Finish,
+    Abort,
+}
+
 struct Recording {
     id: String,
-    capture: Option<Box<dyn CaptureHandle>>,
+    /// The pump owns the microphone. It ends, and closes it, when the person finishes or cancels **and** when the runtime
+    /// ends the recording on its own (the 60 s limit, a refused chunk, a failed write, a cancel from elsewhere): the next
+    /// chunk is refused and the loop stops. Nothing else holds the capture, so nothing can leave it running.
     pump: tokio::task::JoinHandle<()>,
-    /// Ends the pump once every chunk sent before it has been handed to the runtime.
-    end: tokio::sync::mpsc::UnboundedSender<Option<Vec<u8>>>,
+    heard: tokio::sync::mpsc::UnboundedSender<Heard>,
 }
 
 /// A dictation: the runtime plus a capture source. `on_window_blur` is what the window's blur event calls
@@ -292,6 +300,11 @@ pub struct Dictation {
     runtime: SpeechRuntime,
     source: Arc<dyn CaptureSource>,
     recording: Mutex<Option<Recording>>,
+}
+
+/// Closes the microphone on the blocking pool: stopping joins the capture thread.
+async fn close(capture: Box<dyn CaptureHandle>) {
+    let _ = tokio::task::spawn_blocking(move || capture.stop()).await;
 }
 
 impl Dictation {
@@ -311,10 +324,10 @@ impl Dictation {
                 language: "en".into(),
             })
             .await?;
-        let (chunks, mut received) = tokio::sync::mpsc::unbounded_channel::<Option<Vec<u8>>>();
-        let sender = chunks.clone();
+        let (heard, mut received) = tokio::sync::mpsc::unbounded_channel::<Heard>();
+        let sender = heard.clone();
         let capture = match self.source.start(Arc::new(move |pcm| {
-            let _ = sender.send(Some(pcm));
+            let _ = sender.send(Heard::Chunk(pcm));
         })) {
             Ok(capture) => capture,
             Err(error) => {
@@ -325,17 +338,41 @@ impl Dictation {
         let runtime = self.runtime.clone();
         let id = session_id.to_string();
         let pump = tokio::spawn(async move {
+            let mut capture = Some(capture);
             let mut sequence = 0u32;
-            while let Some(Some(pcm)) = received.recv().await {
+            let mut append = async |pcm: Vec<u8>| {
                 let chunk = PcmChunk {
                     session_id: id.clone(),
                     sequence,
                     pcm,
                 };
-                if runtime.append_pcm(chunk).await.is_err() {
-                    break;
-                }
                 sequence += 1;
+                runtime.append_pcm(chunk).await.is_ok()
+            };
+            while let Some(message) = received.recv().await {
+                match message {
+                    Heard::Chunk(pcm) => {
+                        if !append(pcm).await {
+                            break;
+                        }
+                    }
+                    Heard::Finish => {
+                        // Stopping delivers what the device still had, ahead of anything not yet read here.
+                        if let Some(capture) = capture.take() {
+                            close(capture).await;
+                        }
+                        while let Ok(Heard::Chunk(pcm)) = received.try_recv() {
+                            if !append(pcm).await {
+                                break;
+                            }
+                        }
+                        break;
+                    }
+                    Heard::Abort => break,
+                }
+            }
+            if let Some(capture) = capture.take() {
+                close(capture).await;
             }
         });
         *self
@@ -343,9 +380,8 @@ impl Dictation {
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = Some(Recording {
             id: session_id.into(),
-            capture: Some(capture),
             pump,
-            end: chunks,
+            heard,
         });
         Ok(())
     }
@@ -359,27 +395,21 @@ impl Dictation {
 
     /// The user is done speaking: closes the microphone, lets what it captured reach the runtime, then transcribes.
     pub async fn finish(&self) -> Result<(), String> {
-        let Some(mut recording) = self.take() else {
+        let Some(recording) = self.take() else {
             return Err("This recording is no longer active.".into());
         };
-        if let Some(capture) = recording.capture.take() {
-            capture.stop();
-        }
-        // Stopping the capture delivered everything it had, so what follows in the channel is the end.
-        let _ = recording.end.send(None);
+        let _ = recording.heard.send(Heard::Finish);
         let _ = recording.pump.await;
         self.runtime.stop(&recording.id).await
     }
 
     /// Throws the recording away.
     pub async fn cancel(&self) -> Result<(), String> {
-        let Some(mut recording) = self.take() else {
+        let Some(recording) = self.take() else {
             return Ok(());
         };
-        if let Some(capture) = recording.capture.take() {
-            capture.stop();
-        }
-        recording.pump.abort();
+        let _ = recording.heard.send(Heard::Abort);
+        let _ = recording.pump.await;
         self.runtime.cancel(&recording.id).await
     }
 

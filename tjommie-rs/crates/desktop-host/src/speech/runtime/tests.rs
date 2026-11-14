@@ -756,6 +756,105 @@ async fn a_dictation_from_microphone_to_text_and_back_to_a_new_one() {
     assert_eq!(source.stopped.load(Ordering::SeqCst), 2);
 }
 
+// Review finding 1. When the runtime ends a recording itself, nobody calls `finish` or `cancel`: the microphone must close
+// on its own, or its indicator stays lit and chunks pile up. The device keeps delivering chunks until it is closed, so each
+// test plays that part (`hear`) and then waits for the close.
+
+#[tokio::test]
+async fn the_microphone_closes_when_the_runtime_refuses_a_chunk() {
+    let f = fixture();
+    let source = Arc::new(FakeSource::default());
+    let dictation = Dictation::new(
+        f.runtime.clone(),
+        Arc::clone(&source) as Arc<dyn CaptureSource>,
+    );
+    dictation.begin("limit").await.unwrap();
+    // 29 chunks fit in the 1,920,000-byte limit; the 30th does not, and the runtime cancels the recording.
+    for _ in 0..30 {
+        source.hear(&vec![1u8; 65536]);
+    }
+    until("the microphone closes", || {
+        source.stopped.load(Ordering::SeqCst) == 1
+    })
+    .await;
+    assert!(!f.runtime.is_capturing());
+    assert!(f.sessions().is_empty());
+    // The UI cancelling afterwards doesn't close it a second time.
+    dictation.cancel().await.unwrap();
+    assert_eq!(source.stopped.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn the_microphone_closes_when_the_time_limit_ends_the_recording() {
+    let f = fixture();
+    f.runtime
+        .inner
+        .recording_limit_ms
+        .store(50, Ordering::SeqCst);
+    let source = Arc::new(FakeSource::default());
+    let dictation = Dictation::new(
+        f.runtime.clone(),
+        Arc::clone(&source) as Arc<dyn CaptureSource>,
+    );
+    dictation.begin("long").await.unwrap();
+    source.hear(&[1, 0, 2, 0]);
+    until(
+        "the runtime ends the recording itself and transcribes it",
+        || !f.finals().is_empty(),
+    )
+    .await;
+    assert_eq!(f.finals(), ["synthetic words"]);
+    // The device is still delivering when the transcript appears.
+    source.hear(&[1, 0]);
+    until("the microphone closes", || {
+        source.stopped.load(Ordering::SeqCst) == 1
+    })
+    .await;
+    dictation.cancel().await.unwrap();
+    assert_eq!(source.stopped.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn the_microphone_closes_when_something_else_cancels_the_recording() {
+    let f = fixture();
+    let source = Arc::new(FakeSource::default());
+    let dictation = Dictation::new(
+        f.runtime.clone(),
+        Arc::clone(&source) as Arc<dyn CaptureSource>,
+    );
+    dictation.begin("other").await.unwrap();
+    source.hear(&[1, 0]);
+    until("the chunk arrives", || f.runtime.is_recording_audio()).await;
+    // Removing the model, say, cancels whatever is recording.
+    f.runtime.cancel_all().await.unwrap();
+    source.hear(&[2, 0]);
+    until("the microphone closes", || {
+        source.stopped.load(Ordering::SeqCst) == 1
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn finishing_and_cancelling_close_the_microphone_exactly_once_each() {
+    let f = fixture();
+    let source = Arc::new(FakeSource::default());
+    let dictation = Dictation::new(
+        f.runtime.clone(),
+        Arc::clone(&source) as Arc<dyn CaptureSource>,
+    );
+    dictation.begin("one").await.unwrap();
+    source.hear(&[1, 0, 2, 0]);
+    dictation.finish().await.unwrap();
+    assert_eq!(source.stopped.load(Ordering::SeqCst), 1);
+    dictation.begin("two").await.unwrap();
+    source.hear(&[1, 0]);
+    dictation.cancel().await.unwrap();
+    assert_eq!(source.stopped.load(Ordering::SeqCst), 2);
+    // Nothing is left to close.
+    dictation.cancel().await.unwrap();
+    assert_eq!(source.stopped.load(Ordering::SeqCst), 2);
+}
+
 #[tokio::test]
 async fn a_microphone_that_cannot_open_ends_the_session_cleanly() {
     struct Broken;

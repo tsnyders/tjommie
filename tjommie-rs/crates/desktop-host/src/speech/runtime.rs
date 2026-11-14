@@ -243,6 +243,9 @@ struct Inner {
     /// A test can make removing a session folder fail, as a locked file would.
     #[cfg(test)]
     fail_cleanup: AtomicBool,
+    /// A test can shorten the 60 s recording limit; 0 keeps it.
+    #[cfg(test)]
+    recording_limit_ms: AtomicU64,
 }
 
 #[derive(Clone)]
@@ -284,12 +287,26 @@ impl SpeechRuntime {
                 initialized: OnceCell::new(),
                 #[cfg(test)]
                 fail_cleanup: AtomicBool::new(false),
+                #[cfg(test)]
+                recording_limit_ms: AtomicU64::new(0),
             }),
         }
     }
 
     pub fn model(&self) -> &SpeechModel {
         &self.inner.options.model
+    }
+
+    /// How long a recording may run before the runtime ends it and transcribes what it has.
+    fn recording_limit(&self) -> Duration {
+        #[cfg(test)]
+        {
+            let ms = self.inner.recording_limit_ms.load(Ordering::SeqCst);
+            if ms > 0 {
+                return Duration::from_millis(ms);
+            }
+        }
+        Duration::from_secs(u64::from(SPEECH_LIMITS.max_seconds))
     }
 
     fn emit(&self, event: SpeechEvent) {
@@ -584,8 +601,11 @@ impl SpeechRuntime {
         let runtime = self.clone();
         let id = session.id.clone();
         *lock(&session.timer) = Some(tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(u64::from(SPEECH_LIMITS.max_seconds))).await;
-            let _ = runtime.stop(&id).await;
+            tokio::time::sleep(runtime.recording_limit()).await;
+            // Its own task: `stop` aborts this timer, which must not abort the transcription it starts.
+            tokio::spawn(async move {
+                let _ = runtime.stop(&id).await;
+            });
         }));
         self.session_event(&session.id, SpeechPhase::Listening, None);
         Ok(())
