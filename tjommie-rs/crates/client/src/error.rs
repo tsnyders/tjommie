@@ -97,7 +97,15 @@ pub enum RpcError {
 impl fmt::Display for RpcError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Daemon { code, message } => write!(formatter, "{code:?}: {message}"),
+            // The wire's own spelling ("not_found"), like the TypeScript client's `ClientRpcError`: error text for the
+            // person strips that prefix (`labels::error_text`).
+            Self::Daemon { code, message } => {
+                let name = serde_json::to_value(code)
+                    .ok()
+                    .and_then(|value| value.as_str().map(str::to_owned))
+                    .unwrap_or_else(|| format!("{code:?}"));
+                write!(formatter, "{name}: {message}")
+            }
             Self::Closed(reason) => reason.fmt(formatter),
             Self::BadParams(why) => write!(formatter, "Couldn't write the params: {why}"),
             Self::BadResult(why) => write!(formatter, "Couldn't read the result: {why}"),

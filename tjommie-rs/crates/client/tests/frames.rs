@@ -124,6 +124,8 @@ async fn a_daemon_error_becomes_an_rpc_error() {
     .await;
     let client = connect(port).await.unwrap();
     let refused = client.call::<method::BotsList>(Empty {}).await.unwrap_err();
+    // Shown the way the TypeScript client's errors read, with the wire's own code, so `labels::error_text` can strip it.
+    assert_eq!(refused.to_string(), "not_found: No such bot");
     match refused {
         RpcError::Daemon { code, message } => {
             assert_eq!(code, ErrorCode::NotFound);
