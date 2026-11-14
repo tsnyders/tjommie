@@ -49,6 +49,27 @@ jobs:
           if (Test-Path (Join-Path $env:LOCALAPPDATA 'Tjommie')) { throw 'a Tjommie data root exists: not a fresh runner' }
           if (Test-Path (Join-Path $env:ProgramData 'Tjommie')) { throw 'a Tjommie program-data folder exists: not a fresh runner' }
 
+      # DIAG-ONLY (this branch, not for main): the desktop question and the PowerShell bisect, before the acceptance test.
+      # Non-fatal, so the acceptance result below is still produced.
+      - name: What this runner is (session, console user)
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          'this step runs in session ' + (Get-Process -Id $PID).SessionId | Write-Host
+          'quser: ' + ((quser 2>&1) -join ' | ') | Write-Host
+          (query session 2>&1) | Out-String | Write-Host
+          Get-CimInstance Win32_OperatingSystem | Select-Object Caption, BuildNumber | Format-List | Out-String | Write-Host
+
+      - name: Desktop and PowerShell experiment against two disposable accounts
+        continue-on-error: true
+        timeout-minutes: 28
+        run: >
+          cargo test -p daemon --locked --test windows_worker_desktop_experiment --
+          --ignored --exact admin_worker_desktop_and_powershell_experiment --nocapture
+        env:
+          TJOMMIE_RS_ADMIN_TESTS: '1'
+          TJOMMIE_WORKER_DIAG: '1'
+
       - name: Real acceptance against two disposable accounts
         run: >
           cargo test -p daemon --locked --test windows_worker_acceptance --
