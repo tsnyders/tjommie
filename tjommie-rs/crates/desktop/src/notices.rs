@@ -7,8 +7,6 @@ use futures::StreamExt as _;
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 use gpui::{App, Global};
 
-use crate::guard::guarded;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Notice {
     /// A UI handler panicked and `guard` caught it.
@@ -73,15 +71,21 @@ pub fn listen() -> UnboundedReceiver<Notice> {
 pub fn init(cx: &mut App) {
     cx.set_global(Notices::default());
     let mut inbox = listen();
+    // A panic while showing a notice is only logged: guarded would raise it as another notice into this same loop,
+    // which would show it and panic again (review F8).
+    // unguarded: the notice sink
     cx.spawn(async move |cx| {
         while let Some(notice) = inbox.next().await {
             cx.update(|cx| {
-                guarded("show a notice", || {
+                let shown = desktop_host::crash::catching(|| {
                     if cx.global_mut::<Notices>().add(notice) {
                         log::info!("Notice: {}", notice.text());
                         cx.refresh_windows();
                     }
-                })
+                });
+                if shown.is_err() {
+                    log::error!("Showing a notice panicked; its backtrace is in desktop-crash.log");
+                }
             });
         }
     })
