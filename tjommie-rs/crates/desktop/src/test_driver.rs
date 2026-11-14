@@ -42,6 +42,15 @@ use windows::core::{HSTRING, PWSTR};
 
 use crate::guard::guarded;
 
+// Review F4: the driver lets another process click and type in the app, so it never builds into the owner's app.
+const _: () = assert!(
+    !matches!(
+        desktop_host::identity::CURRENT.name.as_bytes(),
+        b"production"
+    ),
+    "the test driver never builds into the production identity"
+);
+
 const PIPE_PREFIX: &str = r"\\.\pipe\tjommie-ui-";
 
 pub fn pipe_name(pid: u32) -> String {
