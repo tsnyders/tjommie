@@ -701,7 +701,7 @@ impl Scheduler {
             if get_stored_bot(db, &routine.bot_id)?.paused {
                 return Err(RpcError::new(
                     ErrorCode::BadState,
-                    "Unpause this bot before retrying its routine",
+                    "Unpause this agent before retrying its routine",
                 ));
             }
             if has_open_run(db, &routine.id)? {

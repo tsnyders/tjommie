@@ -103,7 +103,7 @@ impl RoomPort for SqlRooms {
                 if !exists(db, "SELECT 1 FROM bots WHERE id = ?1", [bot.as_str()])? {
                     return Err(RpcError::new(
                         ErrorCode::BadParams,
-                        "Room member: no such bot",
+                        "Room member: no such agent",
                     ));
                 }
             }
@@ -364,7 +364,7 @@ impl Projects {
         )? {
             return Err(RpcError::new(
                 ErrorCode::Busy,
-                "This bot has queued or running work.",
+                "This agent has queued or running work.",
             ));
         }
         if exists(
@@ -374,7 +374,7 @@ impl Projects {
         )? {
             return Err(RpcError::new(
                 ErrorCode::Busy,
-                "This bot owns a task or check that has not finished.",
+                "This agent owns a task or check that has not finished.",
             ));
         }
         Ok(())
@@ -393,7 +393,7 @@ impl Projects {
             if !ids.insert(member.bot_id.as_str()) || roles.len() != member.roles.len() {
                 return Err(RpcError::new(
                     ErrorCode::BadParams,
-                    "Each bot and role must occur once.",
+                    "Each agent and role must occur once.",
                 ));
             }
             get_stored_bot(db, &member.bot_id)?;
@@ -405,7 +405,7 @@ impl Projects {
             )? {
                 return Err(RpcError::new(
                     ErrorCode::Busy,
-                    "This bot already belongs to another active project.",
+                    "This agent already belongs to another active project.",
                 ));
             }
         }

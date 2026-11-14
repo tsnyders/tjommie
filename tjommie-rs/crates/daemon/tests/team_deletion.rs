@@ -384,7 +384,7 @@ mod two_phase_bot_deletion {
             .unwrap();
         let error = fx.db(|db| delete_bot(db, &writer.id)).unwrap_err();
         assert!(
-            error.message.contains("The bot folder is busy"),
+            error.message.contains("The agent folder is busy"),
             "{}",
             error.message
         );

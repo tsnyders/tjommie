@@ -56,12 +56,12 @@ describe("labels", () => {
   it("names bots, models and states, and says when a bot is gone", () => {
     const bots = [{ id: "b1", name: "Pnet apply" }] as Bot[];
     expect(botName(bots, "b1")).toBe("Pnet apply");
-    expect(botName(bots, "gone")).toBe("A deleted bot");
+    expect(botName(bots, "gone")).toBe("A deleted agent");
     expect(modelLabel({ provider: "claude", model: "sonnet" })).toBe("Claude · Sonnet (latest)");
     expect(modelLabel({ provider: "codex", model: "gpt-6-astra" })).toBe("Codex · gpt-6-astra");
     expect(stateLabel({ state: "limited", limitedUntil: new Date(2026, 8, 27, 15, 45).toISOString() })).toBe("Limited until 3:45 PM");
     expect(stateLabel({ state: "waiting", limitedUntil: null })).toBe("Waiting for you");
-    expect(errorText(new Error("bad_params: This bot's browser is off"))).toBe("This bot's browser is off");
+    expect(errorText(new Error("bad_params: This agent's browser is off"))).toBe("This agent's browser is off");
     expect(errorText("busy: Scout is still working")).toBe("Scout is still working");
   });
 });

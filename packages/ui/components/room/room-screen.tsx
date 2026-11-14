@@ -87,7 +87,7 @@ export function RoomScreen({ roomId }: { roomId: string }) {
   if (!room) return null;
   const loaded = conversation?.status === "ready" ? conversation : null;
   const panelOpen = panel || exchangeId !== null;
-  const count = `${members.length} ${members.length === 1 ? "bot" : "bots"}`;
+  const count = `${members.length} ${members.length === 1 ? "agent" : "agents"}`;
   const showPanel = (open: boolean): void => {
     if (phone) setPhonePanel(open);
     else {
@@ -183,7 +183,7 @@ export function RoomScreen({ roomId }: { roomId: string }) {
         ) : !loaded ? (
           <div className="flex-1" />
         ) : loaded.messages.length === 0 ? (
-          <p className="m-auto px-8 text-center text-[13px] leading-[18px] text-secondary">No posts yet. @mention a bot to ask it something.</p>
+          <p className="m-auto px-8 text-center text-[13px] leading-[18px] text-secondary">No posts yet. @mention an agent to ask it something.</p>
         ) : (
           <MessageList messages={loaded.messages} hasMore={loaded.hasMore} onOlder={older} render={render} />
         )}
@@ -195,7 +195,7 @@ export function RoomScreen({ roomId }: { roomId: string }) {
           exchangeId={exchangeId}
           refreshKey={exchangeKey}
           onClose={closeExchange}
-          bar={<PanelBar settingsHref="/settings/?section=bots" settingsLabel="Bots settings" hideLabel="Hide the panel" onHide={closeExchange} />}
+          bar={<PanelBar settingsHref="/settings/?section=bots" settingsLabel="Agents settings" hideLabel="Hide the panel" onHide={closeExchange} />}
         />
       ) : (
         panel && <MembersPanel room={room} members={members} onEdit={() => setEditing(true)} onHide={hideMembers} />
@@ -205,7 +205,7 @@ export function RoomScreen({ roomId }: { roomId: string }) {
         open={deleting}
         onOpenChange={setDeleting}
         title={`Delete ${room.name}?`}
-        body="Its posts are deleted. Its bots and their chats aren't touched."
+        body="Its posts are deleted. Its agents and their chats aren't touched."
         confirm={
           <>
             <Trash2 className="size-4" aria-hidden />
@@ -246,7 +246,7 @@ function MoreMenu({ room, onMembers, onEdit, onDelete }: { room: Room; onMembers
             {onMembers && (
               <Menu.Item className={MENU_ITEM} onClick={() => router.push("/settings/?section=bots")}>
                 <Settings aria-hidden />
-                Bots settings
+                Agents settings
               </Menu.Item>
             )}
             {!room.everyone && (

@@ -17,7 +17,7 @@ describe("ChatHeader on a phone", () => {
     expect(out).toMatch(/aria-label="A very long bot name of thirty-nine, Waiting for you\. Show details"/);
     expect(out).toContain('aria-expanded="false"');
     expect(out).toContain('aria-label="More"');
-    expect(out).not.toContain('aria-label="Bot panel"');
+    expect(out).not.toContain('aria-label="Agent panel"');
   });
 
   it("stacks the name over the state and cuts each short, so neither runs into More or the caption buttons", () => {
@@ -29,7 +29,7 @@ describe("ChatHeader on a phone", () => {
 
   it("leaves the desktop header as it was: the panel icon, and the state beside the name", () => {
     const desktop = html(false);
-    expect(desktop).toContain('aria-label="Bot panel"');
+    expect(desktop).toContain('aria-label="Agent panel"');
     expect(desktop).not.toContain("Show details");
   });
 });

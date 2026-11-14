@@ -1285,7 +1285,7 @@ impl Core<'_> {
             if failed.len() > 1 {
                 return Err(RpcError::new(
                     ErrorCode::BadParams,
-                    "Choose the bot whose room turn you want to retry",
+                    "Choose the agent whose room turn you want to retry",
                 ));
             }
             if let Some(only) = failed.pop() {
@@ -1417,7 +1417,7 @@ impl Core<'_> {
         {
             return Err(RpcError::new(
                 ErrorCode::Busy,
-                "Resume the bot before allowing tools.",
+                "Resume the agent before allowing tools.",
             ));
         }
         let approval = resolve_approval(self.db, approval_id, decision)?;
@@ -1465,7 +1465,7 @@ impl Core<'_> {
             if existing.restore_when_closed {
                 return Err(RpcError::new(
                     ErrorCode::Busy,
-                    "The bot is still closing. Try again shortly.",
+                    "The agent is still closing. Try again shortly.",
                 ));
             }
             return Ok(existing.closed.clone().boxed());
@@ -1566,7 +1566,7 @@ impl Core<'_> {
             outcome: TurnOutcome::Interrupted,
             text: None,
             text_message_id: None,
-            error: Some("The bot was deleted.".into()),
+            error: Some("The agent was deleted.".into()),
         };
         for item in &detached.items {
             self.turn_ended_hook(item, &result);
@@ -1996,7 +1996,7 @@ impl Core<'_> {
         let live = self.live_for(&turn.bot.id);
         turn.live = live;
         if (self.deps().setup_issue)(&turn.bot).is_some() {
-            return Step::Ready(Err("The bot needs setup before it can run.".into()));
+            return Step::Ready(Err("The agent needs setup before it can run.".into()));
         }
         if self.live(live).stop_requested {
             return self.finish_stopped(&turn.bot.id);

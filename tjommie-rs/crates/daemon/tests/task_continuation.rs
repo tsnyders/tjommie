@@ -695,7 +695,7 @@ async fn continues_in_the_task_worktree_after_deleting_an_external_helper(cascad
     h.own()[0]
         .session
         .finish("The external helper will answer later.");
-    h.attempt_reason_is("Waiting for requested bot replies.")
+    h.attempt_reason_is("Waiting for requested agent replies.")
         .await;
     assert!(h.bot_busy(&h.developer.id));
 
@@ -930,7 +930,7 @@ async fn fences_a_late_task_helper_reply_after_an_explicit_operation(operation: 
     h.own()[0]
         .session
         .finish("The helper reply will arrive later.");
-    h.attempt_reason_is("Waiting for requested bot replies.")
+    h.attempt_reason_is("Waiting for requested agent replies.")
         .await;
     let cancel = matches!(operation, LateOperation::Cancel | LateOperation::Archive);
     let stopped = h

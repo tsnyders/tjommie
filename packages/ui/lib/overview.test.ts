@@ -18,8 +18,8 @@ const message = (id: string, kind: Message["kind"], extra: Partial<Message> = {}
 
 describe("the Agents overview", () => {
   it("sums up the bots and filters them", () => {
-    expect(overviewSummary([bot("working"), bot("working"), bot("waiting"), bot("idle"), bot("idle"), bot("paused")])).toBe("6 bots, 2 working, 1 waiting for you");
-    expect(overviewSummary([bot("idle")])).toBe("1 bot");
+    expect(overviewSummary([bot("working"), bot("working"), bot("waiting"), bot("idle"), bot("idle"), bot("paused")])).toBe("6 agents, 2 working, 1 waiting for you");
+    expect(overviewSummary([bot("idle")])).toBe("1 agent");
     expect(matches({ name: "CV Writer", state: "paused" }, "paused", "")).toBe(true);
     expect(matches({ name: "CV Writer", state: "paused" }, "working", "")).toBe(false);
     expect(matches({ name: "CV Writer", state: "idle" }, "all", "writ")).toBe(true);
@@ -114,7 +114,7 @@ describe("the Agents overview", () => {
     const exchange = message("p3", "text", { conversationId: "r1", author: "b1", body: "Done.", createdAt: at(30), data: { exchangeId: "x1", toBotId: "b2" } });
     expect(roomLine([exchange, yours], bots, now)).toBe("You posted 10 minutes ago");
     expect(roomLine([exchange, yours, answer], bots, now)).toBe("Sales answered 4 minutes ago");
-    expect(roomLine([exchange], bots, now)).toBe("Sales and A deleted bot talked 30 minutes ago");
+    expect(roomLine([exchange], bots, now)).toBe("Sales and A deleted agent talked 30 minutes ago");
     // Notices, activity and a reply still on its way aren't posts.
     const notice = message("p4", "notice", { conversationId: "r1", author: "system", body: "Sales couldn't answer." });
     const streaming = message("p5", "text", { conversationId: "r1", author: "b1", body: "", status: "streaming" });
@@ -149,8 +149,8 @@ describe("the phone's filter chips", () => {
 
 describe("Folio's lede", () => {
   it("names a lone bot and counts several", () => {
-    expect(overviewLede([{ name: "Nova", state: "waiting" }, { name: "Ada", state: "working" }, { name: "Bo", state: "working" }])).toBe("2 bots are working; Nova is waiting for you.");
+    expect(overviewLede([{ name: "Nova", state: "waiting" }, { name: "Ada", state: "working" }, { name: "Bo", state: "working" }])).toBe("2 agents are working; Nova is waiting for you.");
     expect(overviewLede([{ name: "Ada", state: "idle" }])).toBe("All quiet.");
-    expect(overviewLede([])).toBe("No bots yet.");
+    expect(overviewLede([])).toBe("No agents yet.");
   });
 });

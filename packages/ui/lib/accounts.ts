@@ -116,7 +116,7 @@ export function statusLine(account: AccountInfo, now: Date, flags: { stuck?: boo
   if (account.kind === "subscription") {
     if (account.setup === null) return flags.stuck ? { tone: "muted", text: "Couldn't check yet", actions: ["check"] } : { tone: "busy", text: "Checking", actions: [] };
     if (account.setup.error) return { tone: "problem", text: account.setup.error, actions: ["check"] };
-    if (!account.setup.signedIn) return { tone: "muted", text: "Not signed in. Bots on it wait.", actions: ["signIn"] };
+    if (!account.setup.signedIn) return { tone: "muted", text: "Not signed in. Agents on it wait.", actions: ["signIn"] };
     const limit = limitState(account, now);
     if (limit) return { tone: "limited", text: limitedText(limit, now), actions: limitActions(account, now) };
     return { tone: "ok", text: "Signed in", actions: [] };
@@ -124,7 +124,7 @@ export function statusLine(account: AccountInfo, now: Date, flags: { stuck?: boo
   if (!account.hasCredential) return { tone: "muted", text: "No key saved", actions: ["addKey"] };
   if (account.spending.blocked) {
     if (account.spending.unknownRows > 0) return { tone: "problem", text: `Stopped: ${account.spending.unknownRows} ${account.spending.unknownRows === 1 ? "turn has" : "turns have"} no price, so the cap can't be checked.`, actions: [] };
-    return { tone: "problem", text: `Reached its ${money(account.spending.capUsd ?? 0)} cap. Bots stopped using it.`, actions: ["raiseCap"] };
+    return { tone: "problem", text: `Reached its ${money(account.spending.capUsd ?? 0)} cap. Agents stopped using it.`, actions: ["raiseCap"] };
   }
   const limit = limitState(account, now);
   if (limit) return { tone: "limited", text: limitedText(limit, now), actions: limitActions(account, now) };

@@ -33,7 +33,7 @@ export const addTime = (times: string[], time: string): string[] => (/^([01]\d|2
 export function routineProblem(draft: RoutineDraft): string | null {
   if (!draft.name.trim()) return "Give the routine a name.";
   if (draft.name.trim().length > 60) return "Keep the name to 60 characters or fewer.";
-  if (!draft.prompt.trim()) return "Say what the bot should do.";
+  if (!draft.prompt.trim()) return "Say what the agent should do.";
   if (draft.days.length === 0) return "Pick at least one day.";
   if (draft.times.length === 0) return "Add at least one time.";
   if (draft.times.length > 12) return "Keep it to 12 times.";

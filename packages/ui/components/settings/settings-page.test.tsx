@@ -43,7 +43,7 @@ describe("settings section links", () => {
     expect(await html()).not.toContain("action=delete");
   });
   it("routes old host sections and returns unknown sections to General", async () => {
-    for (const [section, content] of [["devices", "Host devices"], ["usage", "Host usage"], ["bots", "Requests between bots per chain"], ["appearance", "Device appearance"], ["voice", "Device voice"], ["diagnostics", "Safe report"], ["about", "Device and host versions"], ["bogus", "Current-device general controls"]]) {
+    for (const [section, content] of [["devices", "Host devices"], ["usage", "Host usage"], ["bots", "Requests between agents per chain"], ["appearance", "Device appearance"], ["voice", "Device voice"], ["diagnostics", "Safe report"], ["about", "Device and host versions"], ["bogus", "Current-device general controls"]]) {
       query.value = `section=${section}`;
       expect(await html()).toContain(content);
     }

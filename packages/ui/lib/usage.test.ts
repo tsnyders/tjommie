@@ -115,7 +115,7 @@ describe("bars and breakdown", () => {
       byAccount: [{ accountId: "a9", ...aggregate(5) }, { accountId: "a1", ...aggregate(50) }],
       byModel: [{ provider: "claude", model: "sonnet", ...aggregate(7) }],
     } as unknown as UsageReport;
-    expect(breakdownRows(report, "bot", [{ id: "b1", name: "Scout" }], []).map((row) => row.name)).toEqual(["Scout", "Deleted bot"]);
+    expect(breakdownRows(report, "bot", [{ id: "b1", name: "Scout" }], []).map((row) => row.name)).toEqual(["Scout", "Deleted agent"]);
     expect(breakdownRows(report, "account", [], [{ id: "a1", label: "Personal" }]).map((row) => row.name)).toEqual(["Personal", "Removed account"]);
     expect(breakdownRows(report, "model", [], []).map((row) => row.name)).toEqual(["sonnet"]);
   });

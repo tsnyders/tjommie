@@ -73,13 +73,13 @@ export default function AgentsPage() {
           {searching && !phone ? (
             <SearchField query={query} onQuery={setQuery} onDone={() => setSearching(false)} className="h-8 w-[200px]" />
           ) : searching ? null : (
-            <IconButton label="Search bots" onClick={() => setSearching(true)} className="rounded-full bg-pill max-sm:size-11">
+            <IconButton label="Search agents" onClick={() => setSearching(true)} className="rounded-full bg-pill max-sm:size-11">
               <Search aria-hidden />
             </IconButton>
           )}
-          <Link href="/bots/new/" aria-label="New bot" data-slot="new-bot" className="press inline-flex h-8 items-center gap-1.5 rounded-full bg-user-bubble px-3 text-[14px] font-medium text-user-text max-sm:size-11 max-sm:justify-center max-sm:px-0">
+          <Link href="/bots/new/" aria-label="New agent" data-slot="new-bot" className="press inline-flex h-8 items-center gap-1.5 rounded-full bg-user-bubble px-3 text-[14px] font-medium text-user-text max-sm:size-11 max-sm:justify-center max-sm:px-0">
             <Plus className="size-3.5 max-sm:size-5" aria-hidden />
-            <span className="max-sm:sr-only">New bot</span>
+            <span className="max-sm:sr-only">New agent</span>
           </Link>
         </div>
         </div>
@@ -123,7 +123,7 @@ export default function AgentsPage() {
           {everything && <NewBotCard />}
           {everything && <NewRoomCard onClick={() => setCreatingRoom(true)} />}
         </div>
-        {!everything && shown.length === 0 && <p className="mt-10 text-center text-[13px] text-secondary">No bots match.</p>}
+        {!everything && shown.length === 0 && <p className="mt-10 text-center text-[13px] text-secondary">No agents match.</p>}
       </div>
       {creatingRoom && <RoomForm onClose={() => setCreatingRoom(false)} />}
     </div>
@@ -140,8 +140,8 @@ function SearchField({ query, onQuery, onDone, className }: { query: string; onQ
       onBlur={() => {
         if (!query) onDone();
       }}
-      placeholder="Search bots"
-      aria-label="Search bots"
+      placeholder="Search agents"
+      aria-label="Search agents"
       className={cn(FIELD, "rounded-full px-3 text-[13px]", className)}
     />
   );

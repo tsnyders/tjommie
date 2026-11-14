@@ -93,7 +93,7 @@ function KeyField({ provider, value, onChange }: { provider: Provider; value: st
 
 function CapField({ value, onChange, below }: { value: string; onChange: (value: string) => void; below?: string | null }) {
   return (
-    <Field id="account-cap" label="Spending cap" help={below ?? "Bots stop using the key once its total spend reaches this. It's an estimate from the prices Tjommie knows, not an invoice. Your provider bill may be higher."}>
+    <Field id="account-cap" label="Spending cap" help={below ?? "Agents stop using the key once its total spend reaches this. It's an estimate from the prices Tjommie knows, not an invoice. Your provider bill may be higher."}>
       <div className="relative">
         <span aria-hidden className="pointer-events-none absolute left-4 top-0 flex h-10 items-center text-[14px] text-secondary">
           $
@@ -166,7 +166,7 @@ export function KeyBody({ provider, onClose, onSubmit }: { provider: Provider; o
       <div className="mt-4 flex items-start justify-between gap-4">
         <div>
           <p className="text-[14px] leading-[21px] text-text">Fallback for {provider === "claude" ? "Claude" : "Codex"}</p>
-          <p className="text-[12px] leading-[18px] text-secondary">When a {provider === "claude" ? "Claude" : "Codex"} subscription account hits its limit, bots carry on with this key until it resets.</p>
+          <p className="text-[12px] leading-[18px] text-secondary">When a {provider === "claude" ? "Claude" : "Codex"} subscription account hits its limit, agents carry on with this key until it resets.</p>
         </div>
         <Switch label={`Fallback for ${provider === "claude" ? "Claude" : "Codex"}`} checked={fallback} onChange={setFallback} />
       </div>
@@ -211,7 +211,7 @@ export function CapDialog({ account, onClose, onSubmit }: { account: AccountInfo
 export function CapBody({ account, onClose, onSubmit }: { account: AccountInfo; onClose: () => void; onSubmit: (cap: number) => Promise<void> }) {
   const [cap, setCap] = useState(account.spendingCapUsd === null ? "" : String(account.spendingCapUsd));
   const amount = parseCap(cap);
-  const below = amount !== null && amount < account.spending.knownUsd ? `This is below the ${money(account.spending.knownUsd)} already spent, so bots stop using the key right away.` : null;
+  const below = amount !== null && amount < account.spending.knownUsd ? `This is below the ${money(account.spending.knownUsd)} already spent, so agents stop using the key right away.` : null;
   return (
     <Form
         submit="Save"
@@ -260,7 +260,7 @@ export function RemoveDialog({ account, bots, onClose, onSubmit }: { account: Ac
   if (using.length > 0) {
     return (
       <Dialog open onOpenChange={close(onClose)} title={`Can't remove ${account.label}`} width={320} closable>
-        <p className="mt-2 text-[13px] leading-[18px] text-body">Move these bots to another account first:</p>
+        <p className="mt-2 text-[13px] leading-[18px] text-body">Move these agents to another account first:</p>
         <ul className="mt-2 flex flex-col gap-1">
           {using.map((bot) => (
             <li key={bot.id}>

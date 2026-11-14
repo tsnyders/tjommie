@@ -167,7 +167,7 @@ fn native_request(db: Db, broker: Option<Arc<NativeBrowserBroker>>) -> NativeReq
             if !teardown && !bot.browser {
                 return Err(RpcError::new(
                     ErrorCode::BadState,
-                    "This bot's browser is off.",
+                    "This agent's browser is off.",
                 ));
             }
             let Some(broker) = broker else {

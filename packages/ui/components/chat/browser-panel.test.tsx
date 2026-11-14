@@ -25,7 +25,7 @@ describe("BrowserChrome", () => {
     expect(out).not.toContain('aria-label="Saved logins"');
     expect(out).toContain("Go");
     expect(out).toContain("Take control");
-    expect(out).not.toContain("Resume bot");
+    expect(out).not.toContain("Resume agent");
     expect(out).toContain("Scout is using this browser");
     expect(out).toContain("data:image/jpeg;base64,AAAA");
   });
@@ -50,7 +50,7 @@ describe("BrowserChrome", () => {
 
   it("offers Resume bot while the user drives, and enables the controls", () => {
     const out = html(shown({ control: "human" }));
-    expect(out).toContain("Resume bot");
+    expect(out).toContain("Resume agent");
     expect(out).not.toContain("Take control");
     expect(out).not.toMatch(/aria-label="Reload"[^>]*disabled/);
     expect(out).not.toMatch(/disabled=""[^>]*aria-label="Reload"/);
@@ -72,14 +72,14 @@ describe("BrowserChrome", () => {
   });
 
   it("says why it can't open, with a way to try again", () => {
-    const out = html({ state: null, frame: null, error: "This bot's browser is off" });
-    expect(out).toContain("This bot&#x27;s browser is off");
+    const out = html({ state: null, frame: null, error: "This agent's browser is off" });
+    expect(out).toContain("This agent&#x27;s browser is off");
     expect(out).toContain("Try again");
   });
   it("suppresses private pixels even if an unexpected frame reaches the pane", () => {
     const out = html(shown({ control: "human", canControl: true, privateActive: true }));
     expect(out).toContain("Private interaction"); expect(out).not.toContain("data:image");
-    expect(out).not.toContain("Resume bot");
+    expect(out).not.toContain("Resume agent");
   });
   it("keeps another device's controls disabled while allowing viewing", () => {
     const out = html(shown({ control: "human", canControl: false }));
@@ -96,7 +96,7 @@ describe("native browser pane", () => {
     expect(out).toContain('data-slot');
     expect(out).not.toContain("<img");
     for (const label of ["Browser address", "Back", "Forward", "Reload", "Expand browser", "Browser tab Example"]) expect(out).toContain(`aria-label="${label}"`);
-    expect(out).toContain("Resume bot");
+    expect(out).toContain("Resume agent");
     expect(out).toContain('data-focus-return="control"');
   });
 

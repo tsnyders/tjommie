@@ -106,7 +106,7 @@ function BotSettings({ bot, bots }: { bot: Bot; bots: Bot[] }) {
             />
           </div>
           <aside className="w-[340px] shrink-0 max-sm:w-full">
-            <h2 className="text-[13px] font-semibold leading-[18px] text-label">About this bot</h2>
+            <h2 className="text-[13px] font-semibold leading-[18px] text-label">About this agent</h2>
             <About bot={bot} />
           </aside>
         </div>
@@ -114,11 +114,11 @@ function BotSettings({ bot, bots }: { bot: Bot; bots: Bot[] }) {
       <footer className="flex h-16 shrink-0 items-center gap-2 border-t border-card-stroke px-6 max-sm:h-auto max-sm:flex-wrap max-sm:px-4 max-sm:py-3">
         <button type="button" disabled={busy} onClick={() => setDeleting(true)} className="mr-4 flex shrink-0 items-center gap-1.5 text-[14px] text-danger disabled:opacity-50">
           <Trash2 className="size-4" aria-hidden />
-          Delete bot
+          Delete agent
         </button>
         <Pill disabled={busy} onClick={() => void run(() => request("bots.pause", { id: bot.id, paused: !bot.paused }))}>
           {bot.paused ? <Play className="size-3.5" aria-hidden /> : <Pause className="size-3.5" aria-hidden />}
-          {bot.paused ? "Resume bot" : "Pause bot"}
+          {bot.paused ? "Resume agent" : "Pause agent"}
         </Pill>
         {problem && (
           <p role="alert" className="min-w-0 truncate text-[13px] leading-[18px] text-danger">
@@ -147,7 +147,7 @@ function BotSettings({ bot, bots }: { bot: Bot; bots: Bot[] }) {
         confirm={
           <>
             <Trash2 className="size-4" aria-hidden />
-            Delete bot
+            Delete agent
           </>
         }
         danger

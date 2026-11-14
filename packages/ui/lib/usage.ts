@@ -227,7 +227,7 @@ export type Row = { key: string; name: string; aggregate: UsageAggregate };
 export function breakdownRows(report: UsageReport, by: By, bots: Pick<Bot, "id" | "name">[], accounts: Pick<AccountInfo, "id" | "label">[]): Row[] {
   const rows: Row[] =
     by === "bot"
-      ? report.byBot.map((row) => ({ key: row.botId, name: bots.find((bot) => bot.id === row.botId)?.name ?? "Deleted bot", aggregate: row }))
+      ? report.byBot.map((row) => ({ key: row.botId, name: bots.find((bot) => bot.id === row.botId)?.name ?? "Deleted agent", aggregate: row }))
       : by === "account"
         ? report.byAccount.map((row) => ({ key: row.accountId, name: accounts.find((account) => account.id === row.accountId)?.label ?? "Removed account", aggregate: row }))
         : report.byModel.map((row) => ({ key: `${row.provider}:${row.model}`, name: row.model, aggregate: row }));

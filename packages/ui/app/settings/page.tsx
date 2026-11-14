@@ -27,9 +27,9 @@ const SECTIONS = [
   { value: "files", label: "Files", icon: File, hint: "Downloads and temporary previews" },
   { value: "voice", label: "Voice", icon: Mic, hint: "Local dictation on this device" },
   { value: "logins", label: "Logins", icon: KeyRound, hint: "Selected host's saved logins" },
-  { value: "bots", label: "Bots", icon: Bot, hint: "Host's requests between bots" },
+  { value: "bots", label: "Agents", icon: Bot, hint: "Host's requests between agents" },
   { value: "accounts", label: "Accounts", icon: KeyRound, hint: "Host's sign-ins and limits" },
-  { value: "usage", label: "Usage", icon: ChartColumn, hint: "What the host's bots used" },
+  { value: "usage", label: "Usage", icon: ChartColumn, hint: "What the host's agents used" },
   { value: "devices", label: "Devices", icon: Smartphone, hint: "Pairing and host connections" },
   { value: "diagnostics", label: "Diagnostics", icon: Stethoscope, hint: "Health checks and a safe report" },
   { value: "about", label: "About", icon: Info, hint: "Versions, source and licenses" },
@@ -121,13 +121,13 @@ function BotsSection() {
   }
   return (
     <>
-      <h2 className="text-[20px] font-semibold leading-[26px] text-title">Bots</h2>
-      <h3 className="mt-9 text-[13px] font-semibold leading-[18px] text-label">Bots asking each other</h3>
+      <h2 className="text-[20px] font-semibold leading-[26px] text-title">Agents</h2>
+      <h3 className="mt-9 text-[13px] font-semibold leading-[18px] text-label">Agents asking each other</h3>
       <section className="mt-2.5 flex max-w-[700px] items-start justify-between gap-6 rounded-[12px] bg-card p-4">
         <div>
-          <p className="text-[14px] text-text">Requests between bots per chain</p>
+          <p className="text-[14px] text-text">Requests between agents per chain</p>
           <p className="mt-1 text-[12px] leading-[18px] text-secondary">
-            A chain starts with each message you send and each routine run. When a chain reaches this many bot-to-bot requests, the next request stops and the bot asks you instead.
+            A chain starts with each message you send and each routine run. When a chain reaches this many agent-to-agent requests, the next request stops and the agent asks you instead.
           </p>
           {problem && (
             <p role="alert" className="mt-1 text-[12px] leading-[18px] text-danger">
@@ -135,7 +135,7 @@ function BotsSection() {
             </p>
           )}
         </div>
-        {settings && <Stepper label="Requests between bots per chain" value={settings.chainLimit} min={1} max={20} onChange={(next) => void setChainLimit(next)} />}
+        {settings && <Stepper label="Requests between agents per chain" value={settings.chainLimit} min={1} max={20} onChange={(next) => void setChainLimit(next)} />}
       </section>
     </>
   );

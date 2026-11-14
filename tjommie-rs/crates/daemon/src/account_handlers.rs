@@ -240,7 +240,7 @@ impl Feed {
                     if stopping.await.is_err() {
                         events.send(Event::Notify(Notify::Limit {
                             bot_id,
-                            title: "Check this bot after its spending cap".into(),
+                            title: "Check this agent after its spending cap".into(),
                             body: "The provider did not confirm Stop. Check the chat before starting more work."
                                 .into(),
                         }));
@@ -398,7 +398,7 @@ impl Accounts {
     fn not_running(&self, id: &str) -> Result<(), RpcError> {
         if self.runtime.in_use(id) {
             return Err(busy(
-                "Stop the bots using this account before changing its sign-in or key.",
+                "Stop the agents using this account before changing its sign-in or key.",
             ));
         }
         Ok(())
@@ -565,7 +565,7 @@ impl Accounts {
         self.not_running(&id)?;
         if pinned {
             return Err(busy(
-                "Choose another account for the bots assigned to this account before removing it.",
+                "Choose another account for the agents assigned to this account before removing it.",
             ));
         }
         self.runtime.delete_credential(&id).await?;

@@ -27,7 +27,7 @@ describe("the routine editor", () => {
 
   it("says what's missing before saving, and offers a proposal's own time limit", () => {
     expect(routineProblem(EMPTY_ROUTINE)).toBe("Give the routine a name.");
-    expect(routineProblem({ ...EMPTY_ROUTINE, name: "Check" })).toBe("Say what the bot should do.");
+    expect(routineProblem({ ...EMPTY_ROUTINE, name: "Check" })).toBe("Say what the agent should do.");
     expect(routineProblem({ ...EMPTY_ROUTINE, name: "Check", prompt: "Check", days: [] })).toBe("Pick at least one day.");
     expect(routineProblem({ ...EMPTY_ROUTINE, name: "Check", prompt: "Check", times: [] })).toBe("Add at least one time.");
     const twelve = Array.from({ length: 12 }, (_, hour) => `${String(hour).padStart(2, "0")}:00`);

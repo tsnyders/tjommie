@@ -483,7 +483,7 @@ impl Tasks {
         if self.bot_busy(db, bot_id)? {
             return Err(RpcError::new(
                 ErrorCode::Busy,
-                "This bot already owns an active task or check.",
+                "This agent already owns an active task or check.",
             ));
         }
         db.execute(
@@ -1086,7 +1086,7 @@ impl Tasks {
                     &db,
                     &TaskAttempt {
                         state: AttemptState::Running,
-                        reason: Some("Waiting for requested bot replies.".into()),
+                        reason: Some("Waiting for requested agent replies.".into()),
                         updated_at: now_iso(),
                         ..attempt
                     },
@@ -1181,7 +1181,9 @@ impl Tasks {
                 &db,
                 &TaskAttempt {
                     state: AttemptState::Blocked,
-                    reason: Some("Process exit is unconfirmed; the bot lease is retained.".into()),
+                    reason: Some(
+                        "Process exit is unconfirmed; the agent lease is retained.".into(),
+                    ),
                     updated_at: now_iso(),
                     ..attempt.clone()
                 },
@@ -1630,7 +1632,7 @@ impl Tasks {
         if self.runner()?.current_work(bot_id).is_some() {
             return Err(RpcError::new(
                 ErrorCode::Busy,
-                "This bot still has a live turn.",
+                "This agent still has a live turn.",
             ));
         }
         self.release(&self.lock(), bot_id, owner_id)
@@ -1691,7 +1693,7 @@ impl Tasks {
                 state: if review { EvaluationState::Unavailable } else { EvaluationState::Failed },
                 reason: Some(
                     if termination_unknown {
-                        "Evaluation process termination is unconfirmed; its bot lease is retained for host reconciliation."
+                        "Evaluation process termination is unconfirmed; its agent lease is retained for host reconciliation."
                     } else if review {
                         "review_isolation_unavailable or incomplete snapshot coverage"
                     } else {

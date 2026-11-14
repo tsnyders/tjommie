@@ -135,7 +135,7 @@ export function ChatScreen({ botId }: { botId: string }) {
           exchangeId={exchangeId}
           refreshKey={handoffStatus(messages, exchangeId)}
           onClose={() => closeExchange(exchangeId)}
-          bar={<PanelBar settingsHref={settings} settingsLabel="Bot settings" hideLabel="Hide the panel" onHide={() => closeExchange(exchangeId)} />}
+          bar={<PanelBar settingsHref={settings} settingsLabel="Agent settings" hideLabel="Hide the panel" onHide={() => closeExchange(exchangeId)} />}
         />
       ) : (
         panel && (

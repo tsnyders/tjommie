@@ -7,11 +7,11 @@ type PushResult = { ok: boolean; unregistered: boolean };
 
 const scope = "https://www.googleapis.com/auth/firebase.messaging";
 const bodies: Record<PushKind, string> = {
-  approval: "A bot needs you",
+  approval: "An agent needs you",
   limit: "An account hit its limit",
   routine_failed: "A routine failed",
-  done: "A bot finished",
-  failed: "A bot ran into a problem",
+  done: "An agent finished",
+  failed: "An agent ran into a problem",
 };
 let cached: { secret: string; endpoint: string; token: string; expiresAt: number } | null = null;
 

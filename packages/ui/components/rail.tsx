@@ -43,7 +43,7 @@ export function Rail() {
         <RailLink href="/projects/" label="Projects" selected={pathname.startsWith("/projects")} compact>
           <FolderGit2 className="size-5 text-icon" aria-hidden />
         </RailLink>
-        <RailLink href="/bots/new/" label="New bot" selected={pathname.startsWith("/bots/new")} compact>
+        <RailLink href="/bots/new/" label="New agent" selected={pathname.startsWith("/bots/new")} compact>
           <Plus className="size-5 text-icon" aria-hidden />
         </RailLink>
         <RailLink href="/settings/" label="Settings" selected={pathname.startsWith("/settings")} compact>

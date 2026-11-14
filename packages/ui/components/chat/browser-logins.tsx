@@ -48,7 +48,7 @@ function BrowserLoginScope({ state, onRefresh }: { state: BrowserState; onRefres
     const expected = ++revision.current; setBusy(true); setError(false); setNotice("Confirm in Tjommie's trusted Logins window on the host.");
     try {
       const result = await client.send(action);
-      if (alive.current && expected === revision.current && client.current()) { const cancelled = typeof result === "object" && result !== null && "status" in result && result.status === "cancelled"; setNotice(cancelled ? "Cancelled." : action.kind === "fill" ? "Login filled privately. Automation stays paused." : action.kind === "finish" ? "Private fields cleared or browser closed. Resume the bot separately when ready." : "Logins updated."); onRefresh(); if (action.kind === "unlock") await refresh(); }
+      if (alive.current && expected === revision.current && client.current()) { const cancelled = typeof result === "object" && result !== null && "status" in result && result.status === "cancelled"; setNotice(cancelled ? "Cancelled." : action.kind === "fill" ? "Login filled privately. Automation stays paused." : action.kind === "finish" ? "Private fields cleared or browser closed. Resume the agent separately when ready." : "Logins updated."); onRefresh(); if (action.kind === "unlock") await refresh(); }
     } catch (failure) { if (alive.current && expected === revision.current && client.current()) { setError(!(failure instanceof DOMException && failure.name === "AbortError")); setNotice(""); } }
     finally { if (alive.current && expected === revision.current && client.current()) setBusy(false); }
   }

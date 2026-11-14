@@ -280,7 +280,7 @@ mod team_tools {
         fx.db(|db| set_paused(db, &writer.id, true).unwrap());
         let message =
             refused(fx.run_tool("request_login", &writer.id, json!({ "name": "Example" })));
-        assert!(message.contains("Resume this bot"));
+        assert!(message.contains("Resume this agent"));
     }
 
     #[test]

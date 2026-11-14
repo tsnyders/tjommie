@@ -15,8 +15,8 @@ export type Notifications = "allow" | "on" | "off" | "unavailable";
 const NOTIFICATIONS: Record<Exclude<Notifications, "allow">, string> = { on: "On", off: "Off", unavailable: "Not in this build" };
 // What this phone is told about, under Notifications once they're on: each switch is one or two kinds of push, and all are on until turned off.
 const KINDS: readonly { label: string; kinds: readonly PushKind[] }[] = [
-  { label: "A bot needs you", kinds: ["approval", "limit"] },
-  { label: "A bot is done", kinds: ["done"] },
+  { label: "An agent needs you", kinds: ["approval", "limit"] },
+  { label: "An agent is done", kinds: ["done"] },
   { label: "Something failed", kinds: ["failed", "routine_failed"] },
 ];
 const answered = (receive: string): Notifications => (receive === "granted" ? "on" : receive === "denied" ? "off" : "allow");

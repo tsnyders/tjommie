@@ -26,7 +26,7 @@ describe("RoomComposer", () => {
   it("names the room it posts in", () => {
     const html = renderToStaticMarkup(<RoomComposer room={growth} />);
     expect(html).toContain('aria-label="Message Growth"');
-    expect(html).toContain('placeholder="Message Growth. Type @ to mention a bot."');
+    expect(html).toContain('placeholder="Message Growth. Type @ to mention an agent."');
   });
 });
 
@@ -36,8 +36,8 @@ describe("mentions in a room", () => {
     const members = roomBots(growth, bots);
     expect(mentionOptions("", members).map((option) => option.name)).toEqual(["Sales", "Marketing", "everyone"]);
     expect(mentionOptions("Ch", members)).toEqual([]); // Chief isn't in Growth
-    expect(everyoneLabel(2)).toBe("All 2 bots in this room");
-    expect(everyoneLabel(1)).toBe("All 1 bot in this room");
+    expect(everyoneLabel(2)).toBe("All 2 agents in this room");
+    expect(everyoneLabel(1)).toBe("All 1 agent in this room");
     const source = readFileSync(new URL("./room-composer.tsx", import.meta.url), "utf8");
     expect(source).toContain("mentionOptions(typed.query, members)");
     expect(source).toContain("findMentions(sentText, bots, members)"); // "nobody will reply" counts the room's bots only

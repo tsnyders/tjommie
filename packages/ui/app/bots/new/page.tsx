@@ -82,7 +82,7 @@ export default function NewBotPage() {
         <div className="flex w-[640px] min-w-0 shrink justify-center max-sm:w-auto max-sm:flex-1 max-sm:justify-start">
           <div className="flex h-10 items-center gap-2 rounded-full bg-chip px-3.5">
             <BotAvatar color={form.color} shape={form.shape} size={24} />
-            <h1 className="text-[15px] font-semibold text-title">New bot</h1>
+            <h1 className="text-[15px] font-semibold text-title">New agent</h1>
           </div>
         </div>
       </header>
@@ -143,7 +143,7 @@ export default function NewBotPage() {
               Cancel
             </Pill>
             <Pill primary className={BAR_PILL} disabled={busy} onClick={() => void create()}>
-              Create bot
+              Create agent
             </Pill>
           </>
         )}

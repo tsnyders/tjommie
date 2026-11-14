@@ -181,14 +181,14 @@ function content(view: CardView, claude: boolean, busy: boolean, requesting: boo
             <Line icon={<CircleCheck className="size-4 shrink-0 text-working" aria-hidden />}>{view.account ? `Signed in as ${view.account}` : "Signed in"}</Line>
             {plan && <p className="ml-6 text-[12px] leading-[18px] text-secondary">{plan}</p>}
             {view.sandbox === "needed" && (
-              <p className={cn(helper, "mt-3")}>Codex&apos;s sandbox isn&apos;t set up yet. Codex bots at Own folder need it, and Windows asks for admin permission once.</p>
+              <p className={cn(helper, "mt-3")}>Codex&apos;s sandbox isn&apos;t set up yet. Codex agents at Own folder need it, and Windows asks for admin permission once.</p>
             )}
             {view.sandbox === "preparing" && (
               <Line icon={spinner} className="mt-3">
                 Setting up Codex&apos;s sandbox. Answer the Windows prompt.
               </Line>
             )}
-            {view.sandbox === "unavailable" && <p className={cn(helper, "mt-3")}>Tjommie couldn&apos;t check Codex&apos;s sandbox, so Codex bots at Own folder can&apos;t run yet.</p>}
+            {view.sandbox === "unavailable" && <p className={cn(helper, "mt-3")}>Tjommie couldn&apos;t check Codex&apos;s sandbox, so Codex agents at Own folder can&apos;t run yet.</p>}
           </>
         ),
         actions: (

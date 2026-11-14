@@ -57,7 +57,7 @@ export function AccountsSection({ account, action }: { account: string | null; a
     <>
       <h2 className="text-[20px] font-semibold leading-[26px] text-title">Accounts</h2>
       <p className="mt-2 max-w-[700px] text-[13px] leading-[18px] text-secondary">
-        Bots run Claude Code and Codex on these accounts. Subscriptions sign in on the provider&apos;s own page; Tjommie never sees your password. API keys stay in Windows Credential Manager.
+        Agents run Claude Code and Codex on these accounts. Subscriptions sign in on the provider&apos;s own page; Tjommie never sees your password. API keys stay in Windows Credential Manager.
       </p>
       {problem && (
         <p role="alert" className="mt-3 text-[12px] leading-[18px] text-danger">
@@ -179,7 +179,7 @@ function Group({
       )}
       {installed && provider === "codex" && sandbox !== undefined && sandbox !== "ready" && (
         <div className="mt-3 flex max-w-[700px] flex-wrap items-center gap-3 text-[13px] leading-[18px] text-secondary">
-          <p className="min-w-0 flex-1">Codex&apos;s sandbox isn&apos;t set up yet. Codex bots at Own folder need it, and Windows asks for admin permission once.</p>
+          <p className="min-w-0 flex-1">Codex&apos;s sandbox isn&apos;t set up yet. Codex agents at Own folder need it, and Windows asks for admin permission once.</p>
           {first && (
             <Pill
               primary

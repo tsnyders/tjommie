@@ -207,7 +207,7 @@ export function AccountCard({
           <div className="min-w-0">
             <p className="text-[13px] leading-[18px] text-text">Fallback for {account.provider === "claude" ? "Claude" : "Codex"}</p>
             <p className="text-[12px] leading-[18px] text-secondary">
-              When a {account.provider === "claude" ? "Claude" : "Codex"} subscription account hits its limit, bots carry on with this key until it resets.
+              When a {account.provider === "claude" ? "Claude" : "Codex"} subscription account hits its limit, agents carry on with this key until it resets.
               {!account.isFallback && replaces ? ` Replaces ${replaces.label}.` : ""}
             </p>
           </div>
@@ -221,7 +221,7 @@ export function AccountCard({
               <BotAvatar key={bot.id} color={bot.color} shape={bot.shape} size={18} />
             ))}
           </span>
-          {users.length} {users.length === 1 ? "bot" : "bots"}
+          {users.length} {users.length === 1 ? "agent" : "agents"}
         </div>
       )}
     </section>

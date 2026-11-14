@@ -22,12 +22,12 @@ export function phoneFilters(bots: Pick<Bot, "state">[], current: OverviewFilter
 
 // Folio's one-sentence lede under the Agents title: "Two bots are working; Nova is waiting for you."
 export function overviewLede(bots: Pick<Bot, "name" | "state">[]): string {
-  if (bots.length === 0) return "No bots yet.";
+  if (bots.length === 0) return "No agents yet.";
   const working = bots.filter((bot) => bot.state === "working");
   const waiting = bots.filter((bot) => bot.state === "waiting");
   const parts: string[] = [];
-  if (working.length) parts.push(working.length === 1 ? `${working[0].name} is working` : `${working.length} bots are working`);
-  if (waiting.length) parts.push(waiting.length === 1 ? `${waiting[0].name} is waiting for you` : `${waiting.length} bots are waiting for you`);
+  if (working.length) parts.push(working.length === 1 ? `${working[0].name} is working` : `${working.length} agents are working`);
+  if (waiting.length) parts.push(waiting.length === 1 ? `${waiting[0].name} is waiting for you` : `${waiting.length} agents are waiting for you`);
   if (parts.length === 0) return "All quiet.";
   const sentence = parts.join("; ");
   return `${sentence[0].toUpperCase()}${sentence.slice(1)}.`;
@@ -36,7 +36,7 @@ export function overviewLede(bots: Pick<Bot, "name" | "state">[]): string {
 // "6 bots, 2 working, 1 waiting for you".
 export function overviewSummary(bots: Pick<Bot, "state">[]): string {
   const count = (state: BotState): number => bots.filter((bot) => bot.state === state).length;
-  const parts = [`${bots.length} ${bots.length === 1 ? "bot" : "bots"}`];
+  const parts = [`${bots.length} ${bots.length === 1 ? "agent" : "agents"}`];
   if (count("working")) parts.push(`${count("working")} working`);
   if (count("waiting")) parts.push(`${count("waiting")} waiting for you`);
   return parts.join(", ");

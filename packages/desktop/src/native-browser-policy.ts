@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import type { NativeBrowserBounds } from "../../protocol/src/native-browser.ts";
 
 export function nativeBrowserProfile(root: string, botId: string): string {
-  if (!botId || botId.length > 1000) throw new Error("Invalid browser bot identity.");
+  if (!botId || botId.length > 1000) throw new Error("Invalid browser agent identity.");
   return resolve(root, createHash("sha256").update(botId).digest("hex"));
 }
 export function nativeBrowserUrl(value: string): string {

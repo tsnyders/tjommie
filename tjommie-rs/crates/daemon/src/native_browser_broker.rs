@@ -379,7 +379,7 @@ impl NativeBrowserBroker {
     pub fn close_bot(&self, bot_id: &str) {
         self.state().reject(
             |item| item.bot_id == bot_id,
-            "This bot's native browser closed.",
+            "This agent's native browser closed.",
         );
     }
 

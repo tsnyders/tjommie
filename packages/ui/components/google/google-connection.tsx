@@ -118,7 +118,7 @@ function GoogleDialog({ bot, api, status, onStatus, open, onOpenChange }: { bot:
         body={
           confirming === "clear"
             ? "This removes the Google settings Tjommie saved on this computer, so you can set it up again. Google may still list Tjommie under your account's permissions; remove it there to revoke it fully."
-            : "Every bot loses its Google access, and you'll need to connect again to give it back."
+            : "Every agent loses its Google access, and you'll need to connect again to give it back."
         }
         confirm={confirming === "clear" ? "Clear settings" : "Disconnect"}
         danger
@@ -132,7 +132,7 @@ function GoogleDialog({ bot, api, status, onStatus, open, onOpenChange }: { bot:
 }
 
 const copyFor = (services: GoogleStatus["services"]): string =>
-  `Tjommie connects to your ${serviceList(services)} through Google's API. A bot you allow can ${abilities(services)}, as you. Only allow bots you trust. This doesn't sign the built-in browser in to Google.`;
+  `Tjommie connects to your ${serviceList(services)} through Google's API. An agent you allow can ${abilities(services)}, as you. Only allow agents you trust. This doesn't sign the built-in browser in to Google.`;
 
 // What the dialog shows for the status: set up the app's Google client, connect, wait, or manage.
 export function GoogleBody({
@@ -191,7 +191,7 @@ export function GoogleBody({
           </p>
           {needsReconsent(status) && (
             <div className="flex flex-col gap-2 rounded-[10px] bg-pill p-3">
-              <p>This connection was made with read-only access. Connect again to let bots send, edit and delete; until then no bot can.</p>
+              <p>This connection was made with read-only access. Connect again to let agents send, edit and delete; until then no agent can.</p>
               <div className="flex justify-end">
                 <Pill primary disabled={busy} onClick={onConnect}>
                   Reconnect Google
@@ -209,7 +209,7 @@ export function GoogleBody({
             />
             Allow {bot.name} full access to {serviceList(status.services)}
           </label>
-          <p className="text-[12px] text-secondary">That means it can {abilities(status.services)}. Other bots stay off until you allow them in their own panel.</p>
+          <p className="text-[12px] text-secondary">That means it can {abilities(status.services)}. Other agents stay off until you allow them in their own panel.</p>
           <div className="flex justify-end">
             <Pill disabled={busy} className="text-danger" onClick={onDisconnect}>
               Disconnect Google

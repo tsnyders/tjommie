@@ -58,7 +58,7 @@ export function ChatHeader({ bot, panelOpen, onTogglePanel, panelButton, onOpenB
         <HeaderState bot={bot} />
       </div>
       <div className={cn("absolute top-3 flex items-center gap-1", panelOpen ? "right-4" : "right-[154px]")}>
-        <IconButton ref={panelButton} label="Bot panel" active={panelOpen} onClick={onTogglePanel}>
+        <IconButton ref={panelButton} label="Agent panel" active={panelOpen} onClick={onTogglePanel}>
           <PanelRight aria-hidden />
         </IconButton>
         <MoreMenu bot={bot} onProblem={setProblem} onOpenBrowser={onOpenBrowser} />
@@ -121,7 +121,7 @@ function MoreMenu({ bot, onProblem, onOpenBrowser, onDetails }: { bot: Bot; onPr
             )}
             <Menu.Item className={MENU_ITEM} onClick={() => void run(() => daemon().call("bots.pause", { id: bot.id, paused: !bot.paused }))}>
               {bot.paused ? <Play aria-hidden /> : <Pause aria-hidden />}
-              {bot.paused ? "Resume bot" : "Pause bot"}
+              {bot.paused ? "Resume agent" : "Pause agent"}
             </Menu.Item>
             {bot.browser && (
               <Menu.Item className={MENU_ITEM} onClick={onOpenBrowser}>
@@ -138,7 +138,7 @@ function MoreMenu({ bot, onProblem, onOpenBrowser, onDetails }: { bot: Bot; onPr
             )}
             <Menu.Item className={MENU_ITEM} onClick={() => router.push(`/bots/settings/?bot=${encodeURIComponent(bot.id)}`)}>
               <Settings aria-hidden />
-              Bot settings
+              Agent settings
             </Menu.Item>
           </Menu.Popup>
         </Menu.Positioner>

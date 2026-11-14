@@ -104,12 +104,12 @@ describe("UsageReportView", () => {
     const usage = report(aggregate(2500, { apiSpend: cost({ usd: 3, knownRecords: 1 }) }), { byBot: [{ botId: "b1", ...aggregate(2000) }, { botId: "gone", ...aggregate(500, { apiSpend: cost({ usd: 3, knownRecords: 1 }) }) }] });
     const out = view(usage);
     expect(out).toContain("Scout");
-    expect(out).toContain("Deleted bot");
+    expect(out).toContain("Deleted agent");
     expect(out).toContain("Spent $3.00");
     expect(out).toContain("By account");
   });
 
   it("says there is no usage yet when there are no records", () => {
-    expect(view(report(aggregate(0)))).toContain("No usage yet. It shows here after your bots&#x27; first messages.");
+    expect(view(report(aggregate(0)))).toContain("No usage yet. It shows here after your agents&#x27; first messages.");
   });
 });

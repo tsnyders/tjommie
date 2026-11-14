@@ -936,7 +936,10 @@ mod scheduler {
     #[test]
     fn refuses_a_routine_retry_for_a_paused_bot_or_disabled_routine_before_creating_work() {
         let rows = [
-            ("paused bot", "Unpause this bot before retrying its routine"),
+            (
+                "paused bot",
+                "Unpause this agent before retrying its routine",
+            ),
             ("disabled routine", "Enable this routine before retrying it"),
         ];
         for (reason, message) in rows {

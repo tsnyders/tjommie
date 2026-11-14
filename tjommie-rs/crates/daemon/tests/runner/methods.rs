@@ -107,7 +107,7 @@ async fn sends_a_message_into_a_turn_and_pages_the_chat_history() {
         .await;
     assert_eq!(
         error_of(&missing),
-        ("not_found".to_owned(), "No such bot".to_owned())
+        ("not_found".to_owned(), "No such agent".to_owned())
     );
 }
 
