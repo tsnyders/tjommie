@@ -10,15 +10,18 @@
 
 use daemon::cli::BoxFuture;
 use daemon::win::acceptance::{
-    CliProbe, Credentials, Denials, Failure, Round, Seams, accept_with, receipt_path, receipts,
+    CliProbe, Credentials, Denials, Failure, OwnerDesktop, PROBE_INNER_TIMEOUT, Round, Seams,
+    accept_with, receipt_path, receipts,
 };
 use daemon::win::boundary::{LaunchFailure, NativeLaunch, Receipt, Running, WorkerNative};
+use daemon::win::logon::DesktopRefusal;
 use daemon::win::worker::{Purpose, WorkerConfiguration};
 use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::watch;
@@ -59,6 +62,24 @@ impl CliProbe for Cli {
     }
 }
 
+/// The owner's desktop, scripted: it is there unless told otherwise, and it counts how often it is asked.
+#[derive(Default)]
+struct Desktop {
+    /// The call and Win32 error the control fails with, if it is to fail.
+    refusal: Mutex<Option<DesktopRefusal>>,
+    asked: AtomicUsize,
+}
+
+impl OwnerDesktop for Desktop {
+    fn reachable(&self) -> Result<(), DesktopRefusal> {
+        self.asked.fetch_add(1, Ordering::SeqCst);
+        match self.refusal.lock().unwrap().clone() {
+            Some(refusal) => Err(refusal),
+            None => Ok(()),
+        }
+    }
+}
+
 /// What the fake Windows did and what it is told to do.
 struct State {
     log: Mutex<Vec<String>>,
@@ -67,6 +88,11 @@ struct State {
     live_holders: AtomicUsize,
     /// What the denial probe prints, by who runs it: provider, then review.
     probe: Mutex<[String; 2]>,
+    /// How long the denial probe runs before it ends, and the exit code it ends with.
+    probe_delay: Mutex<Duration>,
+    probe_exit: AtomicI32,
+    /// No worker credential is saved.
+    no_credential: AtomicBool,
     /// What the peer holder prints as it starts.
     holder_says: Mutex<String>,
     /// The holder's tree cannot be confirmed stopped.
@@ -75,6 +101,8 @@ struct State {
     vault: Arc<Vault>,
     /// How many CLI `--version` launches the check asked for.
     cli_launches: Arc<AtomicUsize>,
+    /// The owner's desktop, for the positive control of the desktop denial.
+    desktop: Arc<Desktop>,
 }
 
 /// An in-memory stand-in for Credential Manager: nothing here ever reaches the real vault.
@@ -106,11 +134,15 @@ impl Fake {
             holder_pids: Mutex::default(),
             live_holders: AtomicUsize::new(0),
             probe: Mutex::new([all_denied(), all_denied()]),
+            probe_delay: Mutex::new(Duration::ZERO),
+            probe_exit: AtomicI32::new(0),
+            no_credential: AtomicBool::new(false),
             holder_says: Mutex::new("ready\n".into()),
             holder_unconfirmed: AtomicBool::new(false),
             pids: AtomicU32::new(40_000),
             vault: Arc::new(Vault::default()),
             cli_launches: Arc::new(AtomicUsize::new(0)),
+            desktop: Arc::new(Desktop::default()),
         }))
     }
 }
@@ -150,6 +182,7 @@ impl NativeLaunch for Launch {
             let (state, who) = (self.state.clone(), self.purpose);
             let index = usize::from(who == Purpose::Review);
             let mut unconfirmed = false;
+            let ended_with = Arc::new(AtomicI32::new(0));
             if script.contains("ClaudeCode") {
                 state
                     .log
@@ -199,9 +232,18 @@ impl NativeLaunch for Launch {
                     state.live_holders.load(Ordering::SeqCst)
                 ));
                 let (stopped, says) = (stopped.clone(), state.probe.lock().unwrap()[index].clone());
+                let (delay, code, ended_with) = (
+                    *state.probe_delay.lock().unwrap(),
+                    state.probe_exit.load(Ordering::SeqCst),
+                    ended_with.clone(),
+                );
                 tokio::spawn(async move {
+                    if !delay.is_zero() {
+                        tokio::time::sleep(delay).await;
+                    }
                     let _ = out.write_all(says.as_bytes()).await;
                     drop(out);
+                    ended_with.store(code, Ordering::SeqCst);
                     stopped.send_replace(true);
                 });
             }
@@ -212,7 +254,7 @@ impl NativeLaunch for Launch {
                 stderr: Box::new(tokio::io::empty()),
                 exited: Box::pin(async move {
                     let _ = waiting.wait_for(|stopped| *stopped).await;
-                    Some(0)
+                    Some(ended_with.load(Ordering::SeqCst))
                 }),
                 retire: Arc::new(move || {
                     let stopping = stopping.clone();
@@ -244,7 +286,11 @@ impl WorkerNative for Fake {
         } else {
             "TjReview-12345678"
         };
+        let none = self.0.no_credential.load(Ordering::SeqCst);
         Box::pin(async move {
+            if none {
+                return Ok(None);
+            }
             Ok(Some(
                 json!({ "username": name, "password": "not-an-os-password" }).to_string(),
             ))
@@ -357,6 +403,7 @@ async fn accept_unchecked(
     let seams = Seams {
         cli: Some(Arc::new(Cli(cli, windows.0.cli_launches.clone()))),
         credentials: Some(windows.0.vault.clone()),
+        desktop: Some(windows.0.desktop.clone()),
     };
     accept_with(&world.owner, &world.daemon_dir, native, seams).await
 }
@@ -398,6 +445,8 @@ async fn the_real_harness_runs_both_rounds_nested_in_the_review_lease_and_writes
     let windows = Fake::new();
     let done = accept(&world, &windows, Ok(())).await.unwrap();
     assert!(done.starts_with("Acceptance passed"), "{done}");
+    // The owner's own desktop was checked once, as the positive control of the desktop denial.
+    assert_eq!(windows.0.desktop.asked.load(Ordering::SeqCst), 1);
     // The review identity is only ever launched inside its observed lease, the other identity's fixture is live while
     // an identity proves what it cannot reach, and the second observation comes after that fixture is gone.
     assert_eq!(
@@ -515,6 +564,68 @@ async fn a_probe_that_reports_a_failure_writes_no_receipt_and_releases_the_peer_
     }
 }
 
+/// The positive control of the desktop denial: a worker's refusal at a desktop that is not there proves nothing, so a PC
+/// whose owner cannot reach its own desktop (nobody signed in, a session with no desktop, a locked screen) stops the run
+/// first, in plain words with the Win32 error, before a worker is launched or anything is made, and leaves no receipt.
+/// What the owner is told depends on which call failed: no desktop at all (the station), or a desktop that is not theirs
+/// to open right now (the input desktop: most likely a locked screen), and each says what to do.
+#[tokio::test]
+async fn a_pc_with_no_signed_in_desktop_fails_closed_before_anything_is_launched_or_made() {
+    let station = "OpenWindowStation(WinSta0) failed with Windows error 5: Access is denied";
+    let input = "OpenInputDesktop failed with Windows error 5: Access is denied";
+    for (refusal, reason, expected) in [
+        (
+            DesktopRefusal::Station(station.into()),
+            station,
+            format!(
+                "This PC has no signed-in desktop to protect, so the desktop check can't be proven here ({station}). Run accept-worker from your own signed-in session."
+            ),
+        ),
+        (
+            DesktopRefusal::InputDesktop(input.into()),
+            input,
+            format!(
+                "Your signed-in desktop can't be reached right now, most likely because the screen is locked or the sign-in screen is showing, so the desktop check can't be proven here ({input}). Unlock the screen and run accept-worker again."
+            ),
+        ),
+    ] {
+        let world = world();
+        let windows = Fake::new();
+        *windows.0.desktop.refusal.lock().unwrap() = Some(refusal);
+        // A valid pair from an earlier run must not survive it either.
+        let (provider, review) = configs(&world);
+        let [stale, other] = receipts(&provider, &review, &proven(), &proven()).unwrap();
+        fs::write(receipt_path(&world.owner, Purpose::Provider), stale).unwrap();
+        fs::write(receipt_path(&world.owner, Purpose::Review), other).unwrap();
+        let error = accept_unchecked(&world, &windows, Ok(()))
+            .await
+            .unwrap_err();
+        assert_eq!(error, expected);
+        assert!(
+            error.contains("Windows error 5"),
+            "{reason}: the Win32 error is in the message: {error}"
+        );
+        assert_eq!(windows.0.desktop.asked.load(Ordering::SeqCst), 1);
+        assert_eq!(receipts_present(&world), [false, false], "{reason}");
+        assert!(
+            windows.0.log.lock().unwrap().is_empty(),
+            "{reason}: a worker was launched"
+        );
+        assert!(windows.0.payloads.lock().unwrap().is_empty(), "{reason}");
+        assert_eq!(windows.0.cli_launches.load(Ordering::SeqCst), 0, "{reason}");
+        assert!(
+            windows.0.vault.written.lock().unwrap().is_empty(),
+            "{reason}: the synthetic credential was saved"
+        );
+        assert_eq!(scratch_folders(&world), 0, "{reason}");
+        assert_eq!(
+            starting_with(&world.owner, "acceptance-"),
+            Vec::<String>::new(),
+            "{reason}: the owner marker was made"
+        );
+    }
+}
+
 #[tokio::test]
 async fn a_cli_that_does_not_start_writes_no_receipt() {
     let world = world();
@@ -575,7 +686,27 @@ async fn a_worker_tree_that_cannot_be_confirmed_stopped_writes_no_receipt_and_ke
     let windows = Fake::new();
     windows.0.holder_unconfirmed.store(true, Ordering::SeqCst);
     let error = accept(&world, &windows, Ok(())).await.unwrap_err();
-    assert_eq!(error, daemon::cli::WORKER_TERMINATION);
+    // The fixed sentence stays first, so anything that matches on it still does; what follows is the evidence.
+    assert!(
+        error.starts_with(daemon::cli::WORKER_TERMINATION),
+        "{error}"
+    );
+    // The cause is in the error itself, short; the full record is only for TJOMMIE_WORKER_DIAG=1.
+    assert!(error.contains("What went wrong"), "{error}");
+    assert!(
+        !error.contains("Everything the worker launch path recorded"),
+        "the full record is verbose-only: {error}"
+    );
+    // The first cause is on record under its route, so a termination can be diagnosed from its own log. (The record
+    // is shared by the tests running in parallel here, so it is read whole rather than from the error's tail.)
+    let recorded = daemon::win::diag::recent(3000);
+    assert!(
+        recorded
+            .iter()
+            .any(|line| line.contains("First cause: ROUTE 4")),
+        "no ROUTE 4 line among {} recorded",
+        recorded.len()
+    );
     assert_eq!(receipts_present(&world), [false, false]);
     // Kept for the owner to reconcile; the synthetic credential and the owner marker are still removed.
     assert_eq!(
@@ -652,4 +783,64 @@ async fn an_early_failure_still_removes_an_old_receipt_pair() {
             "{what}: a credential was saved"
         );
     }
+}
+
+/// The probe's own time limit (the 0.4.2 wrapper had 15 s, which a first PowerShell start under a worker's environment
+/// overran) kills PowerShell and ends the probe with exit code 1 and no output, which is all the wrapper can tell. That
+/// has to be reported for what it is, with the limit, and not as a failed denial.
+#[tokio::test(start_paused = true)]
+async fn a_probe_killed_by_its_own_time_limit_is_reported_as_a_timeout() {
+    let world = world();
+    let windows = Fake::new();
+    *windows.0.probe_delay.lock().unwrap() = PROBE_INNER_TIMEOUT;
+    windows.0.probe_exit.store(1, Ordering::SeqCst);
+    windows.0.probe.lock().unwrap()[0] = String::new();
+    let error = accept(&world, &windows, Ok(())).await.unwrap_err();
+    assert!(error.contains("timed out"), "{error}");
+    assert!(
+        error.contains(&format!("{} s", PROBE_INNER_TIMEOUT.as_secs())),
+        "the limit is named: {error}"
+    );
+    assert!(!error.contains("probe failed"), "{error}");
+    assert_eq!(receipts_present(&world), [false, false]);
+    assert_eq!(windows.0.live_holders.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn a_probe_that_exits_nonzero_at_once_says_what_it_saw() {
+    let world = world();
+    let windows = Fake::new();
+    windows.0.probe_exit.store(1, Ordering::SeqCst);
+    windows.0.probe.lock().unwrap()[0] = String::new();
+    let error = accept(&world, &windows, Ok(())).await.unwrap_err();
+    assert!(error.contains("exited with code 1"), "{error}");
+    assert!(error.contains("printed nothing"), "{error}");
+    assert!(
+        !error.contains("timed out"),
+        "it did not run for its limit: {error}"
+    );
+    assert_eq!(receipts_present(&world), [false, false]);
+}
+
+/// A refused launch answers with one fixed sentence; the reason is recorded and carried in the error, so a failure can
+/// be told apart without turning any tracing on.
+#[tokio::test]
+async fn a_refused_launch_says_why() {
+    let world = world();
+    let windows = Fake::new();
+    windows.0.no_credential.store(true, Ordering::SeqCst);
+    let error = accept(&world, &windows, Ok(())).await.unwrap_err();
+    assert!(
+        error.starts_with("The isolated Windows provider could not start."),
+        "{error}"
+    );
+    assert!(error.contains("What went wrong"), "{error}");
+    // (Read from the whole record: tests running in parallel here record into the same one.)
+    assert!(
+        daemon::win::diag::recent(3000)
+            .iter()
+            .any(|line| line.contains("refused: no worker credential is saved at")),
+        "the reason is not on record"
+    );
+    assert_eq!(receipts_present(&world), [false, false]);
 }

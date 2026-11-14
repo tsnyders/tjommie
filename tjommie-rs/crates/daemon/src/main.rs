@@ -158,6 +158,9 @@ fn accept_worker(args: &[String]) -> Result<(), StartupError> {
         "Checking the Windows worker accounts for {}",
         root.display()
     );
+    // A worker's first sign-in and PowerShell start are slow, and a hung one is waited on for minutes before the check
+    // says so: tell the owner now, so the window is not closed mid-run and a worker tree left behind.
+    println!("Checking both worker accounts. This can take a few minutes; leave this window open.");
     let runtime = tokio::runtime::Runtime::new()?;
     let done = runtime
         .block_on(daemon::win::acceptance::accept_worker(&root))
