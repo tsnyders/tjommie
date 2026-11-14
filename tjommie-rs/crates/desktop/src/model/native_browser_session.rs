@@ -40,11 +40,8 @@ pub trait NativeBrowserBridge {
     ) -> impl Future<Output = Result<BrowserState, String>> + Send;
 }
 
-/// Time for the session: the instant now, and a pause. The retries of a failed hide wait on `sleep`.
-pub trait Clock {
-    fn now(&self) -> Instant;
-    fn sleep(&self, duration: Duration) -> impl Future<Output = ()> + Send;
-}
+/// The session's clock: the browser session's trait. `sleep` paces the retries of a failed hide.
+pub use super::browser_session::Clock;
 
 /// What the shared browser chrome shows for a native state: no picture, since the page is drawn by the desktop app.
 pub fn native_view(state: Option<BrowserState>, error: Option<String>) -> BrowserView {
@@ -73,7 +70,6 @@ pub fn same_rect(a: Option<&NativeBrowserBounds>, b: Option<&NativeBrowserBounds
 pub struct NativeBrowserSession {
     bot_id: String,
     closes: Arc<Closes>,
-    token: u64,
     inner: Mutex<Inner>,
 }
 
@@ -97,11 +93,45 @@ enum Job {
     /// The state, read again after an event overtook a reply that had no revision.
     Refresh,
     HandBack,
-    /// Hands the browser back and hides the view. `done` ends the close; `listen` is the subscription this close owns.
+    /// Hands the browser back and hides the view. `done` ends the close; `listen` is the subscription this close owns;
+    /// `token` is this close's own registry entry.
     Close {
         done: Arc<watch::Sender<bool>>,
         listen: u64,
+        token: u64,
     },
+}
+
+/// Clears the lane's `running` flag when a drain is dropped before the queue empties, so a cancelled caller cannot wedge the
+/// lane. Disarmed once `next_task` has cleared the flag itself.
+struct LaneGuard<'a> {
+    inner: &'a Mutex<Inner>,
+    armed: bool,
+}
+
+impl Drop for LaneGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            locked(self.inner).running = false;
+        }
+    }
+}
+
+/// Ends the mount loop when it is dropped before it finishes: clears `mounting` and wakes whoever waits for the mount lane to
+/// go idle (`hidden`), so a cancelled mount cannot leave the hide waiting for good (M8).
+struct MountGuard<'a> {
+    inner: &'a Mutex<Inner>,
+    armed: bool,
+}
+
+impl Drop for MountGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            let mut s = locked(self.inner);
+            s.mounting = false;
+            s.mount_idle.send_replace(true);
+        }
+    }
 }
 
 /// One mount: what to send, and what it will be recorded as once the app has accepted it.
@@ -134,6 +164,8 @@ struct Inner {
     last: NativeBrowserBounds,
     mounting: bool,
     mount_idle: watch::Sender<bool>,
+    /// A freshly opened browser's first mount: the drain that ran the open sends it once the lane is free (M6).
+    mount_wanted: bool,
     retry_at: Option<Instant>,
     retry_timer: Option<Instant>,
     failures: u32,
@@ -169,6 +201,7 @@ impl Inner {
             },
             mounting: false,
             mount_idle: watch::channel(true).0,
+            mount_wanted: false,
             retry_at: None,
             retry_timer: None,
             failures: 0,
@@ -305,15 +338,12 @@ impl Inner {
 }
 
 impl NativeBrowserSession {
-    /// A session for `bot_id`. The closes are the app's (one registry for the bots' native browsers).
+    /// A session for `bot_id`. The closes are the app's registry for native sessions (the app holds one `Closes` for each
+    /// session kind, and shares it across that kind's sessions).
     pub fn new(bot_id: &str, closes: Arc<Closes>) -> Self {
-        let token = closes
-            .issued
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Self {
             bot_id: bot_id.to_owned(),
             closes,
-            token,
             inner: Mutex::new(Inner::new()),
         }
     }
@@ -547,6 +577,11 @@ impl NativeBrowserSession {
     /// Terminal: hides the view at once, hands the browser back, and stops listening. Anything queued but not yet sent is
     /// dropped, except the hand-back. Resolves when the hide and the hand-back are done.
     pub async fn close(&self, bridge: &impl NativeBrowserBridge, clock: &impl Clock) {
+        // Each close mints its own registry token (M7): a later close of this session must not remove this close's entry.
+        let token = self
+            .closes
+            .issued
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let (waiter, opened, drain) = self.with(|s| {
             if let Some(done) = &s.done {
                 return (Some(done.subscribe()), false, false);
@@ -554,7 +589,7 @@ impl NativeBrowserSession {
             s.tasks.retain(|task| task.release);
             let (tx, rx) = watch::channel(false);
             let done = Arc::new(tx);
-            self.closes.put(&self.bot_id, self.token, rx.clone());
+            self.closes.put(&self.bot_id, token, rx.clone());
             s.done = Some(done.clone());
             let listen = s.listen_id;
             s.retry_timer = None;
@@ -563,23 +598,40 @@ impl NativeBrowserSession {
             s.occluded = false;
             let opened = s.opened;
             let drain = s.submit(Task {
-                job: Job::Close { done, listen },
+                job: Job::Close {
+                    done,
+                    listen,
+                    token,
+                },
                 release: true,
                 done: None,
             });
             (Some(rx), opened, drain)
         });
-        if opened {
-            self.sync_mount(bridge, clock).await; // hiding doesn't wait for the hand-back
-        }
-        if drain {
-            self.drain(bridge, clock).await;
-        }
+        // The hide and the hand-back run together, as the TypeScript's two `void` calls do: a hung mount cannot keep the bot
+        // from getting its browser back (M6). The close resolves when both have finished.
+        let hide = async {
+            if opened {
+                self.sync_mount(bridge, clock).await;
+            }
+        };
+        let hand_back = async {
+            if drain {
+                self.drain(bridge, clock).await;
+            }
+        };
+        tokio::join!(hide, hand_back);
         wait(waiter).await;
     }
 
     /// Runs the lane: each queued task in order, until the queue is empty. A failure is shown, and the queue goes on.
+    /// A drain dropped before the queue empties releases the lane (`LaneGuard`). A browser's first mount is sent here, once
+    /// the lane is free: a slow mount holds up no queued command (M6).
     async fn drain(&self, bridge: &impl NativeBrowserBridge, clock: &impl Clock) {
+        let mut lane = LaneGuard {
+            inner: &self.inner,
+            armed: true,
+        };
         while let Some(task) = self.with(|s| s.next_task()) {
             let Task { job, done, .. } = task;
             if let Err(error) = self.run(bridge, clock, job).await {
@@ -591,6 +643,10 @@ impl NativeBrowserSession {
             if let Some(done) = done {
                 done.send_replace(true);
             }
+        }
+        lane.armed = false; // the queue is empty, and `next_task` has cleared `running`
+        if self.with(|s| std::mem::take(&mut s.mount_wanted)) {
+            self.sync_mount(bridge, clock).await;
         }
     }
 
@@ -605,8 +661,10 @@ impl NativeBrowserSession {
                 wait(earlier).await;
                 self.run_command(bridge, NativeBrowserUiCommand::Open)
                     .await?;
-                self.with(|s| s.opened = true);
-                self.sync_mount(bridge, clock).await;
+                self.with(|s| {
+                    s.opened = true;
+                    s.mount_wanted = true; // sent by the drain once the lane is free, not inside it (M6)
+                });
                 Ok(())
             }
             Job::Command { command, asked } => {
@@ -624,7 +682,11 @@ impl NativeBrowserSession {
                 Ok(())
             }
             Job::HandBack => self.hand_back(bridge).await,
-            Job::Close { done, listen } => {
+            Job::Close {
+                done,
+                listen,
+                token,
+            } => {
                 let _ = self.hand_back(bridge).await; // best effort at a terminal close
                 self.hidden(bridge, clock).await;
                 self.with(|s| {
@@ -633,7 +695,7 @@ impl NativeBrowserSession {
                     }
                 });
                 done.send_replace(true);
-                self.closes.drop_if(&self.bot_id, self.token);
+                self.closes.drop_if(&self.bot_id, token);
                 Ok(())
             }
         }
@@ -735,6 +797,10 @@ impl NativeBrowserSession {
         if !started {
             return;
         }
+        let mut mount_guard = MountGuard {
+            inner: &self.inner,
+            armed: true,
+        };
         tokio::task::yield_now().await; // the TypeScript lane's first step waits a microtask, so bounds set meanwhile count
         loop {
             let now = clock.now();
@@ -767,6 +833,7 @@ impl NativeBrowserSession {
                 }
             }
         }
+        mount_guard.armed = false;
         self.with(|s| {
             s.mounting = false;
             s.mount_idle.send_replace(true);
@@ -1603,6 +1670,120 @@ mod tests {
         assert_eq!(
             t.session.view().state.map(|s| s.control),
             Some(BrowserControl::Human)
+        );
+    }
+
+    #[tokio::test]
+    async fn close_hands_the_browser_back_while_its_hide_is_still_held() {
+        let t = Rig::new(state(json!({ "control": "human" })));
+        t.open().await;
+        t.bounds(Some(rect(1.0)), false).await;
+        t.bridge.clear();
+        let mounting = t.bridge.hold("mount");
+        tokio::join!(t.session.close(&t.bridge, &t.clock), async {
+            let mut waited = 0;
+            while !t.bridge.log().contains(&"control:bot".to_owned()) && waited < 200 {
+                tokio::task::yield_now().await;
+                waited += 1;
+            }
+            assert!(
+                t.bridge.log().contains(&"control:bot".to_owned()),
+                "the bot gets its browser back while the hide waits"
+            );
+            mounting.send_replace(true);
+        },);
+        assert!(!t.session.listening());
+    }
+
+    #[tokio::test]
+    async fn a_slow_first_mount_does_not_hold_up_a_command() {
+        let t = Rig::new(state(json!({})));
+        let mounting = t.bridge.hold("mount");
+        let before = t.bridge.calls();
+        tokio::join!(t.session.open(&t.bridge, &t.clock), async {
+            let mut waited = 0;
+            while t.bridge.calls() < before + 2 && waited < 200 {
+                tokio::task::yield_now().await;
+                waited += 1;
+            }
+            t.session
+                .navigate(&t.bridge, &t.clock, "https://a.test/")
+                .await;
+            assert!(
+                t.bridge
+                    .log()
+                    .contains(&"navigate:g1:p1:https://a.test/".to_owned()),
+                "a command runs while the first mount waits"
+            );
+            mounting.send_replace(true);
+        },);
+    }
+
+    #[tokio::test]
+    async fn a_dropped_drain_or_mount_does_not_wedge_the_lanes() {
+        let t = Rig::new(state(json!({ "control": "human" })));
+        t.open().await;
+        t.bounds(Some(rect(1.0)), false).await;
+        let navigating = t.bridge.hold("navigate");
+        tokio::select! {
+            _ = t.session.navigate(&t.bridge, &t.clock, "https://a.test/") => {}
+            _ = tokio::task::yield_now() => {}
+        }
+        navigating.send_replace(true);
+        let mounting = t.bridge.hold("mount");
+        tokio::select! {
+            _ = t.bounds(Some(rect(2.0)), false) => {}
+            _ = tokio::task::yield_now() => {}
+        }
+        mounting.send_replace(true);
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            t.session.suspend(&t.bridge, &t.clock),
+        )
+        .await
+        .expect("the hand-back still completes");
+        tokio::time::timeout(Duration::from_secs(5), t.session.close(&t.bridge, &t.clock))
+            .await
+            .expect("the close still completes");
+        assert!(!t.session.listening());
+    }
+
+    #[tokio::test]
+    async fn each_close_keeps_its_own_registry_entry_until_it_ends() {
+        let t = Rig::new(state(json!({ "control": "human" })));
+        t.open().await;
+        let first = t.bridge.hold("state"); // close 1 waits on the app's state
+        let before = t.bridge.calls();
+        let second_started = Cell::new(false);
+        tokio::join!(
+            t.session.close(&t.bridge, &t.clock),
+            async {
+                while t.bridge.calls() == before {
+                    tokio::task::yield_now().await;
+                }
+                t.session.open(&t.bridge, &t.clock).await; // reopened while close 1 is still in flight
+                second_started.set(true);
+                t.session.close(&t.bridge, &t.clock).await; // close 2 registers, then waits for its own hand-back
+            },
+            async {
+                let mut waited = 0;
+                while !second_started.get() && waited < 200 {
+                    tokio::task::yield_now().await;
+                    waited += 1;
+                }
+                let second = t.bridge.hold("state"); // close 2 waits on the app's state as well
+                first.send_replace(true);
+                let mut waited = 0;
+                while !t.bridge.log().contains(&"control:bot".to_owned()) && waited < 200 {
+                    tokio::task::yield_now().await;
+                    waited += 1;
+                }
+                assert!(
+                    t.closes.get("b1").is_some(),
+                    "close 2 is still registered after close 1 has ended"
+                );
+                second.send_replace(true);
+            },
         );
     }
 
