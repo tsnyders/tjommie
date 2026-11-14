@@ -395,16 +395,17 @@ impl WorkerBoundary {
     /// Marks a worker tree's stop as unconfirmed, for good: both identities are refused from here on. `why` is the
     /// first cause, which is what a diagnosis needs: every launch after it fails the same way.
     fn unknown_termination(&self, why: &str) {
-        diag::problem(format!(
-            "{} boundary: a worker tree's stop is now unconfirmed, so both identities are refused until the daemon restarts. First cause: {why}",
-            self.purpose().as_str()
-        ));
+        // The refusal comes first and does not depend on the log: nothing below it may skip it.
         {
             let mut state = self.state();
             state.termination_unknown = true;
             state.generation += 1;
         }
         self.preparation().poison();
+        diag::problem(format!(
+            "{} boundary: a worker tree's stop is now unconfirmed, so both identities are refused until the daemon restarts. First cause: {why}",
+            self.purpose().as_str()
+        ));
     }
 
     fn assert_preparation(&self) -> Result<(), BoundaryError> {
@@ -769,11 +770,14 @@ impl WorkerBoundary {
         tokio::spawn(async move {
             let ran = std::time::Instant::now();
             let code = exited.await;
+            let lived = ran.elapsed().as_millis();
+            // Retire first and log after: the job must be stopped whatever the log does.
+            let retired = retire().await;
             diag::note(format!(
-                "process {pid} exited with {code:?} after {}ms; retiring its job",
-                ran.elapsed().as_millis()
+                "process {pid} exited with {code:?} after {lived}ms; its job {} retired",
+                if retired { "was" } else { "could not be" }
             ));
-            if retire().await {
+            if retired {
                 watcher.state().children.remove(&pid);
                 watcher
                     .preparation()
@@ -824,23 +828,27 @@ impl WorkerBoundary {
         if let Some(observer) = &self.0.options.observer {
             return observer().await;
         }
-        {
+        let busy = {
             let state = self.state();
             let scope = REVIEW_SCOPE.try_with(Clone::clone).ok();
-            if state.review_lease.is_none()
+            (state.review_lease.is_none()
                 || scope != state.review_lease
                 || !state.children.is_empty()
-                || state.launches > 0
-            {
-                diag::problem(format!(
-                    "observe_review_policy: Busy (lease held: {}, in this scope: {}, running children: {}, launches in progress: {})",
-                    state.review_lease.is_some(),
-                    scope == state.review_lease,
-                    state.children.len(),
-                    state.launches
-                ));
-                return Err(BoundaryError::Busy);
-            }
+                || state.launches > 0)
+                .then(|| {
+                    format!(
+                        "observe_review_policy: Busy (lease held: {}, in this scope: {}, running children: {}, launches in progress: {})",
+                        state.review_lease.is_some(),
+                        scope == state.review_lease,
+                        state.children.len(),
+                        state.launches
+                    )
+                })
+        };
+        // Logged with the state lock released: a blocked stderr reader must not stall every other boundary call.
+        if let Some(why) = busy {
+            diag::problem(why);
+            return Err(BoundaryError::Busy);
         }
         let config = self.configuration()?;
         let scratch = config.worker_root.join("policy-observer");

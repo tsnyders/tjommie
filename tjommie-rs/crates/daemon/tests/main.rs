@@ -246,11 +246,11 @@ async fn accept_worker_without_a_provisioned_root_says_to_provision_first() {
             folder.display()
         )
     );
-    // Like `provision`, it says which install it is looking at before it does anything.
+    // Like `provision`, it says which install it is looking at before it does anything, then that the run is slow.
     assert_eq!(
         daemon.stdout().trim(),
         format!(
-            "Checking the Windows worker accounts for {}",
+            "Checking the Windows worker accounts for {}\nChecking both worker accounts. This can take a few minutes; leave this window open.",
             folder.display()
         )
     );

@@ -596,12 +596,17 @@ impl Job {
                     std::thread::sleep(Duration::from_millis(10));
                 }
                 Ok(left) => {
+                    // The process table is walked only when asked for, like the listing before the stop.
+                    let now = if diag::verbose() {
+                        format!("job now: {}", self.describe())
+                    } else {
+                        "job now: not listed".into()
+                    };
                     return (
                         false,
                         format!(
-                            "{left} process(es) still active {}ms after TerminateJobObject; {before}; job now: {}",
-                            started.elapsed().as_millis(),
-                            self.describe()
+                            "{left} process(es) still active {}ms after TerminateJobObject; {before}; {now}",
+                            started.elapsed().as_millis()
                         ),
                     );
                 }
@@ -1541,7 +1546,7 @@ impl WorkerProcess {
 /// `runtime\node.exe` under the worker account, suspended, checks its token, binds it to a new
 /// `Global\TjommieWorkerJob-<purpose>-<uuid>` job and returns it. The caller writes `launch_frame` to stdin, then
 /// resumes it. On failure, `Err((message, stopped))` says whether anything that started was confirmed gone.
-pub fn launch(
+pub(crate) fn launch(
     config: &WorkerConfiguration,
     password: &str,
     cwd: &Path,

@@ -5,6 +5,7 @@
 - Bots are now called agents throughout the app.
 - The one-time check that proves the isolated worker accounts are locked down works again (`tjommie-daemon accept-worker`), so isolated mode can be set up.
 - That check now waits long enough for a new worker account's slow first PowerShell start, says plainly when something timed out, and says why when it cannot confirm that a worker's processes stopped.
+- That check now tells you at the start that it can take a few minutes, so you know to leave the window open.
 
 ## 0.5.0 — 2026-11-13
 

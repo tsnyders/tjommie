@@ -15,6 +15,8 @@
 //! Never pass a password, a credential blob, a token or an environment value here. Account names, SIDs, process ids,
 //! image names, paths and Win32 error codes are what this is for.
 
+use std::collections::VecDeque;
+use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex, PoisonError};
 use std::time::Instant;
@@ -23,9 +25,9 @@ use std::time::Instant;
 const KEPT: usize = 3000;
 
 static STARTED: LazyLock<Instant> = LazyLock::new(Instant::now);
-static LINES: Mutex<Vec<String>> = Mutex::new(Vec::new());
+static LINES: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
 /// Problems in the order they were recorded, each with its sequence number.
-static PROBLEMS: Mutex<Vec<(u64, String)>> = Mutex::new(Vec::new());
+static PROBLEMS: Mutex<VecDeque<(u64, String)>> = Mutex::new(VecDeque::new());
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static VERBOSE: LazyLock<bool> =
     LazyLock::new(|| std::env::var("TJOMMIE_WORKER_DIAG").is_ok_and(|value| value == "1"));
@@ -42,13 +44,15 @@ fn record(message: &str) {
         std::thread::current().id()
     );
     if verbose() {
-        eprintln!("{line}");
+        // Never `eprintln!`: it panics when stderr cannot be written (the parent is gone, the pipe is closed), and
+        // this runs on the launch path, where no log line may ever stop a safety step. A lost line is only lost.
+        let _ = writeln!(std::io::stderr().lock(), "{line}");
     }
     let mut lines = LINES.lock().unwrap_or_else(PoisonError::into_inner);
     if lines.len() >= KEPT {
-        lines.remove(0);
+        lines.pop_front();
     }
-    lines.push(line);
+    lines.push_back(line);
 }
 
 /// Records one line of what a step saw.
@@ -63,9 +67,9 @@ pub fn problem(message: impl AsRef<str>) {
     let sequence = SEQUENCE.fetch_add(1, Ordering::SeqCst) + 1;
     let mut problems = PROBLEMS.lock().unwrap_or_else(PoisonError::into_inner);
     if problems.len() >= KEPT {
-        problems.remove(0);
+        problems.pop_front();
     }
-    problems.push((
+    problems.push_back((
         sequence,
         format!("[+{}ms] {message}", STARTED.elapsed().as_millis()),
     ));
@@ -91,7 +95,11 @@ pub fn problems_since(mark: u64, limit: usize) -> Vec<String> {
 /// The last `count` lines recorded, oldest first.
 pub fn recent(count: usize) -> Vec<String> {
     let lines = LINES.lock().unwrap_or_else(PoisonError::into_inner);
-    lines[lines.len().saturating_sub(count)..].to_vec()
+    lines
+        .iter()
+        .skip(lines.len().saturating_sub(count))
+        .cloned()
+        .collect()
 }
 
 /// At most `limit` bytes of `bytes` as text with control characters made visible, for a pipe's tail in a log line.
