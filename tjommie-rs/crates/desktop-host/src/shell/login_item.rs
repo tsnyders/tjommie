@@ -1,8 +1,10 @@
 //! Start at Windows sign-in (T6.3; port of `login-item.ts`). It writes what Electron's `setLoginItemSettings` writes:
 //! the value named by the app's AppUserModelID in `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, holding
 //! `"<exe>" --hidden`, so an entry R1 already made keeps working for the Rust app in the same install folder. T8.1
-//! records the real entry from a published R1 install; until it lands, the name and data below are Electron's documented
-//! defaults, and `value_name` is the one thing to change if the recorded facts differ.
+//! recorded the real entry from a published R1 install (0.5.1, `installer/r1-install-facts.json`), and it matches: the
+//! value is named `com.tsnyders.tjommie` (the AppUserModelID), holds `"<install>\Tjommie.exe" --hidden`, and R1 writes no
+//! `StartupApproved\Run` value, which reads here as "on". R1's install folder is `Programs\tjommie`, so the exe in that
+//! entry is compared without regard to case.
 //!
 //! Dev, e2e and update-test builds never write it (`allowed` is false), and neither does a run with its own
 //! `TJOMMIE_USER_DATA`, which is a smoke run beside a real install.
@@ -133,7 +135,8 @@ mod tests {
     use super::super::registry::Fake;
     use super::*;
 
-    const EXE: &str = r"C:\Users\alice\AppData\Local\Programs\Tjommie\Tjommie.exe";
+    // R1's install folder, as T8.1 recorded it (named after the package, so lowercase).
+    const EXE: &str = r"C:\Users\alice\AppData\Local\Programs\tjommie\Tjommie.exe";
     const NAME: &str = "com.tsnyders.tjommie";
 
     fn item(registry: &Arc<Fake>, user_data: &Path, allowed: bool) -> LoginItem {
