@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { LanEndpoint, RelayUrl, RemoteKey, RemoteName } from "@tjommie/protocol";
 import { z } from "zod";
+import { speechOrigin } from "./speech-permissions.ts";
 
 // The paired PCs and the appearance live in the page's localStorage, which the next desktop app can't read. This keeps a copy
 // of them in the data folder, which that app reads once, the first time it starts. Zoom isn't in localStorage, so it isn't here.
@@ -75,4 +76,34 @@ export async function exportDesktopUi(read: Read, dataRoot: string, log: Log = (
   } catch (error) {
     log(`Desktop UI export failed: ${error instanceof Error ? error.message : String(error)}`);
   }
+}
+
+// The parts of the app's window this needs. Electron's BrowserWindow has them all.
+export type UiWindow = {
+  webContents: {
+    isDestroyed(): boolean;
+    getURL(): string;
+    executeJavaScript(code: string): Promise<unknown>;
+    on(event: "did-finish-load", listener: () => void): unknown;
+  };
+  on(event: "hide", listener: () => void): unknown;
+};
+
+// Exports when the app's page finishes loading and when the window hides to the tray, so a change made during a long session in
+// the tray is kept at the next hide. Returns the same export, for the moments the app is about to quit. Production only, and only
+// while the page is the app's own: any other origin's storage is not the app's.
+export function keepDesktopUiExported(window: UiWindow, options: { production: boolean; dataRoot: string; log: Log }): () => Promise<void> {
+  const page = window.webContents; // taken now: a window that is gone no longer answers .webContents
+  const now = async (): Promise<void> => {
+    if (!options.production) return;
+    const read: Read = async (key) => {
+      if (page.isDestroyed() || !speechOrigin(page.getURL(), options.production)) throw new Error("The page is not the app's own.");
+      const value = await page.executeJavaScript(`localStorage.getItem(${JSON.stringify(key)})`);
+      return typeof value === "string" ? value : null;
+    };
+    await exportDesktopUi(read, options.dataRoot, options.log);
+  };
+  page.on("did-finish-load", () => { void now(); });
+  window.on("hide", () => { void now(); });
+  return now;
 }

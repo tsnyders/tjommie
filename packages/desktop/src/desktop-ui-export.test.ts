@@ -1,7 +1,8 @@
+import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { expect, it } from "vitest";
-import { exportDesktopUi } from "./desktop-ui-export.ts";
+import { expect, it, vi } from "vitest";
+import { exportDesktopUi, keepDesktopUiExported } from "./desktop-ui-export.ts";
 import { tempRoot } from "./testing.ts";
 
 const THEME = "tjommie.theme", TEXT = "tjommie.textSize", DENSITY = "tjommie.density", HOSTS = "tjommie.mobile.hosts.v1", PENDING = "tjommie.mobile.pending.v1";
@@ -101,6 +102,93 @@ it("a read that fails leaves the earlier export alone", async () => {
   expect(readFileSync(exportFile(root), "utf8")).toBe(before);
   expect(readdirSync(join(root, "data"))).toEqual(["desktop-ui-export.json"]);
   expect(seen.length).toBeGreaterThan(0);
+});
+
+// A stand-in for the app's window: its events come from emitters, and its page answers localStorage.getItem like the real one.
+function fakeWindow(url = "app://tjommie/", stored: Stored = {}) {
+  const state = { url, destroyed: false, stored };
+  const webContents = Object.assign(new EventEmitter(), {
+    isDestroyed: () => state.destroyed,
+    getURL: () => state.url,
+    executeJavaScript: async (code: string): Promise<unknown> => {
+      const match = /^localStorage\.getItem\((".*")\)$/.exec(code);
+      if (!match?.[1]) throw new Error(`Unexpected script: ${code}`);
+      const name: unknown = JSON.parse(match[1]);
+      return typeof name === "string" ? state.stored[name] ?? null : null;
+    },
+  });
+  return { window: Object.assign(new EventEmitter(), { webContents }), webContents, state };
+}
+const settle = (): Promise<void> => new Promise((resolve) => { setImmediate(resolve); });
+
+it("exports when the app's page finishes loading", async () => {
+  const root = tempRoot();
+  const { window, webContents } = fakeWindow(undefined, { [THEME]: "light", [HOSTS]: JSON.stringify([host(1)]) });
+  keepDesktopUiExported(window, { production: true, dataRoot: root, log: () => {} });
+  expect(existsSync(exportFile(root))).toBe(false);
+  webContents.emit("did-finish-load");
+  await vi.waitFor(() => expect(exported(root)).toMatchObject({ theme: "light", hosts: [host(1)] }));
+});
+
+it("exports again when the window hides to the tray", async () => {
+  const root = tempRoot();
+  const { window, webContents, state } = fakeWindow(undefined, { [THEME]: "light" });
+  keepDesktopUiExported(window, { production: true, dataRoot: root, log: () => {} });
+  webContents.emit("did-finish-load");
+  await vi.waitFor(() => expect(exported(root)).toMatchObject({ theme: "light", hosts: [] }));
+  // Changed during a long session in the tray, after the page loaded.
+  state.stored = { [THEME]: "dark", [DENSITY]: "compact", [HOSTS]: JSON.stringify([host(2)]) };
+  window.emit("hide");
+  await vi.waitFor(() => expect(exported(root)).toMatchObject({ theme: "dark", density: "compact", hosts: [host(2)] }));
+});
+
+it("exports on demand, for the moment the app is about to quit", async () => {
+  const root = tempRoot();
+  const { window } = fakeWindow(undefined, { [TEXT]: "larger" });
+  const now = keepDesktopUiExported(window, { production: true, dataRoot: root, log: () => {} });
+  await now();
+  expect(exported(root)).toMatchObject({ textSize: "larger" });
+});
+
+it("exports nothing from a page that is not the app's own", async () => {
+  const root = tempRoot();
+  const { log, seen } = lines();
+  const { window, webContents } = fakeWindow("https://example.com/", { [THEME]: "light", [HOSTS]: JSON.stringify([host(1)]) });
+  const now = keepDesktopUiExported(window, { production: true, dataRoot: root, log });
+  webContents.emit("did-finish-load");
+  window.emit("hide");
+  await now();
+  await settle();
+  expect(existsSync(exportFile(root))).toBe(false);
+  expect(seen).toHaveLength(3);
+  expect(seen.every((line) => line.includes("not the app's own"))).toBe(true);
+});
+
+it("exports nothing in a development run", async () => {
+  const root = tempRoot();
+  const { window, webContents } = fakeWindow("http://localhost:3000/", { [THEME]: "light" });
+  const now = keepDesktopUiExported(window, { production: false, dataRoot: root, log: () => {} });
+  webContents.emit("did-finish-load");
+  window.emit("hide");
+  await now();
+  await settle();
+  expect(existsSync(exportFile(root))).toBe(false);
+});
+
+it("a destroyed window exports nothing and throws nothing", async () => {
+  const root = tempRoot();
+  const { log, seen } = lines();
+  const { window, state } = fakeWindow(undefined, { [THEME]: "light" });
+  const now = keepDesktopUiExported(window, { production: true, dataRoot: root, log });
+  await now();
+  const before = readFileSync(exportFile(root), "utf8");
+  state.destroyed = true;
+  state.stored = { [THEME]: "dark" };
+  window.emit("hide");
+  await expect(now()).resolves.toBeUndefined();
+  await settle();
+  expect(readFileSync(exportFile(root), "utf8")).toBe(before);
+  expect(seen).toHaveLength(2);
 });
 
 // The Rust app reads this file the first time it starts (desktop-host device_settings, `reads_electron_fixture`), so the
