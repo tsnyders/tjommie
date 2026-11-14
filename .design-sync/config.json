@@ -1,0 +1,8 @@
+{
+  "projectId": "43494ba1-c221-46f0-8d6e-56d531563d26",
+  "shape": "package",
+  "pkg": "tjommie-aegis",
+  "globalName": "TjommieAegis",
+  "cssEntry": "aegis.css",
+  "readmeHeader": ".design-sync/conventions.md"
+}

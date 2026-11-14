@@ -340,7 +340,7 @@ Three directions are produced as Claude Design design systems in `design/claude-
 **Decision (owner, 2026-11-09):**
 - Direction C **Aegis** (`design/claude-design/aegis/`: README, `tokens.json`/`tokens.css`, `components/`, `screens/`, `shots/`) is the first UI.
 - Its motion spec is `components/motion.html`, the live prototype screens and the `motion` tokens (durations, easings, springs, staggers).
-- Claude Design link: _added after the owner's `/design-sync` upload_.
+- Claude Design link: [Tjommie Aegis](https://claude.ai/design/p/43494ba1-c221-46f0-8d6e-56d531563d26). It was synced on 2026-11-14 and holds 22 cards, the tokens, the design notes and the motion clips. To re-sync, see `.design-sync/NOTES.md`.
 
 ### Phase 1: Rust daemon inside Electron (release R1)
 **Scope:**
