@@ -398,14 +398,22 @@ fn close_all_ends_every_browser_process_and_the_engine_does_not_open_again() {
     assert!(rig.engine.snapshot("alpha").is_none() && rig.engine.snapshot("beta").is_none());
     // The browser process tree ends on its own once nothing holds the environment.
     let folder = rig.root.path().to_path_buf();
-    // Windows takes its time to end a browser's processes when the PC is busy.
-    let deadline = Instant::now() + Duration::from_secs(120);
+    // Windows takes its time to end a browser's processes when the PC is busy; the ceiling is a generous 120 s, and
+    // anything slower than 15 s is said out loud, so a slow teardown shows up before it becomes a leak.
+    let (started, deadline) = (Instant::now(), Instant::now() + Duration::from_secs(120));
     while !webview_processes(&folder).is_empty() {
         assert!(
             Instant::now() < deadline,
-            "browser processes still running after close_all"
+            "browser processes still running {:?} after close_all",
+            started.elapsed()
         );
         rig.ui.settle(Duration::from_secs(1));
+    }
+    if started.elapsed() > Duration::from_secs(15) {
+        eprintln!(
+            "WARNING: the browser took {:?} to end after close_all",
+            started.elapsed()
+        );
     }
 }
 

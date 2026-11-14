@@ -423,11 +423,23 @@ impl Rig {
         let outcome = self.ui.run(async move {
             let deadline = Instant::now() + within;
             let mut last = String::new();
+            let mut refused = 0u32;
             while Instant::now() < deadline {
                 match try_eval(&tab, &expression).await {
-                    Ok(answer) if answer == expected => return Ok(()),
+                    Ok(answer) if answer == expected => {
+                        if refused > 0 {
+                            eprintln!("note: the page refused {refused} command(s) with the one transient error before it answered");
+                        }
+                        return Ok(());
+                    }
                     Ok(answer) => last = answer,
-                    Err(error) => last = format!("refused: {error}"),
+                    // The one transient error a page may give for a moment while it unwinds a dialog. Any other
+                    // error is not that, and fails the test at once instead of being retried away.
+                    Err(error) if error.contains(TRANSIENT) => {
+                        refused += 1;
+                        last = format!("refused: {error}");
+                    }
+                    Err(error) => panic!("{expression}: a refusal that is not the transient one: {error}"),
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
@@ -476,6 +488,9 @@ struct RemoteObject {
 }
 
 /// `Runtime.evaluate` of a JavaScript expression, as text.
+/// What WebView2 says to a command sent to a page that is still unwinding a dialog it has just been told to close.
+pub const TRANSIENT: &str = "The parameter is incorrect";
+
 /// `eval`, but a refusal is an `Err`: a page that has only just been unblocked may refuse a command for a moment.
 pub async fn try_eval(tab: &TabHandle, expression: &str) -> Result<String, String> {
     let params = serde_json::json!({ "expression": expression, "returnByValue": true, "awaitPromise": true }).to_string();
