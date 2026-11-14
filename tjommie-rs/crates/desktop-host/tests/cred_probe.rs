@@ -70,8 +70,16 @@ fn probe(args: &[&str]) -> String {
     String::from_utf8(output.stdout).unwrap().trim().to_owned()
 }
 
+// Real Credential Manager: skipped on hosted CI like the daemon's own Credential Manager tests (ci.yml sets TJOMMIE_CI_HOSTED=1
+// because hosted service logons can't reliably reach it). This runs on real PCs.
 #[test]
 fn typescript_and_rust_read_each_others_device_keys() {
+    if std::env::var("TJOMMIE_CI_HOSTED").as_deref() == Ok("1") {
+        eprintln!(
+            "skipped: hosted Windows service logons cannot reliably reach Credential Manager"
+        );
+        return;
+    }
     let root = Root::random();
     let root_text = root.0.to_str().unwrap();
     let keys = DeviceKeys::new(&root.0).unwrap();
