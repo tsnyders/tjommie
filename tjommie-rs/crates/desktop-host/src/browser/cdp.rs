@@ -77,6 +77,7 @@ macro_rules! method {
         }
     };
 }
+pub(crate) use method;
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]

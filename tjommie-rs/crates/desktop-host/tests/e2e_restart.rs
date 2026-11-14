@@ -321,3 +321,89 @@ fn e2e_daemon_restart_with_panel_open() {
     new_bridge.close();
     runtime.block_on(second.server.close());
 }
+
+/// T3.3 through the whole chain: a bot's tool call goes from the daemon's broker through the bridge to the engine and
+/// the real page, and the model's answer (text, an error flag) comes back the way the daemon's MCP proxy reads it.
+#[test]
+fn a_bots_tool_call_travels_through_the_broker_and_bridge_to_the_real_page() {
+    let mut rig = Rig::new();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let daemon = runtime.block_on(Daemon::start('t'));
+    let (queue, jobs) = JobQueue::new();
+    let spawner = rig.ui.spawner();
+    rig.ui.spawn(serve(rig.engine.clone(), jobs, move |task| {
+        use futures::task::LocalSpawnExt as _;
+        let _ = spawner.spawn_local(task);
+    }));
+    let bridge = HostBridge::start(
+        BridgeConfig {
+            port: daemon.port,
+            token: daemon.token.clone(),
+        },
+        Arc::new(queue),
+        Arc::new(|| {}),
+    )
+    .expect("bridge");
+    let identity = Daemon::identity(&rig, "alpha");
+    let request = |command: Value| {
+        let (broker, identity) = (daemon.broker.clone(), identity.clone());
+        runtime.spawn(async move {
+            broker
+                .request(identity, command, None)
+                .await
+                .map_err(|error| error.to_string())
+        })
+    };
+    finish(&mut rig, &runtime, request(json!({ "kind": "open" }))).expect("open");
+    rig.load("alpha", "tools.html");
+
+    let clicked = finish(
+        &mut rig,
+        &runtime,
+        request(json!({ "kind": "tool", "name": "browser_click", "args": { "target": "#save" } })),
+    )
+    .expect("a tool answer");
+    let text = clicked["content"][0]["text"].as_str().expect("text");
+    assert!(text.contains("button \"Save\""), "{text}");
+    assert!(
+        clicked.get("isError").is_none(),
+        "a tool that worked has no error flag: {clicked}"
+    );
+    assert_eq!(
+        rig.eval("alpha", "document.getElementById('clicks').value"),
+        "1"
+    );
+
+    // A tool that fails answers in words, with the flag, and is not a transport error.
+    let failed = finish(
+        &mut rig,
+        &runtime,
+        request(
+            json!({ "kind": "tool", "name": "browser_click", "args": { "target": "#missing" } }),
+        ),
+    )
+    .expect("a failed tool still answers");
+    assert_eq!(failed["isError"], true, "{failed}");
+    assert!(
+        failed["content"][0]["text"]
+            .as_str()
+            .expect("text")
+            .contains("exactly one"),
+        "{failed}"
+    );
+
+    // Cancelling with nothing running is quiet.
+    finish(
+        &mut rig,
+        &runtime,
+        request(json!({ "kind": "cancel_tools" })),
+    )
+    .expect("cancel");
+
+    bridge.close();
+    runtime.block_on(daemon.server.close());
+}

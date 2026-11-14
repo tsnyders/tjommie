@@ -10,6 +10,7 @@ use protocol::native_browser::{NativeBrowserCommand, NativeBrowserHostCommand};
 
 use super::engine::{Engine, Reply};
 use super::host_bridge::{Executor, Job};
+use super::tools::Automation;
 
 /// A job on its way to the UI thread, with where its answer goes.
 pub struct Queued {
@@ -51,19 +52,27 @@ pub async fn serve(
     jobs: Receiver<Queued>,
     spawn: impl Fn(LocalBoxFuture<'static, ()>),
 ) {
+    let automation = Automation::new(engine.clone());
     while let Ok(queued) = jobs.recv().await {
         let engine = engine.clone();
+        let automation = automation.clone();
         spawn(Box::pin(async move {
-            let result = run(&engine, queued.job).await;
+            let result = run(&engine, &automation, queued.job).await;
             let _ = queued.reply.send(result);
         }));
     }
 }
 
-async fn run(engine: &Rc<Engine>, job: Job) -> Result<Reply, String> {
+async fn run(engine: &Rc<Engine>, automation: &Rc<Automation>, job: Job) -> Result<Reply, String> {
     match job.command {
-        // Tools have their own cancellation (T3.3); with none running there is nothing to cancel.
-        NativeBrowserCommand::Host(NativeBrowserHostCommand::CancelTools) => Ok(Reply::empty()),
+        // Running tools stop before their next step; with none running there is nothing to cancel.
+        NativeBrowserCommand::Host(NativeBrowserHostCommand::CancelTools) => {
+            automation.cancel(&job.bot.id);
+            Ok(Reply::empty())
+        }
+        NativeBrowserCommand::Host(NativeBrowserHostCommand::Tool(tool)) => {
+            Ok(Reply::tool(automation.run(&job.bot, &tool).await))
+        }
         command => engine
             .execute(&job.bot, command)
             .await

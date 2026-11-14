@@ -7,8 +7,9 @@
 use futures::channel::oneshot;
 use webview2_com::{
     CallDevToolsProtocolMethodCompletedHandler, ClearBrowsingDataCompletedHandler,
-    CoreWebView2EnvironmentOptions, CreateCoreWebView2ControllerCompletedHandler,
-    CreateCoreWebView2EnvironmentCompletedHandler, GetCookiesCompletedHandler,
+    ContentLoadingEventHandler, CoreWebView2EnvironmentOptions,
+    CreateCoreWebView2ControllerCompletedHandler, CreateCoreWebView2EnvironmentCompletedHandler,
+    DevToolsProtocolEventReceivedEventHandler, GetCookiesCompletedHandler,
     Microsoft::Web::WebView2::Win32::{
         COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW, COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL,
         CreateCoreWebView2EnvironmentWithOptions, ICoreWebView2, ICoreWebView2_2, ICoreWebView2_3,
@@ -281,4 +282,44 @@ pub async fn clear_profile(webview: &ICoreWebView2) -> Result<(), ComError> {
             "Browser profile still contains cookies after clearing.".into(),
         )),
     }
+}
+
+/// Calls `on_event(parameters_json)` for each DevTools protocol event called `event`, from now on. The callback runs
+/// inside a WebView2 callback: it may only hand the text on.
+pub fn subscribe_devtools(
+    webview: &ICoreWebView2,
+    event: &str,
+    mut on_event: impl FnMut(String) + 'static,
+) -> Result<(), ComError> {
+    // SAFETY: plain COM calls on a page this engine owns; the handler is reference counted by COM.
+    unsafe {
+        let receiver = webview.GetDevToolsProtocolEventReceiver(&HSTRING::from(event))?;
+        let handler =
+            DevToolsProtocolEventReceivedEventHandler::create(Box::new(move |_, args| {
+                let mut json = PWSTR::null();
+                if let Some(args) = &args {
+                    let _ = args.ParameterObjectAsJson(&mut json);
+                }
+                on_event(take_pwstr(json));
+                Ok(())
+            }));
+        let mut token = 0i64;
+        receiver.add_DevToolsProtocolEventReceived(&handler, &mut token)?;
+    }
+    Ok(())
+}
+
+/// Calls `on_content` when a new document starts loading in the page's main frame, from now on (same rule).
+pub fn subscribe_content_loading(
+    webview: &ICoreWebView2,
+    mut on_content: impl FnMut() + 'static,
+) -> Result<(), ComError> {
+    let handler = ContentLoadingEventHandler::create(Box::new(move |_, _| {
+        on_content();
+        Ok(())
+    }));
+    let mut token = 0i64;
+    // SAFETY: plain COM call on a page this engine owns; the handler is reference counted by COM.
+    unsafe { webview.add_ContentLoading(&handler, &mut token)? };
+    Ok(())
 }

@@ -9,7 +9,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::Once;
+use std::sync::{Arc, Once};
 use std::time::{Duration, Instant};
 
 use futures::future::LocalBoxFuture;
@@ -32,7 +32,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::{BOOL, Interface as _, w};
 
 use super::access::{Access, AccessError};
-use super::cdp::CdpError;
+use super::cdp::{self, CdpError};
 use super::com::{self, ComError};
 use super::lifecycle::{Lifecycle, MemoryLevel, Need, Placement, Plan, Timeouts};
 use super::policy::{self, PolicyError};
@@ -41,9 +41,11 @@ use super::{BotIdentity, flags};
 use crate::identity::Identity;
 use crate::owner_safety;
 
+mod automation;
 mod commands;
 mod events;
 
+pub use automation::{AutomationSession, ToolView};
 pub use commands::{Actor, BotEvent, Check, LOCAL, Reply};
 pub use events::{HostEvent, Notification};
 
@@ -236,6 +238,9 @@ struct Tab {
     loading: Cell<Option<Instant>>,
     /// The JavaScript dialog the page is blocked on, until it is answered.
     dialog: RefCell<Option<events::PendingDialog>>,
+    /// Whether file choosers report to a bot's tool instead of opening (the tools turn it on; the person taking control
+    /// turns it off, so their click opens the native picker).
+    file_chooser_intercept: Cell<bool>,
 }
 
 impl Tab {
@@ -287,7 +292,7 @@ struct Bot {
     /// Held while the bot's controllers are created or closed.
     open_lock: AsyncMutex<()>,
     /// A bot's commands run one at a time, in the order they arrived.
-    queue: QueueMutex<()>,
+    queue: Arc<QueueMutex<()>>,
     /// Tools whose guards were dropped while the state was borrowed: their need ends at the next `apply`.
     pending_tool_ends: Cell<u32>,
 }
@@ -317,6 +322,7 @@ pub struct Engine {
 pub struct TabHandle {
     id: String,
     webview: ICoreWebView2,
+    tab: Rc<Tab>,
 }
 
 impl TabHandle {
@@ -337,6 +343,50 @@ impl TabHandle {
     pub fn source(&self) -> Result<String, ComError> {
         com::source(&self.webview)
     }
+
+    pub fn title(&self) -> Result<String, ComError> {
+        com::title(&self.webview)
+    }
+
+    /// One typed DevTools protocol command.
+    pub async fn cdp<M: cdp::Method>(&self, params: &M::Params) -> Result<M::Reply, cdp::CdpError> {
+        cdp::call::<M>(&self.webview, params).await
+    }
+
+    /// Whether a navigation of this page is still in flight.
+    pub fn is_loading(&self) -> bool {
+        self.tab.loading.get().is_some()
+    }
+
+    /// Whether file choosers report to a bot's tool instead of opening.
+    pub fn intercepts_file_chooser(&self) -> bool {
+        self.tab.file_chooser_intercept.get()
+    }
+
+    /// Notes that the tools turned the interception on (or off) in the page. The engine turns it off again when the
+    /// person takes control.
+    pub fn note_file_chooser_interception(&self, on: bool) {
+        self.tab.file_chooser_intercept.set(on);
+    }
+
+    /// Calls `sink(event, parameters_json)` for each of the named DevTools events, from now on. The sink runs inside a
+    /// WebView2 callback: it may only hand the text on.
+    pub fn subscribe(
+        &self,
+        events: &[&'static str],
+        sink: Rc<dyn Fn(&'static str, String)>,
+    ) -> Result<(), ComError> {
+        for event in events {
+            let (event, sink) = (*event, sink.clone());
+            com::subscribe_devtools(&self.webview, event, move |json| sink(event, json))?;
+        }
+        Ok(())
+    }
+
+    /// Calls `on_content` when a new document begins loading in the main frame, from now on (same rule as `subscribe`).
+    pub fn on_new_document(&self, on_content: impl FnMut() + 'static) -> Result<(), ComError> {
+        com::subscribe_content_loading(&self.webview, on_content)
+    }
 }
 
 /// A tool, a vault fill or a UI command in progress on a bot: while it lives the bot's page is awake and visible.
@@ -354,6 +404,7 @@ impl ToolGuard {
         Ok(TabHandle {
             id: tab.id.clone(),
             webview: tab.webview.clone(),
+            tab,
         })
     }
 
@@ -363,6 +414,7 @@ impl ToolGuard {
         Ok(TabHandle {
             id: tab.id.clone(),
             webview: tab.webview.clone(),
+            tab,
         })
     }
 
@@ -580,7 +632,7 @@ impl Engine {
                 dialog: None,
             }),
             open_lock: AsyncMutex::new(()),
-            queue: QueueMutex::new(()),
+            queue: Arc::new(QueueMutex::new(())),
             pending_tool_ends: Cell::new(0),
         });
         bots.insert(identity.id.clone(), bot.clone());
@@ -731,6 +783,7 @@ impl Engine {
             point: Cell::new((0.0, 0.0)),
             loading: Cell::new(url.is_some().then(|| self.now())),
             dialog: RefCell::new(None),
+            file_chooser_intercept: Cell::new(false),
         }))
     }
 

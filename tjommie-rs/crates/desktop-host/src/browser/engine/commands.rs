@@ -27,6 +27,10 @@ use crate::browser::cdp::{
     SetDeviceMetricsParams,
 };
 use crate::browser::keys;
+use crate::browser::tools::ToolReply;
+use crate::browser::tools::protocol::{
+    PageSetInterceptFileChooserDialog, SetInterceptFileChooserParams,
+};
 
 /// The person at this PC, as a controller. Remote controllers are named by their connection.
 pub const LOCAL: &str = "local";
@@ -56,6 +60,8 @@ pub enum Actor {
 #[serde(untagged)]
 pub enum Reply {
     State(Box<BrowserState>),
+    /// A browser tool's answer: text and images, with an error flag.
+    Tool(Box<ToolReply>),
     Empty(Empty),
 }
 
@@ -69,6 +75,10 @@ impl Reply {
 
     pub fn state(state: BrowserState) -> Self {
         Self::State(Box::new(state))
+    }
+
+    pub fn tool(reply: ToolReply) -> Self {
+        Self::Tool(Box::new(reply))
     }
 }
 
@@ -187,7 +197,7 @@ impl Engine {
         }
     }
 
-    fn require_control(&self, bot: &Bot, actor: Actor) -> Result<(), EngineError> {
+    pub(super) fn require_control(&self, bot: &Bot, actor: Actor) -> Result<(), EngineError> {
         let state = bot.state.borrow();
         if state.dead {
             return Err(EngineError::refused("The agent browser is closing."));
@@ -713,6 +723,16 @@ impl Engine {
         // Ownership and held-input release cannot wait behind a browser tool or a frame.
         for tab in self.tabs_of(bot) {
             self.release(bot, &tab).await;
+            if control == BrowserControl::Human && tab.file_chooser_intercept.replace(false) {
+                // The tools had file choosers report to them; the person's click opens the native picker. A page blocked
+                // on a dialog answers nothing, so this never waits long.
+                let off = cdp::call::<PageSetInterceptFileChooserDialog>(
+                    &tab.webview,
+                    &SetInterceptFileChooserParams { enabled: false },
+                );
+                futures::pin_mut!(off);
+                let _ = futures::future::select(off, self.sleep(Duration::from_millis(500))).await;
+            }
         }
         {
             let mut state = bot.state.borrow_mut();

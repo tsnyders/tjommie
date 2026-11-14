@@ -42,7 +42,7 @@ pub fn safe_name(suggested: &str) -> String {
 const VERBATIM: &str = "\\\\?\\";
 
 /// A path without that prefix, which WebView2 does not accept as a save path. A network path keeps its form.
-fn plain(path: PathBuf) -> PathBuf {
+pub(crate) fn plain(path: PathBuf) -> PathBuf {
     let text = path.to_string_lossy().into_owned();
     match text.strip_prefix(VERBATIM) {
         Some(rest) if !rest.starts_with("UNC\\") => PathBuf::from(rest),

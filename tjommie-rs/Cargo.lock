@@ -1428,11 +1428,13 @@ name = "desktop-host"
 version = "0.5.0"
 dependencies = [
  "async-channel",
+ "base64 0.23.1",
  "daemon",
  "futures",
  "jiff",
  "log",
  "protocol",
+ "regex",
  "reqwest",
  "rustls",
  "rustls-pemfile",
