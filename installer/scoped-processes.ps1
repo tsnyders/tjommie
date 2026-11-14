@@ -31,23 +31,25 @@ function Assert-NarrowFolder([string]$Folder) {
     }
 }
 
-# Stops every process whose executable is inside $Folder, and the processes they started, however deep. A child counts only if
-# it started after its parent, so a process id Windows has reused for something else is not mistaken for a child. This
-# script's own process is never stopped. Returns what was stopped.
-function Stop-ProcessesInFolder([string]$Folder) {
+# The processes whose executable is inside $Folder, and the processes they started, however deep, as a table of process id to
+# process. A child counts only if it started after its parent, so a process id Windows has reused for something else is not
+# mistaken for a child. This script's own process is never in it, and neither is any id in $ExceptIds (an uninstaller that
+# runs from inside the folder it removes must not stop itself). Has no effect.
+function Select-ProcessesInFolder([string]$Folder, [int[]]$ExceptIds = @()) {
     Assert-NarrowFolder $Folder
     $all = @(Get-CimInstance Win32_Process)
+    $left = @($PID) + $ExceptIds
     $selected = @{}
     foreach ($process in $all) {
         $id = [int]$process.ProcessId
-        if ($id -eq $PID -or -not $process.ExecutablePath) { continue }
+        if ($left -contains $id -or -not $process.ExecutablePath) { continue }
         if (Test-PathInFolder $process.ExecutablePath $Folder) { $selected[$id] = $process }
     }
     do {
         $added = $false
         foreach ($process in $all) {
             $id = [int]$process.ProcessId
-            if ($id -eq $PID -or $selected.ContainsKey($id)) { continue }
+            if ($left -contains $id -or $selected.ContainsKey($id)) { continue }
             $parent = [int]$process.ParentProcessId
             if ($selected.ContainsKey($parent) -and $process.CreationDate -ge $selected[$parent].CreationDate) {
                 $selected[$id] = $process
@@ -55,6 +57,12 @@ function Stop-ProcessesInFolder([string]$Folder) {
             }
         }
     } while ($added)
+    return $selected
+}
+
+# Stops what Select-ProcessesInFolder selects. Returns what was stopped.
+function Stop-ProcessesInFolder([string]$Folder, [int[]]$ExceptIds = @()) {
+    $selected = Select-ProcessesInFolder $Folder $ExceptIds
     $stopped = @()
     foreach ($id in $selected.Keys) {
         Stop-Process -Id $id -Force -ErrorAction SilentlyContinue

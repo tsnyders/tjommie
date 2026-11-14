@@ -1,8 +1,8 @@
-import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { join } from "node:path";
+import { describe, expect, it, vi } from "vitest";
+import { installer, powershell, repo, runBody, scriptsIn, temp, windows } from "./ps-support.ts";
 
 // Each test starts PowerShell (one to four times), which is slow on a loaded machine.
 vi.setConfig({ testTimeout: 60_000 });
@@ -12,55 +12,13 @@ vi.setConfig({ testTimeout: 60_000 });
 // scripts that install and uninstall are only parse-checked and shown to refuse to run anywhere but a hosted runner. Nothing
 // in this file installs or uninstalls anything, or looks at a Tjommie location.
 
-const repo = resolve(import.meta.dirname, "..");
-const installer = join(repo, "installer");
-const windows = process.platform === "win32";
-
-const shell = ((): string => {
-  for (const candidate of ["pwsh", "powershell"]) {
-    if (spawnSync(candidate, ["-NoProfile", "-Command", "exit 0"], { windowsHide: true }).status === 0) return candidate;
-  }
-  return "powershell";
-})();
-
-const folders: string[] = [];
-function temp(): string {
-  const folder = mkdtempSync(join(tmpdir(), "tjommie-r1-facts-test-"));
-  folders.push(folder);
-  return folder;
-}
-afterEach(() => { for (const folder of folders.splice(0)) rmSync(folder, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
-
-type Run = { status: number | null; stdout: string; stderr: string };
-
-// Runs a script from a file, with this environment (not ours: a CI runner's own GITHUB_ACTIONS must not leak in).
-function powershell(file: string, args: string[], env: NodeJS.ProcessEnv): Run {
-  const run = spawnSync(shell, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", file, ...args], { encoding: "utf8", windowsHide: true, env });
-  return { status: run.status, stdout: run.stdout, stderr: run.stderr };
-}
-
 // A script of our own that dot-sources the readers, runs `body` and prints its result as JSON.
-function readers(body: string): unknown {
-  const file = join(temp(), "run.ps1");
-  writeFileSync(file, `$ErrorActionPreference = 'Stop'\n. '${join(installer, "r1-facts-lib.ps1")}'\n${body}\n`);
-  const run = powershell(file, [], { ...process.env });
-  if (run.status !== 0) throw new Error(`PowerShell failed (${run.status}): ${run.stderr || run.stdout}`);
-  return JSON.parse(run.stdout) as unknown;
-}
+const readers = (body: string): unknown => runBody("r1-facts-lib.ps1", body);
 
 // The same, with the process-scoping functions (installer/scoped-processes.ps1) loaded instead.
-function scoped(body: string): unknown {
-  const file = join(temp(), "run.ps1");
-  writeFileSync(file, `$ErrorActionPreference = 'Stop'
-. '${join(installer, "scoped-processes.ps1")}'
-${body}
-`);
-  const run = powershell(file, [], { ...process.env });
-  if (run.status !== 0) throw new Error(`PowerShell failed (${run.status}): ${run.stderr || run.stdout}`);
-  return JSON.parse(run.stdout) as unknown;
-}
+const scoped = (body: string): unknown => runBody("scoped-processes.ps1", body);
 
-const scripts = existsSync(installer) ? readdirSync(installer).filter((name) => name.endsWith(".ps1")) : [];
+const scripts = scriptsIn(".ps1");
 
 describe.skipIf(!windows)("the R1 install-facts scripts", () => {
   it("has the scripts the workflow runs", () => {
