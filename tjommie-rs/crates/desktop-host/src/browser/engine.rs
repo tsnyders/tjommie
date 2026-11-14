@@ -45,11 +45,13 @@ use crate::owner_safety;
 mod automation;
 mod commands;
 mod events;
+mod input;
 mod stream;
 
 pub use automation::{AutomationSession, ToolView};
 pub use commands::{Actor, BotEvent, Check, LOCAL, Reply};
 pub use events::{HostEvent, Notification};
+pub use input::{Shield, png_size};
 
 /// Where a page that a tool or a stream keeps awake sits while no panel shows it: outside the window's client
 /// area, still "visible" to WebView2 (hiding it would stop it rendering).
@@ -319,6 +321,8 @@ pub struct Engine {
     config: EngineConfig,
     /// This engine, for the tasks it spawns on itself.
     weak: std::rc::Weak<Engine>,
+    /// The chords the app keeps for itself while a page has the keyboard.
+    forwarded: Rc<RefCell<Vec<super::keyboard::Chord>>>,
     events: async_channel::Sender<HostEvent>,
     notify: async_channel::Sender<Notification>,
     /// A menu or dialog is over the page area for every bot: pages stay awake but out of the way.
@@ -561,6 +565,7 @@ impl Engine {
             .map_err(|refused| EngineError::Refused(refused.0))?;
         Ok(Rc::new_cyclic(|weak| Self {
             weak: weak.clone(),
+            forwarded: Rc::new(RefCell::new(Vec::new())),
             config,
             events,
             notify,
@@ -790,6 +795,14 @@ impl Engine {
             &bot.identity.home_folder,
             &webview,
         )?;
+        events::watch_keyboard(
+            &self.events,
+            bot_id,
+            &controller,
+            &webview,
+            self.forwarded.clone(),
+        )?;
+        self.install_handoff(&webview).await;
         // SAFETY: as above. The page stays hidden until the lifecycle plan says where it goes.
         unsafe {
             controller.SetIsVisible(false)?;
@@ -959,9 +972,23 @@ impl Engine {
             Self::place(container, &tabs, None, false);
             Self::set_visible(&tabs, None);
             for tab in &tabs {
-                if !super::lifecycle::loading_blocks_suspend(tab.loading.get(), now)
-                    && !com::is_suspended(&tab.webview).unwrap_or(false)
-                    && let Err(error) = com::try_suspend(&tab.webview)
+                if super::lifecycle::loading_blocks_suspend(tab.loading.get(), now) {
+                    // A loading page makes no progress asleep, and it may have fallen asleep behind our back (a suspend
+                    // request for the document before it was still on its way when this navigation began): wake it.
+                    if com::is_suspended(&tab.webview).unwrap_or(false)
+                        && let Err(error) = com::resume(&tab.webview)
+                    {
+                        log::warn!("browser page not resumed: {error}");
+                    }
+                    continue;
+                }
+                if !com::is_suspended(&tab.webview).unwrap_or(false)
+                    && let Err(error) = com::try_suspend(&tab.webview, {
+                        let (events, bot_id) = (self.events.clone(), bot.identity.id.clone());
+                        move || {
+                            let _ = events.try_send(HostEvent::SuspendDone { bot_id });
+                        }
+                    })
                 {
                     log::debug!("browser page not suspended: {error}");
                 }

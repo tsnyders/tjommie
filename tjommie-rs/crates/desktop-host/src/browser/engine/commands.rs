@@ -26,6 +26,7 @@ use crate::browser::cdp::{
     InputInsertText, InsertTextParams, MouseEventType, NoParams, PointerButton,
     SetDeviceMetricsParams,
 };
+use crate::browser::keyboard::FocusDirection;
 use crate::browser::keys;
 use crate::browser::tools::ToolReply;
 use crate::browser::tools::protocol::{
@@ -1439,6 +1440,31 @@ impl Engine {
                     self.notice(&bot, &message);
                 }
             }
+            HostEvent::SuspendDone { bot_id } => {
+                if let Some(bot) = self.live_bot(&bot_id) {
+                    // The plan may be the same as before, but the page is not: look at it again.
+                    bot.state.borrow_mut().applied = None;
+                    self.apply(&bot);
+                }
+            }
+            HostEvent::BindingCalled { bot_id, json } => {
+                if let Some(bot) = self.live_bot(&bot_id) {
+                    self.on_binding(&bot, &json);
+                }
+            }
+            HostEvent::MoveFocus { bot_id, next } => {
+                if let Some(bot) = self.live_bot(&bot_id) {
+                    self.focus_leaves(
+                        &bot,
+                        if next {
+                            FocusDirection::Next
+                        } else {
+                            FocusDirection::Previous
+                        },
+                    );
+                }
+            }
+            HostEvent::Shortcut { bot_id, chord } => self.on_shortcut(&bot_id, chord),
             HostEvent::ScreencastFrame {
                 bot_id,
                 tab_id,

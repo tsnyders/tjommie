@@ -5,6 +5,9 @@
 //! policy, then pushes a [`HostEvent`] and returns. It never touches engine state and never panics. The host drains
 //! the channel on the UI thread and calls `Engine::apply_event`, which is where state changes.
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use async_channel::Sender;
 use protocol::browser::BrowserState;
 use webview2_com::{
@@ -15,7 +18,7 @@ use webview2_com::{
         COREWEBVIEW2_DOWNLOAD_STATE, COREWEBVIEW2_PERMISSION_KIND,
         COREWEBVIEW2_PERMISSION_STATE_DENY, COREWEBVIEW2_SCRIPT_DIALOG_KIND, ICoreWebView2,
         ICoreWebView2_4, ICoreWebView2_5, ICoreWebView2_10, ICoreWebView2_27,
-        ICoreWebView2Deferral, ICoreWebView2NewWindowRequestedEventArgs,
+        ICoreWebView2Controller, ICoreWebView2Deferral, ICoreWebView2NewWindowRequestedEventArgs,
         ICoreWebView2ScriptDialogOpeningEventArgs,
     },
     NavigationCompletedEventHandler, NavigationStartingEventHandler,
@@ -27,6 +30,7 @@ use windows::core::{BOOL, HSTRING, Interface as _, PWSTR};
 
 use super::super::com::ComError;
 use super::super::downloads;
+use super::super::keyboard::{Chord, FocusDirection};
 use super::super::permissions::{self, Permission};
 use super::super::policy;
 
@@ -72,6 +76,15 @@ pub enum HostEvent {
         tab_id: String,
         json: String,
     },
+    /// A request to suspend a page was answered: if the bot wants the page awake by now, it fell asleep behind the
+    /// engine's back and must be resumed.
+    SuspendDone { bot_id: String },
+    /// The page's isolated world called the hand-off binding (Shift+Tab was pressed in the page), as JSON text.
+    BindingCalled { bot_id: String, json: String },
+    /// Focus is leaving the page by Tab (`next`) or Shift+Tab past its first or last control.
+    MoveFocus { bot_id: String, next: bool },
+    /// A chord the app keeps for itself was pressed with the page in focus; the page never saw it.
+    Shortcut { bot_id: String, chord: Chord },
 }
 
 /// What the engine tells its host: the state to draw, and things to say.
@@ -82,9 +95,15 @@ pub enum Notification {
         bot_id: String,
         message: String,
     },
-    /// Focus left the page by the keyboard and belongs to the app (T3.5).
+    /// Focus left the page by the keyboard and belongs to the app: it goes to the next or previous control.
     FocusReturn {
         bot_id: String,
+        direction: FocusDirection,
+    },
+    /// An app chord (`keymap::page_forwarded()`) was pressed with a page in focus: the app runs its action.
+    Shortcut {
+        bot_id: String,
+        chord: Chord,
     },
 }
 
@@ -146,6 +165,58 @@ pub(super) fn watch_screencast(
                 json,
             },
         );
+    })
+}
+
+/// Registers the keyboard hand-off of a bot's page: Shift+Tab (through the isolated world's binding), Tab past either end
+/// of the page, and the app's own chords. The handlers only hand a typed message on.
+pub(super) fn watch_keyboard(
+    events: &Sender<HostEvent>,
+    bot_id: &str,
+    controller: &ICoreWebView2Controller,
+    webview: &ICoreWebView2,
+    forwarded: Rc<RefCell<Vec<Chord>>>,
+) -> Result<(), ComError> {
+    let (sender, id) = (events.clone(), bot_id.to_string());
+    super::super::com::subscribe_devtools(webview, "Runtime.bindingCalled", move |json| {
+        push(
+            &sender,
+            HostEvent::BindingCalled {
+                bot_id: id.clone(),
+                json,
+            },
+        );
+    })?;
+    let (sender, id) = (events.clone(), bot_id.to_string());
+    super::super::com::subscribe_move_focus(controller, move |next| {
+        push(
+            &sender,
+            HostEvent::MoveFocus {
+                bot_id: id.clone(),
+                next,
+            },
+        );
+    })?;
+    let (sender, id) = (events.clone(), bot_id.to_string());
+    super::super::com::subscribe_accelerators(controller, move |key, ctrl, shift, alt| {
+        let hit = forwarded
+            .borrow()
+            .iter()
+            .find(|chord| chord.matches(key, ctrl, shift, alt))
+            .copied();
+        match hit {
+            Some(chord) => {
+                push(
+                    &sender,
+                    HostEvent::Shortcut {
+                        bot_id: id.clone(),
+                        chord,
+                    },
+                );
+                true
+            }
+            None => false,
+        }
     })
 }
 

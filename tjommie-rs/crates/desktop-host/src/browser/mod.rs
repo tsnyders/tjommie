@@ -14,6 +14,7 @@ pub mod engine;
 pub mod flags;
 pub mod host;
 pub mod host_bridge;
+pub mod keyboard;
 pub mod keys;
 pub mod lifecycle;
 pub mod permissions;

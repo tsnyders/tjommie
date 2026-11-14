@@ -671,6 +671,12 @@ impl Engine {
             .borrow_mut()
             .access
             .end_private(owner, private_epoch)?;
+        // Private mode switched the runtime domain off, and the keyboard hand-off's binding went with it.
+        for tab in self.tabs_of(&rc) {
+            let _ = self
+                .within(PRIVATE_LIMIT, self.enable_handoff_binding(&tab.webview))
+                .await;
+        }
         self.changed(&rc);
         Ok(self.browser_state(&rc, owner))
     }
