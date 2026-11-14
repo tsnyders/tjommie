@@ -1,7 +1,7 @@
 //! The notification-area icon (T6.1; `main.ts:698-716`, `updater.ts` `trayTemplate`): a left click shows the window, the
 //! right-click menu has Open, Restart to update (once an update is ready) and Quit.
 //!
-//! The icon lives on a message-only window with its own thread and message loop, so it works while the UI thread is
+//! The icon lives on a hidden top-level window with its own thread and message loop, so it works while the UI thread is
 //! busy. The window procedure only turns messages into typed `TrayEvent`s on a channel; it never calls into the UI and
 //! never panics (a panic across a window procedure aborts the process).
 
@@ -21,11 +21,11 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconFromResourceEx, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
     DestroyMenu, DispatchMessageW, GWLP_USERDATA, GetCursorPos, GetMessageW, GetWindowLongPtrW,
-    HICON, HWND_MESSAGE, IDI_APPLICATION, LR_DEFAULTCOLOR, LoadIconW, MF_GRAYED, MF_SEPARATOR,
-    MF_STRING, MSG, PostMessageW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW,
-    SetForegroundWindow, SetWindowLongPtrW, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu,
-    TranslateMessage, UnregisterClassW, WM_APP, WM_CLOSE, WM_DESTROY, WM_LBUTTONUP, WM_NULL,
-    WM_RBUTTONUP, WNDCLASSW, WS_OVERLAPPED,
+    HICON, IDI_APPLICATION, LR_DEFAULTCOLOR, LoadIconW, MF_GRAYED, MF_SEPARATOR, MF_STRING, MSG,
+    PostMessageW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SetForegroundWindow,
+    SetWindowLongPtrW, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage,
+    UnregisterClassW, WM_APP, WM_CLOSE, WM_DESTROY, WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP, WNDCLASSW,
+    WS_EX_TOOLWINDOW, WS_POPUP,
 };
 use windows::core::{PCWSTR, w};
 
@@ -191,7 +191,7 @@ impl Tray {
         self.shared.icon_added.load(Ordering::SeqCst)
     }
 
-    /// The message-only window, so tests can post it the icon's messages.
+    /// The tray's window, so tests can post it the icon's messages.
     pub fn window(&self) -> isize {
         self.hwnd
     }
@@ -292,16 +292,20 @@ fn run(shared: &Arc<Shared>, ready: &Sender<Result<isize, String>>) {
             let _ = ready.send(Err("The tray window class could not be registered.".into()));
             return;
         }
+        // A hidden top-level window, never shown. Not message-only: `SetForegroundWindow` (which makes the context menu
+        // close when the user clicks elsewhere) can't activate a message-only window, and message-only windows don't get
+        // broadcasts like `TaskbarCreated`. A tool window stays out of the taskbar and Alt+Tab. Chromium's notify-icon host
+        // and the `tray-icon` crate do the same.
         let hwnd = match CreateWindowExW(
-            Default::default(),
+            WS_EX_TOOLWINDOW,
             PCWSTR(class_name.as_ptr()),
             w!("Tjommie tray"),
-            WS_OVERLAPPED,
+            WS_POPUP,
             0,
             0,
             0,
             0,
-            Some(HWND_MESSAGE),
+            None,
             None,
             Some(instance),
             None,
@@ -511,8 +515,55 @@ mod tests {
         assert_eq!(event_for_command(0), None);
     }
 
-    // Posts the icon's own callback messages to the real message-only window. A click on the actual icon is the
-    // owner's check (tools/phase3-checklist).
+    // Review finding 2. The right-click menu is owned by the tray's window, and `SetForegroundWindow` (which is what makes the
+    // menu close when the user clicks elsewhere) can only activate a top-level window. A message-only window is a child of
+    // the hidden Message window, never top-level, and also never receives broadcasts such as `TaskbarCreated` (which is how
+    // the icon comes back after Explorer restarts). So the window is a hidden top-level tool window: never shown, absent
+    // from the taskbar and Alt+Tab. That a click outside really closes the menu needs real input: the owner's check.
+    #[test]
+    fn the_tray_window_is_a_hidden_top_level_tool_window() {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            EnumWindows, GA_PARENT, GWL_EXSTYLE, GetAncestor, GetDesktopWindow, GetWindowLongPtrW,
+            IsWindowVisible, WS_EX_TOOLWINDOW,
+        };
+        use windows::core::BOOL;
+        unsafe extern "system" fn collect(window: HWND, found: LPARAM) -> BOOL {
+            // SAFETY: `found` is the address of the Vec the test passes below, alive for the whole EnumWindows call.
+            let windows = unsafe { &mut *(found.0 as *mut Vec<isize>) };
+            windows.push(window.0 as isize);
+            BOOL(1)
+        }
+        let (events, _received) = channel();
+        let tray = Tray::start(
+            TrayConfig {
+                tooltip: "Tjommie RS test".into(),
+                icon_png: None,
+            },
+            events,
+        )
+        .unwrap();
+        let window = HWND(tray.window() as *mut c_void);
+        // SAFETY: queries about the window this test owns, and one enumeration into a Vec that outlives it.
+        unsafe {
+            // A child of the desktop (top-level), not of the Message window; never shown.
+            assert_eq!(GetAncestor(window, GA_PARENT), GetDesktopWindow());
+            assert!(!IsWindowVisible(window).as_bool());
+            assert_ne!(
+                GetWindowLongPtrW(window, GWL_EXSTYLE) as u32 & WS_EX_TOOLWINDOW.0,
+                0
+            );
+            // Top-level windows, visible or not, are what broadcasts reach; message-only windows are not among them.
+            let mut top_level: Vec<isize> = Vec::new();
+            EnumWindows(Some(collect), LPARAM(&raw mut top_level as isize)).unwrap();
+            assert!(
+                top_level.contains(&tray.window()),
+                "the tray window must be enumerable as top-level"
+            );
+        }
+    }
+
+    // Posts the icon's own callback messages to the real window. A click on the actual icon is the owner's check
+    // (phase3-checklist.md, M6).
     #[test]
     fn a_left_click_on_the_icon_shows_the_window() {
         let (events, received) = channel();
