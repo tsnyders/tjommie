@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, net, Notification, protocol, session, shell, Tray } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, net, Notification, protocol, session, shell, Tray, type WebContents } from "electron";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { userInfo } from "node:os";
 import { join } from "node:path";
@@ -18,6 +18,7 @@ import { getLoginItem, setLoginItem, startsHidden, syncLoginItem } from "./login
 import { createUpdater, trayTemplate } from "./updater.ts";
 import { RemoteWires } from "./remote-wire.ts";
 import { createDeviceKeys } from "./device-keys.ts";
+import { exportDesktopUi } from "./desktop-ui-export.ts";
 import { localFilePath } from "./local-file-path.ts";
 import { createDesktopDiagnostics } from "./diagnostics.ts";
 import { DesktopDeviceBridge, attachmentSaveName, isAttachmentUrl } from "./local-device-bridge.ts";
@@ -650,6 +651,7 @@ function createWindow(): void {
     paintTitleBar();
   });
   window.webContents.on("did-navigate-in-page", (_event, url, isMainFrame) => { if (isMainFrame) appDocumentReady = speechOrigin(url, production); });
+  window.webContents.on("did-finish-load", () => { void exportPairedPcsAndAppearance(window.webContents); });
   window.webContents.on("did-start-navigation", (_event, url, _inPlace, isMainFrame) => {
     if (!isMainFrame || navigationFor(url, production) !== "stay" || isAttachmentUrl(url)) return;
     appDocumentReady = false; void revokeLocalDevice();
@@ -675,6 +677,18 @@ function createWindow(): void {
     if (decision === "browser") void shell.openExternal(url);
   });
   void window.loadURL(production ? "app://tjommie/" : "http://localhost:3000/");
+}
+
+// Every time the app's page finishes loading, keeps a copy of the paired PCs and the appearance in the data folder for the next
+// desktop app (see desktop-ui-export.ts). The page's storage is only read while it is the app's own page.
+async function exportPairedPcsAndAppearance(contents: WebContents): Promise<void> {
+  if (!production) return;
+  const read = async (key: string): Promise<string | null> => {
+    if (contents.isDestroyed() || !speechOrigin(contents.getURL(), production)) throw new Error("The page is not the app's own.");
+    const value: unknown = await contents.executeJavaScript(`localStorage.getItem(${JSON.stringify(key)})`);
+    return typeof value === "string" ? value : null;
+  };
+  await exportDesktopUi(read, dataRoot, log);
 }
 
 async function revokeLocalDevice(): Promise<void> {
