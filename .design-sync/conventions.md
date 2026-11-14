@@ -6,7 +6,7 @@ Aegis is a tokens-and-patterns design system: there are no components to import.
 - Load `styles.css`. Set the theme on the root element: `<html data-theme="light">`, or `data-theme="dark"` (the same palette in warm graphite).
 - Phone layouts: add `data-device="phone"` to the root for phone type sizes.
 - Reduced motion: `data-motion="reduced"` removes press, lift and enter offsets. Use it when the user prefers reduced motion.
-- Bot colour: put `class="bot-blue"` (or `bot-purple`, `bot-pink`, `bot-gray`, `bot-teal`, `bot-green`, `bot-orange`, `bot-red`, `bot-brown`, `bot-amber`) on a bot's element, and use `var(--bot)` inside it.
+- Agent colour: put `class="bot-blue"` (or `bot-purple`, `bot-pink`, `bot-gray`, `bot-teal`, `bot-green`, `bot-orange`, `bot-red`, `bot-brown`, `bot-amber`) on an agent's element, and use `var(--bot)` inside it. These class and token names keep their original `bot` prefix.
 
 ## Styling idiom: CSS variables, no utility classes
 - **Surfaces:** `--bg` (the stone frame), `--paper` (panels), `--raised` (white cards), `--sunk`, `--panel`.
@@ -24,9 +24,9 @@ Aegis is a tokens-and-patterns design system: there are no components to import.
   - Eases `--ease-out` and `--ease-move`, durations `--duration-base` and `--duration-fade`, stagger `--stagger-step`.
 
 ## Rules the design keeps
-- The bots are the only colour. The chrome stays stone and ink.
+- The agents are the only colour. The chrome stays stone and ink.
 - Text never scales or rotates. Nothing animates in response to a keyboard action.
-- An amber bot always shows its name next to its avatar.
+- An amber agent always shows its name next to its avatar.
 - On the phone a drawer replaces the bottom bar; on the desktop it is a persistent sidebar. A white composer card is pinned to the bottom of every chat.
 
 ## Where the truth lives
