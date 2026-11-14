@@ -18,11 +18,17 @@ use crate::error::{CloseReason, ConnectError, RpcError};
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
-/// Where a daemon is. T1.3 adds the other PCs (LAN and relay).
+/// Where a daemon is. `Local` is the daemon on this PC, reached with its token. `Lan` and `Relay` are the two ways to
+/// another PC: they carry no token, because the PC is reached through [`crate::remote`], which proves who both sides are
+/// with this device's key first.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Endpoint {
     /// The daemon on this PC, at 127.0.0.1.
     Local { port: u16 },
+    /// Another PC on the local network, over TCP.
+    Lan { host: String, port: u16 },
+    /// Another PC through its relay: `url` is the relay's https URL, `host_id` the PC's id.
+    Relay { url: String, host_id: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,6 +51,72 @@ const EVENT_BACKLOG: usize = 1024;
 
 /// How long [`Client::close`] waits for the daemon to finish the close handshake.
 const GOODBYE: Duration = Duration::from_secs(2);
+
+/// What a connection delivers, one item at a time.
+pub(crate) enum Incoming {
+    Text(String),
+    /// The other side closed, with its code and reason when it said them.
+    Close(Option<(u16, String)>),
+    /// The connection broke.
+    Failed(String),
+    /// The connection ended without a close.
+    Ended,
+    /// Something that isn't a text message.
+    Invalid,
+    /// Nothing for the client (a ping or a pong).
+    Skip,
+}
+
+/// One connection to a daemon, as the client uses it: text messages in and out. A WebSocket is one; so is the encrypted
+/// channel to another PC ([`crate::remote`]).
+pub(crate) trait Link: Send + 'static {
+    fn send(&mut self, text: String) -> impl Future<Output = Result<(), String>> + Send;
+    /// The next thing that arrived. Safe to cancel.
+    fn next(&mut self) -> impl Future<Output = Incoming> + Send;
+    /// Closes with `code` and `reason`.
+    fn hang_up(&mut self, code: u16, reason: &str) -> impl Future<Output = ()> + Send;
+    /// After our own close, waits for the other side's (a short while), so it sees a clean close.
+    fn finish(&mut self) -> impl Future<Output = ()> + Send;
+}
+
+struct WebSocketLink(Socket);
+
+impl Link for WebSocketLink {
+    async fn send(&mut self, text: String) -> Result<(), String> {
+        self.0
+            .send(Message::text(text))
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    async fn next(&mut self) -> Incoming {
+        match self.0.next().await {
+            Some(Ok(Message::Text(text))) => Incoming::Text(text.to_string()),
+            Some(Ok(Message::Close(frame))) => Incoming::Close(
+                frame.map(|frame| (u16::from(frame.code), frame.reason.to_string())),
+            ),
+            Some(Ok(Message::Ping(_) | Message::Pong(_))) => Incoming::Skip,
+            Some(Ok(_)) => Incoming::Invalid,
+            Some(Err(error)) => Incoming::Failed(error.to_string()),
+            None => Incoming::Ended,
+        }
+    }
+
+    async fn hang_up(&mut self, code: u16, reason: &str) {
+        let frame = CloseFrame {
+            code: CloseCode::from(code),
+            reason: reason.to_owned().into(),
+        };
+        let _ = self.0.close(Some(frame)).await;
+    }
+
+    async fn finish(&mut self) {
+        let _ = tokio::time::timeout(GOODBYE, async {
+            while let Some(Ok(_)) = self.0.next().await {}
+        })
+        .await;
+    }
+}
 
 struct Pending {
     method: &'static str,
@@ -72,7 +144,8 @@ pub struct Client {
 }
 
 impl Client {
-    /// Opens the WebSocket, says hello with `token` and waits for the welcome.
+    /// Opens the WebSocket to the daemon on this PC, says hello with `token` and waits for the welcome. Another PC is
+    /// reached with [`crate::remote::connect_peer`], not with a token.
     pub async fn connect(endpoint: Endpoint, token: &str) -> Result<Client, ConnectError> {
         Self::connect_with(endpoint, token, ConnectOptions::default()).await
     }
@@ -82,11 +155,42 @@ impl Client {
         token: &str,
         options: ConnectOptions,
     ) -> Result<Client, ConnectError> {
-        let socket = open(&endpoint, token, options).await?;
+        let Endpoint::Local { port } = endpoint else {
+            return Err(ConnectError::NotLocal);
+        };
+        let (socket, _) = tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}"))
+            .await
+            .map_err(|error| match error {
+                tokio_tungstenite::tungstenite::Error::Http(response) => {
+                    ConnectError::Refused(response.status().as_u16())
+                }
+                other => ConnectError::Unreachable(other.to_string()),
+            })?;
+        Self::over(WebSocketLink(socket), token, options).await
+    }
+
+    /// Says hello over an open connection and waits for the welcome.
+    pub(crate) async fn over(
+        mut link: impl Link,
+        token: &str,
+        options: ConnectOptions,
+    ) -> Result<Client, ConnectError> {
+        let hello = json!({ "type": "hello", "protocol": PROTOCOL_VERSION, "token": token });
+        if let Err(error) = link.send(hello.to_string()).await {
+            return Err(ConnectError::Unreachable(error));
+        }
+        match tokio::time::timeout(options.welcome_timeout, welcomed(&mut link)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => return Err(error),
+            Err(_) => {
+                link.hang_up(1000, "").await;
+                return Err(ConnectError::TimedOut);
+            }
+        }
         let (commands, receiver) = mpsc::unbounded_channel();
         let (events, _) = broadcast::channel(EVENT_BACKLOG);
         let (closed_sender, closed) = watch::channel(None);
-        tokio::spawn(run(socket, receiver, events.clone(), closed_sender));
+        tokio::spawn(run(link, receiver, events.clone(), closed_sender));
         Ok(Client {
             commands,
             events,
@@ -154,39 +258,18 @@ impl Client {
     }
 }
 
-async fn open(
-    endpoint: &Endpoint,
-    token: &str,
-    options: ConnectOptions,
-) -> Result<Socket, ConnectError> {
-    let Endpoint::Local { port } = endpoint;
-    let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}"))
-        .await
-        .map_err(|error| match error {
-            tokio_tungstenite::tungstenite::Error::Http(response) => {
-                ConnectError::Refused(response.status().as_u16())
-            }
-            other => ConnectError::Unreachable(other.to_string()),
-        })?;
-    let hello = json!({ "type": "hello", "protocol": PROTOCOL_VERSION, "token": token });
-    if let Err(error) = socket.send(Message::text(hello.to_string())).await {
-        return Err(ConnectError::Unreachable(error.to_string()));
-    }
-    match tokio::time::timeout(options.welcome_timeout, welcomed(&mut socket)).await {
-        Ok(Ok(())) => Ok(socket),
-        Ok(Err(error)) => Err(error),
-        Err(_) => {
-            let _ = socket.close(None).await;
-            Err(ConnectError::TimedOut)
-        }
+fn close_reason(frame: Option<(u16, String)>, opened: bool) -> CloseReason {
+    match frame {
+        Some((code, reason)) => CloseReason::new(code, reason, opened),
+        None => CloseReason::new(1005, "", opened),
     }
 }
 
 /// Waits for the welcome. The daemon says why it refuses with a close code: 4401 (token) or 4003 (protocol).
-async fn welcomed(socket: &mut Socket) -> Result<(), ConnectError> {
+async fn welcomed(link: &mut impl Link) -> Result<(), ConnectError> {
     loop {
-        match socket.next().await {
-            Some(Ok(Message::Text(text))) => {
+        match link.next().await {
+            Incoming::Text(text) => {
                 let frame: Option<Value> = serde_json::from_str(&text).ok();
                 let welcome = frame.as_ref().is_some_and(|frame| {
                     frame.get("type").and_then(Value::as_str) == Some("welcome")
@@ -196,7 +279,7 @@ async fn welcomed(socket: &mut Socket) -> Result<(), ConnectError> {
                 if welcome {
                     return Ok(());
                 }
-                hang_up(socket, 4400, "Invalid server frame").await;
+                link.hang_up(4400, "Invalid server frame").await;
                 return Err(ConnectError::BadFrame(
                     if frame.is_some() {
                         "Unexpected welcome protocol"
@@ -206,7 +289,7 @@ async fn welcomed(socket: &mut Socket) -> Result<(), ConnectError> {
                     .to_owned(),
                 ));
             }
-            Some(Ok(Message::Close(frame))) => {
+            Incoming::Close(frame) => {
                 let reason = close_reason(frame, false);
                 return Err(match reason.code {
                     4401 => ConnectError::Unauthorized,
@@ -214,19 +297,15 @@ async fn welcomed(socket: &mut Socket) -> Result<(), ConnectError> {
                     _ => ConnectError::Closed(reason),
                 });
             }
-            Some(Ok(Message::Ping(_) | Message::Pong(_))) => {}
-            Some(Ok(_)) => {
-                hang_up(socket, 4400, "Invalid server frame").await;
+            Incoming::Skip => {}
+            Incoming::Invalid => {
+                link.hang_up(4400, "Invalid server frame").await;
                 return Err(ConnectError::BadFrame("Expected a text frame".to_owned()));
             }
-            Some(Err(error)) => {
-                return Err(ConnectError::Closed(CloseReason::new(
-                    1006,
-                    error.to_string(),
-                    false,
-                )));
+            Incoming::Failed(error) => {
+                return Err(ConnectError::Closed(CloseReason::new(1006, error, false)));
             }
-            None => {
+            Incoming::Ended => {
                 return Err(ConnectError::Closed(CloseReason::new(
                     1006,
                     "The connection ended",
@@ -237,25 +316,10 @@ async fn welcomed(socket: &mut Socket) -> Result<(), ConnectError> {
     }
 }
 
-fn close_reason(frame: Option<CloseFrame>, opened: bool) -> CloseReason {
-    match frame {
-        Some(frame) => CloseReason::new(u16::from(frame.code), frame.reason.to_string(), opened),
-        None => CloseReason::new(1005, "", opened),
-    }
-}
-
-async fn hang_up(socket: &mut Socket, code: u16, reason: &str) {
-    let frame = CloseFrame {
-        code: CloseCode::from(code),
-        reason: reason.to_owned().into(),
-    };
-    let _ = socket.close(Some(frame)).await;
-}
-
-/// The connection's own task: it owns the socket, writes requests, and routes what arrives. It ends the connection when
-/// anything goes wrong, so the caller can't be left waiting on a dead socket.
+/// The connection's own task: it owns the link, writes requests, and routes what arrives. It ends the connection when
+/// anything goes wrong, so the caller can't be left waiting on a dead connection.
 async fn run(
-    mut socket: Socket,
+    mut link: impl Link,
     mut commands: mpsc::UnboundedReceiver<Command>,
     events: broadcast::Sender<Event>,
     closed: watch::Sender<Option<CloseReason>>,
@@ -266,32 +330,32 @@ async fn run(
             command = commands.recv() => match command {
                 Some(Command::Call { id, method, text, reply }) => {
                     pending.insert(id, Pending { method, reply });
-                    if let Err(error) = socket.send(Message::text(text)).await {
-                        break CloseReason::new(1006, error.to_string(), true);
+                    if let Err(error) = link.send(text).await {
+                        break CloseReason::new(1006, error, true);
                     }
                 }
                 Some(Command::Close) | None => {
-                    hang_up(&mut socket, 1000, "Client closed").await;
-                    finish_handshake(&mut socket).await;
+                    link.hang_up(1000, "Client closed").await;
+                    link.finish().await;
                     break CloseReason::new(1000, "Client closed", true);
                 }
             },
-            frame = socket.next() => match frame {
-                Some(Ok(Message::Text(text))) => {
+            incoming = link.next() => match incoming {
+                Incoming::Text(text) => {
                     if let Err(why) = route(&text, &mut pending, &events) {
                         let reason = format!("Invalid server frame: {why}");
-                        hang_up(&mut socket, 4400, "Invalid server frame").await;
+                        link.hang_up(4400, "Invalid server frame").await;
                         break CloseReason::new(4400, reason, true);
                     }
                 }
-                Some(Ok(Message::Close(frame))) => break close_reason(frame, true),
-                Some(Ok(Message::Ping(_) | Message::Pong(_))) => {}
-                Some(Ok(_)) => {
-                    hang_up(&mut socket, 4400, "Invalid server frame").await;
+                Incoming::Close(frame) => break close_reason(frame, true),
+                Incoming::Skip => {}
+                Incoming::Invalid => {
+                    link.hang_up(4400, "Invalid server frame").await;
                     break CloseReason::new(4400, "Invalid server frame: Expected a text frame", true);
                 }
-                Some(Err(error)) => break CloseReason::new(1006, error.to_string(), true),
-                None => break CloseReason::new(1006, "The connection ended", true),
+                Incoming::Failed(error) => break CloseReason::new(1006, error, true),
+                Incoming::Ended => break CloseReason::new(1006, "The connection ended", true),
             },
         }
     };
@@ -300,14 +364,6 @@ async fn run(
     for (_, call) in pending.drain() {
         let _ = call.reply.send(Err(RpcError::Closed(reason.clone())));
     }
-}
-
-/// After our close frame, reads until the daemon's reply (or a short while), so it sees a clean close.
-async fn finish_handshake(socket: &mut Socket) {
-    let _ = tokio::time::timeout(GOODBYE, async {
-        while let Some(Ok(_)) = socket.next().await {}
-    })
-    .await;
 }
 
 /// Hands one frame to the call or the receivers it is for. An `Err` is a frame the client can't accept, and ends the connection.

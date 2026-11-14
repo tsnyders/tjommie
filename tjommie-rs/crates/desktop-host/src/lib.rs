@@ -5,6 +5,7 @@
 pub mod app_dirs;
 pub mod crash;
 pub mod daemon_process;
+pub mod device_keys;
 pub mod device_settings;
 pub mod diagnostics;
 pub mod identity;
@@ -13,6 +14,7 @@ pub mod log;
 pub mod owner_safety;
 pub mod paths;
 pub mod perf;
+pub mod remote_hosts;
 pub mod shell;
 pub mod spawn;
 pub mod speech;

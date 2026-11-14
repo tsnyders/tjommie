@@ -53,6 +53,9 @@ pub enum ConnectError {
     TimedOut,
     /// The daemon closed the connection before welcoming, for another reason.
     Closed(CloseReason),
+    /// `Client::connect` takes a token, which only the daemon on this PC accepts. Another PC is reached through
+    /// `client::remote`.
+    NotLocal,
 }
 
 impl fmt::Display for ConnectError {
@@ -69,6 +72,9 @@ impl fmt::Display for ConnectError {
             Self::BadFrame(why) => write!(formatter, "Invalid server frame: {why}"),
             Self::TimedOut => formatter.write_str("The daemon didn't welcome the client in time."),
             Self::Closed(reason) => reason.fmt(formatter),
+            Self::NotLocal => {
+                formatter.write_str("Another PC is reached with this device's key, not a token.")
+            }
         }
     }
 }

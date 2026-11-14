@@ -1116,6 +1116,7 @@ checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 name = "client"
 version = "0.5.1"
 dependencies = [
+ "base64 0.23.1",
  "daemon",
  "futures-util",
  "protocol",
@@ -1123,6 +1124,8 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-tungstenite",
+ "transport",
+ "url",
 ]
 
 [[package]]
@@ -1703,6 +1706,7 @@ dependencies = [
  "base64 0.23.1",
  "client",
  "cpal",
+ "daemon",
  "futures-util",
  "getrandom 0.4.3",
  "jiff",
@@ -1715,6 +1719,7 @@ dependencies = [
  "sha2 0.10.9",
  "tempfile",
  "tokio",
+ "tokio-tungstenite",
  "url",
  "uuid",
  "windows 0.62.2",
