@@ -13,6 +13,6 @@ describe("attachments", () => {
   });
 
   it("shows a file's name from its Windows path", () => {
-    expect(fileName("C:\\Users\\tyrel\\Documents\\CV final.pdf")).toBe("CV final.pdf");
+    expect(fileName("C:\\Users\\owner\\Documents\\CV final.pdf")).toBe("CV final.pdf");
   });
 });
