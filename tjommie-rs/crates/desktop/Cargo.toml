@@ -16,6 +16,7 @@ futures = "0.3.34"
 gpui.workspace = true
 gpui-kit.workspace = true
 log = "0.4.35"
+protocol = { path = "../protocol" }
 rust-embed = "8.14.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
@@ -28,6 +29,10 @@ windows = { version = "0.62.2", features = [
   "Win32_System_Pipes",
   "Win32_System_Threading",
 ] }
+
+[dev-dependencies]
+# View tests: GPUI's TestAppContext.
+gpui = { workspace = true, features = ["test-support"] }
 
 [[bin]]
 name = "tjommie-desktop"

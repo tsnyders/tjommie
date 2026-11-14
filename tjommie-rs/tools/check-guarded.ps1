@@ -1,11 +1,13 @@
 <#
 The UI boundary rule (Phase 3 plan T0.4, widened by the M0 review's F5): in crates/desktop/src, every handler
 registration runs its whole closure inside guarded( (or guarded_async( for a spawned task), so a panic in it becomes a
-"Something went wrong" toast instead of a crash. A registration is any on_* method, observe*, subscribe*, spawn,
-spawn_in, defer or defer_in call. A closure inside cx.listener(...) counts; a method passed by name doesn't (wrap it in
-a guarded closure). Nothing may follow the guarded call but .await, a semicolon and the closing brace. Not checked:
-std::thread::spawn and background_spawn (off the UI thread, where a panic ends only that thread), Command::spawn(),
-method definitions. A registration that must not be guarded says why on the line above it: // unguarded: <reason>
+"Something went wrong" toast instead of a crash. A registration is a method call: .on_*, .observe*, .subscribe*,
+.spawn, .spawn_in, .defer or .defer_in. A closure inside cx.listener(...) counts; a method passed by name doesn't (wrap
+it in a guarded closure). Nothing may follow the guarded call but .await, a semicolon and the closing brace. Not
+checked: our primitives' .on_press and .on_toggle (ui/primitives runs them inside its own guarded handlers; gpui-kit
+has neither name), std::thread::spawn and background_spawn (off the UI thread, where a panic ends only that thread),
+Command::spawn(), definitions, and calls of a callback held in a variable (on_press(window, cx)). A registration that
+must not be guarded says why on the line above it: // unguarded: <reason>
 
     .\tools\check-guarded.ps1             # from tjommie-rs: lists each unguarded call and exits 1
     .\tools\check-guarded.ps1 -SelfTest   # this script, on planted handlers
@@ -13,8 +15,8 @@ method definitions. A registration that must not be guarded says why on the line
 param([string]$Path = (Join-Path (Split-Path $PSScriptRoot -Parent) 'crates\desktop\src'), [switch]$SelfTest)
 $ErrorActionPreference = 'Stop'
 
-# A registration call with at least one argument, maybe with a turbofish; not `fn on_click(` and not `thread::spawn(`.
-$call = [regex]'(?<!fn\s)(?<!thread::)\b(?:on_[a-z_]+|observe[a-z_]*|subscribe[a-z_]*|spawn(?:_in)?|defer(?:_in)?)(?:::<[^>]*>)?\((?!\s*\))'
+# A registration: a method call with at least one argument, maybe with a turbofish, but not a primitive's builder.
+$call = [regex]'(?<=\.)(?!(?:on_press|on_toggle)\()(?:on_[a-z_]+|observe[a-z_]*|subscribe[a-z_]*|spawn(?:_in)?|defer(?:_in)?)(?:::<[^>]*>)?\((?!\s*\))'
 # Where the closure must start, after any plain leading arguments (window, &entity, MouseButton::Left):
 # [cx.listener(] [async] [move] |params| [{] guarded( or guarded_async(
 $guardedStart = [regex]'\G\s*(?:[^,|(){}]+,\s*)*(?:cx\.listener\(\s*)?(?:async\s+)?(?:move\s+)?\|[^|]*\|\s*(?<brace>\{\s*)?guarded(?:_async)?\('
@@ -103,6 +105,9 @@ fn view(cx: &mut Context<Shell>) {
     .detach();
     std::thread::spawn(move || serve());
     let child = Command::new("x").spawn()?;
+    div().on_click(move |_, window, cx| guarded("press", || on_press(window, cx)));
+    Pill::new("cancel", "Cancel").on_press(|window, cx| window.close_dialog(cx));
+    Toggle::new("wifi", "Wi-Fi", on).on_toggle(move |on, _, cx| set(on, cx));
     // unguarded: the notice sink
     cx.spawn(async move |cx| { loop { show().await } }).detach();
 }
@@ -119,10 +124,12 @@ fn view(cx: &mut Context<Shell>) {
     cx.subscribe(&entity, |this, _, event, cx| this.handle(event, cx)).detach();
     // unguarded:
     cx.spawn(async move |cx| { loop { show().await } }).detach();
+    Slider::new("volume").on_change(|value, _, cx| set(value, cx));
+    Popover::new("menu").on_open_change(move |open, _, cx| { shield(*open, cx) });
 }
 '@
         $planted = Join-Path $dir 'planted.rs'
-        $expected = @(2, 3, 4, 5, 6, 7, 8, 9, 11 | ForEach-Object { "${planted}:$_" })
+        $expected = @(2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13 | ForEach-Object { "${planted}:$_" })
         $found = @(Find-Unguarded $dir)
         if (Compare-Object $expected $found) { Write-Host "FAIL: expected $($expected -join ', '); found $($found -join ', ')"; exit 1 }
         Write-Host 'PASS: the planted unguarded handlers were found and the guarded ones passed.'
