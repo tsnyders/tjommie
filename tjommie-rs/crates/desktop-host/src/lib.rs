@@ -2,6 +2,7 @@
 //! login vault, speech, the updater, tray, notifications, the login item, crash handling and the daemon process.
 //! Its tests build without compiling GPUI.
 
+pub mod browser;
 pub mod crash;
 pub mod identity;
 pub mod log;
