@@ -219,6 +219,48 @@ async fn refuses_arguments_to_provision_before_touching_anything() {
     .await;
 }
 
+/// Only the argument check: `accept-worker` itself creates and removes worker fixtures, so no test runs it here.
+#[tokio::test]
+async fn refuses_arguments_to_accept_worker_before_touching_anything() {
+    let root = TempRoot::new();
+    let daemon = launch(&["accept-worker", "--root", "elsewhere"], root, &[]);
+    exits_plainly(
+        daemon,
+        "Usage: tjommie-daemon accept-worker (as the Tjommie owner, not elevated, with Tjommie closed)",
+    )
+    .await;
+}
+
+/// With no worker configuration there is nothing to check: it says so and what to do first, creating nothing. The data
+/// root is a throwaway folder, never the owner's.
+#[tokio::test]
+async fn accept_worker_without_a_provisioned_root_says_to_provision_first() {
+    let root = TempRoot::new();
+    let folder = root.0.clone();
+    let mut daemon = launch(&["accept-worker"], root, &[]);
+    assert_eq!(daemon.exited().await.code(), Some(1));
+    assert_eq!(
+        daemon.stderr().trim(),
+        format!(
+            "There is no worker configuration in {}. Run `tjommie-daemon provision` first (from an elevated window), then restart Windows.",
+            folder.display()
+        )
+    );
+    // Like `provision`, it says which install it is looking at before it does anything.
+    assert_eq!(
+        daemon.stdout().trim(),
+        format!(
+            "Checking the Windows worker accounts for {}",
+            folder.display()
+        )
+    );
+    assert_eq!(
+        std::fs::read_dir(&folder).unwrap().count(),
+        0,
+        "nothing was created"
+    );
+}
+
 #[tokio::test]
 async fn requires_an_explicit_mode() {
     exits_plainly(launch(&[], TempRoot::new(), &[]), MISSING_MODE).await;

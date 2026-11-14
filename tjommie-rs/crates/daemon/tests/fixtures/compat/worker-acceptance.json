@@ -1,0 +1,52 @@
+{
+  "_provenance": "Captured 2026-11-14 by running the TypeScript 0.4.2 acceptance code on synthetic inputs: the zod WindowsWorkerConfiguration schema and workerConfigurationHash from packages/daemon/src/windows-worker.ts, and the Denials schema and the receipt literal from scripts/vault/accept-worker.ts (all on the `legacy` branch, copied verbatim into a throwaway script; nothing touched Windows). `receipts` holds the exact bytes accept-worker.ts wrote to worker-acceptance.json (provider) and review-worker-acceptance.json (review). Do not change this file unless rollback compatibility with 0.4.2 is deliberately dropped.",
+  "configurations": {
+    "provider": {
+      "version": 2,
+      "purpose": "provider",
+      "ownerSid": "S-1-5-21-1111111111-2222222222-3333333333-1001",
+      "workerSid": "S-1-5-21-1111111111-2222222222-3333333333-1002",
+      "peerSid": "S-1-5-21-1111111111-2222222222-3333333333-1003",
+      "workerName": "TjWorker-c7b7c5a9",
+      "workerRoot": "C:ProgramDataTjommieWorker-c7b7c5a986b6work",
+      "peerRoot": "C:ProgramDataTjommieWorker-c7b7c5a986b6\review",
+      "runtimeRoot": "C:ProgramDataTjommieWorker-c7b7c5a986b6\runtime",
+      "ownerDataRoot": "C:UsersFixtureAppDataLocalTjommie-rs",
+      "provisionedAt": "2026-11-09T12:00:00.000Z",
+      "credentialTarget": "Tjommie/c7b7c5a986b63824c0803169/isolated-worker"
+    },
+    "review": {
+      "version": 2,
+      "purpose": "review",
+      "ownerSid": "S-1-5-21-1111111111-2222222222-3333333333-1001",
+      "workerSid": "S-1-5-21-1111111111-2222222222-3333333333-1003",
+      "peerSid": "S-1-5-21-1111111111-2222222222-3333333333-1002",
+      "workerName": "TjReview-c7b7c5a9",
+      "workerRoot": "C:ProgramDataTjommieWorker-c7b7c5a986b6\review",
+      "peerRoot": "C:ProgramDataTjommieWorker-c7b7c5a986b6work",
+      "runtimeRoot": "C:ProgramDataTjommieWorker-c7b7c5a986b6\runtime",
+      "ownerDataRoot": "C:UsersFixtureAppDataLocalTjommie-rs",
+      "provisionedAt": "2026-11-09T12:00:00.000Z",
+      "credentialTarget": "Tjommie/c7b7c5a986b63824c0803169/isolated-review"
+    }
+  },
+  "denials": {
+    "ownerFileDenied": true,
+    "ownerCredentialDenied": true,
+    "ownerProcessDenied": true,
+    "ownerDesktopDenied": true,
+    "workerWriteAllowed": true,
+    "peerFileDenied": true,
+    "peerWriteDenied": true,
+    "peerRegistryDenied": true,
+    "peerProcessDenied": true
+  },
+  "configurationHashes": {
+    "provider": "751f9a2c909bdf46b6db3bd8211ef423bcae1d008f43ca0bf8e602506c6f0889",
+    "review": "ce5861d145e910796dbfb89f96fd25582a48f16150f178262b0cf92177be810c"
+  },
+  "receipts": {
+    "provider": "{\"version\":2,\"purpose\":\"provider\",\"workerSid\":\"S-1-5-21-1111111111-2222222222-3333333333-1002\",\"peerSid\":\"S-1-5-21-1111111111-2222222222-3333333333-1003\",\"configurationHash\":\"751f9a2c909bdf46b6db3bd8211ef423bcae1d008f43ca0bf8e602506c6f0889\",\"peerConfigurationHash\":\"ce5861d145e910796dbfb89f96fd25582a48f16150f178262b0cf92177be810c\",\"ownerFileDenied\":true,\"ownerCredentialDenied\":true,\"ownerProcessDenied\":true,\"ownerDesktopDenied\":true,\"workerWriteAllowed\":true,\"peerFileDenied\":true,\"peerWriteDenied\":true,\"peerRegistryDenied\":true,\"peerProcessDenied\":true,\"codexStarted\":true,\"claudeStarted\":true,\"reviewPolicyVerified\":true}",
+    "review": "{\"version\":2,\"purpose\":\"review\",\"workerSid\":\"S-1-5-21-1111111111-2222222222-3333333333-1003\",\"peerSid\":\"S-1-5-21-1111111111-2222222222-3333333333-1002\",\"configurationHash\":\"ce5861d145e910796dbfb89f96fd25582a48f16150f178262b0cf92177be810c\",\"peerConfigurationHash\":\"751f9a2c909bdf46b6db3bd8211ef423bcae1d008f43ca0bf8e602506c6f0889\",\"ownerFileDenied\":true,\"ownerCredentialDenied\":true,\"ownerProcessDenied\":true,\"ownerDesktopDenied\":true,\"workerWriteAllowed\":true,\"peerFileDenied\":true,\"peerWriteDenied\":true,\"peerRegistryDenied\":true,\"peerProcessDenied\":true,\"codexStarted\":true,\"claudeStarted\":true,\"reviewPolicyVerified\":true}"
+  }
+}

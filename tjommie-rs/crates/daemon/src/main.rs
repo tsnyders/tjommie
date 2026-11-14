@@ -29,6 +29,9 @@ fn run(args: &[String]) -> Result<(), StartupError> {
     if args.first().is_some_and(|arg| arg == "provision") {
         return provision(&args[1..]);
     }
+    if args.first().is_some_and(|arg| arg == "accept-worker") {
+        return accept_worker(&args[1..]);
+    }
     let launch = startup::parse_launch(args, |key| std::env::var(key).ok())?;
     let (auth, stdin) = match launch.mode {
         Mode::Development => (Auth::Development, None),
@@ -135,6 +138,34 @@ fn provision(args: &[String]) -> Result<(), StartupError> {
     );
     let done = daemon::win::logon::provision(&root).map_err(StartupError::Plain)?;
     println!("{done}");
+    Ok(())
+}
+
+/// `accept-worker`: `scripts/vault/accept-worker.ts` of 0.4.2, run once by the owner (unelevated, with Tjommie closed)
+/// after `provision`, a restart and installing the runtime. It proves on this PC that the worker accounts are locked
+/// down and that both provider CLIs start under them, and only then writes the two acceptance receipts that let
+/// Tjommie enable isolated mode. Any failed check writes none and removes an earlier run's.
+fn accept_worker(args: &[String]) -> Result<(), StartupError> {
+    if !args.is_empty() {
+        return Err(StartupError::Plain(
+            "Usage: tjommie-daemon accept-worker (as the Tjommie owner, not elevated, with Tjommie closed)"
+                .into(),
+        ));
+    }
+    let root = daemon::paths::data_root();
+    // The owner sees which install is about to be checked before anything is created.
+    println!(
+        "Checking the Windows worker accounts for {}",
+        root.display()
+    );
+    let runtime = tokio::runtime::Runtime::new()?;
+    let done = runtime
+        .block_on(daemon::win::acceptance::accept_worker(&root))
+        .map_err(StartupError::Plain)?;
+    println!("{done}");
+    println!(
+        "Reopen Tjommie, then sign in to Claude and Codex for the worker accounts in Accounts."
+    );
     Ok(())
 }
 

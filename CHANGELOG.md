@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Bots are now called agents throughout the app.
+- The one-time check that proves the isolated worker accounts are locked down works again (`tjommie-daemon accept-worker`), so isolated mode can be set up.
 
 ## 0.5.0 — 2026-11-13
 
