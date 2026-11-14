@@ -55,6 +55,8 @@ jobs:
           --ignored --exact admin_acceptance_checks_two_real_worker_identities --nocapture
         env:
           TJOMMIE_RS_ADMIN_TESTS: '1'
+          # Prints every step of the worker launch path with its time, so a red run explains itself (see win/diag.rs).
+          TJOMMIE_WORKER_DIAG: '1'
           # TJOMMIE_CI_HOSTED is deliberately not set: this test needs the real Credential Manager.
 
       # Only ever on a hosted (discarded) runner: the same condition the guard checks, so a changed `runs-on` can never

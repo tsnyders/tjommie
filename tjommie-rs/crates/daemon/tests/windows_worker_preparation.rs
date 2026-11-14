@@ -12,6 +12,7 @@ use daemon::win::worker::{Purpose, WorkerConfiguration};
 use serde_json::json;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -507,6 +508,37 @@ async fn settles_an_already_created_pre_ack_child_after_poisoning_without_sendin
         Some(BoundaryError::Termination)
     );
     assert_eq!(f.native.request(1).continues.load(Ordering::SeqCst), 0);
+}
+
+/// A log line that cannot be written must never skip a safety step. With `TJOMMIE_WORKER_DIAG=1` every note goes to
+/// stderr, and `eprintln!` panics when that write fails (the desktop parent gone, a closed pipe). This re-runs the two
+/// tests that end in an unconfirmed stop (the launch that cannot be confirmed stopped, which poisons both identities, and
+/// the exit watcher's retirement, which must still fire the exit) in a child whose stderr refuses every write. A
+/// read-only file handle does that deterministically (access denied), with no race against a closing pipe. With
+/// `eprintln!` the first test's task panics before the poison and the second's watcher before the retirement.
+#[test]
+fn a_stderr_that_cannot_be_written_never_skips_a_poison_or_a_retirement() {
+    let scratch = TempDir::new().unwrap();
+    let refusing = scratch.path().join("stderr.txt");
+    fs::write(&refusing, "").unwrap();
+    let ran = daemon::spawn::command(std::env::current_exe().unwrap())
+        .args([
+            "holds_queued_preparations_out_and_poisons_both_identities_promptly_after_unknown_retirement",
+            "refuses_a_held_verification_result_after_a_live_job_loses_retirement_proof",
+            // Not captured: the harness would otherwise swallow `eprintln!`, and the write would never be tried.
+            "--exact",
+            "--nocapture",
+        ])
+        .env("TJOMMIE_WORKER_DIAG", "1")
+        .stderr(Stdio::from(fs::File::open(&refusing).unwrap()))
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&ran.stdout);
+    assert!(ran.status.success(), "the child failed:\n{stdout}");
+    assert!(
+        stdout.contains("2 passed"),
+        "the child did not run both tests:\n{stdout}"
+    );
 }
 
 /// One `#spawnHeld` refusal: `Unavailable`, promptly, and no native launch at all.
