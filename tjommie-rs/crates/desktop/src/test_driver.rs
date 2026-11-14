@@ -40,7 +40,7 @@ use windows::Win32::System::Pipes::{
 use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 use windows::core::{HSTRING, PWSTR};
 
-use crate::guard::guarded;
+use crate::guard::{guarded, guarded_async};
 
 // Review F4: the driver lets another process click and type in the app, so it never builds into the owner's app.
 const _: () = assert!(
@@ -481,19 +481,22 @@ pub fn start(window: AnyWindowHandle, cx: &mut App) {
         }
     });
     cx.spawn(async move |cx| {
-        while let Some((request, reply)) = inbox.next().await {
-            let answered = cx.update(|cx| {
-                guarded("answer the test driver", || {
-                    window.update(cx, |_, window, cx| handle(request, window, cx))
-                })
-            });
-            let response = match answered {
-                Some(Ok(response)) => response,
-                Some(Err(error)) => Response::failed(format!("{error:#}")),
-                None => Response::failed("answering panicked"),
-            };
-            let _ = reply.send(response);
-        }
+        guarded_async("serve the test driver", async move {
+            while let Some((request, reply)) = inbox.next().await {
+                let answered = cx.update(|cx| {
+                    guarded("answer the test driver", || {
+                        window.update(cx, |_, window, cx| handle(request, window, cx))
+                    })
+                });
+                let response = match answered {
+                    Some(Ok(response)) => response,
+                    Some(Err(error)) => Response::failed(format!("{error:#}")),
+                    None => Response::failed("answering panicked"),
+                };
+                let _ = reply.send(response);
+            }
+        })
+        .await
     })
     .detach();
 }

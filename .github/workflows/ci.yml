@@ -60,7 +60,8 @@ jobs:
       - run: rustup toolchain install
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      # The UI boundary rule (Phase 3 plan T0.4): every desktop UI handler's closure starts with guarded(.
+      # The UI boundary rule (Phase 3 plan T0.4, M0 review F5): every handler registration in the desktop crate runs its
+      # whole closure inside guarded(.
       - run: ./tools/check-guarded.ps1 -SelfTest
       - run: ./tools/check-guarded.ps1
       # --no-fail-fast: one run shows every failing test binary, not only the first one cargo stops at.
