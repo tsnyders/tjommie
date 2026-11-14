@@ -1,4 +1,4 @@
-name: Desktop acceptance (Phase 3: the installer, over R1)
+name: "Desktop acceptance (Phase 3: the installer, over R1)"
 
 # Phase 3 replaces R1's Electron shell with the GPUI app, installed by a hand-written NSIS installer that must reproduce R1's
 # install exactly and install over it (plan M8). This workflow proves that on a disposable runner that has never seen Tjommie,
