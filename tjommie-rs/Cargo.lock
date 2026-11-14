@@ -1511,6 +1511,7 @@ version = "0.5.0"
 dependencies = [
  "base64 0.23.1",
  "cpal",
+ "futures-util",
  "jiff",
  "log",
  "protocol",
