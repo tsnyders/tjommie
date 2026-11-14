@@ -2,9 +2,10 @@
 // No console window, ever (spec §1).
 #![windows_subsystem = "windows"]
 
-use std::path::PathBuf;
+use std::process::ExitCode;
 
 use desktop::notices::{self, Notice};
+use desktop_host::{identity, owner_safety};
 use gpui::{
     App, AppContext as _, Bounds, Context, IntoElement, Render, TitlebarOptions, Window,
     WindowBounds, WindowOptions, div, px, size,
@@ -19,8 +20,14 @@ impl Render for Blank {
     }
 }
 
-fn main() {
-    let root = dev_root();
+fn main() -> ExitCode {
+    let identity = identity::CURRENT;
+    // The data root (spec §4), refused when it is the owner's and this isn't the production build. There is no window
+    // or log yet to say so; the exit code does.
+    let root = match identity.data_root() {
+        Ok(root) if owner_safety::assert_root_allowed(&root, &identity).is_ok() => root,
+        _ => return ExitCode::from(2),
+    };
     desktop_host::log::init(&root);
     desktop_host::crash::install(&root);
     // Windows passes --after-crash when it restarts the app after a crash. Its --hidden (start in the tray) waits for
@@ -36,7 +43,7 @@ fn main() {
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             titlebar: Some(TitlebarOptions {
-                title: Some("Tjommie RS".into()),
+                title: Some(identity.product.into()),
                 ..Default::default()
             }),
             ..Default::default()
@@ -45,11 +52,5 @@ fn main() {
             cx.quit();
         }
     });
-}
-
-/// The dev data root (spec §4) until the build identity (T0.6) chooses the root. Never the production root.
-fn dev_root() -> PathBuf {
-    std::env::var_os("LOCALAPPDATA")
-        .map_or_else(std::env::temp_dir, PathBuf::from)
-        .join("Tjommie-rs")
+    ExitCode::SUCCESS
 }

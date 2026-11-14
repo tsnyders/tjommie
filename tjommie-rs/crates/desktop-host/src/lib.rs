@@ -3,5 +3,7 @@
 //! Its tests build without compiling GPUI.
 
 pub mod crash;
+pub mod identity;
 pub mod log;
+pub mod owner_safety;
 pub mod spawn;

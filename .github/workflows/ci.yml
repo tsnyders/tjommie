@@ -68,6 +68,20 @@ jobs:
         env:
           # Hosted service logons can't reliably reach Credential Manager; those tests run on real PCs.
           TJOMMIE_CI_HOSTED: '1'
+      # Spec §3.10: only the production build carries the update feed (Phase 3 plan T0.6). --workspace reuses the test
+      # build's dependencies instead of compiling GPUI again.
+      - name: The dev and e2e desktop builds have no update feed
+        run: |
+          function Assert-NoFeed {
+            $text = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes('target\debug\tjommie-desktop.exe'))
+            if ($text.Contains('github.com/tsnyders/tjommie')) { throw "The $env:TJOMMIE_IDENTITY desktop build contains the update feed." }
+          }
+          $env:TJOMMIE_IDENTITY = 'dev'
+          cargo build --workspace --locked
+          Assert-NoFeed
+          $env:TJOMMIE_IDENTITY = 'e2e'
+          cargo build --workspace --locked
+          Assert-NoFeed
       # The desktop's daemon-process test hosts the Rust exe when TJOMMIE_DAEMON_EXE names it (plan T9.1). Build it here so
       # that test runs on every change instead of being skipped. It needs the node_modules the step above installed.
       - run: cargo build --locked -p daemon --bin tjommie-daemon
