@@ -12,7 +12,7 @@ Run without compiling GPUI: the models are plain Rust. In CI they run with the r
 | TypeScript module | Why |
 |---|---|
 | `push`, `phone-nav`, `use-phone`, `use-keyboard`, `mobile-identity`, `mobile-style`, `keep-alive`, `native-capability` | phone only (Phase 4) |
-| `use-*` hooks | React hooks become GPUI entities; their logic is in the matching model (`use-dictation` in `dictation`, `use-usage` in `usage`, `use-draft` and `use-sheet` are view state with no logic to port) |
+| `use-*` hooks | React hooks become GPUI entities; their logic is in the matching model (`use-dictation` in `dictation`, `use-usage`'s rules in `usage` (`concerns`, `REFETCH_MS`, `TICK_CAP_MS`, `clock_tick_ms`, `Generation`, `Throttle`; the entity owns the effect: subscribing, the timers and re-rendering), `use-draft` and `use-sheet` are view state with no logic to port) |
 | `utils` (`cn`) | a Tailwind class helper |
 | `theme` | the Aegis theme file (T0.2) |
 | `desktop` | the Electron preload bridge, replaced by direct calls (traits in `logins` and `native_browser_session` mark where) |
@@ -20,7 +20,9 @@ Run without compiling GPUI: the models are plain Rust. In CI they run with the r
 | `local-speech`, `attachment-device` | replaced by the speech and device services (M6) |
 | `remote-pc-fixture` | a test fixture, ported where its tests are (`desktop-host::remote_hosts` tests) |
 | `google-api` | Google is not enabled |
-| `connection`, `remote-hosts`, `relay-wire` | the connection and pairing logic: T1.3 (`client::remote`, `desktop-host::remote_hosts`); the heartbeat/reconnect manager of `connection.ts` waits for the app-level connection state |
+| `connection`, `remote-hosts`, `relay-wire` | ported: `connection.ts` in `model::connection` (below), `remote-hosts.ts` and the pairing in `desktop-host::remote_hosts`, `relay-wire.ts` in `client::remote`. What `model::connection` leaves to the app is listed at the end of its section |
+| `file-thumbnails-retirement.test.ts` (5 cases) | The wait for the native side to finish cleaning up an invalidated thumbnail generation is not ported: `ThumbnailQueue::invalidate` does not wait, and the caller (the thumbnails entity) awaits the native cleanup it started; the contract is documented in `file_thumbnails.rs`. Port these cases with that entity in M5 |
+| `dependencies.test.ts` (1 case) | a `package.json` dependency check; there is no equivalent for the Rust crate (`Cargo.lock` is checked by `--locked` and `tests/pins.rs`) |
 | `appearance-settings`, `theme` storage | device-local settings: T1.5 (`desktop-host::device_settings`) |
 
 # Ported tests
@@ -539,3 +541,52 @@ Extra tests (no TypeScript case): rounds_money_to_cents_the_way_javascript_does_
 | TypeScript test (file: title) | Rust test (model::labels::tests::...) |
 |---|---|
 | format.test.ts (describe "labels"): "names bots, models and states, and says when a bot is gone" | names_bots_models_and_states_and_says_when_a_bot_is_gone |
+
+## connection (packages/ui/lib/connection.ts)
+Five TypeScript files, 36 `it(...)` titles (37 cases: `connection-host.test.ts`'s `it.each(["forget", "refused"])` runs twice, and has a row for each). The rows use the same pinned fixture ids as the TypeScript (`HOST`, the synthetic PC); the PC is `FakePc` in the tests, standing in for `remote-pc-fixture.ts`, and time is a clock the tests move (`advance` is `vi.advanceTimersByTimeAsync`, `settle` is `settle`).
+
+| TypeScript test (file: title) | Rust test (model::connection::tests::...) |
+|---|---|
+| connection.test.ts: "connection: rejects a call made while Tjommie isn't connected, instead of throwing" | rejects_a_call_made_while_tjommie_isnt_connected_instead_of_throwing |
+| connection.test.ts: "connection: rejects a chat's history while Tjommie isn't connected, as the room's does" | rejects_a_chats_history_while_tjommie_isnt_connected_as_the_rooms_does |
+| connection.test.ts: "connection: loads a chat whose history failed to load again on Retry" | loads_a_chat_whose_history_failed_to_load_again_on_retry |
+| connection.test.ts: "connection: forgets a closed exchange, so its messages stop arriving and a reopen loads it again" | forgets_a_closed_exchange_so_its_messages_stop_arriving_and_a_reopen_loads_it_again |
+| connection-start.test.ts: "the first connection: says why after a few failed tries, and keeps trying until the daemon answers" | says_why_after_a_few_failed_tries_and_keeps_trying_until_the_daemon_answers |
+| connection-start.test.ts: "the first connection: says in plain words when the daemon can't be reached" | says_in_plain_words_when_the_daemon_cant_be_reached |
+| connection-start.test.ts: "a pushed connection: shows Reconnecting while it replaces a live one" | shows_reconnecting_while_it_replaces_a_live_one |
+| connection-start.test.ts: "calls in flight: keeps at most 16 calls outstanding, so a burst can't trip the phone host's limit of 32, and answers every call" | keeps_at_most_16_calls_outstanding_so_a_burst_cant_trip_the_phone_hosts_limit_of_32_and_answers_every_call |
+| connection.heartbeat.test.ts: "pings every 20 s while in front, and replaces a link whose ping gets no reply within 10 s" | pings_every_20_s_while_in_front_and_replaces_a_link_whose_ping_gets_no_reply_within_10_s |
+| connection.heartbeat.test.ts: "opens a new wire the moment the network changes" | opens_a_new_wire_the_moment_the_network_changes |
+| connection.heartbeat.test.ts: "rejects a chat.send that was in flight when the link was lost, and never sends it again" | rejects_a_chat_send_that_was_in_flight_when_the_link_was_lost_and_never_sends_it_again |
+| connection.heartbeat.test.ts: "races the LAN endpoints: the first to finish the handshake wins and the slower one is closed" | desktop-host/tests/remote_dialer_race.rs: races_the_lan_endpoints_the_first_to_finish_the_handshake_wins_and_the_slower_one_is_closed |
+| connection.heartbeat.test.ts: "tries the relay after the 1 s LAN window when every LAN endpoint fails" | desktop-host/tests/remote_dialer_race.rs: tries_the_relay_after_the_lan_window_when_every_lan_endpoint_fails |
+| connection.heartbeat.test.ts: "doesn't let a LAN endpoint that connects but stalls its handshake hold the relay back past the 1 s window" | desktop-host/tests/remote_dialer_race.rs: does_not_let_a_lan_endpoint_that_connects_but_stalls_its_handshake_hold_the_relay_back_past_the_lan_window |
+| connection.heartbeat.test.ts: "stops heartbeat while hidden and checks the link on return without a foreground service" | stops_heartbeat_while_hidden_and_checks_the_link_on_return_without_a_foreground_service |
+| connection.resume.test.ts: "locked 30 min then visible: the dead link is replaced after a bounded ping, without a failed screen, and the open chat catches up" | locked_30_min_then_visible_the_dead_link_is_replaced_after_a_bounded_ping_without_a_failed_screen_and_the_open_chat_catches_up |
+| connection.resume.test.ts: "keeps the link through a quick trip away, checking it with a ping instead of reconnecting" | keeps_the_link_through_a_quick_trip_away_checking_it_with_a_ping_instead_of_reconnecting |
+| connection.resume.test.ts: "admits fresh file actions after a disconnect only when native thumbnail cleanup is confirmed" | admits_fresh_file_actions_after_a_disconnect_only_when_native_thumbnail_cleanup_is_confirmed |
+| connection.resume.test.ts: "keeps authorized native save data when returning from a picker after two minutes on a healthy link" | keeps_authorized_native_save_data_when_returning_from_a_picker_after_two_minutes_on_a_healthy_link |
+| connection.resume.test.ts: "keeps only a byte-free pending picker through a ten-minute hidden disconnect and reacquires a fresh client" | keeps_only_a_byte_free_pending_picker_through_a_ten_minute_hidden_disconnect_and_reacquires_a_fresh_client |
+| connection.resume.test.ts: "fences selection A to B to A while allowing a same-selection reconnect" | fences_selection_a_to_b_to_a_while_allowing_a_same_selection_reconnect |
+| connection.resume.test.ts: "bounds fresh authorization to thirty visible seconds and leaves no active transfer" | bounds_fresh_authorization_to_thirty_visible_seconds_and_leaves_no_active_transfer |
+| connection.resume.test.ts: "cancels a pending authorization promptly without a late ping closing a healthy link" | cancels_a_pending_authorization_promptly_without_a_late_ping_closing_a_healthy_link |
+| connection.resume.test.ts: "does not cancel a staged native save when a foreground ping expires while the picker is hidden" | does_not_cancel_a_staged_native_save_when_a_foreground_ping_expires_while_the_picker_is_hidden |
+| connection.resume.test.ts: "does not let an older unanswered ping replace a link verified after returning" | does_not_let_an_older_unanswered_ping_replace_a_link_verified_after_returning |
+| connection.resume.test.ts: "fences an overdue hidden ping before the queued resume check runs" | fences_an_overdue_hidden_ping_before_the_queued_resume_check_runs |
+| connection.resume.test.ts: "host offline over relay: the relay's 4404 says the PC is offline, over the bots already listed" | host_offline_over_relay_the_relays_4404_says_the_pc_is_offline_over_the_bots_already_listed |
+| connection.resume.test.ts: "can't reach the PC: a saved PC that stops answering shows unreachable over the cached screens, never the failed screen" | cant_reach_the_pc_a_saved_pc_that_stops_answering_shows_unreachable_over_the_cached_screens_never_the_failed_screen |
+| connection.resume.test.ts: "revoked: the PC's authenticated refusal is terminal: removed, and nothing reopens" | revoked_the_pcs_authenticated_refusal_is_terminal_removed_and_nothing_reopens |
+| connection.resume.test.ts: "backs off 0, 1, 2, 5 and 10 s, then keeps trying every 10 s while the app is in front" | backs_off_0_1_2_5_and_10_s_then_keeps_trying_every_10_s_while_the_app_is_in_front |
+| connection.resume.test.ts: "says why a first connect failed, and tries again on return without taking the connect screen away" | says_why_a_first_connect_failed_and_tries_again_on_return_without_taking_the_connect_screen_away |
+| connection.resume.test.ts: "stops retrying while hidden without keep-alive, and tries again the moment the app is back" | stops_retrying_while_hidden_without_keep_alive_and_tries_again_the_moment_the_app_is_back |
+| connection-host.test.ts: "hard-cancels a byte-free picker on forget instead of rebinding after reconnect" (it.each, "forget") | hard_cancels_a_byte_free_picker_on_forget_instead_of_rebinding_after_reconnect |
+| connection-host.test.ts: "hard-cancels a byte-free picker on refused instead of rebinding after reconnect" (it.each, "refused") | hard_cancels_a_byte_free_picker_on_refused_instead_of_rebinding_after_reconnect |
+| connection-host.test.ts: "closes previous host file handles before a new host becomes ready" | closes_previous_host_file_handles_before_a_new_host_becomes_ready |
+| connection-host.test.ts: "remembers which saved PC the desktop window is on, from the moment it's picked until This PC or Forget" | remembers_which_saved_pc_the_desktop_window_is_on_from_the_moment_its_picked_until_this_pc_or_forget |
+| connection-host.test.ts: "forgets a PC that removed this device only once its key is gone: a failed delete leaves the removed screen, the PC and its key as they were" | forgets_a_pc_that_removed_this_device_only_once_its_key_is_gone_a_failed_delete_leaves_the_removed_screen_the_pc_and_its_key_as_they_were |
+
+`admits_fresh_file_actions_after_a_disconnect_only_when_native_thumbnail_cleanup_is_confirmed` ports the connection's half of its TypeScript test: no new link opens before the file cleanup is confirmed. Its `queueThumbnail` and `pauseThumbnailWork` assertions are `file_thumbnails`' (`ThumbnailQueue`), whose header says the wait on native cleanup is not ported there.
+
+Decisions the TypeScript did not make, each with a test of its own in `model::connection::tests`: a close code 4003 says `update` and is not retried (`a_daemon_that_speaks_another_protocol_says_update_and_is_not_retried`, `a_remote_link_that_ends_is_replaced_and_a_pc_on_another_protocol_says_update`; the TypeScript has the code and no test); events a link missed end it and start a reconnect (`events_that_a_link_missed_end_it_and_start_a_reconnect`); a chat load and a Forget finish even if the caller stops waiting (`a_chat_load_whose_caller_gives_up_still_finishes`, `a_forget_whose_caller_gives_up_still_leaves_the_pc`); a call, a wait for the file host and a download that are dropped leave nothing registered (`a_dropped_call_gives_its_place_in_line_back`, `a_download_that_is_dropped_or_waiting_leaves_nothing_registered`); a timer that fires twice, or after its connection was replaced, starts nothing (`a_timer_that_fires_twice_or_after_its_connection_was_replaced_starts_nothing`); `next_timer` and `timers_changed` (the sans-IO clock); `route_push`, the daemon-failed and restart path, Forget on a phone, and events during the startup lists and a catch-up (the remaining tests with no TypeScript counterpart).
+
+Not ported: `desktop()` and its IPC subscriptions (the app calls `on_connection` and `on_daemon_failed`), `document` and the page identity `captureAttachmentSave` compared (a WebView reload), `onNetworkChange` (the app calls `network_changed`), the `outside` status for a missing Electron bridge, and `invalidateThumbnailWork` (the app retires its `ThumbnailQueue` inside `Environment::invalidate_files`).
