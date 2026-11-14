@@ -9,6 +9,8 @@ use std::backtrace::Backtrace;
 use std::cell::Cell;
 use std::panic::{AssertUnwindSafe, PanicHookInfo};
 use std::path::Path;
+use std::sync::{Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 use windows::Win32::System::Recovery::{
     RESTART_NO_PATCH, RESTART_NO_REBOOT, RegisterApplicationRestart,
@@ -22,6 +24,15 @@ thread_local! {
     /// panic unwinds its own thread, which tokio turns into a failed task (review F1).
     static UI_THREAD: Cell<bool> = const { Cell::new(false) };
 }
+
+/// How often a panic from one place is written in full, so a handler that panics every frame can't flood the log;
+/// the ones between are counted (review F7). A crash is always written.
+const EVERY: Duration = Duration::from_secs(60);
+
+/// Where recent panics came from, when one from there was last written, and how many from there were skipped since.
+type Recent = Vec<(String, Instant, u32)>;
+
+static RECENT: Mutex<Recent> = Mutex::new(Vec::new());
 
 /// Runs `f` and catches a panic in it, which the hook logs as caught instead of crashing the app.
 pub fn catching<R>(f: impl FnOnce() -> R) -> std::thread::Result<R> {
@@ -43,7 +54,16 @@ pub fn install(root: &Path) {
         } else {
             "background panic"
         };
-        crate::log::append(&file, &entry(info, kind));
+        let skipped = if kind == "crash" {
+            Some(0)
+        } else {
+            let location = info.location().map(ToString::to_string).unwrap_or_default();
+            let mut recent = RECENT.lock().unwrap_or_else(PoisonError::into_inner);
+            admit(&mut recent, &location, Instant::now())
+        };
+        if let Some(skipped) = skipped {
+            crate::log::append(&file, &entry(info, kind, skipped));
+        }
         if kind == "crash" {
             std::process::abort();
         }
@@ -60,10 +80,33 @@ pub fn install(root: &Path) {
     }
 }
 
-fn entry(info: &PanicHookInfo<'_>, kind: &str) -> String {
+/// Whether to write a panic from `location` at `now`: `Some(how many from there were skipped since the last one
+/// written)`, or `None` to skip it.
+fn admit(recent: &mut Recent, location: &str, now: Instant) -> Option<u32> {
+    match recent.iter_mut().find(|(at, ..)| at == location) {
+        None => {
+            recent.push((location.to_owned(), now, 0));
+            Some(0)
+        }
+        Some((_, written, skipped)) if now.duration_since(*written) < EVERY => {
+            *skipped += 1;
+            None
+        }
+        Some((_, written, skipped)) => {
+            *written = now;
+            Some(std::mem::take(skipped))
+        }
+    }
+}
+
+fn entry(info: &PanicHookInfo<'_>, kind: &str, skipped: u32) -> String {
     let thread = std::thread::current();
+    let skipped = match skipped {
+        0 => String::new(),
+        n => format!("({n} more from there since the last entry)\n"),
+    };
     format!(
-        "{} Tjommie {} {kind} in thread '{}': {info}\n{}\n",
+        "{} Tjommie {} {kind} in thread '{}': {info}\n{skipped}{}\n",
         jiff::Timestamp::now(),
         env!("CARGO_PKG_VERSION"),
         thread.name().unwrap_or("unnamed"),
@@ -77,6 +120,19 @@ mod tests {
     use windows::Win32::System::Recovery::GetApplicationRestartSettings;
     use windows::Win32::System::Threading::GetCurrentProcess;
     use windows::core::PWSTR;
+
+    #[test]
+    fn a_storm_is_written_once_a_minute() {
+        let mut recent = Vec::new();
+        let start = Instant::now();
+        let at = |secs| start + Duration::from_secs(secs);
+        assert_eq!(admit(&mut recent, "a.rs:1:1", at(0)), Some(0));
+        assert_eq!(admit(&mut recent, "a.rs:1:1", at(1)), None);
+        assert_eq!(admit(&mut recent, "b.rs:2:2", at(2)), Some(0));
+        assert_eq!(admit(&mut recent, "a.rs:1:1", at(30)), None);
+        assert_eq!(admit(&mut recent, "a.rs:1:1", at(61)), Some(2));
+        assert_eq!(admit(&mut recent, "a.rs:1:1", at(62)), None);
+    }
 
     /// Set in the child half of `hook_writes_log`: this test binary run again, which crashes on purpose.
     const CHILD_ROOT: &str = "TJOMMIE_CRASH_TEST_ROOT";
@@ -102,7 +158,10 @@ mod tests {
             let registered = String::from_utf16_lossy(&line[..len as usize - 1]);
             assert_eq!(registered, "--hidden --after-crash");
             assert_eq!(flags, (RESTART_NO_PATCH | RESTART_NO_REBOOT).0);
-            assert!(catching(|| panic!("planted caught panic")).is_err());
+            // A storm from one place is written once a minute (review F7).
+            for _ in 0..3 {
+                assert!(catching(|| panic!("planted caught panic")).is_err());
+            }
             // Another thread's panic unwinds that thread only (review F1); tokio contains its tasks' panics this way.
             assert!(
                 std::thread::spawn(|| panic!("planted background panic"))
@@ -137,6 +196,7 @@ mod tests {
             log.contains("caught panic in thread '") && log.contains("planted caught panic"),
             "{log}"
         );
+        assert_eq!(log.matches("planted caught panic").count(), 1, "{log}");
         assert!(
             log.contains(" crash in thread '") && log.contains("planted crash"),
             "{log}"

@@ -34,6 +34,17 @@ pub struct Notices(pub Vec<Notice>);
 
 impl Global for Notices {}
 
+impl Notices {
+    /// Adds `notice` unless the same one is already waiting, so a panic storm shows one toast (review F7).
+    fn add(&mut self, notice: Notice) -> bool {
+        let new = !self.0.contains(&notice);
+        if new {
+            self.0.push(notice);
+        }
+        new
+    }
+}
+
 thread_local! {
     static OUTBOX: RefCell<Option<UnboundedSender<Notice>>> = const { RefCell::new(None) };
 }
@@ -66,12 +77,30 @@ pub fn init(cx: &mut App) {
         while let Some(notice) = inbox.next().await {
             cx.update(|cx| {
                 guarded("show a notice", || {
-                    log::info!("Notice: {}", notice.text());
-                    cx.global_mut::<Notices>().0.push(notice);
-                    cx.refresh_windows();
+                    if cx.global_mut::<Notices>().add(notice) {
+                        log::info!("Notice: {}", notice.text());
+                        cx.refresh_windows();
+                    }
                 })
             });
         }
     })
     .detach();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_waiting_notice_is_not_added_twice() {
+        let mut notices = Notices::default();
+        assert!(notices.add(Notice::SomethingWentWrong));
+        assert!(!notices.add(Notice::SomethingWentWrong));
+        assert!(notices.add(Notice::ClosedUnexpectedly));
+        assert_eq!(
+            notices.0,
+            [Notice::SomethingWentWrong, Notice::ClosedUnexpectedly]
+        );
+    }
 }

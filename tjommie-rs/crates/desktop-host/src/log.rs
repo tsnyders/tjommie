@@ -3,6 +3,13 @@
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, PoisonError};
+
+/// Past this size a log moves to `<name>.1`, replacing the one before, so each log keeps under twice this (review F7).
+const CAP: u64 = 4 << 20;
+
+/// One append at a time, so two threads can't both move a full log aside.
+static APPENDING: Mutex<()> = Mutex::new(());
 
 /// Sends `log` records at Info and above to desktop.log. Call once, at start.
 pub fn init(root: &Path) {
@@ -14,10 +21,16 @@ pub fn init(root: &Path) {
     }
 }
 
-/// Appends `text` to `file`, making its folder; a failure is dropped.
+/// Appends `text` to `file`, making its folder and moving a full file aside first; a failure is dropped.
 pub(crate) fn append(file: &Path, text: &str) {
+    let _appending = APPENDING.lock().unwrap_or_else(PoisonError::into_inner);
     if let Some(dir) = file.parent() {
         let _ = std::fs::create_dir_all(dir);
+    }
+    if std::fs::metadata(file).is_ok_and(|meta| meta.len() >= CAP) {
+        let mut aside = file.as_os_str().to_owned();
+        aside.push(".1");
+        let _ = std::fs::rename(file, aside);
     }
     if let Ok(mut out) = std::fs::OpenOptions::new()
         .create(true)
@@ -92,5 +105,19 @@ mod tests {
             file: file.join("logs").join("desktop.log"),
         };
         info(&blocked, "lost");
+    }
+
+    #[test]
+    fn moves_a_full_log_aside() {
+        let root = tempfile::tempdir().unwrap();
+        let file = root.path().join("desktop.log");
+        std::fs::File::create(&file).unwrap().set_len(CAP).unwrap();
+        append(&file, "next\n");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "next\n");
+        let aside = root.path().join("desktop.log.1");
+        assert_eq!(std::fs::metadata(&aside).unwrap().len(), CAP);
+        // Under the cap, lines stay in the same file.
+        append(&file, "more\n");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "next\nmore\n");
     }
 }
