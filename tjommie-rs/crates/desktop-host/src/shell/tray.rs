@@ -524,10 +524,13 @@ mod tests {
             events,
         )
         .unwrap();
-        assert!(
-            tray.icon_added(),
-            "Windows should take a notification-area icon"
-        );
+        // A machine with no desktop shell (a CI runner, a service) can't take the icon; the routing below doesn't need it.
+        if std::env::var_os("CI").is_none() {
+            assert!(
+                tray.icon_added(),
+                "Windows should take a notification-area icon"
+            );
+        }
         tray.set_update_state(UpdateState::Ready {
             version: "9.9.9".into(),
         });
