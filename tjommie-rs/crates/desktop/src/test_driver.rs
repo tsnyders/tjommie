@@ -19,8 +19,8 @@ use gpui::{
     A11ySubtreeBuilder, AnyElement, AnyWindowHandle, App, Bounds, Element, ElementId, FocusHandle,
     GlobalElementId, InspectorElementId, InteractiveElement, Interactivity, IntoElement, Keystroke,
     LayoutId, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement,
-    Pixels, PlatformInput, Point, StatefulInteractiveElement, StyleRefinement, Styled, Window,
-    point, px,
+    Pixels, PlatformInput, Point, SharedString, StatefulInteractiveElement, StyleRefinement,
+    Styled, Window, point, px,
 };
 use serde::{Deserialize, Serialize};
 use windows::Win32::Foundation::{ERROR_PIPE_CONNECTED, HANDLE, HLOCAL, LocalFree};
@@ -342,12 +342,12 @@ pub fn begin_frame() {
 /// it forwards to the element unchanged.
 pub struct Observed<E> {
     inner: E,
-    id: &'static str,
+    id: SharedString,
     focus: Option<FocusHandle>,
 }
 
 impl<E> Observed<E> {
-    pub fn new(inner: E, id: &'static str) -> Self {
+    pub fn new(inner: E, id: SharedString) -> Self {
         Observed {
             inner,
             id,
@@ -400,7 +400,7 @@ impl<E: Element> Element for Observed<E> {
         let mut node = gpui::accesskit::Node::new(role.unwrap_or(gpui::Role::Unknown));
         self.inner.write_a11y_info(&mut node);
         let observed = UiNode {
-            id: self.id.to_owned(),
+            id: self.id.to_string(),
             role: role.map(|role| format!("{role:?}")).unwrap_or_default(),
             text: node.label().or(node.value()).unwrap_or_default().to_owned(),
             enabled: !node.is_disabled(),

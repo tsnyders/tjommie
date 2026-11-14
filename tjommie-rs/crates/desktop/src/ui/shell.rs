@@ -117,6 +117,7 @@ impl Render for Shell {
                     .window_control_area(WindowControlArea::Drag),
             )
             .child(caption_buttons(theme))
+            .child(crate::ui::primitives::toast::toasts(cx))
     }
 }
 
