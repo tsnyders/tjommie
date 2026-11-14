@@ -2,7 +2,7 @@
 //! pages of its own to navigate, so only the second half of `navigationFor` survives: a web link goes to the default
 //! browser, anything else is blocked. Folders and files open only when they pass the local-path rules.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use url::Url;
 use windows::Win32::UI::Shell::ShellExecuteW;
@@ -81,15 +81,29 @@ pub fn open_folder(path: &str) -> Result<(), String> {
     shell_open(path)
 }
 
+/// `%SystemRoot%explorer.exe`, by absolute path (the daemon's convention for system tools, `cli::system32`): never a
+/// lookup through the PATH or the current folder.
+fn explorer_exe() -> PathBuf {
+    std::env::var_os("SystemRoot")
+        .map_or_else(|| PathBuf::from(r"C:Windows"), PathBuf::from)
+        .join("explorer.exe")
+}
+
+/// Explorer asked to select `path`. The path was checked to be an existing local file, which can't hold a quote, so
+/// quoting it by hand (Explorer wants `/select,"path"` as one argument) is safe.
+fn explorer_command(path: &str) -> spawn::NoWindowCommand {
+    use std::os::windows::process::CommandExt as _;
+    let mut command = spawn::command(explorer_exe());
+    command.raw_arg(format!("/select,\"{path}\""));
+    command
+}
+
 /// `file:show`: selects a file in Explorer. Only a real, local file.
 pub fn show_in_folder(path: &str) -> Result<(), String> {
     if !local_file_path(path) || !Path::new(path).is_file() {
         return Err("That file can't be shown.".into());
     }
-    use std::os::windows::process::CommandExt as _;
-    let mut command = spawn::command("explorer.exe");
-    command.raw_arg(format!("/select,\"{path}\""));
-    command
+    explorer_command(path)
         .spawn()
         .map(drop)
         .map_err(|_| "Windows could not show that file.".to_string())
@@ -159,6 +173,18 @@ mod tests {
         ] {
             assert!(open_external_with(blocked, never).is_err(), "{blocked}");
         }
+    }
+
+    // Review finding 6: a system tool is started by its absolute path, as the daemon starts taskkill, never found through the
+    // PATH or the current folder, where a look-alike could sit.
+    #[test]
+    fn explorer_is_started_by_its_full_system_path() {
+        let explorer = explorer_exe();
+        assert!(explorer.is_absolute(), "{}", explorer.display());
+        assert!(explorer.is_file(), "{}", explorer.display());
+        assert!(explorer.ends_with("explorer.exe"));
+        let command = explorer_command(r"C:a bc.txt");
+        assert_eq!(command.get_program(), explorer.as_os_str());
     }
 
     #[test]

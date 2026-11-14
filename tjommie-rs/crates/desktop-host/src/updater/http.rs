@@ -14,7 +14,7 @@ const MAX_REDIRECTS: usize = 5;
 /// Where the updater may ask.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Policy {
-    /// The production feed: HTTPS to github.com or its asset hosts, on the default port, with no credentials in the
+    /// The production feed: HTTPS to github.com or the two hosts its release downloads redirect to, on the default port, with no credentials in the
     /// address.
     GitHub,
     /// The speech model: HTTPS to huggingface.co or its `*.hf.co` download hosts, on the default port, with no
@@ -37,6 +37,15 @@ fn is_loopback(url: &Url) -> bool {
         }
 }
 
+/// The hosts a GitHub release is served from: github.com, which redirects a download to one of the two asset hosts
+/// (`objects.` until 2025, `release-assets.` since). Named exactly: `*.githubusercontent.com` also holds a raw-file host and
+/// an image proxy that serves other people's bytes.
+const GITHUB_HOSTS: [&str; 3] = [
+    "github.com",
+    "objects.githubusercontent.com",
+    "release-assets.githubusercontent.com",
+];
+
 fn is_github(url: &Url) -> bool {
     let Some(Host::Domain(name)) = url.host() else {
         return false;
@@ -46,7 +55,7 @@ fn is_github(url: &Url) -> bool {
         && url.username().is_empty()
         && url.password().is_none()
         && url.port().is_none_or(|port| port == 443)
-        && (name == "github.com" || name.ends_with(".githubusercontent.com"))
+        && GITHUB_HOSTS.contains(&name.as_str())
 }
 
 /// Where the speech model may come from: Hugging Face and its download hosts (`huggingface.co`, `*.hf.co`).
@@ -300,6 +309,15 @@ mod tests {
             "https://127.0.0.1/x",
             "https://api.github.com:444/x",
             "https://user{AT}github.com/x",
+            // Other GitHub hosts that aren't where releases are served from: a raw-file host, an image proxy that serves
+            // third-party bytes, the bare domain, the API.
+            "https://raw.githubusercontent.com/x/y/main/a.exe",
+            "https://camo.githubusercontent.com/abc",
+            "https://user-images.githubusercontent.com/1/a.png",
+            "https://githubusercontent.com/x",
+            "https://api.github.com/repos/x/y",
+            "https://objects.githubusercontent.com.evil.example/x",
+            "https://evil.objects.githubusercontent.com/x",
         ] {
             let bad = bad.replace("{AT}", "@");
             assert!(!is_github(&url(&bad)), "{bad}");

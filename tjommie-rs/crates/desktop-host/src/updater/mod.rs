@@ -3,7 +3,8 @@
 //! The chain of trust, link by link, because the app runs whatever this downloads:
 //! 1. The feed's address is compiled into production builds only, or (update-test builds) a local address from the
 //!    environment. Dev and e2e builds have none, and the address isn't even in their binary (`identity`).
-//! 2. The feed and the installer are fetched over HTTPS from github.com or its asset hosts, and every redirect hop is
+//! 2. The feed and the installer are fetched over HTTPS from github.com or the two hosts its release downloads redirect to
+//!    (objects. and release-assets.githubusercontent.com, by name), and every redirect hop is
 //!    checked against that list (`http::Policy`).
 //! 3. `latest.yml` is parsed strictly (`feed`): a plain `.exe` name, a SHA-512 of exactly 64 bytes, agreeing fields.
 //! 4. The download's SHA-512 must equal the feed's, and its size must match. It is checked again just before the
@@ -203,8 +204,10 @@ pub struct Updater {
 }
 
 fn sha512_of(path: &Path) -> std::io::Result<[u8; 64]> {
-    use std::io::Read as _;
-    let mut file = std::fs::File::open(path)?;
+    sha512_of_reader(&mut std::fs::File::open(path)?)
+}
+
+fn sha512_of_reader(file: &mut impl std::io::Read) -> std::io::Result<[u8; 64]> {
     let mut hash = Sha512::new();
     let mut buffer = vec![0u8; 1 << 20];
     loop {
@@ -215,6 +218,26 @@ fn sha512_of(path: &Path) -> std::io::Result<[u8; 64]> {
         hash.update(buffer.get(..read).unwrap_or_default());
     }
     Ok(hash.finalize().into())
+}
+
+/// Opens the installer so nobody can change it while it is checked and started: shared for reading only, so any other
+/// open for writing, deleting or renaming (a swap) is refused by Windows for as long as the returned handle lives. Checks
+/// its SHA-512 through that handle. Hold it until the installer has been started.
+fn open_for_launch(path: &Path, expected: &[u8; 64]) -> std::io::Result<std::fs::File> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    /// FILE_SHARE_READ: others may read it (the loader must, to start it), nothing else.
+    const FILE_SHARE_READ: u32 = 1;
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .open(path)?;
+    if &sha512_of_reader(&mut file)? != expected {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "the installer does not match its checksum",
+        ));
+    }
+    Ok(file)
 }
 
 impl Updater {
@@ -524,7 +547,7 @@ impl Updater {
             core.restart_requested = false;
             (ready, force_run)
         };
-        if !sha512_of(&ready.path).is_ok_and(|sha| sha == ready.sha512) {
+        let Ok(held) = open_for_launch(&ready.path, &ready.sha512) else {
             let _ = std::fs::remove_file(&ready.path);
             self.core().auto_install = false;
             self.change(
@@ -534,14 +557,16 @@ impl Updater {
                 true,
             );
             return Err(CHANGED_ON_DISK.into());
-        }
+        };
         // electron-updater's arguments: `--updated` is how the new app knows to start in the tray, and `--force-run`
         // makes the silent installer start it again when the user chose Restart to update.
         let mut args = vec!["--updated", "/S"];
         if force_run {
             args.push("--force-run");
         }
-        self.inner.deps.launcher.launch(&ready.path, &args)?;
+        let launched = self.inner.deps.launcher.launch(&ready.path, &args);
+        drop(held); // only now: the installer has started, and may replace its own files
+        launched?;
         self.core().launched = true;
         Ok(true)
     }

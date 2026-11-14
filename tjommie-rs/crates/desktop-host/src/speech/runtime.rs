@@ -6,7 +6,7 @@
 //! Events and error messages never carry a path or a system error: the audio and the transcript are private.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -242,7 +242,7 @@ struct Inner {
     initialized: OnceCell<bool>,
     /// A test can make removing a session folder fail, as a locked file would.
     #[cfg(test)]
-    fail_cleanup: AtomicBool,
+    fail_cleanup: std::sync::atomic::AtomicBool,
     /// A test can shorten the 60 s recording limit; 0 keeps it.
     #[cfg(test)]
     recording_limit_ms: AtomicU64,
@@ -286,7 +286,7 @@ impl SpeechRuntime {
                 state: Mutex::new(State::default()),
                 initialized: OnceCell::new(),
                 #[cfg(test)]
-                fail_cleanup: AtomicBool::new(false),
+                fail_cleanup: std::sync::atomic::AtomicBool::new(false),
                 #[cfg(test)]
                 recording_limit_ms: AtomicU64::new(0),
             }),
@@ -688,13 +688,10 @@ impl SpeechRuntime {
     }
 
     async fn transcribe(&self, session: &Arc<Session>) {
-        let timed_out = Arc::new(AtomicBool::new(false));
         let timeout = {
             let session = Arc::clone(session);
-            let timed_out = Arc::clone(&timed_out);
             tokio::spawn(async move {
                 tokio::time::sleep(Duration::from_millis(SPEECH_LIMITS.timeout_ms)).await;
-                timed_out.store(true, Ordering::SeqCst);
                 session.cancel.send_replace(true);
             })
         };

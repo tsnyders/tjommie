@@ -26,7 +26,8 @@ pub fn read_string(path: &Path, name: &str) -> Result<String, String> {
         if size == 0 {
             return Err(unreadable("size"));
         }
-        let mut data = vec![0u8; size as usize];
+        // The version data is read as 16-bit text below, so the buffer must be aligned for that: a Vec<u32> is.
+        let mut data = vec![0u32; (size as usize).div_ceil(4)];
         GetFileVersionInfoW(
             PCWSTR(file.as_ptr()),
             None,

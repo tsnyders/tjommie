@@ -901,10 +901,20 @@ mod tests {
             &format!("com.tsnyders.tjommie-rs.test.{}", uuid::Uuid::new_v4()),
             clicks,
         );
-        // (A machine without the notification platform can't make a notifier at all, which is the same answer.)
-        if let Ok(notifier) = toasts.notifier() {
-            assert!(notifier.Setting().is_err());
-        }
+        // A desktop has the notification platform, and this must hold there. Only a CI runner may lack it, and then the
+        // skip is said out loud rather than passing as a silent no-op.
+        let notifier = match toasts.notifier() {
+            Ok(notifier) => notifier,
+            Err(error) => {
+                assert!(
+                    std::env::var_os("CI").is_some(),
+                    "a desktop has a notification platform: {error:?}"
+                );
+                eprintln!("skipped: this CI machine has no notification platform ({error:?})");
+                return;
+            }
+        };
+        assert!(notifier.Setting().is_err());
     }
 
     // Shows one real toast ("Tjommie RS notify test") under its own test id, which this test registers and removes.

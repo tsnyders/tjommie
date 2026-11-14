@@ -89,10 +89,23 @@ impl Inspector for FakeInspector {
 #[derive(Default)]
 struct FakeLauncher {
     launches: Mutex<Vec<(PathBuf, Vec<String>)>>,
+    /// What a writer with the user's rights could do to the installer at the moment it is launched: (open it for
+    /// writing, delete it, rename it), each true if it was refused.
+    swaps: Mutex<Vec<(bool, bool, bool)>>,
 }
 
 impl InstallerLauncher for FakeLauncher {
     fn launch(&self, installer: &Path, args: &[&str]) -> Result<(), String> {
+        let write_refused = std::fs::OpenOptions::new()
+            .write(true)
+            .open(installer)
+            .is_err();
+        let delete_refused = std::fs::remove_file(installer).is_err();
+        let rename_refused = std::fs::rename(installer, installer.with_extension("moved")).is_err();
+        self.swaps
+            .lock()
+            .unwrap()
+            .push((write_refused, delete_refused, rename_refused));
         self.launches.lock().unwrap().push((
             installer.to_path_buf(),
             args.iter().map(|arg| (*arg).to_string()).collect(),
@@ -614,6 +627,46 @@ async fn rejects_foreign_app_id() {
             "the refused file is deleted"
         );
     }
+}
+
+// Review finding 5. Checking the file and then starting it leaves a window in which the file could be swapped. The check is
+// made through a handle that denies writing, deleting and renaming, held until the installer has been started.
+#[tokio::test]
+async fn the_installer_cant_be_swapped_between_the_check_and_the_launch() {
+    let f = fixture(serving_a_new_version(), Options::default());
+    f.updater.check().await;
+    assert_eq!(f.updater.install_on_quit(), Ok(true));
+    assert_eq!(*f.launcher.swaps.lock().unwrap(), [(true, true, true)]);
+    let file = f.root.path().join("tjommie-update-0.7.0").join(INSTALLER);
+    assert_eq!(
+        std::fs::read(&file).unwrap(),
+        installer_bytes(),
+        "and the file is as it was"
+    );
+    // Once the installer has started the handle is let go, so the installer itself can replace its own files.
+    assert!(std::fs::OpenOptions::new().write(true).open(&file).is_ok());
+}
+
+// The real launcher starts a file that is held open that way (a process can be created from it), with no console.
+#[tokio::test]
+async fn the_real_launcher_starts_an_installer_held_open_for_reading() {
+    let windir = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:Windows".into());
+    let folder = tempfile::tempdir().unwrap();
+    let installer = folder.path().join("Setup.exe");
+    // Any small program will do; it ignores arguments it doesn't know and exits.
+    std::fs::copy(
+        Path::new(&windir).join("System32").join("whoami.exe"),
+        &installer,
+    )
+    .unwrap();
+    let held = open_for_launch(&installer, &sha512(&std::fs::read(&installer).unwrap())).unwrap();
+    assert_eq!(
+        DetachedLauncher.launch(&installer, &["--updated", "/S"]),
+        Ok(())
+    );
+    drop(held);
+    // Let the child finish before the folder is removed.
+    tokio::time::sleep(Duration::from_millis(500)).await;
 }
 
 // The file is checked again just before it runs: whatever happened to it on disk since the download is not run.

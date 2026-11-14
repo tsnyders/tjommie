@@ -152,6 +152,87 @@ impl AppInfo {
     }
 }
 
+fn is_separator(c: char) -> bool {
+    c == '\\' || c == '/'
+}
+
+/// Where a path that begins at `at` begins: a drive and a separator (`C:\`, `c:/`), or a UNC share (`\\server`), not in
+/// the middle of a word.
+fn path_starts(chars: &[char], at: usize) -> bool {
+    let after = |offset: usize| chars.get(at + offset).copied();
+    let standalone = at == 0
+        || chars
+            .get(at - 1)
+            .is_some_and(|before| !before.is_alphanumeric() && *before != '\\');
+    let first = chars.get(at).copied();
+    standalone
+        && (first.is_some_and(|c| c.is_ascii_alphabetic())
+            && after(1) == Some(':')
+            && after(2).is_some_and(is_separator)
+            || first == Some('\\')
+                && after(1) == Some('\\')
+                && after(2).is_some_and(|c| !is_separator(c)))
+}
+
+/// Where a path that began earlier ends: a quote, an angle bracket, a pipe, a line end, or a colon and a space (`path: error`).
+fn path_ends(chars: &[char], at: usize) -> bool {
+    match chars.get(at) {
+        None | Some('"' | '\'' | '<' | '>' | '|' | '\r' | '\n') => true,
+        Some(':') => chars.get(at + 1) == Some(&' '),
+        Some(_) => false,
+    }
+}
+
+/// `C:\a\b\c\file.rs:12:5` becomes `...\c\file.rs:12:5`: the last two parts and the line numbers, no folder names.
+fn redact_one_path(path: &str) -> String {
+    // A trailing `:line` or `:line:column` is not part of the path.
+    let mut numbers = Vec::new();
+    let mut body = path;
+    while let Some((rest, tail)) = body.rsplit_once(':') {
+        if numbers.len() < 2 && !tail.is_empty() && tail.bytes().all(|b| b.is_ascii_digit()) {
+            numbers.push(tail);
+            body = rest;
+        } else {
+            break;
+        }
+    }
+    let parts: Vec<&str> = body
+        .split(is_separator)
+        .filter(|part| !part.is_empty())
+        .collect();
+    let keep = parts.len().saturating_sub(2);
+    let mut out = format!("...\\{}", parts.get(keep..).unwrap_or_default().join("\\"));
+    for number in numbers.iter().rev() {
+        out.push(':');
+        out.push_str(number);
+    }
+    out
+}
+
+/// Replaces every absolute Windows path in `text` with its last two parts. A crash log's backtrace names the files of the
+/// machine that built the app, and its panic messages can name a folder of the person's; neither belongs in a report that
+/// leaves the PC.
+pub fn redact_paths(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut at = 0;
+    while let Some(&c) = chars.get(at) {
+        if !path_starts(&chars, at) {
+            out.push(c);
+            at += 1;
+            continue;
+        }
+        let mut end = at;
+        while !path_ends(&chars, end) {
+            end += 1;
+        }
+        let path: String = chars.get(at..end).unwrap_or_default().iter().collect();
+        out.push_str(&redact_one_path(&path));
+        at = end;
+    }
+    out
+}
+
 /// The plain-text crash report: the app's facts, then the end of `desktop-crash.log`.
 pub fn crash_report_text(info: &AppInfo, root: &Path) -> String {
     let mut text = format!(
@@ -183,7 +264,7 @@ pub fn crash_report_text(info: &AppInfo, root: &Path) -> String {
             } else {
                 tail
             };
-            text.push_str(&tail);
+            text.push_str(&redact_paths(&tail));
             if !text.ends_with('\n') {
                 text.push('\n');
             }
@@ -585,6 +666,89 @@ mod tests {
         assert_eq!(asked.load(Ordering::SeqCst), 0);
         release.send(None).unwrap();
         assert_eq!(first.await.unwrap(), Ok(SaveOutcome::Cancelled));
+    }
+
+    // Review finding 9. A backtrace names the files of the machine that built the app (a CI runner's workspace and cargo
+    // folder, or the builder's own profile), and a panic message can name a folder of the person's. The crash report keeps
+    // what helps find the fault, the last two parts of each path and the line numbers, and drops the rest.
+    #[test]
+    fn a_crash_report_keeps_no_folder_names_from_the_machine_that_built_or_ran_the_app() {
+        let log = [
+            r"   at C:\Users\alice\Documents\Projects\widgets\tjommie-rs\crates\desktop-host\src\updater\mod.rs:515:9",
+            r"   at D:\a\tjommie\tjommie\tjommie-rs\crates\desktop\src\app.rs:42",
+            r"   at C:\Users\alice\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tokio-1.54.1\src\runtime\mod.rs:1:2",
+            r"thread 'main' panicked: could not open C:\Users\alice\My Files\Local\logs\x.log: Access is denied. (os error 5)",
+            r#"path "c:/Program Files (x86)/Some App/lib/x.rs" and 'E:\team\project\sub\y.rs'"#,
+            r"\\fileserver\share\a\b\notes.txt:7",
+            "version: 0.6.0 at 2026-11-14 22:01:02, ratio 3:4, a:b, done",
+            "",
+        ]
+        .join("\n");
+        let redacted = redact_paths(&log);
+        for leaked in [
+            "alice",
+            "Users",
+            "widgets",
+            "Documents",
+            "registry",
+            "index.crates.io",
+            "My Files",
+            "team",
+            "project",
+            "fileserver",
+            "share",
+            "Program Files",
+            "Some App",
+            ":\\",
+            ":/",
+            r"\\",
+        ] {
+            assert!(
+                !redacted.contains(leaked),
+                "{leaked:?} left in:\n{redacted}"
+            );
+        }
+        // What finds the fault stays: the files, the line and column numbers, and the text around the paths.
+        for kept in [
+            r"updater\mod.rs:515:9",
+            r"src\app.rs:42",
+            r"runtime\mod.rs:1:2",
+            r"logs\x.log: Access is denied. (os error 5)",
+            r"lib\x.rs",
+            r"sub\y.rs",
+            r"b\notes.txt:7",
+            "version: 0.6.0 at 2026-11-14 22:01:02, ratio 3:4, a:b, done",
+            "thread 'main' panicked: could not open",
+        ] {
+            assert!(redacted.contains(kept), "{kept:?} lost from:\n{redacted}");
+        }
+        assert_eq!(
+            redacted.lines().count(),
+            log.lines().count(),
+            "no line is added or lost"
+        );
+        // Nothing to redact: the text is as it was.
+        assert_eq!(
+            redact_paths("no paths here\nor here: 1:2\n"),
+            "no paths here\nor here: 1:2\n"
+        );
+    }
+
+    #[test]
+    fn the_crash_report_text_is_redacted_where_it_is_built() {
+        let root = tempfile::tempdir().unwrap();
+        let logs = root.path().join("logs");
+        std::fs::create_dir_all(&logs).unwrap();
+        std::fs::write(
+            logs.join("desktop-crash.log"),
+            "2026-11-14 panic\n   at C:\\Users\\alice\\work\\tjommie\\crates\\desktop\\src\\main.rs:9:1\n",
+        )
+        .unwrap();
+        let info = app_info(&crate::identity::CURRENT, "0.6.0", &Fake::default());
+        let text = crash_report_text(&info, root.path());
+        assert!(
+            text.contains(r"src\main.rs:9:1") && !text.contains("alice") && !text.contains("C:\\")
+        );
     }
 
     #[tokio::test]
