@@ -13,6 +13,7 @@ use crate::cli::{
     WorkerPurpose, WorkerTermination,
 };
 use crate::win::cred;
+use crate::win::diag;
 use crate::win::logon::{self, WorkerProcess};
 use crate::win::policy_observer::WORKER_POLICY_OBSERVER;
 use crate::win::worker::{
@@ -391,7 +392,13 @@ impl WorkerBoundary {
         state.generation += 1;
     }
 
-    fn unknown_termination(&self) {
+    /// Marks a worker tree's stop as unconfirmed, for good: both identities are refused from here on. `why` is the
+    /// first cause, which is what a diagnosis needs: every launch after it fails the same way.
+    fn unknown_termination(&self, why: &str) {
+        diag::problem(format!(
+            "{} boundary: a worker tree's stop is now unconfirmed, so both identities are refused until the daemon restarts. First cause: {why}",
+            self.purpose().as_str()
+        ));
         {
             let mut state = self.state();
             state.termination_unknown = true;
@@ -402,6 +409,10 @@ impl WorkerBoundary {
 
     fn assert_preparation(&self) -> Result<(), BoundaryError> {
         if self.state().termination_unknown || self.preparation().failed() {
+            diag::note(format!(
+                "{} boundary: refused, an earlier unconfirmed stop has poisoned the identities",
+                self.purpose().as_str()
+            ));
             Err(BoundaryError::Termination)
         } else {
             Ok(())
@@ -465,11 +476,23 @@ impl WorkerBoundary {
                     self.assert_preparation()?;
                     return Ok(());
                 }
-                Err(_)
+                Err(error)
                     if attempt == 0
                         && !preparation.failed()
-                        && retirement != preparation.retirements() => {}
-                Err(_) => return Err(BoundaryError::Unavailable),
+                        && retirement != preparation.retirements() =>
+                {
+                    diag::note(format!(
+                        "verify_held: the {} identity was refused ({error}) while a known job retired; trying once more",
+                        config.purpose.as_str()
+                    ));
+                }
+                Err(error) => {
+                    diag::problem(format!(
+                        "verify_held: the {} identity was refused: {error}",
+                        config.purpose.as_str()
+                    ));
+                    return Err(BoundaryError::Unavailable);
+                }
             }
         }
         Err(BoundaryError::Unavailable)
@@ -532,23 +555,43 @@ impl WorkerBoundary {
         frame: Vec<u8>,
         environment: Vec<(String, String)>,
     ) -> Result<Option<CliChild>, BoundaryError> {
-        let unavailable = || BoundaryError::Unavailable;
+        // Every refusal says why: the caller only ever sees the one fixed sentence.
+        let unavailable = |why: &str| {
+            diag::problem(format!("spawn_held: refused: {why}"));
+            BoundaryError::Unavailable
+        };
         let config = self.configuration()?;
+        diag::note(format!(
+            "spawn_held: {} identity runs {file} (launch frame of {} bytes) in {}",
+            config.purpose.as_str(),
+            frame.len(),
+            cwd.display()
+        ));
         let file_path = Path::new(file);
-        if !(self.0.options.exclusive)()
-            || !inside(&config.runtime_root, file_path)
-            || !file.to_lowercase().ends_with(".exe")
-        {
-            return Err(unavailable());
+        if !(self.0.options.exclusive)() {
+            return Err(unavailable(
+                "this boundary is not exclusive (another launch path was used, or no pair is installed)",
+            ));
+        }
+        if !inside(&config.runtime_root, file_path) {
+            return Err(unavailable(&format!(
+                "{file} is not inside the runtime folder {}",
+                config.runtime_root.display()
+            )));
+        }
+        if !file.to_lowercase().ends_with(".exe") {
+            return Err(unavailable(&format!("{file} is not an .exe")));
         }
         let bootstrap = config.runtime_root.join("node.exe");
         let line = command_line(
             &bootstrap.to_string_lossy(),
             &["-e".into(), BOOTSTRAP.into()],
         )
-        .map_err(|_| unavailable())?;
+        .map_err(|error| unavailable(&format!("the bootstrap command line: {error}")))?;
         if line.encode_utf16().count() + 1 > 1024 {
-            return Err(unavailable());
+            return Err(unavailable(
+                "the bootstrap command line is over 1024 UTF-16 units",
+            ));
         }
         let homes: Vec<&str> = env
             .iter()
@@ -560,10 +603,17 @@ impl WorkerBoundary {
             .iter()
             .any(|home| !inside(&config.worker_root, Path::new(home)))
         {
-            return Err(unavailable());
+            return Err(unavailable(
+                "a CLI profile folder lies outside the worker's own root",
+            ));
         }
+        let timer = std::time::Instant::now();
         self.verify_held(&config).await?;
         self.assert_preparation()?;
+        diag::note(format!(
+            "spawn_held: verified in {}ms; granting the working folder",
+            timer.elapsed().as_millis()
+        ));
         self.grant_directory(cwd).await?;
         self.assert_preparation()?;
         for home in &homes {
@@ -576,7 +626,9 @@ impl WorkerBoundary {
         if !inside(&config.worker_root, cwd)
             && crate::fsid::same_location(cwd, &config.owner_data_root).unwrap_or(true)
         {
-            return Err(unavailable());
+            return Err(unavailable(
+                "the working folder is outside the worker root and is, or may be, the owner's data folder",
+            ));
         }
         let saved = self
             .0
@@ -584,7 +636,12 @@ impl WorkerBoundary {
             .native
             .read_credential(&config.credential_target)
             .await
-            .map_err(|_| unavailable())?;
+            .map_err(|error| {
+                unavailable(&format!(
+                    "the worker credential at {} could not be read: {error}",
+                    config.credential_target
+                ))
+            })?;
         self.assert_preparation()?;
         #[derive(serde::Deserialize)]
         struct Saved {
@@ -592,20 +649,29 @@ impl WorkerBoundary {
             password: String,
         }
         // Parsed into owned strings, so every copy of the password can be wiped.
-        let mut saved = saved.ok_or_else(unavailable)?;
+        let mut saved = saved.ok_or_else(|| {
+            unavailable(&format!(
+                "no worker credential is saved at {}",
+                config.credential_target
+            ))
+        })?;
         let parsed = serde_json::from_str::<Saved>(&saved);
         logon::wipe(&mut saved);
         let Saved {
             username,
             mut password,
-        } = parsed.map_err(|_| unavailable())?;
+        } = parsed
+            .map_err(|_| unavailable("the saved worker credential is not the expected JSON"))?;
         if username != config.worker_name || password.is_empty() {
             logon::wipe(&mut password);
-            return Err(unavailable());
+            return Err(unavailable(
+                "the saved worker credential is for another account or holds no password",
+            ));
         }
         let preparation = self.preparation();
         let launch_generation = preparation.retirements();
         self.assert_preparation()?;
+        let launch_began = std::time::Instant::now();
         let launched = match self
             .0
             .options
@@ -615,14 +681,38 @@ impl WorkerBoundary {
         {
             Ok(launched) => launched,
             Err(failure) if !failure.stopped => {
-                self.unknown_termination();
+                self.unknown_termination(&format!(
+                    "ROUTE 1: the native launch failed and nothing it started could be confirmed stopped: {}",
+                    failure.message
+                ));
                 return Err(BoundaryError::Termination);
             }
             // Poisoned while the launch was pending: TypeScript's receipt wait notices that first.
-            Err(_) if self.assert_preparation().is_err() => return Err(BoundaryError::Termination),
-            Err(_) if launch_generation != preparation.retirements() => return Ok(None),
-            Err(_) => return Err(unavailable()),
+            Err(failure) if self.assert_preparation().is_err() => {
+                diag::problem(format!(
+                    "spawn_held: the native launch failed ({}) after the identities were poisoned",
+                    failure.message
+                ));
+                return Err(BoundaryError::Termination);
+            }
+            Err(failure) if launch_generation != preparation.retirements() => {
+                diag::note(format!(
+                    "spawn_held: the native launch failed ({}) while a known job retired; trying once more",
+                    failure.message
+                ));
+                return Ok(None);
+            }
+            Err(failure) => {
+                return Err(unavailable(&format!(
+                    "the native launch failed and its tree is gone: {}",
+                    failure.message
+                )));
+            }
         };
+        diag::note(format!(
+            "spawn_held: the native launch took {}ms",
+            launch_began.elapsed().as_millis()
+        ));
         let receipt = launched.receipt();
         if receipt.purpose != config.purpose
             || receipt.worker_sid != config.worker_sid
@@ -630,34 +720,59 @@ impl WorkerBoundary {
         {
             // Created but never resumed: settle it without letting it run.
             let poisoned = self.assert_preparation().is_err();
+            diag::problem(format!(
+                "spawn_held: the launched process {} is being abandoned unresumed (receipt matches the identity: {}, poisoned: {poisoned})",
+                receipt.worker_pid,
+                receipt.purpose == config.purpose && receipt.worker_sid == config.worker_sid
+            ));
             if !launched.abandon().await {
-                self.unknown_termination();
+                self.unknown_termination(
+                    "ROUTE 2: a launched but never resumed process could not be confirmed stopped",
+                );
                 return Err(BoundaryError::Termination);
             }
             return Err(if poisoned {
                 BoundaryError::Termination
             } else {
-                unavailable()
+                unavailable("the launched process did not match the identity, so it was stopped")
             });
         }
         let pid = receipt.worker_pid;
         self.state().children.insert(pid, receipt);
+        let resume_began = std::time::Instant::now();
         let running = match launched.resume(frame).await {
-            Ok(running) => running,
+            Ok(running) => {
+                diag::note(format!(
+                    "spawn_held: process {pid} resumed in {}ms",
+                    resume_began.elapsed().as_millis()
+                ));
+                running
+            }
             Err(failure) => {
                 self.state().children.remove(&pid);
                 if !failure.stopped {
-                    self.unknown_termination();
+                    self.unknown_termination(&format!(
+                        "ROUTE 3: process {pid} could not be written to or resumed, and could not be confirmed stopped: {}",
+                        failure.message
+                    ));
                     return Err(BoundaryError::Termination);
                 }
-                return Err(unavailable());
+                return Err(unavailable(&format!(
+                    "process {pid} could not be written to or resumed (it was stopped): {}",
+                    failure.message
+                )));
             }
         };
         let exit = ChildExit::new();
         let (retire, exited) = (running.retire.clone(), running.exited);
         let (watcher, fired) = (self.clone(), exit.clone());
         tokio::spawn(async move {
+            let ran = std::time::Instant::now();
             let code = exited.await;
+            diag::note(format!(
+                "process {pid} exited with {code:?} after {}ms; retiring its job",
+                ran.elapsed().as_millis()
+            ));
             if retire().await {
                 watcher.state().children.remove(&pid);
                 watcher
@@ -666,7 +781,9 @@ impl WorkerBoundary {
                     .fetch_add(1, Ordering::SeqCst);
                 fired.fire(CliExit::Exited { code, signal: None });
             } else {
-                watcher.unknown_termination();
+                watcher.unknown_termination(&format!(
+                    "ROUTE 4: process {pid} exited ({code:?}) but its tree could not be confirmed stopped (see the retire line above)"
+                ));
                 fired.fire(CliExit::Failed(TERMINATION.into()));
             }
         });
@@ -715,13 +832,28 @@ impl WorkerBoundary {
                 || !state.children.is_empty()
                 || state.launches > 0
             {
+                diag::problem(format!(
+                    "observe_review_policy: Busy (lease held: {}, in this scope: {}, running children: {}, launches in progress: {})",
+                    state.review_lease.is_some(),
+                    scope == state.review_lease,
+                    state.children.len(),
+                    state.launches
+                ));
                 return Err(BoundaryError::Busy);
             }
         }
         let config = self.configuration()?;
         let scratch = config.worker_root.join("policy-observer");
-        std::fs::create_dir_all(&scratch).map_err(|_| BoundaryError::Unavailable)?;
+        std::fs::create_dir_all(&scratch).map_err(|error| {
+            diag::problem(format!(
+                "observe_review_policy: {} could not be made: {error}",
+                scratch.display()
+            ));
+            BoundaryError::Unavailable
+        })?;
         let node = config.runtime_root.join("node.exe");
+        let began = std::time::Instant::now();
+        diag::note("observe_review_policy: starting the fixed observer as the review worker");
         let mut child = self
             .spawn(
                 &node.to_string_lossy(),
@@ -732,6 +864,7 @@ impl WorkerBoundary {
             .await?;
         drop(child.stdin);
         let mut output = Vec::new();
+        let mut stderr_tail = Vec::new();
         let read = async {
             let mut chunk = [0u8; 1024];
             loop {
@@ -750,7 +883,16 @@ impl WorkerBoundary {
             }
         };
         let drain = async {
-            let _ = tokio::io::copy(&mut child.stderr, &mut tokio::io::sink()).await;
+            // Kept (a little of it) for the diagnosis; everything else is dropped, as before.
+            let mut chunk = [0u8; 512];
+            while let Ok(count) = child.stderr.read(&mut chunk).await {
+                if count == 0 {
+                    break;
+                }
+                if stderr_tail.len() < 2048 {
+                    stderr_tail.extend_from_slice(&chunk[..count]);
+                }
+            }
         };
         let finished = tokio::time::timeout(Duration::from_secs(20), async {
             let (read, ()) = tokio::join!(read, drain);
@@ -761,20 +903,48 @@ impl WorkerBoundary {
         let exit = match finished {
             Ok(Ok(exit)) => exit,
             Ok(Err(error)) => {
+                diag::problem(format!(
+                    "observe_review_policy: reading the observer's output failed after {}ms ({error}); output so far: {}; stderr: {}",
+                    began.elapsed().as_millis(),
+                    diag::excerpt(&output, 300),
+                    diag::excerpt(&stderr_tail, 600)
+                ));
                 let _ = (child.kill_tree)().await;
                 return Err(error);
             }
             Err(_) => {
+                diag::problem(format!(
+                    "observe_review_policy: TIMEOUT, the observer did not finish within 20s (output so far: {}); it is being stopped, which makes this a termination",
+                    diag::excerpt(&output, 300)
+                ));
                 let _ = (child.kill_tree)().await;
                 return Err(BoundaryError::Termination);
             }
         };
         let code = match exit {
-            CliExit::Failed(_) => return Err(BoundaryError::Termination),
+            CliExit::Failed(message) => {
+                diag::problem(format!(
+                    "observe_review_policy: the observer's tree was not confirmed stopped after {}ms ({message}); stderr: {}",
+                    began.elapsed().as_millis(),
+                    diag::excerpt(&stderr_tail, 600)
+                ));
+                return Err(BoundaryError::Termination);
+            }
             CliExit::Exited { code, .. } => code,
         };
-        let value: ObservedPolicy =
-            serde_json::from_slice(&output).map_err(|_| BoundaryError::Unavailable)?;
+        diag::note(format!(
+            "observe_review_policy: the observer exited with {code:?} after {}ms, printing {}",
+            began.elapsed().as_millis(),
+            diag::excerpt(&output, 300)
+        ));
+        let value: ObservedPolicy = serde_json::from_slice(&output).map_err(|error| {
+            diag::problem(format!(
+                "observe_review_policy: the observer's output is not the expected JSON ({error}); exit code {code:?}; output: {}; stderr: {}",
+                diag::excerpt(&output, 300),
+                diag::excerpt(&stderr_tail, 600)
+            ));
+            BoundaryError::Unavailable
+        })?;
         let names = ["managed-settings.json", "managed-mcp.json"];
         let valid = value.version == 1
             && value.registry_absent
@@ -785,6 +955,10 @@ impl WorkerBoundary {
                     })
             });
         if !valid || code != Some(0) {
+            diag::problem(format!(
+                "observe_review_policy: the observer's report was refused (valid: {valid}, exit code {code:?}); output: {}",
+                diag::excerpt(&output, 300)
+            ));
             return Err(BoundaryError::Unavailable);
         }
         let hex = |bytes: &[u8]| format!("{:x}", Sha256::digest(bytes));
@@ -836,15 +1010,27 @@ impl WorkerBoundary {
             })
             .await;
         let terminated = matches!(result, Err(BoundaryError::Termination));
-        if terminated {
-            self.unknown_termination();
-        }
-        let busy = {
+        let (children, launches) = {
             let state = self.state();
-            !state.children.is_empty() || state.launches > 0
+            (state.children.len(), state.launches)
         };
+        diag::note(format!(
+            "with_review_policy: the scope ended with {}; running children {children}, launches in progress {launches}",
+            match &result {
+                Ok(_) => "success".to_string(),
+                Err(error) => format!("the error `{error}`"),
+            }
+        ));
+        if terminated {
+            self.unknown_termination(
+                "the review scope ended with a termination error (an earlier line says where it came from)",
+            );
+        }
+        let busy = children > 0 || launches > 0;
         if busy {
-            self.unknown_termination();
+            self.unknown_termination(&format!(
+                "the review scope ended with {children} child(ren) still registered and {launches} launch(es) in progress"
+            ));
         }
         let mut state = self.state();
         if state.termination_unknown {
@@ -1089,7 +1275,12 @@ impl WorkerNative for WindowsNative {
                 })
             })
             .await
-            .unwrap_or_else(|| Err((FAILURE.into(), false)));
+            .unwrap_or_else(|| {
+                diag::problem(
+                    "the native launch task ended without a result (it panicked or was cancelled), so nothing is known about what it started",
+                );
+                Err((FAILURE.into(), false))
+            });
             match made {
                 Ok((purpose, worker_sid, process, (stdin, stdout, stderr))) => {
                     Ok(Box::new(WindowsLaunch {
@@ -1150,7 +1341,15 @@ impl NativeLaunch for WindowsLaunch {
                 Ok(stdin) => stdin,
                 Err(message) => {
                     let stopper = process.clone();
-                    let stopped = blocking(move || stopper.retire()).await.unwrap_or(false);
+                    let stopped = blocking(move || stopper.retire())
+                        .await
+                        .unwrap_or_else(|| {
+                            diag::problem("the retire task ended without a result (it panicked), so the tree is treated as not stopped");
+                            false
+                        });
+                    diag::problem(format!(
+                        "resume: the launch frame could not be written or the worker resumed ({message}); the tree was stopped: {stopped}"
+                    ));
                     return Err(LaunchFailure { message, stopped });
                 }
             };
@@ -1160,16 +1359,32 @@ impl NativeLaunch for WindowsLaunch {
                 stdout: Box::new(tokio::fs::File::from_std(stdout)),
                 stderr: Box::new(tokio::fs::File::from_std(stderr)),
                 exited: Box::pin(async move {
-                    blocking(move || waiter.worker.wait().ok())
-                        .await
-                        .flatten()
-                        .map(|code| code as i32)
+                    blocking(move || {
+                        waiter
+                            .worker
+                            .wait()
+                            .map_err(|error| {
+                                diag::problem(format!(
+                                    "waiting for process {} to exit failed: {error}",
+                                    waiter.worker.pid()
+                                ));
+                            })
+                            .ok()
+                    })
+                    .await
+                    .flatten()
+                    .map(|code| code as i32)
                 }),
                 retire: Arc::new(move || {
                     let stopper = stopper.clone();
-                    Box::pin(
-                        async move { blocking(move || stopper.retire()).await.unwrap_or(false) },
-                    )
+                    Box::pin(async move {
+                        blocking(move || stopper.retire())
+                            .await
+                            .unwrap_or_else(|| {
+                                diag::problem("the retire task ended without a result (it panicked), so the tree is treated as not stopped");
+                                false
+                            })
+                    })
                 }),
             })
         })
@@ -1179,8 +1394,15 @@ impl NativeLaunch for WindowsLaunch {
         let process = self.process;
         Box::pin(async move {
             blocking(move || {
-                let killed = process.worker.kill().is_ok() && process.worker.wait().is_ok();
-                process.retire() && killed
+                let killed = process.worker.kill();
+                // Only waited for once the kill succeeded: a process that was not killed would never be waited out.
+                let waited = killed.as_ref().ok().map(|()| process.worker.wait());
+                let retired = process.retire();
+                diag::note(format!(
+                    "abandon of process {}: TerminateProcess {killed:?}, WaitForSingleObject {waited:?}, retired {retired}",
+                    process.worker.pid()
+                ));
+                killed.is_ok() && waited.is_some_and(|waited| waited.is_ok()) && retired
             })
             .await
             .unwrap_or(false)

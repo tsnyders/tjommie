@@ -10,15 +10,17 @@
 
 use daemon::cli::BoxFuture;
 use daemon::win::acceptance::{
-    CliProbe, Credentials, Denials, Failure, Round, Seams, accept_with, receipt_path, receipts,
+    CliProbe, Credentials, Denials, Failure, PROBE_INNER_TIMEOUT, Round, Seams, accept_with,
+    receipt_path, receipts,
 };
 use daemon::win::boundary::{LaunchFailure, NativeLaunch, Receipt, Running, WorkerNative};
 use daemon::win::worker::{Purpose, WorkerConfiguration};
 use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::watch;
@@ -67,6 +69,11 @@ struct State {
     live_holders: AtomicUsize,
     /// What the denial probe prints, by who runs it: provider, then review.
     probe: Mutex<[String; 2]>,
+    /// How long the denial probe runs before it ends, and the exit code it ends with.
+    probe_delay: Mutex<Duration>,
+    probe_exit: AtomicI32,
+    /// No worker credential is saved.
+    no_credential: AtomicBool,
     /// What the peer holder prints as it starts.
     holder_says: Mutex<String>,
     /// The holder's tree cannot be confirmed stopped.
@@ -106,6 +113,9 @@ impl Fake {
             holder_pids: Mutex::default(),
             live_holders: AtomicUsize::new(0),
             probe: Mutex::new([all_denied(), all_denied()]),
+            probe_delay: Mutex::new(Duration::ZERO),
+            probe_exit: AtomicI32::new(0),
+            no_credential: AtomicBool::new(false),
             holder_says: Mutex::new("ready\n".into()),
             holder_unconfirmed: AtomicBool::new(false),
             pids: AtomicU32::new(40_000),
@@ -150,6 +160,7 @@ impl NativeLaunch for Launch {
             let (state, who) = (self.state.clone(), self.purpose);
             let index = usize::from(who == Purpose::Review);
             let mut unconfirmed = false;
+            let ended_with = Arc::new(AtomicI32::new(0));
             if script.contains("ClaudeCode") {
                 state
                     .log
@@ -199,9 +210,18 @@ impl NativeLaunch for Launch {
                     state.live_holders.load(Ordering::SeqCst)
                 ));
                 let (stopped, says) = (stopped.clone(), state.probe.lock().unwrap()[index].clone());
+                let (delay, code, ended_with) = (
+                    *state.probe_delay.lock().unwrap(),
+                    state.probe_exit.load(Ordering::SeqCst),
+                    ended_with.clone(),
+                );
                 tokio::spawn(async move {
+                    if !delay.is_zero() {
+                        tokio::time::sleep(delay).await;
+                    }
                     let _ = out.write_all(says.as_bytes()).await;
                     drop(out);
+                    ended_with.store(code, Ordering::SeqCst);
                     stopped.send_replace(true);
                 });
             }
@@ -212,7 +232,7 @@ impl NativeLaunch for Launch {
                 stderr: Box::new(tokio::io::empty()),
                 exited: Box::pin(async move {
                     let _ = waiting.wait_for(|stopped| *stopped).await;
-                    Some(0)
+                    Some(ended_with.load(Ordering::SeqCst))
                 }),
                 retire: Arc::new(move || {
                     let stopping = stopping.clone();
@@ -244,7 +264,11 @@ impl WorkerNative for Fake {
         } else {
             "TjReview-12345678"
         };
+        let none = self.0.no_credential.load(Ordering::SeqCst);
         Box::pin(async move {
+            if none {
+                return Ok(None);
+            }
             Ok(Some(
                 json!({ "username": name, "password": "not-an-os-password" }).to_string(),
             ))
@@ -575,7 +599,27 @@ async fn a_worker_tree_that_cannot_be_confirmed_stopped_writes_no_receipt_and_ke
     let windows = Fake::new();
     windows.0.holder_unconfirmed.store(true, Ordering::SeqCst);
     let error = accept(&world, &windows, Ok(())).await.unwrap_err();
-    assert_eq!(error, daemon::cli::WORKER_TERMINATION);
+    // The fixed sentence stays first, so anything that matches on it still does; what follows is the evidence.
+    assert!(
+        error.starts_with(daemon::cli::WORKER_TERMINATION),
+        "{error}"
+    );
+    // The cause is in the error itself, short; the full record is only for TJOMMIE_WORKER_DIAG=1.
+    assert!(error.contains("What went wrong"), "{error}");
+    assert!(
+        !error.contains("Everything the worker launch path recorded"),
+        "the full record is verbose-only: {error}"
+    );
+    // The first cause is on record under its route, so a termination can be diagnosed from its own log. (The record
+    // is shared by the tests running in parallel here, so it is read whole rather than from the error's tail.)
+    let recorded = daemon::win::diag::recent(3000);
+    assert!(
+        recorded
+            .iter()
+            .any(|line| line.contains("First cause: ROUTE 4")),
+        "no ROUTE 4 line among {} recorded",
+        recorded.len()
+    );
     assert_eq!(receipts_present(&world), [false, false]);
     // Kept for the owner to reconcile; the synthetic credential and the owner marker are still removed.
     assert_eq!(
@@ -652,4 +696,64 @@ async fn an_early_failure_still_removes_an_old_receipt_pair() {
             "{what}: a credential was saved"
         );
     }
+}
+
+/// The probe's own time limit (the 0.4.2 wrapper had 15 s, which a first PowerShell start under a worker's environment
+/// overran) kills PowerShell and ends the probe with exit code 1 and no output, which is all the wrapper can tell. That
+/// has to be reported for what it is, with the limit, and not as a failed denial.
+#[tokio::test(start_paused = true)]
+async fn a_probe_killed_by_its_own_time_limit_is_reported_as_a_timeout() {
+    let world = world();
+    let windows = Fake::new();
+    *windows.0.probe_delay.lock().unwrap() = PROBE_INNER_TIMEOUT;
+    windows.0.probe_exit.store(1, Ordering::SeqCst);
+    windows.0.probe.lock().unwrap()[0] = String::new();
+    let error = accept(&world, &windows, Ok(())).await.unwrap_err();
+    assert!(error.contains("timed out"), "{error}");
+    assert!(
+        error.contains(&format!("{} s", PROBE_INNER_TIMEOUT.as_secs())),
+        "the limit is named: {error}"
+    );
+    assert!(!error.contains("probe failed"), "{error}");
+    assert_eq!(receipts_present(&world), [false, false]);
+    assert_eq!(windows.0.live_holders.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn a_probe_that_exits_nonzero_at_once_says_what_it_saw() {
+    let world = world();
+    let windows = Fake::new();
+    windows.0.probe_exit.store(1, Ordering::SeqCst);
+    windows.0.probe.lock().unwrap()[0] = String::new();
+    let error = accept(&world, &windows, Ok(())).await.unwrap_err();
+    assert!(error.contains("exited with code 1"), "{error}");
+    assert!(error.contains("printed nothing"), "{error}");
+    assert!(
+        !error.contains("timed out"),
+        "it did not run for its limit: {error}"
+    );
+    assert_eq!(receipts_present(&world), [false, false]);
+}
+
+/// A refused launch answers with one fixed sentence; the reason is recorded and carried in the error, so a failure can
+/// be told apart without turning any tracing on.
+#[tokio::test]
+async fn a_refused_launch_says_why() {
+    let world = world();
+    let windows = Fake::new();
+    windows.0.no_credential.store(true, Ordering::SeqCst);
+    let error = accept(&world, &windows, Ok(())).await.unwrap_err();
+    assert!(
+        error.starts_with("The isolated Windows provider could not start."),
+        "{error}"
+    );
+    assert!(error.contains("What went wrong"), "{error}");
+    // (Read from the whole record: tests running in parallel here record into the same one.)
+    assert!(
+        daemon::win::diag::recent(3000)
+            .iter()
+            .any(|line| line.contains("refused: no worker credential is saved at")),
+        "the reason is not on record"
+    );
+    assert_eq!(receipts_present(&world), [false, false]);
 }

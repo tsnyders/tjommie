@@ -11,8 +11,9 @@
 use daemon::cli::{BoxFuture, CliOutput};
 use daemon::spawn;
 use daemon::win::acceptance::{
-    CliProbe, Denials, Failure, Round, Seams, Steps, accept_with, holder_args, probe_args,
-    receipt_path, receipts, removable_scratch, run, version_started,
+    CliProbe, Denials, Failure, PROBE_INNER_TIMEOUT, PROBE_WAIT, READY_WAIT, Round, Seams, Steps,
+    accept_with, holder_args, probe_args, receipt_path, receipts, removable_scratch, run,
+    version_started,
 };
 use daemon::win::boundary::{WindowsNative, WorkerNative};
 use daemon::win::worker::{
@@ -25,6 +26,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::time::Duration;
 use tempfile::TempDir;
 
 fn golden() -> Value {
@@ -145,18 +147,39 @@ fn the_golden_pair_is_a_real_looking_pair_with_clean_windows_paths() {
 }
 
 /// The two `node -e` programs the probe and the holder are run with (`nativeNode` in 0.4.2), as the legacy code built
-/// them. Like the bootstrap and the policy observer in `worker-scripts.json`, so a change to either fails here.
+/// them, pinned like the bootstrap and the policy observer in `worker-scripts.json`. The holder is byte for byte 0.4.2's.
+/// The probe differs in exactly one place, on purpose: the time its PowerShell may take (`timeout:15000` there). That
+/// was measured on a real runner to be too little: PowerShell took 12 to 19 s to start under a worker's environment, so
+/// the probe was killed before it printed anything. The receipts do not carry it, so rollback is unaffected.
 #[test]
-fn the_wrapper_programs_are_the_ones_0_4_2_ran_byte_for_byte() {
+fn the_wrapper_programs_are_0_4_2s_except_for_the_probes_time_limit() {
     let golden = golden();
+    let legacy_probe = golden["wrappers"]["probe"].as_str().unwrap();
+    assert_eq!(
+        legacy_probe.matches("timeout:15000").count(),
+        1,
+        "the legacy probe's one time limit"
+    );
+    let limit = format!("timeout:{}", PROBE_INNER_TIMEOUT.as_millis());
     assert_eq!(
         probe_args("{}")[1],
-        golden["wrappers"]["probe"].as_str().unwrap()
+        legacy_probe.replacen("timeout:15000", &limit, 1),
+        "the probe wrapper may differ from 0.4.2's only in its time limit"
     );
     assert_eq!(
         holder_args("{}")[1],
         golden["wrappers"]["holder"].as_str().unwrap()
     );
+}
+
+/// The probe's own limit sits inside the wait for it, and both are far above what a first PowerShell start was measured
+/// to take (19 s on the runner), so the limit always fires first and reports, and the wait never races it.
+#[test]
+fn the_waits_are_longer_than_what_they_wait_for() {
+    assert!(PROBE_INNER_TIMEOUT >= Duration::from_secs(60));
+    assert!(PROBE_WAIT >= PROBE_INNER_TIMEOUT + Duration::from_secs(10));
+    // The holder has no limit of its own, so its wait is the only bound on PowerShell starting.
+    assert!(READY_WAIT >= PROBE_INNER_TIMEOUT);
 }
 
 #[test]
@@ -785,7 +808,14 @@ async fn admin_acceptance_checks_two_real_worker_identities() {
             },
         )
         .await;
-        assert!(failed.is_err(), "{failed:?}");
+        // Exactly the failure the mocked CLI check raises, which is only reached after both identities launched, the
+        // peer fixture came up and the denial probe ran and proved all nine facts. Any other error (a termination, a
+        // refused launch, a failed probe) means the real path did not get that far, and its text says where it stopped.
+        assert_eq!(
+            failed,
+            Err("a CLI could not start".to_string()),
+            "step 1 did not fail at the mocked CLI check, so the probes did not all run"
+        );
         assert_eq!(
             receipts_present(),
             [false, false],

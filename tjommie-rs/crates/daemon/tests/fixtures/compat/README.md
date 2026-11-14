@@ -12,6 +12,13 @@ on synthetic inputs (its header says how to run it; it needs Node 24, `npm ci` a
 byte for byte). **Do not change any of them unless rollback compatibility with 0.4.2 is deliberately dropped.** Each JSON
 file says how it was made in its `_provenance` field.
 
+One thing in `worker-acceptance.json` is deliberately **not** what the Rust code runs: the probe's Node wrapper. Its
+`spawnSync` gives PowerShell `timeout:15000` in 0.4.2; the Rust one gives it `PROBE_INNER_TIMEOUT` (120 s), because on a
+real runner PowerShell took 12 to 19 s to start under a worker's environment and the probe was killed before it printed
+anything. The fixture keeps what 0.4.2 ran, and `windows_worker_acceptance.rs` pins the difference: the Rust wrapper must
+equal the 0.4.2 one with that single value replaced, and the holder's wrapper must still be byte for byte 0.4.2's. The
+receipts carry neither wrapper, so they, and rollback to 0.4.2, are unaffected.
+
 | File | Pins | Checked by |
 | --- | --- | --- |
 | `credential-entries.json` | Credential Manager target names, blob encoding and `CREDENTIALW` shape (type, persist, user name) | `cred_roundtrip.rs` |
