@@ -11,6 +11,7 @@ base64 = "0.23.1"
 getrandom = "0.4.3"
 jiff = "0.2.41"
 log = { version = "0.4.35", features = ["std"] }
+protocol = { path = "../protocol" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sha2 = "0.10.9"
@@ -20,7 +21,6 @@ zeroize = "1.8"
 
 [dev-dependencies]
 client = { path = "../client" }
-protocol = { path = "../protocol" }
 tempfile = "3.27.0"
 # crash::tests reads the restart registration back.
 windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_System_Threading"] }
