@@ -11,6 +11,7 @@ pub mod bot_form;
 pub mod browser_geometry;
 pub mod browser_preview;
 pub mod browser_session;
+pub mod connection;
 pub mod dictation;
 pub mod document_ranges;
 pub mod exchange;
