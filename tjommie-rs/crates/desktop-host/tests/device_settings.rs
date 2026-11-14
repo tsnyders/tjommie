@@ -205,6 +205,42 @@ fn an_export_that_cannot_be_trusted_at_all_is_not_imported() {
 }
 
 #[test]
+fn a_host_name_or_relay_outside_the_limits_is_dropped() {
+    // zod's RemoteName is trimmed, 1 to 80 characters; the relay is at most 512.
+    let root = root();
+    let long_relay = format!(
+        "https://example.com/{}",
+        "a".repeat(512 - "https://example.com/".len() + 1)
+    );
+    let longest_relay = format!(
+        "https://example.com/{}",
+        "a".repeat(512 - "https://example.com/".len())
+    );
+    write_export(
+        root.path(),
+        &json!({
+            "version": 1,
+            "hosts": [
+                host(1, json!({ "name": "" })),
+                host(2, json!({ "name": "   " })),
+                host(3, json!({ "name": "n".repeat(81) })),
+                host(4, json!({ "name": "n".repeat(80) })),
+                host(5, json!({ "name": "  Padded  " })),
+                host(6, json!({ "relay": long_relay })),
+                host(7, json!({ "relay": longest_relay })),
+            ],
+        }),
+    );
+    let settings = load_or_import(root.path());
+    let kept: Vec<&str> = settings
+        .hosts
+        .iter()
+        .map(|host| host.name.as_str())
+        .collect();
+    assert_eq!(kept, ["n".repeat(80).as_str(), "Padded", "Synthetic PC 7"]);
+}
+
+#[test]
 fn keeps_at_most_16_exported_hosts() {
     let root = root();
     let many: Vec<Value> = (1..=17).map(|n| host(n, json!({}))).collect();
@@ -337,11 +373,25 @@ fn saved_settings_round_trip() {
     assert_eq!(load_or_import(root.path()), settings);
 }
 
+/// The files in the data folder whose names start with `desktop-ui.json.bad-`: copies of unreadable settings.
+fn copies(root: &Path) -> Vec<PathBuf> {
+    let mut found: Vec<PathBuf> = std::fs::read_dir(root.join("data"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("desktop-ui.json.bad-"))
+        })
+        .collect();
+    found.sort();
+    found
+}
+
 #[test]
-fn a_settings_file_that_cannot_be_read_is_kept_aside_and_the_defaults_are_used() {
+fn an_unreadable_settings_file_is_left_as_it_is_and_the_defaults_are_used_for_this_run() {
     for (name, text) in [
         ("not json", "{ nope".to_owned()),
-        ("an unknown field", json!({ "version": 1, "theme": "light", "colour": 1 }).to_string()),
         ("another version", json!({ "version": 9 }).to_string()),
         ("a zoom out of range", json!({ "version": 1, "zoomPercent": 5000 }).to_string()),
         ("a bad host", json!({ "version": 1, "hosts": [host(1, json!({ "hostKey": "x" }))] }).to_string()),
@@ -350,8 +400,42 @@ fn a_settings_file_that_cannot_be_read_is_kept_aside_and_the_defaults_are_used()
         let root = root();
         write(settings_file(root.path()), &text);
         assert_eq!(load_or_import(root.path()), DeviceSettings::default(), "{name}");
-        let aside = settings_file(root.path()).with_extension("json.bad");
-        assert_eq!(std::fs::read_to_string(aside).unwrap(), text, "{name}: the unreadable file is kept");
-        assert!(logged_for(root.path()).iter().any(|line| line.starts_with("WARN")), "{name}");
+        // The paired PCs in a file this build can't read must survive a downgrade, a partial write or a newer build.
+        assert_eq!(std::fs::read_to_string(settings_file(root.path())).unwrap(), text, "{name}: the file is untouched");
+        let kept = copies(root.path());
+        assert_eq!(kept.len(), 1, "{name}: one copy is kept for recovery");
+        assert_eq!(std::fs::read_to_string(&kept[0]).unwrap(), text, "{name}");
+        assert!(logged_for(root.path()).iter().any(|line| line.starts_with("WARN") && line.contains("as it is")), "{name}");
     }
+}
+
+#[test]
+fn a_settings_file_with_more_fields_than_this_build_knows_still_reads() {
+    // A newer build wrote a field this one has never heard of; going back to this build must not lose the paired PCs.
+    let root = root();
+    write(
+        settings_file(root.path()),
+        &json!({ "version": 1, "theme": "light", "colour": "teal", "hosts": [host(1, json!({}))] })
+            .to_string(),
+    );
+    let settings = load_or_import(root.path());
+    assert_eq!(settings.theme, Theme::Light);
+    assert_eq!(names(&settings.hosts), ["Synthetic PC 1"]);
+    assert!(copies(root.path()).is_empty(), "nothing was unreadable");
+}
+
+#[test]
+fn starting_again_does_not_pile_up_copies_of_the_same_unreadable_file() {
+    let root = root();
+    write(settings_file(root.path()), "{ nope");
+    load_or_import(root.path());
+    // A copy is named by the second it was made in, so wait past it: without a check for the same content, this would add one.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    load_or_import(root.path());
+    assert_eq!(copies(root.path()).len(), 1);
+    // Different damage is a different file and is kept too.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    write(settings_file(root.path()), "{ still nope");
+    load_or_import(root.path());
+    assert_eq!(copies(root.path()).len(), 2);
 }

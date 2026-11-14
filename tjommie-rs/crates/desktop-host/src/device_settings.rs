@@ -20,6 +20,10 @@ pub const MAX_HOSTS: usize = 16;
 pub const MIN_ZOOM_PERCENT: u16 = 25;
 pub const MAX_ZOOM_PERCENT: u16 = 500;
 const VERSION: u32 = 1;
+/// zod's `RemoteName`: trimmed, 1 to 80 characters (UTF-16 code units, as JavaScript counts them).
+const MAX_NAME_UNITS: usize = 80;
+/// zod's `RelayUrl`: at most 512 characters.
+const MAX_RELAY_UNITS: usize = 512;
 const EXPORT_FIELDS: [&str; 6] = [
     "version", "theme", "textSize", "density", "hosts", "pending",
 ];
@@ -83,6 +87,17 @@ struct RawLan {
     port: u16,
 }
 
+fn utf16_len(text: &str) -> usize {
+    text.encode_utf16().count()
+}
+
+/// Whether `name` is a device or PC name zod's `RemoteName` accepts: once trimmed, 1 to 80 characters. (The protocol
+/// newtype only refuses control characters, which is enough on the wire, where the manifest checks the rest.)
+pub fn valid_device_name(name: &str) -> bool {
+    let name = name.trim();
+    !name.is_empty() && utf16_len(name) <= MAX_NAME_UNITS
+}
+
 /// zod's `z.uuid()`: the canonical spelling with a version 1 to 8 and an RFC variant, or the nil or max UUID.
 fn is_uuid(text: &str) -> bool {
     if text == "00000000-0000-0000-0000-000000000000"
@@ -117,6 +132,16 @@ impl TryFrom<RawHost> for RemoteHost {
         if !is_uuid(&raw.id) {
             return Err("id is not a UUID".to_owned());
         }
+        if !valid_device_name(raw.name.as_str()) {
+            return Err(format!("name is not 1 to {MAX_NAME_UNITS} characters"));
+        }
+        if raw
+            .relay
+            .as_ref()
+            .is_some_and(|relay| utf16_len(relay.as_str()) > MAX_RELAY_UNITS)
+        {
+            return Err(format!("relay is longer than {MAX_RELAY_UNITS} characters"));
+        }
         if raw.device_id.as_deref().is_some_and(|id| !is_uuid(id)) {
             return Err("deviceId is not a UUID".to_owned());
         }
@@ -138,7 +163,8 @@ impl TryFrom<RawHost> for RemoteHost {
         }
         Ok(RemoteHost {
             id: raw.id,
-            name: raw.name,
+            name: RemoteName::new(raw.name.as_str().trim())
+                .map_err(|_| "name is not valid".to_owned())?,
             device_id: raw.device_id,
             host_key: raw.host_key,
             lan,
@@ -147,9 +173,10 @@ impl TryFrom<RawHost> for RemoteHost {
     }
 }
 
-/// Everything in `desktop-ui.json`. A field missing from the file takes its default.
+/// Everything in `desktop-ui.json`. A field missing from the file takes its default, and a field this build doesn't know is
+/// ignored (a file a newer build wrote must still read after a downgrade; the export, which is strict, is `parse_export`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase", default)]
+#[serde(rename_all = "camelCase", default)]
 pub struct DeviceSettings {
     pub version: u32,
     pub theme: Theme,
@@ -217,24 +244,22 @@ fn parse_settings(text: &str) -> Result<DeviceSettings, String> {
 }
 
 /// Reads `<root>/data/desktop-ui.json`. When that file is missing, imports the 0.5.x export once (or starts from the
-/// defaults when there is none), writes the result, and logs which. A file that can't be understood is kept beside it as
-/// `desktop-ui.json.bad` and the defaults are used, so a damaged file never stops the app from starting.
+/// defaults when there is none), writes the result, and logs which. A file that can't be understood is left exactly as it
+/// is (the paired PCs in it must survive a downgrade or a partial write), a copy is kept beside it as
+/// `desktop-ui.json.bad-<unix seconds>` (once per distinct content), and the defaults are used for this run only. The first
+/// `save` after that replaces the file; the copy is how it is recovered.
 pub fn load_or_import(root: &Path) -> DeviceSettings {
     let file = settings_file(root);
     match std::fs::read_to_string(&file) {
         Ok(text) => match parse_settings(&text) {
             Ok(settings) => settings,
             Err(why) => {
-                let aside = file.with_extension("json.bad");
                 log::warn!(
-                    "device settings: {} can't be read ({why}); keeping a copy as {} and starting from the defaults",
-                    file.display(),
-                    aside.display()
+                    "device settings: {} can't be read ({why}); using the defaults for this run and leaving the file as it is",
+                    file.display()
                 );
-                let _ = std::fs::rename(&file, &aside);
-                let settings = DeviceSettings::default();
-                persist(root, &settings);
-                settings
+                keep_a_copy(&file, &text);
+                DeviceSettings::default()
             }
         },
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -250,6 +275,43 @@ pub fn load_or_import(root: &Path) -> DeviceSettings {
             );
             DeviceSettings::default()
         }
+    }
+}
+
+/// A copy of an unreadable settings file beside it, named `desktop-ui.json.bad-<unix seconds>`, unless one with the same
+/// content is there already (every start would otherwise add another).
+fn keep_a_copy(file: &Path, text: &str) {
+    let (Some(folder), Some(name)) = (
+        file.parent(),
+        file.file_name().and_then(|name| name.to_str()),
+    ) else {
+        return;
+    };
+    let prefix = format!("{name}.bad-");
+    let already = std::fs::read_dir(folder)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|entry| {
+            entry.file_name().to_string_lossy().starts_with(&prefix)
+                && std::fs::read_to_string(entry.path()).is_ok_and(|kept| kept == text)
+        });
+    if already {
+        return;
+    }
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs());
+    let copy = folder.join(format!("{prefix}{seconds}"));
+    match std::fs::write(&copy, text) {
+        Ok(()) => log::warn!(
+            "device settings: kept a copy of the unreadable file as {}",
+            copy.display()
+        ),
+        Err(error) => log::warn!(
+            "device settings: couldn't keep a copy as {} ({error})",
+            copy.display()
+        ),
     }
 }
 

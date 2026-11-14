@@ -28,6 +28,7 @@ use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 use crate::device_keys::{CredentialStore, DeviceKeyError, DeviceKeys};
+use crate::device_settings::valid_device_name;
 pub use crate::device_settings::{MAX_HOSTS, RemoteHost};
 
 /// How long LAN dials get before the relay joins the race (`LINK.lanWindowMs`).
@@ -101,7 +102,8 @@ impl std::fmt::Display for HostError {
             Self::Dial(error) => error.fmt(formatter),
             Self::TooMany => formatter.write_str("Forget a PC before pairing another one."),
             Self::BadCode(message) => formatter.write_str(message),
-            Self::BadName => formatter.write_str("Enter a device name without control characters."),
+            Self::BadName => formatter
+                .write_str("Enter a device name of 1 to 80 characters, without control characters."),
             Self::KeyChanged => formatter.write_str(
                 "This PC's connection key changed. Check the PC before forgetting it and pairing again.",
             ),
@@ -282,7 +284,11 @@ impl<S: HostStore, C: CredentialStore, D: Dialer> Hosts<'_, S, C, D> {
     ) -> Result<RemoteHost, HostError> {
         let code = parse_pairing_code(input, now_ms)
             .map_err(|error| HostError::BadCode(error.to_string()))?;
-        RemoteName::new(name).map_err(|_| HostError::BadName)?;
+        // Control characters, and (as zod's RemoteName) a trimmed length of 1 to 80: the PC would refuse anything else at the
+        // confirmation, with a message that says nothing about the name.
+        if RemoteName::new(name).is_err() || !valid_device_name(name) {
+            return Err(HostError::BadName);
+        }
         if self
             .store
             .hosts()
@@ -294,7 +300,7 @@ impl<S: HostStore, C: CredentialStore, D: Dialer> Hosts<'_, S, C, D> {
         let psk = Zeroizing::new(
             URL_SAFE_NO_PAD
                 .decode(code.secret.as_str())
-                .map_err(|_| HostError::BadName)?,
+                .map_err(|_| HostError::BadCode("The pairing secret is not valid.".to_owned()))?,
         );
         let mut host = RemoteHost {
             id: code.host_id.clone(),
@@ -910,6 +916,17 @@ mod tests {
             w.hosts().pair(&invite(), "Phone", NOW, &[20; 32]).await,
             Err(HostError::KeyChanged)
         );
+        assert_eq!(w.stored_entries(), 0);
+        // zod's RemoteName is trimmed and 1 to 80 characters. The PC would refuse these at the confirmation, with a
+        // message that says nothing about the name, so they are refused here.
+        let w = world();
+        for name in ["", "   ", &"n".repeat(81)] {
+            assert_eq!(
+                w.hosts().pair(&invite(), name, NOW, &[20; 32]).await,
+                Err(HostError::BadName),
+                "{name:?}"
+            );
+        }
         assert_eq!(w.stored_entries(), 0);
         // A bad name, and an expired invitation, are refused before anything is touched too.
         let w = world();
