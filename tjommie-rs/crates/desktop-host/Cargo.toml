@@ -7,11 +7,41 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+base64 = "0.23.1"
+cpal.workspace = true
 jiff = "0.2.41"
 log = { version = "0.4.35", features = ["std"] }
+protocol = { version = "0.5.0", path = "../protocol" }
+reqwest = { version = "0.12.28", default-features = false, features = ["native-tls"] }
+semver.workspace = true
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sha2 = "0.10.9"
 # owner_safety::test_root: a disposable folder under %TEMP% for tests.
 tempfile = "3.27.0"
-windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Recovery", "Win32_System_Threading"] }
+tokio = { version = "1.54.1", features = ["rt", "rt-multi-thread", "macros", "net", "sync", "time", "fs", "io-util"] }
+url = "2.5.8"
+uuid = { version = "1.26.0", features = ["v4"] }
+windows = { version = "0.62.2", features = [
+  "Data_Xml_Dom",
+  "Foundation",
+  "UI_Notifications",
+  "Win32_Foundation",
+  "Win32_Graphics_Dxgi",
+  "Win32_Graphics_Gdi",
+  "Win32_Security",
+  "Win32_Storage_FileSystem",
+  "Win32_System_LibraryLoader",
+  "Win32_System_ProcessStatus",
+  "Win32_System_Recovery",
+  "Win32_System_Registry",
+  "Win32_System_Threading",
+  "Win32_UI_Shell",
+  "Win32_UI_WindowsAndMessaging",
+] }
+
+[dev-dependencies]
+tokio = { version = "1.54.1", features = ["test-util"] }
 
 [lints]
 workspace = true
