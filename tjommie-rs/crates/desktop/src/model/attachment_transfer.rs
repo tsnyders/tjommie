@@ -6,7 +6,8 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use base64::Engine as _;
@@ -18,7 +19,6 @@ use protocol::attachments::{
     AttachmentRef, TransferId,
 };
 use protocol::wire::{Empty, method};
-use tokio::sync::OnceCell;
 
 use super::document_ranges::Signal;
 
@@ -143,11 +143,12 @@ pub fn attachment_bytes(
     Ok(bytes)
 }
 
-/// `untilAbort` for a daemon call that is simply dropped if it loses: the signal, or the host's silence past `deadline`.
-async fn host_call<T>(
+/// `untilAbort(future, signal, deadline = true)`: the answer, or the signal's abort, or the host's silence past `deadline`.
+/// A future that loses is dropped; the caller decides what a late answer means.
+async fn host_until<T>(
     signal: &Signal,
     deadline: Duration,
-    call: impl Future<Output = Result<T, RpcError>>,
+    future: impl Future<Output = Result<T, TransferError>>,
 ) -> Result<T, TransferError> {
     if signal.aborted() {
         return Err(TransferError::Cancelled);
@@ -156,8 +157,20 @@ async fn host_call<T>(
         biased;
         () = signal.cancelled() => Err(TransferError::Cancelled),
         () = tokio::time::sleep(deadline) => Err(TransferError::Failed(HOST_SILENT.to_owned())),
-        reply = call => reply.map_err(TransferError::Rpc),
+        answer = future => answer,
     }
+}
+
+/// A daemon call, timed as a host reply.
+async fn host_call<T>(
+    signal: &Signal,
+    deadline: Duration,
+    call: impl Future<Output = Result<T, RpcError>>,
+) -> Result<T, TransferError> {
+    host_until(signal, deadline, async move {
+        call.await.map_err(TransferError::Rpc)
+    })
+    .await
 }
 
 /// `untilAbort` without a deadline: a native picker or write may take as long as the user needs.
@@ -245,6 +258,15 @@ pub trait AttachmentNative: Sync {
     ) -> impl Future<Output = Result<(), TransferError>> + Send;
 }
 
+/// Holds a transfer's read slot. Dropping it, even while its read waits, frees the slot.
+struct ReadSlot<'b>(&'b AtomicBool);
+
+impl Drop for ReadSlot<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
 /// One open transfer on the daemon. Reads are one at a time; closing happens once.
 pub struct AttachmentTransfer<'a, R> {
     rpc: &'a R,
@@ -309,28 +331,31 @@ impl<'a, R: Rpc> AttachmentTransfer<'a, R> {
         if self.closed.load(Ordering::SeqCst) || self.signal.aborted() {
             return Err(TransferError::Cancelled);
         }
-        if self.reading.load(Ordering::SeqCst)
-            || offset > self.open.attachment.size
-            || !(1..=ATTACHMENT_CHUNK_BYTES).contains(&length)
+        let fits =
+            offset <= self.open.attachment.size && (1..=ATTACHMENT_CHUNK_BYTES).contains(&length);
+        if !fits
+            || self
+                .reading
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .is_err()
         {
             return Err(TransferError::Failed(
                 "Invalid or overlapping file read.".to_owned(),
             ));
         }
-        self.reading.store(true, Ordering::SeqCst);
+        // Freed on every exit, including a read that is dropped while it waits.
+        let _slot = ReadSlot(&self.reading);
         let request = AttachmentRead {
             transfer_id: self.open.transfer_id.clone(),
             offset,
             length,
         };
-        let reply = host_call(
+        let chunk = host_call(
             &self.signal,
             self.host_reply,
             self.rpc.call::<method::AttachmentsRead>(request),
         )
-        .await;
-        self.reading.store(false, Ordering::SeqCst);
-        let chunk = reply?;
+        .await?;
         if self.closed.load(Ordering::SeqCst) || self.signal.aborted() {
             return Err(TransferError::Cancelled);
         }
@@ -360,9 +385,13 @@ pub struct DownloadOptions<'a, R> {
     pub transferring: Option<Box<dyn FnMut(bool) + Send + 'a>>,
 }
 
-/// `downloadAttachment`: saves the file to the destination the user picks, a chunk at a time. The picker may take as long as
-/// it likes; the daemon's silence is timed only while the transfer is open. Whatever was started is cancelled on every way
-/// out, and a cleanup failure is reported unless the save was published.
+/// `downloadAttachment`: saves the file to the destination the user picks, a chunk at a time. The picker and the finish may
+/// take as long as the user needs. The daemon's replies, the activation and each native write are timed by `host_reply`, as
+/// in the TypeScript. Whatever was started is cancelled on every way out, and a cleanup failure is reported unless the save
+/// was published.
+///
+/// The cleanup runs after the body, not in a drop guard (the cancel is async). Dropping this future before it finishes skips
+/// the cancel and the close, so a caller that gives up must abort the signal and let the future finish.
 pub async fn download_attachment<'a, R: Rpc, N: AttachmentNative>(
     rpc: &'a R,
     reference: &AttachmentRef,
@@ -430,7 +459,7 @@ pub async fn download_attachment<'a, R: Rpc, N: AttachmentNative>(
         if signal.aborted() {
             return Err(TransferError::Cancelled);
         }
-        abortable(signal, native.activate_save(&id)).await??;
+        host_until(signal, options.host_reply, native.activate_save(&id)).await?;
         let mut offset = 0u64;
         while offset < size {
             let Some(open) = transfer.as_ref() else {
@@ -441,7 +470,12 @@ pub async fn download_attachment<'a, R: Rpc, N: AttachmentNative>(
                 return Err(TransferError::Cancelled);
             }
             let written = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-            abortable(signal, native.append_save(&id, offset, bytes)).await??;
+            host_until(
+                signal,
+                options.host_reply,
+                native.append_save(&id, offset, bytes),
+            )
+            .await?;
             offset += written;
             progress(offset, size);
         }
@@ -513,6 +547,7 @@ fn is_preview_handle(url: &str, preview_id: &str) -> bool {
     let own_origin = (parsed.scheme() == "app" && parsed.host_str() == Some("tjommie"))
         || (parsed.scheme() == "https" && parsed.host_str() == Some("localhost"));
     own_origin
+        && parsed.port().is_none()
         && parsed.username().is_empty()
         && parsed.password().is_none()
         && parsed.query().is_none()
@@ -554,42 +589,120 @@ pub async fn preview_attachment<'a, R: Rpc, N: AttachmentNative>(
         ));
     }
     Ok(AttachmentPreview {
-        native,
-        transfer,
-        preview_id: preview.preview_id,
-        url: preview.url,
-        closing: OnceCell::new(),
+        shared: Arc::new(PreviewShared {
+            native,
+            transfer,
+            preview_id: preview.preview_id,
+            url: preview.url,
+            signal: signal.clone(),
+            closing: AtomicBool::new(false),
+            closed: Signal::new(),
+            finished: Signal::new(),
+            outcome: OnceLock::new(),
+            lane: tokio::sync::Mutex::new(()),
+            queued: AtomicUsize::new(0),
+        }),
     })
 }
 
-/// An open preview. Closing is shared: every caller gets the first close's outcome, and the native handle is closed once.
+/// An open preview. The handle is cheap to hold: the state lives in an `Arc`, so [`AttachmentPreview::close_when_aborted`]
+/// can finish the close after the handle is dropped.
 pub struct AttachmentPreview<'a, R: Rpc, N: AttachmentNative> {
+    shared: Arc<PreviewShared<'a, R, N>>,
+}
+
+struct PreviewShared<'a, R: Rpc, N: AttachmentNative> {
     native: &'a N,
     transfer: AttachmentTransfer<'a, R>,
     preview_id: String,
     url: String,
-    closing: OnceCell<Result<(), TransferError>>,
+    /// The preview's signal: its abort closes the preview.
+    signal: Signal,
+    /// Set when a close begins. `serve` answers nothing after it (the TypeScript's `remove()`).
+    closing: AtomicBool,
+    /// Aborted when a close begins, so a watcher on a closed preview ends.
+    closed: Signal,
+    /// Aborted when the first close has an outcome.
+    finished: Signal,
+    /// The first close's outcome, which every close shares.
+    outcome: OnceLock<Result<(), TransferError>>,
+    /// The reads, one at a time (the TypeScript's `previous` chain).
+    lane: tokio::sync::Mutex<()>,
+    /// Reads in flight or waiting for the lane (the TypeScript's `queued`).
+    queued: AtomicUsize,
 }
 
-impl<'a, R: Rpc, N: AttachmentNative> AttachmentPreview<'a, R, N> {
-    pub fn url(&self) -> &str {
-        &self.url
+/// Counts a read out of `PreviewShared::queued`, however it ends.
+struct Queued<'b>(&'b AtomicUsize);
+
+impl Drop for Queued<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Records a first close that was dropped before it finished. Later closes are released with that outcome, and none sends
+/// the native close again.
+struct Interrupted<'b> {
+    outcome: &'b OnceLock<Result<(), TransferError>>,
+    finished: &'b Signal,
+}
+
+impl Drop for Interrupted<'_> {
+    fn drop(&mut self) {
+        let _ = self.outcome.set(Err(TransferError::Failed(
+            "The preview closed before its close finished.".to_owned(),
+        )));
+        self.finished.abort();
+    }
+}
+
+impl<'a, R: Rpc, N: AttachmentNative> PreviewShared<'a, R, N> {
+    /// `close`: once. The first call sends the native close and then the daemon's; later calls wait for and share its outcome.
+    async fn close(&self) -> Result<(), TransferError> {
+        if self.closing.swap(true, Ordering::SeqCst) {
+            self.finished.cancelled().await;
+            return self.outcome.get().cloned().unwrap_or_else(|| {
+                Err(TransferError::Failed(
+                    "The preview closed before its close finished.".to_owned(),
+                ))
+            });
+        }
+        self.closed.abort();
+        let _interrupted = Interrupted {
+            outcome: &self.outcome,
+            finished: &self.finished,
+        };
+        let failure = self.native.close_preview(&self.preview_id).await.err();
+        let result = failure
+            .or(self.transfer.close().await.err())
+            .map_or(Ok(()), Err);
+        let _ = self.outcome.set(result.clone());
+        self.finished.abort();
+        result
     }
 
-    pub fn attachment(&self) -> &AttachmentInfo {
-        self.transfer.info()
-    }
-
-    /// One native read request. Another preview's requests are ignored, and nothing is served once closing has begun. A read
-    /// that fails goes to `on_error` (not when the signal was the cause) and is answered with no bytes.
-    pub async fn serve(
+    /// `serve`: one native read request. Another preview's requests are ignored, and nothing is served once closing has
+    /// begun. Two reads may be in flight or waiting, as in the TypeScript; a third is answered with no bytes and no error.
+    /// A read that fails goes to `on_error` unless the signal was the cause, and is answered with no bytes.
+    async fn serve(
         &self,
         request: &NativeRead,
         on_error: &mut dyn FnMut(&TransferError),
     ) -> Result<(), TransferError> {
-        if request.preview_id != self.preview_id || self.closing.initialized() {
+        if request.preview_id != self.preview_id || self.closing.load(Ordering::SeqCst) {
             return Ok(());
         }
+        let position = self.queued.fetch_add(1, Ordering::SeqCst);
+        let _queued = Queued(&self.queued);
+        if position >= 2 {
+            return self
+                .native
+                .respond(&self.preview_id, &request.request_id, None)
+                .await;
+        }
+        // Held through the answer, as the TypeScript's chain is: the next read starts once this one is delivered.
+        let _turn = self.lane.lock().await;
         let bytes = match self.transfer.read(request.offset, request.length).await {
             Ok(bytes) => Some(bytes),
             Err(error) => {
@@ -603,17 +716,45 @@ impl<'a, R: Rpc, N: AttachmentNative> AttachmentPreview<'a, R, N> {
             .respond(&self.preview_id, &request.request_id, bytes)
             .await
     }
+}
 
+impl<'a, R: Rpc, N: AttachmentNative> AttachmentPreview<'a, R, N> {
+    pub fn url(&self) -> &str {
+        &self.shared.url
+    }
+
+    pub fn attachment(&self) -> &AttachmentInfo {
+        self.shared.transfer.info()
+    }
+
+    /// `signal.addEventListener("abort", close)`: the close the TypeScript starts when the preview's signal aborts. It is a
+    /// future the caller drives (in the app, spawn it beside the preview). It borrows nothing from this handle, so the handle
+    /// may be dropped first and the lease is still released. It ends once the preview has closed.
+    pub fn close_when_aborted(&self) -> BoxFuture<'a, ()> {
+        let shared = Arc::clone(&self.shared);
+        Box::pin(async move {
+            tokio::select! {
+                biased;
+                () = shared.signal.cancelled() => {
+                    let _ = shared.close().await;
+                }
+                () = shared.closed.cancelled() => {}
+            }
+        })
+    }
+
+    /// One native read request (see `PreviewShared::serve`).
+    pub async fn serve(
+        &self,
+        request: &NativeRead,
+        on_error: &mut dyn FnMut(&TransferError),
+    ) -> Result<(), TransferError> {
+        self.shared.serve(request, on_error).await
+    }
+
+    /// Closes the preview once: the native handle, then the daemon's lease. Every call gets the same outcome.
     pub async fn close(&self) -> Result<(), TransferError> {
-        self.closing
-            .get_or_init(|| async {
-                let failure = self.native.close_preview(&self.preview_id).await.err();
-                failure
-                    .or(self.transfer.close().await.err())
-                    .map_or(Ok(()), Err)
-            })
-            .await
-            .clone()
+        self.shared.close().await
     }
 }
 
@@ -739,6 +880,32 @@ mod tests {
         }
     }
 
+    /// A daemon whose first `attachments.read` never answers (the reader is abandoned); the rest is `inner`.
+    struct StallOnce {
+        stalled: AtomicBool,
+        inner: FakeRpc,
+    }
+
+    impl Rpc for StallOnce {
+        fn call<M: ClientMethod>(
+            &self,
+            params: M::Params,
+        ) -> impl Future<Output = Result<M::Result, RpcError>> + Send {
+            let stall = M::NAME == "attachments.read" && self.stalled.swap(false, Ordering::SeqCst);
+            let inner = if stall {
+                None
+            } else {
+                Some(self.inner.call::<M>(params))
+            };
+            async move {
+                match inner {
+                    Some(inner) => inner.await,
+                    None => std::future::pending().await,
+                }
+            }
+        }
+    }
+
     /// The native side: a picker that answers when the test says so, and records every call as (name, argument).
     struct Native {
         picker: Mutex<Option<oneshot::Receiver<Option<String>>>>,
@@ -750,6 +917,10 @@ mod tests {
         abort_on_start: Option<Signal>,
         close_gate: Mutex<Option<oneshot::Receiver<()>>>,
         close_error: Option<TransferError>,
+        /// Holds the first `respond` back until the test releases it.
+        respond_gate: Mutex<Option<oneshot::Receiver<()>>>,
+        stall_activate: bool,
+        stall_append: bool,
         preview: NativePreview,
         calls: Mutex<Vec<(String, String)>>,
     }
@@ -766,6 +937,9 @@ mod tests {
                 abort_on_start: None,
                 close_gate: Mutex::new(None),
                 close_error: None,
+                respond_gate: Mutex::new(None),
+                stall_activate: false,
+                stall_append: false,
                 preview: NativePreview {
                     preview_id: "624d43d7-1a49-4d79-8d1d-85d846cfbd8e".to_owned(),
                     url: "app://tjommie/_attachments/624d43d7-1a49-4d79-8d1d-85d846cfbd8e"
@@ -826,7 +1000,13 @@ mod tests {
         ) -> impl Future<Output = Result<(), TransferError>> + Send {
             self.note("activate", save_id);
             let failure = self.activation_error.clone();
-            async move { failure.map_or(Ok(()), |message| Err(TransferError::Failed(message))) }
+            let stall = self.stall_activate;
+            async move {
+                if stall {
+                    return std::future::pending().await;
+                }
+                failure.map_or(Ok(()), |message| Err(TransferError::Failed(message)))
+            }
         }
 
         fn append_save(
@@ -836,7 +1016,13 @@ mod tests {
             _bytes: Vec<u8>,
         ) -> impl Future<Output = Result<(), TransferError>> + Send {
             self.note("append", offset.to_string());
-            std::future::ready(Ok(()))
+            let stall = self.stall_append;
+            async move {
+                if stall {
+                    return std::future::pending().await;
+                }
+                Ok(())
+            }
         }
 
         fn finish_save(
@@ -896,7 +1082,23 @@ mod tests {
                 String::from_utf8_lossy(&bytes).into_owned()
             });
             self.note("respond", format!("{preview_id}|{request_id}|{shown}"));
-            std::future::ready(Ok(()))
+            let gate = self.respond_gate.lock().unwrap().take();
+            async move {
+                if let Some(gate) = gate {
+                    let _ = gate.await;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// A read request from the native preview for the first three bytes.
+    fn native_read(preview_id: &str, request_id: &str) -> NativeRead {
+        NativeRead {
+            preview_id: preview_id.to_owned(),
+            request_id: request_id.to_owned(),
+            offset: 0,
+            length: 3,
         }
     }
 
@@ -988,6 +1190,7 @@ mod tests {
         let phases = Arc::new(Mutex::new(Vec::new()));
         let sink = phases.clone();
         let mut options = options();
+        options.host_reply = Duration::from_millis(40);
         options.reacquire = Some(reacquire_with(&fresh));
         options.transferring = Some(Box::new(move |reacquired| {
             sink.lock().unwrap().push(reacquired)
@@ -1005,7 +1208,8 @@ mod tests {
                 |_, _| {}
             ),
             async {
-                tokio::time::sleep(Duration::from_millis(30)).await;
+                // Longer than the host's deadline: the picker is not timed, so the transfer has not opened.
+                tokio::time::sleep(Duration::from_millis(120)).await;
                 assert_eq!(
                     first
                         .calls()
@@ -1359,18 +1563,17 @@ mod tests {
         let (release, gate) = oneshot::channel();
         *native.close_gate.lock().unwrap() = Some(gate);
         let mut retire = Vec::new();
-        let preview = preview_attachment(
-            &rpc,
-            reference(),
-            &native,
-            &Signal::new(),
-            HOST_REPLY,
-            &mut retire,
-        )
-        .await
-        .unwrap();
-        let (first, second, ()) = tokio::join!(preview.close(), preview.close(), async {
+        let signal = Signal::new();
+        let preview =
+            preview_attachment(&rpc, reference(), &native, &signal, HOST_REPLY, &mut retire)
+                .await
+                .unwrap();
+        signal.abort();
+        // The abort starts the close by itself (the TypeScript's abort listener): the watcher is driven before any explicit
+        // close, and the daemon's lease waits for the native handle.
+        tokio::join!(preview.close_when_aborted(), async {
             tokio::time::sleep(Duration::from_millis(20)).await;
+            assert_eq!(native.count("close_preview"), 1);
             assert!(
                 rpc.calls()
                     .iter()
@@ -1378,6 +1581,7 @@ mod tests {
             );
             release.send(()).unwrap();
         });
+        let (first, second) = tokio::join!(preview.close(), preview.close());
         assert_eq!((first, second), (Ok(()), Ok(())));
         assert_eq!(native.count("close_preview"), 1);
         assert_eq!(
@@ -1518,6 +1722,188 @@ mod tests {
         assert_eq!(native.count("finish"), 0);
         assert_eq!(native.count("append"), 0);
         assert!(native.saw("cancel", "late-save"));
+    }
+
+    #[tokio::test]
+    async fn an_aborted_preview_releases_its_lease_even_when_its_handle_is_dropped() {
+        let rpc = healthy();
+        let native = Native::new();
+        let signal = Signal::new();
+        let mut retire = Vec::new();
+        let preview =
+            preview_attachment(&rpc, reference(), &native, &signal, HOST_REPLY, &mut retire)
+                .await
+                .unwrap();
+        let watcher = preview.close_when_aborted();
+        signal.abort();
+        drop(preview);
+        watcher.await;
+        assert_eq!(native.count("close_preview"), 1);
+        assert_eq!(
+            rpc.calls().last().map(|(name, _)| *name),
+            Some("attachments.close")
+        );
+    }
+
+    #[tokio::test]
+    async fn two_concurrent_serves_are_answered_in_turn_and_a_third_overflow_answers_none_quietly()
+    {
+        let rpc = healthy();
+        let native = Native::new();
+        let (release, gate) = oneshot::channel();
+        *native.respond_gate.lock().unwrap() = Some(gate);
+        let signal = Signal::new();
+        let mut retire = Vec::new();
+        let preview =
+            preview_attachment(&rpc, reference(), &native, &signal, HOST_REPLY, &mut retire)
+                .await
+                .unwrap();
+        let preview_id = native.preview.preview_id.clone();
+        let (first_request, second_request, third_request) = (
+            native_read(&preview_id, "one"),
+            native_read(&preview_id, "two"),
+            native_read(&preview_id, "three"),
+        );
+        let errors = Mutex::new(Vec::new());
+        let mut first_errors = |error: &TransferError| errors.lock().unwrap().push(error.clone());
+        let mut second_errors = |error: &TransferError| errors.lock().unwrap().push(error.clone());
+        let mut third_errors = |error: &TransferError| errors.lock().unwrap().push(error.clone());
+        let reads = || {
+            rpc.calls()
+                .iter()
+                .filter(|(name, _)| *name == "attachments.read")
+                .count()
+        };
+        let (first, second, third, ()) = tokio::join!(
+            preview.serve(&first_request, &mut first_errors),
+            preview.serve(&second_request, &mut second_errors),
+            preview.serve(&third_request, &mut third_errors),
+            async {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                // The first read has answered and holds the turn; the second waits behind it and has not read yet.
+                assert_eq!(reads(), 1);
+                assert!(native.saw("respond", &format!("{preview_id}|three|null")));
+                release.send(()).unwrap();
+            }
+        );
+        assert_eq!((first, second, third), (Ok(()), Ok(()), Ok(())));
+        assert!(errors.lock().unwrap().is_empty());
+        assert!(native.saw("respond", &format!("{preview_id}|one|aaa")));
+        assert!(native.saw("respond", &format!("{preview_id}|two|aaa")));
+        assert_eq!(reads(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_read_dropped_mid_await_does_not_block_the_next_read() {
+        let rpc = StallOnce {
+            stalled: AtomicBool::new(true),
+            inner: healthy(),
+        };
+        let signal = Signal::new();
+        let mut retire = Vec::new();
+        let transfer =
+            AttachmentTransfer::open(&rpc, reference(), &signal, HOST_REPLY, &mut retire)
+                .await
+                .unwrap();
+        let stalled = tokio::time::timeout(Duration::from_millis(10), transfer.read(0, 3)).await;
+        assert!(stalled.is_err());
+        assert_eq!(transfer.read(0, 3).await, Ok(b"aaa".to_vec()));
+    }
+
+    #[tokio::test]
+    async fn a_native_activation_or_write_that_hangs_fails_after_the_host_deadline() {
+        for phase in ["activate", "append"] {
+            let rpc = healthy();
+            let mut native = Native::new();
+            native.stall_activate = phase == "activate";
+            native.stall_append = phase == "append";
+            let mut options = options();
+            options.host_reply = Duration::from_millis(40);
+            let signal = Signal::new();
+            let mut retire = Vec::new();
+            let result = tokio::time::timeout(
+                Duration::from_secs(5),
+                download_attachment(
+                    &rpc,
+                    reference(),
+                    &native,
+                    &signal,
+                    options,
+                    &mut retire,
+                    |_, _| {},
+                ),
+            )
+            .await;
+            assert!(
+                matches!(&result, Ok(Err(TransferError::Failed(message))) if message == HOST_SILENT),
+                "{phase}: {result:?}"
+            );
+            assert!(native.saw("cancel", "native-save"), "{phase}");
+            assert_eq!(
+                rpc.calls().last().map(|(name, _)| *name),
+                Some("attachments.close"),
+                "{phase}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn accepts_only_this_previews_own_handle_from_the_app_or_localhost_without_a_port() {
+        const PREVIEW: &str = "624d43d7-1a49-4d79-8d1d-85d846cfbd8e";
+        let cases = [
+            (format!("app://tjommie/_attachments/{PREVIEW}"), true),
+            (format!("https://localhost/_attachments/{PREVIEW}"), true),
+            (
+                format!("https://localhost:8443/_attachments/{PREVIEW}"),
+                false,
+            ),
+            (format!("app://tjommie/_attachments/{PREVIEW}?x=1"), false),
+            (format!("app://tjommie/_attachments/{PREVIEW}#x"), false),
+            (
+                "app://tjommie/_attachments/00000000-0000-0000-0000-000000000000".to_owned(),
+                false,
+            ),
+            (format!("https://example.com/_attachments/{PREVIEW}"), false),
+        ];
+        for (url, accepted) in cases {
+            let rpc = healthy();
+            let mut native = Native::new();
+            native.preview = NativePreview {
+                preview_id: PREVIEW.to_owned(),
+                url: url.clone(),
+            };
+            let signal = Signal::new();
+            let mut retire = Vec::new();
+            let result =
+                preview_attachment(&rpc, reference(), &native, &signal, HOST_REPLY, &mut retire)
+                    .await;
+            assert_eq!(result.is_ok(), accepted, "{url}");
+            if let Ok(preview) = result {
+                preview.close().await.unwrap();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_close_dropped_midway_is_not_repeated_and_later_closes_get_its_outcome() {
+        let rpc = healthy();
+        let native = Native::new();
+        // The sender is kept alive, so the native close never answers.
+        let (_held, gate) = oneshot::channel::<()>();
+        *native.close_gate.lock().unwrap() = Some(gate);
+        let signal = Signal::new();
+        let mut retire = Vec::new();
+        let preview =
+            preview_attachment(&rpc, reference(), &native, &signal, HOST_REPLY, &mut retire)
+                .await
+                .unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), preview.close())
+                .await
+                .is_err()
+        );
+        assert!(preview.close().await.is_err());
+        assert_eq!(native.count("close_preview"), 1);
     }
 
     #[test]
