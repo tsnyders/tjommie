@@ -80,8 +80,13 @@ jobs:
           cargo build --workspace --locked
           Assert-NoFeed
           $env:TJOMMIE_IDENTITY = 'e2e'
-          cargo build --workspace --locked
+          cargo build --workspace --locked --features desktop/test-driver
           Assert-NoFeed
+      # The e2e tests drive that e2e build through its test driver, each on a temp root (Phase 3 plan T0.5).
+      - name: Desktop e2e tests
+        run: cargo test --workspace --locked --features desktop/test-driver --test 'e2e_*'
+        env:
+          TJOMMIE_IDENTITY: e2e
       # The desktop's daemon-process test hosts the Rust exe when TJOMMIE_DAEMON_EXE names it (plan T9.1). Build it here so
       # that test runs on every change instead of being skipped. It needs the node_modules the step above installed.
       - run: cargo build --locked -p daemon --bin tjommie-daemon

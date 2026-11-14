@@ -13,6 +13,9 @@ impl Theme {
     }
 }
 
+/// The app's theme, set once at start.
+impl gpui::Global for Theme {}
+
 /// Every struct here refuses unknown keys, so a theme file can't carry a key the app never reads.
 macro_rules! tokens {
     ($($(#[$doc:meta])* $name:ident { $($(#[$field_meta:meta])* $field:ident: $ty:ty),* $(,)? })*) => {$(

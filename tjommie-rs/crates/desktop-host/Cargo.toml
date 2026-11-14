@@ -11,11 +11,7 @@ jiff = "0.2.41"
 log = { version = "0.4.35", features = ["std"] }
 # owner_safety::test_root: a disposable folder under %TEMP% for tests.
 tempfile = "3.27.0"
-windows = { version = "0.62.2", features = ["Win32_System_Recovery"] }
-
-[dev-dependencies]
-# crash::tests reads the restart registration back.
-windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_System_Threading"] }
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Recovery", "Win32_System_Threading"] }
 
 [lints]
 workspace = true

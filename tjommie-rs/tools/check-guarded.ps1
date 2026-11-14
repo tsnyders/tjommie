@@ -64,3 +64,4 @@ if ($found) {
     exit 1
 }
 Write-Host "Every UI handler under $Path is guarded."
+exit 0
