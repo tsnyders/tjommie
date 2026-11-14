@@ -33,8 +33,16 @@ pub struct BrowserView {
     pub busy: bool,
 }
 
-/// Closes that haven't finished handing a bot's browser back, by bot: a reopened panel waits for the last one. The
-/// TypeScript keeps this in a module-level map; here the caller holds one `Closes` for the whole app.
+/// The time a session reads. The browser session reads `now` only and never sleeps; `sleep` is for the native session's
+/// mount retries. The app's clock is `Instant::now` and `tokio::time::sleep`; the tests move a clock by hand.
+pub trait Clock {
+    fn now(&self) -> Instant;
+    fn sleep(&self, duration: Duration) -> impl Future<Output = ()> + Send;
+}
+
+/// Closes that haven't finished handing a bot's browser back, by bot: a reopened panel waits for the last one. Each close
+/// mints its own token, so a close removes only its own entry. The TypeScript keeps one module-level map per session kind;
+/// the app holds two `Closes`, one for browser sessions and one for native sessions, and shares each across its sessions.
 #[derive(Default)]
 pub struct Closes {
     pub(super) issued: std::sync::atomic::AtomicU64,
@@ -137,8 +145,10 @@ enum Job {
     Command(Command),
     /// Hands the browser back to the bot and leaves the view hidden: `suspend`.
     Suspend,
-    /// Hands the browser back, then ends the session: `close`.
-    Close,
+    /// Hands the browser back, then ends the session: `close`. `token` is this close's own registry entry.
+    Close {
+        token: u64,
+    },
 }
 
 /// A unit of queued work, run in order by whichever call found the lane idle.
@@ -588,7 +598,7 @@ impl Inner {
         let Some(state) = self.view.state.clone() else {
             return false;
         };
-        let Some(page_id) = state.active_page_id.clone() else {
+        let Some(page_id) = state.active_page_id.clone().filter(|page| !page.is_empty()) else {
             return false;
         };
         if state.control != BrowserControl::Human
@@ -747,6 +757,10 @@ impl Inner {
         if data.bot_id != bot {
             return;
         }
+        // The stream ended (or was stopped for a suspend or close): a frame still on its way is dropped, not shown or acked (M5).
+        if self.stream.is_none() {
+            return;
+        }
         let Some(frame) = data.frame else {
             self.end_stream(); // it ended: a private interaction, a closed browser, or a stop
             return;
@@ -825,7 +839,7 @@ impl Inner {
         self.closing = true;
         let drain = self.submit(
             Task {
-                job: Job::Close,
+                job: Job::Close { token },
                 release: true,
                 kind: None,
                 key: None,
@@ -833,6 +847,35 @@ impl Inner {
             now,
         );
         (Some(waiter), drain)
+    }
+}
+
+/// Clears the lane's `running` flag when a drain is dropped before it finishes. Disarmed once the queue is empty, when
+/// `next_task` has already cleared the flag.
+struct LaneGuard<'a> {
+    inner: &'a Mutex<Inner>,
+    armed: bool,
+}
+
+impl Drop for LaneGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            locked(self.inner).running = false;
+        }
+    }
+}
+
+/// Clears the picture poll's `frame_pending` when a pull is dropped before it answers, so the poll cannot stay stopped.
+struct PullGuard<'a> {
+    inner: &'a Mutex<Inner>,
+    armed: bool,
+}
+
+impl Drop for PullGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            locked(self.inner).frame_pending = false;
+        }
     }
 }
 
@@ -856,23 +899,20 @@ impl Closes {
     }
 }
 
-/// One bot's browser panel. Every call takes the daemon (`&impl Rpc`) and the instant it happens at. Calls that find the lane
+/// One bot's browser panel. Every call takes the daemon (`&impl Rpc`) and the clock (`&impl Clock`). Calls that find the lane
 /// busy return at once: the call that is running the lane runs their work too, as the TypeScript's pump does.
 pub struct BrowserSession {
     bot_id: String,
     closes: Arc<Closes>,
-    token: u64,
     inner: Mutex<Inner>,
 }
 
 impl BrowserSession {
     /// A session for `bot_id`. `live` says whether the connection offers the live stream (the TypeScript's `listen`).
     pub fn new(bot_id: &str, closes: Arc<Closes>, live: bool) -> Self {
-        let token = closes.issued.fetch_add(1, Ordering::Relaxed);
         Self {
             bot_id: bot_id.to_owned(),
             closes,
-            token,
             inner: Mutex::new(Inner {
                 visible: true,
                 live,
@@ -919,21 +959,30 @@ impl BrowserSession {
         }
     }
 
-    /// Runs the lane: each queued task in order, until the queue is empty.
-    async fn drain(&self, rpc: &impl Rpc, now: Instant) {
+    /// Runs the lane: each queued task in order, until the queue is empty. A drain dropped before then (a cancelled caller)
+    /// releases the lane through `LaneGuard`, so the next call runs the queue instead of finding the lane busy for good.
+    async fn drain(&self, rpc: &impl Rpc, clock: &impl Clock) {
+        let mut lane = LaneGuard {
+            inner: &self.inner,
+            armed: true,
+        };
         while let Some(task) = self.with(|s| s.next_task()) {
-            if let Err(error) = self.run(rpc, task, now).await {
+            if let Err(error) = self.run(rpc, task, clock).await {
                 self.with(|s| s.set(Patch::error(&error)));
             }
         }
+        lane.armed = false; // the queue is empty, and `next_task` has cleared `running`
         self.flush(rpc).await;
     }
 
-    async fn run(&self, rpc: &impl Rpc, task: Task, now: Instant) -> Result<(), RpcError> {
+    /// Runs one task. The clock is read after each await: a re-armed timer or an active window must count from when the
+    /// daemon answered, not from when the task was queued.
+    async fn run(&self, rpc: &impl Rpc, task: Task, clock: &impl Clock) -> Result<(), RpcError> {
         match task.job {
             Job::Open { earlier } => {
                 wait(earlier).await;
                 let state = rpc.call::<method::BrowserOpen>(self.bot()).await?;
+                let now = clock.now();
                 self.with(|s| {
                     s.apply(state);
                     s.poll(now, Duration::ZERO);
@@ -942,11 +991,13 @@ impl BrowserSession {
             }
             Job::Input { target, input } => {
                 self.send(rpc, &target, input).await?;
+                let now = clock.now();
                 self.with(|s| s.wake(now));
                 Ok(())
             }
             Job::Command(command) => {
                 let state = self.command_call(rpc, command).await;
+                let now = clock.now();
                 self.with(|s| {
                     if let Ok(state) = &state {
                         s.apply(state.clone());
@@ -957,6 +1008,7 @@ impl BrowserSession {
             }
             Job::Suspend => {
                 let outcome = self.hand_back(rpc).await;
+                let now = clock.now();
                 self.with(|s| {
                     if let Err(error) = &outcome {
                         s.set(Patch::error(error));
@@ -971,7 +1023,7 @@ impl BrowserSession {
                 });
                 Ok(())
             }
-            Job::Close => {
+            Job::Close { token } => {
                 let _ = self.hand_back(rpc).await; // best effort at a terminal close
                 self.flush(rpc).await;
                 self.with(|s| {
@@ -979,7 +1031,7 @@ impl BrowserSession {
                         done.send_replace(true);
                     }
                 });
-                self.closes.drop_if(&self.bot_id, self.token);
+                self.closes.drop_if(&self.bot_id, token);
                 Ok(())
             }
         }
@@ -1125,7 +1177,8 @@ impl BrowserSession {
     }
 
     /// Opens the browser's view: the first state, then the first picture.
-    pub async fn open(&self, rpc: &impl Rpc, now: Instant) {
+    pub async fn open(&self, rpc: &impl Rpc, clock: &impl Clock) {
+        let now = clock.now();
         let earlier = self.closes.get(&self.bot_id);
         let drain = self.with(|s| {
             s.submit(
@@ -1139,12 +1192,14 @@ impl BrowserSession {
             )
         });
         if drain {
-            self.drain(rpc, now).await;
+            self.drain(rpc, clock).await;
         }
     }
 
-    /// Shows or hides the panel. Hiding releases this device's input and control, and stops the pictures.
-    pub async fn set_visible(&self, rpc: &impl Rpc, now: Instant, visible: bool) {
+    /// Shows or hides the panel. Hiding releases this device's input and control, and stops the pictures. Hiding awaits the
+    /// whole hand-back (the TypeScript's `void suspend()` does not wait): call it from a task that can afford to wait.
+    pub async fn set_visible(&self, rpc: &impl Rpc, clock: &impl Clock, visible: bool) {
+        let now = clock.now();
         self.with(|s| s.visible = visible);
         if visible {
             self.with(|s| {
@@ -1152,26 +1207,32 @@ impl BrowserSession {
                 s.poll(now, Duration::ZERO);
             });
         } else {
-            self.suspend(rpc, now).await;
+            self.suspend(rpc, clock).await;
         }
     }
 
     /// Hides the panel's pictures and hands the browser back to the bot. Resolves when the hand-back is done.
-    pub async fn suspend(&self, rpc: &impl Rpc, now: Instant) {
+    pub async fn suspend(&self, rpc: &impl Rpc, clock: &impl Clock) {
+        let now = clock.now();
         let (waiter, drain) = self.with(|s| s.begin_suspend(now));
+        // The stream-off call goes out before the hand-back or the wait, so the daemon stops streaming at once (M5).
+        self.flush(rpc).await;
         if drain {
-            self.drain(rpc, now).await;
+            self.drain(rpc, clock).await;
         }
         wait(waiter).await;
     }
 
     /// Ends the session: the picture and stream stop, presses are dropped, and the browser goes back to the bot (it stays
     /// open). Resolves when the hand-back is done.
-    pub async fn close(&self, rpc: &impl Rpc, now: Instant) {
-        let (waiter, drain) =
-            self.with(|s| s.begin_close(&self.closes, &self.bot_id, self.token, now));
+    pub async fn close(&self, rpc: &impl Rpc, clock: &impl Clock) {
+        let now = clock.now();
+        // Each close mints its own registry token (M7): a later close of this session must not remove this close's entry.
+        let token = self.closes.issued.fetch_add(1, Ordering::Relaxed);
+        let (waiter, drain) = self.with(|s| s.begin_close(&self.closes, &self.bot_id, token, now));
+        self.flush(rpc).await; // the stream-off call goes out before the hand-back or the wait (M5)
         if drain {
-            self.drain(rpc, now).await;
+            self.drain(rpc, clock).await;
         }
         wait(waiter).await;
     }
@@ -1187,15 +1248,16 @@ impl BrowserSession {
     }
 
     /// A key, mouse, wheel or text input from the user.
-    pub async fn input(&self, rpc: &impl Rpc, now: Instant, input: BrowserInput) {
+    pub async fn input(&self, rpc: &impl Rpc, clock: &impl Clock, input: BrowserInput) {
+        let now = clock.now();
         let drain = self.with(|s| s.prepare_input(input, now));
         if drain {
-            self.drain(rpc, now).await;
+            self.drain(rpc, clock).await;
         }
     }
 
     /// Releases every key and button the user holds (leaving the Browser pane, or the window losing focus).
-    pub async fn release_all(&self, rpc: &impl Rpc, now: Instant) {
+    pub async fn release_all(&self, rpc: &impl Rpc, clock: &impl Clock) {
         let (buttons, keys) = self.with(|s| (s.buttons.entries(), s.keys.keys()));
         for (button, held) in buttons {
             let input = BrowserInput::Mouse {
@@ -1204,12 +1266,12 @@ impl BrowserSession {
                 y: held.y,
                 button: Some(button),
             };
-            self.input(rpc, now, input).await;
+            self.input(rpc, clock, input).await;
         }
         for key in keys {
             self.input(
                 rpc,
-                now,
+                clock,
                 BrowserInput::Key {
                     action: KeyAction::Up,
                     key,
@@ -1220,7 +1282,8 @@ impl BrowserSession {
     }
 
     /// Takes or gives back control. The reply's state is shown.
-    pub async fn set_control(&self, rpc: &impl Rpc, now: Instant, control: BrowserControl) {
+    pub async fn set_control(&self, rpc: &impl Rpc, clock: &impl Clock, control: BrowserControl) {
+        let now = clock.now();
         let drain = self.with(|s| {
             if s.suspended || s.closing {
                 return false;
@@ -1239,11 +1302,12 @@ impl BrowserSession {
             s.command(Command::Control(params), false, None, None, now)
         });
         if drain {
-            self.drain(rpc, now).await;
+            self.drain(rpc, clock).await;
         }
     }
 
-    pub async fn navigate(&self, rpc: &impl Rpc, now: Instant, url: &str) {
+    pub async fn navigate(&self, rpc: &impl Rpc, clock: &impl Clock, url: &str) {
+        let now = clock.now();
         let drain = self.with(|s| {
             s.on_page(
                 &self.bot_id,
@@ -1259,11 +1323,12 @@ impl BrowserSession {
             )
         });
         if drain {
-            self.drain(rpc, now).await;
+            self.drain(rpc, clock).await;
         }
     }
 
-    pub async fn history(&self, rpc: &impl Rpc, now: Instant, action: HistoryAction) {
+    pub async fn history(&self, rpc: &impl Rpc, clock: &impl Clock, action: HistoryAction) {
+        let now = clock.now();
         let drain = self.with(|s| {
             s.on_page(
                 &self.bot_id,
@@ -1274,11 +1339,12 @@ impl BrowserSession {
             )
         });
         if drain {
-            self.drain(rpc, now).await;
+            self.drain(rpc, clock).await;
         }
     }
 
-    pub async fn resize(&self, rpc: &impl Rpc, now: Instant, width: u32, height: u32) {
+    pub async fn resize(&self, rpc: &impl Rpc, clock: &impl Clock, width: u32, height: u32) {
+        let now = clock.now();
         let drain = self.with(|s| {
             s.on_page(
                 &self.bot_id,
@@ -1295,7 +1361,7 @@ impl BrowserSession {
             )
         });
         if drain {
-            self.drain(rpc, now).await;
+            self.drain(rpc, clock).await;
         }
     }
 
@@ -1303,10 +1369,11 @@ impl BrowserSession {
     pub async fn dialog(
         &self,
         rpc: &impl Rpc,
-        now: Instant,
+        clock: &impl Clock,
         accept: bool,
         prompt_text: Option<&str>,
     ) {
+        let now = clock.now();
         let drain = self.with(|s| {
             s.on_page(
                 &self.bot_id,
@@ -1323,17 +1390,18 @@ impl BrowserSession {
             )
         });
         if drain {
-            self.drain(rpc, now).await;
+            self.drain(rpc, clock).await;
         }
     }
 
     pub async fn tab(
         &self,
         rpc: &impl Rpc,
-        now: Instant,
+        clock: &impl Clock,
         action: TabAction,
         page_id: Option<&str>,
     ) {
+        let now = clock.now();
         let drain = self.with(|s| {
             let Some(state) = s.view.state.clone() else {
                 return false;
@@ -1351,18 +1419,34 @@ impl BrowserSession {
             s.command(Command::Tab(params), true, None, None, now)
         });
         if drain {
-            self.drain(rpc, now).await;
+            self.drain(rpc, clock).await;
         }
     }
 
     /// The picture timer ran out: one pull of the picture or the state, then the next timer.
-    pub async fn on_timer(&self, rpc: &impl Rpc, now: Instant) {
+    /// The picture timer ran out: one pull of the picture or the state, then the next timer. A callback for a timer that
+    /// input or a wake-up has since moved is ignored, and so is one that arrives during a pull (M4): the timer must be due,
+    /// and no pull may be in flight. The clock is read again after the pull, so the next timer counts from its answer.
+    pub async fn on_timer(&self, rpc: &impl Rpc, clock: &impl Clock) {
         let epoch = self.with(|s| {
+            let now = clock.now();
+            if s.frame_pending || s.timer.is_none_or(|due| due > now) {
+                return None;
+            }
             s.timer = None;
             s.frame_pending = true;
-            s.epoch
+            Some(s.epoch)
         });
+        let Some(epoch) = epoch else {
+            return;
+        };
+        let mut pull = PullGuard {
+            inner: &self.inner,
+            armed: true,
+        };
         let outcome = self.pull(rpc, epoch).await;
+        pull.armed = false;
+        let now = clock.now();
         self.with(|s| {
             let failure = outcome.as_ref().err().filter(|_| epoch == s.epoch);
             if let Some(error) = failure {
@@ -1427,9 +1511,11 @@ impl BrowserSession {
             }
             match &frame {
                 Some(picture) => {
-                    if let Some(stream_id) = &picture.stream_id {
+                    if let Some(stream_id) =
+                        picture.stream_id.as_deref().filter(|id| !id.is_empty())
+                    {
                         s.cursor = Some(FrameCursor {
-                            stream_id: stream_id.clone(),
+                            stream_id: stream_id.to_owned(),
                             sequence: picture.sequence,
                         });
                     }
@@ -1493,7 +1579,6 @@ mod tests {
     use client::{ClientMethod, RpcError};
     use protocol::browser::{BrowserDialogParams, KeyAction, MouseAction};
     use serde_json::{Value, json};
-    use std::cell::Cell;
     use std::time::Duration;
 
     /// The TypeScript `state()`: one tab, a human in control, with `patch` merged over it.
@@ -1738,7 +1823,7 @@ mod tests {
             let failing = locked(&self.table).fail.contains(&name);
             failing.then(|| RpcError::Daemon {
                 code: ErrorCode::Internal,
-                message: format!("failed: {name}"),
+                message: name.to_owned(),
             })
         }
 
@@ -1786,18 +1871,45 @@ mod tests {
     async fn advance_session(
         session: &BrowserSession,
         daemon: &Daemon,
-        clock: &Cell<Instant>,
+        clock: &TestClock,
         ms: u64,
     ) {
-        let target = clock.get() + Duration::from_millis(ms);
+        let target = clock.now() + Duration::from_millis(ms);
         while let Some(due) = session.next_timer() {
             if due > target {
                 break;
             }
             clock.set(due);
-            session.on_timer(daemon, due).await;
+            session.on_timer(daemon, clock).await;
         }
         clock.set(target);
+    }
+
+    /// A clock the tests move by hand. The browser session never sleeps, so `sleep` returns at once.
+    struct TestClock {
+        now: std::sync::Mutex<Instant>,
+    }
+
+    impl TestClock {
+        fn new() -> Self {
+            Self {
+                now: std::sync::Mutex::new(Instant::now()),
+            }
+        }
+
+        fn set(&self, at: Instant) {
+            *locked(&self.now) = at;
+        }
+    }
+
+    impl Clock for TestClock {
+        fn now(&self) -> Instant {
+            *locked(&self.now)
+        }
+
+        fn sleep(&self, _duration: Duration) -> impl Future<Output = ()> + Send {
+            std::future::ready(())
+        }
     }
 
     /// A session with its daemon and a clock. `at()` is the clock's instant.
@@ -1805,7 +1917,7 @@ mod tests {
         session: BrowserSession,
         daemon: Daemon,
         closes: Arc<Closes>,
-        clock: Cell<Instant>,
+        clock: TestClock,
         live: bool,
     }
 
@@ -1816,7 +1928,7 @@ mod tests {
                 session: BrowserSession::new("b1", closes.clone(), live),
                 daemon,
                 closes,
-                clock: Cell::new(Instant::now()),
+                clock: TestClock::new(),
                 live,
             }
         }
@@ -1829,8 +1941,9 @@ mod tests {
             Self::of(Daemon::streamed(initial, false), true)
         }
 
-        fn at(&self) -> Instant {
-            self.clock.get()
+        /// The clock every session call reads.
+        fn at(&self) -> &TestClock {
+            &self.clock
         }
 
         /// A second session for the same bot, as a reopened panel is.
@@ -1937,10 +2050,8 @@ mod tests {
         t.flush().await;
         t.daemon.fail_on(&["browser.frame"]);
         t.advance(250).await;
-        // The TypeScript expects the bare "browser.frame": its errorText strips the "failed: " prefix. The Rust error text
-        // carries the daemon's error code, so this checks that the message is shown.
-        let error = t.session.view().error.expect("the failed pull is shown");
-        assert!(error.contains("browser.frame"), "{error}");
+        // The daemon's error text is "internal: browser.frame"; the view shows it without the code, as the TypeScript does.
+        assert_eq!(t.session.view().error.as_deref(), Some("browser.frame"));
         t.daemon.fail_on(&[]);
         t.advance(1100).await;
         assert_eq!(t.session.view().error, None);
@@ -2948,6 +3059,172 @@ mod tests {
         t.advance(600).await;
         assert_eq!(t.daemon.count("browser.frame"), 2); // then the stream keeps it current again
         t.close().await;
+    }
+
+    #[tokio::test]
+    async fn a_stale_picture_timer_does_not_pull_again_while_a_pull_is_in_flight() {
+        let t = Rig::new(state(json!({})));
+        t.open().await;
+        t.flush().await;
+        let old_due = t.session.next_timer().expect("the next poll is armed");
+        t.advance(100).await;
+        t.input(text("x")).await; // input re-arms the poll to now
+        let new_due = t.session.next_timer().expect("input re-armed the poll");
+        assert!(new_due < old_due);
+        let gate = t.daemon.hold(&["browser.frame"]);
+        let before = t.daemon.count("browser.frame");
+        tokio::join!(
+            async {
+                t.clock.set(new_due);
+                t.session.on_timer(&t.daemon, t.at()).await; // the poll input asked for: its pull is held
+            },
+            async {
+                let mut waited = 0;
+                while t.daemon.count("browser.frame") == before && waited < 200 {
+                    tokio::task::yield_now().await;
+                    waited += 1;
+                }
+                t.clock.set(old_due);
+                // The stale callback returns at once. Were the guard missing, it would start a second pull that the same gate
+                // holds, so the call is bounded: the count below then shows the extra pull instead of the test hanging.
+                let _ = tokio::time::timeout(
+                    Duration::from_millis(200),
+                    t.session.on_timer(&t.daemon, t.at()),
+                )
+                .await; // the callback input cancelled, arriving while that pull is in flight
+                gate.send_replace(true);
+            },
+        );
+        assert_eq!(t.daemon.count("browser.frame") - before, 1);
+    }
+
+    #[tokio::test]
+    async fn ignores_a_streamed_frame_that_arrives_after_the_stream_ended() {
+        let t = Rig::streamed(state(json!({})));
+        t.open().await;
+        t.flush().await;
+        t.push(Some(live(1))).await;
+        t.session
+            .stream(
+                &t.daemon,
+                BrowserStreamFrame {
+                    bot_id: "b1".into(),
+                    frame: None,
+                },
+            )
+            .await; // the desktop ends the stream
+        let shown = t.session.view();
+        let acks = t.daemon.count("browser.streamAck");
+        t.session
+            .stream(
+                &t.daemon,
+                BrowserStreamFrame {
+                    bot_id: "b1".into(),
+                    frame: Some(live(4)),
+                },
+            )
+            .await; // a frame already on its way
+        assert_eq!(t.daemon.count("browser.streamAck"), acks);
+        assert_eq!(t.session.view(), shown);
+    }
+
+    #[tokio::test]
+    async fn ignores_streamed_frames_while_suspended() {
+        let t = Rig::streamed(state(json!({})));
+        t.open().await;
+        t.flush().await;
+        t.push(Some(live(1))).await;
+        t.session.set_visible(&t.daemon, t.at(), false).await;
+        let hidden = t.session.view();
+        t.session
+            .stream(
+                &t.daemon,
+                BrowserStreamFrame {
+                    bot_id: "b1".into(),
+                    frame: Some(live(2)),
+                },
+            )
+            .await;
+        assert_eq!(t.session.view(), hidden);
+        assert_eq!(hidden.frame, None);
+    }
+
+    #[tokio::test]
+    async fn a_stream_stop_reaches_the_daemon_at_once_even_while_an_input_is_in_flight() {
+        let t = Rig::streamed(state(json!({})));
+        t.open().await;
+        t.flush().await;
+        let gate = t.daemon.hold(&["browser.input"]);
+        let stopped = || {
+            t.daemon
+                .calls("browser.stream")
+                .iter()
+                .any(|p| p["on"] == json!(false))
+        };
+        tokio::join!(
+            t.input(key(KeyAction::Down, "a")), // held at the daemon, so the lane is busy
+            t.session.set_visible(&t.daemon, t.at(), false), // waits for the lane
+            async {
+                let mut waited = 0;
+                while !stopped() && waited < 200 {
+                    tokio::task::yield_now().await;
+                    waited += 1;
+                }
+                assert!(
+                    stopped(),
+                    "the stream stop went out before the input returned"
+                );
+                gate.send_replace(true);
+            },
+        );
+    }
+
+    #[tokio::test]
+    async fn a_dropped_drain_does_not_wedge_the_lane() {
+        let t = Rig::new(state(json!({})));
+        t.open().await;
+        t.flush().await;
+        let gate = t.daemon.hold(&["browser.input"]);
+        tokio::select! {
+            _ = t.input(key(KeyAction::Down, "a")) => {} // held at the daemon
+            _ = tokio::task::yield_now() => {} // the caller gives up: its drain is dropped mid-flight
+        }
+        gate.send_replace(true);
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            t.session
+                .set_control(&t.daemon, t.at(), BrowserControl::Bot),
+        )
+        .await
+        .expect("a new command still runs");
+        tokio::time::timeout(Duration::from_secs(5), t.session.suspend(&t.daemon, t.at()))
+            .await
+            .expect("the hand-back still completes");
+    }
+
+    #[tokio::test]
+    async fn the_next_poll_counts_from_when_the_daemon_answered() {
+        let t = Rig::new(state(json!({})));
+        t.open().await;
+        t.flush().await;
+        let gate = t.daemon.hold(&["browser.frame"]);
+        let started = t.at().now();
+        tokio::join!(
+            advance_session(&t.session, &t.daemon, &t.clock, 250), // the poll is due at +250, and its pull is held
+            async {
+                let mut waited = 0;
+                while t.daemon.count("browser.frame") < 2 && waited < 200 {
+                    tokio::task::yield_now().await;
+                    waited += 1;
+                }
+                t.clock.set(started + Duration::from_millis(550)); // the daemon takes 300 ms to answer
+                gate.send_replace(true);
+            },
+        );
+        assert_eq!(
+            t.session.next_timer(),
+            Some(started + Duration::from_millis(800))
+        );
     }
 
     #[test]
