@@ -7,6 +7,7 @@
 
 mod connection;
 mod error;
+pub mod remote;
 
 pub use connection::{Client, ConnectOptions, Endpoint};
 pub use error::{CloseReason, ConnectError, RpcError};

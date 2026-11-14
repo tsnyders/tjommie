@@ -4,6 +4,8 @@
 
 pub mod crash;
 pub mod daemon_process;
+pub mod device_keys;
 pub mod device_settings;
 pub mod log;
+pub mod remote_hosts;
 pub mod spawn;
