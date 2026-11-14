@@ -32,11 +32,22 @@ checked against the fixture, and `ownerDesktopDenied` is the same field in the s
    `OpenWindowStation("WinSta0", WINSTA_READATTRIBUTES)`, which is the real boundary; and could open their own `default`
    desktop on their own station, as designed. The launch is identical to 0.4.2's, so this was always so. The Rust probe
    now counts the desktop as denied only if **both** hold: `OpenInputDesktop(0,false,0x0108)` yields no handle (with any
-   error; a handle is a failure), and `OpenWindowStation("WinSta0", false, WINSTA_READATTRIBUTES)`, the weakest access
-   there is, fails with exactly error 5 (a handle, or any other error, is a failure). That is stricter than 0.4.2's
-   rule, never weaker. `accept-worker` also runs the owner's side itself before anything else: it opens `WinSta0` and the
-   input desktop as the owner and stops with a plain error if it cannot, so a worker's refusal always means the target is
-   there and the worker was kept out.
+   error; a handle is a failure), and `OpenWindowStation("WinSta0", false, MAXIMUM_ALLOWED)` fails with exactly error 5
+   (a handle, whatever the mask, or any other error, is a failure).
+
+   This is not a tightening or a loosening of 0.4.2's rule but a rule aimed at a different call. The desktop half no
+   longer requires error 5, because from a private station that call cannot reach permissions, so it accepts any failure.
+   The station half is new, and the proof now rests on it together with "no input-desktop handle". The station is asked
+   for `MAXIMUM_ALLOWED` rather than one right such as `WINSTA_READATTRIBUTES` (the one the diagnostic run tried):
+   Windows grants a request only if every requested bit is granted, so a refusal of one right proves only that right is
+   absent, while a refusal of `MAXIMUM_ALLOWED` proves the worker holds no right at all on `WinSta0`. If a worker ever
+   does get a handle, that is a finding about what the worker can reach (the clipboard, the screen), not a probe fault, and
+   must not be fixed by narrowing the mask.
+
+   `accept-worker` also runs the owner's side itself before anything else: it opens `WinSta0` and the input desktop as
+   the owner and stops with a plain error if it cannot (saying which call failed, with its Windows error, and whether
+   to sign in or to unlock the screen), so a worker's refusal always means the target is there and the worker was kept
+   out. That control only needs to succeed, so it asks `WinSta0` for one right (`WINSTA_READATTRIBUTES`).
 
 | File | Pins | Checked by |
 | --- | --- | --- |

@@ -14,6 +14,7 @@ use daemon::win::acceptance::{
     accept_with, receipt_path, receipts,
 };
 use daemon::win::boundary::{LaunchFailure, NativeLaunch, Receipt, Running, WorkerNative};
+use daemon::win::logon::DesktopRefusal;
 use daemon::win::worker::{Purpose, WorkerConfiguration};
 use serde_json::{Value, json};
 use std::fs;
@@ -65,15 +66,15 @@ impl CliProbe for Cli {
 #[derive(Default)]
 struct Desktop {
     /// The call and Win32 error the control fails with, if it is to fail.
-    refusal: Mutex<Option<String>>,
+    refusal: Mutex<Option<DesktopRefusal>>,
     asked: AtomicUsize,
 }
 
 impl OwnerDesktop for Desktop {
-    fn reachable(&self) -> Result<(), String> {
+    fn reachable(&self) -> Result<(), DesktopRefusal> {
         self.asked.fetch_add(1, Ordering::SeqCst);
         match self.refusal.lock().unwrap().clone() {
-            Some(reason) => Err(reason),
+            Some(refusal) => Err(refusal),
             None => Ok(()),
         }
     }
@@ -566,15 +567,31 @@ async fn a_probe_that_reports_a_failure_writes_no_receipt_and_releases_the_peer_
 /// The positive control of the desktop denial: a worker's refusal at a desktop that is not there proves nothing, so a PC
 /// whose owner cannot reach its own desktop (nobody signed in, a session with no desktop, a locked screen) stops the run
 /// first, in plain words with the Win32 error, before a worker is launched or anything is made, and leaves no receipt.
+/// What the owner is told depends on which call failed: no desktop at all (the station), or a desktop that is not theirs
+/// to open right now (the input desktop: most likely a locked screen), and each says what to do.
 #[tokio::test]
 async fn a_pc_with_no_signed_in_desktop_fails_closed_before_anything_is_launched_or_made() {
-    for reason in [
-        "OpenWindowStation(WinSta0) failed with Windows error 5: Access is denied",
-        "OpenInputDesktop failed with Windows error 1: Incorrect function",
+    let station = "OpenWindowStation(WinSta0) failed with Windows error 5: Access is denied";
+    let input = "OpenInputDesktop failed with Windows error 5: Access is denied";
+    for (refusal, reason, expected) in [
+        (
+            DesktopRefusal::Station(station.into()),
+            station,
+            format!(
+                "This PC has no signed-in desktop to protect, so the desktop check can't be proven here ({station}). Run accept-worker from your own signed-in session."
+            ),
+        ),
+        (
+            DesktopRefusal::InputDesktop(input.into()),
+            input,
+            format!(
+                "Your signed-in desktop can't be reached right now, most likely because the screen is locked or the sign-in screen is showing, so the desktop check can't be proven here ({input}). Unlock the screen and run accept-worker again."
+            ),
+        ),
     ] {
         let world = world();
         let windows = Fake::new();
-        *windows.0.desktop.refusal.lock().unwrap() = Some(reason.into());
+        *windows.0.desktop.refusal.lock().unwrap() = Some(refusal);
         // A valid pair from an earlier run must not survive it either.
         let (provider, review) = configs(&world);
         let [stale, other] = receipts(&provider, &review, &proven(), &proven()).unwrap();
@@ -583,11 +600,10 @@ async fn a_pc_with_no_signed_in_desktop_fails_closed_before_anything_is_launched
         let error = accept_unchecked(&world, &windows, Ok(()))
             .await
             .unwrap_err();
-        assert_eq!(
-            error,
-            format!(
-                "This PC has no signed-in desktop to protect, so the desktop check can't be proven here ({reason}). Run accept-worker from your own signed-in, unlocked session."
-            )
+        assert_eq!(error, expected);
+        assert!(
+            error.contains("Windows error 5"),
+            "{reason}: the Win32 error is in the message: {error}"
         );
         assert_eq!(windows.0.desktop.asked.load(Ordering::SeqCst), 1);
         assert_eq!(receipts_present(&world), [false, false], "{reason}");

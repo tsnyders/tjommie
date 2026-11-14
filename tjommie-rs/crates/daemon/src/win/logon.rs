@@ -393,8 +393,10 @@ pub fn current_user_sid() -> Result<String, String> {
     token_user(token.0)
 }
 
-/// `WINSTA_READATTRIBUTES`: the weakest access to a window station that says anything. A worker refused this is refused
-/// every stronger access too.
+/// `WINSTA_READATTRIBUTES`: what the owner's side of the control asks of `WinSta0`. It only has to show that the station
+/// is there and that the owner can open it, so one right will do. (The denial probe asks a worker for `MAXIMUM_ALLOWED`
+/// instead: Windows grants a request only if every requested bit is granted, so a refusal of one right proves only that
+/// right absent, while a refusal of `MAXIMUM_ALLOWED` proves the worker holds none.)
 const WINSTA_READATTRIBUTES: u32 = 0x0002;
 /// What the denial probe asks of the input desktop (`DESKTOP_SWITCHDESKTOP | DESKTOP_CREATEMENU`, as 0.4.2 did).
 const PROBE_DESKTOP_ACCESS: u32 = 0x0108;
@@ -408,23 +410,44 @@ fn win32(call: &str, error: &windows::core::Error) -> String {
     )
 }
 
+/// Which of the owner's two desktop calls failed, as the call and its Win32 error. The owner is told different things:
+/// with no desktop at all, to run from a signed-in session; with a desktop that is not theirs to open, to unlock it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DesktopRefusal {
+    /// `OpenWindowStation(WinSta0)` failed: this session has no desktop (nobody is signed in to it, or it is a remote,
+    /// service or scheduled-task session).
+    Station(String),
+    /// The window station opened but `OpenInputDesktop` failed: the input desktop is not the owner's to open, most likely
+    /// because the screen is locked or the sign-in screen is showing.
+    InputDesktop(String),
+}
+
+impl std::fmt::Display for DesktopRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (Self::Station(reason) | Self::InputDesktop(reason)) = self;
+        f.write_str(reason)
+    }
+}
+
 /// The owner's side of the desktop denial, run by the owner's own process: whether the signed-in desktop is there to be
 /// protected. It opens what a worker must be refused (this session's window station `WinSta0`, and the input desktop,
 /// with the very calls the denial probe makes) and lets both go. Without it a worker's refusal could mean the target
 /// does not exist (on a machine nobody is signed in to, or from a session with no desktop), not that the worker was kept
-/// out. `Err` names the call that failed and its Win32 error.
-pub fn desktop_reachable() -> Result<(), String> {
+/// out. `Err` says which call failed, with its name and Win32 error.
+pub fn desktop_reachable() -> Result<(), DesktopRefusal> {
     // SAFETY: each handle is opened here and closed here before the next call or the return.
     unsafe {
         let station = OpenWindowStationW(&HSTRING::from("WinSta0"), false, WINSTA_READATTRIBUTES)
-            .map_err(|error| win32("OpenWindowStation(WinSta0)", &error))?;
+            .map_err(|error| {
+            DesktopRefusal::Station(win32("OpenWindowStation(WinSta0)", &error))
+        })?;
         let _ = CloseWindowStation(station);
         let desktop = OpenInputDesktop(
             DESKTOP_CONTROL_FLAGS(0),
             false,
             DESKTOP_ACCESS_FLAGS(PROBE_DESKTOP_ACCESS),
         )
-        .map_err(|error| win32("OpenInputDesktop", &error))?;
+        .map_err(|error| DesktopRefusal::InputDesktop(win32("OpenInputDesktop", &error)))?;
         let _ = CloseDesktop(desktop);
     }
     Ok(())

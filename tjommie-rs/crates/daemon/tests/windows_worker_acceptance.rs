@@ -172,7 +172,9 @@ const LEGACY_DESKTOP_DENIED: &str = concat!(
 /// What replaced it, and the only thing that differs from 0.4.2's script (see `fixtures/compat/README.md`): two
 /// declarations (an import cannot sit inside a method body), the pure rule on its own so that it can be tested, and
 /// `DesktopDenied`, which is true only if `OpenInputDesktop` gives no handle (any error) AND `OpenWindowStation("WinSta0",
-/// false, WINSTA_READATTRIBUTES)` fails with exactly error 5.
+/// false, MAXIMUM_ALLOWED)` fails with exactly error 5. `MAXIMUM_ALLOWED` (`0x02000000`), not one `WINSTA_*` right:
+/// Windows grants a request only if every requested bit is granted, so a refusal of one right proves only that right
+/// absent, while a refusal of `MAXIMUM_ALLOWED` proves the worker holds no right at all on `WinSta0`.
 const DESKTOP_REGION: &str = concat!(
     r#" [DllImport("user32.dll",EntryPoint="OpenWindowStationW",CharSet=CharSet.Unicode,SetLastError=true)] static extern IntPtr OpenStation(string name,bool inherit,uint access);"#,
     "\n",
@@ -180,7 +182,7 @@ const DESKTOP_REGION: &str = concat!(
     "\n",
     r#" public static bool DesktopDeniedBy(bool gotDesktop,bool gotStation,int stationError) { return !gotDesktop && !gotStation && stationError==5; }"#,
     "\n",
-    r#" public static bool DesktopDenied() { var desktop=OpenInputDesktop(0,false,0x0108); var gotDesktop=desktop!=IntPtr.Zero; if(gotDesktop) CloseDesktop(desktop); var station=OpenStation("WinSta0",false,0x0002); var stationError=Marshal.GetLastWin32Error(); var gotStation=station!=IntPtr.Zero; if(gotStation) CloseWindowStation(station); return DesktopDeniedBy(gotDesktop,gotStation,stationError); }"#,
+    r#" public static bool DesktopDenied() { var desktop=OpenInputDesktop(0,false,0x0108); var gotDesktop=desktop!=IntPtr.Zero; if(gotDesktop) CloseDesktop(desktop); var station=OpenStation("WinSta0",false,0x02000000); var stationError=Marshal.GetLastWin32Error(); var gotStation=station!=IntPtr.Zero; if(gotStation) CloseWindowStation(station); return DesktopDeniedBy(gotDesktop,gotStation,stationError); }"#,
     "\n"
 );
 
@@ -191,7 +193,9 @@ const DESKTOP_REGION: &str = concat!(
 ///   PowerShell took 12 to 19 s to start under a worker's environment, so the probe was killed before it printed anything.
 /// - The desktop test, `DesktopDenied` and what it needs (`DESKTOP_REGION`). 0.4.2's could never pass for a correctly
 ///   isolated worker: from a worker's own non-interactive window station `OpenInputDesktop` fails with error 1, not 5, so
-///   its "denied only if error 5" was unsatisfiable. The new rule is stricter, never weaker.
+///   its "denied only if error 5" was unsatisfiable. The new rule is aimed at a different call: the desktop half accepts
+///   any failure (that call cannot reach permissions from a private station), and the new station half, a refusal of
+///   `MAXIMUM_ALLOWED` on `WinSta0` with error 5, is the proof.
 ///
 /// The receipts carry neither, so rollback is unaffected.
 #[test]
@@ -219,6 +223,12 @@ fn the_wrapper_programs_are_0_4_2s_except_for_the_probes_time_limit_and_desktop_
         1,
     );
     let rust = &probe_args("{}")[1];
+    // The shipped probe asks `WinSta0` for `MAXIMUM_ALLOWED`: only its refusal shows the worker holds no right of any
+    // kind on it. Said apart from the pinned text, so that editing the probe and the pin together cannot quietly narrow it.
+    assert!(
+        wrapped_script(rust).contains(r#"OpenStation("WinSta0",false,0x02000000)"#),
+        "the probe must ask for MAXIMUM_ALLOWED, not a single right"
+    );
     assert_eq!(
         wrapped_script(rust),
         script,

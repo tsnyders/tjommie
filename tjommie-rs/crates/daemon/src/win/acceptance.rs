@@ -379,11 +379,17 @@ pub fn version_started(output: &CliOutput) -> bool {
 /// handle with error 5. A worker runs on its own non-interactive window station
 /// and has no input desktop at all, so that call fails there with error 1 (`ERROR_INVALID_FUNCTION`) whatever the
 /// permissions are: the rule could never be met by a correctly isolated worker (a hosted runner showed it, see
-/// `fixtures/compat/README.md`). The test now aims at the real boundary, and is stricter than 0.4.2's, never weaker. The
-/// desktop is denied only if both hold: `OpenInputDesktop` yields no handle (with any error: it cannot say more than
-/// that), and `OpenWindowStation("WinSta0", WINSTA_READATTRIBUTES)`, the weakest access there is, fails with exactly error
-/// 5. A handle from either, or any other error from the station, means not denied. The owner's side of it is
-/// [`OwnerDesktop`]: the target must exist for a refusal to mean anything.
+/// `fixtures/compat/README.md`). The new rule is not a tightening or a loosening of 0.4.2's but aimed at a different
+/// call: the desktop half no longer requires error 5 (from a private station that call cannot reach permissions, so it
+/// accepts any failure), and the station half is new and is the proof. The desktop is denied only if both hold:
+/// `OpenInputDesktop` yields no handle (with any error), and `OpenWindowStation("WinSta0", MAXIMUM_ALLOWED)` fails with
+/// exactly error 5. A handle from either, whatever the mask, or any other error from the station, means not denied.
+///
+/// `MAXIMUM_ALLOWED` and not a single `WINSTA_*` right: Windows grants a request only if every requested bit is granted,
+/// so a refusal of one bit proves only that bit is absent (a DACL can grant the clipboard or the screen and not
+/// `WINSTA_READATTRIBUTES`). `MAXIMUM_ALLOWED` gets a handle if any access is granted, so its refusal proves the worker
+/// holds no right at all on `WinSta0`. The owner's side of it is [`OwnerDesktop`]: the target must exist for a refusal to
+/// mean anything.
 const POWERSHELL_PROBE: &str = r#"
 $ErrorActionPreference='Stop'
 [Console]::InputEncoding=New-Object Text.UTF8Encoding($false)
@@ -403,7 +409,7 @@ public static class TjWorkerProbe {
  [DllImport("user32.dll",EntryPoint="OpenWindowStationW",CharSet=CharSet.Unicode,SetLastError=true)] static extern IntPtr OpenStation(string name,bool inherit,uint access);
  [DllImport("user32.dll")] static extern bool CloseWindowStation(IntPtr value);
  public static bool DesktopDeniedBy(bool gotDesktop,bool gotStation,int stationError) { return !gotDesktop && !gotStation && stationError==5; }
- public static bool DesktopDenied() { var desktop=OpenInputDesktop(0,false,0x0108); var gotDesktop=desktop!=IntPtr.Zero; if(gotDesktop) CloseDesktop(desktop); var station=OpenStation("WinSta0",false,0x0002); var stationError=Marshal.GetLastWin32Error(); var gotStation=station!=IntPtr.Zero; if(gotStation) CloseWindowStation(station); return DesktopDeniedBy(gotDesktop,gotStation,stationError); }
+ public static bool DesktopDenied() { var desktop=OpenInputDesktop(0,false,0x0108); var gotDesktop=desktop!=IntPtr.Zero; if(gotDesktop) CloseDesktop(desktop); var station=OpenStation("WinSta0",false,0x02000000); var stationError=Marshal.GetLastWin32Error(); var gotStation=station!=IntPtr.Zero; if(gotStation) CloseWindowStation(station); return DesktopDeniedBy(gotDesktop,gotStation,stationError); }
  public static bool FileDenied(string path,bool write) { try { using(var file=File.Open(path,FileMode.Open,write?FileAccess.ReadWrite:FileAccess.Read,FileShare.ReadWrite)){} return false; } catch(UnauthorizedAccessException){return true;} }
  public static bool RegistryDenied(string path) { try { using(var key=Registry.Users.OpenSubKey(path,true)){return false;} } catch(UnauthorizedAccessException){return true;} catch(SecurityException){return true;} }
 }
@@ -489,24 +495,30 @@ impl Credentials for CredentialManager {
 pub trait OwnerDesktop: Send + Sync {
     /// Whether this process can open the desktop's window station and input desktop (and lets them go). `Err` is the
     /// call that failed and its Win32 error.
-    fn reachable(&self) -> Result<(), String>;
+    fn reachable(&self) -> Result<(), logon::DesktopRefusal>;
 }
 
 /// The real [`OwnerDesktop`].
 struct SignedInDesktop;
 
 impl OwnerDesktop for SignedInDesktop {
-    fn reachable(&self) -> Result<(), String> {
+    fn reachable(&self) -> Result<(), logon::DesktopRefusal> {
         logon::desktop_reachable()
     }
 }
 
-/// What the owner is told when the control fails. A worker's refusal at a desktop that is not there would prove nothing,
-/// so the check stops here, before it launches anything, rather than pass a test that cannot fail.
-fn no_desktop(reason: &str) -> Failure {
-    check(format!(
-        "This PC has no signed-in desktop to protect, so the desktop check can't be proven here ({reason}). Run accept-worker from your own signed-in, unlocked session."
-    ))
+/// What the owner is told when the control fails, keyed on which call failed (the Win32 error is in both). A worker's
+/// refusal at a desktop that is not there would prove nothing, so the check stops here, before it launches anything,
+/// rather than pass a test that cannot fail.
+fn no_desktop(refusal: &logon::DesktopRefusal) -> Failure {
+    check(match refusal {
+        logon::DesktopRefusal::Station(reason) => format!(
+            "This PC has no signed-in desktop to protect, so the desktop check can't be proven here ({reason}). Run accept-worker from your own signed-in session."
+        ),
+        logon::DesktopRefusal::InputDesktop(reason) => format!(
+            "Your signed-in desktop can't be reached right now, most likely because the screen is locked or the sign-in screen is showing, so the desktop check can't be proven here ({reason}). Unlock the screen and run accept-worker again."
+        ),
+    })
 }
 
 /// What a test replaces; `Default` is the real thing.
@@ -1037,11 +1049,11 @@ impl Steps for WindowsSteps {
         Box::pin(async move {
             // The positive control of the desktop denial, first of all and by the owner's own process: the desktop
             // the workers are refused must exist, or their refusal says nothing. Nothing has been launched or made yet.
-            self.desktop.reachable().map_err(|reason| {
+            self.desktop.reachable().map_err(|refusal| {
                 diag::problem(format!(
-                    "prepare: the owner cannot reach its own desktop, so the desktop denial cannot be proven: {reason}"
+                    "prepare: the owner cannot reach its own desktop, so the desktop denial cannot be proven: {refusal}"
                 ));
-                no_desktop(&reason)
+                no_desktop(&refusal)
             })?;
             // The daemon's own readiness check, run here so a refusal says why (a restart is due, a provider CLI is
             // running, a runtime file is writable) instead of the boundary's one fixed sentence.
