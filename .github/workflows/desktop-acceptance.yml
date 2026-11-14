@@ -1,0 +1,80 @@
+name: Desktop acceptance (Phase 3: the installer, over R1)
+
+# Phase 3 replaces R1's Electron shell with the GPUI app, installed by a hand-written NSIS installer that must reproduce R1's
+# install exactly and install over it (plan M8). This workflow proves that on a disposable runner that has never seen Tjommie,
+# so it may install, uninstall and use the production identity's folders and registry keys.
+#
+#   facts (T8.1)  Install the latest published R1 silently, then record exactly what it did: the install folder and its files,
+#                 the HKCU Uninstall {GUID} values and the HKCU\Software\<GUID> key, the Start-menu and desktop shortcuts with
+#                 their AppUserModelID, the start-at-login entries after the first start, and how an upgrade runs the old
+#                 uninstaller. The result is the artifact r1-install-facts (r1-install-facts.json); it is committed as
+#                 installer/r1-install-facts.json, and installer/tjommie.nsi is written from it. Nothing is guessed.
+#
+# T8.4 adds the update, production-over-R1 and rollback jobs here.
+#
+# Nothing here ever runs on the owner's PC: every script in installer/ refuses to run unless RUNNER_ENVIRONMENT is
+# github-hosted, and the cleanup step below has the same condition.
+
+on:
+  push:
+    branches: ['desktop-acceptance-*']
+  workflow_dispatch:
+    inputs:
+      r1_tag:
+        description: 'The R1 release to install (a tag such as v0.5.1). Empty means the latest published release.'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-acceptance-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  facts:
+    name: Record R1's install facts
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Refuse anything that is not a fresh GitHub-hosted runner
+        run: |
+          . ./installer/hosted-runner.ps1
+          Assert-HostedRunner
+          Assert-FreshRunner
+
+      - name: 1. Install the latest published R1
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          R1_TAG: ${{ inputs.r1_tag }}
+        run: ./installer/install-latest-r1.ps1
+
+      - name: 2. Record what the install looks like
+        run: ./installer/collect-r1-facts.ps1
+
+      - name: Show the facts
+        if: ${{ always() }}
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'r1-install-facts'
+          if (Test-Path -LiteralPath (Join-Path $dir 'r1-install-facts.json')) {
+            Get-Content -LiteralPath (Join-Path $dir 'r1-install-facts.json') -Raw
+          } else { Write-Output 'No facts file was written.' }
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ always() }}
+        with:
+          name: r1-install-facts
+          path: |
+            ${{ runner.temp }}/r1-install-facts/r1-install-facts.json
+            ${{ runner.temp }}/r1-install-facts/latest.yml
+          if-no-files-found: error
+          retention-days: 30
