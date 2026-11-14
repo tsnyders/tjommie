@@ -7,7 +7,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Once;
 use std::time::{Duration, Instant};
@@ -38,6 +38,8 @@ use super::lifecycle::{Lifecycle, MemoryLevel, Need, Placement, Plan, Timeouts};
 use super::policy::{self, PolicyError};
 use super::profiles::{self, ProfileError};
 use super::{BotIdentity, flags};
+use crate::identity::Identity;
+use crate::owner_safety;
 
 mod commands;
 mod events;
@@ -136,6 +138,8 @@ pub struct EngineConfig {
     pub parent: HWND,
     /// `<root>/data/webview2`.
     pub user_data_folder: PathBuf,
+    /// Which build this is: it decides which roots may be used (`owner_safety`).
+    pub identity: Identity,
     /// The address a bot's first page opens.
     pub start_url: String,
     pub timeouts: Timeouts,
@@ -146,10 +150,11 @@ pub struct EngineConfig {
 }
 
 impl EngineConfig {
-    pub fn new(parent: HWND, user_data_folder: PathBuf) -> Self {
+    pub fn new(parent: HWND, user_data_folder: PathBuf, identity: Identity) -> Self {
         Self {
             parent,
             user_data_folder,
+            identity,
             start_url: BROWSER_START_URL.to_string(),
             timeouts: Timeouts::default(),
             clock: Rc::new(Instant::now),
@@ -450,13 +455,16 @@ fn configure(webview: &ICoreWebView2) {
 }
 
 impl Engine {
-    /// Nothing starts here: the environment waits for the first [`open`](Self::open).
+    /// Nothing starts here: the environment waits for the first [`open`](Self::open). A browser profile folder the
+    /// build identity may not use (the owner's, for anything but production) is refused.
     pub fn new(
         config: EngineConfig,
         events: async_channel::Sender<HostEvent>,
         notify: async_channel::Sender<Notification>,
-    ) -> Rc<Self> {
-        Rc::new(Self {
+    ) -> Result<Rc<Self>, EngineError> {
+        owner_safety::assert_root_allowed(&config.user_data_folder, &config.identity)
+            .map_err(|refused| EngineError::Refused(refused.0))?;
+        Ok(Rc::new(Self {
             config,
             events,
             notify,
@@ -469,7 +477,7 @@ impl Engine {
             window_visible: Cell::new(true),
             closed: Cell::new(false),
             deleting: RefCell::new(HashSet::new()),
-        })
+        }))
     }
 
     fn now(&self) -> Instant {
@@ -512,6 +520,9 @@ impl Engine {
         if self.deleting.borrow().contains(&profile) {
             return Err(EngineError::Deleting);
         }
+        // Downloads are written under the bot's home folder: it gets the same refusal as the profile folder.
+        owner_safety::assert_root_allowed(Path::new(&identity.home_folder), &self.config.identity)
+            .map_err(|refused| EngineError::Refused(refused.0))?;
         let mut bots = self.bots.borrow_mut();
         if let Some(bot) = bots.get(&identity.id) {
             let same_home =

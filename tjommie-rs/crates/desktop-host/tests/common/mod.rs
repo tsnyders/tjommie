@@ -286,13 +286,17 @@ impl Rig {
         let root = tempfile::tempdir().expect("temp root");
         let server = FixtureServer::start();
         let clock = Rc::new(Cell::new(Instant::now()));
-        let mut config = EngineConfig::new(ui.parent, root.path().join("data").join("webview2"));
+        let mut config = EngineConfig::new(
+            ui.parent,
+            root.path().join("data").join("webview2"),
+            desktop_host::identity::E2E,
+        );
         config.start_url = server.url("blank.html");
         let shared = clock.clone();
         config.clock = Rc::new(move || shared.get());
         let (events, inbox) = async_channel::unbounded();
         let (notify, notices) = async_channel::unbounded();
-        let engine = Engine::new(config, events, notify);
+        let engine = Engine::new(config, events, notify).expect("a root the e2e identity may use");
         let applier = engine.clone();
         ui.spawn(async move {
             while let Ok(event) = inbox.recv().await {
