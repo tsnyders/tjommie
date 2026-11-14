@@ -288,6 +288,8 @@ struct Bot {
     open_lock: AsyncMutex<()>,
     /// A bot's commands run one at a time, in the order they arrived.
     queue: QueueMutex<()>,
+    /// Tools whose guards were dropped while the state was borrowed: their need ends at the next `apply`.
+    pending_tool_ends: Cell<u32>,
 }
 
 pub struct Engine {
@@ -380,8 +382,16 @@ impl Drop for ToolGuard {
         }
         // Dropped without `end` (a cancelled task): the need ends now, and the page is put to sleep by the host's
         // next event, never from inside whatever dropped this.
+        // The state may be borrowed right now (a future dropped mid-`apply`), and a `RefCell` panic is not one the deny
+        // lints catch: if so, the end is noted outside the cell and taken at the next `apply`.
         let now = self.engine.now();
-        self.bot.state.borrow_mut().life.end_tool(now);
+        match self.bot.state.try_borrow_mut() {
+            Ok(mut state) => state.life.end_tool(now),
+            Err(_) => self
+                .bot
+                .pending_tool_ends
+                .set(self.bot.pending_tool_ends.get() + 1),
+        }
         let _ = self.engine.events.try_send(HostEvent::Reapply {
             bot_id: self.bot.identity.id.clone(),
         });
@@ -571,6 +581,7 @@ impl Engine {
             }),
             open_lock: AsyncMutex::new(()),
             queue: QueueMutex::new(()),
+            pending_tool_ends: Cell::new(0),
         });
         bots.insert(identity.id.clone(), bot.clone());
         Ok(bot)
@@ -799,6 +810,9 @@ impl Engine {
         let now = self.now();
         let (plan, applied, tabs, container) = {
             let mut state = bot.state.borrow_mut();
+            for _ in 0..bot.pending_tool_ends.take() {
+                state.life.end_tool(now);
+            }
             if !state.open || state.dead {
                 return;
             }
@@ -1295,5 +1309,58 @@ impl Engine {
                 .map_or(MemoryLevel::Normal, |applied| applied.memory),
             generation: state.generation.clone(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_guard_dropped_while_the_bots_state_is_borrowed_does_not_panic_and_asks_for_a_replan() {
+        let root = crate::owner_safety::test_root().unwrap();
+        let (events, inbox) = async_channel::unbounded();
+        let (notify, _) = async_channel::unbounded();
+        let config = EngineConfig::new(
+            HWND::default(),
+            root.path().join("data").join("webview2"),
+            crate::identity::E2E,
+        );
+        let engine = Engine::new(config, events, notify).unwrap();
+        let identity = BotIdentity {
+            id: "alpha".into(),
+            name: "alpha".into(),
+            home_folder: root
+                .path()
+                .join("bots")
+                .join("alpha")
+                .to_string_lossy()
+                .into_owned(),
+            project_folder: None,
+        };
+        let bot = engine.bot_entry(&identity).unwrap();
+        bot.state.borrow_mut().life.begin_tool(engine.now());
+        let guard = ToolGuard {
+            engine: engine.clone(),
+            bot: bot.clone(),
+            ended: Cell::new(false),
+        };
+        // Dropped from inside whatever held the state (a future cancelled mid-apply): it must not panic.
+        let held = bot.state.borrow_mut();
+        drop(guard);
+        drop(held);
+        assert!(
+            matches!(inbox.try_recv(), Ok(HostEvent::Reapply { bot_id }) if bot_id == "alpha"),
+            "the host is asked to look at the bot again"
+        );
+        assert!(
+            bot.state.borrow().life.need().tool,
+            "the end waits for the next plan"
+        );
+        engine.apply(&bot);
+        assert!(
+            !bot.state.borrow().life.need().tool,
+            "and the tool's need ends there"
+        );
     }
 }
