@@ -22,6 +22,7 @@ use futures::future::BoxFuture;
 use protocol::browser::BrowserState;
 use protocol::native_browser::{NativeBrowserCommand, NativeBrowserStreamMessage, StreamEnd};
 use serde_json::{Value, json};
+
 use tokio::sync::Notify;
 
 fn secret(letter: char) -> String {
@@ -494,4 +495,121 @@ async fn posts_a_stream_message_and_learns_whether_anybody_took_it() {
     assert_eq!(seen.lock().unwrap().len(), 2);
     bridge.close();
     fixture.close().await;
+}
+
+/// A daemon that hands out one job, then answers every POST of an answer with 413 once, and 204 after that. It records
+/// the answers it was sent.
+async fn refusing_daemon() -> (u16, Arc<Mutex<Vec<String>>>) {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let bodies = Arc::new(Mutex::new(Vec::<String>::new()));
+    let (seen, handed) = (bodies.clone(), Arc::new(AtomicUsize::new(0)));
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                return;
+            };
+            let (seen, handed) = (seen.clone(), handed.clone());
+            tokio::spawn(async move {
+                let mut raw = Vec::new();
+                let mut chunk = [0u8; 4096];
+                let (head_end, length) = loop {
+                    let read = stream.read(&mut chunk).await.unwrap_or(0);
+                    if read == 0 {
+                        return;
+                    }
+                    raw.extend_from_slice(&chunk[..read]);
+                    let text = String::from_utf8_lossy(&raw).into_owned();
+                    if let Some(end) = text.find("\r\n\r\n") {
+                        let length = text
+                            .lines()
+                            .find_map(|line| {
+                                line.to_lowercase()
+                                    .strip_prefix("content-length:")
+                                    .map(|v| v.trim().parse::<usize>().unwrap_or(0))
+                            })
+                            .unwrap_or(0);
+                        break (end + 4, length);
+                    }
+                };
+                while raw.len() < head_end + length {
+                    let read = stream.read(&mut chunk).await.unwrap_or(0);
+                    if read == 0 {
+                        break;
+                    }
+                    raw.extend_from_slice(&chunk[..read]);
+                }
+                let head = String::from_utf8_lossy(&raw[..head_end]).into_owned();
+                let reply = if head.starts_with("GET") && handed.fetch_add(1, Ordering::SeqCst) == 0
+                {
+                    let job = json!({ "id": uuid::Uuid::new_v4().to_string(), "bot": { "id": "one", "name": "One", "homeFolder": "C:/synthetic/one" }, "command": { "kind": "state" } }).to_string();
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{job}",
+                        job.len()
+                    )
+                } else if head.starts_with("POST") {
+                    let mut posted = seen.lock().unwrap();
+                    posted.push(String::from_utf8_lossy(&raw[head_end..]).into_owned());
+                    let status = if posted.len() == 1 {
+                        "413 Payload Too Large"
+                    } else {
+                        "204 No Content"
+                    };
+                    format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                } else {
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        .to_string()
+                };
+                let _ = stream.write_all(reply.as_bytes()).await;
+            });
+        }
+    });
+    (port, bodies)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_answer_the_daemon_refuses_as_too_large_is_not_counted_delivered_and_is_replaced_by_a_short_error()
+ {
+    let (port, bodies) = refusing_daemon().await;
+    let bridge = HostBridge::start(
+        BridgeConfig {
+            port,
+            token: secret('h'),
+        },
+        Arc::new(By(|job: Job| {
+            let state = sample_state(&job.bot.id);
+            Box::pin(async move { Ok(Reply::state(state)) })
+        })),
+        Arc::new(|| {}),
+    )
+    .expect("bridge");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while bodies.lock().unwrap().len() < 2 {
+        assert!(
+            Instant::now() < deadline,
+            "the daemon must be sent a short error after refusing the answer"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let posted = bodies.lock().unwrap().clone();
+    assert!(
+        posted[0].contains("\"ok\":true"),
+        "the first answer is the real one: {}",
+        posted[0]
+    );
+    assert!(
+        posted[1].contains("\"ok\":false") && posted[1].contains("too large"),
+        "then a short error: {}",
+        posted[1]
+    );
+    assert_eq!(
+        bridge.undelivered(),
+        1,
+        "the refused answer is counted, not treated as delivered"
+    );
+    bridge.close();
 }

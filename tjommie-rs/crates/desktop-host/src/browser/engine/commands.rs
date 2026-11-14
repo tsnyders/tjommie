@@ -31,6 +31,11 @@ use crate::browser::keys;
 /// The person at this PC, as a controller. Remote controllers are named by their connection.
 pub const LOCAL: &str = "local";
 
+/// The longest address and title of a tab in a state: a page chooses both (history.pushState, document.title), and
+/// the state goes to the daemon and every watching device on each change.
+const URL_CHARS: usize = 8192;
+const TITLE_CHARS: usize = 1024;
+
 /// A browser may have this many tabs open at once.
 const TAB_LIMIT: usize = 30;
 /// How long a disconnected remote controller is remembered, so its late commands are refused.
@@ -114,12 +119,17 @@ impl Engine {
                     com::source(&tab.webview)
                         .ok()
                         .filter(|url| !url.is_empty())
+                        .map(|url| url.chars().take(URL_CHARS).collect())
                         .unwrap_or_else(|| "about:blank".to_string())
                 },
                 title: if private {
                     "Private interaction".to_string()
                 } else {
-                    com::title(&tab.webview).unwrap_or_default()
+                    com::title(&tab.webview)
+                        .unwrap_or_default()
+                        .chars()
+                        .take(TITLE_CHARS)
+                        .collect()
                 },
             })
             .collect();

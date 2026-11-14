@@ -604,3 +604,45 @@ fn a_download_is_saved_in_the_bots_own_browser_files_folder_and_the_person_is_to
     );
     awake.end();
 }
+
+#[test]
+fn a_hostile_page_cannot_make_the_browser_state_huge() {
+    let mut rig = Rig::new();
+    rig.open("alpha");
+    rig.load("alpha", "blank.html");
+    let awake = rig.begin("alpha");
+    // A page chooses its own address (history.pushState, up to Chromium's 2 MB) and its own title.
+    rig.eval(
+        "alpha",
+        "history.pushState(null, '', '/' + 'a'.repeat(1500000)); document.title = 'T'.repeat(1000000); 'ok'",
+    );
+    wait_state(&mut rig, "alpha", "the hostile title to arrive", |state| {
+        state
+            .tabs
+            .first()
+            .is_some_and(|tab| tab.title.starts_with("TTTT"))
+    });
+    let state = rig.state("alpha");
+    let tab = &state.tabs[0];
+    assert!(
+        tab.url.chars().count() <= 8192,
+        "an address of {} characters",
+        tab.url.chars().count()
+    );
+    assert!(
+        tab.title.chars().count() <= 1024,
+        "a title of {} characters",
+        tab.title.chars().count()
+    );
+    assert!(
+        tab.url.starts_with("http://127.0.0.1:"),
+        "the bound keeps the start of the address"
+    );
+    let wire = serde_json::to_string(&state).expect("state");
+    assert!(
+        wire.len() < 20_000,
+        "the whole state is {} bytes",
+        wire.len()
+    );
+    awake.end();
+}

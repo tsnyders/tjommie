@@ -25,6 +25,7 @@ const NORMAL_JOBS: usize = 4;
 const STREAM_POST_TIMEOUT: Duration = Duration::from_secs(2);
 const RETRY_AFTER_ERROR: Duration = Duration::from_secs(1);
 const ERROR_CHARS: usize = 2000;
+const TOO_LARGE: &str = "The browser's answer was too large to send.";
 const MISMATCH: &str = "The desktop browser command did not match the installed host protocol.";
 
 /// A job the daemon queued for this desktop.
@@ -82,6 +83,8 @@ struct Shared {
     on_error: Arc<dyn Fn() + Send + Sync>,
     /// Normal-lane jobs running now.
     active: AtomicUsize,
+    /// Answers the daemon refused (a status other than 204): they were not delivered.
+    undelivered: AtomicUsize,
     finished: Notify,
 }
 
@@ -140,8 +143,28 @@ impl Shared {
         let Ok(body) = serde_json::to_vec(&answer) else {
             return;
         };
-        if self.post(body, None).await.is_err() {
-            (self.on_error)();
+        match self.post(body, None).await {
+            Ok(status) if status.is_success() => {}
+            Ok(reqwest::StatusCode::PAYLOAD_TOO_LARGE) if result.is_ok() => {
+                // Too big for the daemon: it would wait out its timeout on a job nobody answers. Say so briefly.
+                log::warn!("the daemon refused a browser answer as too large");
+                self.undelivered.fetch_add(1, Ordering::SeqCst);
+                let short = Answer {
+                    id,
+                    ok: false,
+                    result: None,
+                    error: Some(TOO_LARGE.to_string()),
+                };
+                if let Ok(body) = serde_json::to_vec(&short) {
+                    let _ = self.post(body, None).await;
+                }
+            }
+            Ok(status) => {
+                // 404: the job was gone (it timed out at the daemon). Anything else is as unexpected. Not delivered.
+                log::warn!("the daemon refused a browser answer: {status}");
+                self.undelivered.fetch_add(1, Ordering::SeqCst);
+            }
+            Err(_) => (self.on_error)(),
         }
     }
 
@@ -233,6 +256,7 @@ impl HostBridge {
             executor,
             on_error,
             active: AtomicUsize::new(0),
+            undelivered: AtomicUsize::new(0),
             finished: Notify::new(),
         });
         let (stop, stopped) = watch::channel(false);
@@ -281,6 +305,11 @@ impl HostBridge {
             .await;
         // 204 is the only acceptance; anything else (404: nobody is subscribed) has nothing to read.
         matches!(posted, Ok(Ok(status)) if status == reqwest::StatusCode::NO_CONTENT)
+    }
+
+    /// How many answers the daemon refused so far: they were not delivered.
+    pub fn undelivered(&self) -> usize {
+        self.shared.undelivered.load(Ordering::SeqCst)
     }
 
     /// Stops both lanes. Quick: it does not wait for jobs still running.
