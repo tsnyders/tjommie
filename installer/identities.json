@@ -1,0 +1,32 @@
+{
+  "_": "The apps installer/tjommie.nsi can build (spec section 4). appId, product and exe are Core's identity table (tjommie-rs/crates/desktop-host/src/identity.rs). guid is electron-builder's name-based UUID of the appId (namespace below); production's is the one R1 registers, recorded in r1-install-facts.json. root: programs = always %LOCALAPPDATA%\\Programs\\<folder>; temp = a folder two levels under %TEMP%, named for the product, given with /D= (R1's update test installs there). scripts/installer.test.ts proves each value, and that no two identities share a GUID, folder, product name, exe or AppUserModelID.",
+  "namespace": "50e065bc-3134-11e6-9bab-38c9862bdaf3",
+  "publisher": "TSnyders",
+  "comments": "AI agents on your own PC",
+  "identities": {
+    "production": {
+      "appId": "com.tsnyders.tjommie",
+      "guid": "89b4e4b4-ac49-585f-800a-537f559f4641",
+      "product": "Tjommie",
+      "exe": "Tjommie.exe",
+      "folder": "tjommie",
+      "root": "programs"
+    },
+    "dev": {
+      "appId": "com.tsnyders.tjommie-rs",
+      "guid": "d5db3d03-9fa2-5010-9cdd-f2c9123032b3",
+      "product": "Tjommie RS",
+      "exe": "TjommieRS.exe",
+      "folder": "tjommie-rs",
+      "root": "programs"
+    },
+    "updatetest": {
+      "appId": "com.tsnyders.tjommie.updatetest",
+      "guid": "5891e549-73c7-5ca5-865f-6a0f99687a40",
+      "product": "Tjommie Update Test",
+      "exe": "Tjommie Update Test.exe",
+      "folder": "tjommie-updatetest",
+      "root": "temp"
+    }
+  }
+}
