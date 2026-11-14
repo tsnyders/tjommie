@@ -5,7 +5,7 @@ import sys
 import time
 
 ROOT = Path(__file__).resolve().parent
-AGY = Path(r"C:\Users\tyrel\AppData\Local\agy\bin\agy.exe")
+AGY = Path.home() / "AppData" / "Local" / "agy" / "bin" / "agy.exe"
 
 def main():
     prompt_path = (ROOT / sys.argv[1]).resolve()
