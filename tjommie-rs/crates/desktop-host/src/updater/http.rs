@@ -17,6 +17,9 @@ pub enum Policy {
     /// The production feed: HTTPS to github.com or its asset hosts, on the default port, with no credentials in the
     /// address.
     GitHub,
+    /// The speech model: HTTPS to huggingface.co or its `*.hf.co` download hosts, on the default port, with no
+    /// credentials in the address.
+    HuggingFace,
     /// The update test's local feed: this PC only.
     Loopback,
     /// This PC, one port: lets a test show that a redirect to anything else is never asked for, even a local address.
@@ -46,6 +49,23 @@ fn is_github(url: &Url) -> bool {
         && (name == "github.com" || name.ends_with(".githubusercontent.com"))
 }
 
+/// Where the speech model may come from: Hugging Face and its download hosts (`huggingface.co`, `*.hf.co`).
+pub fn is_model_host(url: &Url) -> bool {
+    let Some(Host::Domain(name)) = url.host() else {
+        return false;
+    };
+    let name = name.to_ascii_lowercase();
+    url.scheme() == "https"
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.port().is_none_or(|port| port == 443)
+        && (name == "huggingface.co"
+            || (name.ends_with(".hf.co")
+                && name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')))
+}
+
 impl Policy {
     /// The policy a feed address implies. An address that is neither GitHub nor this PC is not a feed.
     pub fn for_feed(feed: &Url) -> Result<Policy, String> {
@@ -68,6 +88,7 @@ impl Policy {
         }
         let allowed = match self {
             Policy::GitHub => is_github(url),
+            Policy::HuggingFace => is_model_host(url),
             Policy::Loopback => is_loopback(url),
             #[cfg(test)]
             Policy::LoopbackPort(port) => is_loopback(url) && url.port() == Some(port),

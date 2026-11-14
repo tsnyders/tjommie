@@ -20,7 +20,7 @@ serde_json = "1.0.154"
 sha2 = "0.10.9"
 # owner_safety::test_root: a disposable folder under %TEMP% for tests.
 tempfile = "3.27.0"
-tokio = { version = "1.54.1", features = ["rt", "rt-multi-thread", "macros", "net", "sync", "time", "fs", "io-util"] }
+tokio = { version = "1.54.1", features = ["rt", "rt-multi-thread", "macros", "net", "sync", "time", "fs", "io-util", "process"] }
 url = "2.5.8"
 uuid = { version = "1.26.0", features = ["v4"] }
 windows = { version = "0.62.2", features = [

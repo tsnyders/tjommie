@@ -37,7 +37,7 @@ use crate::identity::{Identity, Kind};
 use crate::spawn;
 
 pub use feed::{MAX_FEED_BYTES, MAX_INSTALLER_BYTES, Release};
-pub use http::{Http, Policy, Progress, ReqwestHttp};
+pub use http::{Http, Policy, Progress, ReqwestHttp, is_model_host};
 pub use quit::{DaemonStop, QuitHost, QuitOutcome, run_quit};
 pub use state::{SHUTDOWN_FAILURE, UpdateState};
 
