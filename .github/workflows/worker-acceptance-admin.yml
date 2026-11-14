@@ -1,0 +1,72 @@
+name: Worker acceptance (admin, disposable runner)
+
+# Opt-in and manual: nothing triggers this, it is not part of ci.yml and it is not a required check. It runs the one
+# admin-gated test of `tjommie-daemon accept-worker` (the isolated-worker acceptance check) against two real, throwaway
+# Windows accounts on a fresh GitHub-hosted runner, which is the only way short of the owner's PC to see Windows itself
+# refuse what the check's probes try. No other workflow sets TJOMMIE_RS_ADMIN_TESTS or passes --ignored.
+#
+# A red run is diagnostic until a green one exists. If it fails inside `provision` or while saving the synthetic
+# credential, that is most likely the hosted-logon Credential Manager limit that makes ci.yml set TJOMMIE_CI_HOSTED, not
+# the boundary; run the same test by hand on a disposable admin VM instead. Never run it on a PC with a real Tjommie
+# install: the guard below refuses anything but a fresh hosted runner.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: worker-acceptance-admin
+  cancel-in-progress: false
+
+jobs:
+  admin-acceptance:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        # Inside tjommie-rs so rustup applies rust-toolchain.toml, as in ci.yml.
+        working-directory: tjommie-rs
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The test copies `where node` into the throwaway runtime folder. npm ci is not needed: nothing here drives the
+      # TypeScript client.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+      - run: rustup toolchain install
+
+      - name: Refuse anything that is not a fresh, elevated, GitHub-hosted runner
+        shell: pwsh
+        run: |
+          if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted') { throw 'not a GitHub-hosted runner' }
+          $me = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
+          if (-not $me.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'not elevated' }
+          if (Get-LocalUser | Where-Object { $_.Name -like 'TjWorker-*' -or $_.Name -like 'TjReview-*' }) { throw 'worker accounts exist: not a fresh runner' }
+          if (Test-Path (Join-Path $env:LOCALAPPDATA 'Tjommie')) { throw 'a Tjommie data root exists: not a fresh runner' }
+          if (Test-Path (Join-Path $env:ProgramData 'Tjommie')) { throw 'a Tjommie program-data folder exists: not a fresh runner' }
+
+      - name: Real acceptance against two disposable accounts
+        run: >
+          cargo test -p daemon --locked --test windows_worker_acceptance --
+          --ignored --exact admin_acceptance_checks_two_real_worker_identities --nocapture
+        env:
+          TJOMMIE_RS_ADMIN_TESTS: '1'
+          # TJOMMIE_CI_HOSTED is deliberately not set: this test needs the real Credential Manager.
+
+      # Only ever on a hosted (discarded) runner: the same condition the guard checks, so a changed `runs-on` can never
+      # make this delete anything on a real PC.
+      - name: Remove whatever the test left
+        if: ${{ always() && runner.environment == 'github-hosted' }}
+        shell: pwsh
+        run: |
+          Get-LocalUser | Where-Object { $_.Name -like 'TjWorker-*' -or $_.Name -like 'TjReview-*' } | Remove-LocalUser -ErrorAction Continue
+          Get-CimInstance Win32_UserProfile |
+            Where-Object { (Split-Path $_.LocalPath -Leaf) -like 'TjWorker-*' -or (Split-Path $_.LocalPath -Leaf) -like 'TjReview-*' } |
+            Remove-CimInstance -ErrorAction Continue
+          Remove-Item -LiteralPath (Join-Path $env:ProgramData 'Tjommie') -Recurse -Force -ErrorAction SilentlyContinue
+          cmdkey /list | Select-String 'target=(Tjommie/[^ ]*)' |
+            ForEach-Object { cmdkey /delete:($_.Matches[0].Groups[1].Value) }

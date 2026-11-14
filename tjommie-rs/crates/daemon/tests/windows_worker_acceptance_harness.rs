@@ -44,7 +44,8 @@ fn proven() -> Round {
 }
 
 /// "Both CLIs start", mocked: no Claude or Codex is installed, signed in or asked anything.
-struct Cli(Result<(), Failure>);
+/// It counts how often it is asked to start a CLI.
+struct Cli(Result<(), Failure>, Arc<AtomicUsize>);
 
 impl CliProbe for Cli {
     fn started<'a>(
@@ -53,6 +54,7 @@ impl CliProbe for Cli {
         _cli: protocol::model::Provider,
         _account: &'a Path,
     ) -> BoxFuture<'a, Result<(), Failure>> {
+        self.1.fetch_add(1, Ordering::SeqCst);
         Box::pin(async move { self.0.clone() })
     }
 }
@@ -71,6 +73,8 @@ struct State {
     holder_unconfirmed: AtomicBool,
     pids: AtomicU32,
     vault: Arc<Vault>,
+    /// How many CLI `--version` launches the check asked for.
+    cli_launches: Arc<AtomicUsize>,
 }
 
 /// An in-memory stand-in for Credential Manager: nothing here ever reaches the real vault.
@@ -106,6 +110,7 @@ impl Fake {
             holder_unconfirmed: AtomicBool::new(false),
             pids: AtomicU32::new(40_000),
             vault: Arc::new(Vault::default()),
+            cli_launches: Arc::new(AtomicUsize::new(0)),
         }))
     }
 }
@@ -342,13 +347,23 @@ fn scratch_folders(world: &World) -> usize {
         .sum()
 }
 
-async fn accept(world: &World, windows: &Fake, cli: Result<(), Failure>) -> Result<String, String> {
+/// Runs the check against the fake Windows and says nothing more.
+async fn accept_unchecked(
+    world: &World,
+    windows: &Fake,
+    cli: Result<(), Failure>,
+) -> Result<String, String> {
     let native: Arc<dyn WorkerNative> = Arc::new(Fake(windows.0.clone()));
     let seams = Seams {
-        cli: Some(Arc::new(Cli(cli))),
+        cli: Some(Arc::new(Cli(cli, windows.0.cli_launches.clone()))),
         credentials: Some(windows.0.vault.clone()),
     };
-    let result = accept_with(&world.owner, &world.daemon_dir, native, seams).await;
+    accept_with(&world.owner, &world.daemon_dir, native, seams).await
+}
+
+/// [`accept_unchecked`], and whatever the outcome checks the synthetic credential was cleaned up.
+async fn accept(world: &World, windows: &Fake, cli: Result<(), Failure>) -> Result<String, String> {
+    let result = accept_unchecked(world, windows, cli).await;
     // Whatever the outcome, every synthetic credential the check saved was deleted again.
     let (written, deleted) = (
         windows.0.vault.written.lock().unwrap().clone(),
@@ -490,6 +505,13 @@ async fn a_probe_that_reports_a_failure_writes_no_receipt_and_releases_the_peer_
             0,
             "{field}: an ordinary failure cleans up after itself"
         );
+        // An identity that has just shown it is not isolated is not asked to start either CLI (0.4.2 threw first). The
+        // provider round, which came first, did start both.
+        assert_eq!(
+            windows.0.cli_launches.load(Ordering::SeqCst),
+            2 * active,
+            "{field}: a CLI was launched under the identity whose denial failed"
+        );
     }
 }
 
@@ -565,4 +587,69 @@ async fn a_worker_tree_that_cannot_be_confirmed_stopped_writes_no_receipt_and_ke
         starting_with(&world.owner, "acceptance-"),
         Vec::<String>::new()
     );
+}
+
+/// What is wrong, how to make it so, and what the error must say.
+type EarlyFailure = (&'static str, fn(&World), &'static str);
+
+/// `accept_with` fails before it reaches `run` when the configuration is missing or is not a pair. A pair of receipts from
+/// an earlier run must be gone on those exits too, so that every way out starts from "no receipts".
+#[tokio::test]
+async fn an_early_failure_still_removes_an_old_receipt_pair() {
+    let cases: [EarlyFailure; 3] = [
+        (
+            "a missing configuration",
+            |world| fs::remove_file(world.owner.join("review-worker.json")).unwrap(),
+            "There is no worker configuration in",
+        ),
+        (
+            "a configuration that is not a pair",
+            |world| fs::write(world.owner.join("review-worker.json"), "{}").unwrap(),
+            "is not a consistent provider and review pair",
+        ),
+        (
+            // Clearing comes before the configuration is even read, so this is what is reported.
+            "an old receipt that cannot be removed",
+            |world| {
+                fs::remove_file(world.owner.join("worker.json")).unwrap();
+                fs::remove_file(receipt_path(&world.owner, Purpose::Provider)).unwrap();
+                fs::create_dir(receipt_path(&world.owner, Purpose::Provider)).unwrap();
+            },
+            "could not be removed",
+        ),
+    ];
+    for (what, spoil, expected) in cases {
+        let world = world();
+        let windows = Fake::new();
+        let (provider, review) = configs(&world);
+        let [stale, other] = receipts(&provider, &review, &proven(), &proven()).unwrap();
+        let (one, two) = (
+            receipt_path(&world.owner, Purpose::Provider),
+            receipt_path(&world.owner, Purpose::Review),
+        );
+        fs::write(&one, stale).unwrap();
+        fs::write(&two, other).unwrap();
+        fs::write(format!("{}.pending", two.display()), "half written").unwrap();
+        spoil(&world);
+        let error = accept_unchecked(&world, &windows, Ok(()))
+            .await
+            .unwrap_err();
+        assert!(error.contains(expected), "{what}: {error}");
+        // The review receipt and its half-written twin are gone; the provider one is gone unless it was made a folder
+        // to stand for a receipt that cannot be removed.
+        assert!(!two.exists(), "{what}: the review receipt survived");
+        assert!(
+            !std::path::Path::new(&format!("{}.pending", two.display())).exists(),
+            "{what}"
+        );
+        assert!(!one.is_file(), "{what}: the provider receipt survived");
+        assert!(
+            windows.0.log.lock().unwrap().is_empty(),
+            "{what}: something was launched"
+        );
+        assert!(
+            windows.0.vault.written.lock().unwrap().is_empty(),
+            "{what}: a credential was saved"
+        );
+    }
 }

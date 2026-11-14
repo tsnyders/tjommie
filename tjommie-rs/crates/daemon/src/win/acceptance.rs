@@ -155,16 +155,20 @@ impl Round {
     }
 
     fn require(&self, who: Purpose) -> Result<(), Failure> {
-        let unproven = self.unproven();
-        if unproven.is_empty() {
-            Ok(())
-        } else {
-            Err(check(format!(
-                "Acceptance failed for the {} identity: {} did not hold. No receipt was written.",
-                who.as_str(),
-                unproven.join(", ")
-            )))
-        }
+        not_held(who, &self.unproven())
+    }
+}
+
+/// Ok if nothing is left unproven, else the failure that names what did not hold for this identity.
+fn not_held(who: Purpose, unproven: &[&'static str]) -> Result<(), Failure> {
+    if unproven.is_empty() {
+        Ok(())
+    } else {
+        Err(check(format!(
+            "Acceptance failed for the {} identity: {} did not hold. No receipt was written.",
+            who.as_str(),
+            unproven.join(", ")
+        )))
     }
 }
 
@@ -247,6 +251,24 @@ fn clear(paths: &[PathBuf; 2]) -> Result<(), String> {
     }
 }
 
+/// Where both receipts go (provider, then review).
+fn receipt_paths(owner_data_root: &Path) -> [PathBuf; 2] {
+    [
+        receipt_path(owner_data_root, Purpose::Provider),
+        receipt_path(owner_data_root, Purpose::Review),
+    ]
+}
+
+/// Removes an earlier run's receipts before anything else, so no old receipt can stand beside a check that did not
+/// pass. One that cannot be removed is an error: nothing is checked while it stands.
+fn clear_earlier(paths: &[PathBuf; 2]) -> Result<(), Failure> {
+    clear(paths).map_err(|stayed| {
+        check(format!(
+            "An earlier acceptance receipt could not be removed, so no check was run: {stayed}"
+        ))
+    })
+}
+
 /// `writeFileSync(path + ".pending")` then `renameSync`: a receipt appears whole or not at all.
 fn write_receipt(path: &Path, json: &str) -> Result<(), Failure> {
     let (temporary, failed) = (pending(path), |error: std::io::Error| {
@@ -283,16 +305,8 @@ pub async fn run(
     provider: &WorkerConfiguration,
     review: &WorkerConfiguration,
 ) -> Result<(), Failure> {
-    let root = &provider.owner_data_root;
-    let paths = [
-        receipt_path(root, Purpose::Provider),
-        receipt_path(root, Purpose::Review),
-    ];
-    clear(&paths).map_err(|stayed| {
-        check(format!(
-            "An earlier acceptance receipt could not be removed, so no check was run: {stayed}"
-        ))
-    })?;
+    let paths = receipt_paths(&provider.owner_data_root);
+    clear_earlier(&paths)?;
     let outcome = async {
         steps.prepare().await?;
         let first = steps.round(Purpose::Provider).await?;
@@ -775,6 +789,9 @@ impl WindowsSteps {
             )
             .await?;
         let denials = Denials::parse(&collect(child).await?)?;
+        // As in 0.4.2, where a false denial threw inside the round: an identity that has just shown it is not isolated
+        // is not asked to start either CLI.
+        not_held(active, &denials.unproven())?;
         let account = scratch.join("accounts");
         std::fs::create_dir(&account)
             .map_err(|error| check(format!("Could not make {}: {error}", account.display())))?;
@@ -894,6 +911,9 @@ pub async fn accept_with(
     native: Arc<dyn WorkerNative>,
     seams: Seams,
 ) -> Result<String, String> {
+    // First of all, before the configuration is even read: every way out of this function, an early failure included,
+    // starts from "no receipts" (`run` clears them again for the checks it makes).
+    clear_earlier(&receipt_paths(root)).map_err(|failure| failure.to_string())?;
     for purpose in [Purpose::Provider, Purpose::Review] {
         if !root.join(purpose.configuration_file()).is_file() {
             return Err(format!(

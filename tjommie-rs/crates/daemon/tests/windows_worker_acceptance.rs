@@ -4,7 +4,8 @@
 //! proven before either receipt is written, a failure leaves no receipt (not even an old one), and the receipts are the
 //! bytes 0.4.2 wrote (`fixtures/compat/worker-acceptance.json`) that the Rust validator accepts. The real probe
 //! scripts are run once as the current user, who must not be denied anything. The one test that creates real worker
-//! accounts is admin-gated and only runs on the CI runner.
+//! accounts is admin-gated: no workflow runs it automatically. The opt-in `Worker acceptance (admin, disposable
+//! runner)` workflow (`.github/workflows/worker-acceptance-admin.yml`, `workflow_dispatch`) runs it on demand.
 #![cfg(windows)]
 
 use daemon::cli::{BoxFuture, CliOutput};
@@ -15,7 +16,7 @@ use daemon::win::acceptance::{
 };
 use daemon::win::boundary::{WindowsNative, WorkerNative};
 use daemon::win::worker::{
-    Purpose, WorkerConfiguration, command_line, launch_frame, validate_acceptance,
+    Purpose, WorkerConfiguration, command_line, launch_frame, validate_acceptance, validate_pair,
 };
 use daemon::win::{cred, logon};
 use serde_json::{Value, json};
@@ -118,6 +119,43 @@ fn the_receipts_are_the_bytes_the_typescript_acceptance_wrote() {
     assert_eq!(
         review_receipt,
         golden["receipts"]["review"].as_str().unwrap()
+    );
+}
+
+/// The fixture's pair must look like what `provision` writes: absolute, disjoint roots whose fields agree. A mangled
+/// path (a lost backslash, as in "C:ProgramData...", or a carriage return) is neither, and `parse` alone would not notice.
+#[test]
+fn the_golden_pair_is_a_real_looking_pair_with_clean_windows_paths() {
+    let (provider, review) = golden_configs();
+    validate_pair(&provider, &review).unwrap();
+    validate_pair(&review, &provider).unwrap();
+    for config in [&provider, &review] {
+        for path in [
+            &config.worker_root,
+            &config.peer_root,
+            &config.runtime_root,
+            &config.owner_data_root,
+        ] {
+            let text = path.to_str().unwrap();
+            // "C:" and a backslash (character 92), then a name.
+            assert_eq!(&text.as_bytes()[..3], &[b'C', b':', 92], "{text:?}");
+            assert!(text.chars().all(|c| !c.is_control()), "{text:?}");
+        }
+    }
+}
+
+/// The two `node -e` programs the probe and the holder are run with (`nativeNode` in 0.4.2), as the legacy code built
+/// them. Like the bootstrap and the policy observer in `worker-scripts.json`, so a change to either fails here.
+#[test]
+fn the_wrapper_programs_are_the_ones_0_4_2_ran_byte_for_byte() {
+    let golden = golden();
+    assert_eq!(
+        probe_args("{}")[1],
+        golden["wrappers"]["probe"].as_str().unwrap()
+    );
+    assert_eq!(
+        holder_args("{}")[1],
+        golden["wrappers"]["holder"].as_str().unwrap()
     );
 }
 
@@ -655,7 +693,7 @@ fn the_real_probe_run_as_the_owner_itself_proves_nothing() {
     assert!(receipts(&provider, &review, &round, &proven()).is_err());
 }
 
-// ---- admin, CI-runner only -------------------------------------------------------------------------------------
+// ---- admin, opt-in: no workflow runs it automatically ---------------------------------------------------------
 
 /// "Both CLIs start", mocked: no Claude or Codex is installed, signed in or asked anything. `Err` makes the CLI check fail.
 struct Cli(Result<(), Failure>);
@@ -672,7 +710,7 @@ impl CliProbe for Cli {
 }
 
 /// Backdates both configurations' `provisionedAt` (kept equal, as a pair must be): readiness refuses a boot that
-/// predates provisioning, and a CI runner provisions right after it boots.
+/// predates provisioning, and a freshly started runner provisions right after it boots.
 fn backdate(owner_root: &Path) {
     for file in ["worker.json", "review-worker.json"] {
         let path = owner_root.join(file);
@@ -682,8 +720,10 @@ fn backdate(owner_root: &Path) {
     }
 }
 
-/// Admin, CI-runner only (`TJOMMIE_RS_ADMIN_TESTS=1`): the real check against two disposable accounts, with the CLI
-/// check mocked. A failing run writes no receipt and removes an old one; a passing run writes two receipts the daemon's
+/// Admin, opt-in (`TJOMMIE_RS_ADMIN_TESTS=1`): the real check against two disposable accounts, with the CLI check
+/// mocked. No workflow runs it automatically: the opt-in `Worker acceptance (admin, disposable runner)` workflow
+/// (`.github/workflows/worker-acceptance-admin.yml`, `workflow_dispatch`) does, on a fresh runner, or run it by hand
+/// on a disposable admin machine and never on a PC with a real Tjommie install. A failing run writes no receipt and removes an old one; a passing run writes two receipts the daemon's
 /// own readiness check accepts, and leaves no scratch folder, marker or synthetic credential. Cleanup is by the
 /// disposable root's ns8: its two accounts, its two credential targets and its folders.
 #[tokio::test]
