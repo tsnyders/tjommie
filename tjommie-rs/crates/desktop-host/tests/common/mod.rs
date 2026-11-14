@@ -132,6 +132,31 @@ impl Ui {
         }
     }
 
+    /// Like [`run`](Self::run), but gives up after `within` and returns `None` (the future is dropped).
+    pub fn run_within<T: 'static>(
+        &mut self,
+        within: Duration,
+        future: impl Future<Output = T> + 'static,
+    ) -> Option<T> {
+        let slot: Rc<RefCell<Option<T>>> = Rc::new(RefCell::new(None));
+        let out = slot.clone();
+        self.spawn(async move {
+            let value = future.await;
+            *out.borrow_mut() = Some(value);
+        });
+        let deadline = Instant::now() + within;
+        loop {
+            self.pool.run_until_stalled();
+            if let Some(value) = slot.borrow_mut().take() {
+                return Some(value);
+            }
+            if Instant::now() >= deadline {
+                return None;
+            }
+            pump(Duration::from_millis(10));
+        }
+    }
+
     /// Pumps messages and tasks until `condition` holds, or fails after `timeout`.
     pub fn wait_until(&mut self, what: &str, timeout: Duration, condition: impl Fn() -> bool) {
         let deadline = Instant::now() + timeout;
@@ -208,17 +233,25 @@ impl FixtureServer {
                         Ok(body) if !path.contains("..") => ("200 OK", body),
                         _ => ("404 Not Found", b"not found".to_vec()),
                     };
-                    // One page is an attachment, to be downloaded rather than shown.
-                    let (kind, disposition) = if path == "download.txt" {
-                        (
+                    // One page is an attachment, to be downloaded rather than shown; one asks for a password.
+                    let (kind, extra) = match path.as_str() {
+                        "download.txt" => (
                             "application/octet-stream",
                             "Content-Disposition: attachment; filename=\"report.txt\"\r\n",
-                        )
+                        ),
+                        "basic-auth" => (
+                            "text/html; charset=utf-8",
+                            "WWW-Authenticate: Basic realm=\"fixture\"\r\n",
+                        ),
+                        _ => ("text/html; charset=utf-8", ""),
+                    };
+                    let status = if path == "basic-auth" {
+                        "401 Unauthorized"
                     } else {
-                        ("text/html; charset=utf-8", "")
+                        status
                     };
                     let head = format!(
-                        "HTTP/1.1 {status}\r\nContent-Type: {kind}\r\n{disposition}Content-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+                        "HTTP/1.1 {status}\r\nContent-Type: {kind}\r\n{extra}Content-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
                         body.len()
                     );
                     let _ = stream.write_all(head.as_bytes());

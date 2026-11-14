@@ -8,18 +8,20 @@
 use async_channel::Sender;
 use protocol::browser::BrowserState;
 use webview2_com::{
-    BytesReceivedChangedEventHandler, DocumentTitleChangedEventHandler,
+    BasicAuthenticationRequestedEventHandler, BytesReceivedChangedEventHandler,
+    ClientCertificateRequestedEventHandler, DocumentTitleChangedEventHandler,
     DownloadStartingEventHandler, HistoryChangedEventHandler,
     Microsoft::Web::WebView2::Win32::{
         COREWEBVIEW2_DOWNLOAD_STATE, COREWEBVIEW2_PERMISSION_KIND,
         COREWEBVIEW2_PERMISSION_STATE_DENY, COREWEBVIEW2_SCRIPT_DIALOG_KIND, ICoreWebView2,
-        ICoreWebView2_4, ICoreWebView2Deferral, ICoreWebView2NewWindowRequestedEventArgs,
+        ICoreWebView2_4, ICoreWebView2_5, ICoreWebView2_10, ICoreWebView2_27,
+        ICoreWebView2Deferral, ICoreWebView2NewWindowRequestedEventArgs,
         ICoreWebView2ScriptDialogOpeningEventArgs,
     },
     NavigationCompletedEventHandler, NavigationStartingEventHandler,
     NewWindowRequestedEventHandler, PermissionRequestedEventHandler, ProcessFailedEventHandler,
-    ScriptDialogOpeningEventHandler, SourceChangedEventHandler, StateChangedEventHandler,
-    WindowCloseRequestedEventHandler, take_pwstr,
+    ScreenCaptureStartingEventHandler, ScriptDialogOpeningEventHandler, SourceChangedEventHandler,
+    StateChangedEventHandler, WindowCloseRequestedEventHandler, take_pwstr,
 };
 use windows::core::{BOOL, HSTRING, Interface as _, PWSTR};
 
@@ -297,6 +299,71 @@ pub(super) fn watch(
             })),
             &mut token,
         )?;
+
+        // Prompts nobody could see, because a bot's page is parked or hidden, are cancelled: the screen picker
+        // (`getDisplayMedia`), a password dialog and a client-certificate picker. Electron denied them all.
+        if let Ok(webview) = webview.cast::<ICoreWebView2_27>() {
+            let (events_for_capture, bot) = (events.clone(), bot_id.to_string());
+            webview.add_ScreenCaptureStarting(
+                &ScreenCaptureStartingEventHandler::create(Box::new(move |_, args| {
+                    if let Some(args) = args {
+                        let _ = args.SetCancel(true);
+                    }
+                    push(
+                        &events_for_capture,
+                        HostEvent::Notice {
+                            bot_id: bot.clone(),
+                            message: permissions::notice(Permission::ScreenCapture),
+                        },
+                    );
+                    Ok(())
+                })),
+                &mut token,
+            )?;
+        }
+        if let Ok(webview) = webview.cast::<ICoreWebView2_10>() {
+            let (events_for_password, bot) = (events.clone(), bot_id.to_string());
+            webview.add_BasicAuthenticationRequested(
+                &BasicAuthenticationRequestedEventHandler::create(Box::new(move |_, args| {
+                    if let Some(args) = args {
+                        let _ = args.SetCancel(true);
+                    }
+                    push(
+                        &events_for_password,
+                        HostEvent::Notice {
+                            bot_id: bot.clone(),
+                            message:
+                                "A page asked for a password, which Tjommie's browser never gives."
+                                    .into(),
+                        },
+                    );
+                    Ok(())
+                })),
+                &mut token,
+            )?;
+        }
+        if let Ok(webview) = webview.cast::<ICoreWebView2_5>() {
+            let (events_for_certificate, bot) = (events.clone(), bot_id.to_string());
+            webview.add_ClientCertificateRequested(
+                &ClientCertificateRequestedEventHandler::create(Box::new(move |_, args| {
+                    // Handled, with no certificate chosen: the request goes on without one, and no picker is shown.
+                    // (Cancelling would abort the connection instead.)
+                    if let Some(args) = args {
+                        let _ = args.SetHandled(true);
+                    }
+                    push(
+                        &events_for_certificate,
+                        HostEvent::Notice {
+                            bot_id: bot.clone(),
+                            message: "A page asked for a client certificate, which Tjommie's browser never gives."
+                                .into(),
+                        },
+                    );
+                    Ok(())
+                })),
+                &mut token,
+            )?;
+        }
 
         let (events_for_failure, bot) = (events.clone(), bot_id.to_string());
         webview.add_ProcessFailed(

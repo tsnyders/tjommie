@@ -19,6 +19,8 @@ pub enum Permission {
     LocalFonts,
     MidiSystemExclusiveMessages,
     WindowManagement,
+    /// `getDisplayMedia`: WebView2 raises its own event for it, not a permission request.
+    ScreenCapture,
 }
 
 impl Permission {
@@ -57,6 +59,7 @@ impl Permission {
             Self::LocalFonts => "local-fonts",
             Self::MidiSystemExclusiveMessages => "midiSysex",
             Self::WindowManagement => "window-management",
+            Self::ScreenCapture => "media",
         }
     }
 }
