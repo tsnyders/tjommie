@@ -29,7 +29,7 @@ function Assert-FreshRunner {
             $entry = $uninstall.OpenSubKey($name)
             $display = $entry.GetValue('DisplayName')
             $entry.Close()
-            if ($display -eq 'Tjommie') { $found += "HKCU Uninstall\$name" }
+            if ($display -like 'Tjommie*') { $found += "HKCU Uninstall\$name" }
         }
         $uninstall.Close()
     }
