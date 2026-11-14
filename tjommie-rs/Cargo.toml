@@ -9,6 +9,15 @@ rust-version = "1.97"
 license = "Apache-2.0"
 publish = false
 
+# The desktop pins (Phase 3 plan, "Pins and upgrades"), declared once. Upgrade only for a named reason (a bug we
+# hit, a security fix, a needed API), and gpui-kit with its matching gpui-pre in one PR; tests/pins.rs checks them.
+[workspace.dependencies]
+# GPUI itself: the exact Zed snapshot gpui-kit v0.9.1 is built against (crates.io `gpui-pre`).
+gpui = { package = "gpui-pre", version = "=0.3.12" }
+# gpui-component ships inside gpui-kit since 0.9; pinned to the v0.9.1 tag commit.
+gpui-kit = { git = "https://github.com/longbridge/gpui-kit", rev = "39ab849a93b5f15507b969164d49891db8d5b470" }
+webview2-com = "=0.39.1"
+
 # Keep debug builds small. The build PC runs several worktrees at once, and
 # full debug info filled the disk (about 8 GB per worktree). Line tables keep
 # file:line in backtraces for our own crates; dependencies get none.

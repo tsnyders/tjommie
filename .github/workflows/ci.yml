@@ -38,7 +38,8 @@ jobs:
 
   rust:
     runs-on: windows-latest
-    timeout-minutes: 45
+    # The desktop crates build GPUI (Phase 3), which more than doubles a cold build.
+    timeout-minutes: 90
     defaults:
       run:
         # Inside tjommie-rs so rustup applies rust-toolchain.toml.

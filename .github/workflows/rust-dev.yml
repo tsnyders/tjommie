@@ -1,0 +1,37 @@
+name: Rust dev build
+
+# Spec §7: pushes to the integration branch produce dev-identity builds as workflow artifacts only, never a release.
+on:
+  push:
+    branches: [rust-rewrite]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-dev-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dev:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        # Inside tjommie-rs so rustup applies rust-toolchain.toml.
+        working-directory: tjommie-rs
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install
+      # The dev identity (spec §4): no update feed, login item off. The dev NSIS installer joins this artifact in M8.
+      - run: cargo build --release --locked -p desktop -p daemon
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tjommie-rs-dev-${{ github.sha }}
+          path: |
+            tjommie-rs/target/release/tjommie-desktop.exe
+            tjommie-rs/target/release/tjommie-daemon.exe
+          if-no-files-found: error
+          retention-days: 14
