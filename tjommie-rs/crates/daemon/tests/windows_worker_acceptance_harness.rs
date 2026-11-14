@@ -10,8 +10,8 @@
 
 use daemon::cli::BoxFuture;
 use daemon::win::acceptance::{
-    CliProbe, Credentials, Denials, Failure, PROBE_INNER_TIMEOUT, Round, Seams, accept_with,
-    receipt_path, receipts,
+    CliProbe, Credentials, Denials, Failure, OwnerDesktop, PROBE_INNER_TIMEOUT, Round, Seams,
+    accept_with, receipt_path, receipts,
 };
 use daemon::win::boundary::{LaunchFailure, NativeLaunch, Receipt, Running, WorkerNative};
 use daemon::win::worker::{Purpose, WorkerConfiguration};
@@ -61,6 +61,24 @@ impl CliProbe for Cli {
     }
 }
 
+/// The owner's desktop, scripted: it is there unless told otherwise, and it counts how often it is asked.
+#[derive(Default)]
+struct Desktop {
+    /// The call and Win32 error the control fails with, if it is to fail.
+    refusal: Mutex<Option<String>>,
+    asked: AtomicUsize,
+}
+
+impl OwnerDesktop for Desktop {
+    fn reachable(&self) -> Result<(), String> {
+        self.asked.fetch_add(1, Ordering::SeqCst);
+        match self.refusal.lock().unwrap().clone() {
+            Some(reason) => Err(reason),
+            None => Ok(()),
+        }
+    }
+}
+
 /// What the fake Windows did and what it is told to do.
 struct State {
     log: Mutex<Vec<String>>,
@@ -82,6 +100,8 @@ struct State {
     vault: Arc<Vault>,
     /// How many CLI `--version` launches the check asked for.
     cli_launches: Arc<AtomicUsize>,
+    /// The owner's desktop, for the positive control of the desktop denial.
+    desktop: Arc<Desktop>,
 }
 
 /// An in-memory stand-in for Credential Manager: nothing here ever reaches the real vault.
@@ -121,6 +141,7 @@ impl Fake {
             pids: AtomicU32::new(40_000),
             vault: Arc::new(Vault::default()),
             cli_launches: Arc::new(AtomicUsize::new(0)),
+            desktop: Arc::new(Desktop::default()),
         }))
     }
 }
@@ -381,6 +402,7 @@ async fn accept_unchecked(
     let seams = Seams {
         cli: Some(Arc::new(Cli(cli, windows.0.cli_launches.clone()))),
         credentials: Some(windows.0.vault.clone()),
+        desktop: Some(windows.0.desktop.clone()),
     };
     accept_with(&world.owner, &world.daemon_dir, native, seams).await
 }
@@ -422,6 +444,8 @@ async fn the_real_harness_runs_both_rounds_nested_in_the_review_lease_and_writes
     let windows = Fake::new();
     let done = accept(&world, &windows, Ok(())).await.unwrap();
     assert!(done.starts_with("Acceptance passed"), "{done}");
+    // The owner's own desktop was checked once, as the positive control of the desktop denial.
+    assert_eq!(windows.0.desktop.asked.load(Ordering::SeqCst), 1);
     // The review identity is only ever launched inside its observed lease, the other identity's fixture is live while
     // an identity proves what it cannot reach, and the second observation comes after that fixture is gone.
     assert_eq!(
@@ -535,6 +559,53 @@ async fn a_probe_that_reports_a_failure_writes_no_receipt_and_releases_the_peer_
             windows.0.cli_launches.load(Ordering::SeqCst),
             2 * active,
             "{field}: a CLI was launched under the identity whose denial failed"
+        );
+    }
+}
+
+/// The positive control of the desktop denial: a worker's refusal at a desktop that is not there proves nothing, so a PC
+/// whose owner cannot reach its own desktop (nobody signed in, a session with no desktop, a locked screen) stops the run
+/// first, in plain words with the Win32 error, before a worker is launched or anything is made, and leaves no receipt.
+#[tokio::test]
+async fn a_pc_with_no_signed_in_desktop_fails_closed_before_anything_is_launched_or_made() {
+    for reason in [
+        "OpenWindowStation(WinSta0) failed with Windows error 5: Access is denied",
+        "OpenInputDesktop failed with Windows error 1: Incorrect function",
+    ] {
+        let world = world();
+        let windows = Fake::new();
+        *windows.0.desktop.refusal.lock().unwrap() = Some(reason.into());
+        // A valid pair from an earlier run must not survive it either.
+        let (provider, review) = configs(&world);
+        let [stale, other] = receipts(&provider, &review, &proven(), &proven()).unwrap();
+        fs::write(receipt_path(&world.owner, Purpose::Provider), stale).unwrap();
+        fs::write(receipt_path(&world.owner, Purpose::Review), other).unwrap();
+        let error = accept_unchecked(&world, &windows, Ok(()))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error,
+            format!(
+                "This PC has no signed-in desktop to protect, so the desktop check can't be proven here ({reason}). Run accept-worker from your own signed-in, unlocked session."
+            )
+        );
+        assert_eq!(windows.0.desktop.asked.load(Ordering::SeqCst), 1);
+        assert_eq!(receipts_present(&world), [false, false], "{reason}");
+        assert!(
+            windows.0.log.lock().unwrap().is_empty(),
+            "{reason}: a worker was launched"
+        );
+        assert!(windows.0.payloads.lock().unwrap().is_empty(), "{reason}");
+        assert_eq!(windows.0.cli_launches.load(Ordering::SeqCst), 0, "{reason}");
+        assert!(
+            windows.0.vault.written.lock().unwrap().is_empty(),
+            "{reason}: the synthetic credential was saved"
+        );
+        assert_eq!(scratch_folders(&world), 0, "{reason}");
+        assert_eq!(
+            starting_with(&world.owner, "acceptance-"),
+            Vec::<String>::new(),
+            "{reason}: the owner marker was made"
         );
     }
 }

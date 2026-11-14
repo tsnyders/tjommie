@@ -100,7 +100,8 @@ fn check(message: impl Into<String>) -> Failure {
 
 /// The nine facts one worker's probe reports (`Denials` in `accept-worker.ts`), in the receipt's field order. Each must
 /// be `true` for acceptance: eight are things the worker must be refused, and `worker_write_allowed` is the one thing
-/// it must be allowed.
+/// it must be allowed. `owner_desktop_denied` is that the worker can reach neither the owner's input desktop nor its
+/// window station (see `POWERSHELL_PROBE`); the receipt's field and its meaning to 0.4.2 are unchanged.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Denials {
@@ -368,9 +369,21 @@ pub fn version_started(output: &CliOutput) -> bool {
 
 // ---- the fixed programs a worker runs --------------------------------------------------------------------------
 
-/// `powershellProbe`, byte for byte: reads the payload from stdin, tries everything the worker must be refused and the
-/// one write it must be allowed, and prints the nine results as JSON. A missing target fails the script (an error is
-/// not a denial), so a peer fixture that is not really there cannot be mistaken for a denied one.
+/// `powershellProbe`: reads the payload from stdin, tries everything the worker must be refused and the one write it
+/// must be allowed, and prints the nine results as JSON. A missing target fails the script (an error is not a denial),
+/// so a peer fixture that is not really there cannot be mistaken for a denied one.
+///
+/// It is 0.4.2's byte for byte except one region, the line that held `DesktopDenied`, which `windows_worker_acceptance.rs`
+/// pins exactly: two declarations (a C# method body cannot hold them), the pure rule `DesktopDeniedBy` (so the rule can be
+/// tested on its own) and `DesktopDenied` itself. 0.4.2 counted the desktop as denied only if `OpenInputDesktop` gave no
+/// handle with error 5. A worker runs on its own non-interactive window station
+/// and has no input desktop at all, so that call fails there with error 1 (`ERROR_INVALID_FUNCTION`) whatever the
+/// permissions are: the rule could never be met by a correctly isolated worker (a hosted runner showed it, see
+/// `fixtures/compat/README.md`). The test now aims at the real boundary, and is stricter than 0.4.2's, never weaker. The
+/// desktop is denied only if both hold: `OpenInputDesktop` yields no handle (with any error: it cannot say more than
+/// that), and `OpenWindowStation("WinSta0", WINSTA_READATTRIBUTES)`, the weakest access there is, fails with exactly error
+/// 5. A handle from either, or any other error from the station, means not denied. The owner's side of it is
+/// [`OwnerDesktop`]: the target must exist for a refusal to mean anything.
 const POWERSHELL_PROBE: &str = r#"
 $ErrorActionPreference='Stop'
 [Console]::InputEncoding=New-Object Text.UTF8Encoding($false)
@@ -387,7 +400,10 @@ public static class TjWorkerProbe {
  [DllImport("user32.dll")] static extern bool CloseDesktop(IntPtr value);
  public static bool CredentialDenied(string target) { IntPtr value; if(!Read(target,1,0,out value)) return Marshal.GetLastWin32Error()==1168; CredFree(value); return false; }
  public static bool ProcessDenied(uint pid) { var value=OpenProcess(0x0038,false,pid); if(value==IntPtr.Zero) return Marshal.GetLastWin32Error()==5; CloseHandle(value); return false; }
- public static bool DesktopDenied() { var value=OpenInputDesktop(0,false,0x0108); if(value==IntPtr.Zero) return Marshal.GetLastWin32Error()==5; CloseDesktop(value); return false; }
+ [DllImport("user32.dll",EntryPoint="OpenWindowStationW",CharSet=CharSet.Unicode,SetLastError=true)] static extern IntPtr OpenStation(string name,bool inherit,uint access);
+ [DllImport("user32.dll")] static extern bool CloseWindowStation(IntPtr value);
+ public static bool DesktopDeniedBy(bool gotDesktop,bool gotStation,int stationError) { return !gotDesktop && !gotStation && stationError==5; }
+ public static bool DesktopDenied() { var desktop=OpenInputDesktop(0,false,0x0108); var gotDesktop=desktop!=IntPtr.Zero; if(gotDesktop) CloseDesktop(desktop); var station=OpenStation("WinSta0",false,0x0002); var stationError=Marshal.GetLastWin32Error(); var gotStation=station!=IntPtr.Zero; if(gotStation) CloseWindowStation(station); return DesktopDeniedBy(gotDesktop,gotStation,stationError); }
  public static bool FileDenied(string path,bool write) { try { using(var file=File.Open(path,FileMode.Open,write?FileAccess.ReadWrite:FileAccess.Read,FileShare.ReadWrite)){} return false; } catch(UnauthorizedAccessException){return true;} }
  public static bool RegistryDenied(string path) { try { using(var key=Registry.Users.OpenSubKey(path,true)){return false;} } catch(UnauthorizedAccessException){return true;} catch(SecurityException){return true;} }
 }
@@ -468,12 +484,39 @@ impl Credentials for CredentialManager {
     }
 }
 
+/// The owner's signed-in desktop, as far as the check uses it: the target the denial probe tries to reach as a worker. A
+/// seam so tests never depend on the machine they run on having a desktop.
+pub trait OwnerDesktop: Send + Sync {
+    /// Whether this process can open the desktop's window station and input desktop (and lets them go). `Err` is the
+    /// call that failed and its Win32 error.
+    fn reachable(&self) -> Result<(), String>;
+}
+
+/// The real [`OwnerDesktop`].
+struct SignedInDesktop;
+
+impl OwnerDesktop for SignedInDesktop {
+    fn reachable(&self) -> Result<(), String> {
+        logon::desktop_reachable()
+    }
+}
+
+/// What the owner is told when the control fails. A worker's refusal at a desktop that is not there would prove nothing,
+/// so the check stops here, before it launches anything, rather than pass a test that cannot fail.
+fn no_desktop(reason: &str) -> Failure {
+    check(format!(
+        "This PC has no signed-in desktop to protect, so the desktop check can't be proven here ({reason}). Run accept-worker from your own signed-in, unlocked session."
+    ))
+}
+
 /// What a test replaces; `Default` is the real thing.
 #[derive(Default)]
 pub struct Seams {
     /// "Both CLIs start": the real one needs both CLIs installed under the protected runtime.
     pub cli: Option<Arc<dyn CliProbe>>,
     pub credentials: Option<Arc<dyn Credentials>>,
+    /// "The owner has a desktop": the real one opens this session's `WinSta0` and input desktop.
+    pub desktop: Option<Arc<dyn OwnerDesktop>>,
 }
 
 /// "Both CLIs start" (`resolveCli` and `runCli(.., ["--version"])` under the identity). A seam so tests need no
@@ -781,6 +824,7 @@ pub struct WindowsSteps {
     native: Arc<dyn WorkerNative>,
     cli: Arc<dyn CliProbe>,
     credentials: Arc<dyn Credentials>,
+    desktop: Arc<dyn OwnerDesktop>,
     installed: Mutex<Option<InstalledWorkers>>,
     marker: PathBuf,
     credential: String,
@@ -991,6 +1035,14 @@ impl WindowsSteps {
 impl Steps for WindowsSteps {
     fn prepare(&self) -> BoxFuture<'_, Result<(), Failure>> {
         Box::pin(async move {
+            // The positive control of the desktop denial, first of all and by the owner's own process: the desktop
+            // the workers are refused must exist, or their refusal says nothing. Nothing has been launched or made yet.
+            self.desktop.reachable().map_err(|reason| {
+                diag::problem(format!(
+                    "prepare: the owner cannot reach its own desktop, so the desktop denial cannot be proven: {reason}"
+                ));
+                no_desktop(&reason)
+            })?;
             // The daemon's own readiness check, run here so a refusal says why (a restart is due, a provider CLI is
             // running, a runtime file is writable) instead of the boundary's one fixed sentence.
             for config in [&self.provider_config, &self.review_config] {
@@ -1181,6 +1233,7 @@ pub async fn accept_with(
     let credentials = seams
         .credentials
         .unwrap_or_else(|| Arc::new(CredentialManager));
+    let desktop = seams.desktop.unwrap_or_else(|| Arc::new(SignedInDesktop));
     let cli = seams.cli.unwrap_or_else(|| {
         Arc::new(InstalledClis {
             provider: SystemCli::with_worker(Arc::new(provider.clone()))
@@ -1210,6 +1263,7 @@ pub async fn accept_with(
         native,
         cli,
         credentials,
+        desktop,
         installed: Mutex::new(installed),
     };
     run(&steps, &provider_config, &review_config)

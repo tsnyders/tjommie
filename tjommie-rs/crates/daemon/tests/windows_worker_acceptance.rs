@@ -146,13 +146,56 @@ fn the_golden_pair_is_a_real_looking_pair_with_clean_windows_paths() {
     }
 }
 
+/// The PowerShell text inside a `node -e` wrapper: the wrapper's one string literal, still JSON-escaped.
+fn script_literal(wrapper: &str) -> &str {
+    wrapper
+        .rsplit_once("'-Command',")
+        .unwrap()
+        .1
+        .split_once("];const p=")
+        .unwrap()
+        .0
+}
+
+/// The PowerShell script a wrapper runs (the probe's or the holder's), as text.
+fn wrapped_script(wrapper: &str) -> String {
+    serde_json::from_str(script_literal(wrapper)).unwrap()
+}
+
+/// The line of the probe's C# that held `DesktopDenied` in 0.4.2: it counted the desktop as denied only if
+/// `OpenInputDesktop(0,false,0x0108)` gave no handle with error 5.
+const LEGACY_DESKTOP_DENIED: &str = concat!(
+    r#" public static bool DesktopDenied() { var value=OpenInputDesktop(0,false,0x0108); if(value==IntPtr.Zero) return Marshal.GetLastWin32Error()==5; CloseDesktop(value); return false; }"#,
+    "\n"
+);
+
+/// What replaced it, and the only thing that differs from 0.4.2's script (see `fixtures/compat/README.md`): two
+/// declarations (an import cannot sit inside a method body), the pure rule on its own so that it can be tested, and
+/// `DesktopDenied`, which is true only if `OpenInputDesktop` gives no handle (any error) AND `OpenWindowStation("WinSta0",
+/// false, WINSTA_READATTRIBUTES)` fails with exactly error 5.
+const DESKTOP_REGION: &str = concat!(
+    r#" [DllImport("user32.dll",EntryPoint="OpenWindowStationW",CharSet=CharSet.Unicode,SetLastError=true)] static extern IntPtr OpenStation(string name,bool inherit,uint access);"#,
+    "\n",
+    r#" [DllImport("user32.dll")] static extern bool CloseWindowStation(IntPtr value);"#,
+    "\n",
+    r#" public static bool DesktopDeniedBy(bool gotDesktop,bool gotStation,int stationError) { return !gotDesktop && !gotStation && stationError==5; }"#,
+    "\n",
+    r#" public static bool DesktopDenied() { var desktop=OpenInputDesktop(0,false,0x0108); var gotDesktop=desktop!=IntPtr.Zero; if(gotDesktop) CloseDesktop(desktop); var station=OpenStation("WinSta0",false,0x0002); var stationError=Marshal.GetLastWin32Error(); var gotStation=station!=IntPtr.Zero; if(gotStation) CloseWindowStation(station); return DesktopDeniedBy(gotDesktop,gotStation,stationError); }"#,
+    "\n"
+);
+
 /// The two `node -e` programs the probe and the holder are run with (`nativeNode` in 0.4.2), as the legacy code built
 /// them, pinned like the bootstrap and the policy observer in `worker-scripts.json`. The holder is byte for byte 0.4.2's.
-/// The probe differs in exactly one place, on purpose: the time its PowerShell may take (`timeout:15000` there). That
-/// was measured on a real runner to be too little: PowerShell took 12 to 19 s to start under a worker's environment, so
-/// the probe was killed before it printed anything. The receipts do not carry it, so rollback is unaffected.
+/// The probe differs in exactly two places, on purpose, and nothing else may:
+/// - The time its PowerShell may take (`timeout:15000` there). That was measured on a real runner to be too little:
+///   PowerShell took 12 to 19 s to start under a worker's environment, so the probe was killed before it printed anything.
+/// - The desktop test, `DesktopDenied` and what it needs (`DESKTOP_REGION`). 0.4.2's could never pass for a correctly
+///   isolated worker: from a worker's own non-interactive window station `OpenInputDesktop` fails with error 1, not 5, so
+///   its "denied only if error 5" was unsatisfiable. The new rule is stricter, never weaker.
+///
+/// The receipts carry neither, so rollback is unaffected.
 #[test]
-fn the_wrapper_programs_are_0_4_2s_except_for_the_probes_time_limit() {
+fn the_wrapper_programs_are_0_4_2s_except_for_the_probes_time_limit_and_desktop_test() {
     let golden = golden();
     let legacy_probe = golden["wrappers"]["probe"].as_str().unwrap();
     assert_eq!(
@@ -160,15 +203,104 @@ fn the_wrapper_programs_are_0_4_2s_except_for_the_probes_time_limit() {
         1,
         "the legacy probe's one time limit"
     );
-    let limit = format!("timeout:{}", PROBE_INNER_TIMEOUT.as_millis());
+    let legacy_literal = script_literal(legacy_probe);
+    let legacy_script = wrapped_script(legacy_probe);
     assert_eq!(
-        probe_args("{}")[1],
-        legacy_probe.replacen("timeout:15000", &limit, 1),
-        "the probe wrapper may differ from 0.4.2's only in its time limit"
+        legacy_script.matches(LEGACY_DESKTOP_DENIED).count(),
+        1,
+        "0.4.2's one DesktopDenied line"
+    );
+    // 0.4.2's script with exactly that line replaced, in 0.4.2's wrapper with exactly its time limit replaced.
+    let script = legacy_script.replacen(LEGACY_DESKTOP_DENIED, DESKTOP_REGION, 1);
+    let limit = format!("timeout:{}", PROBE_INNER_TIMEOUT.as_millis());
+    let expected = legacy_probe.replacen("timeout:15000", &limit, 1).replacen(
+        legacy_literal,
+        &serde_json::to_string(&script).unwrap(),
+        1,
+    );
+    let rust = &probe_args("{}")[1];
+    assert_eq!(
+        wrapped_script(rust),
+        script,
+        "the probe script may differ from 0.4.2's only in its DesktopDenied region"
+    );
+    assert_eq!(
+        *rust, expected,
+        "the probe wrapper may differ from 0.4.2's only in its time limit and that region"
     );
     assert_eq!(
         holder_args("{}")[1],
         golden["wrappers"]["holder"].as_str().unwrap()
+    );
+}
+
+/// The desktop rule, run as the real C# the probe compiles (`DesktopDeniedBy`), over every case that matters. Denied
+/// means exactly one thing: no input-desktop handle AND the window station refused with error 5. A handle from either
+/// is a failure, and so is any other error, which would only mean the target could not be asked (0.4.2's rule failed
+/// the other way: it demanded error 5 of a call that cannot give it from a worker's station).
+#[test]
+fn the_desktop_is_denied_only_when_no_desktop_handle_and_the_station_is_refused_with_error_5() {
+    let script = wrapped_script(&probe_args("{}")[1]);
+    let class = script
+        .split_once("Add-Type -TypeDefinition @'\n")
+        .unwrap()
+        .1
+        .split_once("\n'@")
+        .unwrap()
+        .0;
+    // (a desktop handle was got, a station handle was got, the station's error, denied?)
+    let cases: [(bool, bool, i32, bool); 9] = [
+        // The input desktop opened: never denied, whatever the station said.
+        (true, false, 5, false),
+        (true, true, 0, false),
+        // No input desktop (error 1 from a non-interactive station) and the station refused with 5: the one denial.
+        (false, false, 5, true),
+        // No input desktop, but the station opened: not denied (this is what a worker that is NOT isolated sees).
+        (false, true, 0, false),
+        // No input desktop and the station could not be asked: nothing is proven.
+        (false, false, 1, false),
+        (false, false, 2, false),
+        (false, false, 87, false),
+        (false, false, 1314, false),
+        // No handle but no error either: nothing was refused.
+        (false, false, 0, false),
+    ];
+    let calls: Vec<String> = cases
+        .iter()
+        .map(|(desktop, station, error, _)| {
+            format!("[TjWorkerProbe]::DesktopDeniedBy(${desktop},${station},{error})")
+        })
+        .collect();
+    let program = format!(
+        "Add-Type -TypeDefinition $env:TJ_CLASS;({}) -join ','",
+        calls.join(",")
+    );
+    let done = spawn::command("powershell")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            program.as_str(),
+        ])
+        .env("TJ_CLASS", class)
+        .output()
+        .unwrap();
+    assert!(
+        done.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&done.stdout),
+        String::from_utf8_lossy(&done.stderr)
+    );
+    let answers: Vec<bool> = String::from_utf8(done.stdout)
+        .unwrap()
+        .trim()
+        .split(',')
+        .map(|word| word == "True")
+        .collect();
+    let expected: Vec<bool> = cases.iter().map(|case| case.3).collect();
+    assert_eq!(
+        answers, expected,
+        "the rule's answer for each case, in order"
     );
 }
 
@@ -641,14 +773,7 @@ fn the_wrapper_programs_and_scripts_parse() {
             String::from_utf8_lossy(&done.stderr)
         );
         // The PowerShell text is the one string literal in the wrapper: JSON.parse of it gives the script back.
-        let literal = args[1]
-            .rsplit_once("'-Command',")
-            .unwrap()
-            .1
-            .split_once("];const p=")
-            .unwrap()
-            .0;
-        let script: String = serde_json::from_str(literal).unwrap();
+        let script = wrapped_script(&args[1]);
         let parsed = spawn::command("powershell")
             .args([
                 "-NoProfile",
@@ -702,6 +827,12 @@ fn the_real_probe_run_as_the_owner_itself_proves_nothing() {
         !report.peer_write_denied && !report.peer_process_denied && !report.peer_registry_denied
     );
     assert!(report.worker_write_allowed);
+    // Nor is its own desktop: it opens the input desktop, so the desktop was not denied. (Through the probe's own rule;
+    // the owner-side control below is what the check itself runs.)
+    assert!(
+        !report.owner_desktop_denied,
+        "the owner reached its own desktop, so the probe must not call it denied"
+    );
     assert!(!report.unproven().is_empty());
     assert!(
         scratch.path().join("write.txt").exists(),
@@ -714,6 +845,17 @@ fn the_real_probe_run_as_the_owner_itself_proves_nothing() {
     };
     let (provider, review) = golden_configs();
     assert!(receipts(&provider, &review, &round, &proven()).is_err());
+}
+
+/// The check's positive control for the desktop denial, the real one: the owner (this process, signed in to its own
+/// desktop, as a hosted runner's user is) opens `WinSta0` and the input desktop. This is what makes a worker's refusal
+/// mean something, since the target exists and it is the worker that is refused. Where it fails, `accept-worker` stops
+/// before launching anything and says so; this test failing means this machine has no signed-in desktop to run it on.
+#[test]
+fn the_owner_can_reach_its_own_desktop_so_a_workers_refusal_means_something() {
+    logon::desktop_reachable().unwrap_or_else(|reason| {
+        panic!("this session has no signed-in desktop for the owner to reach: {reason}")
+    });
 }
 
 // ---- admin, opt-in: no workflow runs it automatically ---------------------------------------------------------
@@ -749,6 +891,11 @@ fn backdate(owner_root: &Path) {
 /// on a disposable admin machine and never on a PC with a real Tjommie install. A failing run writes no receipt and removes an old one; a passing run writes two receipts the daemon's
 /// own readiness check accepts, and leaves no scratch folder, marker or synthetic credential. Cleanup is by the
 /// disposable root's ns8: its two accounts, its two credential targets and its folders.
+///
+/// All nine denials must hold for both identities, `ownerDesktopDenied` included. That needs the owner-side control to
+/// hold too (this process signed in to a desktop: a hosted runner's `runneradmin` is, in session 2 on `WinSta0`), and the
+/// workers to be refused it: they have their own non-interactive window station, so `OpenInputDesktop` gives them no
+/// handle and `OpenWindowStation("WinSta0")` fails with error 5.
 #[tokio::test]
 #[ignore = "admin: needs elevation; run with TJOMMIE_RS_ADMIN_TESTS=1 cargo test -- --ignored"]
 async fn admin_acceptance_checks_two_real_worker_identities() {
@@ -756,6 +903,11 @@ async fn admin_acceptance_checks_two_real_worker_identities() {
         eprintln!("skipped: set TJOMMIE_RS_ADMIN_TESTS=1 on a disposable machine");
         return;
     }
+    // The owner-side control of the desktop denial, up front and by name: without a signed-in desktop `accept_with`
+    // stops at its first step, and this says why before any account is made.
+    logon::desktop_reachable().unwrap_or_else(|reason| {
+        panic!("this runner has no signed-in desktop to protect: {reason}")
+    });
     let folder = TempDir::new().unwrap();
     let owner_root = folder.path().join("owner");
     assert!(
@@ -809,7 +961,7 @@ async fn admin_acceptance_checks_two_real_worker_identities() {
         )
         .await;
         // Exactly the failure the mocked CLI check raises, which is only reached after both identities launched, the
-        // peer fixture came up and the denial probe ran and proved all nine facts. Any other error (a termination, a
+        // peer fixture came up and the denial probe ran and proved all nine facts (the desktop one included). Any other error (a termination, a
         // refused launch, a failed probe) means the real path did not get that far, and its text says where it stopped.
         assert_eq!(
             failed,

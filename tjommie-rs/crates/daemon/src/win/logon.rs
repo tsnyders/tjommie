@@ -62,8 +62,9 @@ use windows::Win32::System::JobObjects::{
 use windows::Win32::System::Pipes::CreatePipe;
 use windows::Win32::System::Registry::{HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RegGetValueW};
 use windows::Win32::System::StationsAndDesktops::{
-    CloseDesktop, CloseWindowStation, CreateDesktopW, CreateWindowStationW, DESKTOP_CONTROL_FLAGS,
-    GetProcessWindowStation, HDESK, HWINSTA, SetProcessWindowStation,
+    CloseDesktop, CloseWindowStation, CreateDesktopW, CreateWindowStationW, DESKTOP_ACCESS_FLAGS,
+    DESKTOP_CONTROL_FLAGS, GetProcessWindowStation, HDESK, HWINSTA, OpenInputDesktop,
+    OpenWindowStationW, SetProcessWindowStation,
 };
 use windows::Win32::System::SystemInformation::GetTickCount64;
 use windows::Win32::System::Threading::{
@@ -390,6 +391,43 @@ pub fn current_user_sid() -> Result<String, String> {
     // SAFETY: the pseudo handle needs no closing.
     let token = process_token(unsafe { GetCurrentProcess() })?;
     token_user(token.0)
+}
+
+/// `WINSTA_READATTRIBUTES`: the weakest access to a window station that says anything. A worker refused this is refused
+/// every stronger access too.
+const WINSTA_READATTRIBUTES: u32 = 0x0002;
+/// What the denial probe asks of the input desktop (`DESKTOP_SWITCHDESKTOP | DESKTOP_CREATEMENU`, as 0.4.2 did).
+const PROBE_DESKTOP_ACCESS: u32 = 0x0108;
+
+/// A failed call, with the Win32 error number first: that is what tells "no desktop here" (1, 5) from anything else.
+fn win32(call: &str, error: &windows::core::Error) -> String {
+    format!(
+        "{call} failed with Windows error {}: {}",
+        error.code().0 as u32 & 0xFFFF,
+        error.message().trim_end_matches(['.', '\r', '\n', ' '])
+    )
+}
+
+/// The owner's side of the desktop denial, run by the owner's own process: whether the signed-in desktop is there to be
+/// protected. It opens what a worker must be refused (this session's window station `WinSta0`, and the input desktop,
+/// with the very calls the denial probe makes) and lets both go. Without it a worker's refusal could mean the target
+/// does not exist (on a machine nobody is signed in to, or from a session with no desktop), not that the worker was kept
+/// out. `Err` names the call that failed and its Win32 error.
+pub fn desktop_reachable() -> Result<(), String> {
+    // SAFETY: each handle is opened here and closed here before the next call or the return.
+    unsafe {
+        let station = OpenWindowStationW(&HSTRING::from("WinSta0"), false, WINSTA_READATTRIBUTES)
+            .map_err(|error| win32("OpenWindowStation(WinSta0)", &error))?;
+        let _ = CloseWindowStation(station);
+        let desktop = OpenInputDesktop(
+            DESKTOP_CONTROL_FLAGS(0),
+            false,
+            DESKTOP_ACCESS_FLAGS(PROBE_DESKTOP_ACCESS),
+        )
+        .map_err(|error| win32("OpenInputDesktop", &error))?;
+        let _ = CloseDesktop(desktop);
+    }
+    Ok(())
 }
 
 /// `Verify` (`windows-worker.ps1:131-151`): the process runs as the worker, unelevated, in no administrator or
