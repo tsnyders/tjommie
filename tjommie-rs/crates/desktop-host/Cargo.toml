@@ -5,3 +5,16 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
+
+[dependencies]
+jiff = "0.2.41"
+log = { version = "0.4.35", features = ["std"] }
+windows = { version = "0.62.2", features = ["Win32_System_Recovery"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"
+# crash::tests reads the restart registration back.
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_System_Threading"] }
+
+[lints]
+workspace = true

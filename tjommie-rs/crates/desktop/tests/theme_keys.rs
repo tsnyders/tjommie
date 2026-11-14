@@ -1,4 +1,6 @@
 //! The theme files (spec Phase 0): every theme has Aegis's key set, and `Theme` reads Aegis exactly.
+// Tests may unwrap (Phase 3 plan T0.4); clippy.toml covers #[test] functions, this covers the helpers.
+#![allow(clippy::unwrap_used)]
 
 use std::collections::BTreeSet;
 use std::path::Path;

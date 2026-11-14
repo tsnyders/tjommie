@@ -1412,8 +1412,11 @@ dependencies = [
 name = "desktop"
 version = "0.5.0"
 dependencies = [
+ "desktop-host",
+ "futures",
  "gpui-kit",
  "gpui-pre",
+ "log",
  "serde",
  "serde_json",
 ]
@@ -1421,6 +1424,12 @@ dependencies = [
 [[package]]
 name = "desktop-host"
 version = "0.5.0"
+dependencies = [
+ "jiff",
+ "log",
+ "tempfile",
+ "windows 0.62.2",
+]
 
 [[package]]
 name = "digest"
