@@ -2,7 +2,8 @@
 //! with one JSON request per line and one JSON response per line: `click{id}`, `type{id,text}`, `key{chord}`,
 //! `snapshot` and `wait{id,predicate,timeout_ms}`. The snapshot is the semantic tree: each element registered with
 //! `semantic()`, with its AccessKit role and text as Windows UI Automation sees them. Only the current user may open
-//! the pipe.
+//! the pipe. The app creates it as the name's first instance and the client checks that the app it launched serves it,
+//! so a process that takes the name first can't stand in for the app (review F10).
 
 use std::cell::RefCell;
 use std::fs::File;
@@ -32,10 +33,10 @@ use windows::Win32::Security::{
     DACL_SECURITY_INFORMATION, GetTokenInformation, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES,
     TOKEN_QUERY, TOKEN_USER, TokenUser,
 };
-use windows::Win32::Storage::FileSystem::PIPE_ACCESS_DUPLEX;
+use windows::Win32::Storage::FileSystem::{FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX};
 use windows::Win32::System::Pipes::{
-    ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_BYTE,
-    PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT,
+    ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, GetNamedPipeServerProcessId,
+    PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT,
 };
 use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 use windows::core::{HSTRING, PWSTR};
@@ -176,6 +177,17 @@ impl Client {
                 .open(&name)
             {
                 Ok(pipe) => {
+                    let mut server = 0;
+                    // SAFETY: `pipe` is an open pipe handle and `server` outlives the call.
+                    unsafe {
+                        GetNamedPipeServerProcessId(HANDLE(pipe.as_raw_handle()), &mut server)
+                    }?;
+                    if server != app.id() {
+                        let _ = app.kill();
+                        return Err(io::Error::other(format!(
+                            "{name} is served by process {server}, not the app"
+                        )));
+                    }
                     let writer = pipe.try_clone()?;
                     return Ok(Client {
                         app,
@@ -520,7 +532,7 @@ fn create_pipe() -> io::Result<File> {
         };
         let pipe = CreateNamedPipeW(
             &HSTRING::from(pipe_name(std::process::id())),
-            PIPE_ACCESS_DUPLEX,
+            PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
             PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
             1,
             64 * 1024,
