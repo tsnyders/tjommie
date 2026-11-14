@@ -299,10 +299,18 @@ async fn tcp_frames(address: IpAddr, port: u16, timeout: Duration) -> Result<Wir
 
 /// A WebSocket to a relay (`webSocketFrames`): every message is one binary Noise frame; anything else closes the wire.
 pub async fn web_socket_frames(url: &str, timeout: Duration) -> Result<Wire, WireError> {
-    let (socket, _) = tokio::time::timeout(timeout, tokio_tungstenite::connect_async(url))
-        .await
-        .map_err(|_| WireError::Unavailable)?
-        .map_err(|_| WireError::Unavailable)?;
+    // A Noise frame is at most MAX_NOISE_FRAME bytes, so a relay has no reason to send more in one message: stop reading at
+    // that, where tungstenite's defaults would buffer up to 64 MiB of a hostile relay's message first.
+    let config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
+        .max_message_size(Some(MAX_NOISE_FRAME))
+        .max_frame_size(Some(MAX_NOISE_FRAME));
+    let (socket, _) = tokio::time::timeout(
+        timeout,
+        tokio_tungstenite::connect_async_with_config(url, Some(config), false),
+    )
+    .await
+    .map_err(|_| WireError::Unavailable)?
+    .map_err(|_| WireError::Unavailable)?;
     let (mut sink, mut stream) = socket.split();
     let (out, mut queued) = mpsc::unbounded_channel::<Vec<u8>>();
     let (inbox, input) = mpsc::channel::<Vec<u8>>(INBOX);
