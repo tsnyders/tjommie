@@ -1414,6 +1414,8 @@ version = "0.5.0"
 dependencies = [
  "gpui-kit",
  "gpui-pre",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
