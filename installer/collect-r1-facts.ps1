@@ -24,6 +24,7 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'hosted-runner.ps1')
 Assert-HostedRunner
 . (Join-Path $PSScriptRoot 'r1-facts-lib.ps1')
+. (Join-Path $PSScriptRoot 'scoped-processes.ps1')
 
 if (-not $InstallResult) { $InstallResult = $env:R1_INSTALL_RESULT }
 if (-not $InstallResult) { throw 'No install result: run install-latest-r1.ps1 first, or pass -InstallResult.' }
@@ -33,6 +34,10 @@ New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 $install = Get-Content -LiteralPath $InstallResult -Raw | ConvertFrom-Json
 $folder = [string]$install.installFolder
 if (-not (Test-Path -LiteralPath (Join-Path $folder 'Tjommie.exe'))) { throw "No Tjommie.exe in $folder." }
+# Everything this script starts, stops or uninstalls is scoped to this one folder, which must be an install under the user's
+# Programs folder: a per-user NSIS install, nowhere else.
+if ((Split-Path -Parent ([IO.Path]::GetFullPath($folder).TrimEnd('\'))) -ine (Join-Path $env:LOCALAPPDATA 'Programs')) { throw "$folder is not an install folder under %LOCALAPPDATA%\Programs." }
+Assert-NarrowFolder $folder
 
 $productName = 'Tjommie'
 $uninstallKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall'
@@ -41,9 +46,10 @@ $approvedKey = 'Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApprov
 $userData = Join-Path $env:APPDATA $productName
 $dataRoot = Join-Path $env:LOCALAPPDATA $productName
 
+# Stops what runs from this run's install folder, and their children; never anything by its name (a real PC's own Tjommie has
+# the same name), and never anything running from anywhere else.
 function Stop-Tjommie {
-    taskkill /F /T /IM Tjommie.exe 2>&1 | Out-Null
-    taskkill /F /T /IM tjommie-daemon.exe 2>&1 | Out-Null
+    Stop-ProcessesInFolder $folder | Out-Null
 }
 
 # The app's entries in the registry and the shortcuts, as they are right now.
@@ -211,6 +217,9 @@ try {
     $quietValue = @($entry['values'] | Where-Object { $_['name'] -eq 'QuietUninstallString' })
     if ($quietValue.Count -eq 0 -or -not $quietValue[0]['data']) { throw 'The uninstall entry has no QuietUninstallString.' }
     $quiet = [string]$quietValue[0]['data']
+    # The registry says what to run; it is run only if it is this install's own uninstaller.
+    $uninstaller = Get-CommandExecutable $quiet
+    if (-not $uninstaller -or -not (Test-PathInFolder $uninstaller $folder)) { throw "The registered uninstaller ($uninstaller) is not inside the install folder, so it is not run." }
     $uninstall = Watch-Processes { Start-Process -FilePath "$env:SystemRoot\System32\cmd.exe" -ArgumentList '/d', '/s', '/c', "`"$quiet`"" -PassThru }
     for ($attempt = 0; $attempt -lt 30; $attempt++) {
         Start-Sleep -Seconds 2

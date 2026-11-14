@@ -10,6 +10,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot 'hosted-runner.ps1')
+. (Join-Path $PSScriptRoot 'scoped-processes.ps1')
 Assert-HostedRunner
 Assert-FreshRunner
 
@@ -66,8 +67,10 @@ for ($attempt = 0; $attempt -lt 30; $attempt++) {
     $folder = $null
 }
 if (-not $folder) { throw 'The install did not settle.' }
-# The installer may have started the app; the collector starts it itself, once, when it is ready.
-taskkill /F /T /IM Tjommie.exe 2>&1 | Out-Null
+# The installer may have started the app; the collector starts it itself, once, when it is ready. Only what runs from this
+# install folder is stopped (and its children), never anything by name.
+if ((Split-Path -Parent ([IO.Path]::GetFullPath($folder).TrimEnd('\'))) -ine (Join-Path $env:LOCALAPPDATA 'Programs')) { throw "$folder is not an install folder under %LOCALAPPDATA%\Programs." }
+Stop-ProcessesInFolder $folder | Out-Null
 
 $result = [ordered]@{
     tag                 = $tag
