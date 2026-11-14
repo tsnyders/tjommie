@@ -965,6 +965,15 @@ dependencies = [
 [[package]]
 name = "client"
 version = "0.5.0"
+dependencies = [
+ "daemon",
+ "futures-util",
+ "protocol",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-tungstenite",
+]
 
 [[package]]
 name = "cocoa"
