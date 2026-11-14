@@ -973,6 +973,8 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-tungstenite",
+ "transport",
+ "url",
 ]
 
 [[package]]
@@ -1421,23 +1423,39 @@ dependencies = [
 name = "desktop"
 version = "0.5.0"
 dependencies = [
+ "base64 0.23.1",
+ "client",
  "desktop-host",
  "futures",
  "gpui-kit",
  "gpui-pre",
+ "jiff",
  "log",
+ "protocol",
+ "regex",
  "serde",
  "serde_json",
+ "tokio",
+ "url",
 ]
 
 [[package]]
 name = "desktop-host"
 version = "0.5.0"
 dependencies = [
+ "base64 0.23.1",
+ "client",
+ "getrandom 0.4.3",
  "jiff",
  "log",
+ "protocol",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
  "tempfile",
+ "tokio",
  "windows 0.62.2",
+ "zeroize",
 ]
 
 [[package]]
