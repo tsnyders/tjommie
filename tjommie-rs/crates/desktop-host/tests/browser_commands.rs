@@ -603,6 +603,8 @@ fn a_download_is_saved_in_the_bots_own_browser_files_folder_and_the_person_is_to
         "synthetic download"
     );
     awake.end();
+    // A navigation that became a download must not keep the page awake for good: nobody is looking at it.
+    rig.wait_suspended("alpha");
 }
 
 #[test]
@@ -645,4 +647,30 @@ fn a_hostile_page_cannot_make_the_browser_state_huge() {
         wire.len()
     );
     awake.end();
+}
+
+#[test]
+fn a_navigation_that_never_completes_does_not_pin_the_page_awake() {
+    let mut rig = Rig::new();
+    rig.open("alpha");
+    rig.load("alpha", "blank.html");
+    let url = rig.server.url("blank.html");
+    let state = rig.exec_state("alpha", json!({ "kind": "open" }));
+    take_control(&mut rig, "alpha");
+    // Navigating to the address the page is already at, and a command to go back where there is no back: neither
+    // is guaranteed to end in a navigation event, and the page must not wait for one forever.
+    rig.exec_state(
+        "alpha",
+        page_command("navigate", &state, json!({ "url": url })),
+    );
+    rig.exec_state(
+        "alpha",
+        page_command("history", &state, json!({ "action": "back" })),
+    );
+    rig.exec_state("alpha", json!({ "kind": "control", "control": "bot" }));
+    // Nobody is looking at it. Once a minute has passed with no end to the navigation it may sleep.
+    rig.clock.set(rig.clock.get() + Duration::from_secs(61));
+    let (engine, now) = (rig.engine.clone(), rig.clock.get());
+    rig.ui.run(async move { engine.tick(now).await });
+    rig.wait_suspended("alpha");
 }

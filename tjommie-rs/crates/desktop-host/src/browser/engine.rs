@@ -231,10 +231,17 @@ struct Tab {
     keys: RefCell<Vec<String>>,
     buttons: RefCell<Vec<MouseButton>>,
     point: Cell<(f64, f64)>,
-    /// A navigation is in flight. A suspended page makes no progress, so a loading page is left awake.
-    loading: Cell<bool>,
+    /// When the navigation in flight began. A suspended page makes no progress, so a loading page is left awake,
+    /// for at most `LOADING_GRACE` (a navigation that never reports its end must not pin the page).
+    loading: Cell<Option<Instant>>,
     /// The JavaScript dialog the page is blocked on, until it is answered.
     dialog: RefCell<Option<events::PendingDialog>>,
+}
+
+impl Tab {
+    fn set_loading(&self, loading: bool, now: Instant) {
+        self.loading.set(loading.then_some(now));
+    }
 }
 
 /// What `apply` last did, so an unchanged plan costs no COM calls.
@@ -711,7 +718,7 @@ impl Engine {
             keys: RefCell::new(Vec::new()),
             buttons: RefCell::new(Vec::new()),
             point: Cell::new((0.0, 0.0)),
-            loading: Cell::new(url.is_some()),
+            loading: Cell::new(url.is_some().then(|| self.now())),
             dialog: RefCell::new(None),
         }))
     }
@@ -860,7 +867,7 @@ impl Engine {
             Self::place(container, &tabs, None, false);
             Self::set_visible(&tabs, None);
             for tab in &tabs {
-                if !tab.loading.get()
+                if !super::lifecycle::loading_blocks_suspend(tab.loading.get(), now)
                     && !com::is_suspended(&tab.webview).unwrap_or(false)
                     && let Err(error) = com::try_suspend(&tab.webview)
                 {
@@ -953,7 +960,18 @@ impl Engine {
         self.bots
             .borrow()
             .values()
-            .filter_map(|bot| bot.state.borrow().life.next_deadline(now))
+            .flat_map(|bot| {
+                let state = bot.state.borrow();
+                let timers = state.life.next_deadline(now);
+                // A page still counted as loading stops being counted at the end of its grace: look at it then.
+                let loading = state
+                    .tabs
+                    .iter()
+                    .filter_map(|tab| tab.loading.get())
+                    .map(|since| since + super::lifecycle::LOADING_GRACE)
+                    .filter(|deadline| *deadline > now);
+                timers.into_iter().chain(loading).collect::<Vec<_>>()
+            })
             .min()
     }
 
@@ -974,6 +992,17 @@ impl Engine {
             if due {
                 self.teardown(&bot, true);
                 continue;
+            }
+            // A navigation that never reported its end stops keeping the page awake: plan the page again.
+            let expired = bot.state.borrow().tabs.iter().any(|tab| {
+                tab.loading.get().is_some()
+                    && !super::lifecycle::loading_blocks_suspend(tab.loading.get(), now)
+            });
+            if expired {
+                for tab in &bot.state.borrow().tabs {
+                    tab.loading.set(None);
+                }
+                bot.state.borrow_mut().applied = None;
             }
             self.apply(&bot);
             let level = {

@@ -96,6 +96,16 @@ impl Default for Timeouts {
     }
 }
 
+/// How long a page that has not reported the end of its navigation still counts as loading. A suspended page makes no
+/// progress, so a loading page is left awake; but a navigation that never reports its end (a download, one dropped
+/// before it began) must not keep a hidden page awake for good.
+pub const LOADING_GRACE: Duration = Duration::from_secs(60);
+
+/// Whether a navigation begun at `since` still keeps a hidden page from sleeping at `now`.
+pub fn loading_blocks_suspend(since: Option<Instant>, now: Instant) -> bool {
+    since.is_some_and(|since| now.duration_since(since) < LOADING_GRACE)
+}
+
 /// One bot's inputs and timers.
 #[derive(Debug)]
 pub struct Lifecycle {
@@ -379,5 +389,22 @@ mod tests {
             both.memory_level(start + Duration::from_secs(130)),
             MemoryLevel::Low
         );
+    }
+
+    #[test]
+    fn a_loading_page_stays_awake_for_a_minute_and_then_may_sleep() {
+        let start = Instant::now();
+        assert!(!loading_blocks_suspend(None, start));
+        assert!(loading_blocks_suspend(Some(start), start));
+        assert!(loading_blocks_suspend(
+            Some(start),
+            start + Duration::from_secs(59)
+        ));
+        assert!(!loading_blocks_suspend(Some(start), start + LOADING_GRACE));
+        // A navigation that began later restarts the clock.
+        assert!(loading_blocks_suspend(
+            Some(start + Duration::from_secs(50)),
+            start + Duration::from_secs(100)
+        ));
     }
 }

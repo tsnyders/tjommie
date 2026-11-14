@@ -478,10 +478,10 @@ impl Engine {
                     // report its progress.
                     let url = policy::native_browser_url(url)?;
                     // The page is loading from here on: it is not put to sleep before it has finished.
-                    tab.loading.set(true);
+                    tab.set_loading(true, self.now());
                     // SAFETY: plain COM call on a page this engine owns.
                     if let Err(error) = unsafe { tab.webview.Navigate(&HSTRING::from(url)) } {
-                        tab.loading.set(false);
+                        tab.set_loading(false, self.now());
                         self.notice(bot, &error.message());
                     }
                     self.changed(bot);
@@ -492,7 +492,7 @@ impl Engine {
                     let tab = self.tab(bot, Some(page_id))?;
                     self.release(bot, &tab).await;
                     run_check(check)?;
-                    Self::history(&tab, *action);
+                    Self::history(&tab, *action, self.now());
                     self.changed(bot);
                 }
                 _ => {}
@@ -502,23 +502,23 @@ impl Engine {
         .await
     }
 
-    fn history(tab: &Tab, action: HistoryAction) {
+    fn history(tab: &Tab, action: HistoryAction, now: Instant) {
         // SAFETY: plain COM calls on a page this engine owns.
         unsafe {
             match action {
                 HistoryAction::Reload => {
-                    tab.loading.set(tab.webview.Reload().is_ok());
+                    tab.set_loading(tab.webview.Reload().is_ok(), now);
                 }
                 HistoryAction::Back => {
                     let mut can = BOOL::default();
                     if tab.webview.CanGoBack(&mut can).is_ok() && can.as_bool() {
-                        tab.loading.set(tab.webview.GoBack().is_ok());
+                        tab.set_loading(tab.webview.GoBack().is_ok(), now);
                     }
                 }
                 HistoryAction::Forward => {
                     let mut can = BOOL::default();
                     if tab.webview.CanGoForward(&mut can).is_ok() && can.as_bool() {
-                        tab.loading.set(tab.webview.GoForward().is_ok());
+                        tab.set_loading(tab.webview.GoForward().is_ok(), now);
                     }
                 }
             }
@@ -1310,7 +1310,7 @@ impl Engine {
                         .find(|tab| tab.id == tab_id)
                         .cloned();
                     if let Some(tab) = tab {
-                        tab.loading.set(loading);
+                        tab.set_loading(loading, self.now());
                         if !loading {
                             // A page that has finished loading may go to sleep now: plan it again.
                             bot.state.borrow_mut().applied = None;
