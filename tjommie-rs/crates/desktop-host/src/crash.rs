@@ -11,7 +11,7 @@ use std::panic::{AssertUnwindSafe, PanicHookInfo};
 use std::path::Path;
 
 use windows::Win32::System::Recovery::{
-    REGISTER_APPLICATION_RESTART_FLAGS, RegisterApplicationRestart,
+    RESTART_NO_PATCH, RESTART_NO_REBOOT, RegisterApplicationRestart,
 };
 use windows::core::w;
 
@@ -48,11 +48,12 @@ pub fn install(root: &Path) {
             std::process::abort();
         }
     }));
+    // After a crash or a hang, not after a patch or a Windows Update reboot: neither is a crash (review F6).
     // SAFETY: the command line is a static NUL-terminated UTF-16 string.
     if let Err(error) = unsafe {
         RegisterApplicationRestart(
             w!("--hidden --after-crash"),
-            REGISTER_APPLICATION_RESTART_FLAGS(0),
+            RESTART_NO_PATCH | RESTART_NO_REBOOT,
         )
     } {
         log::warn!("Could not register the restart after a crash: {error}");
@@ -84,21 +85,23 @@ mod tests {
     fn hook_writes_log() {
         if let Some(root) = std::env::var_os(CHILD_ROOT) {
             install(Path::new(&root));
-            // Windows holds the restart registration; read its command line back.
+            // Windows holds the restart registration; read its command line and flags back.
             let mut line = [0u16; 64];
             let mut len = line.len() as u32;
+            let mut flags = 0;
             // SAFETY: `line` holds `len` UTF-16 units, the most the call writes.
             unsafe {
                 GetApplicationRestartSettings(
                     GetCurrentProcess(),
                     Some(PWSTR(line.as_mut_ptr())),
                     &mut len,
-                    None,
+                    Some(&mut flags),
                 )
             }
             .unwrap();
             let registered = String::from_utf16_lossy(&line[..len as usize - 1]);
             assert_eq!(registered, "--hidden --after-crash");
+            assert_eq!(flags, (RESTART_NO_PATCH | RESTART_NO_REBOOT).0);
             assert!(catching(|| panic!("planted caught panic")).is_err());
             // Another thread's panic unwinds that thread only (review F1); tokio contains its tasks' panics this way.
             assert!(
