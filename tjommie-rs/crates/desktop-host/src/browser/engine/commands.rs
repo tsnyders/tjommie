@@ -293,6 +293,36 @@ impl Engine {
         }
     }
 
+    /// The daemon restarted (a new port and host token). Its connections are gone with it, and so is every remote
+    /// controller's hold on a browser: the daemon never got to send their `disconnect` jobs, and the new daemon names
+    /// its connections afresh. Each such hold is handed back to the bot, the old controllers' late commands are
+    /// refused, and every ticket and frame from before the restart goes stale. The person's own hold is kept.
+    pub async fn daemon_restarted(self: &Rc<Self>) {
+        let now = self.now();
+        for life in self.controllers.borrow_mut().values_mut() {
+            life.closed = true;
+            life.expires = Some(now + CONTROLLER_MEMORY);
+        }
+        let bots: Vec<Rc<Bot>> = self.bots.borrow().values().cloned().collect();
+        for bot in bots {
+            if !bot.state.borrow().open {
+                continue;
+            }
+            let owner = bot.state.borrow().access.owner().map(str::to_string);
+            if let Some(owner) = owner.filter(|owner| owner != LOCAL) {
+                let identity = bot.identity.clone();
+                if let Err(error) = self
+                    .control(&identity, BrowserControl::Bot, &owner, false, None)
+                    .await
+                {
+                    self.notice(&bot, &format!("Browser handback failed: {error}"));
+                }
+            }
+            bot.state.borrow_mut().access.changed_page();
+            self.changed(&bot);
+        }
+    }
+
     /// A bot whose browser is on, as the daemon lists it: it may open.
     pub fn allow_bot(&self, id: &str) {
         self.disabled.borrow_mut().remove(id);

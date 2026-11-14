@@ -126,6 +126,7 @@ fn e2e_daemon_restart_with_panel_open() {
     let identities: std::collections::HashMap<&str, BotIdentity> = [
         ("alpha", Daemon::identity(&rig, "alpha")),
         ("beta", Daemon::identity(&rig, "beta")),
+        ("gamma", Daemon::identity(&rig, "gamma")),
     ]
     .into_iter()
     .collect();
@@ -167,6 +168,36 @@ fn e2e_daemon_restart_with_panel_open() {
     assert_eq!(held["control"], "human");
     let generation = held["generation"].clone();
 
+    // A phone holds gamma's browser, under the id the old daemon gave its connection; the bot's tools wait for it.
+    finish(
+        &mut rig,
+        &runtime,
+        request(&first, "gamma", json!({ "kind": "open" })),
+    )
+    .expect("open gamma");
+    let phone = |action: Value| json!({ "kind": "remote", "controllerId": "rpc:old-phone", "action": action });
+    let taken = finish(
+        &mut rig,
+        &runtime,
+        request(
+            &first,
+            "gamma",
+            phone(json!({ "kind": "control", "control": "human" })),
+        ),
+    )
+    .expect("the phone takes control");
+    assert_eq!(taken["control"], "human");
+    let (engine, gamma) = (rig.engine.clone(), rig.bot("gamma"));
+    let refused = rig
+        .ui
+        .run(async move { engine.resize(&gamma, 800, 600, None).await });
+    assert_eq!(
+        refused
+            .expect_err("the bot waits for the person")
+            .to_string(),
+        "The person is controlling this browser. Wait until they return control."
+    );
+
     // The daemon restarts: its server and broker go away.
     first.broker.close();
     let old_token = first.token.clone();
@@ -205,6 +236,16 @@ fn e2e_daemon_restart_with_panel_open() {
         "the same browser session"
     );
 
+    // The old daemon's connections are gone with it, and so are their holds on browsers: no `disconnect` job will
+    // ever come for the phone, so the engine hands its browser back itself.
+    let engine = rig.engine.clone();
+    rig.ui.run(async move { engine.daemon_restarted().await });
+    assert_eq!(
+        rig.state("gamma").control,
+        protocol::browser::BrowserControl::Bot,
+        "the phone's hold is gone"
+    );
+
     // The new daemon has another port and another token; the bridge reconnects to it, and the same engine serves it.
     let second = runtime.block_on(Daemon::start('b'));
     assert_ne!(second.token, old_token);
@@ -234,6 +275,40 @@ fn e2e_daemon_restart_with_panel_open() {
         "the new daemon sees the same live browser"
     );
     assert_eq!(state["control"], "human");
+    // The old phone's late commands are refused; the person can take gamma's browser; the bot's tools work again.
+    let late = finish(
+        &mut rig,
+        &runtime,
+        request(&second, "gamma", phone(json!({ "kind": "state" }))),
+    )
+    .expect_err("a gone controller");
+    assert_eq!(late, "This browser controller disconnected.");
+    let person = finish(
+        &mut rig,
+        &runtime,
+        request(
+            &second,
+            "gamma",
+            json!({ "kind": "control", "control": "human" }),
+        ),
+    )
+    .expect("the person takes control");
+    assert_eq!(person["control"], "human");
+    let back = finish(
+        &mut rig,
+        &runtime,
+        request(
+            &second,
+            "gamma",
+            json!({ "kind": "control", "control": "bot" }),
+        ),
+    )
+    .expect("and hands it back");
+    assert_eq!(back["control"], "bot");
+    let (engine, gamma) = (rig.engine.clone(), rig.bot("gamma"));
+    rig.ui
+        .run(async move { engine.resize(&gamma, 800, 600, None).await })
+        .expect("the bot's tools work without reopening");
     // The deleted bot's browser stays off, whoever asks.
     let refused = finish(
         &mut rig,
