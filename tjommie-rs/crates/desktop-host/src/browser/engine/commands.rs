@@ -192,7 +192,7 @@ impl Engine {
         });
     }
 
-    fn check_generation(&self, bot: &Bot, generation: &str) -> Result<(), EngineError> {
+    pub(super) fn check_generation(&self, bot: &Bot, generation: &str) -> Result<(), EngineError> {
         if bot.state.borrow().generation == generation {
             Ok(())
         } else {

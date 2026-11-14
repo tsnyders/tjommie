@@ -9,3 +9,4 @@ pub mod log;
 pub mod owner_safety;
 pub mod shell;
 pub mod spawn;
+pub mod vault;

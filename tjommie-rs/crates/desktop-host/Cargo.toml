@@ -17,7 +17,9 @@ protocol = { version = "0.5.0", path = "../protocol" }
 # The tools' search patterns (`browser_find`, `browser_network_requests`).
 regex = "1.13.1"
 reqwest = { version = "0.12.28", default-features = false }
-serde = { version = "1.0.229", features = ["derive"] }
+# The login vault's records (`data/logins.sqlite`): the same bundled SQLite the daemon uses.
+rusqlite = { version = "0.41.1", features = ["bundled"] }
+serde ={ version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sha2 = "0.10.9"
 # owner_safety::test_root: a disposable folder under %TEMP% for tests.
@@ -31,6 +33,7 @@ windows = { version = "0.62.2", features = [
   "Win32_Foundation",
   "Win32_Graphics_Gdi",
   "Win32_Security",
+  "Win32_Security_Credentials",
   "Win32_System_Com",
   "Win32_System_Com_StructuredStorage",
   "Win32_System_LibraryLoader",
@@ -39,6 +42,8 @@ windows = { version = "0.62.2", features = [
   "Win32_UI_Input_KeyboardAndMouse",
   "Win32_UI_WindowsAndMessaging",
 ] }
+# Secrets of the login vault are wiped from memory after they are written or filled.
+zeroize = { version = "1.8", features = ["serde"] }
 
 [dev-dependencies]
 # The real broker and server the bridge is tested against (the daemon's own, in-process, on loopback).

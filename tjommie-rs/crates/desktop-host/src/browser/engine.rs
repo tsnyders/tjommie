@@ -47,11 +47,13 @@ mod commands;
 mod events;
 mod input;
 mod stream;
+mod vault;
 
 pub use automation::{AutomationSession, ToolView};
 pub use commands::{Actor, BotEvent, Check, LOCAL, Reply};
 pub use events::{HostEvent, Notification};
 pub use input::{Shield, png_size};
+pub use vault::VaultFinish;
 
 /// Where a page that a tool or a stream keeps awake sits while no panel shows it: outside the window's client
 /// area, still "visible" to WebView2 (hiding it would stop it rendering).
@@ -301,6 +303,8 @@ struct BotState {
     stream: stream::StreamState,
     /// Numbers the frames of a bot's browser, live or asked for, so a watcher can order them.
     frame_sequence: u64,
+    /// The private login interaction in progress, if any (the vault's fill).
+    login: Option<vault::LoginState>,
 }
 
 struct Bot {
@@ -658,6 +662,7 @@ impl Engine {
                 dialog: None,
                 stream: stream::StreamState::default(),
                 frame_sequence: 0,
+                login: None,
             }),
             open_lock: AsyncMutex::new(()),
             queue: Arc::new(QueueMutex::new(())),

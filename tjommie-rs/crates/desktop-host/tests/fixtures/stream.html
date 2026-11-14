@@ -15,6 +15,8 @@
   let n = 0;
   window.ticks = 0;
   (function tick() {
+    // Re-armed first: a script that is terminated mid-frame (a private interaction does that) must not end the animation.
+    requestAnimationFrame(tick);
     n += 1;
     window.ticks = n;
     g.fillStyle = `hsl(${(n * 3) % 360} 70% 45%)`;
@@ -23,6 +25,5 @@
     g.font = "64px monospace";
     g.fillText(String(n), 40, 100);
     g.fillRect((n * 7) % 1200, 300, 80, 80);
-    requestAnimationFrame(tick);
   })();
 </script>

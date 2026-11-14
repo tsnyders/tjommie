@@ -225,6 +225,23 @@ fn e2e_daemon_restart_with_panel_open() {
         rig.engine.snapshot("beta").is_none(),
         "a deleted bot's browser closes"
     );
+    // A menu opens over the page while the daemon is down: the shield is the desktop's own and needs no daemon, so it
+    // takes its picture and hides the page's window all the same, and lowering it brings the live page back.
+    let engine = rig.engine.clone();
+    let shield = rig
+        .ui
+        .run(async move { engine.raise_shield("alpha").await });
+    assert!(
+        desktop_host::browser::engine::png_size(&shield.png).is_some(),
+        "a picture of the page was taken without a daemon"
+    );
+    assert!(
+        rig.engine
+            .snapshot("alpha")
+            .is_some_and(|s| !s.container_shown),
+        "and the page's window is behind the shield"
+    );
+    rig.engine.lower_shield("alpha");
     let still = rig.engine.snapshot("alpha").expect("alpha is still open");
     assert!(
         still.open && still.visible,
