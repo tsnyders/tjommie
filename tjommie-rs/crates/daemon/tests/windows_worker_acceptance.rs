@@ -785,7 +785,14 @@ async fn admin_acceptance_checks_two_real_worker_identities() {
             },
         )
         .await;
-        assert!(failed.is_err(), "{failed:?}");
+        // Exactly the failure the mocked CLI check raises, which is only reached after both identities launched, the
+        // peer fixture came up and the denial probe ran and proved all nine facts. Any other error (a termination, a
+        // refused launch, a failed probe) means the real path did not get that far, and its text says where it stopped.
+        assert_eq!(
+            failed,
+            Err("a CLI could not start".to_string()),
+            "step 1 did not fail at the mocked CLI check, so the probes did not all run"
+        );
         assert_eq!(
             receipts_present(),
             [false, false],

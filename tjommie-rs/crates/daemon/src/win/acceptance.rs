@@ -19,6 +19,7 @@ use crate::cli::{
 };
 use crate::startup::{StartupError, install_workers};
 use crate::win::boundary::{BoundaryError, WindowsNative, WorkerBoundary, WorkerNative};
+use crate::win::diag;
 use crate::win::worker::{Purpose, WorkerConfiguration};
 use crate::win::{cred, logon};
 use protocol::model::Provider;
@@ -541,25 +542,75 @@ impl Held {
     /// `finally { child.stdin.end(); await retired(child); }`.
     async fn release(mut self) -> Result<(), Failure> {
         drop(self.stdin.take());
-        let stopped = retired(self.retirement.take(), &self.kill_tree).await;
+        let stopped = retired("peer fixture", self.retirement.take(), &self.kill_tree).await;
         self.drain.abort();
         stopped
     }
 }
 
 /// `retired`: the tree's stop must be confirmed, in time, or it is a `Termination`.
-async fn retired(retirement: Option<Retirement>, kill_tree: &KillTree) -> Result<(), Failure> {
+async fn retired(
+    label: &str,
+    retirement: Option<Retirement>,
+    kill_tree: &KillTree,
+) -> Result<(), Failure> {
     let Some(proof) = retirement else {
+        diag::problem(format!(
+            "{label}: TERMINATION: the launched process has no stop proof to wait for"
+        ));
         return Err(Failure::Termination);
     };
+    let began = std::time::Instant::now();
     match tokio::time::timeout(RETIREMENT, proof).await {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(_)) => Err(Failure::Termination),
+        Ok(Ok(())) => {
+            diag::note(format!(
+                "{label}: the tree's stop was confirmed after {}ms",
+                began.elapsed().as_millis()
+            ));
+            Ok(())
+        }
+        Ok(Err(message)) => {
+            diag::problem(format!(
+                "{label}: TERMINATION: the stop proof failed after {}ms ({message}); the `retire of worker process` line above says what the job still held",
+                began.elapsed().as_millis()
+            ));
+            Err(Failure::Termination)
+        }
         Err(_) => {
-            let _ = kill_tree().await;
+            diag::problem(format!(
+                "{label}: TERMINATION: no stop proof within {}s; stopping the tree by force",
+                RETIREMENT.as_secs()
+            ));
+            let forced = kill_tree().await;
+            diag::problem(format!("{label}: the forced stop gave {forced:?}"));
             Err(Failure::Termination)
         }
     }
+}
+
+/// What a pipe printed (the first 2 KB of it), kept for the diagnosis while the rest is dropped as before.
+type Tail = Arc<Mutex<Vec<u8>>>;
+
+fn keep_tail(mut pipe: Box<dyn AsyncRead + Send + Unpin>) -> (Tail, tokio::task::JoinHandle<()>) {
+    let tail = Tail::default();
+    let kept = tail.clone();
+    let task = tokio::spawn(async move {
+        let mut chunk = [0u8; 512];
+        while let Ok(count) = pipe.read(&mut chunk).await {
+            if count == 0 {
+                break;
+            }
+            let mut kept = kept.lock().unwrap_or_else(PoisonError::into_inner);
+            if kept.len() < 2048 {
+                kept.extend_from_slice(&chunk[..count]);
+            }
+        }
+    });
+    (tail, task)
+}
+
+fn tail_text(tail: &Tail) -> String {
+    diag::excerpt(&tail.lock().unwrap_or_else(PoisonError::into_inner), 600)
 }
 
 /// Reads the fixture's `ready` line.
@@ -586,16 +637,15 @@ async fn collect(child: CliChild) -> Result<String, Failure> {
     let CliChild {
         stdin,
         mut stdout,
-        mut stderr,
+        stderr,
         exit,
         kill_tree,
         retirement,
-        ..
+        pid,
     } = child;
     drop(stdin);
-    let drain = tokio::spawn(async move {
-        let _ = tokio::io::copy(&mut stderr, &mut tokio::io::sink()).await;
-    });
+    let began = std::time::Instant::now();
+    let (stderr_tail, drain) = keep_tail(stderr);
     let reading = tokio::time::timeout(PROBE, async {
         let (mut bytes, mut chunk) = (Vec::new(), [0u8; 1024]);
         loop {
@@ -612,22 +662,54 @@ async fn collect(child: CliChild) -> Result<String, Failure> {
     .await;
     let result = match reading {
         Err(_) => {
-            let _ = kill_tree().await;
+            diag::problem(format!(
+                "probe (process {pid:?}): TERMINATION: no result within {}s; stopping the tree by force. stderr: {}",
+                PROBE.as_secs(),
+                tail_text(&stderr_tail)
+            ));
+            let forced = kill_tree().await;
+            diag::problem(format!("probe: the forced stop gave {forced:?}"));
             Err(Failure::Termination)
         }
-        Ok(None) => match kill_tree().await {
-            Ok(()) => Err(check(PROBE_FAILED)),
-            Err(_) => Err(Failure::Termination),
-        },
-        Ok(Some((bytes, status))) => match retired(retirement, &kill_tree).await {
-            Err(failure) => Err(failure),
-            Ok(()) => match status {
-                CliExit::Exited { code: Some(0), .. } => {
-                    Ok(String::from_utf8_lossy(&bytes).into_owned())
+        Ok(None) => {
+            diag::problem(format!(
+                "probe (process {pid:?}): printed more than {PROBE_OUTPUT_LIMIT} bytes; stopping the tree. stderr: {}",
+                tail_text(&stderr_tail)
+            ));
+            match kill_tree().await {
+                Ok(()) => Err(check(PROBE_FAILED)),
+                Err(message) => {
+                    diag::problem(format!(
+                        "probe: TERMINATION: the stop after too much output was not confirmed ({message})"
+                    ));
+                    Err(Failure::Termination)
                 }
-                _ => Err(check(PROBE_FAILED)),
-            },
-        },
+            }
+        }
+        Ok(Some((bytes, status))) => {
+            diag::note(format!(
+                "probe (process {pid:?}): exited {status:?} after {}ms, printing {}; stderr: {}",
+                began.elapsed().as_millis(),
+                diag::excerpt(&bytes, 400),
+                tail_text(&stderr_tail)
+            ));
+            match retired("probe", retirement, &kill_tree).await {
+                Err(failure) => Err(failure),
+                Ok(()) => match status {
+                    CliExit::Exited { code: Some(0), .. } => {
+                        Ok(String::from_utf8_lossy(&bytes).into_owned())
+                    }
+                    other => {
+                        diag::problem(format!(
+                            "probe: it did not exit 0 ({other:?}); output: {}; stderr: {}",
+                            diag::excerpt(&bytes, 400),
+                            tail_text(&stderr_tail)
+                        ));
+                        Err(check(PROBE_FAILED))
+                    }
+                },
+            }
+        }
     };
     drain.abort();
     result
@@ -711,29 +793,55 @@ impl WindowsSteps {
             pid,
             stdin,
             mut stdout,
-            mut stderr,
+            stderr,
             kill_tree,
             retirement,
             ..
         } = child;
-        // Nothing the fixture prints after `ready` is wanted, but an unread pipe must not stall it.
+        let began = std::time::Instant::now();
+        diag::note(format!(
+            "peer fixture ({}): process {pid:?} started; waiting for it to say ready",
+            peer.as_str()
+        ));
+        // Nothing the fixture prints after `ready` is wanted, but an unread pipe must not stall it. Its first bytes of
+        // stderr (PowerShell's own errors, if it has any) are kept for the diagnosis.
+        let (stderr_tail, stderr_task) = keep_tail(stderr);
         let (ready, rest) = tokio::sync::oneshot::channel();
         let drain = tokio::spawn(async move {
             let _ = ready.send(read_ready(&mut stdout).await);
-            let (mut sink_out, mut sink_err) = (tokio::io::sink(), tokio::io::sink());
-            let _ = tokio::join!(
-                tokio::io::copy(&mut stdout, &mut sink_out),
-                tokio::io::copy(&mut stderr, &mut sink_err)
-            );
+            let mut sink_out = tokio::io::sink();
+            let _ = tokio::io::copy(&mut stdout, &mut sink_out).await;
+            let _ = stderr_task.await;
         });
         let waited = match tokio::time::timeout(READY, rest).await {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => Err(check("The peer fixture closed before ready.")),
             Err(_) => {
-                let _ = kill_tree().await;
+                diag::problem(format!(
+                    "peer fixture ({}): TERMINATION: it did not say ready within {}s; stopping it by force. stderr: {}",
+                    peer.as_str(),
+                    READY.as_secs(),
+                    tail_text(&stderr_tail)
+                ));
+                let forced = kill_tree().await;
+                diag::problem(format!("peer fixture: the forced stop gave {forced:?}"));
                 Err(Failure::Termination)
             }
         };
+        match &waited {
+            Ok(()) => diag::note(format!(
+                "peer fixture ({}): ready after {}ms",
+                peer.as_str(),
+                began.elapsed().as_millis()
+            )),
+            Err(Failure::Check(message)) => diag::problem(format!(
+                "peer fixture ({}): {message} after {}ms; stderr: {}",
+                peer.as_str(),
+                began.elapsed().as_millis(),
+                tail_text(&stderr_tail)
+            )),
+            Err(Failure::Termination) => {}
+        }
         // `peer.receipts().find(wrapperPid === child.pid)`: a process the boundary has no receipt for is one it cannot
         // account for.
         let accounted = pid.filter(|pid| {
@@ -753,7 +861,13 @@ impl WindowsSteps {
         let problem = match (waited, accounted) {
             (Ok(()), Some(_)) => return Ok(held),
             (Err(failure), _) => failure,
-            (Ok(()), None) => Failure::Termination,
+            (Ok(()), None) => {
+                diag::problem(format!(
+                    "peer fixture: TERMINATION: process {pid:?} has no receipt in the {} boundary, so it cannot be accounted for",
+                    peer.as_str()
+                ));
+                Failure::Termination
+            }
         };
         // Whatever went wrong, the fixture is stopped and confirmed gone before anything else happens.
         held.release().await?;
@@ -780,6 +894,10 @@ impl WindowsSteps {
             "write": scratch.join("write.txt").to_string_lossy(),
         });
         let node = config.runtime_root.join("node.exe");
+        diag::note(format!(
+            "probe ({}): starting it against the live peer fixture (process {peer_pid})",
+            active.as_str()
+        ));
         let child = boundary
             .spawn(
                 &node.to_string_lossy(),
@@ -788,7 +906,20 @@ impl WindowsSteps {
                 &[],
             )
             .await?;
-        let denials = Denials::parse(&collect(child).await?)?;
+        let report = collect(child).await?;
+        let denials = Denials::parse(&report).inspect_err(|_| {
+            diag::problem(format!(
+                "probe ({}): its output is not the nine expected booleans: {}",
+                active.as_str(),
+                diag::excerpt(report.as_bytes(), 400)
+            ));
+        })?;
+        diag::note(format!(
+            "probe ({}): reported {}; not proven: {:?}",
+            active.as_str(),
+            diag::excerpt(report.as_bytes(), 400),
+            denials.unproven()
+        ));
         // As in 0.4.2, where a false denial threw inside the round: an identity that has just shown it is not isolated
         // is not asked to start either CLI.
         not_held(active, &denials.unproven())?;
@@ -808,12 +939,18 @@ impl Steps for WindowsSteps {
             // The daemon's own readiness check, run here so a refusal says why (a restart is due, a provider CLI is
             // running, a runtime file is writable) instead of the boundary's one fixed sentence.
             for config in [&self.provider_config, &self.review_config] {
+                let began = std::time::Instant::now();
                 self.native.verify(config, &[]).await.map_err(|reason| {
                     check(format!(
                         "The {} worker is not ready to be checked: {reason}",
                         config.purpose.as_str()
                     ))
                 })?;
+                diag::note(format!(
+                    "prepare: the {} identity passed the readiness check in {}ms",
+                    config.purpose.as_str(),
+                    began.elapsed().as_millis()
+                ));
             }
             for folder in &self.scratch {
                 std::fs::create_dir(folder).map_err(|error| {
@@ -834,6 +971,12 @@ impl Steps for WindowsSteps {
         Box::pin(async move {
             let verified = AtomicBool::new(false);
             let peer = active.peer();
+            let began = std::time::Instant::now();
+            diag::note(format!(
+                "round: the {} identity is proved against a live {} fixture",
+                active.as_str(),
+                peer.as_str()
+            ));
             let denials = self
                 .scoped(peer, &verified, async {
                     let held = self.hold(peer).await?;
@@ -847,7 +990,19 @@ impl Steps for WindowsSteps {
                     // A tree that cannot be confirmed stopped outranks whatever the check found.
                     held.release().await.and(proved)
                 })
-                .await?;
+                .await
+                .inspect_err(|failure| {
+                    diag::problem(format!(
+                        "round ({}): failed after {}ms with: {failure}",
+                        active.as_str(),
+                        began.elapsed().as_millis()
+                    ));
+                })?;
+            diag::note(format!(
+                "round ({}): finished in {}ms",
+                active.as_str(),
+                began.elapsed().as_millis()
+            ));
             Ok(Round {
                 denials,
                 claude_started: true,
@@ -895,6 +1050,20 @@ impl Steps for WindowsSteps {
                 .take();
         })
     }
+}
+
+/// A failure as text for the owner. The one sentence of a termination says nothing about its cause, so it carries what
+/// the worker launch path recorded (`win::diag`): the first cause, in order, with times. Other failures name their own
+/// cause already.
+fn explained(failure: Failure) -> String {
+    let text = failure.to_string();
+    if !text.contains(crate::cli::WORKER_TERMINATION) {
+        return text;
+    }
+    format!(
+        "{text}\n\nWhat the worker launch path recorded (the last 120 lines, oldest first; the first PROBLEM line is the cause, later ones follow from it):\n{}",
+        diag::recent(120).join("\n")
+    )
 }
 
 /// Runs the check for the install at `root` with the real Windows layer and CLIs. Returns what to tell the owner.
@@ -974,7 +1143,7 @@ pub async fn accept_with(
     };
     run(&steps, &provider_config, &review_config)
         .await
-        .map_err(|failure| failure.to_string())?;
+        .map_err(explained)?;
     Ok(format!(
         "Acceptance passed for the separate provider and review identities: denied owner and peer file, registry, process, credential and desktop access, permitted writes to their own folders, both CLI versions under both identities, and an unchanged review policy before and after. Wrote {} and {}. No model turn was run and no owner credential was read.",
         receipt_path(root, Purpose::Provider).display(),

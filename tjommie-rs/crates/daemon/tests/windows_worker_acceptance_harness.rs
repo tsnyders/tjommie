@@ -575,7 +575,25 @@ async fn a_worker_tree_that_cannot_be_confirmed_stopped_writes_no_receipt_and_ke
     let windows = Fake::new();
     windows.0.holder_unconfirmed.store(true, Ordering::SeqCst);
     let error = accept(&world, &windows, Ok(())).await.unwrap_err();
-    assert_eq!(error, daemon::cli::WORKER_TERMINATION);
+    // The fixed sentence stays first, so anything that matches on it still does; what follows is the evidence.
+    assert!(
+        error.starts_with(daemon::cli::WORKER_TERMINATION),
+        "{error}"
+    );
+    assert!(
+        error.contains("What the worker launch path recorded"),
+        "{error}"
+    );
+    // The first cause is on record under its route, so a termination can be diagnosed from its own log. (The record
+    // is shared by the tests running in parallel here, so it is read whole rather than from the error's tail.)
+    let recorded = daemon::win::diag::recent(3000);
+    assert!(
+        recorded
+            .iter()
+            .any(|line| line.contains("First cause: ROUTE 4")),
+        "no ROUTE 4 line among {} recorded",
+        recorded.len()
+    );
     assert_eq!(receipts_present(&world), [false, false]);
     // Kept for the owner to reconcile; the synthetic credential and the owner marker are still removed.
     assert_eq!(

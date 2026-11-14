@@ -4,6 +4,7 @@
 //! `TJOMMIE_RS_ADMIN_TESTS=1`.
 
 use crate::win::cred::{self, Namespace};
+use crate::win::diag;
 use crate::win::worker::{
     ADMINISTRATORS, BOOTSTRAP, FAILURE, MutexWait, Purpose, SYSTEM, WorkerConfiguration,
     assert_job_descriptor, assert_mutex_descriptor, assert_runtime_tree, command_line,
@@ -53,9 +54,10 @@ use windows::Win32::System::Diagnostics::ToolHelp::{
 };
 use windows::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, IsProcessInJob, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-    JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-    JobObjectBasicAccountingInformation, JobObjectExtendedLimitInformation,
-    QueryInformationJobObject, SetInformationJobObject, TerminateJobObject,
+    JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_BASIC_PROCESS_ID_LIST,
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectBasicAccountingInformation,
+    JobObjectBasicProcessIdList, JobObjectExtendedLimitInformation, QueryInformationJobObject,
+    SetInformationJobObject, TerminateJobObject,
 };
 use windows::Win32::System::Pipes::CreatePipe;
 use windows::Win32::System::Registry::{HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RegGetValueW};
@@ -93,6 +95,11 @@ pub(crate) fn wipe(secret: &mut str) {
 
 fn text(error: impl std::fmt::Display) -> String {
     error.to_string()
+}
+
+/// An error that says which Win32 call produced it (the error's own text carries the code).
+fn called(call: &str, error: impl std::fmt::Display) -> String {
+    format!("{call}: {error}")
 }
 
 fn wide(value: &str) -> Vec<u16> {
@@ -390,7 +397,11 @@ pub fn current_user_sid() -> Result<String, String> {
 /// groups: a worker whose token carries Administrators at all, even deny-only (a UAC-filtered admin), is refused.
 pub fn verify_token(process: HANDLE, worker_sid: &str) -> Result<(), String> {
     let token = process_token(process)?;
-    if token_user(token.0)? != worker_sid {
+    let user = token_user(token.0)?;
+    if user != worker_sid {
+        diag::problem(format!(
+            "verify_token: the process runs as {user}, not as the worker {worker_sid}"
+        ));
         return Err(FAILURE.into());
     }
     let groups = token_info(token.0, TokenGroups)?;
@@ -402,10 +413,14 @@ pub fn verify_token(process: HANDLE, worker_sid: &str) -> Result<(), String> {
     for group in groups {
         let sid = sid_string(group.Sid)?;
         if sid == ADMINISTRATORS || sid == SYSTEM {
+            diag::problem(format!(
+                "verify_token: the worker's token carries the group {sid}"
+            ));
             return Err(FAILURE.into());
         }
     }
     if elevated(token.0)? {
+        diag::problem("verify_token: the worker's token is elevated");
         return Err(FAILURE.into());
     }
     let privileges = token_info(token.0, TokenPrivileges)?;
@@ -421,6 +436,14 @@ pub fn verify_token(process: HANDLE, worker_sid: &str) -> Result<(), String> {
     {
         Ok(())
     } else {
+        let extra: Vec<u32> = privileges
+            .iter()
+            .filter(|p| p.Luid.HighPart != 0 || !ORDINARY_PRIVILEGES.contains(&p.Luid.LowPart))
+            .map(|p| p.Luid.LowPart)
+            .collect();
+        diag::problem(format!(
+            "verify_token: the worker's token holds privileges beyond the ordinary five (LUID low parts {extra:?})"
+        ));
         Err(FAILURE.into())
     }
 }
@@ -474,8 +497,8 @@ impl Job {
         Ok(job)
     }
 
-    /// How many processes are still in the job.
-    pub fn active(&self) -> Result<u32, String> {
+    /// The kernel's process counts for the job.
+    fn accounting(&self) -> Result<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, String> {
         let mut info = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
         // SAFETY: `info` is a live, correctly sized struct.
         unsafe {
@@ -488,22 +511,108 @@ impl Job {
             )
         }
         .map_err(text)?;
-        Ok(info.ActiveProcesses)
+        Ok(info)
+    }
+
+    /// How many processes are still in the job.
+    pub fn active(&self) -> Result<u32, String> {
+        Ok(self.accounting()?.ActiveProcesses)
+    }
+
+    /// The ids of the processes still in the job (the first 256).
+    pub fn members(&self) -> Result<Vec<u32>, String> {
+        const ROOM: usize = 256;
+        // The list is two u32 counts and then the ids as pointer-sized values; a u64 buffer keeps it aligned.
+        let mut buffer = vec![0u64; 1 + ROOM];
+        // SAFETY: the buffer is live, aligned and sized for the header and `ROOM` ids.
+        unsafe {
+            QueryInformationJobObject(
+                Some(self.0.0),
+                JobObjectBasicProcessIdList,
+                buffer.as_mut_ptr().cast(),
+                (buffer.len() * mem::size_of::<u64>()) as u32,
+                None,
+            )
+        }
+        .map_err(text)?;
+        // SAFETY: the call filled a JOBOBJECT_BASIC_PROCESS_ID_LIST followed by that many ids, within `buffer`.
+        let list = unsafe { &*(buffer.as_ptr() as *const JOBOBJECT_BASIC_PROCESS_ID_LIST) };
+        let count = (list.NumberOfProcessIdsInList as usize).min(ROOM);
+        // SAFETY: as above.
+        let ids = unsafe { std::slice::from_raw_parts(list.ProcessIdList.as_ptr(), count) };
+        Ok(ids.iter().map(|id| *id as u32).collect())
+    }
+
+    /// What the job holds, for a diagnostic line: `active=2 total=3 terminated=0 members=[node.exe(pid 10 ppid 4), ..]`.
+    pub fn describe(&self) -> String {
+        let counts = match self.accounting() {
+            Ok(info) => format!(
+                "active={} total={} terminated={}",
+                info.ActiveProcesses, info.TotalProcesses, info.TotalTerminatedProcesses
+            ),
+            Err(error) => format!("counts unavailable ({error})"),
+        };
+        let members = match self.members() {
+            Ok(ids) => process_names(&ids),
+            Err(error) => format!("unavailable ({error})"),
+        };
+        format!("{counts} members=[{members}]")
     }
 
     /// `StopJob` (`windows-worker.ps1:216-221`): kill everything with exit code 71 and confirm, within 5 s, that
     /// nothing is left. `false` means the tree could not be confirmed stopped.
     pub fn stop(&self) -> bool {
+        self.stop_reported().0
+    }
+
+    /// [`Job::stop`], and what it saw: the call that failed and its Win32 error, or the processes that survived.
+    pub fn stop_reported(&self) -> (bool, String) {
+        // Listed up front only when asked for: it walks the process table.
+        let before = diag::verbose().then(|| format!("job before the stop: {}", self.describe()));
+        let before = before
+            .as_deref()
+            .unwrap_or("job before the stop: not listed");
+        let started = Instant::now();
         // SAFETY: the job handle is valid while `self` lives.
-        if unsafe { TerminateJobObject(self.0.0, 71) }.is_err() {
-            return false;
+        if let Err(error) = unsafe { TerminateJobObject(self.0.0, 71) } {
+            return (
+                false,
+                format!("TerminateJobObject failed: {error}; {before}"),
+            );
         }
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = started + Duration::from_secs(5);
         loop {
             match self.active() {
-                Ok(0) => return true,
-                Ok(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
-                _ => return false,
+                Ok(0) => {
+                    return (
+                        true,
+                        format!(
+                            "empty {}ms after TerminateJobObject; {before}",
+                            started.elapsed().as_millis()
+                        ),
+                    );
+                }
+                Ok(_) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Ok(left) => {
+                    return (
+                        false,
+                        format!(
+                            "{left} process(es) still active {}ms after TerminateJobObject; {before}; job now: {}",
+                            started.elapsed().as_millis(),
+                            self.describe()
+                        ),
+                    );
+                }
+                Err(error) => {
+                    return (
+                        false,
+                        format!(
+                            "QueryInformationJobObject failed while waiting: {error}; {before}"
+                        ),
+                    );
+                }
             }
         }
     }
@@ -519,6 +628,45 @@ impl Job {
             Ok(member.as_bool())
         }
     }
+}
+
+/// `name(pid N ppid P)` for each of `ids`, from one snapshot of the process table; an id that has gone says so.
+fn process_names(ids: &[u32]) -> String {
+    // SAFETY: the snapshot is owned by the guard; the entry is a local, sized struct.
+    let snapshot = match unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) } {
+        Ok(handle) => Owned(handle),
+        Err(error) => return format!("process table unavailable ({error}); pids {ids:?}"),
+    };
+    let mut table = std::collections::HashMap::new();
+    let mut entry = PROCESSENTRY32W {
+        dwSize: mem::size_of::<PROCESSENTRY32W>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: as above.
+    let mut more = unsafe { Process32FirstW(snapshot.0, &mut entry) }.is_ok();
+    while more {
+        let length = entry
+            .szExeFile
+            .iter()
+            .position(|c| *c == 0)
+            .unwrap_or(entry.szExeFile.len());
+        table.insert(
+            entry.th32ProcessID,
+            (
+                String::from_utf16_lossy(&entry.szExeFile[..length]),
+                entry.th32ParentProcessID,
+            ),
+        );
+        // SAFETY: as above.
+        more = unsafe { Process32NextW(snapshot.0, &mut entry) }.is_ok();
+    }
+    ids.iter()
+        .map(|id| match table.get(id) {
+            Some((name, parent)) => format!("{name}(pid {id} ppid {parent})"),
+            None => format!("pid {id} (already gone)"),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// `CreateWindowStation` and `SetProcessWindowStation` act on the whole process; one worker at a time switches.
@@ -582,9 +730,11 @@ impl NativeWorker {
             unsafe {
                 worker.station =
                     CreateWindowStationW(&HSTRING::from(&station_name), 0, 0x37f, Some(&secured))
-                        .map_err(text)?;
-                let previous = GetProcessWindowStation().map_err(text)?;
-                SetProcessWindowStation(worker.station).map_err(text)?;
+                        .map_err(|error| called("CreateWindowStationW", error))?;
+                let previous = GetProcessWindowStation()
+                    .map_err(|error| called("GetProcessWindowStation", error))?;
+                SetProcessWindowStation(worker.station)
+                    .map_err(|error| called("SetProcessWindowStation", error))?;
                 let desktop = CreateDesktopW(
                     &HSTRING::from("default"),
                     PCWSTR::null(),
@@ -597,8 +747,8 @@ impl NativeWorker {
                 // launch rather than carry on from the worker's station.
                 SetProcessWindowStation(previous)
                     .or_else(|_| SetProcessWindowStation(previous))
-                    .map_err(text)?;
-                worker.desktop = desktop.map_err(text)?;
+                    .map_err(|error| called("SetProcessWindowStation (back)", error))?;
+                worker.desktop = desktop.map_err(|error| called("CreateDesktopW", error))?;
             }
         }
         let inheritable = SECURITY_ATTRIBUTES {
@@ -610,7 +760,8 @@ impl NativeWorker {
             let (mut read, mut write) = (HANDLE::default(), HANDLE::default());
             // SAFETY: both ends are owned by the returned guards; the daemon's end is made non-inheritable.
             unsafe {
-                CreatePipe(&mut read, &mut write, Some(&inheritable), 0).map_err(text)?;
+                CreatePipe(&mut read, &mut write, Some(&inheritable), 0)
+                    .map_err(|error| called("CreatePipe", error))?;
                 let (child, parent) = if child_reads {
                     (Owned(read), Owned(write))
                 } else {
@@ -639,6 +790,12 @@ impl NativeWorker {
         let mut secret = wide(password);
         let domain = std::env::var("COMPUTERNAME").map_err(|_| FAILURE.to_string())?;
         let mut info = PROCESS_INFORMATION::default();
+        diag::note(format!(
+            "CreateProcessWithLogonW as {user} (domain {domain}), program {file}, working folder {}, command line {} UTF-16 units",
+            cwd.display(),
+            line.len()
+        ));
+        let began = Instant::now();
         // SAFETY: every buffer outlives the call; the password copy is wiped right after it.
         let started = unsafe {
             CreateProcessWithLogonW(
@@ -656,6 +813,17 @@ impl NativeWorker {
             )
         };
         secret.fill(0);
+        match &started {
+            Ok(()) => diag::note(format!(
+                "CreateProcessWithLogonW returned after {}ms: process {}",
+                began.elapsed().as_millis(),
+                info.dwProcessId
+            )),
+            Err(error) => diag::problem(format!(
+                "CreateProcessWithLogonW as {user} failed after {}ms: {error}",
+                began.elapsed().as_millis()
+            )),
+        }
         started.map_err(text)?;
         worker.process = Owned(info.hProcess);
         worker.pid = info.dwProcessId;
@@ -1310,7 +1478,16 @@ impl ReviewLease {
     /// mutex is released. Returns whether everything was settled.
     pub fn finish(mut self, stopped: bool) -> bool {
         if self.marked && stopped {
-            self.marked = fs::remove_file(&self.marker).is_err();
+            self.marked = match fs::remove_file(&self.marker) {
+                Ok(()) => false,
+                Err(error) => {
+                    diag::problem(format!(
+                        "the review marker {} could not be removed although the tree stopped: {error}",
+                        self.marker.display()
+                    ));
+                    true
+                }
+            };
         }
         stopped && !self.marked
     }
@@ -1338,13 +1515,25 @@ impl WorkerProcess {
     /// Stops the tree and settles the review lease. `false` means the tree could not be confirmed stopped, and the
     /// caller must treat the identity as unsafe (`WorkerLaunchTerminationError`).
     pub fn retire(&self) -> bool {
-        let stopped = self.job.stop();
+        let (stopped, seen) = self.job.stop_reported();
         let lease = self
             .lease
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .take();
-        lease.map_or(stopped, |lease| lease.finish(stopped))
+        let reviewing = lease.is_some();
+        let settled = lease.map_or(stopped, |lease| lease.finish(stopped));
+        let line = format!(
+            "retire of worker process {}: job stopped={stopped}, review lease={}, settled={settled}; {seen}",
+            self.worker.pid(),
+            if reviewing { "held" } else { "none" }
+        );
+        if settled {
+            diag::note(line);
+        } else {
+            diag::problem(line);
+        }
+        settled
     }
 }
 
@@ -1352,12 +1541,20 @@ impl WorkerProcess {
 /// `runtime\node.exe` under the worker account, suspended, checks its token, binds it to a new
 /// `Global\TjommieWorkerJob-<purpose>-<uuid>` job and returns it. The caller writes `launch_frame` to stdin, then
 /// resumes it. On failure, `Err((message, stopped))` says whether anything that started was confirmed gone.
-pub(crate) fn launch(
+pub fn launch(
     config: &WorkerConfiguration,
     password: &str,
     cwd: &Path,
     environment: &[(String, String)],
 ) -> Result<WorkerProcess, (String, bool)> {
+    diag::note(format!(
+        "launch: {} identity {} ({}), working folder {}, {} environment entries",
+        config.purpose.as_str(),
+        config.worker_name,
+        config.worker_sid,
+        cwd.display(),
+        environment.len()
+    ));
     let bootstrap = config.runtime_root.join("node.exe");
     let file = bootstrap.to_str().ok_or((FAILURE.to_string(), true))?;
     let line =
@@ -1368,14 +1565,22 @@ pub(crate) fn launch(
     let block =
         environment_block(&worker_environment(config, environment).map_err(|error| (error, true))?);
     let mut lease = if config.purpose == Purpose::Review {
-        Some(ReviewLease::open(config).map_err(|error| (error, true))?)
+        Some(ReviewLease::open(config).map_err(|error| {
+            diag::problem(format!(
+                "launch: the review lease could not be taken: {error}"
+            ));
+            (error, true)
+        })?)
     } else {
         None
     };
     if let Some(lease) = lease.as_mut() {
-        lease
-            .mark(&config.worker_sid)
-            .map_err(|error| (error, true))?;
+        lease.mark(&config.worker_sid).map_err(|error| {
+            diag::problem(format!(
+                "launch: the review marker could not be written: {error}"
+            ));
+            (error, true)
+        })?;
     }
     let worker = match NativeWorker::start(
         &config.worker_name,
@@ -1391,26 +1596,46 @@ pub(crate) fn launch(
         Err(error) => {
             // Nothing started, so the marker can go.
             let settled = lease.is_none_or(|lease| lease.finish(true));
+            diag::problem(format!(
+                "launch: the worker did not start ({error}); nothing to stop, marker settled={settled}"
+            ));
             return Err((error, settled));
         }
     };
-    let bound = verify_token(worker.process(), &config.worker_sid).and_then(|()| {
-        let name = format!(
-            r"Global\TjommieWorkerJob-{}-{}",
-            config.purpose.as_str(),
-            random_uuid()?
-        );
-        Job::bind(worker.process(), Some(&name), &config.owner_sid)
-    });
+    let bound = verify_token(worker.process(), &config.worker_sid)
+        .map_err(|error| format!("token check: {error}"))
+        .and_then(|()| {
+            let name = format!(
+                r"Global\TjommieWorkerJob-{}-{}",
+                config.purpose.as_str(),
+                random_uuid()?
+            );
+            Job::bind(worker.process(), Some(&name), &config.owner_sid)
+                .map_err(|error| format!("Job::bind ({name}): {error}"))
+        });
     match bound {
-        Ok(job) => Ok(WorkerProcess {
-            worker,
-            job,
-            lease: Mutex::new(lease),
-        }),
+        Ok(job) => {
+            diag::note(format!(
+                "launch: process {} verified and bound to its job: {}",
+                worker.pid(),
+                job.describe()
+            ));
+            Ok(WorkerProcess {
+                worker,
+                job,
+                lease: Mutex::new(lease),
+            })
+        }
         Err(error) => {
             // Still suspended and in no job: kill it and wait, so the marker is only removed for a dead process.
-            let stopped = worker.kill().is_ok() && worker.wait().is_ok();
+            let killed = worker.kill();
+            // Only waited for once the kill succeeded: a process that was not killed would never be waited out.
+            let waited = killed.as_ref().ok().map(|()| worker.wait());
+            let stopped = killed.is_ok() && waited.as_ref().is_some_and(|waited| waited.is_ok());
+            diag::problem(format!(
+                "launch: process {} could not be verified or bound ({error}); TerminateProcess: {killed:?}; WaitForSingleObject: {waited:?}; confirmed stopped={stopped}",
+                worker.pid()
+            ));
             drop(worker);
             let settled = lease.map_or(stopped, |lease| lease.finish(stopped));
             Err((error, settled))
