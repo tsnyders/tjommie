@@ -613,3 +613,125 @@ async fn an_answer_the_daemon_refuses_as_too_large_is_not_counted_delivered_and_
     );
     bridge.close();
 }
+
+/// A daemon that hands out `jobs` jobs (one per GET, `unreadable` ones the host cannot parse) and never answers a POST:
+/// it reads the request and holds the connection open. Returns the port and how many POSTs arrived.
+async fn deaf_daemon(jobs: usize, unreadable: bool) -> (u16, Arc<AtomicUsize>) {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let (posts, handed) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+    let counted = posts.clone();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                return;
+            };
+            let (posts, handed) = (counted.clone(), handed.clone());
+            tokio::spawn(async move {
+                let mut chunk = [0u8; 8192];
+                let Ok(read) = stream.read(&mut chunk).await else {
+                    return;
+                };
+                let head = String::from_utf8_lossy(&chunk[..read]).into_owned();
+                if head.starts_with("POST") {
+                    posts.fetch_add(1, Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_secs(3600)).await; // never answers
+                    return;
+                }
+                // Jobs go to the normal lane only; the urgent lane (`?control=1`) just waits.
+                let reply = if !head.contains("control=1")
+                    && handed.fetch_add(1, Ordering::SeqCst) < jobs
+                {
+                    let command = if unreadable {
+                        json!({ "kind": "teleport" })
+                    } else {
+                        json!({ "kind": "state" })
+                    };
+                    let job = json!({ "id": uuid::Uuid::new_v4().to_string(), "bot": { "id": "one", "name": "One", "homeFolder": "C:/synthetic/one" }, "command": command }).to_string();
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{job}",
+                        job.len()
+                    )
+                } else {
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+                    "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        .to_string()
+                };
+                let _ = stream.write_all(reply.as_bytes()).await;
+            });
+        }
+    });
+    (port, posts)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn closing_the_bridge_is_prompt_even_while_an_answer_to_the_daemon_hangs() {
+    let (port, posts) = deaf_daemon(1, true).await;
+    let bridge = HostBridge::start(
+        BridgeConfig {
+            port,
+            token: secret('h'),
+        },
+        Arc::new(By(|_job: Job| Box::pin(async { Ok(Reply::empty()) }))),
+        Arc::new(|| {}),
+    )
+    .expect("bridge");
+    while posts.load(Ordering::SeqCst) == 0 {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    // The UI thread closes the bridge at shutdown: a daemon that never answers must not hold it there.
+    let (done, finished) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        bridge.close();
+        let _ = done.send(());
+    });
+    assert!(
+        finished.recv_timeout(Duration::from_secs(3)).is_ok(),
+        "close() was held by an unanswered POST"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_answer_the_daemon_never_takes_does_not_pin_a_lane_slot_for_good() {
+    let (port, posts) = deaf_daemon(5, false).await;
+    let ran = Arc::new(AtomicUsize::new(0));
+    let counted = ran.clone();
+    let bridge = HostBridge::start(
+        BridgeConfig {
+            port,
+            token: secret('h'),
+        },
+        Arc::new(By(move |_job: Job| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Ok(Reply::empty()) })
+        })),
+        Arc::new(|| {}),
+    )
+    .expect("bridge");
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert_eq!(
+        ran.load(Ordering::SeqCst),
+        4,
+        "four unanswered posts hold the four normal slots for now"
+    );
+    // After the answer timeout the slots free and the fifth job runs.
+    let deadline = Instant::now()
+        + desktop_host::browser::host_bridge::ANSWER_TIMEOUT
+        + Duration::from_secs(5);
+    while ran.load(Ordering::SeqCst) < 5 {
+        assert!(
+            Instant::now() < deadline,
+            "the slots were never freed ({} posts)",
+            posts.load(Ordering::SeqCst)
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        bridge.undelivered() >= 1,
+        "an answer that timed out is counted as undelivered"
+    );
+    bridge.close();
+}

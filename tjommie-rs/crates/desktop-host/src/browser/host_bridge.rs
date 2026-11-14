@@ -21,6 +21,9 @@ use super::engine::Reply;
 
 /// How many normal-lane jobs run at once; the urgent lane is separate so cancellation never waits behind them.
 const NORMAL_JOBS: usize = 4;
+/// How long a posted answer may wait for the daemon. Plenty on loopback; a daemon that takes the connection and never
+/// answers must not hold a lane slot for good.
+pub const ANSWER_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long a posted frame, or the end of a stream, may wait for the daemon's answer.
 const STREAM_POST_TIMEOUT: Duration = Duration::from_secs(2);
 const RETRY_AFTER_ERROR: Duration = Duration::from_secs(1);
@@ -143,7 +146,7 @@ impl Shared {
         let Ok(body) = serde_json::to_vec(&answer) else {
             return;
         };
-        match self.post(body, None).await {
+        match self.post(body, Some(ANSWER_TIMEOUT)).await {
             Ok(status) if status.is_success() => {}
             Ok(reqwest::StatusCode::PAYLOAD_TOO_LARGE) if result.is_ok() => {
                 // Too big for the daemon: it would wait out its timeout on a job nobody answers. Say so briefly.
@@ -156,12 +159,18 @@ impl Shared {
                     error: Some(TOO_LARGE.to_string()),
                 };
                 if let Ok(body) = serde_json::to_vec(&short) {
-                    let _ = self.post(body, None).await;
+                    let _ = self.post(body, Some(ANSWER_TIMEOUT)).await;
                 }
             }
             Ok(status) => {
                 // 404: the job was gone (it timed out at the daemon). Anything else is as unexpected. Not delivered.
                 log::warn!("the daemon refused a browser answer: {status}");
+                self.undelivered.fetch_add(1, Ordering::SeqCst);
+            }
+            Err(error) if error.is_timeout() => {
+                // The daemon took the connection and never answered: the job is not delivered, and its lane slot is
+                // free again.
+                log::warn!("the daemon did not take a browser answer in time");
                 self.undelivered.fetch_add(1, Ordering::SeqCst);
             }
             Err(_) => (self.on_error)(),
@@ -214,7 +223,10 @@ async fn lane(shared: Arc<Shared>, control: bool, mut stop: watch::Receiver<bool
                         id: String,
                     }
                     if let Ok(JustId { id }) = serde_json::from_slice(&bytes) {
-                        shared.answer(&id, Err(MISMATCH.to_string())).await;
+                        let answering = shared.clone();
+                        tokio::spawn(async move {
+                            answering.answer(&id, Err(MISMATCH.to_string())).await;
+                        });
                     }
                 }
             },
