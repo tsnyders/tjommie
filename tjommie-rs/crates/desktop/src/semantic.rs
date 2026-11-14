@@ -22,7 +22,12 @@ pub trait SemanticExt: InteractiveElement + Element {
 impl<E: InteractiveElement + Element> SemanticExt for E {
     fn semantic(self, id: impl Into<SharedString>, role: Role) -> Semantic<Stateful<E>> {
         let id: SharedString = id.into();
-        let element = self.id(id.clone()).accessibility_id(id.clone()).role(role);
+        // View tests find the element by its id (`VisualTestContext::debug_bounds`); outside test builds, a no-op.
+        let element = self
+            .debug_selector(|| id.to_string())
+            .id(id.clone())
+            .accessibility_id(id.clone())
+            .role(role);
         #[cfg(feature = "test-driver")]
         let element = crate::test_driver::Observed::new(element, id);
         element

@@ -10,8 +10,8 @@ Location kinds: `(unit)` is a `#[cfg(test)]` module, `(view)` is a GPUI `TestApp
 |---|---|---|---|
 | `packages/ui/components/accounts/accounts.test.tsx` | `crates/desktop/src/ui/settings/accounts.rs` (view) | T5.5 | Accounts: sign-in, check, limits (row 6). |
 | `packages/ui/components/agents/cards.test.tsx` | `crates/desktop/src/ui/agents/cards.rs` (view) | T5.1 | Needs-you cards. |
-| `packages/ui/components/app-shell.test.tsx` | `crates/desktop/src/ui/shell/app_shell.rs` (view) | T2.1 | Also `shell::navigates_to_chat_from_recents` and `e2e_navigation`. |
-| `packages/ui/components/back-link.test.tsx` | `crates/desktop/src/ui/shell/back_link.rs` (view) | T2.1 | - |
+| `packages/ui/components/app-shell.test.tsx` | `crates/desktop/src/ui/shell/mod.rs` (view) | T2.1 | `shell::the_connection_screen_takes_the_main_columns_place`, `shell::navigates_to_chat_from_recents`, `e2e_navigation`; the status pill in `shell/connection.rs` (unit), `Connection::blocks` in `shell/data.rs` (unit). |
+| `packages/ui/components/back-link.test.tsx` | `n/a: phone only (the back link shows below 640 px; the desktop has the sidebar)` | - | Ruled in T2.1. |
 | `packages/ui/components/bot-form/identity.test.tsx` | `crates/desktop/src/ui/bots/identity.rs` (view) | T5.1 | Bot identity fields. |
 | `packages/ui/components/bot-form/phone.test.tsx` | `n/a: phone only (Phase 4, Android Compose)` | - | Bot form stacked for a phone screen. |
 | `packages/ui/components/chat/approval-card.test.tsx` | `crates/desktop/src/ui/chat/approval.rs` (view) | T4.2 | `approval::keyboard_snaps`, `approval::interrupt_undo_halfway`. |
@@ -36,7 +36,7 @@ Location kinds: `(unit)` is a `#[cfg(test)]` module, `(view)` is a GPUI `TestApp
 | `packages/ui/components/chat/right-panel.test.tsx` | `crates/desktop/src/ui/browser/right_panel.rs` (view) | T3.7 | - |
 | `packages/ui/components/chat/setup-banner.test.tsx` | `crates/desktop/src/ui/chat/setup_banner.rs` (view) | T4.1 | - |
 | `packages/ui/components/chat/sign-in-toast.test.tsx` | `crates/desktop/src/ui/chat/sign_in_toast.rs` (view) | T4.1 | - |
-| `packages/ui/components/connection-screen.test.tsx` | `crates/desktop/src/ui/shell/connection.rs` (view) | T2.1 | Connecting, failed with the reason, retry. |
+| `packages/ui/components/connection-screen.test.tsx` | `crates/desktop/src/ui/shell/connection.rs` (unit, view) | T2.1 | Every case but the phone's Pair again (Android only). |
 | `packages/ui/components/controls.test.tsx` | `crates/desktop/src/ui/primitives/controls.rs` (view) | T2.2 | Pill, IconButton, Toggle. |
 | `packages/ui/components/devices/devices.test.tsx` | `crates/desktop/src/ui/settings/devices.rs` (view) | T5.5 | Devices section (row 15). |
 | `packages/ui/components/devices/pairing.test.ts` | `crates/desktop/src/ui/settings/devices.rs` (unit) | T5.5 | Pair-code check and countdown; pure helpers. |
@@ -47,7 +47,7 @@ Location kinds: `(unit)` is a `#[cfg(test)]` module, `(view)` is a GPUI `TestApp
 | `packages/ui/components/general/desktop-app.test.tsx` | `crates/desktop/src/ui/settings/desktop_app.rs` (view) | T5.5 | Start at login and updates (row 19); the logic is in T6.3 and T6.4. |
 | `packages/ui/components/google/google-connection.test.tsx` | `crates/desktop/src/ui/settings/google.rs` (view) | T5.5 | Only the "not enabled" state (row 21). |
 | `packages/ui/components/host-gate.test.tsx` | `crates/desktop/src/ui/shell/host_switcher.rs` (view) | T2.1 | Gating when the window is on another PC. Its cases also touch T4.3, T5.1 and T5.5. |
-| `packages/ui/components/host-switcher.test.tsx` | `crates/desktop/src/ui/shell/host_switcher.rs` (view) | T2.1 | - |
+| `packages/ui/components/host-switcher.test.tsx` | `crates/desktop/src/ui/shell/sidebar.rs` (unit) | T2.1 | `hostRows`, `chooseHost` and the button; the phone's Switch PC pill and phone list are n/a. |
 | `packages/ui/components/mobile-connect.test.tsx` | `crates/desktop/src/ui/settings/devices.rs` (view) | T5.5 | Pairing QR, shown under Devices. |
 | `packages/ui/components/projects/project-workspace.test.tsx` | `crates/desktop/src/ui/projects/workspace.rs` (view) | T5.3 | - |
 | `packages/ui/components/projects/task-detail.test.tsx` | `crates/desktop/src/ui/projects/task_detail.rs` (view) | T5.3 | - |
@@ -65,7 +65,7 @@ Location kinds: `(unit)` is a `#[cfg(test)]` module, `(view)` is a GPUI `TestApp
 | `packages/ui/components/settings/save-report.test.ts` | `crates/desktop-host/src/diagnostics.rs` (unit) | T6.6 | Save through the system picker; cancel; size limit. |
 | `packages/ui/components/settings/settings-page.test.tsx` | `crates/desktop/src/ui/settings/mod.rs` (view) | T5.5 | Also `e2e_settings_sections`. |
 | `packages/ui/components/settings/voice-section.test.tsx` | `crates/desktop/src/ui/settings/voice.rs` (view) | T5.5 | Voice (row 14). |
-| `packages/ui/components/tab-bar.test.tsx` | `crates/desktop/src/ui/shell/tab_bar.rs` (view) | T2.1 | - |
+| `packages/ui/components/tab-bar.test.tsx` | `n/a: phone only (the floating tab bar; the desktop has the sidebar)` | - | Ruled in T2.1. |
 | `packages/ui/components/usage/provider-usage.test.tsx` | `crates/desktop/src/ui/settings/usage.rs` (view) | T5.5 | Usage and limit meter (row 7); also `e2e_usage_caps`. |
 | `packages/ui/components/usage/usage-section.test.tsx` | `crates/desktop/src/ui/settings/usage.rs` (view) | T5.5 | - |
 | `packages/ui/lib/accounts.test.ts` | `crates/desktop/src/model/accounts.rs` (unit) | T1.4 | - |
@@ -201,8 +201,8 @@ git ls-files ':(glob)packages/desktop/src/**/*.test.ts'                         
 
 | Section | Rows | Real tests | n/a rows | Owner run or never automated |
 |---|---|---|---|---|
-| packages/ui (112 files) | 112 | 1 | 15 | 1 |
+| packages/ui (112 files) | 112 | 1 | 17 | 1 |
 | packages/desktop/src (64 files) | 64 | 15 | 13 | 3 |
-| Total | 176 | 16 | 28 | 4 |
+| Total | 176 | 16 | 30 | 4 |
 
 Each path from both `git ls-files` lists appears in exactly one row (verified by script), and no other test path appears in either table. The 176 rows are 112 + 64. Of the 16 real tests, 4 are phone-only n/a rows, 4 are owner-run or never automated, and 8 are mapped to automated Rust tests. The desktop n/a rows include those 4 phone-only real tests.

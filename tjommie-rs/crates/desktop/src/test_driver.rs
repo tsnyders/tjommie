@@ -84,6 +84,7 @@ pub enum Request {
 pub enum Predicate {
     Exists,
     Focused,
+    Selected,
     Text(String),
 }
 
@@ -92,6 +93,7 @@ impl Predicate {
         match self {
             Predicate::Exists => true,
             Predicate::Focused => node.focused,
+            Predicate::Selected => node.selected,
             Predicate::Text(text) => node.text == *text,
         }
     }
@@ -143,6 +145,8 @@ pub struct UiNode {
     pub text: String,
     pub enabled: bool,
     pub focused: bool,
+    /// The selected row of a set, such as the sidebar's section or Recents row on show.
+    pub selected: bool,
     /// In window coordinates, logical px.
     pub bounds: UiBounds,
 }
@@ -404,6 +408,7 @@ impl<E: Element> Element for Observed<E> {
             role: role.map(|role| format!("{role:?}")).unwrap_or_default(),
             text: node.label().or(node.value()).unwrap_or_default().to_owned(),
             enabled: !node.is_disabled(),
+            selected: node.is_selected().unwrap_or(false),
             focused: self
                 .focus
                 .as_ref()

@@ -38,6 +38,7 @@ pub struct Pill {
     icon: Option<&'static str>,
     variant: PillVariant,
     small: bool,
+    tight: bool,
     on_press: Option<Handler>,
 }
 
@@ -49,6 +50,7 @@ impl Pill {
             icon: None,
             variant: PillVariant::Grey,
             small: false,
+            tight: false,
             on_press: None,
         }
     }
@@ -60,6 +62,12 @@ impl Pill {
 
     pub fn small(mut self) -> Self {
         self.small = true;
+        self
+    }
+
+    /// The full height with 16 px sides, as the sidebar's New agent pill has.
+    pub fn tight(mut self) -> Self {
+        self.tight = true;
         self
     }
 
@@ -101,6 +109,8 @@ impl RenderOnce for Pill {
         };
         let (height, pad) = if self.small {
             (32.0, theme.space.s16)
+        } else if self.tight {
+            (theme.size.control_desktop, theme.space.s16)
         } else {
             (theme.size.control_desktop, theme.space.s20)
         };
