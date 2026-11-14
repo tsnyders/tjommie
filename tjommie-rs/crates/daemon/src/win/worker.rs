@@ -50,7 +50,7 @@ impl Purpose {
             Self::Review => "review-worker.json",
         }
     }
-    fn acceptance_file(self) -> &'static str {
+    pub fn acceptance_file(self) -> &'static str {
         match self {
             Self::Provider => "worker-acceptance.json",
             Self::Review => "review-worker-acceptance.json",

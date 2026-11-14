@@ -35,7 +35,7 @@ use crate::server::{
 use crate::setup::Setup;
 use crate::turn_notices::turn_notice;
 use crate::win::acl::{ProtectedAccount, ProtectedPaths, Protection};
-use crate::win::boundary::{BoundaryOptions, WindowsNative, WorkerBoundary};
+use crate::win::boundary::{BoundaryOptions, WindowsNative, WorkerBoundary, WorkerNative};
 use crate::win::cred::Namespace;
 use crate::win::worker::Purpose;
 use crate::{accounts_store, bots, db, diagnostics, paths, settings};
@@ -458,10 +458,14 @@ struct Parts {
 /// launch path when provider isolation is set up. Returns the provider boundary, which `SystemCli` and M6 use even
 /// when isolation is off (a boundary that isn't required launches nothing), and the review boundary, which M5's
 /// reviews use the same way.
-fn install_workers(
+///
+/// `native` is the Windows layer: the daemon passes the real one, and the worker acceptance check builds the same pair
+/// through here so it exercises exactly what the daemon will install.
+pub(crate) fn install_workers(
     root: &Path,
     exe_dir: &Path,
     install: &Arc<WorkerInstall>,
+    native: &Arc<dyn WorkerNative>,
 ) -> Result<
     (
         WorkerBoundary,
@@ -477,7 +481,7 @@ fn install_workers(
             purpose,
             daemon_dir: exe_dir.to_path_buf(),
             exclusive: Arc::new(move || install.exclusive(kind)),
-            native: Arc::new(WindowsNative),
+            native: native.clone(),
             observer: None,
         })
     };
@@ -540,8 +544,9 @@ fn assemble(
 
     // How CLIs launch: inside the Windows worker when it is set up, else directly.
     let install = Arc::new(WorkerInstall::default());
+    let native: Arc<dyn WorkerNative> = Arc::new(WindowsNative);
     let (provider_worker, review_worker, workers) =
-        install_workers(&paths.root, &exe_dir, &install)?;
+        install_workers(&paths.root, &exe_dir, &install, &native)?;
     let cli =
         Arc::new(SystemCli::with_worker(Arc::new(provider_worker.clone())).reporting_to(install));
     let setup = Setup::new(cli.clone(), Arc::new(HttpsFetch::new().map_err(plain)?));
