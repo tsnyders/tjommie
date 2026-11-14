@@ -205,14 +205,20 @@ pub struct BotSnapshot {
 pub enum DeleteOutcome {
     /// The profile's folder is gone.
     Removed,
-    /// Its sign-in and storage are cleared, but Windows still holds some files: they go at the next start.
-    Locked,
+    /// The browser cleared its sign-in and storage, but Windows still holds some files of the folder: they go at
+    /// the next start.
+    ClearedButLocked,
+    /// Nothing could clear the profile and some of its files remain: its sign-in may still be there.
+    Remains,
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct PruneReport {
     pub removed: Vec<String>,
+    /// Cleared by the browser, but some files are held by Windows and go at the next start.
     pub locked: Vec<String>,
+    /// Could not be cleared, and some files remain.
+    pub remains: Vec<String>,
 }
 
 struct Tab {
@@ -1087,19 +1093,23 @@ impl Engine {
         id: &str,
         profile: &str,
     ) -> Result<DeleteOutcome, EngineError> {
-        // Fail closed: sign-in is cleared from the live profile first, so a folder that stays locked holds none.
-        let bot = self.bots.borrow().get(id).cloned();
-        if let Some(bot) = bot {
-            let webview = bot
-                .state
+        // Fail closed: sign-in is cleared by the browser first, so a folder that stays locked holds none. A bot with a
+        // page open clears through it; any other (idle-closed, or never opened this run) through a hidden page opened
+        // on its profile for the moment.
+        let live = self.bots.borrow().get(id).cloned().and_then(|bot| {
+            bot.state
                 .borrow()
                 .tabs
                 .first()
-                .map(|tab| tab.webview.clone());
-            if let Some(webview) = webview {
+                .map(|tab| tab.webview.clone())
+        });
+        let cleared = match live {
+            Some(webview) => {
                 com::clear_profile(&webview).await?;
+                true
             }
-        }
+            None => self.clear_unopened(profile).await?,
+        };
         self.close_bot(id).await?;
         let root = self.profile_root();
         for attempt in 0..UNLOCK_ATTEMPTS {
@@ -1110,7 +1120,35 @@ impl Engine {
                 (self.config.sleep)(UNLOCK_INTERVAL).await;
             }
         }
-        Ok(DeleteOutcome::Locked)
+        Ok(if cleared {
+            DeleteOutcome::ClearedButLocked
+        } else {
+            DeleteOutcome::Remains
+        })
+    }
+
+    /// Clears the sign-in and storage of a profile no page of ours has open, by opening it hidden for a moment.
+    /// `Ok(true)`: cleared. `Ok(false)`: there is nothing to clear it with (no browser has started this run) or no
+    /// folder to clear. An error means it could not be cleared, and the caller must not call it cleared.
+    async fn clear_unopened(&self, profile: &str) -> Result<bool, EngineError> {
+        let Some(environment) = self.environment.lock().await.clone() else {
+            return Ok(false);
+        };
+        if profiles::checked_profile(&self.profile_root(), profile)?.is_none() {
+            return Ok(false);
+        }
+        let controller = com::create_controller(&environment, self.config.parent, profile).await?;
+        // SAFETY: plain COM calls on the controller this function just created; it is closed before returning.
+        let cleared = async {
+            unsafe { controller.SetIsVisible(false)? };
+            let webview = unsafe { controller.CoreWebView2()? };
+            com::clear_profile(&webview).await?;
+            Ok::<(), EngineError>(())
+        }
+        .await;
+        // SAFETY: closing the controller created above.
+        let _ = unsafe { controller.Close() };
+        cleared.map(|()| true)
     }
 
     /// Removes profile folders whose bot no longer exists (those in `valid_ids` and the open ones are kept).
@@ -1132,11 +1170,12 @@ impl Engine {
                 continue;
             }
             self.deleting.borrow_mut().insert(hash.clone());
-            let removed = profiles::remove_profile(&self.profile_root(), &hash);
+            let outcome = self.prune_one(&hash).await;
             self.deleting.borrow_mut().remove(&hash);
-            match removed {
-                Ok(true) => report.removed.push(hash),
-                Ok(false) => report.locked.push(hash),
+            match outcome {
+                Ok(DeleteOutcome::Removed) => report.removed.push(hash),
+                Ok(DeleteOutcome::ClearedButLocked) => report.locked.push(hash),
+                Ok(DeleteOutcome::Remains) => report.remains.push(hash),
                 Err(error) => errors.push(error.to_string()),
             }
         }
@@ -1148,6 +1187,22 @@ impl Engine {
                 errors.join("; ")
             )))
         }
+    }
+
+    /// One orphaned profile: removed if it can be, and if Windows holds a file of it, cleared by a hidden page first.
+    async fn prune_one(&self, hash: &str) -> Result<DeleteOutcome, EngineError> {
+        let root = self.profile_root();
+        if profiles::remove_profile(&root, hash)? {
+            return Ok(DeleteOutcome::Removed);
+        }
+        let cleared = self.clear_unopened(hash).await?;
+        Ok(if profiles::remove_profile(&root, hash)? {
+            DeleteOutcome::Removed
+        } else if cleared {
+            DeleteOutcome::ClearedButLocked
+        } else {
+            DeleteOutcome::Remains
+        })
     }
 
     // ---- reading -------------------------------------------------------------------------------------------

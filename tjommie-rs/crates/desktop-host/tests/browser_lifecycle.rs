@@ -428,3 +428,97 @@ fn a_tool_arriving_while_a_suspend_is_in_flight_still_finds_the_page_awake() {
         guard.end();
     }
 }
+
+#[test]
+fn deleting_an_idle_closed_bots_profile_clears_it_even_when_a_file_stays_locked() {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    let mut rig = Rig::new();
+    rig.open("alpha");
+    rig.open("beta"); // keeps the browser process, and so the profile's files, alive after alpha closes
+    rig.load("alpha", "blank.html");
+    rig.eval(
+        "alpha",
+        "localStorage.setItem('secret', 'x'); document.cookie = 'session=1; path=/'; 'ok'",
+    );
+    // Alpha goes idle and its controller closes; the profile stays on disk.
+    rig.show("alpha");
+    rig.hide("alpha");
+    rig.clock
+        .set(rig.clock.get() + Duration::from_secs(11 * 60));
+    let (engine, now) = (rig.engine.clone(), rig.clock.get());
+    rig.ui.run(async move { engine.tick(now).await });
+    assert!(
+        !rig.engine.snapshot("alpha").expect("snapshot").open,
+        "alpha is idle-closed"
+    );
+    // One file in its folder stays locked, as a file Windows has not released would.
+    let hash = policy::profile_name("alpha").expect("hash");
+    let folder = rig.engine.profile_root().join(profiles::folder_name(&hash));
+    let locked = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .share_mode(0)
+        .open(folder.join("held-open.tmp"))
+        .expect("a locked file");
+    let (engine, id) = (rig.engine.clone(), "alpha".to_string());
+    let outcome = rig
+        .ui
+        .run(async move { engine.delete_profile(&id).await.expect("delete") });
+    assert_eq!(
+        outcome,
+        DeleteOutcome::ClearedButLocked,
+        "the folder could not be removed, and the outcome says exactly that"
+    );
+    drop(locked);
+    // What the person had signed in to is gone anyway: a new alpha starts with nothing.
+    rig.open("alpha");
+    rig.load("alpha", "blank.html");
+    assert_eq!(
+        rig.eval(
+            "alpha",
+            "String(localStorage.getItem('secret')) + '|' + document.cookie"
+        ),
+        "null|"
+    );
+}
+
+#[test]
+fn pruning_an_orphan_with_a_locked_file_clears_it_and_reports_what_remains() {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    let mut rig = Rig::new();
+    rig.open("gone");
+    rig.load("gone", "blank.html");
+    rig.eval("gone", "localStorage.setItem('secret', 'x'); 'ok'");
+    let engine = rig.engine.clone();
+    rig.ui
+        .run(async move { engine.close_bot("gone").await.expect("close") });
+    // Its bot no longer exists, and one file of its profile is held by Windows.
+    let hash = policy::profile_name("gone").expect("hash");
+    let folder = rig.engine.profile_root().join(profiles::folder_name(&hash));
+    let locked = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .share_mode(0)
+        .open(folder.join("held-open.tmp"))
+        .expect("a locked file");
+    let engine = rig.engine.clone();
+    let report = rig
+        .ui
+        .run(async move { engine.prune_profiles(&[]).await.expect("prune") });
+    assert_eq!(
+        report.locked,
+        vec![hash],
+        "cleared, but the folder is held: {report:?}"
+    );
+    assert!(report.removed.is_empty() && report.remains.is_empty());
+    drop(locked);
+    // A bot that comes back under the same id starts with nothing.
+    rig.open("gone");
+    rig.load("gone", "blank.html");
+    assert_eq!(
+        rig.eval("gone", "String(localStorage.getItem('secret'))"),
+        "null"
+    );
+}
