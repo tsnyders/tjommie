@@ -27,6 +27,7 @@ jobs:
       - run: npm ci
       - run: node scripts/protocol-manifest.ts --check
       - run: node scripts/browser-tools-manifest.ts --check
+      - run: node scripts/aegis-theme.ts --check
       - run: npm run typecheck
       - run: npm run lint
       - run: npm test
@@ -38,7 +39,8 @@ jobs:
 
   rust:
     runs-on: windows-latest
-    timeout-minutes: 45
+    # The desktop crates build GPUI (Phase 3), which more than doubles a cold build.
+    timeout-minutes: 90
     defaults:
       run:
         # Inside tjommie-rs so rustup applies rust-toolchain.toml.
@@ -58,6 +60,9 @@ jobs:
       - run: rustup toolchain install
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # The UI boundary rule (Phase 3 plan T0.4): every desktop UI handler's closure starts with guarded(.
+      - run: ./tools/check-guarded.ps1 -SelfTest
+      - run: ./tools/check-guarded.ps1
       # --no-fail-fast: one run shows every failing test binary, not only the first one cargo stops at.
       - run: cargo test --workspace --locked --no-fail-fast
         env:

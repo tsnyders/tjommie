@@ -9,6 +9,27 @@ rust-version = "1.97"
 license = "Apache-2.0"
 publish = false
 
+# The desktop pins (Phase 3 plan, "Pins and upgrades"), declared once. Upgrade only for a named reason (a bug we
+# hit, a security fix, a needed API), and gpui-kit with its matching gpui-pre in one PR; tests/pins.rs checks them.
+[workspace.dependencies]
+# GPUI itself: the exact Zed snapshot gpui-kit v0.9.1 is built against (crates.io `gpui-pre`).
+gpui = { package = "gpui-pre", version = "=0.3.12" }
+# gpui-component ships inside gpui-kit since 0.9; pinned to the v0.9.1 tag commit.
+gpui-kit = { git = "https://github.com/longbridge/gpui-kit", rev = "39ab849a93b5f15507b969164d49891db8d5b470" }
+webview2-com = "=0.39.1"
+
+# No panics at UI boundaries (Phase 3 plan T0.4): the desktop crates (client, desktop-host, desktop) opt in with
+# `[lints] workspace = true`; the daemon doesn't. clippy.toml allows the first four in tests.
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+indexing_slicing = "deny"
+panic = "deny"
+unreachable = "deny"
+todo = "deny"
+unimplemented = "deny"
+string_slice = "deny"
+
 # Keep debug builds small. The build PC runs several worktrees at once, and
 # full debug info filled the disk (about 8 GB per worktree). Line tables keep
 # file:line in backtraces for our own crates; dependencies get none.
@@ -17,3 +38,14 @@ debug = "line-tables-only"
 
 [profile.dev.package."*"]
 debug = false
+
+# The desktop crash log's backtraces keep file:line in release (Phase 3 plan T0.4); the PDB ships with the app in M8.
+# The daemon's release build stays R1's.
+[profile.release.package.desktop]
+debug = "line-tables-only"
+
+[profile.release.package.desktop-host]
+debug = "line-tables-only"
+
+[profile.release.package.client]
+debug = "line-tables-only"

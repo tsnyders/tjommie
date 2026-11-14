@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "theme": "light",
+  "textSize": "larger",
+  "density": "compact",
+  "hosts": [
+    {
+      "id": "5b0e2c8e-6f1a-4c55-9a43-2f0d7b1e9c01",
+      "name": "Desk PC",
+      "deviceId": "8d1f4c1e-2b7a-4e0b-b1d3-0a6c5e9f7a22",
+      "hostKey": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+      "lan": [
+        {
+          "host": "192.168.1.20",
+          "port": 47101
+        },
+        {
+          "host": "fe80::1",
+          "port": 47101
+        }
+      ],
+      "relay": "https://relay.example.workers.dev"
+    },
+    {
+      "id": "5b0e2c8e-6f1a-4c55-9a43-2f0d7b1e9c02",
+      "name": "Laptop",
+      "deviceId": null,
+      "hostKey": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",
+      "lan": [
+        {
+          "host": "192.168.1.20",
+          "port": 47101
+        }
+      ],
+      "relay": null
+    }
+  ],
+  "pending": [
+    {
+      "id": "5b0e2c8e-6f1a-4c55-9a43-2f0d7b1e9c03",
+      "name": "New PC",
+      "deviceId": null,
+      "hostKey": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM",
+      "lan": [
+        {
+          "host": "192.168.1.20",
+          "port": 47101
+        }
+      ],
+      "relay": null
+    }
+  ]
+}
