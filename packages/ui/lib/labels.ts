@@ -1,7 +1,7 @@
 import type { Autonomy, Bot, BotState } from "@tjommie/protocol";
 import { clock } from "./format";
 
-export const DELETED_BOT = "A deleted bot";
+export const DELETED_BOT = "A deleted agent";
 
 export function botName(bots: Pick<Bot, "id" | "name">[], id: string): string {
   return bots.find((bot) => bot.id === id)?.name ?? DELETED_BOT;

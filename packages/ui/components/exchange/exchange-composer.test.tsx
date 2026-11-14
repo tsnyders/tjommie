@@ -47,7 +47,7 @@ describe("ExchangeComposer's reply", () => {
   const html = (names: string[]): string => renderToStaticMarkup(<ExchangeComposer exchangeId="synthetic-exchange" bots={names.map((name, index) => bot(`b${index + 1}`, name))} />);
 
   it("is posted in Everyone, and says so", () => {
-    expect(html(["Sales", "Marketing"])).toContain('placeholder="Ask both bots in Everyone"');
+    expect(html(["Sales", "Marketing"])).toContain('placeholder="Ask both agents in Everyone"');
     expect(html(["Sales"])).toContain('placeholder="Ask Sales in Everyone"');
     expect(html([])).toContain('placeholder="Reply in Everyone"');
     // Once a reply is posted, which a static render can't reach, it's linked to Everyone.

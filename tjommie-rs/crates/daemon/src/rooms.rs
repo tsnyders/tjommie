@@ -119,7 +119,7 @@ pub fn delete_room(db: &Connection, id: &str) -> Result<(), RpcError> {
     if answering.is_some() {
         return Err(RpcError::new(
             ErrorCode::Busy,
-            "This room has a bot still answering",
+            "This room has an agent still answering",
         ));
     }
     db.execute("DELETE FROM conversations WHERE id = ?1", [id])?;
@@ -170,7 +170,7 @@ fn set_members(db: &Connection, room_id: &str, bot_ids: &[String]) -> Result<(),
         if known.is_none() {
             return Err(RpcError::new(
                 ErrorCode::BadParams,
-                "Room member: no such bot",
+                "Room member: no such agent",
             ));
         }
     }

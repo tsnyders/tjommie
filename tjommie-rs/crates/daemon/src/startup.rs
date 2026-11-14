@@ -687,7 +687,7 @@ fn assemble(
         // the folder protection to be in place.
         setup_issue: Arc::new(move |bot| {
             if lock(&issue).contains(&bot.id) {
-                return Some("This bot is changing provider. Try again shortly.".to_owned());
+                return Some("This agent is changing provider. Try again shortly.".to_owned());
             }
             if bot.provider != Provider::Codex || bot.autonomy != Autonomy::Folder {
                 return None;

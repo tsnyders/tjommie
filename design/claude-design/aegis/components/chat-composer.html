@@ -420,19 +420,19 @@ a { color: inherit; text-decoration: none; cursor: pointer; }
 <main class="doc">
   <header class="doc-head">
     <h1>Composer</h1>
-    <p>A large white card pinned to the bottom of the chat. One row of round controls: attach, mention, the bot's provider, model and effort in a stone pill, dictate, and the near-black send. A hint above the field says what the bot is doing to your message.</p>
+    <p>A large white card pinned to the bottom of the chat. One row of round controls: attach, mention, the agent's provider, model and effort in a stone pill, dictate, and the near-black send. A hint above the field says what the agent is doing to your message.</p>
   </header>
 
   <div class="cols-2">
     <section class="doc-sec">
-      <h2>Idle, bot waiting for approval</h2>
+      <h2>Idle, agent waiting for approval</h2>
       <div class="board col">
         <div class="composer">
           <div class="hint"><span class="dot"></span>Forge is waiting for your approval</div>
           <div class="field">Message Forge</div>
           <div class="controls">
             <button class="icon-btn grey" aria-label="Attach files"><svg class="i" aria-hidden="true"><use href="#i-plus"/></svg></button>
-            <button class="icon-btn grey" aria-label="Mention a bot"><svg class="i" aria-hidden="true"><use href="#i-at-sign"/></svg></button>
+            <button class="icon-btn grey" aria-label="Mention an agent"><svg class="i" aria-hidden="true"><use href="#i-at-sign"/></svg></button>
             <span class="model">Codex <b>GPT-6 Sol</b> Max</span>
             <span class="grow"></span>
             <button class="icon-btn grey" aria-label="Dictate"><svg class="i" aria-hidden="true"><use href="#i-mic"/></svg></button>
@@ -442,27 +442,27 @@ a { color: inherit; text-decoration: none; cursor: pointer; }
         <span class="cap">Send stays dim until there is text. Enter sends, Shift+Enter adds a line.</span>
       </div>
 
-      <h2>Bot working: your message steers or queues</h2>
+      <h2>Agent working: your message steers or queues</h2>
       <div class="board col">
         <div class="composer">
           <div class="hint">Scout is working. Your message joins this turn, or queues if it can't.</div>
           <div class="field">Message Scout</div>
           <div class="controls">
             <button class="icon-btn grey" aria-label="Attach files"><svg class="i" aria-hidden="true"><use href="#i-plus"/></svg></button>
-            <button class="icon-btn grey" aria-label="Mention a bot"><svg class="i" aria-hidden="true"><use href="#i-at-sign"/></svg></button>
+            <button class="icon-btn grey" aria-label="Mention an agent"><svg class="i" aria-hidden="true"><use href="#i-at-sign"/></svg></button>
             <span class="model">Claude Code <b>Opus 5.5</b> High</span>
             <span class="grow"></span>
             <button class="icon-btn grey" aria-label="Dictate"><svg class="i" aria-hidden="true"><use href="#i-mic"/></svg></button>
             <button class="icon-btn dark" aria-label="Stop Scout"><svg class="i i-sm" aria-hidden="true"><use href="#i-square"/></svg></button>
           </div>
         </div>
-        <span class="cap">With the field empty the round button stops the turn. Stop takes a click; Enter never stops a bot.</span>
+        <span class="cap">With the field empty the round button stops the turn. Stop takes a click; Enter never stops an agent.</span>
         <div class="composer">
           <div class="hint">Scout is working. Your message joins this turn, or queues if it can't.</div>
           <div class="field typed">Check the dock API on the main branch, not the release notes.<span class="caret"></span></div>
           <div class="controls">
             <button class="icon-btn grey" aria-label="Attach files"><svg class="i" aria-hidden="true"><use href="#i-plus"/></svg></button>
-            <button class="icon-btn grey" aria-label="Mention a bot"><svg class="i" aria-hidden="true"><use href="#i-at-sign"/></svg></button>
+            <button class="icon-btn grey" aria-label="Mention an agent"><svg class="i" aria-hidden="true"><use href="#i-at-sign"/></svg></button>
             <span class="model">Claude Code <b>Opus 5.5</b> High</span>
             <span class="grow"></span>
             <button class="icon-btn grey" aria-label="Dictate"><svg class="i" aria-hidden="true"><use href="#i-mic"/></svg></button>
@@ -480,7 +480,7 @@ a { color: inherit; text-decoration: none; cursor: pointer; }
           <div class="field typed">Run cargo test again, then push if it<span class="caret"></span></div>
           <div class="controls">
             <button class="icon-btn grey" aria-label="Attach files"><svg class="i" aria-hidden="true"><use href="#i-plus"/></svg></button>
-            <button class="icon-btn grey" aria-label="Mention a bot"><svg class="i" aria-hidden="true"><use href="#i-at-sign"/></svg></button>
+            <button class="icon-btn grey" aria-label="Mention an agent"><svg class="i" aria-hidden="true"><use href="#i-at-sign"/></svg></button>
             <span class="model">Codex <b>GPT-6 Sol</b> Max</span>
             <span class="grow"></span>
             <button class="icon-btn on" aria-label="Stop dictating" aria-pressed="true"><svg class="i" aria-hidden="true"><use href="#i-mic"/></svg></button>
@@ -497,7 +497,7 @@ a { color: inherit; text-decoration: none; cursor: pointer; }
           <div class="field typed">Compare this with the fixture before you push.</div>
           <div class="controls">
             <button class="icon-btn grey" aria-label="Attach files"><svg class="i" aria-hidden="true"><use href="#i-plus"/></svg></button>
-            <button class="icon-btn grey" aria-label="Mention a bot"><svg class="i" aria-hidden="true"><use href="#i-at-sign"/></svg></button>
+            <button class="icon-btn grey" aria-label="Mention an agent"><svg class="i" aria-hidden="true"><use href="#i-at-sign"/></svg></button>
             <span class="model">Codex <b>GPT-6 Sol</b> Max</span>
             <span class="grow"></span>
             <button class="icon-btn grey" aria-label="Dictate"><svg class="i" aria-hidden="true"><use href="#i-mic"/></svg></button>
@@ -519,7 +519,7 @@ a { color: inherit; text-decoration: none; cursor: pointer; }
             <button class="icon-btn dark send-off" aria-label="Send" aria-disabled="true"><svg class="i" aria-hidden="true"><use href="#i-arrow-up"/></svg></button>
           </div>
         </div>
-        <span class="cap" style="padding: 0 var(--space-6)">On the phone, + opens Attach and Mention a bot; typing @ also mentions. Dictation needs Android 13 or later.</span>
+        <span class="cap" style="padding: 0 var(--space-6)">On the phone, + opens Attach and Mention an agent; typing @ also mentions. Dictation needs Android 13 or later.</span>
       </div>
     </section>
   </div>

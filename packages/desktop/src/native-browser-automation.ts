@@ -27,7 +27,7 @@ function guard(ctx: Context): void {
   if (ctx.cancelled) throw new Error("The browser tool was cancelled. Take a fresh snapshot before continuing.");
   const state = ctx.engine.state(ctx.bot.id);
   if (state.privateActive || ctx.privateEpoch !== undefined && state.privateEpoch !== ctx.privateEpoch || ctx.controlEpoch !== undefined && state.controlEpoch !== ctx.controlEpoch) throw new Error("The browser interaction changed; this tool result was discarded.");
-  if (state.control !== "bot") throw new Error("The person has taken browser control. Return control to the bot before continuing.");
+  if (state.control !== "bot") throw new Error("The person has taken browser control. Return control to the agent before continuing.");
   if (ctx.viewportRevision !== undefined && state.viewportRevision !== ctx.viewportRevision) throw new Error("The browser panel resized during this action. Take a fresh snapshot before retrying.");
   if (Date.now() >= ctx.deadline) throw new Error("The browser tool exceeded its 22-second deadline. Take a fresh snapshot before retrying.");
 }
@@ -250,10 +250,10 @@ async function uploads(bot: NativeBrowserBot, paths: string[]): Promise<string[]
   if (extra.projectFolder) roots.push(await realpath(extra.projectFolder));
   let size = 0;
   return Promise.all(paths.map(async (path) => {
-    if (!isAbsolute(path)) throw new Error("Upload paths must be absolute paths inside this bot's folders.");
+    if (!isAbsolute(path)) throw new Error("Upload paths must be absolute paths inside this agent's folders.");
     const file = await realpath(path), info = await stat(file);
     size += info.size;
-    if (!roots.some((root) => inside(root, file)) || !info.isFile() || size > 20 * 1024 * 1024) throw new Error("Uploads must be regular files inside this bot's folders, at most 20 MiB combined.");
+    if (!roots.some((root) => inside(root, file)) || !info.isFile() || size > 20 * 1024 * 1024) throw new Error("Uploads must be regular files inside this agent's folders, at most 20 MiB combined.");
     return file;
   }));
 }
@@ -261,9 +261,9 @@ async function output(ctx: Context, data: string | Buffer, filename: string): Pr
   guard(ctx);
   const base = await realpath(ctx.bot.homeFolder), directory = join(base, "browser-files");
   await mkdir(directory, { recursive: true });
-  if ((await lstat(directory)).isSymbolicLink() || !inside(base, await realpath(directory))) throw new Error("Browser output must remain inside the bot's folder.");
+  if ((await lstat(directory)).isSymbolicLink() || !inside(base, await realpath(directory))) throw new Error("Browser output must remain inside the agent's folder.");
   const path = resolve(directory, filename);
-  if (!inside(directory, path) || dirname(path) !== directory || /[<>:"|?*]/.test(basename(path))) throw new Error("Use a plain filename inside this bot's browser-files folder.");
+  if (!inside(directory, path) || dirname(path) !== directory || /[<>:"|?*]/.test(basename(path))) throw new Error("Use a plain filename inside this agent's browser-files folder.");
   guard(ctx);
   await writeFile(path, data, { flag: "wx", mode: 0o600 });
   return path;

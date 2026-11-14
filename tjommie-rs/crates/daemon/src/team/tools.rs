@@ -566,7 +566,7 @@ impl Team {
         let bot = get_stored_bot(host.db(), bot_id)?;
         if bot.paused || !bot.browser {
             return Err(plain(
-                "Resume this bot and enable its browser before requesting a login.",
+                "Resume this agent and enable its browser before requesting a login.",
             ));
         }
         let work = host.current_work(bot_id);
@@ -576,7 +576,7 @@ impl Team {
                 conversation_id: work.map_or_else(|| bot_id.to_owned(), |work| work.conversation_id),
                 author: bot_id.to_owned(),
                 kind: MessageKind::Text,
-                body: format!("Login requested: {name}. Open Logins in this bot's Computer view to select a saved login and confirm the exact website on the host."),
+                body: format!("Login requested: {name}. Open Logins in this agent's Computer view to select a saved login and confirm the exact website on the host."),
                 data: None,
                 status: MessageStatus::Done,
             },

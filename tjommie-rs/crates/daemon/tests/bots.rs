@@ -161,7 +161,7 @@ fn keeps_names_unique_regardless_of_case() {
     let error =
         create_bot(&f.db, &f.bots_dir, &input(json!({ "name": "researcher" }))).unwrap_err();
     assert_eq!(error.code, ErrorCode::NameTaken);
-    assert!(error.message.contains("already a bot"));
+    assert!(error.message.contains("already an agent"));
 }
 
 #[test]
@@ -220,7 +220,7 @@ fn validates_the_can_message_list() {
             &researcher.id,
             &patch(json!({ "canMessage": ["nope"] }))
         ))
-        .contains("no such bot")
+        .contains("no such agent")
     );
 }
 
@@ -303,7 +303,7 @@ fn keeps_the_bot_when_its_home_folder_cannot_be_removed() {
     drop(open);
     assert_eq!(
         (error.code, error.message.as_str()),
-        (ErrorCode::Busy, "The bot folder is busy")
+        (ErrorCode::Busy, "The agent folder is busy")
     );
     assert_eq!(get_stored_bot(&f.db, &bot.id).unwrap(), bot);
     assert_eq!(fs::read_to_string(home.join("notes.md")).unwrap(), notes);
@@ -345,7 +345,7 @@ fn tells_the_bot_about_tjommies_tools_and_about_its_browser_only_when_it_has_one
     );
 }
 
-const MANAGED: &str = "The project folder must be outside the managed bots folder";
+const MANAGED: &str = "The project folder must be outside the managed agents folder";
 const DATA_ROOT: &str = "doesn't contain Tjommie's own data folder";
 
 #[test]

@@ -147,7 +147,7 @@ pub fn bot_available(
         if changing(&switching) || changing(&deleting) {
             return Err(RpcError::new(
                 ErrorCode::Busy,
-                "This bot's settings or lifecycle is changing. Try again shortly.",
+                "This agent's settings or lifecycle is changing. Try again shortly.",
             ));
         }
         Ok(())

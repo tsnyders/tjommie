@@ -133,7 +133,7 @@ async fn refuses_to_delete_a_bot_in_a_project_and_to_change_a_bot_with_a_running
     assert_eq!(error.code, ErrorCode::Busy);
     assert_eq!(
         error.message,
-        "Remove this bot from its project and finish its task or check before deleting it."
+        "Remove this agent from its project and finish its task or check before deleting it."
     );
 
     // A member without a task can still be changed; one that holds a task lease cannot (`tasks.botBusy`).
@@ -158,7 +158,7 @@ async fn refuses_to_delete_a_bot_in_a_project_and_to_change_a_bot_with_a_running
     assert_eq!(error.code, ErrorCode::Busy);
     assert_eq!(
         error.message,
-        "Stop this bot's project task or check before changing its settings."
+        "Stop this agent's project task or check before changing its settings."
     );
     drop(context);
     server.close().await;
@@ -197,7 +197,7 @@ fn counts_a_bot_being_switched_or_deleted_as_unavailable_to_projects() {
         assert_eq!(error.code, ErrorCode::Busy);
         assert_eq!(
             error.message,
-            "This bot's settings or lifecycle is changing. Try again shortly."
+            "This agent's settings or lifecycle is changing. Try again shortly."
         );
         available("other").unwrap();
         set.lock().unwrap().clear();
@@ -257,7 +257,7 @@ async fn protects_a_bot_as_its_new_provider_before_saving_the_change_and_refuses
     assert_eq!(error.code, ErrorCode::BadState);
     assert_eq!(
         error.message,
-        "Could not update the bot folder protection. Try again after checking Codex's sandbox setup."
+        "Could not update the agent folder protection. Try again after checking Codex's sandbox setup."
     );
     assert_eq!(
         bots::get_stored_bot(&h.db.lock().unwrap(), &bot.id)

@@ -74,13 +74,13 @@ describe("PhoneSettings", () => {
   });
 
   it("offers the three kinds of notification, all on, only while notifications are On", () => {
-    expect(switches(html({ notifications: "on" }))).toEqual([["A bot needs you", true], ["A bot is done", true], ["Something failed", true]]);
+    expect(switches(html({ notifications: "on" }))).toEqual([["An agent needs you", true], ["An agent is done", true], ["Something failed", true]]);
     for (const notifications of ["allow", "off", "unavailable", null] as const) expect(switches(html({ notifications }))).toEqual([]);
   });
 
   it.each([
-    ["A bot needs you", ["routine_failed", "done", "failed"]],
-    ["A bot is done", ["approval", "limit", "routine_failed", "failed"]],
+    ["An agent needs you", ["routine_failed", "done", "failed"]],
+    ["An agent is done", ["approval", "limit", "routine_failed", "failed"]],
     ["Something failed", ["approval", "limit", "done"]],
   ])("turning off %s registers again without its kinds, and stays off", async (label, kinds) => {
     await registerPushIfAllowed({ call: requested as Client["call"] }, fakePush({ permission: "granted" }));
@@ -94,10 +94,10 @@ describe("PhoneSettings", () => {
   it("turning a switch back on asks for its kinds again", async () => {
     await registerPushIfAllowed({ call: requested as Client["call"] }, fakePush({ permission: "granted" }));
     html();
-    press("A bot is done", false);
+    press("An agent is done", false);
     await vi.waitFor(() => expect(requested).toHaveBeenLastCalledWith("device.registerPush", { token: "synthetic-push-token", kinds: ["approval", "limit", "routine_failed", "failed"] }));
     html();
-    press("A bot is done", true);
+    press("An agent is done", true);
     await vi.waitFor(() => expect(requested).toHaveBeenLastCalledWith("device.registerPush", { token: "synthetic-push-token", kinds: ALL }));
     expect(switches(html()).every(([, on]) => on)).toBe(true);
   });

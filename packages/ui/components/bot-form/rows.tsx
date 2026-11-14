@@ -88,7 +88,7 @@ export function FolderRow({ projectFolder, onChange }: { projectFolder: string |
 export function AutonomyRow({ autonomy, provider, botName, onChange }: { autonomy: Autonomy; provider: Provider; botName: string; onChange: (autonomy: Autonomy) => void }) {
   const [open, setOpen] = useState(true);
   const [confirming, setConfirming] = useState(false);
-  const name = botName.trim() || "this bot";
+  const name = botName.trim() || "this agent";
   return (
     <Row icon={Shield} title="Autonomy" value={open ? undefined : AUTONOMY_LEVELS.find((level) => level.value === autonomy)?.label} open={open} onToggle={() => setOpen(!open)}>
       <Segmented label="Autonomy" value={autonomy} options={AUTONOMY_LEVELS} onChange={(next) => (next === "full" ? setConfirming(true) : onChange(next))} />
@@ -97,7 +97,7 @@ export function AutonomyRow({ autonomy, provider, botName, onChange }: { autonom
         open={confirming}
         onOpenChange={setConfirming}
         title={`Let ${name} work without asking?`}
-        body={`In Full auto, ${name} can run any command and change any file your Windows account can, without checking with you first. Only choose it for bots you trust with that.`}
+        body={`In Full auto, ${name} can run any command and change any file your Windows account can, without checking with you first. Only choose it for agents you trust with that.`}
         confirm="Use Full auto"
         onConfirm={() => {
           onChange("full");
@@ -148,7 +148,7 @@ export function CanMessageRow({ label, summary, selfId = null, ids, bots, defaul
       onToggle={() => setOpen(!open)}
     >
       {others.length === 0 ? (
-        <p className="text-[13px] leading-[18px] text-secondary">No other bots yet.</p>
+        <p className="text-[13px] leading-[18px] text-secondary">No other agents yet.</p>
       ) : (
         <ul className="flex flex-col">
           {others.map((bot) => (

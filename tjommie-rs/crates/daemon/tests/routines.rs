@@ -790,7 +790,7 @@ mod routines_store_tests {
         let db = &f.db;
         let error =
             create_routine(db, &input_with("no-such-bot", json!({})), now_ms()).unwrap_err();
-        assert!(error.message.contains("No such bot"), "{}", error.message);
+        assert!(error.message.contains("No such agent"), "{}", error.message);
         assert!(
             get_routine(db, "missing")
                 .unwrap_err()

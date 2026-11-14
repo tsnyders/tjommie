@@ -92,7 +92,7 @@ export function BotCard({ bot, bots, messages, routines }: { bot: Bot; bots: Bot
             <AvatarStack bots={partners} />
           </>
         ) : (
-          <span className="text-[12px] text-caption">No bot chats today</span>
+          <span className="text-[12px] text-caption">No agent chats today</span>
         )}
         {waiting && (
           <span aria-hidden className={cn(CARD_PILL, "ml-auto bg-user-bubble text-user-text")}>
@@ -185,11 +185,11 @@ function CardMenu({ bot, onProblem }: { bot: Bot; onProblem: (problem: string | 
             </Menu.Item>
             <Menu.Item className={MENU_ITEM} onClick={pause}>
               {bot.paused ? <Play aria-hidden /> : <Pause aria-hidden />}
-              {bot.paused ? "Resume bot" : "Pause bot"}
+              {bot.paused ? "Resume agent" : "Pause agent"}
             </Menu.Item>
             <Menu.Item className={MENU_ITEM} onClick={() => router.push(`/bots/settings/?bot=${encodeURIComponent(bot.id)}`)}>
               <Settings aria-hidden />
-              Bot settings
+              Agent settings
             </Menu.Item>
           </Menu.Popup>
         </Menu.Positioner>
@@ -205,7 +205,7 @@ export function TeamRoomCard({ room, messages, bots }: { room: Room; messages: M
     <article className={cn(CARD, "border-card-stroke hover:border-input-stroke max-sm:hidden")}>
       <div className="flex h-[181px] shrink-0 flex-col justify-center gap-3 overflow-hidden rounded-[10px] bg-popover p-3">
         {posts.length === 0 ? (
-          messages && <p className="text-center text-[12px] text-placeholder">No bot chats yet</p>
+          messages && <p className="text-center text-[12px] text-placeholder">No agent chats yet</p>
         ) : (
           posts.map((post) => {
             const author = bots.find((each) => each.id === post.author);
@@ -248,7 +248,7 @@ export function NewBotCard() {
       <span className="flex size-12 items-center justify-center rounded-full bg-popover text-icon">
         <Plus className="size-6" aria-hidden />
       </span>
-      <span className="text-[15px] font-semibold text-title">New bot</span>
+      <span className="text-[15px] font-semibold text-title">New agent</span>
       <span className="text-[12px] text-secondary">Start from a suggestion or from scratch</span>
     </Link>
   );
@@ -262,7 +262,7 @@ export function NewRoomCard({ onClick }: { onClick: () => void }) {
         <Plus className="size-6" aria-hidden />
       </span>
       <span className="text-[15px] font-semibold text-title">New room</span>
-      <span className="text-[12px] text-secondary">Choose which bots are in it</span>
+      <span className="text-[12px] text-secondary">Choose which agents are in it</span>
     </button>
   );
 }

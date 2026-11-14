@@ -94,7 +94,7 @@ export function RightPanel({
           </IconButton>
         ) : (
           <>
-            <Link href={`/bots/settings/?bot=${encodeURIComponent(bot.id)}`} aria-label="Bot settings" title="Bot settings" className="press flex size-8 shrink-0 items-center justify-center rounded-[10px] text-icon hover:bg-pill hover:text-text">
+            <Link href={`/bots/settings/?bot=${encodeURIComponent(bot.id)}`} aria-label="Agent settings" title="Agent settings" className="press flex size-8 shrink-0 items-center justify-center rounded-[10px] text-icon hover:bg-pill hover:text-text">
               <Settings className="size-4" aria-hidden />
             </Link>
             <IconButton label="Hide panel" onClick={onHide}>
@@ -124,7 +124,7 @@ function PaneSwitch({ pane, onPane }: { pane: Pane; onPane: (pane: Pane) => void
   return (
     <div
       role="tablist"
-      aria-label="Bot panel views"
+      aria-label="Agent panel views"
       onKeyDown={(event) => {
         if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
         event.preventDefault();

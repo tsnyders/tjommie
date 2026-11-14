@@ -22,7 +22,7 @@ const RANGES = [
 ] as const satisfies readonly { value: RangeKind; label: string }[];
 
 const BREAKDOWNS = [
-  { value: "bot", label: "By bot" },
+  { value: "bot", label: "By agent" },
   { value: "account", label: "By account" },
   { value: "model", label: "By model" },
 ] as const satisfies readonly { value: By; label: string }[];
@@ -91,7 +91,7 @@ export function UsageSection({ filters }: { filters: UsageFilters }) {
   const accounts = useApp((state) => state.accounts);
   const { report, error } = useUsage({ kind: range, filters });
   const chips: { key: keyof UsageFilters; label: string }[] = [];
-  if (filters.bot) chips.push({ key: "bot", label: bots.find((bot) => bot.id === filters.bot)?.name ?? "Deleted bot" });
+  if (filters.bot) chips.push({ key: "bot", label: bots.find((bot) => bot.id === filters.bot)?.name ?? "Deleted agent" });
   if (filters.account) chips.push({ key: "account", label: accounts?.find((account) => account.id === filters.account)?.label ?? "Removed account" });
   if (filters.model) chips.push({ key: "model", label: filters.model });
 
@@ -131,7 +131,7 @@ function CombinedTile({ costs }: { costs: UsageAggregate["costs"] }) {
 }
 
 export function UsageReportView({ report, range, by, onBy, bots, accounts }: { report: UsageReport; range: RangeKind; by: By; onBy: (by: By) => void; bots: Pick<Bot, "id" | "name">[]; accounts: Pick<AccountInfo, "id" | "label">[] }) {
-  if (emptyUsage(report)) return <p className="mt-8 text-[13px] leading-[18px] text-secondary">No usage yet. It shows here after your bots&apos; first messages.</p>;
+  if (emptyUsage(report)) return <p className="mt-8 text-[13px] leading-[18px] text-secondary">No usage yet. It shows here after your agents&apos; first messages.</p>;
   return (
     <>
       <div className="mt-5 flex max-w-[760px] flex-wrap gap-3">

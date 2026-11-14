@@ -110,7 +110,9 @@ fn import(args: &[String]) -> Result<(), StartupError> {
     println!(
         "Routines are paused and queued or running work was marked failed, so nothing runs in both installs."
     );
-    println!("Bots' browser profiles weren't copied, so this install's browser starts signed out.");
+    println!(
+        "Agents' browser profiles weren't copied, so this install's browser starts signed out."
+    );
     Ok(())
 }
 

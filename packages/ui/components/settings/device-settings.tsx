@@ -17,7 +17,7 @@ export function GeneralSection() {
     <SettingsCard>
       {api ? <SettingsRow title="Closing the desktop window" note="Tjommie keeps running in this device's tray. Choose Quit from the tray to stop it." /> : <SettingsRow title="Desktop startup and updates" note="These controls are available in the Windows desktop app on that device." />}
       {api && (!api.loginItem || !api.updates) && <SettingsRow title="Startup and update controls" note="Unavailable in this app version." />}
-      <SettingsRow title="Connected host settings" note="Bots, Accounts, Usage and Devices refer to the selected host PC. Switching PCs changes those sections." />
+      <SettingsRow title="Connected host settings" note="Agents, Accounts, Usage and Devices refer to the selected host PC. Switching PCs changes those sections." />
     </SettingsCard>
   </SettingsSection>;
 }

@@ -420,7 +420,7 @@ a { color: inherit; text-decoration: none; cursor: pointer; }
 <main class="doc">
   <header class="doc-head">
     <h1>Approval and exchange cards</h1>
-    <p>An approval is the one raised card in a thread: what the bot wants, the exact command, its autonomy, and two answers. Approve is the near-black pill; Deny is an underlined text action, so the safe answer is never the loud one by accident. Bot-to-bot exchanges fold into a card with both voices.</p>
+    <p>An approval is the one raised card in a thread: what the agent wants, the exact command, its autonomy, and two answers. Approve is the near-black pill; Deny is an underlined text action, so the safe answer is never the loud one by accident. Agent-to-agent exchanges fold into a card with both voices.</p>
   </header>
 
   <div class="cols-2">
@@ -445,7 +445,7 @@ a { color: inherit; text-decoration: none; cursor: pointer; }
         <span class="answered"><svg class="i" aria-hidden="true"><use href="#i-check"/></svg>Approved from your phone: git push origin rust-rewrite</span>
       </div>
 
-      <h2>Autonomy, what the bot may do without asking</h2>
+      <h2>Autonomy, what the agent may do without asking</h2>
       <div class="board kinds">
         <span class="pill pill-working">Ask</span><span>Always ask: asks before every change it makes.</span>
         <span class="pill pill-working">Folder</span><span>Own folder: works freely inside its own folder and asks before anything else.</span>
@@ -454,14 +454,14 @@ a { color: inherit; text-decoration: none; cursor: pointer; }
     </section>
 
     <section class="doc-sec">
-      <h2>Exchange, bot to bot</h2>
+      <h2>Exchange, agent to agent</h2>
       <div class="board col">
         <div class="exchange">
           <div class="head"><svg class="i" aria-hidden="true"><use href="#i-arrow-left-right"/></svg><span>Forge asked Scout</span><span class="meta" style="margin-left: auto">2 messages</span><a class="link" style="margin-left: var(--space-12)">View thread</a></div>
           <div class="line"><span class="av av-20 bot-blue" data-state="waiting"><svg width="20" height="20" viewBox="0 0 40 40" aria-hidden="true"><use href="#bot-hexagon"/><g class="look"><g class="scan"><g class="lid"><path d="M17 15 L16 21 M24.5 15 L23.5 21" class="eyes" stroke-width="3" stroke-linecap="round" fill="none"/></g></g></g></svg></span><span>Does the bundled SQLite in rusqlite match the version node:sqlite ships?</span></div>
           <div class="line"><span class="av av-20 bot-teal" data-state="working"><svg width="20" height="20" viewBox="0 0 40 40" aria-hidden="true"><use href="#bot-blob"/><g class="look"><g class="scan"><g class="lid"><path d="M18 15 L17 21 M25.5 15 L24.5 21" class="eyes" stroke-width="3" stroke-linecap="round" fill="none"/></g></g></g></svg></span><span>Yes, both are 3.50. Safe to compare sqlite_master output.</span></div>
         </div>
-        <span class="cap">While the other bot answers</span>
+        <span class="cap">While the other agent answers</span>
         <div class="exchange">
           <div class="head"><svg class="i" aria-hidden="true"><use href="#i-arrow-left-right"/></svg><span>Scout asked Quill</span><span class="meta" style="margin-left: auto">1 message</span><a class="link" style="margin-left: var(--space-12)">View thread</a></div>
           <div class="line"><span class="av av-20 bot-teal" data-state="working"><svg width="20" height="20" viewBox="0 0 40 40" aria-hidden="true"><use href="#bot-blob"/><g class="look"><g class="scan"><g class="lid"><path d="M18 15 L17 21 M25.5 15 L24.5 21" class="eyes" stroke-width="3" stroke-linecap="round" fill="none"/></g></g></g></svg></span><span>Which dock layout did task 14 settle on for the browser panel?</span></div>

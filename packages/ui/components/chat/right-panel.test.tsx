@@ -40,9 +40,9 @@ describe("RightPanel on a phone", () => {
     const out = render({ phone: true });
     expect(out).toContain("absolute inset-0");
     expect(out).toContain('aria-label="Close details"');
-    expect(out).toContain('aria-label="Bot panel views"');
+    expect(out).toContain('aria-label="Agent panel views"');
     expect(out).not.toContain('role="separator"');
-    expect(out).not.toContain('aria-label="Bot settings"');
+    expect(out).not.toContain('aria-label="Agent settings"');
     expect(out).not.toContain('aria-label="Hide panel"');
     expect(out).not.toContain("border-l");
     expect(out).not.toContain("width:460px");
@@ -65,7 +65,7 @@ describe("RightPanel without the desktop app's bridge", () => {
     vi.stubGlobal("window", {});
     for (const phone of [true, false]) {
       const out = render({ phone, pane: "browser" });
-      expect(out).toContain("Bot panel views");
+      expect(out).toContain("Agent panel views");
       expect(out).toContain('id="pane-browser"');
       expect(out).toContain('aria-label="Open computer"');
       expect(out).toContain("The browser host is offline.");
@@ -83,7 +83,7 @@ describe("RightPanel in the desktop app while it's on another PC", () => {
     update((state) => ({ ...state, host: HOME }));
     for (const phone of [true, false]) {
       const out = render({ phone, pane: "browser" });
-      expect(out).toContain("Bot panel views");
+      expect(out).toContain("Agent panel views");
       expect(out).toContain('id="pane-browser"');
       expect(out).toContain('aria-label="Open computer"');
       expect(out).toContain("The browser host is offline.");
@@ -94,7 +94,7 @@ describe("RightPanel in the desktop app while it's on another PC", () => {
 describe("RightPanel", () => {
   it("always offers Details and Browser, Hide panel and a resize separator", () => {
     const out = render();
-    expect(out).toContain('aria-label="Bot panel views"');
+    expect(out).toContain('aria-label="Agent panel views"');
     expect(out).toMatch(/role="tab"[^>]*aria-selected="true"[^>]*>Details/);
     expect(out).toMatch(/role="tab"[^>]*aria-selected="false"[^>]*>Browser/);
     expect(out).toContain('aria-label="Hide panel"');
@@ -120,7 +120,7 @@ describe("RightPanel", () => {
 
   it("has no switch, and never the browser, for a bot without one", () => {
     const out = render({ bot: { ...bot, browser: false }, pane: "browser" });
-    expect(out).not.toContain("Bot panel views");
+    expect(out).not.toContain("Agent panel views");
     expect(out).not.toContain('id="pane-browser"');
   });
 

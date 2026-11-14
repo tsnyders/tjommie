@@ -570,7 +570,7 @@ impl Team {
     fn name(&self, db: &Connection, id: &str) -> Result<String, RpcError> {
         Ok(self
             .bot_or_null(db, id)?
-            .map_or_else(|| "A deleted bot".to_owned(), |bot| bot.name))
+            .map_or_else(|| "A deleted agent".to_owned(), |bot| bot.name))
     }
 
     /// `#roomsFor`: Everyone, and each other room that holds both bots.
@@ -1263,7 +1263,7 @@ impl Team {
         if !self.state().issued.contains(&handle.serial) {
             return Err(RpcError::new(
                 ErrorCode::BadParams,
-                "Unknown bot deletion handle",
+                "Unknown agent deletion handle",
             ));
         }
         let bot_id = handle.bot.id.clone();
@@ -1273,7 +1273,7 @@ impl Team {
         if self.bot_or_null(host.db(), &bot_id)?.is_some() {
             return Err(RpcError::new(
                 ErrorCode::Busy,
-                "The bot must be deleted before finishing its exchanges",
+                "The agent must be deleted before finishing its exchanges",
             ));
         }
         let queued: RefCell<Vec<WorkItem>> = RefCell::new(Vec::new());
@@ -1410,7 +1410,7 @@ impl Team {
                     if input.bot_id != approval.bot_id {
                         return Err(RpcError::new(
                             ErrorCode::BadParams,
-                            "The routine belongs to a different bot",
+                            "The routine belongs to a different agent",
                         ));
                     }
                     self.emit(Event::RoutineUpdated(create_routine(db, &input, now_ms())?));

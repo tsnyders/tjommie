@@ -100,7 +100,7 @@ pub fn activity_label(
             "list_bots" => "Looked at the team".into(),
             "message_bot" => format!(
                 "Messaged {}",
-                text_arg(input, "bot").unwrap_or_else(|| "a bot".into())
+                text_arg(input, "bot").unwrap_or_else(|| "an agent".into())
             ),
             "share_file" => format!("Shared {}", file_name(text_arg(input, "path"))),
             "add_routine" => format!(

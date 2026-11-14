@@ -441,7 +441,7 @@ async fn requires_an_idle_account_before_authorizing_one_queued_work_limit_retry
     assert!(
         h.error("accounts.retryLimit", json!({ "id": id }))
             .await
-            .contains("Stop the bots")
+            .contains("Stop the agents")
     );
     runtime.release(&running);
     assert_eq!(

@@ -8,10 +8,10 @@ const growth: Room = { id: "r1", name: "Growth", botIds: ["b1"], everyone: false
 describe("a room's card on Agents", () => {
   it("says nothing of the room's posts while they're being read, and that it has none once they are", () => {
     const reading = renderToStaticMarkup(<TeamRoomCard room={growth} messages={undefined} bots={[]} />);
-    expect(reading).not.toContain("No bot chats yet");
+    expect(reading).not.toContain("No agent chats yet");
     expect(reading).not.toContain("No posts yet");
     const read = renderToStaticMarkup(<TeamRoomCard room={growth} messages={[]} bots={[]} />);
-    expect(read).toContain("No bot chats yet");
+    expect(read).toContain("No agent chats yet");
     expect(read).toContain("No posts yet");
   });
 });

@@ -774,7 +774,7 @@ impl AccountRuntime {
         }
         if self.in_use(id) {
             return Err(fail(
-                "Stop the bots using this account before replacing its key.",
+                "Stop the agents using this account before replacing its key.",
             ));
         }
         self.changed(id);
@@ -804,7 +804,7 @@ impl AccountRuntime {
         let account = get_account(&self.db(), id, false)?;
         if self.in_use(id) {
             return Err(fail(
-                "Stop the bots using this account before removing its key.",
+                "Stop the agents using this account before removing its key.",
             ));
         }
         self.changed(id);
@@ -861,7 +861,9 @@ impl AccountRuntime {
             return Err(fail("API-key accounts do not use subscription sign-in."));
         }
         if self.in_use(id) {
-            return Err(fail("Stop the bots using this account before signing in."));
+            return Err(fail(
+                "Stop the agents using this account before signing in.",
+            ));
         }
         if self.state().waiting(id) {
             return Err(fail("Sign-in is already waiting for this account."));
@@ -981,7 +983,7 @@ impl AccountRuntime {
         let stored = get_account(&self.db(), id, false)?;
         if stored.provider != Provider::Codex || self.in_use(id) {
             return Err(fail(
-                "Stop this Codex account's bots before setting up its sandbox.",
+                "Stop this Codex account's agents before setting up its sandbox.",
             ));
         }
         self.changed(id);
@@ -1084,7 +1086,7 @@ impl AccountRuntime {
             let account = get_account(&db, id, false)?;
             if state.in_use(id) {
                 return Err(fail(
-                    "Stop the bots using this account before retrying its limit.",
+                    "Stop the agents using this account before retrying its limit.",
                 ));
             }
             let ready = state
@@ -1262,7 +1264,7 @@ impl AccountRuntime {
                 .any(|run| run.effective_account_id == id && run.bot_id != bot.id)
             {
                 return Ok(Some(
-                    "Another bot is using this API account. Its queued work will wait.",
+                    "Another agent is using this API account. Its queued work will wait.",
                 ));
             }
         }
@@ -1304,14 +1306,14 @@ impl AccountRuntime {
         let Ok(pinned) = pinned else {
             let id = bot.account_id.as_deref().unwrap_or_default();
             return Ok(blocked(
-                "Choose an account in this bot's settings.",
+                "Choose an account in this agent's settings.",
                 id,
                 None,
             ));
         };
         if pinned.provider != bot.provider {
             return Ok(blocked(
-                "Choose an account for this bot's provider.",
+                "Choose an account for this agent's provider.",
                 &pinned.id,
                 None,
             ));
@@ -1373,7 +1375,7 @@ impl AccountRuntime {
             present(bot.account_id.as_deref()).is_some_and(|id| id != context.pinned_account_id);
         if bot.provider != context.provider || repinned || bot.model != context.model {
             return Err(fail(
-                "This bot's account or model changed before work could start.",
+                "This agent's account or model changed before work could start.",
             ));
         }
         if state.holds.contains_key(&account.id)

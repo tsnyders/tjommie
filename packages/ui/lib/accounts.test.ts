@@ -156,7 +156,7 @@ describe("statusLine", () => {
     expect(statusLine(account({ setup: null }), NOW)).toMatchObject({ text: "Checking", actions: [] });
     expect(statusLine(account({ setup: null }), NOW, { stuck: true })).toMatchObject({ actions: ["check"] });
     expect(statusLine(account({ setup: { provider: "claude", installed: true, version: null, signedIn: false, account: null, plan: null, error: "CLI failed" } }), NOW)).toMatchObject({ text: "CLI failed", actions: ["check"] });
-    expect(statusLine(account({ setup: { provider: "claude", installed: true, version: null, signedIn: false, account: null, plan: null, error: null } }), NOW)).toMatchObject({ text: "Not signed in. Bots on it wait.", actions: ["signIn"] });
+    expect(statusLine(account({ setup: { provider: "claude", installed: true, version: null, signedIn: false, account: null, plan: null, error: null } }), NOW)).toMatchObject({ text: "Not signed in. Agents on it wait.", actions: ["signIn"] });
     expect(statusLine(account(), NOW)).toMatchObject({ text: "Signed in", tone: "ok" });
   });
 
@@ -167,7 +167,7 @@ describe("statusLine", () => {
 
   it("reads an API key's state: no key, over its cap, stopped for unpriced turns, or fine", () => {
     expect(statusLine(key({ hasCredential: false }), NOW)).toMatchObject({ text: "No key saved", actions: ["addKey"] });
-    expect(statusLine(key({ spending: { knownUsd: 20, unknownRows: 0, capUsd: 20, blocked: true } }), NOW)).toMatchObject({ text: "Reached its $20.00 cap. Bots stopped using it.", actions: ["raiseCap"] });
+    expect(statusLine(key({ spending: { knownUsd: 20, unknownRows: 0, capUsd: 20, blocked: true } }), NOW)).toMatchObject({ text: "Reached its $20.00 cap. Agents stopped using it.", actions: ["raiseCap"] });
     const unpriced = statusLine(key({ spending: { knownUsd: 3, unknownRows: 4, capUsd: 20, blocked: true } }), NOW);
     expect(unpriced.text).toBe("Stopped: 4 turns have no price, so the cap can't be checked.");
     expect(unpriced.actions).toEqual([]);

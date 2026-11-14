@@ -42,13 +42,13 @@ describe("AccountCard", () => {
     expect(out).toContain("Signed in");
     expect(out).toContain("5-hour limit");
     expect(out).toContain("42%");
-    expect(out).toContain("1 bot");
+    expect(out).toContain("1 agent");
     expect(out).toContain('aria-label="More for Claude (Personal)"');
   });
 
   it("offers Sign in on a signed-out subscription, and Cancel and the page again while one is waiting", () => {
     const out = card(sub({ setup: { provider: "claude", installed: true, version: null, signedIn: false, account: null, plan: null, error: null } }));
-    expect(out).toContain("Not signed in. Bots on it wait.");
+    expect(out).toContain("Not signed in. Agents on it wait.");
     expect(out).toContain('data-account-action="signin"');
     const waiting = card(sub({ signIn: { attempt: "t1", state: "waiting" } }), { reopenUrl: "https://example.test/signin" });
     expect(waiting).toContain("Finish signing in in your browser");
@@ -69,7 +69,7 @@ describe("AccountCard", () => {
 
   it("stops an API key at its cap, and at unpriced turns, with the right way forward", () => {
     const capped = card(key({ spending: { knownUsd: 20, unknownRows: 0, capUsd: 20, blocked: true } }));
-    expect(capped).toContain("Reached its $20.00 cap. Bots stopped using it.");
+    expect(capped).toContain("Reached its $20.00 cap. Agents stopped using it.");
     expect(capped).toContain("Raise cap");
     const unpriced = card(key({ spending: { knownUsd: 3, unknownRows: 2, capUsd: 20, blocked: true } }));
     expect(unpriced).toContain("Stopped: 2 turns have no price, so the cap can&#x27;t be checked.");
@@ -141,7 +141,7 @@ describe("dialog forms", () => {
 
   it("warns when a cap is below what is already spent", () => {
     const spent = key({ spendingCapUsd: 10, spending: { knownUsd: 25, unknownRows: 0, capUsd: 10, blocked: true } });
-    expect(renderToStaticMarkup(<CapBody account={spent} onClose={() => {}} onSubmit={noop} />)).toContain("This is below the $25.00 already spent, so bots stop using the key right away.");
+    expect(renderToStaticMarkup(<CapBody account={spent} onClose={() => {}} onSubmit={noop} />)).toContain("This is below the $25.00 already spent, so agents stop using the key right away.");
     expect(renderToStaticMarkup(<CapBody account={key()} onClose={() => {}} onSubmit={noop} />)).not.toContain("already spent");
   });
 

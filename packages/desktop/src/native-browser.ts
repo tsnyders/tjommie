@@ -87,7 +87,7 @@ export class NativeBrowserEngine {
   async open(bot: NativeBrowserBot): Promise<BrowserState> {
     if (this.#closed || this.#options.window.isDestroyed()) throw new Error("The desktop browser host is closed.");
     const hash = basename(nativeBrowserProfile(this.#options.profileRoot, bot.id));
-    if (this.#deleting.has(hash) || this.#blockedProfiles.has(hash)) throw new Error("The bot browser profile is being deleted or needs cleanup to be retried.");
+    if (this.#deleting.has(hash) || this.#blockedProfiles.has(hash)) throw new Error("The agent browser profile is being deleted or needs cleanup to be retried.");
     let browser = this.#browsers.get(bot.id);
     if (!browser) {
       const path = nativeBrowserProfile(this.#options.profileRoot, bot.id);
@@ -100,8 +100,8 @@ export class NativeBrowserEngine {
       this.#browsers.set(bot.id, browser);
       this.#configureSession(browser);
       this.#newTab(browser);
-    } else if (resolve(browser.bot.homeFolder) !== resolve(bot.homeFolder)) throw new Error("The browser bot home changed; close its browser before reopening it.");
-    if (browser.closing) throw new Error("The bot browser is closing.");
+    } else if (resolve(browser.bot.homeFolder) !== resolve(bot.homeFolder)) throw new Error("The browser agent home changed; close its browser before reopening it.");
+    if (browser.closing) throw new Error("The agent browser is closing.");
     await Promise.all([...browser.tabs.values()].map((tab) => tab.ready));
     return this.state(bot.id);
   }
@@ -188,7 +188,7 @@ export class NativeBrowserEngine {
     const browser = this.#get(bot.id);
     if (control === "human") browser.access.take(owner);
     else {
-      if (browser.access.privateActive && explicit) throw new Error("Finish the private interaction before explicitly resuming the bot.");
+      if (browser.access.privateActive && explicit) throw new Error("Finish the private interaction before explicitly resuming the agent.");
       if (!browser.access.release(owner)) {
         if (explicit && browser.access.owner !== null) throw new Error("Another device is controlling this browser.");
         return this.state(bot.id, owner);
@@ -480,7 +480,7 @@ export class NativeBrowserEngine {
     return this.#enqueue(browser, async () => {
       check?.();
       this.#requireControl(browser, "bot");
-      if (browser.mount?.visible) throw new Error("The visible browser follows its panel size. Resize the Tjommie panel, or hide it before requesting a fixed bot viewport.");
+      if (browser.mount?.visible) throw new Error("The visible browser follows its panel size. Resize the Tjommie panel, or hide it before requesting a fixed agent viewport.");
       const tab = this.#tab(browser);
       await this.#resizeTab(tab, width, height); check?.(); browser.viewportRevision++;
       this.#changed(browser); return this.state(bot.id);
@@ -548,7 +548,7 @@ export class NativeBrowserEngine {
     if (browser.downloadListener) browser.session.removeListener("will-download", browser.downloadListener);
     denyNativeBrowserPermissions(browser.session);
     this.#browsers.delete(botId); this.#present();
-    if (errors.length) throw new AggregateError(errors, "Could not completely close the bot browser.");
+    if (errors.length) throw new AggregateError(errors, "Could not completely close the agent browser.");
   }
 
   async closeAll(): Promise<void> {
@@ -566,7 +566,7 @@ export class NativeBrowserEngine {
 
   #get(botId: string): Browser {
     const browser = this.#browsers.get(botId);
-    if (!browser) throw new Error("The bot browser is not open.");
+    if (!browser) throw new Error("The agent browser is not open.");
     return browser;
   }
   #tab(browser: Browser, id = browser.active ?? undefined): Tab {
@@ -576,12 +576,12 @@ export class NativeBrowserEngine {
   }
   #generation(browser: Browser, generation: string): void { if (browser.generation !== generation) throw new Error("The browser session changed; refresh its state."); }
   #requireControl(browser: Browser, actor: "human" | "bot"): void {
-    if (browser.closing) throw new Error("The bot browser is closing.");
+    if (browser.closing) throw new Error("The agent browser is closing.");
     if (browser.access.control !== actor || browser.handover > 0 || actor === "bot" && browser.access.privateActive) throw new Error(actor === "bot" ? "The person is controlling this browser. Wait until they return control." : "Take control of the browser first.");
   }
   #enqueue<T>(browser: Browser, task: () => Promise<T>): Promise<T> {
     const result = browser.tail.then(async () => {
-      if (browser.closing) throw new Error("The bot browser is closing.");
+      if (browser.closing) throw new Error("The agent browser is closing.");
       browser.busy++; this.#changed(browser);
       try { return await task(); }
       finally { browser.busy--; if (!browser.closing) this.#changed(browser); }
@@ -817,7 +817,7 @@ export class NativeBrowserEngine {
         item.setSavePath(join(directory, `${randomUUID()}-${name}`));
         browser.downloads.add(item);
         item.on("updated", () => { if (item.getReceivedBytes() > 100 * 1024 * 1024) item.cancel(); });
-        item.once("done", (_event, status) => { browser.downloads.delete(item); this.#notice(browser, status === "completed" ? `Downloaded ${name} to the bot's browser-files folder.` : `Download ${status}: ${name}`); });
+        item.once("done", (_event, status) => { browser.downloads.delete(item); this.#notice(browser, status === "completed" ? `Downloaded ${name} to the agent's browser-files folder.` : `Download ${status}: ${name}`); });
       } catch (error) { event.preventDefault(); this.#notice(browser, `Download failed: ${String(error)}`); }
     };
     browser.session.on("will-download", browser.downloadListener);

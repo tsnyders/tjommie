@@ -30,7 +30,7 @@ export function withAt(text: string, caret: number): { text: string; caret: numb
 }
 
 // What @everyone stands for in the mention list.
-export const everyoneLabel = (count: number): string => `All ${count} ${count === 1 ? "bot" : "bots"} in this room`;
+export const everyoneLabel = (count: number): string => `All ${count} ${count === 1 ? "agent" : "agents"} in this room`;
 
 export function RoomComposer({ room }: { room: Room }) {
   const phone = usePhone();
@@ -151,7 +151,7 @@ export function RoomComposer({ room }: { room: Room }) {
       }}
     >
       {open && (
-        <ul ref={list} id="mention-list" role="listbox" aria-label="Mention a bot" className="absolute bottom-full left-4 z-10 mb-2 flex max-h-[min(240px,40dvh)] w-[min(280px,calc(100vw-32px))] flex-col gap-1 overflow-y-auto overscroll-contain rounded-[16px] border border-divider bg-popover p-1.5">
+        <ul ref={list} id="mention-list" role="listbox" aria-label="Mention an agent" className="absolute bottom-full left-4 z-10 mb-2 flex max-h-[min(240px,40dvh)] w-[min(280px,calc(100vw-32px))] flex-col gap-1 overflow-y-auto overscroll-contain rounded-[16px] border border-divider bg-popover p-1.5">
           {options.map((option, index) => (
             <li
               key={option.name}
@@ -173,7 +173,7 @@ export function RoomComposer({ room }: { room: Room }) {
           ))}
         </ul>
       )}
-      {hint && !text && <p className="mb-2 text-center text-[12px] leading-[18px] text-caption">No bot was mentioned, so nobody will reply. Type @ to ask a bot.</p>}
+      {hint && !text && <p className="mb-2 text-center text-[12px] leading-[18px] text-caption">No agent was mentioned, so nobody will reply. Type @ to ask an agent.</p>}
       <DictationStatus voice={voice} />
       <form
         onSubmit={(event) => {
@@ -193,14 +193,14 @@ export function RoomComposer({ room }: { room: Room }) {
           aria-controls={open ? "mention-list" : undefined}
           aria-activedescendant={open ? `mention-${active}` : undefined}
           aria-autocomplete="list"
-          placeholder={phone ? `Message ${room.name}` : `Message ${room.name}. Type @ to mention a bot.`}
+          placeholder={phone ? `Message ${room.name}` : `Message ${room.name}. Type @ to mention an agent.`}
           onChange={(event) => { voice.changed(event.target.value); edit(event.target.value, event.target.selectionStart); }}
           onSelect={(event) => setCaret(event.currentTarget.selectionStart)}
           onKeyDown={onKeyDown}
           className="block max-h-[200px] min-h-8 w-full min-w-0 resize-none bg-transparent px-3 py-2 text-[14px] leading-[21px] text-text outline-none [field-sizing:content] placeholder:text-placeholder max-sm:max-h-[min(200px,25dvh)] max-sm:min-h-11"
         />
         <div role="group" aria-label="Message actions" className="flex min-h-8 min-w-0 flex-wrap items-center gap-1 max-sm:min-h-11">
-          <IconButton label="Mention" title="Mention a bot" onClick={mention} className="rounded-full max-sm:size-11">
+          <IconButton label="Mention" title="Mention an agent" onClick={mention} className="rounded-full max-sm:size-11">
             <AtSign className="size-[18px]" aria-hidden />
           </IconButton>
           <DictationButton voice={voice} />

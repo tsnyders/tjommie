@@ -1061,7 +1061,7 @@ a { color: inherit; text-decoration: none; cursor: pointer; }
       <section class="greet" id="greet">
         <svg class="mark" width="48" height="48" viewBox="0 0 40 40" role="img" aria-label="Tjommie"><defs><linearGradient id="stone-7" x1="0.15" y1="0" x2="0.85" y2="1"><stop offset="0" style="stop-color: var(--stone-1)"/><stop offset="1" style="stop-color: var(--stone-2)"/></linearGradient><linearGradient id="stone-7-sweep" class="sweep" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="14" y2="8" gradientTransform="translate(-40 0)"><stop offset="0" style="stop-color: var(--sweep); stop-opacity: 0"/><stop offset="0.5" style="stop-color: var(--sweep); stop-opacity: 0.42"/><stop offset="1" style="stop-color: var(--sweep); stop-opacity: 0"/></linearGradient></defs><path d="M20 3 C25.5 3 31 4.6 34.6 6.6 C35.5 7.1 36 8 36 9 V19.5 C36 28.2 29.4 34.4 21.3 37.2 C20.5 37.5 19.5 37.5 18.7 37.2 C10.6 34.4 4 28.2 4 19.5 V9 C4 8 4.5 7.1 5.4 6.6 C9 4.6 14.5 3 20 3 Z" fill="url(#stone-7)"/><path d="M20 3 C25.5 3 31 4.6 34.6 6.6 C35.5 7.1 36 8 36 9 V19.5 C36 28.2 29.4 34.4 21.3 37.2 C20.5 37.5 19.5 37.5 18.7 37.2 C10.6 34.4 4 28.2 4 19.5 V9 C4 8 4.5 7.1 5.4 6.6 C9 4.6 14.5 3 20 3 Z" fill="url(#stone-7-sweep)"/><g class="look"><g class="lid"><path d="M17 15 L16 21 M24.5 15 L23.5 21" style="stroke: var(--stone-eye)" stroke-width="3" stroke-linecap="round" fill="none"/></g></g></svg>
         <h1>Good evening</h1>
-        <p id="summary"><span class="tick" id="n-need">2</span> <span id="w-need">bots need</span> you. <span class="tick" id="n-work">2</span> are working.</p>
+        <p id="summary"><span class="tick" id="n-need">2</span> <span id="w-need">agents need</span> you. <span class="tick" id="n-work">2</span> are working.</p>
       </section>
 
       <div class="section-label" id="needs-label"><span class="dot"></span>Needs you<span class="count tick" id="needs-count">2</span></div>
@@ -1070,8 +1070,8 @@ a { color: inherit; text-decoration: none; cursor: pointer; }
         <div class="item" id="need-nova"><span class="av av-40 bot-gray" data-state="needs_setup" style="--ring: var(--white)"><svg width="40" height="40" viewBox="0 0 40 40" aria-hidden="true"><use href="#bot-circle"/><g class="look"><g class="scan"><g class="lid"><path d="M17 14 L16 20 M24.5 14 L23.5 20" class="eyes" stroke-width="3" stroke-linecap="round" fill="none"/></g></g></g></svg><span class="badge"><svg class="i" aria-hidden="true"><use href="#i-plug"/></svg></span></span><div class="grow"><div class="name">Nova</div><div class="ask truncate">Sign in to finish setup</div></div><button type="button" class="btn btn-primary">Finish setup</button></div>
       </section>
 
-      <div class="section-label" id="bots-label">Bots</div>
-      <section class="list" aria-label="Bots">
+      <div class="section-label" id="bots-label">Agents</div>
+      <section class="list" aria-label="Agents">
         <a class="bot-row" id="row-forge" href="phone-chat.html"><span class="av av-40 bot-blue" data-state="waiting"><svg width="40" height="40" viewBox="0 0 40 40" aria-hidden="true"><use href="#bot-hexagon"/><g class="look"><g class="scan"><g class="lid"><path d="M17 15 L16 21 M24.5 15 L23.5 21" class="eyes" stroke-width="3" stroke-linecap="round" fill="none"/></g></g></g></svg><span class="badge badge-attn"></span></span><div class="grow"><div class="name">Forge</div><div class="doing truncate">Wants to run git push</div></div><span class="pill-slot"><span class="pill pill-needs"><span class="dot"></span>Needs you</span></span></a>
         <a class="bot-row"><span class="av av-40 bot-teal" data-state="working"><svg width="40" height="40" viewBox="0 0 40 40" aria-hidden="true"><use href="#bot-blob"/><g class="look"><g class="scan"><g class="lid"><path d="M18 15 L17 21 M25.5 15 L24.5 21" class="eyes" stroke-width="3" stroke-linecap="round" fill="none"/></g></g></g></svg></span><div class="grow"><div class="name">Scout</div><div class="doing truncate">Researching GPUI docks</div></div><span class="pill pill-working">Working</span></a>
         <a class="bot-row"><span class="av av-40 bot-purple" data-state="working"><svg width="40" height="40" viewBox="0 0 40 40" aria-hidden="true"><use href="#bot-droplet"/><g class="look"><g class="scan"><g class="lid"><path d="M17.5 21 L16.8 27 M24 21 L23.3 27" class="eyes" stroke-width="3" stroke-linecap="round" fill="none"/></g></g></g></svg></span><div class="grow"><div class="name">Quill</div><div class="doing truncate">Reviewing task 14</div></div><span class="pill pill-working">Working</span></a>
@@ -1133,7 +1133,7 @@ a { color: inherit; text-decoration: none; cursor: pointer; }
     <a class="view-all">View all<svg class="i" aria-hidden="true"><use href="#i-chevron-right"/></svg></a>
     <div class="drawer-foot">
       <button type="button" class="me" aria-label="You">T</button>
-      <button type="button" class="btn btn-primary"><svg class="i" aria-hidden="true"><use href="#i-plus"/></svg>New bot</button>
+      <button type="button" class="btn btn-primary"><svg class="i" aria-hidden="true"><use href="#i-plus"/></svg>New agent</button>
     </div>
     <div class="gesture"><i></i></div>
   </nav>

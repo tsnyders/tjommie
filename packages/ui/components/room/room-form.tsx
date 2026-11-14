@@ -85,7 +85,7 @@ export function RoomForm({ room, onClose }: { room?: Room; onClose: () => void }
         </div>
         <div className="mt-4">
           <CanMessageRow label="In this room" summary={canMessageSummary(chosen, bots)} ids={chosen} bots={bots} defaultOpen onChange={setBotIds}>
-            The bots you mention answer here, and @everyone asks them all. Being in a room doesn&apos;t change who a bot can message.
+            The agents you mention answer here, and @everyone asks them all. Being in a room doesn&apos;t change who an agent can message.
           </CanMessageRow>
         </div>
         {problem && (

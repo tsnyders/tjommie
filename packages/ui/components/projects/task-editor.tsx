@@ -42,11 +42,11 @@ export function TaskEditor({ project, task, bots, onClose, onSaved }: { project:
         </Menu.Trigger><Menu.Portal><Menu.Positioner side="bottom" align="start" sideOffset={6} className="z-[60]"><Menu.Popup className={`${MENU_POPUP} z-50 max-h-[min(320px,60dvh)] max-w-[calc(100vw-32px)] overflow-y-auto`}>
           <Menu.RadioGroup value={value} onValueChange={(next: unknown) => { if (typeof next === "string") change(next); }}>
             <Menu.RadioItem value="" closeOnClick className={MENU_ITEM}><span className="min-w-0 flex-1">{role === "developer" ? "Choose a developer" : "Unassigned"}</span><Menu.RadioItemIndicator><Check aria-hidden /></Menu.RadioItemIndicator></Menu.RadioItem>
-            {project.members.filter((member) => member.roles.includes(role)).map((member) => { const bot = bots.find((candidate) => candidate.id === member.botId); return <Menu.RadioItem key={member.botId} value={member.botId} closeOnClick className={MENU_ITEM}>{bot && <BotAvatar color={bot.color} shape={bot.shape} size={18} className="shrink-0" />}<span className="min-w-0 flex-1 truncate">{bot?.name ?? "Unavailable bot"}</span><Menu.RadioItemIndicator><Check aria-hidden /></Menu.RadioItemIndicator></Menu.RadioItem>; })}
+            {project.members.filter((member) => member.roles.includes(role)).map((member) => { const bot = bots.find((candidate) => candidate.id === member.botId); return <Menu.RadioItem key={member.botId} value={member.botId} closeOnClick className={MENU_ITEM}>{bot && <BotAvatar color={bot.color} shape={bot.shape} size={18} className="shrink-0" />}<span className="min-w-0 flex-1 truncate">{bot?.name ?? "Unavailable agent"}</span><Menu.RadioItemIndicator><Check aria-hidden /></Menu.RadioItemIndicator></Menu.RadioItem>; })}
           </Menu.RadioGroup>
         </Menu.Popup></Menu.Positioner></Menu.Portal></Menu.Root>
       </div>)}
-      <p className="text-[12px] leading-[18px] text-secondary">Save creates a task draft. Start explicitly begins developer work and may use the bot&apos;s provider allowance. Integration needs a reviewer, tester and accepted checks.</p>
+      <p className="text-[12px] leading-[18px] text-secondary">Save creates a task draft. Start explicitly begins developer work and may use the agent&apos;s provider allowance. Integration needs a reviewer, tester and accepted checks.</p>
       {problem && <p role="alert" className="text-[12px] leading-[18px] text-danger">{problem}</p>}
       <div className="flex flex-wrap justify-end gap-2"><Pill className="max-sm:min-h-11" onClick={onClose}>Cancel</Pill><Pill primary className="max-sm:min-h-11" type="submit" disabled={busy || !title.trim() || !instructions.trim() || !assigneeId}>{busy ? "Saving…" : "Save task"}</Pill></div>
     </form>

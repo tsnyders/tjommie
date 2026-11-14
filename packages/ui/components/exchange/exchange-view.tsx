@@ -132,7 +132,7 @@ export function ExchangeComposer({ bots, exchangeId }: { bots: Bot[]; exchangeId
   const change = (next: string): void => { revision.bump(); setText(next); };
   const voice = useDictation("exchange", exchangeId, field, text, change);
   const canSend = bots.length > 0 && text.trim() !== ""; // with both bots gone there's no one to mention
-  const asked = bots.length === 2 ? "Ask both bots in Everyone" : bots.length === 1 ? `Ask ${bots[0].name} in Everyone` : "Reply in Everyone";
+  const asked = bots.length === 2 ? "Ask both agents in Everyone" : bots.length === 1 ? `Ask ${bots[0].name} in Everyone` : "Reply in Everyone";
   async function send(): Promise<void> {
     if (busy || !canSend || !guard.begin()) return;
     void voice.cancel();

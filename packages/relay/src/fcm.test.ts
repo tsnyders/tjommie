@@ -39,7 +39,7 @@ it("signs the service-account grant, sends content-free FCM payloads, caches OAu
   expect(messages[0].headers.get("authorization")).toBe("Bearer fake-access");
   expect(messages[0].body).toEqual({ message: {
     token: "token-a",
-    notification: { title: "Tjommie", body: "A bot needs you" },
+    notification: { title: "Tjommie", body: "An agent needs you" },
     data,
     android: { priority: "high", notification: { tag: "approval:bot-1", channel_id: "bots" } },
   } });
@@ -64,7 +64,7 @@ it("uses fixed done and failed bodies and forwards roomId without bot content", 
   }
   expect(messages).toEqual(["done", "failed"].map((kind, index) => ({ message: {
     token: "token",
-    notification: { title: "Tjommie", body: ["A bot finished", "A bot ran into a problem"][index] },
+    notification: { title: "Tjommie", body: ["An agent finished", "An agent ran into a problem"][index] },
     data: { v: "1", hostId: "99cf98ba-2638-4b16-8a6e-1691c1673b45", kind, botId: "bot-1", roomId: "room-1" },
     android: { priority: "high", notification: { tag: `${kind}:bot-1`, channel_id: "bots" } },
   } })));

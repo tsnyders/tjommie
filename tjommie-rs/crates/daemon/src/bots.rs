@@ -154,7 +154,7 @@ pub fn get_stored_bot(db: &Connection, id: &str) -> Result<StoredBot, RpcError> 
             read_bot,
         )
         .optional()?
-        .ok_or_else(|| RpcError::new(ErrorCode::NotFound, "No such bot"))?;
+        .ok_or_else(|| RpcError::new(ErrorCode::NotFound, "No such agent"))?;
     let mut links =
         db.prepare("SELECT target_bot_id FROM bot_links WHERE bot_id = ?1 ORDER BY target_bot_id")?;
     let can_message = links
@@ -334,7 +334,7 @@ fn account_pin(
         return Ok(None); // Legacy unit fixtures can have no accounts; the daemon makes them before creating bots.
     };
     if account_provider != text(&provider) {
-        return Err(bad_params("The account must use the bot's provider."));
+        return Err(bad_params("The account must use the agent's provider."));
     }
     Ok(Some(id))
 }
@@ -362,7 +362,7 @@ pub fn delete_bot(db: &Connection, id: &str) -> Result<(), RpcError> {
     let had_folder = home.exists();
     // A locked folder must fail before any of its contents are removed.
     if had_folder && fs::rename(&home, &removed).is_err() {
-        return Err(RpcError::new(ErrorCode::Busy, "The bot folder is busy"));
+        return Err(RpcError::new(ErrorCode::Busy, "The agent folder is busy"));
     }
     if let Err(error) = db.execute("DELETE FROM bots WHERE id = ?1", [id]) {
         if had_folder {
@@ -475,7 +475,7 @@ pub fn bot_prompt(bot: &StoredBot) -> String {
         "Call share_file for each file you create or deliver so the person can preview and download it. A file path in chat alone does not deliver the file.".to_owned(),
     ];
     if bot.browser {
-        lines.push("Your browser tools share a browser with the person through the browser panel in Tjommie. Sites they sign in to there stay signed in. When they take over, ask them to choose Resume bot when finished. The panel has no native file picker; after they resume, use browser_file_upload to supply files or paths: [] to cancel a pending file chooser. Never open a separate browser window or use their personal browser profile.".to_owned());
+        lines.push("Your browser tools share a browser with the person through the browser panel in Tjommie. Sites they sign in to there stay signed in. When they take over, ask them to choose Resume agent when finished. The panel has no native file picker; after they resume, use browser_file_upload to supply files or paths: [] to cancel a pending file chooser. Never open a separate browser window or use their personal browser profile.".to_owned());
     }
     let instructions = bot.instructions.trim();
     lines.extend([
@@ -499,7 +499,7 @@ fn assert_name_free(db: &Connection, name: &str, except: Option<&str>) -> Result
     match taken {
         Some(()) => Err(RpcError::new(
             ErrorCode::NameTaken,
-            format!("There's already a bot called {name}"),
+            format!("There's already an agent called {name}"),
         )),
         None => Ok(()),
     }
@@ -533,7 +533,7 @@ fn check_project_folder(
         || (bots_dir.exists() && at_or_inside(&fs::canonicalize(bots_dir)?, &real));
     if managed {
         return Err(bad_params(
-            "The project folder must be outside the managed bots folder",
+            "The project folder must be outside the managed agents folder",
         ));
     }
     let data_root = bots_dir.parent().unwrap_or(bots_dir);
@@ -573,7 +573,7 @@ fn set_links(db: &Connection, bot_id: &str, targets: &[String]) -> Result<(), Rp
 fn validate_links(db: &Connection, bot_id: &str, targets: &[String]) -> Result<(), RpcError> {
     for target in unique(targets) {
         if target == bot_id {
-            return Err(bad_params("A bot can't message itself"));
+            return Err(bad_params("An agent can't message itself"));
         }
         if db
             .query_row("SELECT 1 FROM bots WHERE id = ?1", [target], |_| Ok(()))
@@ -582,7 +582,7 @@ fn validate_links(db: &Connection, bot_id: &str, targets: &[String]) -> Result<(
         {
             return Err(RpcError::new(
                 ErrorCode::NotFound,
-                "Can message: no such bot",
+                "Can message: no such agent",
             ));
         }
     }
@@ -638,7 +638,7 @@ impl Drop for Switching {
 fn already_changing() -> RpcError {
     RpcError::new(
         ErrorCode::Busy,
-        "This bot is already changing provider. Try again shortly.",
+        "This agent is already changing provider. Try again shortly.",
     )
 }
 
@@ -730,7 +730,7 @@ pub fn register(handlers: Handlers, context: &Context) -> Handlers {
                 {
                     return Err(RpcError::new(
                         ErrorCode::Busy,
-                        "Stop this bot's project task or check before changing its settings.",
+                        "Stop this agent's project task or check before changing its settings.",
                     ));
                 }
                 let (before, patch) = (
@@ -797,7 +797,7 @@ pub fn register(handlers: Handlers, context: &Context) -> Handlers {
                         if update.accounts.protection_status() == Protection::CheckFailed {
                             return Err(RpcError::new(
                                 ErrorCode::BadState,
-                                "Could not update the bot folder protection. Try again after checking Codex's sandbox setup.",
+                                "Could not update the agent folder protection. Try again after checking Codex's sandbox setup.",
                             ));
                         }
                     }
@@ -846,7 +846,7 @@ pub fn register(handlers: Handlers, context: &Context) -> Handlers {
                 {
                     return Err(RpcError::new(
                         ErrorCode::Busy,
-                        "Remove this bot from its project and finish its task or check before deleting it.",
+                        "Remove this agent from its project and finish its task or check before deleting it.",
                     ));
                 }
                 delete.with_db(|db| get_stored_bot(db, &id))?;
@@ -854,7 +854,7 @@ pub fn register(handlers: Handlers, context: &Context) -> Handlers {
                 if !ids.insert(id.clone()) {
                     return Err(RpcError::new(
                         ErrorCode::Busy,
-                        "The bot is already being deleted. Try again shortly.",
+                        "The agent is already being deleted. Try again shortly.",
                     ));
                 }
                 Ok::<_, RpcError>(Deleting {
@@ -876,7 +876,7 @@ pub fn register(handlers: Handlers, context: &Context) -> Handlers {
                             Err(_) => {
                                 return Err(RpcError::new(
                                     ErrorCode::Busy,
-                                    "The bot is taking too long to close. Try deleting it again shortly.",
+                                    "The agent is taking too long to close. Try deleting it again shortly.",
                                 ));
                             }
                         }
@@ -949,7 +949,7 @@ pub fn register(handlers: Handlers, context: &Context) -> Handlers {
                 if bot.browser {
                     Ok(())
                 } else {
-                    Err(bad_params("This bot's browser is off"))
+                    Err(bad_params("This agent's browser is off"))
                 }
             });
             let m6 = show.late.m6.get().cloned();

@@ -25,13 +25,13 @@ export default function Home() {
         <div className="mx-auto w-full max-w-[808px] px-6 pb-12 pt-[72px] max-sm:px-4 max-sm:pt-6">
           <h1 className="text-[20px] font-semibold leading-[26px] text-title">Set up Tjommie</h1>
           <p className="mt-2 text-[14px] leading-[21px] text-secondary">
-            Tjommie runs your bots with Claude Code and Codex on this PC. Sign in to each one once. Tjommie keeps its own sign-in, separate from how you use these tools yourself, and never sees your password.
+            Tjommie runs your agents with Claude Code and Codex on this PC. Sign in to each one once. Tjommie keeps its own sign-in, separate from how you use these tools yourself, and never sees your password.
           </p>
           <div className="mt-8">
             <ProviderCards />
           </div>
           <Link href="/bots/new/" className="press mt-10 inline-flex h-10 items-center rounded-full bg-user-bubble px-5 text-[14px] font-semibold text-user-text">
-            Create your first bot
+            Create your first agent
           </Link>
           <p className="mt-3 text-[12px] leading-[18px] text-secondary">You can sign in to the other one later in Settings.</p>
         </div>

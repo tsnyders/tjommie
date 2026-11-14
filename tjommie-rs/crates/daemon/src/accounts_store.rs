@@ -341,7 +341,7 @@ pub fn remove_account(db: &Connection, id: &str) -> Result<(), RpcError> {
     {
         return Err(RpcError::new(
             ErrorCode::Busy,
-            "Move this account's bots before removing it",
+            "Move this account's agents before removing it",
         ));
     }
     let transaction = db.unchecked_transaction()?;

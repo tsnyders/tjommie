@@ -171,7 +171,7 @@ async fn opens_the_browser_only_for_a_bot_that_has_one() {
         .await;
     assert_eq!(
         response["error"],
-        json!({ "code": "bad_params", "message": "This bot's browser is off" })
+        json!({ "code": "bad_params", "message": "This agent's browser is off" })
     );
     let mut browsing = bot("Browsing");
     browsing["browser"] = json!(true);

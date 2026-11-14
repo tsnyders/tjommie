@@ -62,7 +62,7 @@ cpSync(join(desktop, "src", "preload.cjs"), join(app, "src", "preload.cjs"));
 for (const name of ["vault-entry.html", "vault-entry.js", "vault-entry.css", "vault-entry-preload.cjs"]) cpSync(join(desktop, "src", name), join(app, "src", name));
 writeFileSync(
   join(app, "package.json"),
-  JSON.stringify({ name: testAppId ? testIdentity.packageName : "tjommie", appId, productName, version, ...(testDataRoot ? { testDataRoot } : {}), description: "AI bots on your own PC", author: "TSnyders", license: "Apache-2.0", type: "module", main: "src/main.mjs" }, null, 2),
+  JSON.stringify({ name: testAppId ? testIdentity.packageName : "tjommie", appId, productName, version, ...(testDataRoot ? { testDataRoot } : {}), description: "AI agents on your own PC", author: "TSnyders", license: "Apache-2.0", type: "module", main: "src/main.mjs" }, null, 2),
 );
 
 // The daemon is one exe: no Node bundle, no Playwright MCP and no Noise wasm (the UI keeps its own copy of the wasm in resources/ui).

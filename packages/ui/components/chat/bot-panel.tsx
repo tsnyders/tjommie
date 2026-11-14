@@ -170,7 +170,7 @@ export function BrowserCard({ bot, onOpen }: { bot: Bot; onOpen: () => void }) {
             Open
           </button>
         </div>
-        <p className="mt-0.5 text-[12px] leading-[18px] text-secondary">Built into Tjommie, with its own sign-ins. Watch the bot use it, or take over.</p>
+        <p className="mt-0.5 text-[12px] leading-[18px] text-secondary">Built into Tjommie, with its own sign-ins. Watch the agent use it, or take over.</p>
       </div>
       <BrowserThumbnail botId={bot.id} name={bot.name} />
     </section>

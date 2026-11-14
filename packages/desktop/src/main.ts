@@ -337,7 +337,7 @@ async function launchDaemon(): Promise<DaemonConnection> {
       if (command.kind === "cancel_tools") { await cancelNativeBrowserAutomation(identity.id); return {}; }
       const bot = await resolveNativeBot(identity.id);
       const result = await nativeEngine.execute(bot, command);
-      if (disabledNativeBots.has(bot.id)) { await nativeEngine.closeBot(bot.id); throw new Error("This bot's browser is off."); }
+      if (disabledNativeBots.has(bot.id)) { await nativeEngine.closeBot(bot.id); throw new Error("This agent's browser is off."); }
       return result;
     },
   });
@@ -453,12 +453,12 @@ async function executeVault(command: VaultHostCommand): Promise<unknown> {
 }
 
 async function resolveNativeBot(id: unknown, requireBrowser = true) {
-  if (typeof id !== "string" || !id || id.length > 256) throw new Error("Invalid browser bot.");
+  if (typeof id !== "string" || !id || id.length > 256) throw new Error("Invalid browser agent.");
   if (!nativeClient && daemon) void connectNativeClient(daemon).catch(() => {});
   if (!nativeClient) throw new Error("The native browser needs the desktop background service.");
   const client = await nativeClient;
   const bot = (await client.call("bots.list", {})).find((value) => value.id === id);
-  if (!bot || requireBrowser && (!bot.browser || disabledNativeBots.has(id))) throw new Error("This bot's browser is off or the bot no longer exists.");
+  if (!bot || requireBrowser && (!bot.browser || disabledNativeBots.has(id))) throw new Error("This agent's browser is off or the agent no longer exists.");
   return bot;
 }
 
@@ -528,7 +528,7 @@ function registerIpc(): void {
     const bot = await resolveNativeBot(botId);
     if (!nativeEngine) throw new Error("The native browser is not ready.");
     const result = await nativeEngine.execute(bot, value);
-    if (disabledNativeBots.has(bot.id)) { await nativeEngine.closeBot(bot.id); throw new Error("This bot's browser is off."); }
+    if (disabledNativeBots.has(bot.id)) { await nativeEngine.closeBot(bot.id); throw new Error("This agent's browser is off."); }
     return result;
   });
   ipcMain.handle("native-browser:mount", async (event, botId: unknown, mount: unknown) => {
@@ -543,7 +543,7 @@ function registerIpc(): void {
     const bot = await resolveNativeBot(botId);
     if (!nativeEngine) throw new Error("The native browser is not ready.");
     const result = await nativeEngine.mount(bot, value);
-    if (disabledNativeBots.has(bot.id)) { await nativeEngine.closeBot(bot.id); throw new Error("This bot's browser is off."); }
+    if (disabledNativeBots.has(bot.id)) { await nativeEngine.closeBot(bot.id); throw new Error("This agent's browser is off."); }
     return result;
   });
   ipcMain.handle("google:connect", async (_event, services: unknown): Promise<{ attempt: string }> => {
@@ -717,5 +717,5 @@ function hintTray(): void {
   if (existsSync(marker) || !Notification.isSupported()) return;
   mkdirSync(app.getPath("userData"), { recursive: true });
   writeFileSync(marker, "");
-  new Notification({ title: "Tjommie is still running", body: "Your bots and routines keep working. Quit from the Tjommie icon in the taskbar tray.", icon: appIcon }).show();
+  new Notification({ title: "Tjommie is still running", body: "Your agents and routines keep working. Quit from the Tjommie icon in the taskbar tray.", icon: appIcon }).show();
 }

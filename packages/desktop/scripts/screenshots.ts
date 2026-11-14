@@ -41,14 +41,14 @@ try {
   await page.getByRole("link", { name: "Settings", exact: true }).click();
   await page.getByRole("heading", { name: "General", exact: true }).waitFor();
   await shot("wf10-settings-general-dark");
-  await page.getByRole("link", { name: "Bots", exact: true }).click();
+  await page.getByRole("navigation", { name: "Settings" }).getByRole("link", { name: "Agents", exact: true }).click();
   await page.getByText("Requests between bots per chain").waitFor();
   await shot("wf10-settings-bots-dark");
 
   // Bots like WF1's. CV Writer is made through the API to save time; Pnet apply the way a person would, with WF3's
   // instructions and Can message closed again, as WF3 draws them.
   const writer = await claudeBot(client, "CV Writer", { color: "green", shape: "rounded-square", instructions: "You tailor CVs. Answer in one short line." });
-  await page.getByRole("link", { name: "New bot", exact: true }).click();
+  await page.getByRole("link", { name: "New agent", exact: true }).click();
   await page.getByRole("button", { name: /^Job hunter/ }).click();
   await page.getByLabel("Name").fill("Pnet apply");
   await page.getByLabel("What should this bot do?").fill("Apply to Full Stack and React roles on pnet.co.za in Johannesburg or remote. Skip senior roles. Ask CV Writer for a tailored CV when a listing asks for Angular or Azure.");
@@ -59,7 +59,7 @@ try {
   await page.getByRole("button", { name: /^Model/ }).click();
   await page.getByRole("button", { name: "Haiku (latest)" }).click();
   await page.getByRole("radio", { name: "Always ask" }).click();
-  await page.getByRole("button", { name: "Create bot" }).click();
+  await page.getByRole("button", { name: "Create agent" }).click();
   await page.getByRole("heading", { level: 1, name: "Pnet apply", exact: true }).waitFor();
 
   // WF1 and WF6: an exchange with a shared file, then an approval card left waiting. Pnet apply passes the request on
@@ -118,7 +118,7 @@ try {
   // popover and WF2's cards show that state.
   await send(page, "Pnet apply", "Use the Write tool to create agents-note.txt containing hi. Then reply DONE.");
   await page.getByRole("group", { name: "Waiting for you" }).first().waitFor({ timeout: 180_000 });
-  await page.getByRole("link", { name: "Bot settings", exact: true }).click();
+  await page.getByRole("link", { name: "Agent settings", exact: true }).click();
   await page.getByText("# Pnet apply's notes").waitFor();
   await shot("wf8-bot-settings-dark");
   await page.getByRole("radio", { name: "Full auto" }).click();
@@ -126,7 +126,7 @@ try {
   await fullAuto.waitFor();
   await shot("wf11-full-auto-dark");
   await fullAuto.getByRole("button", { name: "Cancel" }).click();
-  await page.getByRole("button", { name: "Delete bot" }).click();
+  await page.getByRole("button", { name: "Delete agent" }).click();
   const remove = page.getByRole("dialog", { name: "Delete Pnet apply?" });
   await remove.waitFor();
   await shot("wf11-delete-bot-dark");

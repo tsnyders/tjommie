@@ -245,11 +245,11 @@ export function BrowserChrome({
             <IconButton type="submit" label="Go" className="size-9 max-sm:size-11" disabled={!human} onMouseDown={(event) => event.preventDefault()}><CornerDownLeft aria-hidden /></IconButton>
           </form>
           <div className="flex min-w-0 shrink-0 flex-wrap items-center gap-2 text-[12px] leading-[18px] text-secondary">
-            <span className="min-w-0 flex-1" title={human ? "Shift+Tab leaves the page. Closing this panel, or opening Details, hands the browser back to the bot." : undefined}>
+            <span className="min-w-0 flex-1" title={human ? "Shift+Tab leaves the page. Closing this panel, or opening Details, hands the browser back to the agent." : undefined}>
               {state.privateActive ? "Private interaction. Browser automation and pictures are paused." : human ? <>{"You're in control."}<span className="sr-only"> Shift+Tab leaves the page.</span></> : state.control === "human" ? "Another device is controlling this browser. You can watch." : `${botName} is using this browser. You can watch.`}
             </span>
             <Pill disabled={state.privateActive} data-focus-return="control" onClick={() => controls.setControl(human ? "bot" : "human")} className="text-[13px] max-sm:min-h-11">
-              {human ? "Resume bot" : "Take control"}
+              {human ? "Resume agent" : "Take control"}
             </Pill>
           </div>
           {tab && googleSignInRejected(tab.url) && <p className="text-[12px] leading-[18px] text-secondary">Google may block sign-in in automated browsers.</p>}

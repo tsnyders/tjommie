@@ -39,7 +39,7 @@ afterEach(async () => { if (root) await act(async () => root!.unmount()); root =
 it("shows metadata and invokes native host entry without ordinary secret inputs", async () => {
   await mount(<LoginsSection />); expect(document.body.textContent).toContain(entry.name); expect(document.body.textContent).toContain(entry.origin);
   expect(document.querySelector('input[type="password"]')).toBeNull(); expect(document.querySelector('input[name="username"]')).toBeNull();
-  await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Bot for new login"]')!.click());
+  await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Agent for new login"]')!.click());
   const choice = [...document.querySelectorAll<HTMLElement>('[role="menuitemradio"]')].find(item => item.textContent === "Writer")!;
   await act(async () => choice.click());
   expect(document.querySelector("select")).toBeNull();
@@ -52,7 +52,7 @@ it("requires current control/page/epoch, exact-origin metadata, and keeps Finish
   await act(async () => button("Fill on host").click()); await settle();
   expect(call).toHaveBeenCalledWith("vault.fill", { botId: "one", generation: "generation-one", pageId: "page-one", controlEpoch: 7, id: entry.id, revision: 3 });
   await act(async () => root!.render(<BrowserLogins state={{ ...state, privateActive: true, privateEpoch: 9, tabs: [] }} onRefresh={refreshed} />));
-  expect(document.querySelector("select,input")).toBeNull(); expect(document.body.textContent).toContain("Remote fields and pictures are hidden"); expect(document.body.textContent).not.toContain("Resume bot");
+  expect(document.querySelector("select,input")).toBeNull(); expect(document.body.textContent).toContain("Remote fields and pictures are hidden"); expect(document.body.textContent).not.toContain("Resume agent");
   await act(async () => button("Clear private fields on host").click()); await settle(); expect(call).toHaveBeenCalledWith("vault.finish", { botId: "one", generation: "generation-one", privateEpoch: 9, mode: "clear" });
   expect(call.mock.calls.some(([method]) => method === "browser.control")).toBe(false);
   expect(browserLoginTarget({ ...state, canControl: false })).toBeNull(); expect(browserLoginTarget({ ...state, controlEpoch: undefined })).toBeNull(); expect(browserLoginTarget({ ...state, privateActive: true })).toBeNull();

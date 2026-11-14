@@ -79,10 +79,10 @@ describe("this PC's buttons", () => {
     );
     const mine = ["Show report.pdf in its folder", "Open the home folder"];
     for (const label of mine) expect(labelled(label), label).not.toBeNull();
-    expect(labelled("Bot panel views")).not.toBeNull(); expect(labelled("Open computer")).not.toBeNull();
+    expect(labelled("Agent panel views")).not.toBeNull(); expect(labelled("Open computer")).not.toBeNull();
     await showPc(HOME);
     for (const label of mine) expect(labelled(label), label).toBeNull();
-    expect(labelled("Bot panel views")).not.toBeNull(); expect(labelled("Open computer")).not.toBeNull();
+    expect(labelled("Agent panel views")).not.toBeNull(); expect(labelled("Open computer")).not.toBeNull();
     expect(document.querySelector('[data-slot="browser-thumbnail"]')).not.toBeNull();
     await showPc(null);
     for (const label of mine) expect(labelled(label), label).not.toBeNull();
@@ -94,7 +94,7 @@ describe("this PC's buttons", () => {
     expect(text()).toContain("Open home folder");
     expect(text()).toContain("Open browser");
     await showPc(HOME);
-    expect(text()).toContain("Bot settings"); // still open
+    expect(text()).toContain("Agent settings"); // still open
     expect(text()).not.toContain("Open home folder");
     expect(text()).toContain("Open browser"); // remote Computer remains available; folders stay local-only
   });

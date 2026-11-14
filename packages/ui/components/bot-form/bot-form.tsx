@@ -24,7 +24,7 @@ export function BotFormFields({ form, onChange, bots, selfId, saved, nameError, 
     <div className="flex flex-col">
       <Identity form={form} onChange={onChange} nameError={nameError} />
       <div className="mt-6 flex flex-col gap-1.5">
-        <Label htmlFor="bot-instructions">What should this bot do?</Label>
+        <Label htmlFor="bot-instructions">What should this agent do?</Label>
         <textarea
           id="bot-instructions"
           value={form.instructions}
@@ -46,7 +46,7 @@ export function BotFormFields({ form, onChange, bots, selfId, saved, nameError, 
           bots={bots}
           onChange={(canMessage) => onChange({ ...form, canMessage })}
         >
-          It can ask these bots for help. They can&apos;t ask it back unless you allow that in their own settings.
+          It can ask these agents for help. They can&apos;t ask it back unless you allow that in their own settings.
         </CanMessageRow>
         {routinesRow}
       </div>

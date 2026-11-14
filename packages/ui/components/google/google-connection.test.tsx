@@ -48,7 +48,7 @@ describe("GoogleBody", () => {
   it("always says what a bot can do with it, and that it isn't the built-in browser's sign-in", () => {
     for (const status of [{ ...base, configured: false }, base, connected]) {
       const out = html(status);
-      expect(out).toContain("A bot you allow can send and manage your email");
+      expect(out).toContain("An agent you allow can send and manage your email");
       expect(out).toContain("doesn&#x27;t sign the built-in browser in to Google");
     }
   });

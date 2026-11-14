@@ -23,7 +23,7 @@ public class TjommiePushRoutingPlugin extends Plugin {
   @Override public void load() {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
     NotificationManager manager = (NotificationManager) getContext().getSystemService(Context.NOTIFICATION_SERVICE);
-    manager.createNotificationChannel(new NotificationChannel("bots", "Bots", NotificationManager.IMPORTANCE_HIGH));
+    manager.createNotificationChannel(new NotificationChannel("bots", "Agents", NotificationManager.IMPORTANCE_HIGH));
   }
 
   @PluginMethod public void available(PluginCall call) {

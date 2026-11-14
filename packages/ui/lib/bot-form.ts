@@ -49,9 +49,9 @@ export const formFromBot = (bot: Bot): BotForm => ({
 // Why the name can't be saved yet, or null. The daemon checks again (name_taken).
 export function nameProblem(name: string, bots: Pick<Bot, "id" | "name">[], selfId: string | null): string | null {
   const trimmed = name.trim();
-  if (!trimmed) return "Give the bot a name.";
+  if (!trimmed) return "Give the agent a name.";
   if (trimmed.length > 40) return "Keep the name to 40 characters or fewer.";
-  if (bots.some((bot) => bot.id !== selfId && bot.name.toLowerCase() === trimmed.toLowerCase())) return `There's already a bot called ${trimmed}.`;
+  if (bots.some((bot) => bot.id !== selfId && bot.name.toLowerCase() === trimmed.toLowerCase())) return `There's already an agent called ${trimmed}.`;
   return null;
 }
 
@@ -95,7 +95,7 @@ export function routinesSummary(routines: Pick<RoutineDraft, "days" | "times" | 
 // The value of a row of bots to choose (Can message, a room's bots). Deleted bots don't count.
 export function canMessageSummary(ids: string[], bots: Pick<Bot, "id">[]): string {
   const count = ids.filter((id) => bots.some((bot) => bot.id === id)).length;
-  return count === 0 ? "Nobody yet" : `${count} ${count === 1 ? "bot" : "bots"}`;
+  return count === 0 ? "Nobody yet" : `${count} ${count === 1 ? "agent" : "agents"}`;
 }
 
 export const AUTONOMY_LEVELS = [
@@ -109,6 +109,6 @@ export function autonomyHelp(autonomy: Autonomy, provider: Provider): string {
   if (autonomy === "ask") return "Always ask: asks before every change it makes.";
   if (autonomy === "full") return "Full auto: never asks. It can run any command and change any file your Windows account can.";
   return provider === "claude"
-    ? "Own folder: works freely inside its own folder and asks before anything else. Claude bots also ask before each shell command."
-    : "Own folder: works freely inside its own folder and asks before anything else. It can still read the rest of your user profile, and Codex bots can read each other's folders.";
+    ? "Own folder: works freely inside its own folder and asks before anything else. Claude agents also ask before each shell command."
+    : "Own folder: works freely inside its own folder and asks before anything else. It can still read the rest of your user profile, and Codex agents can read each other's folders.";
 }

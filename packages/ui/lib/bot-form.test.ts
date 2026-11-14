@@ -36,9 +36,9 @@ describe("the bot form", () => {
 
   it("checks the name and trims it for the daemon", () => {
     const bots = [bot, { ...bot, id: "b2", name: "CV Writer" }];
-    expect(nameProblem("  ", bots, null)).toBe("Give the bot a name.");
+    expect(nameProblem("  ", bots, null)).toBe("Give the agent a name.");
     expect(nameProblem("x".repeat(41), bots, null)).toBe("Keep the name to 40 characters or fewer.");
-    expect(nameProblem("cv writer", bots, null)).toBe("There's already a bot called cv writer.");
+    expect(nameProblem("cv writer", bots, null)).toBe("There's already an agent called cv writer.");
     expect(nameProblem("Pnet apply", bots, "b1")).toBeNull();
     expect(createInput({ ...NEW_BOT, name: " Night Shift " }).name).toBe("Night Shift");
   });
@@ -49,12 +49,12 @@ describe("the bot form", () => {
     expect(routinesSummary([{ days: weekdays, times: ["16:45"], enabled: true }, { days: weekdays, times: ["08:48", "12:47"], enabled: true }])).toBe("Weekdays 8:48 AM, 12:47 PM, 4:45 PM");
     expect(routinesSummary([{ days: weekdays, times: ["08:48"], enabled: true }, { days: [0], times: ["09:00"], enabled: true }])).toBe("2 routines");
     expect(routinesSummary([{ days: weekdays, times: ["08:48"], enabled: false }])).toBe("1 paused");
-    expect(canMessageSummary(["b2", "gone"], [bot, { ...bot, id: "b2" }])).toBe("1 bot");
+    expect(canMessageSummary(["b2", "gone"], [bot, { ...bot, id: "b2" }])).toBe("1 agent");
     expect(canMessageSummary([], [bot])).toBe("Nobody yet");
   });
 
   it("says what Own folder protects for each CLI", () => {
-    expect(autonomyHelp("folder", "claude")).toContain("Claude bots also ask before each shell command.");
+    expect(autonomyHelp("folder", "claude")).toContain("Claude agents also ask before each shell command.");
     expect(autonomyHelp("folder", "codex")).toContain("It can still read the rest of your user profile");
     expect(autonomyHelp("full", "codex")).toMatch(/^Full auto: never asks\./);
   });

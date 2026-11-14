@@ -67,7 +67,7 @@ export function AboutSection() {
   const [notices, showNotices] = useState(false);
   const host = useApp((state) => state.host);
   const { info } = useSystemInfo();
-  return <SettingsSection title="About" note="Tjommie connects this device to bots running on the selected host PC.">
+  return <SettingsSection title="About" note="Tjommie connects this device to agents running on the selected host PC.">
     <SettingsCard>
       <SettingsRow title="This device's app version"><span className="text-[13px] text-secondary">{diagnosticVersion(info?.device?.appVersion) ?? "Unknown in this app"}</span></SettingsRow>
       <SettingsRow title="Connected host's app version" note={host === null ? "The host running on this device." : "The paired PC, which may have a different version."}><span className="text-[13px] text-secondary">{diagnosticVersion(info?.host?.appVersion) ?? "Unknown"}</span></SettingsRow>
