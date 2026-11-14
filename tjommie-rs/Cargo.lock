@@ -1687,15 +1687,21 @@ dependencies = [
 name = "desktop"
 version = "0.5.1"
 dependencies = [
+ "base64 0.23.1",
+ "client",
  "desktop-host",
  "futures",
  "gpui-kit",
  "gpui-pre",
+ "jiff",
  "log",
  "protocol",
+ "regex",
  "rust-embed",
  "serde",
  "serde_json",
+ "tokio",
+ "url",
  "windows 0.62.2",
 ]
 
