@@ -48,11 +48,131 @@ function readers(body: string): unknown {
   return JSON.parse(run.stdout) as unknown;
 }
 
+// The same, with the process-scoping functions (installer/scoped-processes.ps1) loaded instead.
+function scoped(body: string): unknown {
+  const file = join(temp(), "run.ps1");
+  writeFileSync(file, `$ErrorActionPreference = 'Stop'
+. '${join(installer, "scoped-processes.ps1")}'
+${body}
+`);
+  const run = powershell(file, [], { ...process.env });
+  if (run.status !== 0) throw new Error(`PowerShell failed (${run.status}): ${run.stderr || run.stdout}`);
+  return JSON.parse(run.stdout) as unknown;
+}
+
 const scripts = existsSync(installer) ? readdirSync(installer).filter((name) => name.endsWith(".ps1")) : [];
 
 describe.skipIf(!windows)("the R1 install-facts scripts", () => {
   it("has the scripts the workflow runs", () => {
-    expect(scripts).toEqual(expect.arrayContaining(["collect-r1-facts.ps1", "hosted-runner.ps1", "install-latest-r1.ps1", "r1-facts-lib.ps1"]));
+    expect(scripts).toEqual(expect.arrayContaining(["collect-r1-facts.ps1", "hosted-runner.ps1", "install-latest-r1.ps1", "r1-facts-lib.ps1", "scoped-processes.ps1"]));
+  });
+
+  // The second defence, behind the hosted-runner guard: processes are stopped by where they run from, never by name.
+  // These tests start only stubs they make themselves (copies of ping.exe and cmd.exe under the name Tjommie.exe, in temp
+  // folders), and never touch a real Tjommie: the stop function is only ever pointed at a stub folder.
+  it("stops only what runs from the install folder, and its children, and leaves a same-named stub elsewhere alone", () => {
+    const root = temp();
+    const inside = join(root, "install");
+    const outside = join(root, "somewhere else");
+    mkdirSync(inside);
+    mkdirSync(outside);
+    const result = scoped(String.raw`
+      $system = "$env:SystemRoot\System32"
+      Copy-Item "$system\cmd.exe" '${join(inside, "Tjommie.exe")}'
+      Copy-Item "$system\ping.exe" '${join(inside, "tjommie-daemon.exe")}'
+      Copy-Item "$system\ping.exe" '${join(outside, "Tjommie.exe")}'
+      Copy-Item "$system\ping.exe" '${join(outside, "tjommie-daemon.exe")}'
+      $started = @()
+      try {
+        # Outside the folder, with the same names: these must survive.
+        $started += Start-Process -FilePath '${join(outside, "Tjommie.exe")}' -ArgumentList '-n','60','127.0.0.1' -WindowStyle Hidden -PassThru
+        $started += Start-Process -FilePath '${join(outside, "tjommie-daemon.exe")}' -ArgumentList '-n','60','127.0.0.1' -WindowStyle Hidden -PassThru
+        # Inside: a Tjommie.exe that starts a child (ping, which lives in System32, outside the folder), and a daemon.
+        $app = Start-Process -FilePath '${join(inside, "Tjommie.exe")}' -ArgumentList '/c','ping -n 60 127.0.0.1' -WindowStyle Hidden -PassThru
+        $daemon = Start-Process -FilePath '${join(inside, "tjommie-daemon.exe")}' -ArgumentList '-n','60','127.0.0.1' -WindowStyle Hidden -PassThru
+        $started += $app, $daemon
+        $child = $null
+        for ($i = 0; $i -lt 50 -and -not $child; $i++) { Start-Sleep -Milliseconds 100; $child = Get-CimInstance Win32_Process -Filter "ParentProcessId=$($app.Id)" | Select-Object -First 1 }
+        if (-not $child) { throw 'The stub app never started its child.' }
+        $stopped = @(Stop-ProcessesInFolder '${inside}')
+        Start-Sleep -Milliseconds 700
+        $alive = { param($id) [bool](Get-Process -Id $id -ErrorAction SilentlyContinue) }
+        [ordered]@{
+          stopped        = @($stopped | ForEach-Object { $_['id'] })
+          appId          = $app.Id
+          daemonId       = $daemon.Id
+          childId        = [int]$child.ProcessId
+          outsideIds     = @($started[0].Id, $started[1].Id)
+          outsideApp     = (& $alive $started[0].Id)
+          outsideDaemon  = (& $alive $started[1].Id)
+          insideApp      = (& $alive $app.Id)
+          insideDaemon   = (& $alive $daemon.Id)
+          insideChild    = (& $alive ([int]$child.ProcessId))
+        } | ConvertTo-Json -Compress
+      } finally {
+        # Only the stubs this test started, by id, and the child it saw.
+        foreach ($process in $started) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue }
+        if ($child) { Stop-Process -Id ([int]$child.ProcessId) -Force -ErrorAction SilentlyContinue }
+      }
+    `) as { stopped: number[]; appId: number; daemonId: number; childId: number; outsideIds: number[]; outsideApp: boolean; outsideDaemon: boolean; insideApp: boolean; insideDaemon: boolean; insideChild: boolean };
+    expect(result.insideApp).toBe(false);
+    expect(result.insideDaemon).toBe(false);
+    expect(result.insideChild).toBe(false); // the child of the stub app, though its own executable is outside the folder
+    expect(result.outsideApp).toBe(true); // same name, other folder
+    expect(result.outsideDaemon).toBe(true);
+    // The stub app, its daemon and its child are stopped (and anything the app's console started, which is its child too); the
+    // same-named stubs elsewhere are not on the list.
+    expect(result.stopped).toEqual(expect.arrayContaining([result.appId, result.daemonId, result.childId]));
+    for (const id of result.outsideIds) expect(result.stopped).not.toContain(id);
+  });
+
+  // Pure checks: a refused folder stops nothing, because the function that stops things calls this first.
+  it("refuses a folder that is a drive, a system or profile folder, or holds one, and accepts an install folder", () => {
+    const local = process.env.LOCALAPPDATA ?? "C:\\Users\\alice\\AppData\\Local";
+    const result = scoped(String.raw`
+      function Check([string]$Folder) { try { Assert-NarrowFolder $Folder; 'accepted' } catch { 'refused' } }
+      $cases = [ordered]@{}
+      foreach ($folder in @('', 'C:\', 'C:\Users', $env:SystemRoot, $env:USERPROFILE, (Split-Path $env:USERPROFILE -Parent), $env:LOCALAPPDATA, (Split-Path $env:LOCALAPPDATA -Parent), $env:APPDATA, $env:TEMP, $env:ProgramFiles, 'C:\Windows\..')) { $cases["refused: $folder"] = Check $folder }
+      foreach ($folder in @((Join-Path $env:LOCALAPPDATA 'Programs\Tjommie'), (Join-Path $env:TEMP 'tjommie-stub\install'), 'D:\a\work\install')) { $cases["accepted: $folder"] = Check $folder }
+      $cases | ConvertTo-Json -Compress
+    `) as Record<string, string>;
+    for (const [name, outcome] of Object.entries(result)) expect(outcome, name).toBe(name.startsWith("refused") ? "refused" : "accepted");
+    expect(Object.keys(result)).toContain(`accepted: ${join(local, "Programs\\Tjommie")}`);
+  });
+
+  it("reads which program a command line starts, and which paths are inside a folder", () => {
+    const result = scoped(String.raw`
+      [ordered]@{
+        quoted   = Get-CommandExecutable '"C:\Users\alice\AppData\Local\Programs\Tjommie\Uninstall Tjommie.exe" /currentuser /S'
+        plain    = Get-CommandExecutable 'C:\x\u.exe /S'
+        bare     = Get-CommandExecutable '  u.exe  '
+        empty    = Get-CommandExecutable '   '
+        unclosed = Get-CommandExecutable '"C:\x\u.exe /S'
+        inside   = Test-PathInFolder 'C:\Users\alice\AppData\Local\Programs\Tjommie\Tjommie.exe' 'C:\Users\alice\AppData\Local\Programs\Tjommie'
+        shouted  = Test-PathInFolder 'c:\USERS\alice\appdata\local\programs\tjommie\resources\a.exe' 'C:\Users\alice\AppData\Local\Programs\Tjommie\'
+        sibling  = Test-PathInFolder 'C:\Users\alice\AppData\Local\Programs\Tjommie-old\Tjommie.exe' 'C:\Users\alice\AppData\Local\Programs\Tjommie'
+        dotdot   = Test-PathInFolder 'C:\Users\alice\AppData\Local\Programs\Tjommie\..\Other\a.exe' 'C:\Users\alice\AppData\Local\Programs\Tjommie'
+        elsewhere = Test-PathInFolder 'D:\Tjommie.exe' 'C:\Users\alice\AppData\Local\Programs\Tjommie'
+      } | ConvertTo-Json -Compress
+    `) as Record<string, string | boolean | null>;
+    expect(result).toEqual({
+      quoted: "C:\\Users\\alice\\AppData\\Local\\Programs\\Tjommie\\Uninstall Tjommie.exe", plain: "C:\\x\\u.exe", bare: "u.exe", empty: null, unclosed: null,
+      inside: true, shouted: true, sibling: false, dotdot: false, elsewhere: false,
+    });
+  });
+
+  // No script may stop, kill or look up a process by its image name: that is how a real Tjommie would be reached.
+  it("never stops or looks up a process by name", () => {
+    for (const name of scripts) {
+      const code = readFileSync(join(installer, name), "utf8").split("\n").filter((line) => !line.trim().startsWith("#")).join("\n");
+      expect(code, name).not.toMatch(/taskkill|\bpkill\b|killall|wmic/i);
+      expect(code, name).not.toMatch(/\/IM\b/);
+      expect(code, name).not.toMatch(/Stop-Process\s+(-Name|-InputObject|\$)/i);
+      expect(code, name).not.toMatch(/Get-Process\s+(-Name|[A-Za-z'"*])/i);
+      expect(code, name).not.toMatch(/Win32_Process[^\n]*Name\s*=/i);
+      // Every Stop-Process names an id.
+      for (const stop of code.match(/\bStop-Process\b[^\n]*/gi) ?? []) expect(stop, `${name}: ${stop}`).toMatch(/-Id\b/);
+    }
   });
 
   it("parses: every installer script is valid PowerShell", () => {
