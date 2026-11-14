@@ -1428,14 +1428,17 @@ name = "desktop-host"
 version = "0.5.0"
 dependencies = [
  "async-channel",
+ "daemon",
  "futures",
  "jiff",
  "log",
  "protocol",
+ "reqwest",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
+ "tokio",
  "url",
  "uuid",
  "webview2-com",

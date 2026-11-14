@@ -12,8 +12,9 @@ use webview2_com::{
     Microsoft::Web::WebView2::Win32::{
         COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW, COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL,
         CreateCoreWebView2EnvironmentWithOptions, ICoreWebView2, ICoreWebView2_2, ICoreWebView2_3,
-        ICoreWebView2_13, ICoreWebView2_19, ICoreWebView2Controller, ICoreWebView2Environment,
-        ICoreWebView2Environment10, ICoreWebView2EnvironmentOptions, ICoreWebView2Profile2,
+        ICoreWebView2_13, ICoreWebView2_19, ICoreWebView2Controller, ICoreWebView2Controller3,
+        ICoreWebView2Environment, ICoreWebView2Environment10, ICoreWebView2EnvironmentOptions,
+        ICoreWebView2Profile2,
     },
     NavigationCompletedEventHandler, TrySuspendCompletedHandler, take_pwstr,
 };
@@ -157,6 +158,27 @@ pub async fn call_devtools(
         )?;
     }
     rx.await.map_err(lost)?
+}
+
+/// The page's title.
+pub fn title(webview: &ICoreWebView2) -> Result<String, ComError> {
+    let mut title = PWSTR::null();
+    // SAFETY: WebView2 fills `title` with a CoTaskMem string, which `take_pwstr` copies and frees.
+    unsafe { webview.DocumentTitle(&mut title)? };
+    Ok(take_pwstr(title))
+}
+
+/// The display scale the page renders at (1.0 at 100%).
+pub fn rasterization_scale(controller: &ICoreWebView2Controller) -> f64 {
+    let Ok(controller) = controller.cast::<ICoreWebView2Controller3>() else {
+        return 1.0;
+    };
+    let mut scale = 1.0f64;
+    // SAFETY: plain COM call writing one f64.
+    match unsafe { controller.RasterizationScale(&mut scale) } {
+        Ok(()) => scale,
+        Err(_) => 1.0,
+    }
 }
 
 /// The page's current address.

@@ -30,6 +30,14 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::w;
 
+use desktop_host::browser::BotIdentity;
+use desktop_host::browser::engine::{
+    Engine, EngineConfig, EngineError, Notification, Panel, Reply, TabHandle, ToolGuard,
+};
+use protocol::browser::BrowserState;
+use protocol::native_browser::NativeBrowserCommand;
+use std::cell::Cell;
+
 unsafe extern "system" fn parent_proc(
     hwnd: HWND,
     msg: u32,
@@ -91,6 +99,11 @@ impl Ui {
         // SAFETY: a live window of this thread.
         unsafe { GetClientRect(self.parent, &mut rect).expect("client rect") };
         rect
+    }
+
+    /// The spawner of this thread's local executor, for code that runs tasks of its own.
+    pub fn spawner(&self) -> futures::executor::LocalSpawner {
+        self.pool.spawner()
     }
 
     pub fn spawn(&self, future: impl Future<Output = ()> + 'static) {
@@ -195,8 +208,17 @@ impl FixtureServer {
                         Ok(body) if !path.contains("..") => ("200 OK", body),
                         _ => ("404 Not Found", b"not found".to_vec()),
                     };
+                    // One page is an attachment, to be downloaded rather than shown.
+                    let (kind, disposition) = if path == "download.txt" {
+                        (
+                            "application/octet-stream",
+                            "Content-Disposition: attachment; filename=\"report.txt\"\r\n",
+                        )
+                    } else {
+                        ("text/html; charset=utf-8", "")
+                    };
                     let head = format!(
-                        "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+                        "HTTP/1.1 {status}\r\nContent-Type: {kind}\r\n{disposition}Content-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
                         body.len()
                     );
                     let _ = stream.write_all(head.as_bytes());
@@ -237,4 +259,269 @@ pub fn webview_processes(folder: &Path) -> Vec<ProcessInfo> {
         return Vec::new();
     }
     serde_json::from_str(text).unwrap_or_else(|error| panic!("process list {text:?}: {error}"))
+}
+
+/// Steps of a test, printed when `TJOMMIE_TEST_TRACE` is set (a hang shows where it stopped).
+pub fn trace(step: &str) {
+    if std::env::var_os("TJOMMIE_TEST_TRACE").is_some() {
+        eprintln!(
+            "[trace {:?}] {step}",
+            std::thread::current().name().unwrap_or("?")
+        );
+    }
+}
+
+pub struct Rig {
+    pub ui: Ui,
+    pub engine: Rc<Engine>,
+    pub root: tempfile::TempDir,
+    pub server: FixtureServer,
+    pub clock: Rc<Cell<Instant>>,
+    pub notices: async_channel::Receiver<Notification>,
+}
+
+impl Rig {
+    pub fn new() -> Rig {
+        let ui = Ui::new();
+        let root = tempfile::tempdir().expect("temp root");
+        let server = FixtureServer::start();
+        let clock = Rc::new(Cell::new(Instant::now()));
+        let mut config = EngineConfig::new(ui.parent, root.path().join("data").join("webview2"));
+        config.start_url = server.url("blank.html");
+        let shared = clock.clone();
+        config.clock = Rc::new(move || shared.get());
+        let (events, inbox) = async_channel::unbounded();
+        let (notify, notices) = async_channel::unbounded();
+        let engine = Engine::new(config, events, notify);
+        let applier = engine.clone();
+        ui.spawn(async move {
+            while let Ok(event) = inbox.recv().await {
+                applier.apply_event(event).await;
+            }
+        });
+        Rig {
+            ui,
+            engine,
+            root,
+            server,
+            clock,
+            notices,
+        }
+    }
+
+    pub fn bot(&self, id: &str) -> BotIdentity {
+        BotIdentity {
+            id: id.into(),
+            name: id.into(),
+            home_folder: self
+                .root
+                .path()
+                .join("bots")
+                .join(id)
+                .to_string_lossy()
+                .into_owned(),
+            project_folder: None,
+        }
+    }
+
+    /// A panel over the right half of the parent's client area, in physical pixels.
+    pub fn panel(&self) -> Panel {
+        let client = self.ui.client_rect();
+        Panel {
+            rect: RECT {
+                left: client.right / 2,
+                top: 80,
+                right: client.right - 20,
+                bottom: client.bottom - 20,
+            },
+            occluded: false,
+        }
+    }
+
+    pub fn open(&mut self, id: &str) {
+        trace(&format!("open {id}"));
+        let (engine, bot) = (self.engine.clone(), self.bot(id));
+        self.ui
+            .run(async move { engine.open(&bot).await.expect("open") });
+    }
+
+    /// A tool starts on a bot, as one does in production: its page is awake, parked or in the panel, until the guard
+    /// ends. A page can only be reached through a guard.
+    pub fn begin(&mut self, id: &str) -> ToolGuard {
+        let (engine, bot) = (self.engine.clone(), self.bot(id));
+        self.ui
+            .run(async move { engine.begin_tool(&bot).await.expect("begin tool") })
+    }
+
+    /// Loads `page` from the fixture server and waits until the page says it is done.
+    pub fn load(&mut self, id: &str, page: &str) {
+        trace(&format!("load {id} {page}"));
+        let guard = self.begin(id);
+        let (tab, url) = (guard.tab().expect("active tab"), self.server.url(page));
+        self.ui.run(async move {
+            tab.navigate(&url).await.expect("navigate");
+            let deadline = Instant::now() + Duration::from_secs(60);
+            let mut last = String::new();
+            while Instant::now() < deadline {
+                last = eval(&tab, "document.readyState + '|' + location.href").await;
+                if last == format!("complete|{url}") {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            panic!("page did not load: {url} (the page says {last:?})");
+        });
+        guard.end();
+    }
+
+    /// `eval` until the page accepts the command and the answer is `expected`, or the time is up.
+    pub fn eval_until(&mut self, id: &str, expression: &str, expected: &str, within: Duration) {
+        let label = format!("{expression} never became {expected:?}");
+        let guard = self.begin(id);
+        let (tab, expression, expected) = (
+            guard.tab().expect("active tab"),
+            expression.to_string(),
+            expected.to_string(),
+        );
+        let outcome = self.ui.run(async move {
+            let deadline = Instant::now() + within;
+            let mut last = String::new();
+            while Instant::now() < deadline {
+                match try_eval(&tab, &expression).await {
+                    Ok(answer) if answer == expected => return Ok(()),
+                    Ok(answer) => last = answer,
+                    Err(error) => last = format!("refused: {error}"),
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(last)
+        });
+        guard.end();
+        assert!(outcome.is_ok(), "{label}: {outcome:?}");
+    }
+
+    pub fn eval(&mut self, id: &str, expression: &str) -> String {
+        trace(&format!("eval {expression}"));
+        let guard = self.begin(id);
+        let (tab, expression) = (guard.tab().expect("active tab"), expression.to_string());
+        let answer = self.ui.run(async move { eval(&tab, &expression).await });
+        guard.end();
+        answer
+    }
+
+    pub fn show(&mut self, id: &str) {
+        self.engine
+            .set_panel(id, Some(self.panel()))
+            .expect("set panel");
+    }
+
+    pub fn hide(&mut self, id: &str) {
+        self.engine.set_panel(id, None).expect("clear panel");
+    }
+
+    pub fn wait_suspended(&mut self, id: &str) {
+        let engine = self.engine.clone();
+        let id = id.to_string();
+        self.ui
+            .wait_until("the page to suspend", Duration::from_secs(20), move || {
+                engine.snapshot(&id).is_some_and(|s| s.suspended)
+            });
+    }
+}
+
+#[derive(Deserialize)]
+struct Evaluated {
+    result: RemoteObject,
+}
+#[derive(Deserialize)]
+struct RemoteObject {
+    value: Option<serde_json::Value>,
+}
+
+/// `Runtime.evaluate` of a JavaScript expression, as text.
+/// `eval`, but a refusal is an `Err`: a page that has only just been unblocked may refuse a command for a moment.
+pub async fn try_eval(tab: &TabHandle, expression: &str) -> Result<String, String> {
+    let params = serde_json::json!({ "expression": expression, "returnByValue": true, "awaitPromise": true }).to_string();
+    let json = tab
+        .call("Runtime.evaluate", &params)
+        .await
+        .map_err(|error| error.to_string())?;
+    let evaluated: Evaluated = serde_json::from_str(&json).map_err(|error| error.to_string())?;
+    Ok(match evaluated.result.value {
+        Some(serde_json::Value::String(text)) => text,
+        Some(other) => other.to_string(),
+        None => "undefined".to_string(),
+    })
+}
+
+pub async fn eval(tab: &TabHandle, expression: &str) -> String {
+    let params = serde_json::json!({ "expression": expression, "returnByValue": true, "awaitPromise": true }).to_string();
+    let json = tab
+        .call("Runtime.evaluate", &params)
+        .await
+        .expect("Runtime.evaluate");
+    match serde_json::from_str::<Evaluated>(&json)
+        .expect("evaluate result")
+        .result
+        .value
+    {
+        Some(serde_json::Value::String(text)) => text,
+        Some(other) => other.to_string(),
+        None => "undefined".to_string(),
+    }
+}
+
+impl Rig {
+    /// Runs a wire command for a bot, as the daemon would send it.
+    pub fn exec(&mut self, id: &str, command: serde_json::Value) -> Result<Reply, EngineError> {
+        trace(&format!("exec {command}"));
+        let command: NativeBrowserCommand =
+            serde_json::from_value(command).expect("a command the protocol accepts");
+        let (engine, bot) = (self.engine.clone(), self.bot(id));
+        self.ui
+            .run(async move { engine.execute(&bot, command).await })
+    }
+
+    pub fn exec_state(&mut self, id: &str, command: serde_json::Value) -> BrowserState {
+        match self.exec(id, command).expect("the command to succeed") {
+            Reply::State(state) => *state,
+            other => panic!("expected a browser state, got {other:?}"),
+        }
+    }
+
+    pub fn exec_error(&mut self, id: &str, command: serde_json::Value) -> String {
+        match self.exec(id, command) {
+            Err(error) => error.to_string(),
+            Ok(reply) => panic!("expected a refusal, got {reply:?}"),
+        }
+    }
+
+    pub fn state(&self, id: &str) -> BrowserState {
+        self.engine.state(id, "local").expect("state")
+    }
+
+    /// The notices and states the engine has sent so far.
+    pub fn notifications(&self) -> Vec<Notification> {
+        let mut seen = Vec::new();
+        while let Ok(item) = self.notices.try_recv() {
+            seen.push(item);
+        }
+        seen
+    }
+
+    /// Pumps until a notice containing `text` arrives (other notices are kept out of the way).
+    pub fn wait_notice(&mut self, text: &str) -> String {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            for item in self.notifications() {
+                if let Notification::Notice { message, .. } = item
+                    && message.contains(text)
+                {
+                    return message;
+                }
+            }
+            assert!(Instant::now() < deadline, "no notice containing {text:?}");
+            self.ui.settle(Duration::from_millis(100));
+        }
+    }
 }

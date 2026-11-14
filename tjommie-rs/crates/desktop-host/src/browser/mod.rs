@@ -6,10 +6,17 @@
 
 use serde::Deserialize;
 
+pub mod access;
+pub mod cdp;
 pub mod com;
+pub mod downloads;
 pub mod engine;
 pub mod flags;
+pub mod host;
+pub mod host_bridge;
+pub mod keys;
 pub mod lifecycle;
+pub mod permissions;
 pub mod policy;
 pub mod profiles;
 

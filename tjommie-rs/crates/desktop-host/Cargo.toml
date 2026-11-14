@@ -12,11 +12,14 @@ futures = "0.3.34"
 jiff = "0.2.41"
 log = { version = "0.4.35", features = ["std"] }
 protocol = { version = "0.5.0", path = "../protocol" }
+reqwest = { version = "0.12.28", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sha2 = "0.10.9"
 # owner_safety::test_root: a disposable folder under %TEMP% for tests.
 tempfile = "3.27.0"
+# FIFO async mutex (a bot's command queue) and the bridge's runtime; the engine itself needs only `sync`.
+tokio = { version = "1.54.1", features = ["sync", "rt", "time", "macros"] }
 url = "2.5.8"
 uuid = { version = "1.26.0", features = ["v4"] }
 webview2-com.workspace = true
@@ -31,6 +34,11 @@ windows = { version = "0.62.2", features = [
   "Win32_UI_Input_KeyboardAndMouse",
   "Win32_UI_WindowsAndMessaging",
 ] }
+
+[dev-dependencies]
+# The real broker and server the bridge is tested against (the daemon's own, in-process, on loopback).
+daemon = { path = "../daemon" }
+tokio = { version = "1.54.1", features = ["sync", "rt", "rt-multi-thread", "time", "macros"] }
 
 [lints]
 workspace = true

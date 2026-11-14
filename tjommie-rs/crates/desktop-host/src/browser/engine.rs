@@ -14,7 +14,8 @@ use std::time::{Duration, Instant};
 
 use futures::future::LocalBoxFuture;
 use futures::lock::Mutex as AsyncMutex;
-use protocol::browser::BROWSER_START_URL;
+use protocol::browser::{BROWSER_START_URL, BrowserDialog, MouseButton};
+use tokio::sync::Mutex as QueueMutex;
 use webview2_com::Microsoft::Web::WebView2::Win32::{
     ICoreWebView2, ICoreWebView2Controller, ICoreWebView2Environment, ICoreWebView2Settings3,
     ICoreWebView2Settings4,
@@ -22,18 +23,27 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{CreateSolidBrush, MapWindowPoints};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, GetFocus, SetFocus};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, GetWindowRect, IsWindowVisible, RegisterClassW,
-    SW_HIDE, SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW, SetWindowPos, ShowWindow, WNDCLASSW,
-    WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_EX_NOPARENTNOTIFY,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, GetWindowRect, IsChild, IsWindowVisible,
+    RegisterClassW, SW_HIDE, SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW, SetWindowPos,
+    ShowWindow, WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_EX_NOPARENTNOTIFY,
 };
 use windows::core::{BOOL, Interface as _, w};
 
+use super::access::{Access, AccessError};
+use super::cdp::CdpError;
 use super::com::{self, ComError};
 use super::lifecycle::{Lifecycle, MemoryLevel, Need, Placement, Plan, Timeouts};
 use super::policy::{self, PolicyError};
 use super::profiles::{self, ProfileError};
 use super::{BotIdentity, flags};
+
+mod commands;
+mod events;
+
+pub use commands::{Actor, BotEvent, Check, LOCAL, Reply};
+pub use events::{HostEvent, Notification};
 
 /// Where a page that a tool or a stream keeps awake sits while no panel shows it: outside the window's client
 /// area, still "visible" to WebView2 (hiding it would stop it rendering).
@@ -55,6 +65,10 @@ pub enum EngineError {
     Profile(ProfileError),
     Com(ComError),
     Window(String),
+    Access(AccessError),
+    Cdp(CdpError),
+    /// A refusal in the TypeScript engine's own words.
+    Refused(String),
 }
 
 impl std::fmt::Display for EngineError {
@@ -71,7 +85,9 @@ impl std::fmt::Display for EngineError {
             Self::Policy(error) => write!(f, "{error}"),
             Self::Profile(error) => write!(f, "{error}"),
             Self::Com(error) => write!(f, "{error}"),
-            Self::Window(message) => f.write_str(message),
+            Self::Window(message) | Self::Refused(message) => f.write_str(message),
+            Self::Access(error) => write!(f, "{error}"),
+            Self::Cdp(error) => write!(f, "{error}"),
         }
     }
 }
@@ -91,6 +107,21 @@ impl From<ProfileError> for EngineError {
 impl From<ComError> for EngineError {
     fn from(error: ComError) -> Self {
         Self::Com(error)
+    }
+}
+impl From<AccessError> for EngineError {
+    fn from(error: AccessError) -> Self {
+        Self::Access(error)
+    }
+}
+impl From<CdpError> for EngineError {
+    fn from(error: CdpError) -> Self {
+        Self::Cdp(error)
+    }
+}
+impl EngineError {
+    pub fn refused(message: &str) -> Self {
+        Self::Refused(message.to_string())
     }
 }
 impl From<windows::core::Error> for EngineError {
@@ -138,14 +169,6 @@ fn thread_sleep(duration: Duration) -> LocalBoxFuture<'static, ()> {
     })
 }
 
-/// Typed messages that WebView2 callbacks and dropped guards push; the host applies them with
-/// [`Engine::apply_event`] on the UI thread.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum HostEvent {
-    /// A bot's need changed where no `await` could carry the change (a dropped tool guard): look at it again.
-    Reapply { bot_id: String },
-}
-
 /// The panel's page frame, in physical pixels in the parent's client coordinates.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Panel {
@@ -191,6 +214,16 @@ struct Tab {
     id: String,
     controller: ICoreWebView2Controller,
     webview: ICoreWebView2,
+    /// Set while a CDP override holds the page at this CSS size; a panel showing the page gives it back.
+    fixed_viewport: Cell<Option<(u32, u32)>>,
+    /// Keys and buttons held down by injected input, released when control changes.
+    keys: RefCell<Vec<String>>,
+    buttons: RefCell<Vec<MouseButton>>,
+    point: Cell<(f64, f64)>,
+    /// A navigation is in flight. A suspended page makes no progress, so a loading page is left awake.
+    loading: Cell<bool>,
+    /// The JavaScript dialog the page is blocked on, until it is answered.
+    dialog: RefCell<Option<events::PendingDialog>>,
 }
 
 /// What `apply` last did, so an unchanged plan costs no COM calls.
@@ -202,6 +235,7 @@ struct Applied {
     active: Option<String>,
     tabs: usize,
     memory: MemoryLevel,
+    interactive: bool,
 }
 
 struct BotState {
@@ -218,6 +252,14 @@ struct BotState {
     applied: Option<Applied>,
     /// The active page's address when its controller was closed for idleness.
     last_url: Option<String>,
+    access: Access,
+    revision: u64,
+    viewport_revision: u64,
+    /// Commands running or queued (`busy` in the state).
+    busy: u32,
+    /// A hand-over of control is in progress.
+    handover: u32,
+    dialog: Option<BrowserDialog>,
 }
 
 struct Bot {
@@ -226,11 +268,20 @@ struct Bot {
     state: RefCell<BotState>,
     /// Held while the bot's controllers are created or closed.
     open_lock: AsyncMutex<()>,
+    /// A bot's commands run one at a time, in the order they arrived.
+    queue: QueueMutex<()>,
 }
 
 pub struct Engine {
     config: EngineConfig,
     events: async_channel::Sender<HostEvent>,
+    notify: async_channel::Sender<Notification>,
+    /// A menu or dialog is over the page area for every bot: pages stay awake but out of the way.
+    occluded: Cell<bool>,
+    /// Remote controllers seen: a disconnected one stays remembered for a minute, so a late command is refused.
+    controllers: RefCell<HashMap<String, commands::ControllerLife>>,
+    /// Bots whose browser is deleted or switched off: a command that finishes for one of them closes it.
+    disabled: RefCell<HashSet<String>>,
     environment: AsyncMutex<Option<ICoreWebView2Environment>>,
     bots: RefCell<HashMap<String, Rc<Bot>>>,
     /// The one bot whose panel is open.
@@ -276,6 +327,25 @@ pub struct ToolGuard {
 }
 
 impl ToolGuard {
+    /// The bot's active tab. A tab can only be reached through a guard: the guard keeps the page awake, visible and
+    /// parked (or in the panel) for as long as it lives, because a suspended page answers nothing.
+    pub fn tab(&self) -> Result<TabHandle, EngineError> {
+        let tab = self.engine.tab(&self.bot, None)?;
+        Ok(TabHandle {
+            id: tab.id.clone(),
+            webview: tab.webview.clone(),
+        })
+    }
+
+    /// A tab by id (a tool's `pageId`).
+    pub fn tab_by_id(&self, id: &str) -> Result<TabHandle, EngineError> {
+        let tab = self.engine.tab(&self.bot, Some(id))?;
+        Ok(TabHandle {
+            id: tab.id.clone(),
+            webview: tab.webview.clone(),
+        })
+    }
+
     /// Ends the tool: a hidden bot goes back to sleep at once.
     pub fn end(self) {
         self.ended.set(true);
@@ -381,10 +451,18 @@ fn configure(webview: &ICoreWebView2) {
 
 impl Engine {
     /// Nothing starts here: the environment waits for the first [`open`](Self::open).
-    pub fn new(config: EngineConfig, events: async_channel::Sender<HostEvent>) -> Rc<Self> {
+    pub fn new(
+        config: EngineConfig,
+        events: async_channel::Sender<HostEvent>,
+        notify: async_channel::Sender<Notification>,
+    ) -> Rc<Self> {
         Rc::new(Self {
             config,
             events,
+            notify,
+            occluded: Cell::new(false),
+            controllers: RefCell::new(HashMap::new()),
+            disabled: RefCell::new(HashSet::new()),
             environment: AsyncMutex::new(None),
             bots: RefCell::new(HashMap::new()),
             mounted: RefCell::new(None),
@@ -460,8 +538,15 @@ impl Engine {
                 viewport: DEFAULT_VIEWPORT,
                 applied: None,
                 last_url: None,
+                access: Access::default(),
+                revision: 0,
+                viewport_revision: 0,
+                busy: 0,
+                handover: 0,
+                dialog: None,
             }),
             open_lock: AsyncMutex::new(()),
+            queue: QueueMutex::new(()),
         });
         bots.insert(identity.id.clone(), bot.clone());
         Ok(bot)
@@ -475,6 +560,11 @@ impl Engine {
         loop {
             if self.closed.get() {
                 return Err(EngineError::Closed);
+            }
+            if self.disabled.borrow().contains(&identity.id) {
+                return Err(EngineError::refused(
+                    "This agent's browser is off or the agent no longer exists.",
+                ));
             }
             let bot = self.bot_entry(identity)?;
             let turn = bot.open_lock.lock().await;
@@ -541,9 +631,7 @@ impl Engine {
             };
             (url, container)
         };
-        let created = self
-            .new_tab(&environment, container, &bot.profile, &url)
-            .await;
+        let created = self.new_tab(bot, &environment, container, Some(&url)).await;
         let tab = match created {
             Ok(tab) => tab,
             Err(error) => {
@@ -569,26 +657,45 @@ impl Engine {
         Ok(())
     }
 
+    /// A page in `profile`. With a `url` it opens that address; without one (a popup, whose contents the page
+    /// supplies) it stays blank.
     async fn new_tab(
         &self,
+        bot: &Bot,
         environment: &ICoreWebView2Environment,
         container: HWND,
-        profile: &str,
-        url: &str,
+        url: Option<&str>,
     ) -> Result<Rc<Tab>, EngineError> {
+        let (bot_id, profile) = (bot.identity.id.as_str(), bot.profile.as_str());
         let controller = com::create_controller(environment, container, profile).await?;
         // SAFETY: plain COM calls on the controller this function just created.
         let webview = unsafe { controller.CoreWebView2()? };
         configure(&webview);
+        let id = uuid::Uuid::new_v4().to_string();
+        events::watch(
+            &self.events,
+            bot_id,
+            &id,
+            &bot.identity.home_folder,
+            &webview,
+        )?;
         // SAFETY: as above. The page stays hidden until the lifecycle plan says where it goes.
         unsafe {
             controller.SetIsVisible(false)?;
-            webview.Navigate(&windows::core::HSTRING::from(url))?;
+            if let Some(url) = url {
+                webview.Navigate(&windows::core::HSTRING::from(url))?;
+            }
         }
         Ok(Rc::new(Tab {
-            id: uuid::Uuid::new_v4().to_string(),
+            id,
             controller,
             webview,
+            fixed_viewport: Cell::new(None),
+            keys: RefCell::new(Vec::new()),
+            buttons: RefCell::new(Vec::new()),
+            point: Cell::new((0.0, 0.0)),
+            loading: Cell::new(url.is_some()),
+            dialog: RefCell::new(None),
         }))
     }
 
@@ -662,21 +769,6 @@ impl Engine {
         }
     }
 
-    /// The bot's active tab, for a tool or a test to talk to.
-    pub fn active_tab(&self, id: &str) -> Result<TabHandle, EngineError> {
-        let bot = self.bot(id)?;
-        let state = bot.state.borrow();
-        let tab = state
-            .active
-            .as_ref()
-            .and_then(|active| state.tabs.iter().find(|tab| &tab.id == active))
-            .ok_or(EngineError::NotOpen)?;
-        Ok(TabHandle {
-            id: tab.id.clone(),
-            webview: tab.webview.clone(),
-        })
-    }
-
     /// Brings WebView2 in line with the bot's need: resume first, then place and show; or hide, then suspend.
     /// Synchronous, and safe to call as often as you like: a plan that has not changed costs nothing.
     fn apply(&self, bot: &Rc<Bot>) {
@@ -695,6 +787,12 @@ impl Engine {
                 MemoryLevel::Normal
             };
             let panel = state.panel.filter(|_| plan.placement == Placement::Panel);
+            let occluded = self.occluded.get() || panel.is_some_and(|panel| panel.occluded);
+            // Real mouse and keyboard reach the page only while the person holds it and can see it.
+            let interactive = plan.placement == Placement::Panel
+                && !occluded
+                && state.access.owner() == Some("local")
+                && state.handover == 0;
             let rect = match plan.placement {
                 Placement::Panel => panel.map(|panel| panel.rect),
                 Placement::Parked => Some(parked_rect(state.viewport)),
@@ -703,16 +801,37 @@ impl Engine {
             let applied = Applied {
                 plan,
                 rect,
-                occluded: panel.is_some_and(|panel| panel.occluded),
+                occluded,
                 active: state.active.clone(),
                 tabs: state.tabs.len(),
                 memory,
+                interactive,
             };
             if state.applied.as_ref() == Some(&applied) {
                 return;
             }
+            let mut resized = false;
             if let (Placement::Panel, Some(rect)) = (plan.placement, rect) {
+                resized = state.viewport != rect_size(&rect);
                 state.viewport = rect_size(&rect);
+            }
+            // A panel showing the page gives the page its own size back after a fixed one.
+            let mut restore = Vec::new();
+            if plan.placement == Placement::Panel {
+                for tab in &state.tabs {
+                    if tab.fixed_viewport.take().is_some() {
+                        restore.push(tab.id.clone());
+                    }
+                }
+            }
+            if resized || !restore.is_empty() {
+                state.viewport_revision += 1;
+            }
+            for tab_id in restore {
+                let _ = self.events.try_send(HostEvent::RestoreViewport {
+                    bot_id: bot.identity.id.clone(),
+                    tab_id,
+                });
             }
             state.applied = Some(applied.clone());
             (plan, applied, state.tabs.clone(), state.container)
@@ -724,7 +843,8 @@ impl Engine {
             Self::place(container, &tabs, None, false);
             Self::set_visible(&tabs, None);
             for tab in &tabs {
-                if !com::is_suspended(&tab.webview).unwrap_or(false)
+                if !tab.loading.get()
+                    && !com::is_suspended(&tab.webview).unwrap_or(false)
                     && let Err(error) = com::try_suspend(&tab.webview)
                 {
                     log::debug!("browser page not suspended: {error}");
@@ -741,6 +861,24 @@ impl Engine {
             }
             Self::place(container, &tabs, applied.rect, applied.occluded);
             Self::set_visible(&tabs, applied.active.as_deref());
+        }
+        self.set_interactive(container, applied.interactive);
+    }
+
+    /// Real mouse and keyboard input reaches a page only while `interactive`: the container window is disabled
+    /// otherwise, and a page that held the keyboard gives it back to the app.
+    fn set_interactive(&self, container: HWND, interactive: bool) {
+        // SAFETY: plain Win32 calls on windows this engine owns, on the UI thread.
+        unsafe {
+            let _ = EnableWindow(container, interactive);
+            let focus = GetFocus();
+            if !interactive
+                && !focus.is_invalid()
+                && focus != self.config.parent
+                && IsChild(container, focus).as_bool()
+            {
+                let _ = SetFocus(Some(self.config.parent));
+            }
         }
     }
 
@@ -791,17 +929,6 @@ impl Engine {
         }
     }
 
-    pub fn apply_event(&self, event: HostEvent) {
-        match event {
-            HostEvent::Reapply { bot_id } => {
-                let bot = self.bots.borrow().get(&bot_id).cloned();
-                if let Some(bot) = bot {
-                    self.apply(&bot);
-                }
-            }
-        }
-    }
-
     // ---- timers --------------------------------------------------------------------------------------------
 
     /// When [`tick`](Self::tick) next has something to do.
@@ -816,6 +943,7 @@ impl Engine {
     /// Runs what is due at `now`: a hidden bot idle for 10 minutes has its controller closed, and a bot kept awake
     /// out of sight for 30 seconds gets the Low memory target. The host calls this at each deadline.
     pub async fn tick(&self, now: Instant) {
+        self.forget_controllers(now);
         let bots: Vec<Rc<Bot>> = self.bots.borrow().values().cloned().collect();
         for bot in bots {
             // An open or close in progress is not interrupted; the next tick sees the bot again.

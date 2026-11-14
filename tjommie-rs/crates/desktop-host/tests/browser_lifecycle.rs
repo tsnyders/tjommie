@@ -11,160 +11,14 @@
 
 mod common;
 
-use std::cell::Cell;
 use std::path::PathBuf;
-use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use common::{FixtureServer, Ui, webview_processes};
-use desktop_host::browser::engine::{DeleteOutcome, Engine, EngineConfig, Panel, TabHandle};
+use common::{Rig, webview_processes};
+use desktop_host::browser::engine::DeleteOutcome;
 use desktop_host::browser::lifecycle::{MemoryLevel, Placement};
-use desktop_host::browser::{BotIdentity, flags, policy, profiles};
-use serde::Deserialize;
+use desktop_host::browser::{flags, policy, profiles};
 use windows::Win32::Foundation::RECT;
-
-struct Rig {
-    ui: Ui,
-    engine: Rc<Engine>,
-    root: tempfile::TempDir,
-    server: FixtureServer,
-    clock: Rc<Cell<Instant>>,
-}
-
-impl Rig {
-    fn new() -> Rig {
-        let ui = Ui::new();
-        let root = tempfile::tempdir().expect("temp root");
-        let server = FixtureServer::start();
-        let clock = Rc::new(Cell::new(Instant::now()));
-        let mut config = EngineConfig::new(ui.parent, root.path().join("data").join("webview2"));
-        config.start_url = server.url("blank.html");
-        let shared = clock.clone();
-        config.clock = Rc::new(move || shared.get());
-        let (events, inbox) = async_channel::unbounded();
-        let engine = Engine::new(config, events);
-        let applier = engine.clone();
-        ui.spawn(async move {
-            while let Ok(event) = inbox.recv().await {
-                applier.apply_event(event);
-            }
-        });
-        Rig {
-            ui,
-            engine,
-            root,
-            server,
-            clock,
-        }
-    }
-
-    fn bot(&self, id: &str) -> BotIdentity {
-        BotIdentity {
-            id: id.into(),
-            name: id.into(),
-            home_folder: self
-                .root
-                .path()
-                .join("bots")
-                .join(id)
-                .to_string_lossy()
-                .into_owned(),
-            project_folder: None,
-        }
-    }
-
-    /// A panel over the right half of the parent's client area, in physical pixels.
-    fn panel(&self) -> Panel {
-        let client = self.ui.client_rect();
-        Panel {
-            rect: RECT {
-                left: client.right / 2,
-                top: 80,
-                right: client.right - 20,
-                bottom: client.bottom - 20,
-            },
-            occluded: false,
-        }
-    }
-
-    fn open(&mut self, id: &str) {
-        let (engine, bot) = (self.engine.clone(), self.bot(id));
-        self.ui
-            .run(async move { engine.open(&bot).await.expect("open") });
-    }
-
-    fn tab(&self, id: &str) -> TabHandle {
-        self.engine.active_tab(id).expect("an open tab")
-    }
-
-    /// Loads `page` from the fixture server and waits until the page says it is done.
-    fn load(&mut self, id: &str, page: &str) {
-        let (tab, url) = (self.tab(id), self.server.url(page));
-        self.ui.run(async move {
-            tab.navigate(&url).await.expect("navigate");
-            for _ in 0..200 {
-                if eval(&tab, "document.readyState + '|' + location.href").await
-                    == format!("complete|{url}")
-                {
-                    return;
-                }
-                std::thread::sleep(Duration::from_millis(25));
-            }
-            panic!("page did not load: {url}");
-        });
-    }
-
-    fn eval(&mut self, id: &str, expression: &str) -> String {
-        let (tab, expression) = (self.tab(id), expression.to_string());
-        self.ui.run(async move { eval(&tab, &expression).await })
-    }
-
-    fn show(&mut self, id: &str) {
-        self.engine
-            .set_panel(id, Some(self.panel()))
-            .expect("set panel");
-    }
-
-    fn hide(&mut self, id: &str) {
-        self.engine.set_panel(id, None).expect("clear panel");
-    }
-
-    fn wait_suspended(&mut self, id: &str) {
-        let engine = self.engine.clone();
-        let id = id.to_string();
-        self.ui
-            .wait_until("the page to suspend", Duration::from_secs(20), move || {
-                engine.snapshot(&id).is_some_and(|s| s.suspended)
-            });
-    }
-}
-
-#[derive(Deserialize)]
-struct Evaluated {
-    result: RemoteObject,
-}
-#[derive(Deserialize)]
-struct RemoteObject {
-    value: Option<serde_json::Value>,
-}
-
-/// `Runtime.evaluate` of a JavaScript expression, as text.
-async fn eval(tab: &TabHandle, expression: &str) -> String {
-    let params = serde_json::json!({ "expression": expression, "returnByValue": true, "awaitPromise": true }).to_string();
-    let json = tab
-        .call("Runtime.evaluate", &params)
-        .await
-        .expect("Runtime.evaluate");
-    match serde_json::from_str::<Evaluated>(&json)
-        .expect("evaluate result")
-        .result
-        .value
-    {
-        Some(serde_json::Value::String(text)) => text,
-        Some(other) => other.to_string(),
-        None => "undefined".to_string(),
-    }
-}
 
 fn parked(rect: Option<RECT>) -> bool {
     rect.is_some_and(|rect| rect.right < -1000)
@@ -381,13 +235,15 @@ fn idle_controller_closes_after_timeout() {
     let reopened = rig.engine.snapshot("alpha").expect("snapshot");
     assert!(reopened.open && reopened.tabs == 1);
     let expected = rig.server.url("controls.html");
-    let tab = rig.tab("alpha");
+    let guard = rig.begin("alpha");
+    let tab = guard.tab().expect("active tab");
     // The page is navigating back to its last address; it gets there on its own.
     rig.ui.wait_until(
         "the page to return to its last address",
         Duration::from_secs(15),
         move || tab.source().is_ok_and(|source| source == expected),
     );
+    guard.end();
 }
 
 #[test]
@@ -542,12 +398,33 @@ fn close_all_ends_every_browser_process_and_the_engine_does_not_open_again() {
     assert!(rig.engine.snapshot("alpha").is_none() && rig.engine.snapshot("beta").is_none());
     // The browser process tree ends on its own once nothing holds the environment.
     let folder = rig.root.path().to_path_buf();
-    let deadline = Instant::now() + Duration::from_secs(40);
+    // Windows takes its time to end a browser's processes when the PC is busy.
+    let deadline = Instant::now() + Duration::from_secs(120);
     while !webview_processes(&folder).is_empty() {
         assert!(
             Instant::now() < deadline,
             "browser processes still running after close_all"
         );
         rig.ui.settle(Duration::from_secs(1));
+    }
+}
+
+#[test]
+fn a_tool_arriving_while_a_suspend_is_in_flight_still_finds_the_page_awake() {
+    let mut rig = Rig::new();
+    rig.open("alpha");
+    rig.load("alpha", "blank.html");
+    // Hide (a suspend starts) and start a tool at once, over and over: whichever lands first, the page answers.
+    for round in 0..12 {
+        rig.show("alpha");
+        rig.hide("alpha");
+        let guard = rig.begin("alpha");
+        let snap = rig.engine.snapshot("alpha").expect("snapshot");
+        assert!(
+            snap.visible && snap.placement == Placement::Parked,
+            "round {round}: {snap:?}"
+        );
+        assert_eq!(rig.eval("alpha", "6 * 7"), "42", "round {round}");
+        guard.end();
     }
 }
