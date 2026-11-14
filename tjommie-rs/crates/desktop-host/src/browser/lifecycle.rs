@@ -83,7 +83,7 @@ pub enum MemoryLevel {
 pub struct Timeouts {
     /// A hidden bot with no need for this long has its controller closed.
     pub idle_close: Duration,
-    /// A hidden bot kept awake by a tool or a stream for this long gets the Low memory target.
+    /// A hidden bot kept awake by a tool (not a stream) for this long gets the Low memory target.
     pub low_memory_after: Duration,
 }
 
@@ -106,7 +106,7 @@ pub struct Lifecycle {
     tools: u32,
     /// Since when nothing has needed the page.
     idle_since: Option<Instant>,
-    /// Since when the page has been awake only for a tool or a stream, hidden from the person.
+    /// Since when the page has been awake only for a tool (not a stream), hidden from the person.
     awake_hidden_since: Option<Instant>,
 }
 
@@ -158,14 +158,19 @@ impl Lifecycle {
             self.awake_hidden_since = None;
         } else if need.awake() {
             self.idle_since = None;
-            self.awake_hidden_since.get_or_insert(now);
+            // Only a tool keeps a page awake out of sight long enough to trim it: a stream needs its frames.
+            if need.tool && !need.streaming {
+                self.awake_hidden_since.get_or_insert(now);
+            } else {
+                self.awake_hidden_since = None;
+            }
         } else {
             self.awake_hidden_since = None;
             self.idle_since.get_or_insert(now);
         }
     }
 
-    /// Low for a page that a tool or a stream has kept awake out of sight for a while; Normal otherwise, and always
+    /// Low for a page that a tool has kept awake out of sight for a while (never a streaming one); Normal otherwise, and always
     /// Normal once shown or suspended. Never set on a page `TrySuspend` handles (Microsoft's rule).
     pub fn memory_level(&self, now: Instant) -> MemoryLevel {
         match self.awake_hidden_since {
@@ -339,6 +344,40 @@ mod tests {
         assert_eq!(
             life.memory_level(start + Duration::from_secs(999)),
             MemoryLevel::Normal
+        );
+    }
+
+    #[test]
+    fn a_streaming_page_never_gets_the_low_memory_target() {
+        // Low trims caches and adds page-fault latency: it costs frames, so a page that streams to a phone, with or
+        // without a tool running too, keeps the Normal target however long it stays awake out of sight.
+        let start = Instant::now();
+        let timeouts = Timeouts {
+            idle_close: Duration::from_secs(600),
+            low_memory_after: Duration::from_secs(30),
+        };
+        let later = start + Duration::from_secs(300);
+        let mut streaming = Lifecycle::new(timeouts, start);
+        streaming.set_streaming(true, start);
+        assert_eq!(streaming.memory_level(later), MemoryLevel::Normal);
+        assert_eq!(
+            streaming.next_deadline(start),
+            None,
+            "no timer runs for a streaming page"
+        );
+        let mut both = Lifecycle::new(timeouts, start);
+        both.begin_tool(start);
+        both.set_streaming(true, start + Duration::from_secs(5));
+        assert_eq!(both.memory_level(later), MemoryLevel::Normal);
+        // When the stream ends and the tool is still at work, the clock starts then, not from the tool's start.
+        both.set_streaming(false, start + Duration::from_secs(100));
+        assert_eq!(
+            both.memory_level(start + Duration::from_secs(120)),
+            MemoryLevel::Normal
+        );
+        assert_eq!(
+            both.memory_level(start + Duration::from_secs(130)),
+            MemoryLevel::Low
         );
     }
 }
