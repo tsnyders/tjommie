@@ -34,8 +34,8 @@ use desktop_host::browser::BotIdentity;
 use desktop_host::browser::engine::{
     Engine, EngineConfig, EngineError, Notification, Panel, Reply, TabHandle, ToolGuard,
 };
-use protocol::browser::BrowserState;
-use protocol::native_browser::NativeBrowserCommand;
+use protocol::browser::{BrowserFrame, BrowserState};
+use protocol::native_browser::{NativeBrowserCommand, NativeBrowserStreamMessage, StreamEnd};
 use std::cell::Cell;
 
 unsafe extern "system" fn parent_proc(
@@ -304,8 +304,32 @@ pub fn trace(step: &str) {
     }
 }
 
+/// Where the engine's live frames and stream ends go in a test, standing in for the bridge to the daemon.
+pub struct Sink {
+    /// Each frame, with when the sink received it.
+    pub frames: Vec<(Instant, BrowserFrame)>,
+    pub ends: Vec<StreamEnd>,
+    /// Answers `false` ("nobody is watching") to every message while set.
+    pub refuse: bool,
+    /// How long each delivery takes.
+    pub delay: Duration,
+}
+
+/// A future that is ready after `time`, without blocking the UI thread.
+pub fn after(time: Duration) -> futures::future::LocalBoxFuture<'static, ()> {
+    let (tx, rx) = futures::channel::oneshot::channel();
+    std::thread::spawn(move || {
+        std::thread::sleep(time);
+        let _ = tx.send(());
+    });
+    Box::pin(async move {
+        let _ = rx.await;
+    })
+}
+
 pub struct Rig {
     pub ui: Ui,
+    pub sink: Rc<RefCell<Sink>>,
     pub engine: Rc<Engine>,
     pub root: tempfile::TempDir,
     pub server: FixtureServer,
@@ -327,6 +351,35 @@ impl Rig {
         config.start_url = server.url("blank.html");
         let shared = clock.clone();
         config.clock = Rc::new(move || shared.get());
+        let spawner = ui.spawner();
+        config.spawn = Some(Rc::new(move |task| {
+            let _ = spawner.spawn_local(task);
+        }));
+        let sink = Rc::new(RefCell::new(Sink {
+            frames: Vec::new(),
+            ends: Vec::new(),
+            refuse: false,
+            delay: Duration::ZERO,
+        }));
+        let recorder = sink.clone();
+        config.on_stream = Some(Rc::new(move |message| {
+            let (accept, delay) = {
+                let mut sink = recorder.borrow_mut();
+                match message {
+                    NativeBrowserStreamMessage::StreamFrame { frame, .. } => {
+                        sink.frames.push((Instant::now(), frame));
+                    }
+                    NativeBrowserStreamMessage::StreamEnd { reason, .. } => sink.ends.push(reason),
+                }
+                (!sink.refuse, sink.delay)
+            };
+            Box::pin(async move {
+                if !delay.is_zero() {
+                    after(delay).await;
+                }
+                accept
+            })
+        }));
         let (events, inbox) = async_channel::unbounded();
         let (notify, notices) = async_channel::unbounded();
         let engine = Engine::new(config, events, notify).expect("a root the e2e identity may use");
@@ -338,6 +391,7 @@ impl Rig {
         });
         Rig {
             ui,
+            sink,
             engine,
             root,
             server,
@@ -546,6 +600,32 @@ impl Rig {
             Err(error) => error.to_string(),
             Ok(reply) => panic!("expected a refusal, got {reply:?}"),
         }
+    }
+
+    /// A remote controller's command for a bot, as the daemon sends it.
+    pub fn remote(
+        &mut self,
+        id: &str,
+        controller: &str,
+        action: serde_json::Value,
+    ) -> Result<Reply, EngineError> {
+        self.exec(
+            id,
+            serde_json::json!({ "kind": "remote", "controllerId": controller, "action": action }),
+        )
+    }
+
+    /// Frames the sink has received so far.
+    pub fn frame_count(&self) -> usize {
+        self.sink.borrow().frames.len()
+    }
+
+    /// Pumps until the sink holds `count` frames (more than it held when this was called, if `count` is 0 relative).
+    pub fn wait_frames(&mut self, count: usize, within: Duration) {
+        let sink = self.sink.clone();
+        self.ui.wait_until("frames to arrive", within, move || {
+            sink.borrow().frames.len() >= count
+        });
     }
 
     pub fn state(&self, id: &str) -> BrowserState {

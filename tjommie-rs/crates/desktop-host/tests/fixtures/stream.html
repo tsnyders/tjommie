@@ -1,0 +1,28 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Stream fixture</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #102030; overflow: hidden; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+</style>
+<canvas id="c"></canvas>
+<script>
+  // Repaints on every animation frame, so the compositor has a new frame to show as often as the display allows.
+  const canvas = document.getElementById("c");
+  const g = canvas.getContext("2d");
+  canvas.width = 1280;
+  canvas.height = 800;
+  let n = 0;
+  window.ticks = 0;
+  (function tick() {
+    n += 1;
+    window.ticks = n;
+    g.fillStyle = `hsl(${(n * 3) % 360} 70% 45%)`;
+    g.fillRect(0, 0, 1280, 800);
+    g.fillStyle = "#ffffff";
+    g.font = "64px monospace";
+    g.fillText(String(n), 40, 100);
+    g.fillRect((n * 7) % 1200, 300, 80, 80);
+    requestAnimationFrame(tick);
+  })();
+</script>

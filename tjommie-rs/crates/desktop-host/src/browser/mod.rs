@@ -19,6 +19,7 @@ pub mod lifecycle;
 pub mod permissions;
 pub mod policy;
 pub mod profiles;
+pub mod stream;
 pub mod tools;
 
 /// The bot a browser belongs to, as the daemon names it in a `/browser-host` job (`native-browser-host.ts:6`).

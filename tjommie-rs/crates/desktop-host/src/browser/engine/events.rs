@@ -66,6 +66,12 @@ pub enum HostEvent {
     Notice { bot_id: String, message: String },
     /// A panel is showing a page that had been given a fixed size: give it its window's size back.
     RestoreViewport { bot_id: String, tab_id: String },
+    /// A page's screencast made a frame (`Page.screencastFrame`, as JSON text): decoded and acknowledged by the engine.
+    ScreencastFrame {
+        bot_id: String,
+        tab_id: String,
+        json: String,
+    },
 }
 
 /// What the engine tells its host: the state to draw, and things to say.
@@ -122,6 +128,26 @@ uri_args!(
     webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2NavigationStartingEventArgs,
     webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2NewWindowRequestedEventArgs
 );
+
+/// Has a page's screencast frames pushed to the engine as they come. The handler only hands the text on.
+pub(super) fn watch_screencast(
+    events: &Sender<HostEvent>,
+    bot_id: &str,
+    tab_id: &str,
+    webview: &ICoreWebView2,
+) -> Result<(), ComError> {
+    let (events, bot_id, tab_id) = (events.clone(), bot_id.to_string(), tab_id.to_string());
+    super::super::com::subscribe_devtools(webview, "Page.screencastFrame", move |json| {
+        push(
+            &events,
+            HostEvent::ScreencastFrame {
+                bot_id: bot_id.clone(),
+                tab_id: tab_id.clone(),
+                json,
+            },
+        );
+    })
+}
 
 /// Registers every handler a bot's page needs. The handlers live as long as the page.
 pub(super) fn watch(

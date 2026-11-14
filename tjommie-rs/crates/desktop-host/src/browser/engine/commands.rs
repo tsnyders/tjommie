@@ -5,8 +5,8 @@
 use std::future::Future;
 
 use protocol::browser::{
-    BrowserControl, BrowserInput, BrowserState, BrowserTab, HistoryAction, KeyAction, MouseAction,
-    TabAction,
+    BrowserControl, BrowserFrameResult, BrowserInput, BrowserState, BrowserTab, HistoryAction,
+    KeyAction, MouseAction, TabAction,
 };
 use protocol::native_browser::{
     NativeBrowserCommand, NativeBrowserHostCommand, NativeBrowserRemoteAction,
@@ -62,6 +62,8 @@ pub enum Reply {
     State(Box<BrowserState>),
     /// A browser tool's answer: text and images, with an error flag.
     Tool(Box<ToolReply>),
+    /// A picture of the page, with the state it was taken in.
+    Frame(Box<BrowserFrameResult>),
     Empty(Empty),
 }
 
@@ -95,7 +97,7 @@ pub enum BotEvent {
     Updated { id: String, browser: bool },
 }
 
-fn run_check(check: Option<Check<'_>>) -> Result<(), EngineError> {
+pub(super) fn run_check(check: Option<Check<'_>>) -> Result<(), EngineError> {
     match check {
         Some(check) => check(),
         None => Ok(()),
@@ -173,6 +175,8 @@ impl Engine {
         bot.state.borrow_mut().revision += 1;
         self.notify_state(bot);
         self.apply(bot);
+        // A page switch moves the stream to the new page; a private interaction ends it.
+        self.kick_stream(bot);
     }
 
     /// A notice for the person, unless a private interaction is on (nothing leaks out of it).
@@ -227,7 +231,7 @@ impl Engine {
             .ok_or_else(|| EngineError::refused("That browser tab is closed."))
     }
 
-    fn tabs_of(&self, bot: &Bot) -> Vec<Rc<Tab>> {
+    pub(super) fn tabs_of(&self, bot: &Bot) -> Vec<Rc<Tab>> {
         bot.state.borrow().tabs.clone()
     }
 
@@ -339,6 +343,7 @@ impl Engine {
                 }
             }
             bot.state.borrow_mut().access.changed_page();
+            self.drop_remote_streams(&bot);
             self.changed(&bot);
         }
     }
@@ -794,7 +799,11 @@ impl Engine {
                 .get(&bot.id)
                 .is_some_and(|rc| rc.state.borrow().open && !rc.state.borrow().dead);
             if open {
-                // The handback must not wait for anything a screencast is still doing.
+                // The stream follows its controllers: this one's is over, but the handback must not wait for the
+                // screencast to stop.
+                if let Ok(rc) = self.bot(&bot.id) {
+                    self.drop_controller_stream(&rc, owner);
+                }
                 self.control(bot, BrowserControl::Bot, owner, false, None)
                     .await?;
             }
@@ -822,10 +831,22 @@ impl Engine {
             NativeBrowserRemoteAction::State => {
                 return Ok(Reply::state(self.browser_state(&rc, owner)));
             }
-            NativeBrowserRemoteAction::Frame { .. } | NativeBrowserRemoteAction::Stream { .. } => {
-                return Err(EngineError::refused(
-                    "The live view of a bot's browser is not available yet.",
-                ));
+            NativeBrowserRemoteAction::Frame { thumbnail } => {
+                let frame = self
+                    .remote_frame(bot, owner, &connection, thumbnail.unwrap_or(false))
+                    .await?;
+                return Ok(Reply::Frame(Box::new(frame)));
+            }
+            NativeBrowserRemoteAction::Stream { on, max_fps } => {
+                if self.config.spawn.is_none() || self.config.on_stream.is_none() {
+                    return Err(EngineError::refused(
+                        "The live view of a bot's browser is not available.",
+                    ));
+                }
+                let state = self
+                    .remote_stream(&rc, owner, *on, *max_fps, &connection)
+                    .await?;
+                return Ok(Reply::state(state));
             }
             NativeBrowserRemoteAction::Control {
                 generation: Some(generation),
@@ -1418,6 +1439,11 @@ impl Engine {
                     self.notice(&bot, &message);
                 }
             }
+            HostEvent::ScreencastFrame {
+                bot_id,
+                tab_id,
+                json,
+            } => self.on_screencast_frame(&bot_id, &tab_id, &json),
             HostEvent::RestoreViewport { bot_id, tab_id } => {
                 let Some(bot) = self.live_bot(&bot_id) else {
                     return;
@@ -1445,7 +1471,7 @@ impl Engine {
         }
     }
 
-    fn live_bot(&self, id: &str) -> Option<Rc<Bot>> {
+    pub(super) fn live_bot(&self, id: &str) -> Option<Rc<Bot>> {
         let bot = self.bots.borrow().get(id).cloned()?;
         let live = bot.state.borrow().open && !bot.state.borrow().dead;
         live.then_some(bot)

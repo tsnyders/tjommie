@@ -405,6 +405,14 @@ method!(
     RuntimeEnable, "Runtime.enable", NoParams, Nothing
 );
 method!(
+    /// Turns the runtime domain off (a private interaction cuts the bot off from the page's script).
+    RuntimeDisable, "Runtime.disable", NoParams, Nothing
+);
+method!(
+    /// Turns network observation off.
+    NetworkDisable, "Network.disable", NoParams, Nothing
+);
+method!(
     /// Clears the console's stored messages.
     RuntimeDiscardConsoleEntries, "Runtime.discardConsoleEntries", NoParams, Nothing
 );

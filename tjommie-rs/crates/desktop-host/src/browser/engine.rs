@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 use futures::future::LocalBoxFuture;
 use futures::lock::Mutex as AsyncMutex;
 use protocol::browser::{BROWSER_START_URL, BrowserDialog, MouseButton};
+use protocol::native_browser::{NativeBrowserStreamMessage, StreamEnd};
 use tokio::sync::Mutex as QueueMutex;
 use webview2_com::Microsoft::Web::WebView2::Win32::{
     ICoreWebView2, ICoreWebView2Controller, ICoreWebView2Environment, ICoreWebView2Settings3,
@@ -44,6 +45,7 @@ use crate::owner_safety;
 mod automation;
 mod commands;
 mod events;
+mod stream;
 
 pub use automation::{AutomationSession, ToolView};
 pub use commands::{Actor, BotEvent, Check, LOCAL, Reply};
@@ -149,6 +151,12 @@ pub struct EngineConfig {
     pub clock: Rc<dyn Fn() -> Instant>,
     /// Waits without blocking. The default uses a short-lived thread; the app can supply its executor's timer.
     pub sleep: Rc<dyn Fn(Duration) -> LocalBoxFuture<'static, ()>>,
+    /// Where a live frame, or the end of a stream, goes: the host's bridge to the daemon. It answers `true` if the
+    /// message was taken, `false` if nobody is watching there. Without it the live view is refused.
+    pub on_stream: Option<Rc<dyn Fn(NativeBrowserStreamMessage) -> LocalBoxFuture<'static, bool>>>,
+    /// Runs a task on the UI thread beside the caller: stream deliveries, and the stream's follow-up of a state change.
+    /// Without it the live view is refused.
+    pub spawn: Option<Rc<dyn Fn(LocalBoxFuture<'static, ()>)>>,
 }
 
 impl EngineConfig {
@@ -161,6 +169,8 @@ impl EngineConfig {
             timeouts: Timeouts::default(),
             clock: Rc::new(Instant::now),
             sleep: Rc::new(thread_sleep),
+            on_stream: None,
+            spawn: None,
         }
     }
 }
@@ -241,6 +251,8 @@ struct Tab {
     /// Whether file choosers report to a bot's tool instead of opening (the tools turn it on; the person taking control
     /// turns it off, so their click opens the native picker).
     file_chooser_intercept: Cell<bool>,
+    /// Whether this page's screencast frames reach the engine (registered once, the first time it streams).
+    screencast_wired: Cell<bool>,
 }
 
 impl Tab {
@@ -283,6 +295,10 @@ struct BotState {
     /// A hand-over of control is in progress.
     handover: u32,
     dialog: Option<BrowserDialog>,
+    /// The live view: who watches, and the screencast that serves them.
+    stream: stream::StreamState,
+    /// Numbers the frames of a bot's browser, live or asked for, so a watcher can order them.
+    frame_sequence: u64,
 }
 
 struct Bot {
@@ -295,10 +311,14 @@ struct Bot {
     queue: Arc<QueueMutex<()>>,
     /// Tools whose guards were dropped while the state was borrowed: their need ends at the next `apply`.
     pending_tool_ends: Cell<u32>,
+    /// Starting, switching and stopping the screencast take turns.
+    stream_lock: AsyncMutex<()>,
 }
 
 pub struct Engine {
     config: EngineConfig,
+    /// This engine, for the tasks it spawns on itself.
+    weak: std::rc::Weak<Engine>,
     events: async_channel::Sender<HostEvent>,
     notify: async_channel::Sender<Notification>,
     /// A menu or dialog is over the page area for every bot: pages stay awake but out of the way.
@@ -539,7 +559,8 @@ impl Engine {
     ) -> Result<Rc<Self>, EngineError> {
         owner_safety::assert_root_allowed(&config.user_data_folder, &config.identity)
             .map_err(|refused| EngineError::Refused(refused.0))?;
-        Ok(Rc::new(Self {
+        Ok(Rc::new_cyclic(|weak| Self {
+            weak: weak.clone(),
             config,
             events,
             notify,
@@ -630,10 +651,13 @@ impl Engine {
                 busy: 0,
                 handover: 0,
                 dialog: None,
+                stream: stream::StreamState::default(),
+                frame_sequence: 0,
             }),
             open_lock: AsyncMutex::new(()),
             queue: Arc::new(QueueMutex::new(())),
             pending_tool_ends: Cell::new(0),
+            stream_lock: AsyncMutex::new(()),
         });
         bots.insert(identity.id.clone(), bot.clone());
         Ok(bot)
@@ -784,6 +808,7 @@ impl Engine {
             loading: Cell::new(url.is_some().then(|| self.now())),
             dialog: RefCell::new(None),
             file_chooser_intercept: Cell::new(false),
+            screencast_wired: Cell::new(false),
         }))
     }
 
@@ -1147,6 +1172,8 @@ impl Engine {
             return Ok(());
         };
         let _turn = bot.open_lock.lock().await; // an open in progress finishes first
+        // Whoever watches hears that the browser closed, and the screencast stops before its page goes.
+        self.stop_stream(&bot, StreamEnd::Closed).await;
         self.teardown(&bot, false);
         bot.state.borrow_mut().dead = true;
         let mut bots = self.bots.borrow_mut();
