@@ -7,10 +7,11 @@
 //! Dev, e2e and update-test builds never write it (`allowed` is false), and neither does a run with its own
 //! `TJOMMIE_USER_DATA`, which is a smoke run beside a real install.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::registry::{Hive, Registry};
+use crate::identity::Identity;
 
 pub const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 /// Where Task Manager and Settings record whether the user turned a startup entry off.
@@ -38,6 +39,25 @@ pub struct LoginItemConfig {
     pub exe: PathBuf,
     /// Electron's userData folder (`%APPDATA%\Tjommie`), where the one-time marker lives.
     pub user_data: PathBuf,
+}
+
+impl LoginItemConfig {
+    /// The config for this run, all from the identity: allowed only for an identity that has a login item and a run with no
+    /// `TJOMMIE_USER_DATA`; named by the app id; started as the exe that is running now (what Electron's
+    /// `setLoginItemSettings` wrote), not a path from a table, so it is whatever the installer put on the disk. `user_data`
+    /// is `AppDirs::user_data`, which has already been through `owner_safety`.
+    pub fn for_this_run(
+        identity: &Identity,
+        user_data: &Path,
+        own_user_data_env: Option<&str>,
+    ) -> std::io::Result<LoginItemConfig> {
+        Ok(LoginItemConfig {
+            allowed: allowed(identity.login_item, own_user_data_env),
+            value_name: identity.app_id.into(),
+            exe: std::env::current_exe()?,
+            user_data: user_data.to_path_buf(),
+        })
+    }
 }
 
 pub struct LoginItem {
@@ -108,7 +128,6 @@ impl LoginItem {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
     use std::sync::Arc;
 
     use super::super::registry::Fake;
@@ -179,6 +198,27 @@ mod tests {
         assert!(!login.get());
         assert_eq!(registry.writes(), 0);
         assert!(!user_data.path().join("login-item-set").exists());
+    }
+
+    #[test]
+    fn the_config_for_this_run_comes_from_the_identity_and_the_running_exe() {
+        use crate::identity::{DEV, E2E, PRODUCTION, UPDATE_TEST};
+        let user_data = tempfile::tempdir().unwrap();
+        let config = LoginItemConfig::for_this_run(&PRODUCTION, user_data.path(), None).unwrap();
+        assert!(config.allowed);
+        assert_eq!(config.value_name, "com.tsnyders.tjommie");
+        assert_eq!(config.exe, std::env::current_exe().unwrap());
+        assert_eq!(config.user_data, user_data.path());
+        // Not for a smoke run beside a real install, and never for the other identities.
+        let smoke =
+            LoginItemConfig::for_this_run(&PRODUCTION, user_data.path(), Some(r"C:\tmp\smoke"))
+                .unwrap();
+        assert!(!smoke.allowed);
+        for identity in [DEV, E2E, UPDATE_TEST] {
+            let config = LoginItemConfig::for_this_run(&identity, user_data.path(), None).unwrap();
+            assert!(!config.allowed, "{}", identity.name);
+            assert_eq!(config.value_name, identity.app_id);
+        }
     }
 
     // "reports Windows startup approval, not just the Run key"

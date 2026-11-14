@@ -37,7 +37,10 @@ fn only_a_production_build_contains_the_release_feed_address() {
         );
     }
     // And the identity agrees with what is compiled in.
-    assert_eq!(identity.update_feed.is_some(), cfg!(tjommie_identity = "production"));
+    assert_eq!(
+        identity.update_feed.is_some(),
+        cfg!(tjommie_identity = "production")
+    );
 }
 
 #[test]
