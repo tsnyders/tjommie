@@ -1701,8 +1701,10 @@ name = "desktop-host"
 version = "0.5.1"
 dependencies = [
  "base64 0.23.1",
+ "client",
  "cpal",
  "futures-util",
+ "getrandom 0.4.3",
  "jiff",
  "log",
  "protocol",
@@ -1716,6 +1718,7 @@ dependencies = [
  "url",
  "uuid",
  "windows 0.62.2",
+ "zeroize",
 ]
 
 [[package]]

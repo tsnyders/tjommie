@@ -4,6 +4,7 @@
 
 pub mod app_dirs;
 pub mod crash;
+pub mod daemon_process;
 pub mod diagnostics;
 pub mod identity;
 pub mod links;

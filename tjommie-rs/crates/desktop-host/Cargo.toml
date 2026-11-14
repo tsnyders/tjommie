@@ -10,6 +10,7 @@ publish.workspace = true
 base64 = "0.23.1"
 cpal.workspace = true
 futures-util = "0.3.34"
+getrandom = "0.4.3"
 jiff = "0.2.41"
 log = { version = "0.4.35", features = ["std"] }
 protocol = { version = "0.5.0", path = "../protocol" }
@@ -33,6 +34,7 @@ windows = { version = "0.62.2", features = [
   "Win32_Graphics_Dxgi",
   "Win32_Graphics_Gdi",
   "Win32_Security",
+  "Win32_Security_Credentials",
   "Win32_Storage_FileSystem",
   "Win32_System_LibraryLoader",
   "Win32_System_ProcessStatus",
@@ -42,9 +44,15 @@ windows = { version = "0.62.2", features = [
   "Win32_UI_Shell",
   "Win32_UI_WindowsAndMessaging",
 ] }
+zeroize = "1.8"
 
 [dev-dependencies]
+client = { path = "../client" }
+protocol = { path = "../protocol" }
+tempfile = "3.27.0"
 tokio = { version = "1.54.1", features = ["test-util"] }
+# crash::tests reads the restart registration back.
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_System_Threading"] }
 
 [lints]
 workspace = true
