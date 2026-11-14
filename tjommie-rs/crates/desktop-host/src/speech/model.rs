@@ -64,6 +64,9 @@ struct Inner {
     initialized: OnceCell<bool>,
     verification: tokio::sync::Mutex<()>,
     download: Mutex<Option<Download>>,
+    /// A test can make removing a partial file fail, as a locked file would.
+    #[cfg(test)]
+    fail_partial_cleanup: std::sync::atomic::AtomicBool,
 }
 
 #[derive(Clone)]
@@ -130,6 +133,8 @@ impl SpeechModel {
                 initialized: OnceCell::new(),
                 verification: tokio::sync::Mutex::new(()),
                 download: Mutex::new(None),
+                #[cfg(test)]
+                fail_partial_cleanup: std::sync::atomic::AtomicBool::new(false),
             }),
         }
     }
@@ -350,7 +355,7 @@ impl SpeechModel {
                 "Could not download and verify the speech model. Check storage and network, then try again.".into()
             });
         }
-        match tokio::fs::remove_file(&partial).await {
+        match self.remove_partial(&partial).await {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(_) => {
@@ -365,6 +370,20 @@ impl SpeechModel {
             }
         }
         result
+    }
+
+    async fn remove_partial(&self, partial: &Path) -> std::io::Result<()> {
+        #[cfg(test)]
+        {
+            if self
+                .inner
+                .fail_partial_cleanup
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                return Err(std::io::Error::other("blocked for a test"));
+            }
+        }
+        tokio::fs::remove_file(partial).await
     }
 
     async fn try_receive(
@@ -619,6 +638,48 @@ mod tests {
         ] {
             assert!(is_model_host(&Url::parse(good).unwrap()), "{good}");
         }
+    }
+
+    // `speech-model-cleanup.test.ts` "keeps repeated model cancellation failed until restart verifies the retained partial
+    // was removed"
+    #[tokio::test]
+    async fn keeps_repeated_model_cancellation_failed_until_restart_verifies_the_partial_is_gone() {
+        let dir = tempfile::tempdir().unwrap();
+        // The right number of wrong bytes: the download fails its check, and then removing its partial file is blocked.
+        let (blocked, _) = model(dir.path(), Serve::Bytes(vec![0; BYTES.len()]), source());
+        blocked
+            .inner
+            .fail_partial_cleanup
+            .store(true, Ordering::SeqCst);
+        let error = blocked.download_model().await.unwrap_err();
+        assert!(error.contains("could not be cleared"), "{error}");
+        assert_eq!(names(dir.path()).len(), 1, "the partial is still there");
+        for _ in 0..2 {
+            let error = blocked.cancel_download().await.unwrap_err();
+            assert!(error.contains("cleanup failed"), "{error}");
+        }
+        assert!(!blocked.verify().await);
+        assert_eq!(blocked.status().await.state, SpeechModelState::Error);
+        assert!(
+            blocked.download_model().await.is_err(),
+            "and no new download starts"
+        );
+        // Even once removing it would work, this run stays failed: only a restart can say the partial is gone.
+        blocked
+            .inner
+            .fail_partial_cleanup
+            .store(false, Ordering::SeqCst);
+        assert!(
+            blocked
+                .cancel_download()
+                .await
+                .unwrap_err()
+                .contains("cleanup failed")
+        );
+        let (restarted, _) = model(dir.path(), Serve::Bytes(vec![]), source());
+        assert_eq!(restarted.status().await.state, SpeechModelState::Missing);
+        restarted.cancel_download().await.unwrap();
+        assert!(names(dir.path()).is_empty());
     }
 
     // "cleans only stale owned partial model files after an interrupted app run"
