@@ -1,7 +1,13 @@
 //! Port of `packages/ui/lib/usage.ts`: the Usage screen's ranges, its query, its numbers as words, its chart's bars and
 //! ticks, its breakdown rows, and the throttle that spaces its reloads. Zones are IANA names as the wire has them; a zone
 //! this build's database doesn't know gives `None` where the TypeScript would throw. The machine's own zone
-//! (`localZone`) is left out: the caller passes the zone in.
+//! (`localZone`) is left out: the caller passes the zone in. A zone jiff can't name (a Windows zone with no IANA name,
+//! for one) also gives `None`, and the caller falls back to "UTC", or the screen stays blank.
+//!
+//! The hook `useUsage` (`packages/ui/lib/use-usage.ts`) is split. Its rules are here: `concerns`, `REFETCH_MS`,
+//! `clock_tick_ms`, `Generation`, `Throttle` and `matching`. The entity still owns the `usage.changed` subscription and
+//! its teardown, the clock's timers and its focus and visibility resumes, the `usage.query` request, the held and failed
+//! reports (kept by spec), and reading the clock and the system zone.
 
 use std::collections::HashMap;
 
@@ -9,8 +15,8 @@ use jiff::civil::Date;
 use jiff::tz::TimeZone;
 use jiff::{Timestamp, ToSpan, Zoned};
 use protocol::accounts::{
-    AccountInfo, AccountKind, DailyUsage, UsageAggregate, UsageCost, UsageCosts, UsageQuery,
-    UsageReport, UsageTokens,
+    AccountInfo, AccountKind, DailyUsage, UsageAggregate, UsageChanged, UsageCost, UsageCosts,
+    UsageQuery, UsageReport, UsageTokens,
 };
 use protocol::model::{Bot, Provider, TimeZone as WireZone};
 
@@ -719,11 +725,14 @@ impl Throttle {
         Self { ms, due: None }
     }
 
-    /// A poke at `now`: a run becomes due `ms` later, unless one already is.
-    pub fn poke(&mut self, now: u64) {
-        if self.due.is_none() {
-            self.due = Some(now.saturating_add(self.ms));
+    /// A poke at `now`: a run becomes due `ms` later, unless one already is. Returns true when this poke newly needs a
+    /// timer armed, so the caller arms one only then.
+    pub fn poke(&mut self, now: u64) -> bool {
+        if self.due.is_some() {
+            return false;
         }
+        self.due = Some(now.saturating_add(self.ms));
+        true
     }
 
     /// Whether a run is due at `now`. Taking it clears it.
@@ -746,6 +755,47 @@ impl Throttle {
 /// Whether the report has no records.
 pub fn empty_usage(report: &UsageReport) -> bool {
     report.summary.records == 0
+}
+
+/// How often a `usage.changed` event may refetch, in milliseconds (the hook's `REFETCH_MS`). Usage events come in bursts
+/// while a bot works, so the refetch is at most once a second however steady they are.
+pub const REFETCH_MS: u64 = 1000;
+
+/// The longest the clock waits between ticks, in milliseconds (the hook's 60 s cap).
+pub const TICK_CAP_MS: i64 = 60_000;
+
+/// How long the clock waits before its next tick: the time to the next local midnight, capped at `TICK_CAP_MS`. `None`
+/// for a zone jiff can't name.
+pub fn clock_tick_ms(now: &Zoned, zone: &str) -> Option<i64> {
+    Some(TICK_CAP_MS.min(until_usage_day(now, zone)?))
+}
+
+/// Whether a `usage.changed` event concerns the report for `filters`: an account or bot the filters name must be the
+/// one the event is about. An empty filter names nothing, as the hook's truthiness check treats it.
+pub fn concerns(filters: &UsageFilters, event: &UsageChanged) -> bool {
+    present(&filters.account).is_none_or(|account| account == event.account_id)
+        && present(&filters.bot).is_none_or(|bot| bot == event.bot_id)
+}
+
+/// The hook's generation guard. Each read takes the next number, and an answer applies only while its read is still the
+/// newest and the entity is still live, so a slow reply never overwrites a newer one. The entity keeps one per effect run,
+/// as the TypeScript's `generation` is local to its effect.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Generation {
+    latest: u64,
+}
+
+impl Generation {
+    /// Starts a read and returns its number.
+    pub fn start(&mut self) -> u64 {
+        self.latest = self.latest.saturating_add(1);
+        self.latest
+    }
+
+    /// Whether the answer to read `read` still applies.
+    pub fn applies(&self, read: u64, live: bool) -> bool {
+        live && read == self.latest
+    }
 }
 
 #[cfg(test)]
@@ -1351,6 +1401,100 @@ mod tests {
         throttle.poke(5000);
         throttle.cancel();
         assert!(!throttle.take_due(10_000));
+    }
+
+    #[test]
+    fn a_poke_says_when_it_newly_needs_the_timer_armed() {
+        let mut throttle = Throttle::new(1000);
+        assert!(throttle.poke(0), "the first poke arms the timer");
+        assert!(!throttle.poke(100), "a run is already waiting");
+        assert!(throttle.take_due(1000));
+        assert!(
+            throttle.poke(1000),
+            "the run has gone, so a poke arms again"
+        );
+    }
+
+    /// A `usage.changed` event for an account and a bot.
+    fn changed(account: &str, bot: &str) -> UsageChanged {
+        UsageChanged {
+            account_id: account.to_owned(),
+            bot_id: bot.to_owned(),
+        }
+    }
+
+    #[test]
+    fn a_usage_change_concerns_every_report_that_names_no_account_or_bot() {
+        assert!(concerns(&UsageFilters::default(), &changed("a1", "b1")));
+    }
+
+    #[test]
+    fn a_usage_change_concerns_only_the_account_or_bot_the_filters_name() {
+        let by_account = filters(None, Some("a1"), None);
+        assert!(concerns(&by_account, &changed("a1", "b9")));
+        assert!(!concerns(&by_account, &changed("a2", "b1")));
+        let by_bot = filters(Some("b1"), None, None);
+        assert!(concerns(&by_bot, &changed("a9", "b1")));
+        assert!(!concerns(&by_bot, &changed("a1", "b2")));
+        // Both named: the event has to match both.
+        let both = filters(Some("b1"), Some("a1"), None);
+        assert!(!concerns(&both, &changed("a1", "b2")));
+        assert!(concerns(&both, &changed("a1", "b1")));
+    }
+
+    #[test]
+    fn an_empty_filter_names_nothing_as_the_hook_reads_it() {
+        assert!(concerns(
+            &filters(Some(""), Some(""), None),
+            &changed("a1", "b1")
+        ));
+    }
+
+    #[test]
+    fn the_refetch_runs_at_most_once_a_second_however_steady_the_events() {
+        // Pokes every 100 ms for 3.5 s, with the timer checked 100 ms after each poke: one run a second, the first a second
+        // after the first poke.
+        assert_eq!(REFETCH_MS, 1000);
+        let mut refetch = Throttle::new(REFETCH_MS);
+        let mut runs = 0;
+        for now in (0..3500).step_by(100) {
+            refetch.poke(now);
+            if refetch.take_due(now + 100) {
+                runs += 1;
+            }
+        }
+        assert_eq!(runs, 3);
+    }
+
+    #[test]
+    fn the_clock_ticks_at_midnight_or_once_a_minute_whichever_comes_first() {
+        assert_eq!(TICK_CAP_MS, 60_000);
+        // Johannesburg, a second before midnight: the tick is at midnight, which is 1001 ms away.
+        assert_eq!(
+            clock_tick_ms(&now_at("2026-10-22T21:59:59Z"), JOHANNESBURG),
+            Some(1001)
+        );
+        // Fourteen hours to UTC midnight: the cap applies.
+        assert_eq!(
+            clock_tick_ms(&now_at("2026-10-22T10:00:00Z"), "UTC"),
+            Some(TICK_CAP_MS)
+        );
+        assert_eq!(
+            clock_tick_ms(&now_at("2026-10-22T10:00:00Z"), "Mars/Olympus"),
+            None
+        );
+    }
+
+    #[test]
+    fn only_the_newest_read_applies_and_none_once_the_entity_is_gone() {
+        let mut generation = Generation::default();
+        let first = generation.start();
+        let second = generation.start();
+        // A slow first answer must not overwrite the second read's.
+        assert!(!generation.applies(first, true));
+        assert!(generation.applies(second, true));
+        // Once the entity is gone, nothing applies.
+        assert!(!generation.applies(second, false));
     }
 
     #[test]

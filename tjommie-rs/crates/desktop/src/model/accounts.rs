@@ -173,7 +173,8 @@ fn now_ms(now: &Zoned) -> i64 {
     now.timestamp().as_millisecond()
 }
 
-/// The cents of a non-negative decimal written `digits[.digits]`, rounded half up at the second place.
+/// The cents of a non-negative decimal written `digits[.digits]`, rounded half up at the second place. Past u128 the cents
+/// saturate at `u128::MAX`, rather than overflowing or reading as 0.
 fn cents_of(decimal: &str) -> u128 {
     let (whole, fraction) = decimal.split_once('.').unwrap_or((decimal, ""));
     let digit = |index: usize| {
@@ -183,8 +184,16 @@ fn cents_of(decimal: &str) -> u128 {
             .and_then(|c| c.to_digit(10))
             .map_or(0, u128::from)
     };
-    let cents = whole.parse::<u128>().unwrap_or(0).saturating_mul(100) + digit(0) * 10 + digit(1);
-    cents + u128::from(digit(2) >= 5)
+    // The whole part is digits, so it fails to parse only by being past u128.
+    let whole = if whole.is_empty() {
+        0
+    } else {
+        whole.parse::<u128>().unwrap_or(u128::MAX)
+    };
+    let cents = whole
+        .saturating_mul(100)
+        .saturating_add(digit(0) * 10 + digit(1));
+    cents.saturating_add(u128::from(digit(2) >= 5))
 }
 
 /// `$${usd.toFixed(2)}`. `toFixed` rounds the exact value and a tie goes up, where Rust's `{:.2}` would round it to even,
@@ -237,6 +246,7 @@ fn en_us_number(text: &str) -> String {
 }
 
 /// "9:14 AM" today, "Fri 9:14 AM" on another day.
+/// The display zone is `now`'s: pass the system zone (`Zoned::now()`), since a UTC `now` puts "Today" on the wrong day east of Greenwich.
 pub fn when(value: &str, now: &Zoned) -> String {
     let zone = now.time_zone();
     if day_name(value, now, false) == "Today" {
@@ -2137,6 +2147,18 @@ mod tests {
         assert_eq!(money(5.0), "$5.00");
         // 0.005 is a little above the tie in binary, so it goes up too.
         assert_eq!(money(0.005), "$0.01");
+    }
+
+    #[test]
+    fn cents_of_saturates_on_an_amount_past_u128_without_panicking() {
+        // 38 digits fit in a u128 but not once they are in cents: the sums must saturate, not overflow.
+        let thirty_eight = format!("{}.99", "9".repeat(38));
+        assert_eq!(cents_of(&thirty_eight), u128::MAX);
+        // 40 digits don't parse as a u128 at all. They must saturate too, not read as 0 cents.
+        let forty = format!("{}.50", "1".repeat(40));
+        assert_eq!(cents_of(&forty), u128::MAX);
+        // A missing whole part is still 0 and the fraction counts.
+        assert_eq!(cents_of(".5"), 50);
     }
 
     #[test]
