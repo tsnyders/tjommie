@@ -1,6 +1,6 @@
 # Plan: "Done" and "Failed" notifications (desktop and phone)
 
-**On approval:** the planner writes this plan to `docs/superpowers/plans/2026-10-27-done-and-failed-notifications.md` in the Phase 3 integration worktree `C:/Users/tyrel/.paseo/worktrees/2cb7zj88/tjommie-phase3-remote` (branch `phase3-remote-20261025` @ `4624db1`), then stops. Implementation runs through Paseo agents. All git and all Cloudflare work go to the ops agent.
+**On approval:** the planner writes this plan to `docs/superpowers/plans/2026-10-27-done-and-failed-notifications.md` in the Phase 3 integration worktree `%USERPROFILE%/.paseo/worktrees/2cb7zj88/tjommie-phase3-remote` (branch `phase3-remote-20261025` @ `4624db1`), then stops. Implementation runs through Paseo agents. All git and all Cloudflare work go to the ops agent.
 
 ## Context
 
