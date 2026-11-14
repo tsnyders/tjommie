@@ -76,5 +76,7 @@ jobs:
           path: |
             ${{ runner.temp }}/r1-install-facts/r1-install-facts.json
             ${{ runner.temp }}/r1-install-facts/latest.yml
-          if-no-files-found: error
+            ${{ runner.temp }}/r1-install-facts/install-result.json
+          # A run that fails before it wrote anything has nothing to upload; that must not hide why it failed.
+          if-no-files-found: warn
           retention-days: 30

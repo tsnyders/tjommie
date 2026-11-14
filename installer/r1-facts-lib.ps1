@@ -6,6 +6,9 @@
 
 Set-StrictMode -Version Latest
 
+# Test-PathInFolder and Get-CommandExecutable (pure functions, like everything in that file; it also defines the scoped stop).
+. (Join-Path $PSScriptRoot 'scoped-processes.ps1')
+
 $script:Views = @{ '64' = [Microsoft.Win32.RegistryView]::Registry64; '32' = [Microsoft.Win32.RegistryView]::Registry32 }
 
 function Open-BaseKey([string]$Hive, [string]$View) {
@@ -46,9 +49,37 @@ function Get-RegistryKeyFact([string]$Hive, [string]$SubKey, [string]$View = '64
     } finally { $base.Close() }
 }
 
-# The uninstall entries under $UninstallKey (in $Hive) that belong to the app: DisplayName is the product name, or
-# InstallLocation is the install folder.
-function Find-UninstallEntries([string]$Hive, [string]$UninstallKey, [string]$ProductName, [string]$InstallFolder, [string]$View = '64') {
+# The text of a registry value, or $null if it is not there (or not text).
+function Get-RegistryText($Key, [string]$Name) {
+    $value = $Key.GetValue($Name, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+    if ($null -eq $value -or $value -isnot [string] -or $value -eq '') { return $null }
+    return $value
+}
+
+function Test-SameFolder([string]$A, [string]$B) {
+    try { return [IO.Path]::GetFullPath($A).TrimEnd('\') -ieq [IO.Path]::GetFullPath($B).TrimEnd('\') } catch { return $false }
+}
+
+# Whether an uninstall entry is this install's, which is whether it points into $Folder. By its InstallLocation if it has one
+# (case and a trailing slash don't matter); electron-builder's per-user installs have none there (the location is kept under
+# HKCU\Software\<GUID>), so then by the program its uninstall command, quiet uninstall command or icon names. An entry whose
+# location says another folder is not this install's, whatever else it points at.
+function Test-EntryPointsIntoFolder($Entry, [string]$Folder) {
+    $location = Get-RegistryText $Entry 'InstallLocation'
+    if ($location) { return (Test-SameFolder $location $Folder) }
+    foreach ($name in 'QuietUninstallString', 'UninstallString', 'DisplayIcon') {
+        $text = Get-RegistryText $Entry $name
+        if (-not $text) { continue }
+        # An icon is "path" or "path,index"; the others are command lines.
+        $program = if ($name -eq 'DisplayIcon') { ($text.Trim() -replace ',\s*-?\d+$', '').Trim('"') } else { Get-CommandExecutable $text }
+        if ($program -and (Test-PathInFolder $program $Folder)) { return $true }
+    }
+    return $false
+}
+
+# The names of the uninstall entries under $UninstallKey (in $Hive) that are the install in $InstallFolder: exactly the ones
+# that point into it, so another version, another app and an entry for another folder never count.
+function Find-UninstallEntries([string]$Hive, [string]$UninstallKey, [string]$InstallFolder, [string]$View = '64') {
     $base = Open-BaseKey $Hive $View
     try {
         $parent = $base.OpenSubKey($UninstallKey)
@@ -57,18 +88,64 @@ function Find-UninstallEntries([string]$Hive, [string]$UninstallKey, [string]$Pr
             $found = @()
             foreach ($name in ($parent.GetSubKeyNames() | Sort-Object)) {
                 $entry = $parent.OpenSubKey($name)
-                try {
-                    $display = $entry.GetValue('DisplayName')
-                    $location = $entry.GetValue('InstallLocation')
-                    $same = $null -ne $location -and ([string]$location).TrimEnd('\') -ieq $InstallFolder.TrimEnd('\')
-                    if ($display -eq $ProductName -or $same) { $found += $name }
-                } finally { $entry.Close() }
+                try { if (Test-EntryPointsIntoFolder $entry $InstallFolder) { $found += $name } } finally { $entry.Close() }
             }
             return $found
         } finally { $parent.Close() }
     } finally { $base.Close() }
 }
 
+# Every uninstall entry under $UninstallKey, matched or not, with the facts that show what it is: its name, DisplayName,
+# InstallLocation, UninstallString, QuietUninstallString, DisplayIcon and Publisher ($null where it has none). Taken before
+# anything is asserted, so a run that cannot find the app's entry still shows what is there.
+function Get-UninstallSurvey([string]$Hive, [string]$UninstallKey, [string]$View = '64') {
+    $base = Open-BaseKey $Hive $View
+    try {
+        $parent = $base.OpenSubKey($UninstallKey)
+        if ($null -eq $parent) { return @() }
+        try {
+            $entries = @()
+            foreach ($name in ($parent.GetSubKeyNames() | Sort-Object)) {
+                $entry = $parent.OpenSubKey($name)
+                try {
+                    $entries += , ([ordered]@{
+                        hive                 = $Hive
+                        view                 = $View
+                        subKey               = $name
+                        displayName          = Get-RegistryText $entry 'DisplayName'
+                        installLocation      = Get-RegistryText $entry 'InstallLocation'
+                        uninstallString      = Get-RegistryText $entry 'UninstallString'
+                        quietUninstallString = Get-RegistryText $entry 'QuietUninstallString'
+                        displayIcon          = Get-RegistryText $entry 'DisplayIcon'
+                        publisher            = Get-RegistryText $entry 'Publisher'
+                    })
+                } finally { $entry.Close() }
+            }
+            return $entries
+        } finally { $parent.Close() }
+    } finally { $base.Close() }
+}
+
+# The subkeys of $ParentKey that have an InstallLocation value: where an install records itself (electron-builder keeps its
+# location in HKCU\Software\<GUID>), found without knowing the GUID.
+function Get-InstallLocationKeys([string]$Hive, [string]$ParentKey, [string]$View = '64') {
+    $base = Open-BaseKey $Hive $View
+    try {
+        $parent = $base.OpenSubKey($ParentKey)
+        if ($null -eq $parent) { return @() }
+        try {
+            $found = @()
+            foreach ($name in ($parent.GetSubKeyNames() | Sort-Object)) {
+                $child = $parent.OpenSubKey($name)
+                try {
+                    $location = Get-RegistryText $child 'InstallLocation'
+                    if ($location) { $found += , ([ordered]@{ hive = $Hive; view = $View; key = "$ParentKey\$name"; installLocation = $location }) }
+                } finally { $child.Close() }
+            }
+            return $found
+        } finally { $parent.Close() }
+    } finally { $base.Close() }
+}
 # Every file under $Dir, with sizes: the install's file inventory. Paths are relative, with backslashes, as Windows shows
 # them; the uninstaller NSIS adds is counted apart, because a fresh build's folder has none.
 function Get-FileInventory([string]$Dir, [string]$UninstallerPattern = 'Uninstall *.exe') {

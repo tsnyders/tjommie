@@ -161,6 +161,23 @@ describe.skipIf(!windows)("the R1 install-facts scripts", () => {
     });
   });
 
+  // The first real run died on an assertion and left nothing. Now the facts file is written (and rewritten after every phase)
+  // before any assertion is made, each phase's failure is recorded in it, and the run fails only at the end, so a red run
+  // still uploads everything it saw.
+  it("writes what it saw before it checks anything, and records a phase that fails instead of stopping at it", () => {
+    const code = readFileSync(join(installer, "collect-r1-facts.ps1"), "utf8").split("\n").filter((line) => !line.trim().startsWith("#")).join("\n");
+    const firstSave = code.search(/^\s*Save-Facts\s*$/m);
+    const firstAssertion = code.indexOf("Expected exactly one HKCU uninstall entry");
+    expect(firstSave).toBeGreaterThan(-1);
+    expect(firstAssertion).toBeGreaterThan(-1);
+    expect(firstSave).toBeLessThan(firstAssertion);
+    expect(code).toMatch(/function Invoke-Phase/);
+    expect(code).toMatch(/\$facts\['problems'\]/);
+    for (const phase of ["install", "firstStart", "upgrade", "uninstall"]) expect(code).toContain(`Invoke-Phase '${phase}'`);
+    // The survey of every uninstall entry is taken before the entry is looked for.
+    expect(code.indexOf("Get-UninstallSurvey")).toBeLessThan(firstAssertion);
+  });
+
   // No script may stop, kill or look up a process by its image name: that is how a real Tjommie would be reached.
   it("never stops or looks up a process by name", () => {
     for (const name of scripts) {
@@ -227,51 +244,101 @@ describe.skipIf(!windows)("the R1 install-facts scripts", () => {
   });
 
   // A private key of our own under HKCU, removed afterwards: the readers are pointed at it, never at a real location.
-  it("reads registry values as they are stored, and finds the app's uninstall entries", () => {
+  it("reads registry values as they are stored", () => {
     const key = `Software\\TjommieFactsTest\\${crypto.randomUUID()}`;
     const result = readers(String.raw`
       $key = '${key}'
       $root = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($key + '\Uninstall\{GUID-1}')
-      $root.SetValue('DisplayName', 'Tjommie')
-      $root.SetValue('InstallLocation', 'C:\Users\alice\AppData\Local\Programs\Tjommie')
-      $root.SetValue('UninstallString', '"C:\Users\alice\AppData\Local\Programs\Tjommie\Uninstall Tjommie.exe" /currentuser')
+      $root.SetValue('DisplayName', 'Tjommie 0.5.1')
+      $root.SetValue('UninstallString', '"C:\Users\alice\AppData\Local\Programs\tjommie\Uninstall Tjommie.exe" /currentuser')
       $root.SetValue('EstimatedSize', 123456, 'DWord')
       $root.SetValue('Path', '%LOCALAPPDATA%\Programs', 'ExpandString')
       $root.SetValue('Approved', [byte[]](3,0,0,0,1,2,3,4), 'Binary')
       $root.SetValue('Many', [string[]]('a','b'), 'MultiString')
       $root.Close()
-      $other = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($key + '\Uninstall\Other')
-      $other.SetValue('DisplayName', 'Something else')
-      $other.SetValue('InstallLocation', 'C:\Elsewhere')
-      $other.Close()
-      $byLocation = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($key + '\Uninstall\{GUID-2}')
-      $byLocation.SetValue('DisplayName', 'Renamed')
-      $byLocation.SetValue('InstallLocation', 'c:\users\alice\appdata\local\programs\tjommie\')
-      $byLocation.Close()
       try {
         $fact = Get-RegistryKeyFact 'CurrentUser' ($key + '\Uninstall\{GUID-1}') '64'
-        $found = Find-UninstallEntries 'CurrentUser' ($key + '\Uninstall') 'Tjommie' 'C:\Users\alice\AppData\Local\Programs\Tjommie' '64'
         $missing = Get-RegistryKeyFact 'CurrentUser' ($key + '\Nothing') '64'
-        [ordered]@{ fact = $fact; found = @($found); missing = $missing } | ConvertTo-Json -Depth 8 -Compress
+        [ordered]@{ fact = $fact; missing = $missing } | ConvertTo-Json -Depth 8 -Compress
       } finally {
         [Microsoft.Win32.Registry]::CurrentUser.DeleteSubKeyTree('Software\TjommieFactsTest', $false)
       }
-    `) as { fact: { hive: string; view: string; subKeys: string[]; values: { name: string; kind: string; data: unknown }[] }; found: string[]; missing: null };
+    `) as { fact: { hive: string; view: string; subKeys: string[]; values: { name: string; kind: string; data: unknown }[] }; missing: null };
     const value = (name: string) => result.fact.values.find((entry) => entry.name === name);
     expect(result.fact.hive).toBe("CurrentUser");
     expect(result.fact.view).toBe("64");
-    expect(value("DisplayName")).toEqual({ name: "DisplayName", kind: "String", data: "Tjommie" });
-    expect(value("UninstallString")?.data).toBe(String.raw`"C:\Users\alice\AppData\Local\Programs\Tjommie\Uninstall Tjommie.exe" /currentuser`);
+    expect(value("DisplayName")).toEqual({ name: "DisplayName", kind: "String", data: "Tjommie 0.5.1" });
+    expect(value("UninstallString")?.data).toBe(String.raw`"C:\Users\alice\AppData\Local\Programs\tjommie\Uninstall Tjommie.exe" /currentuser`);
     expect(value("EstimatedSize")).toEqual({ name: "EstimatedSize", kind: "DWord", data: 123456 });
     expect(value("Path")).toEqual({ name: "Path", kind: "ExpandString", data: "%LOCALAPPDATA%\\Programs" }); // not expanded
     expect(value("Approved")).toEqual({ name: "Approved", kind: "Binary", data: "03 00 00 00 01 02 03 04" });
     expect(value("Many")).toEqual({ name: "Many", kind: "MultiString", data: ["a", "b"] });
     expect(result.fact.values.map((entry) => entry.name)).toEqual([...result.fact.values.map((entry) => entry.name)].sort((a, b) => a.localeCompare(b)));
-    // By product name, or by install folder however it is spelled; not the entry for something else.
-    expect(result.found).toEqual(["{GUID-1}", "{GUID-2}"]);
     expect(result.missing).toBeNull();
     // The private key is gone.
     expect(readers(String.raw`[ordered]@{ left = ([Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Software\TjommieFactsTest') -ne $null) } | ConvertTo-Json -Compress`)).toEqual({ left: false });
+  });
+
+  // The first real run found no uninstall entry because the match was too narrow. electron-builder writes the entry with a
+  // DisplayName that has the version in it ("Tjommie 0.5.1") and no InstallLocation (that lives under HKCU\Software\<GUID>), and
+  // the install folder is lowercase (the package name). An entry is this install's if it points into this run's install
+  // folder: by its InstallLocation (case and a trailing slash don't matter), or, with none, by the program its uninstall
+  // command, quiet uninstall command or icon names. An entry for something else, or for another folder, never counts.
+  it("finds the uninstall entry however electron-builder writes it, and only entries that point into this install folder", () => {
+    const key = `Software\\TjommieFactsTest\\${crypto.randomUUID()}`;
+    const result = readers(String.raw`
+      $key = '${key}'
+      $folder = 'C:\Users\alice\AppData\Local\Programs\tjommie'
+      function Entry([string]$name, [hashtable]$values) {
+        $entry = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($key + '\Uninstall\' + $name)
+        foreach ($item in $values.GetEnumerator()) { $entry.SetValue($item.Key, $item.Value) }
+        $entry.Close()
+      }
+      # As electron-builder writes it: the version in the name, no InstallLocation, the uninstaller and the icon in the folder.
+      Entry '{BY-UNINSTALLER}' @{ DisplayName = 'Tjommie 0.5.1'; Publisher = 'Tjommie'; UninstallString = '"C:\Users\alice\AppData\Local\Programs\tjommie\Uninstall Tjommie.exe" /currentuser'; QuietUninstallString = '"C:\Users\alice\AppData\Local\Programs\tjommie\Uninstall Tjommie.exe" /currentuser /S' }
+      Entry '{BY-ICON}' @{ DisplayName = 'Whatever'; DisplayIcon = 'C:\Users\alice\AppData\Local\Programs\tjommie\Tjommie.exe,0' }
+      Entry '{BY-LOCATION}' @{ DisplayName = 'Renamed'; InstallLocation = 'c:\USERS\alice\appdata\local\programs\TJOMMIE\' }
+      # Not this install: another app, a sibling folder with a longer name, a Tjommie entry for another folder, one that says
+      # another folder in its location while its uninstaller is here, and one with nothing to point anywhere.
+      Entry 'Other' @{ DisplayName = 'Something else'; InstallLocation = 'C:\Elsewhere' }
+      Entry '{SIBLING}' @{ DisplayName = 'Tjommie 0.4.2'; InstallLocation = 'C:\Users\alice\AppData\Local\Programs\tjommie-old' }
+      Entry '{ELSEWHERE}' @{ DisplayName = 'Tjommie'; UninstallString = '"D:\Other\Uninstall Tjommie.exe" /S' }
+      Entry '{LOCATION-WINS}' @{ DisplayName = 'Tjommie'; InstallLocation = 'D:\Other'; UninstallString = '"C:\Users\alice\AppData\Local\Programs\tjommie\Uninstall Tjommie.exe" /currentuser' }
+      Entry '{NOTHING}' @{ DisplayName = 'Tjommie 9.9.9' }
+      try {
+        $found = @(Find-UninstallEntries 'CurrentUser' ($key + '\Uninstall') $folder '64')
+        $none = @(Find-UninstallEntries 'CurrentUser' ($key + '\NoSuchKey') $folder '64')
+        $survey = @(Get-UninstallSurvey 'CurrentUser' ($key + '\Uninstall') '64')
+        [ordered]@{ found = $found; none = $none; survey = $survey } | ConvertTo-Json -Depth 8 -Compress
+      } finally {
+        [Microsoft.Win32.Registry]::CurrentUser.DeleteSubKeyTree('Software\TjommieFactsTest', $false)
+      }
+    `) as { found: string[]; none: string[]; survey: Record<string, string | null>[] };
+    expect(result.found).toEqual(["{BY-ICON}", "{BY-LOCATION}", "{BY-UNINSTALLER}"]);
+    expect(result.none).toEqual([]);
+    // The survey lists every entry, found or not, with the five facts that show why: it is what a failed run leaves behind.
+    expect(result.survey.map((entry) => entry.subKey)).toEqual(["Other", "{BY-ICON}", "{BY-LOCATION}", "{BY-UNINSTALLER}", "{ELSEWHERE}", "{LOCATION-WINS}", "{NOTHING}", "{SIBLING}"].sort((a, b) => a.localeCompare(b)));
+    const byUninstaller = result.survey.find((entry) => entry.subKey === "{BY-UNINSTALLER}");
+    expect(byUninstaller).toMatchObject({
+      hive: "CurrentUser", view: "64", displayName: "Tjommie 0.5.1", publisher: "Tjommie", installLocation: null,
+      uninstallString: String.raw`"C:\Users\alice\AppData\Local\Programs\tjommie\Uninstall Tjommie.exe" /currentuser`,
+      quietUninstallString: String.raw`"C:\Users\alice\AppData\Local\Programs\tjommie\Uninstall Tjommie.exe" /currentuser /S`,
+    });
+    expect(result.survey.find((entry) => entry.subKey === "Other")).toMatchObject({ displayName: "Something else", installLocation: "C:\\Elsewhere", uninstallString: null, publisher: null });
+  });
+
+  // electron-builder keeps InstallLocation under HKCU\Software\<GUID>. Listing the subkeys that have one finds it even when
+  // the uninstall entry could not be matched.
+  it("lists the keys under a parent that have an InstallLocation, found or not", () => {
+    const key = `Software\\TjommieFactsTest\\${crypto.randomUUID()}`;
+    const result = readers(String.raw`
+      $key = '${key}'
+      $one = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($key + '\{GUID-A}'); $one.SetValue('InstallLocation', 'C:\Users\alice\AppData\Local\Programs\tjommie'); $one.SetValue('KeepShortcuts', 'true'); $one.Close()
+      $two = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($key + '\NoLocation'); $two.SetValue('Other', 'x'); $two.Close()
+      try { ConvertTo-Json -InputObject @(Get-InstallLocationKeys 'CurrentUser' $key '64') -Depth 5 -Compress }
+      finally { [Microsoft.Win32.Registry]::CurrentUser.DeleteSubKeyTree('Software\TjommieFactsTest', $false) }
+    `) as { hive: string; view: string; key: string; installLocation: string }[];
+    expect(result).toEqual([{ hive: "CurrentUser", view: "64", key: `${key}\\{GUID-A}`, installLocation: "C:\\Users\\alice\\AppData\\Local\\Programs\\tjommie" }]);
   });
 
   // A real .lnk with an AppUserModelID, made by a helper in this test (the readers only read): it shows the AUMID is read
@@ -375,6 +442,14 @@ describe("the desktop-acceptance workflow", () => {
     expect(workflow).toContain("collect-r1-facts.ps1");
     expect(workflow).toMatch(/name: r1-install-facts\b/);
     expect(workflow).not.toMatch(/PRODUCTION_VERSION|0\.5\.0/); // the latest release, not a version written here
+  });
+
+  it("uploads the facts whether the run passed or failed, and never fails the upload for a missing file", () => {
+    const upload = workflow.slice(workflow.indexOf("actions/upload-artifact"));
+    expect(upload).toMatch(/if: \$\{\{ always\(\) \}\}/);
+    expect(upload).toMatch(/name: r1-install-facts\b/);
+    expect(upload).toContain("r1-install-facts/r1-install-facts.json");
+    expect(upload).toMatch(/if-no-files-found: warn/);
   });
 
   it("names only scripts that exist, and never calls an install script without the guard", () => {
