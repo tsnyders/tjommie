@@ -15,7 +15,8 @@ use super::tools::Automation;
 /// What is on its way to the UI thread: a job, with where its answer goes, or the news that the daemon is gone.
 pub enum Queued {
     Job {
-        job: Job,
+        // Boxed: a job is far larger than the news that the daemon is gone.
+        job: Box<Job>,
         reply: oneshot::Sender<Result<Reply, String>>,
     },
     DaemonLost,
@@ -36,7 +37,10 @@ impl JobQueue {
 impl Executor for JobQueue {
     fn execute(&self, job: Job) -> BoxFuture<'static, Result<Reply, String>> {
         let (reply, answer) = oneshot::channel();
-        let sent = self.sender.try_send(Queued::Job { job, reply });
+        let sent = self.sender.try_send(Queued::Job {
+            job: Box::new(job),
+            reply,
+        });
         Box::pin(async move {
             if sent.is_err() {
                 return Err("The native browser is not ready.".to_string());
@@ -66,7 +70,7 @@ pub async fn serve(
                 let engine = engine.clone();
                 let automation = automation.clone();
                 spawn(Box::pin(async move {
-                    let result = run(&engine, &automation, job).await;
+                    let result = run(&engine, &automation, *job).await;
                     let _ = reply.send(result);
                 }));
             }
