@@ -27,13 +27,16 @@ Assert-HostedRunner
 . (Join-Path $PSScriptRoot 'accept-lib.ps1')
 
 if (-not $InstallResult) { throw 'No install result: run install-latest-r1.ps1 first, or pass -InstallResult.' }
+# The install result says which folder this script starts, stops and uninstalls from. It must be the one install-latest-r1.ps1 made on
+# this run, on a fresh runner: a hand-written one, or one from another run, is refused before anything is touched.
+$r1 = Read-Json $InstallResult
+Assert-InstallResultBoundToThisRun $r1
 if (-not $OutDir) { $OutDir = Join-Path $env:RUNNER_TEMP 'installer-acceptance' }
 Start-Acceptance 'over-r1' $OutDir
 $env:STUB_LOG = Join-Path $OutDir 'stub.log'
 
 $facts = Read-Json (Join-Path $PSScriptRoot 'r1-install-facts.json')
 $table = Read-Json (Join-Path $PSScriptRoot 'identities.json')
-$r1 = Read-Json $InstallResult
 $prod = $table.identities.production
 $removeRun = [bool]((Get-Content -LiteralPath (Join-Path $PSScriptRoot 'tjommie.nsi') -Raw) -match '(?m)^!define REMOVE_RUN_VALUE_ON_UNINSTALL\s*$')
 

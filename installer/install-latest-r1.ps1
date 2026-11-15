@@ -72,7 +72,12 @@ if (-not $folder) { throw 'The install did not settle.' }
 if ((Split-Path -Parent ([IO.Path]::GetFullPath($folder).TrimEnd('\'))) -ine (Join-Path $env:LOCALAPPDATA 'Programs')) { throw "$folder is not an install folder under %LOCALAPPDATA%\Programs." }
 Stop-ProcessesInFolder $folder | Out-Null
 
+# The result says which run made it and that the runner was fresh (Assert-FreshRunner passed at the top), so a script that later acts
+# on this install can refuse a result from anywhere else (Assert-InstallResultBoundToThisRun).
 $result = [ordered]@{
+    githubRunId         = $env:GITHUB_RUN_ID
+    githubRunAttempt    = $env:GITHUB_RUN_ATTEMPT
+    fresh               = $true
     tag                 = $tag
     version             = $version
     installerName       = $name
