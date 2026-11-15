@@ -11,10 +11,10 @@ Location kinds: `(unit)` is a `#[cfg(test)]` module, `(view)` is a GPUI `TestApp
 | TypeScript test | Rust test | Task | Notes |
 |---|---|---|---|
 | `packages/ui/components/accounts/accounts.test.tsx` | `crates/desktop/src/ui/settings/accounts.rs` (view) | T5.5 | Accounts: sign-in, check, limits (row 6). |
-| `packages/ui/components/agents/cards.test.tsx` | `crates/desktop/src/ui/agents/cards.rs` (view) | T5.1 | Needs-you cards. |
+| `packages/ui/components/agents/cards.test.tsx` | `crates/desktop/src/ui/agents/tests.rs` (view) | T5.1 | Needs-you cards. |
 | `packages/ui/components/app-shell.test.tsx` | `crates/desktop/src/ui/shell/mod.rs` (view) | T2.1 | `shell::the_connection_screen_takes_the_main_columns_place`, `shell::navigates_to_chat_from_recents`, `e2e_navigation`; the status pill in `shell/connection.rs` (unit), `Connection::blocks` in `shell/data.rs` (unit). |
 | `packages/ui/components/back-link.test.tsx` | `n/a: phone only (the back link shows below 640 px; the desktop has the sidebar)` | - | Ruled in T2.1. |
-| `packages/ui/components/bot-form/identity.test.tsx` | `crates/desktop/src/ui/bots/identity.rs` (view) | T5.1 | Bot identity fields. |
+| `packages/ui/components/bot-form/identity.test.tsx` | `crates/desktop/src/ui/bots/tests.rs` (view) | T5.1 | Bot identity fields. |
 | `packages/ui/components/bot-form/phone.test.tsx` | `n/a: phone only (Phase 4, Android Compose)` | - | Bot form stacked for a phone screen. |
 | `packages/ui/components/chat/approval-card.test.tsx` | `crates/desktop/src/ui/chat/approval.rs` (view) | T4.2 | `approval::keyboard_snaps`, `approval::interrupt_undo_halfway`. |
 | `packages/ui/components/chat/bot-panel.test.tsx` | `crates/desktop/src/ui/browser/panel_tests.rs` (view) | T3.7 | The Details pane's Computer card opens the browser: `panel::tests::offers_details_and_browser_hide_and_settings`. Its visibility-gated preview (`browser.frame` thumbnail, 1 s) waits for the store (T1.4 `model::browser_preview`). |
@@ -51,13 +51,13 @@ Location kinds: `(unit)` is a `#[cfg(test)]` module, `(view)` is a GPUI `TestApp
 | `packages/ui/components/host-gate.test.tsx` | `crates/desktop/src/ui/shell/host_switcher.rs` (view) | T2.1 | Gating when the window is on another PC. Its cases also touch T4.3, T5.1 and T5.5. |
 | `packages/ui/components/host-switcher.test.tsx` | `crates/desktop/src/ui/shell/sidebar.rs` (unit) | T2.1 | `hostRows`, `chooseHost` and the button; the phone's Switch PC pill and phone list are n/a. |
 | `packages/ui/components/mobile-connect.test.tsx` | `crates/desktop/src/ui/settings/devices.rs` (view) | T5.5 | Pairing QR, shown under Devices. |
-| `packages/ui/components/projects/project-workspace.test.tsx` | `crates/desktop/src/ui/projects/workspace.rs` (view) | T5.3 | - |
-| `packages/ui/components/projects/task-detail.test.tsx` | `crates/desktop/src/ui/projects/task_detail.rs` (view) | T5.3 | - |
+| `packages/ui/components/projects/project-workspace.test.tsx` | `crates/desktop/src/ui/projects/tests.rs` (view) | T5.3 | Its four cases one for one. |
+| `packages/ui/components/projects/task-detail.test.tsx` | `crates/desktop/src/ui/projects/tests.rs` (view) | T5.3 | Coverage manifest, and its absence. |
 | `packages/ui/components/projects/task-diff.test.tsx` | `crates/desktop/src/ui/files/diff.rs` (view) | T4.4 | The diff view is T4.4 in the plan's inventory. |
-| `packages/ui/components/room/room-composer.test.tsx` | `crates/desktop/src/ui/rooms/composer.rs` (view) | T5.2 | Mention keys are shared with T2.4 and T4.3. |
+| `packages/ui/components/room/room-composer.test.tsx` | `crates/desktop/src/ui/rooms/tests.rs` (view) | T5.2 | Mention keys are shared with T2.4 and T4.3. The revision case is `rooms::composer::tests`; dictation is T4.3's shared composer; the list-size case reads CSS (n/a). |
 | `packages/ui/components/room/room-form.test.tsx` | `crates/desktop/src/ui/rooms/form.rs` (view) | T5.2 | - |
-| `packages/ui/components/room/room-screen.test.tsx` | `crates/desktop/src/ui/rooms/screen.rs` (view) | T5.2 | Also `e2e_room_mention`. |
-| `packages/ui/components/room/rooms-list.test.ts` | `crates/desktop/src/ui/rooms/list.rs` (view) | T5.2 | - |
+| `packages/ui/components/room/room-screen.test.tsx` | `crates/desktop/src/ui/rooms/tests.rs` (view) | T5.2 | Also `e2e_room_mention`. |
+| `packages/ui/components/room/rooms-list.test.ts` | `crates/desktop/src/ui/rooms/tests.rs` (view) | T5.2 | The previews are the store's conversations (`withMessage`/`withPage` are the store's events and pages here). |
 | `packages/ui/components/safe-area.test.ts` | `n/a: phone only (Phase 4, Android safe-area insets)` | - | - |
 | `packages/ui/components/settings-list.test.ts` | `n/a: phone only (Phase 4, phone Settings list)` | - | The desktop Settings list is T5.5. |
 | `packages/ui/components/settings/device-settings.test.tsx` | `crates/desktop/src/ui/settings/appearance.rs` (view) | T5.5 | Appearance controls; saving is T1.5. |
