@@ -58,6 +58,7 @@ impl Live {
         &self,
         work: impl FnOnce(SpeechRuntime) -> BoxFuture<'static, Result<(), String>>,
     ) -> BoxFuture<'static, Result<(), String>> {
+        // unguarded: a tokio task on the live runtime, not a GPUI handler; a panic in it ends that task alone (Err)
         let task = self.tokio.spawn(work(self.runtime.clone()));
         async move { task.await.unwrap_or_else(|_| Err(UNFINISHED.to_owned())) }.boxed()
     }
@@ -66,6 +67,7 @@ impl Live {
 impl SpeechActions for Live {
     fn status(&self) -> BoxFuture<'static, Option<SpeechStatus>> {
         let runtime = self.runtime.clone();
+        // unguarded: a tokio task on the live runtime, not a GPUI handler; a panic in it ends that task alone (None)
         let task = self.tokio.spawn(async move { runtime.status().await });
         async move { task.await.ok() }.boxed()
     }
