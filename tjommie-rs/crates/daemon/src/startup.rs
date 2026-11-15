@@ -21,7 +21,7 @@ use crate::bots::StoredBot;
 use crate::cli::{CliHost, InstalledWorkers, SystemCli, WorkerInstall, WorkerPurpose};
 use crate::context::{self, Context, Db, Late, LateBotView};
 use crate::m4::{M4, M4Deps};
-use crate::m5::{self, LateTasks, M5, M5Deps};
+use crate::m5::{self, LateTasks, M5, M5Deps, ReviewOptionsHook};
 use crate::m6::{self, M6, M6Deps};
 use crate::protect::{FolderProtection, ListAccounts};
 use crate::queue::WorkItem;
@@ -328,6 +328,20 @@ use crate::provider_fixtures::Fixtures;
 #[cfg(not(feature = "provider-fixtures"))]
 enum Fixtures {}
 
+/// `accept-worker` starts the real Claude and Codex to prove the worker accounts, so it must not run while
+/// `TJOMMIE_PROVIDER_FIXTURES` is set: a run that is meant to start no provider must never be what starts one. Any build
+/// refuses, whether or not it has the `provider-fixtures` feature, and never says what the variable held.
+pub fn refuse_accept_worker_with_fixtures(
+    value: Option<std::ffi::OsString>,
+) -> Result<(), StartupError> {
+    match value {
+        Some(value) if !value.is_empty() => Err(plain(
+            "TJOMMIE_PROVIDER_FIXTURES is set, and accept-worker starts the real Claude and Codex. Unset it first.",
+        )),
+        _ => Ok(()),
+    }
+}
+
 /// A daemon without the `provider-fixtures` feature can't play fixtures. If `TJOMMIE_PROVIDER_FIXTURES` is set anyway
 /// (not empty), starting would run the real Claude and Codex, with real accounts and paid turns, in a run that was meant
 /// to replay recorded conversations. So it refuses, and never says what the variable held.
@@ -578,6 +592,8 @@ struct Providers {
     provider_worker: Option<WorkerBoundary>,
     review_worker: Option<Arc<WorkerBoundary>>,
     workers: Option<InstalledWorkers>,
+    /// How the review runtime's options are adjusted: only fixtures do, to refuse reviews.
+    review_options: Option<ReviewOptionsHook>,
 }
 
 /// The real providers: launched inside the Windows worker when it is set up, else directly.
@@ -595,7 +611,25 @@ fn real_providers(root: &Path, exe_dir: &Path) -> Result<Providers, StartupError
         provider_worker: Some(provider_worker),
         review_worker: Some(review_worker),
         workers,
+        review_options: None,
     })
+}
+
+/// Whether fixtures are on and whether project reviews carry the fixtures' review hook must agree: with fixtures on, a
+/// missing hook leaves the real review path (an API-key account's key and the Claude CLI) open; a hook without fixtures
+/// means the daemon is not what it was told to be. Startup reads the hook off the very `M5Deps` it installs, so a
+/// refactor that drops it stops the daemon from starting instead of quietly leaving reviews live.
+#[cfg(feature = "provider-fixtures")]
+pub fn check_review_wiring(fixtures_on: bool, review_hook: bool) -> Result<(), StartupError> {
+    match (fixtures_on, review_hook) {
+        (true, false) => Err(plain(
+            "Provider fixtures are on, but project reviews are not set to be refused, so a review could start the real Claude. The daemon did not start.",
+        )),
+        (false, true) => Err(plain(
+            "Project reviews are set up for provider fixtures, but fixtures are not on. The daemon did not start.",
+        )),
+        _ => Ok(()),
+    }
 }
 
 /// Recorded conversations and no process: the fixtures host launches nothing, no worker boundary is installed (a review
@@ -613,6 +647,7 @@ fn fixture_providers(fixtures: &Fixtures) -> Providers {
         provider_worker: None,
         review_worker: None,
         workers: None,
+        review_options: Some(fixtures.review_options_hook()),
     }
 }
 
@@ -628,7 +663,8 @@ fn assemble(
 ) -> Result<Parts, StartupError> {
     // Fixtures replace every provider, so nothing runs that the Codex data ACL pass protects: skip the pass, which would
     // read and change the real `~/.codex/.sandbox`. (A desktop run strips the `TJOMMIE_SKIP_*` hooks.)
-    let skip_folder_protection = launch.skip_folder_protection || fixtures.is_some();
+    let fixtures_on = fixtures.is_some();
+    let skip_folder_protection = launch.skip_folder_protection || fixtures_on;
     let mut paths = paths::data_paths(root)?;
     if let Some(accounts) = &launch.accounts_dir {
         paths.accounts = accounts.clone();
@@ -662,6 +698,7 @@ fn assemble(
         provider_worker,
         review_worker,
         workers,
+        review_options,
     } = match fixtures {
         #[cfg(feature = "provider-fixtures")]
         Some(fixtures) => fixture_providers(&fixtures),
@@ -936,24 +973,23 @@ fn assemble(
         .map_err(rpc)?;
 
     // 5c. Projects, tasks and reviews (M5). The runner's task hooks reach the service through `late_tasks`.
-    let m5 = Arc::new(
-        m5::install(
-            &mut handlers,
-            M5Deps {
-                db: db.clone(),
-                root: paths.root.clone(),
-                events: events.clone(),
-                switching: context.late.switching.clone(),
-                deleting: context.late.deleting.clone(),
-                runner: runner.clone(),
-                accounts: accounts.runtime.clone(),
-                host: cli,
-                review_worker,
-                late: late_tasks,
-            },
-        )
-        .map_err(rpc)?,
-    );
+    let m5_deps = M5Deps {
+        db: db.clone(),
+        root: paths.root.clone(),
+        events: events.clone(),
+        switching: context.late.switching.clone(),
+        deleting: context.late.deleting.clone(),
+        runner: runner.clone(),
+        accounts: accounts.runtime.clone(),
+        host: cli,
+        review_worker,
+        late: late_tasks,
+        review_options,
+    };
+    // Read off the very value that is installed, so a hook dropped on the way here is caught, not assumed.
+    #[cfg(feature = "provider-fixtures")]
+    check_review_wiring(fixtures_on, m5_deps.review_options.is_some())?;
+    let m5 = Arc::new(m5::install(&mut handlers, m5_deps).map_err(rpc)?);
     let _ = context.late.m5.set(m5.clone());
 
     // 6. What a restart cut off is settled before anything listens (`runner.start()` then runs the queue).

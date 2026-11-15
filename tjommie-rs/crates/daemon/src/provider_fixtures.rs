@@ -32,12 +32,18 @@
 //! stderr). The accounts are checked before the daemon answers, so a fresh data root accepts `chat.send` at once. The
 //! Codex data ACL pass is skipped (it would touch the real `~/.codex`).
 //!
-//! **Not covered: project reviews.** A review launches the real Claude CLI through the host for a version probe and a
-//! stream-json turn, and only for an API-key account, so the host refuses that launch and the review fails. Covering it
-//! needs: the review runtime's `cli` and `machine_policy_hash` seams (`ProjectReviewOptions`, which `m5::install`
-//! leaves `None`) passed through `M5Deps` and fed a fixture command; an in-memory credential store and an API-key
-//! account; and a host `launch` that answers the reviewer's `--version` and its init and result lines, including the
-//! acceptance fixture's nonce reply, from a `review.json`.
+//! **Project reviews are refused.** A real review launches the Claude CLI for a version probe and a stream-json turn,
+//! with an API-key account's key, so it would be the one way back to a real provider. In fixtures mode a review
+//! answers at once that it is unavailable, `review_isolation_unavailable: Project review is not available in
+//! provider-fixtures mode. A review.json replay is the documented follow-up.` ([`REVIEW_REFUSED`]), before it reads an
+//! account, a credential or the `PATH`, and without asking the host for anything ([`Fixtures::review_options_hook`]).
+//! Project checks (a Full-auto tester's configured command) go through the same refusing host, so they fail to start
+//! and are counted. The follow-up, not built, is a `review.json` replay: the review runtime's `machine_policy_hash` seam,
+//! an in-memory credential store and API-key account, and a host `launch` that answers the reviewer's `--version` and
+//! its init and result lines, including the acceptance fixture's nonce reply.
+//!
+//! `tjommie-daemon accept-worker` (which starts the real provider CLIs to prove the worker accounts) refuses to run while
+//! the variable is set, in every build. The other subcommands start no provider.
 //!
 //! # Where files go and what they are called
 //!
@@ -161,6 +167,11 @@ use crate::cli::{
     BoxFuture, ChildExit, CliChild, CliCommand, CliExit, CliHost, CliOutput, Env, KillTree,
     LaunchOptions,
 };
+use crate::m5::ReviewOptionsHook;
+use crate::project_review::ReviewContext;
+use crate::project_review_runtime::{
+    ProjectReviewOptions, ReviewAccountResolver, ReviewAccountSelection,
+};
 use crate::providers::codex_rpc::{CodexServer, JsonRpcLines};
 use crate::providers::{
     Approval, ApprovalAnswer, Limit, LimitState, LimitWindow, ProviderError, ProviderEvent,
@@ -178,6 +189,9 @@ pub const BUILD_MARKER: &str = "TJOMMIE-PROVIDER-FIXTURES-BUILD-7f3a9c41";
 /// Keeps the marker in the object code even where nothing reads it.
 #[used]
 static KEEP_BUILD_MARKER: &str = BUILD_MARKER;
+
+/// Why a project review fails while fixtures are on (it is the reason's text after `review_isolation_unavailable: `).
+pub const REVIEW_REFUSED: &str = "Project review is not available in provider-fixtures mode. A review.json replay is the documented follow-up.";
 
 const DEFAULT_FILE: &str = "default.json";
 const FILE_VERSION: u32 = 1;
@@ -586,6 +600,27 @@ impl Fixtures {
 
     pub fn usage_fetch(&self) -> Arc<dyn UsageFetch> {
         Arc::new(FixtureFetch)
+    }
+
+    /// How a fixtures daemon wires project reviews, which are refused. A real review launches the Claude CLI with an
+    /// API-key account's key, so every way to get there is closed, each on its own:
+    ///
+    /// * the account resolver is replaced by one that answers "unavailable" with [`REVIEW_REFUSED`], the first thing a
+    ///   review asks, so no account, credential, CLI lookup or probe is touched and nothing is asked of the host;
+    /// * the host is this daemon's refusing [`FixtureHost`], and there is no review worker to launch through;
+    /// * the reviewer's CLI is the placeholder, which is no path, instead of one looked up on `PATH`.
+    pub fn review_options_hook(&self) -> ReviewOptionsHook {
+        let host = self.host();
+        Arc::new(move |options| {
+            let placeholder = host.clone();
+            ProjectReviewOptions {
+                resolve: Arc::new(RefusedReviews),
+                host: host.clone(),
+                worker: None,
+                cli: Some(Arc::new(move || placeholder.find_cli(Provider::Claude))),
+                ..options
+            }
+        })
     }
 
     /// The next turn of the agent's file, used up. The messages of every failure are the turn's error.
@@ -1046,6 +1081,23 @@ impl CliHost for FixtureHost {
             },
         };
         Box::pin(async move { Ok(answer) })
+    }
+}
+
+/// The reviewer account resolver of a fixtures daemon: no reviewer is ever chosen.
+struct RefusedReviews;
+
+impl ReviewAccountResolver for RefusedReviews {
+    fn resolve<'a>(
+        &'a self,
+        _context: &'a ReviewContext,
+        _signal: &'a CancellationToken,
+    ) -> BoxFuture<'a, Result<ReviewAccountSelection, String>> {
+        Box::pin(async {
+            Ok(ReviewAccountSelection::Unavailable(
+                REVIEW_REFUSED.to_owned(),
+            ))
+        })
     }
 }
 
