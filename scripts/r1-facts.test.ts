@@ -379,7 +379,8 @@ public static class TestShortcut {
         ConvertTo-Json -InputObject @(Get-NewProcessFacts $before) -Depth 4 -Compress
       } finally { Stop-Process -Id $child.Id -Force -ErrorAction SilentlyContinue }
     `) as { name: string; commandLine: string }[];
-    const ping = result.find((entry) => entry.name.toLowerCase() === "ping.exe");
+    // Test files run in parallel and others start their own pings, so this one is found by its own arguments.
+    const ping = result.find((entry) => entry.name.toLowerCase() === "ping.exe" && entry.commandLine.includes("-n 4 127.0.0.1"));
     expect(ping?.commandLine).toContain("-n 4 127.0.0.1");
   });
 });

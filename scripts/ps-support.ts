@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach } from "vitest";
+import { afterAll, afterEach } from "vitest";
 
 // What the tests of the installer scripts (installer/*.ps1, installer/tjommie.nsi) share: running a PowerShell script or
 // snippet in a clean environment, and temp folders that are removed afterwards. Nothing here installs, uninstalls or looks
@@ -20,6 +20,13 @@ export const shell = ((): string => {
 })();
 
 const folders: string[] = [];
+
+// The helpers log to %TEMP%\tjommie-installer-logs. A test run must not write there, so every helper run in this process logs to a
+// folder of its own, removed afterwards (tests that read a log pass their own TJOMMIE_HELPER_LOG_DIR).
+const helperLogs = mkdtempSync(join(tmpdir(), "tjommie-helper-logs-"));
+process.env.TJOMMIE_HELPER_LOG_DIR = helperLogs;
+afterAll(() => rmSync(helperLogs, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
+
 export function temp(): string {
   const folder = mkdtempSync(join(tmpdir(), "tjommie-installer-test-"));
   folders.push(folder);
