@@ -460,6 +460,67 @@ fn suppresses_private_pixels_and_the_control_pill(cx: &mut gpui::TestAppContext)
     );
 }
 
+/// A 4x3 JPEG, base64 as a frame carries it.
+const JPEG: &str = "/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAMCAgMCAgMDAwMEAwMEBQgFBQQEBQoHBwYIDAoMDAsKCwsNDhIQDQ4RDgsLEBYQERMUFRUVDA8XGBYUGBIUFRT/2wBDAQMEBAUEBQkFBQkUDQsNFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBT/wAARCAADAAQDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwDxSiiivzc/tU//2Q==";
+
+fn jpeg_frame(sequence: u64) -> BrowserFrame {
+    BrowserFrame {
+        data: JPEG.into(),
+        mime: FrameMime::Jpeg,
+        width: 4,
+        height: 3,
+        sequence,
+        viewport_width: None,
+        viewport_height: None,
+        page_id: Some("p1".into()),
+        viewport_revision: None,
+        stream_id: Some("s1".into()),
+        control_epoch: None,
+        private_epoch: None,
+    }
+}
+
+fn drawn(sent: &Sent) -> Vec<u64> {
+    sent.borrow()
+        .iter()
+        .filter_map(|command| match command {
+            BrowserCommand::Drawn(frame) => Some(frame.sequence),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Draws until a frame has been reported drawn after `before`, while GPUI decodes the picture.
+fn draw_until_drawn(sent: &Sent, before: usize, cx: &mut VisualTestContext) {
+    for _ in 0..50 {
+        cx.run_until_parked();
+        draw(cx);
+        if drawn(sent).len() > before {
+            return;
+        }
+    }
+}
+
+// The remote live view (browser.streamFrame): each frame is reported drawn once it is on screen, once, in order, so the
+// session acknowledges it (browser.streamAck) and the stream sends the next.
+#[gpui::test]
+fn reports_each_streamed_frame_once_it_is_drawn(cx: &mut gpui::TestAppContext) {
+    let mut view = shown(state(BrowserControl::Bot));
+    view.frame = Some(jpeg_frame(1));
+    let (panel, sent, cx) = panel_window(cx, bot("b1", true), Some(view.clone()));
+    open_browser(&panel, cx);
+    draw_until_drawn(&sent, 0, cx);
+    assert_eq!(drawn(&sent), [1]);
+    assert_eq!(cx.update(|_, cx| panel.read(cx).picture.frame().map(|frame| frame.sequence)), Some(1));
+    draw(cx);
+    draw(cx);
+    assert_eq!(drawn(&sent), [1], "once per frame, however often the panel draws");
+    view.frame = Some(jpeg_frame(2));
+    set_remote(view, cx);
+    draw_until_drawn(&sent, 1, cx);
+    assert_eq!(drawn(&sent), [1, 2]);
+}
+
 // browser-panel.test.tsx: "explains an offline remote host without denying the remote Computer pane"
 #[gpui::test]
 fn explains_an_offline_remote_host(cx: &mut gpui::TestAppContext) {
