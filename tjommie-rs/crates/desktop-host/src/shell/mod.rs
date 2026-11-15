@@ -1,5 +1,4 @@
-//! The Windows shell side of the app: single instance, the Animation effects setting, the tray, toast notifications
-//! and the login item.
+//! The Windows shell side of the app: single instance, the tray, toast notifications, the login item and the Animation effects setting.
 
 pub mod animation;
 pub mod login_item;

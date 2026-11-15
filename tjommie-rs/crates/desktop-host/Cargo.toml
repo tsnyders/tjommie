@@ -33,6 +33,8 @@ tokio = { version = "1.54.1", features = ["rt", "rt-multi-thread", "macros", "ne
 url = "2.5.8"
 uuid = { version = "1.26.0", features = ["v4"] }
 webview2-com.workspace = true
+# GPUI already builds windows with WindowsAndMessaging, LibraryLoader and Gdi (shell::animation's hidden window), so the
+# workspace's windows feature set, and GPUI's build, stay the same.
 windows = { version = "0.62.2", features = [
   "Data_Xml_Dom",
   "Foundation",
@@ -62,8 +64,9 @@ zeroize = { version = "1.8", features = ["serde"] }
 daemon = { path = "../daemon" }
 # The TLS fixture servers' certificate, generated per test run.
 rcgen.workspace = true
-# Counts this process's threads (the timer test): the same `windows` crate, one more module.
-windows = { version = "0.62.2", features = ["Win32_System_Diagnostics_ToolHelp"] }
+# Counts this process's threads (the timer test): the same `windows` crate, one more module. crash::tests reads the
+# restart registration back.
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading"] }
 # A TLS fixture server that asks for a client certificate (F2).
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 rustls-pemfile = "2"
