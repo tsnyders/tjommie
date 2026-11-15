@@ -2,8 +2,11 @@
 
 ## Unreleased
 
+## 0.5.1 — 2026-11-14
+
 - Bots are now called agents throughout the app.
-- The one-time check that proves the isolated worker accounts are locked down works again (`tjommie-daemon accept-worker`), so isolated mode can be set up.
+- Isolated mode can be set up again: the one-time check `tjommie-daemon accept-worker` now works on real Windows accounts. Run it from your own unlocked, signed-in session; it can take a few minutes, and it says plainly what went wrong if it can't finish.
+- Tjommie now keeps a copy of your paired PCs and appearance settings, so the next update can carry them over.
 
 ## 0.5.0 — 2026-11-13
 

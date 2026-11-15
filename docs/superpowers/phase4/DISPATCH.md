@@ -2,7 +2,7 @@
 
 Owner accepted `../plans/2026-11-03-phase4-workspace-and-computer.md` and requested multiple GPT-6.1 Sol agents at maximum reasoning on 2026-11-03.
 
-Integration worktree: `C:/Users/tyrel/.paseo/worktrees/2cb7zj88/tjommie-phase4`.
+Integration worktree: `%USERPROFILE%/.paseo/worktrees/2cb7zj88/tjommie-phase4`.
 Branch: `phase4-workspace-20261103`, baseline `aaaf09fe6c45cce2fe42bf9488ac3815156f4ad9`.
 
 The original dirty checkout is preserved. The original dispatch was source-only; the owner's subsequent request to implement all remaining work authorizes isolated CI and device acceptance. See `acceptance-20261103.md` for the current evidence and boundaries. No production release or owner-data migration has occurred.

@@ -19,6 +19,7 @@ use crate::cli::{
 };
 use crate::startup::{StartupError, install_workers};
 use crate::win::boundary::{BoundaryError, WindowsNative, WorkerBoundary, WorkerNative};
+use crate::win::diag;
 use crate::win::worker::{Purpose, WorkerConfiguration};
 use crate::win::{cred, logon};
 use protocol::model::Provider;
@@ -37,10 +38,21 @@ const NOT_ACCEPTED: &str = "The paired protected acceptance receipts were not ac
 const NO_CLI: &str = "Install both provider CLI distributions in the protected runtime folder.";
 /// A worker tree has this long to be confirmed stopped (`retired`).
 const RETIREMENT: Duration = Duration::from_secs(15);
-/// The peer fixture has this long to create its marker and registry key.
-const READY: Duration = Duration::from_secs(15);
-/// The denial probe has this long to report.
-const PROBE: Duration = Duration::from_secs(30);
+// The three budgets below come from a run on a real runner (Windows Server 2025, 2 identities, nothing warmed): the
+// first sign-in of an account takes 6 to 15 s (profile creation, inside `launch`, not counted by any of them), and a
+// PowerShell started in a worker's environment took 12 to 19 s EVERY time, not only the first (the policy observer,
+// which gives PowerShell only `SystemRoot` and `WINDIR`, was done in 0.2 s in the same accounts). 0.4.2's 15 s limit on
+// the probe and 15 s wait for the holder were never tried on real accounts, and the probe was killed at 15 s before it
+// printed anything. Waiting for slow starts costs only time, and a hung PowerShell is still stopped and confirmed gone.
+
+/// The peer holder's PowerShell has this long to create the marker and registry key and say `ready`. The holder has no
+/// limit of its own, so this is the only bound on it.
+pub const READY_WAIT: Duration = Duration::from_secs(120);
+/// How long the probe's own wrapper lets PowerShell run (`timeout` of its `spawnSync`; 15 s in 0.4.2). It is inside
+/// [`PROBE_WAIT`], so it always fires first, and an exit at this limit is reported as a timeout.
+pub const PROBE_INNER_TIMEOUT: Duration = Duration::from_secs(120);
+/// The denial probe, as a whole, has this long to report: its own limit and then some, for Node and the logon.
+pub const PROBE_WAIT: Duration = Duration::from_secs(150);
 const PROBE_OUTPUT_LIMIT: usize = 4096;
 
 /// What went wrong. `Termination` is the one that matters most: a worker tree might still be running, so its scratch
@@ -88,7 +100,8 @@ fn check(message: impl Into<String>) -> Failure {
 
 /// The nine facts one worker's probe reports (`Denials` in `accept-worker.ts`), in the receipt's field order. Each must
 /// be `true` for acceptance: eight are things the worker must be refused, and `worker_write_allowed` is the one thing
-/// it must be allowed.
+/// it must be allowed. `owner_desktop_denied` is that the worker can reach neither the owner's input desktop nor its
+/// window station (see `POWERSHELL_PROBE`); the receipt's field and its meaning to 0.4.2 are unchanged.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Denials {
@@ -356,9 +369,27 @@ pub fn version_started(output: &CliOutput) -> bool {
 
 // ---- the fixed programs a worker runs --------------------------------------------------------------------------
 
-/// `powershellProbe`, byte for byte: reads the payload from stdin, tries everything the worker must be refused and the
-/// one write it must be allowed, and prints the nine results as JSON. A missing target fails the script (an error is
-/// not a denial), so a peer fixture that is not really there cannot be mistaken for a denied one.
+/// `powershellProbe`: reads the payload from stdin, tries everything the worker must be refused and the one write it
+/// must be allowed, and prints the nine results as JSON. A missing target fails the script (an error is not a denial),
+/// so a peer fixture that is not really there cannot be mistaken for a denied one.
+///
+/// It is 0.4.2's byte for byte except one region, the line that held `DesktopDenied`, which `windows_worker_acceptance.rs`
+/// pins exactly: two declarations (a C# method body cannot hold them), the pure rule `DesktopDeniedBy` (so the rule can be
+/// tested on its own) and `DesktopDenied` itself. 0.4.2 counted the desktop as denied only if `OpenInputDesktop` gave no
+/// handle with error 5. A worker runs on its own non-interactive window station
+/// and has no input desktop at all, so that call fails there with error 1 (`ERROR_INVALID_FUNCTION`) whatever the
+/// permissions are: the rule could never be met by a correctly isolated worker (a hosted runner showed it, see
+/// `fixtures/compat/README.md`). The new rule is not a tightening or a loosening of 0.4.2's but aimed at a different
+/// call: the desktop half no longer requires error 5 (from a private station that call cannot reach permissions, so it
+/// accepts any failure), and the station half is new and is the proof. The desktop is denied only if both hold:
+/// `OpenInputDesktop` yields no handle (with any error), and `OpenWindowStation("WinSta0", MAXIMUM_ALLOWED)` fails with
+/// exactly error 5. A handle from either, whatever the mask, or any other error from the station, means not denied.
+///
+/// `MAXIMUM_ALLOWED` and not a single `WINSTA_*` right: Windows grants a request only if every requested bit is granted,
+/// so a refusal of one bit proves only that bit is absent (a DACL can grant the clipboard or the screen and not
+/// `WINSTA_READATTRIBUTES`). `MAXIMUM_ALLOWED` gets a handle if any access is granted, so its refusal proves the worker
+/// holds no right at all on `WinSta0`. The owner's side of it is [`OwnerDesktop`]: the target must exist for a refusal to
+/// mean anything.
 const POWERSHELL_PROBE: &str = r#"
 $ErrorActionPreference='Stop'
 [Console]::InputEncoding=New-Object Text.UTF8Encoding($false)
@@ -375,7 +406,10 @@ public static class TjWorkerProbe {
  [DllImport("user32.dll")] static extern bool CloseDesktop(IntPtr value);
  public static bool CredentialDenied(string target) { IntPtr value; if(!Read(target,1,0,out value)) return Marshal.GetLastWin32Error()==1168; CredFree(value); return false; }
  public static bool ProcessDenied(uint pid) { var value=OpenProcess(0x0038,false,pid); if(value==IntPtr.Zero) return Marshal.GetLastWin32Error()==5; CloseHandle(value); return false; }
- public static bool DesktopDenied() { var value=OpenInputDesktop(0,false,0x0108); if(value==IntPtr.Zero) return Marshal.GetLastWin32Error()==5; CloseDesktop(value); return false; }
+ [DllImport("user32.dll",EntryPoint="OpenWindowStationW",CharSet=CharSet.Unicode,SetLastError=true)] static extern IntPtr OpenStation(string name,bool inherit,uint access);
+ [DllImport("user32.dll")] static extern bool CloseWindowStation(IntPtr value);
+ public static bool DesktopDeniedBy(bool gotDesktop,bool gotStation,int stationError) { return !gotDesktop && !gotStation && stationError==5; }
+ public static bool DesktopDenied() { var desktop=OpenInputDesktop(0,false,0x0108); var gotDesktop=desktop!=IntPtr.Zero; if(gotDesktop) CloseDesktop(desktop); var station=OpenStation("WinSta0",false,0x02000000); var stationError=Marshal.GetLastWin32Error(); var gotStation=station!=IntPtr.Zero; if(gotStation) CloseWindowStation(station); return DesktopDeniedBy(gotDesktop,gotStation,stationError); }
  public static bool FileDenied(string path,bool write) { try { using(var file=File.Open(path,FileMode.Open,write?FileAccess.ReadWrite:FileAccess.Read,FileShare.ReadWrite)){} return false; } catch(UnauthorizedAccessException){return true;} }
  public static bool RegistryDenied(string path) { try { using(var key=Registry.Users.OpenSubKey(path,true)){return false;} } catch(UnauthorizedAccessException){return true;} catch(SecurityException){return true;} }
 }
@@ -405,11 +439,15 @@ fn native_node(script: &str, hold: bool) -> String {
         serde_json::to_string(script).expect("a string")
     );
     let tail = if hold {
-        "const p=spawn(file,args,{windowsHide:true,stdio:['pipe','pipe','pipe']});p.stdin.write(process.argv[1]+'\\n');process.stdin.pipe(p.stdin);p.stdout.pipe(process.stdout);p.stderr.pipe(process.stderr);p.once('error',()=>process.exit(1));p.once('close',code=>process.exit(code??1));"
+        "const p=spawn(file,args,{windowsHide:true,stdio:['pipe','pipe','pipe']});p.stdin.write(process.argv[1]+'\\n');process.stdin.pipe(p.stdin);p.stdout.pipe(process.stdout);p.stderr.pipe(process.stderr);p.once('error',()=>process.exit(1));p.once('close',code=>process.exit(code??1));".to_string()
     } else {
-        "const p=spawnSync(file,args,{windowsHide:true,input:process.argv[1],encoding:'utf8',timeout:15000,maxBuffer:4096});if(p.status!==0)process.exit(1);process.stdout.write(p.stdout);"
+        // Byte for byte 0.4.2's, except `timeout`: 15000 there (see `PROBE_INNER_TIMEOUT`).
+        format!(
+            "const p=spawnSync(file,args,{{windowsHide:true,input:process.argv[1],encoding:'utf8',timeout:{},maxBuffer:4096}});if(p.status!==0)process.exit(1);process.stdout.write(p.stdout);",
+            PROBE_INNER_TIMEOUT.as_millis()
+        )
     };
-    head + tail
+    head + &tail
 }
 
 /// The arguments `runtime\node.exe` is started with for the denial probe: `-e <program> <payload JSON>`.
@@ -452,12 +490,45 @@ impl Credentials for CredentialManager {
     }
 }
 
+/// The owner's signed-in desktop, as far as the check uses it: the target the denial probe tries to reach as a worker. A
+/// seam so tests never depend on the machine they run on having a desktop.
+pub trait OwnerDesktop: Send + Sync {
+    /// Whether this process can open the desktop's window station and input desktop (and lets them go). `Err` is the
+    /// call that failed and its Win32 error.
+    fn reachable(&self) -> Result<(), logon::DesktopRefusal>;
+}
+
+/// The real [`OwnerDesktop`].
+struct SignedInDesktop;
+
+impl OwnerDesktop for SignedInDesktop {
+    fn reachable(&self) -> Result<(), logon::DesktopRefusal> {
+        logon::desktop_reachable()
+    }
+}
+
+/// What the owner is told when the control fails, keyed on which call failed (the Win32 error is in both). A worker's
+/// refusal at a desktop that is not there would prove nothing, so the check stops here, before it launches anything,
+/// rather than pass a test that cannot fail.
+fn no_desktop(refusal: &logon::DesktopRefusal) -> Failure {
+    check(match refusal {
+        logon::DesktopRefusal::Station(reason) => format!(
+            "This PC has no signed-in desktop to protect, so the desktop check can't be proven here ({reason}). Run accept-worker from your own signed-in session."
+        ),
+        logon::DesktopRefusal::InputDesktop(reason) => format!(
+            "Your signed-in desktop can't be reached right now, most likely because the screen is locked or the sign-in screen is showing, so the desktop check can't be proven here ({reason}). Unlock the screen and run accept-worker again."
+        ),
+    })
+}
+
 /// What a test replaces; `Default` is the real thing.
 #[derive(Default)]
 pub struct Seams {
     /// "Both CLIs start": the real one needs both CLIs installed under the protected runtime.
     pub cli: Option<Arc<dyn CliProbe>>,
     pub credentials: Option<Arc<dyn Credentials>>,
+    /// "The owner has a desktop": the real one opens this session's `WinSta0` and input desktop.
+    pub desktop: Option<Arc<dyn OwnerDesktop>>,
 }
 
 /// "Both CLIs start" (`resolveCli` and `runCli(.., ["--version"])` under the identity). A seam so tests need no
@@ -541,25 +612,75 @@ impl Held {
     /// `finally { child.stdin.end(); await retired(child); }`.
     async fn release(mut self) -> Result<(), Failure> {
         drop(self.stdin.take());
-        let stopped = retired(self.retirement.take(), &self.kill_tree).await;
+        let stopped = retired("peer fixture", self.retirement.take(), &self.kill_tree).await;
         self.drain.abort();
         stopped
     }
 }
 
 /// `retired`: the tree's stop must be confirmed, in time, or it is a `Termination`.
-async fn retired(retirement: Option<Retirement>, kill_tree: &KillTree) -> Result<(), Failure> {
+async fn retired(
+    label: &str,
+    retirement: Option<Retirement>,
+    kill_tree: &KillTree,
+) -> Result<(), Failure> {
     let Some(proof) = retirement else {
+        diag::problem(format!(
+            "{label}: TERMINATION: the launched process has no stop proof to wait for"
+        ));
         return Err(Failure::Termination);
     };
+    let began = std::time::Instant::now();
     match tokio::time::timeout(RETIREMENT, proof).await {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(_)) => Err(Failure::Termination),
+        Ok(Ok(())) => {
+            diag::note(format!(
+                "{label}: the tree's stop was confirmed after {}ms",
+                began.elapsed().as_millis()
+            ));
+            Ok(())
+        }
+        Ok(Err(message)) => {
+            diag::problem(format!(
+                "{label}: TERMINATION: the stop proof failed after {}ms ({message}); the `retire of worker process` line above says what the job still held",
+                began.elapsed().as_millis()
+            ));
+            Err(Failure::Termination)
+        }
         Err(_) => {
-            let _ = kill_tree().await;
+            diag::problem(format!(
+                "{label}: TERMINATION: no stop proof within {}s; stopping the tree by force",
+                RETIREMENT.as_secs()
+            ));
+            let forced = kill_tree().await;
+            diag::problem(format!("{label}: the forced stop gave {forced:?}"));
             Err(Failure::Termination)
         }
     }
+}
+
+/// What a pipe printed (the first 2 KB of it), kept for the diagnosis while the rest is dropped as before.
+type Tail = Arc<Mutex<Vec<u8>>>;
+
+fn keep_tail(mut pipe: Box<dyn AsyncRead + Send + Unpin>) -> (Tail, tokio::task::JoinHandle<()>) {
+    let tail = Tail::default();
+    let kept = tail.clone();
+    let task = tokio::spawn(async move {
+        let mut chunk = [0u8; 512];
+        while let Ok(count) = pipe.read(&mut chunk).await {
+            if count == 0 {
+                break;
+            }
+            let mut kept = kept.lock().unwrap_or_else(PoisonError::into_inner);
+            if kept.len() < 2048 {
+                kept.extend_from_slice(&chunk[..count]);
+            }
+        }
+    });
+    (tail, task)
+}
+
+fn tail_text(tail: &Tail) -> String {
+    diag::excerpt(&tail.lock().unwrap_or_else(PoisonError::into_inner), 600)
 }
 
 /// Reads the fixture's `ready` line.
@@ -580,23 +701,60 @@ async fn read_ready(stdout: &mut (dyn AsyncRead + Send + Unpin)) -> Result<(), F
     }
 }
 
-/// `collect`: the probe's stdout (at most 4096 bytes, within 30 seconds), then proof that its tree stopped. It must
+/// What a probe that did not exit 0 means. Its wrapper ends with exit code 1 and no output both when PowerShell fails
+/// and when PowerShell is killed by the wrapper's own time limit ([`PROBE_INNER_TIMEOUT`]), and cannot say which. A run
+/// that lasted as long as that limit and printed nothing is the limit, and is reported as a timeout, not as a failed
+/// denial (which would send the reader looking at the isolation).
+fn probe_failure(status: &CliExit, elapsed: Duration, output: &[u8], stderr: &str) -> Failure {
+    let (ran, limit) = (
+        format!("{} s", elapsed.as_secs()),
+        format!("{} s", PROBE_INNER_TIMEOUT.as_secs()),
+    );
+    let timed_out = output.is_empty()
+        && matches!(status, CliExit::Exited { code: Some(1), .. })
+        && elapsed + Duration::from_secs(2) >= PROBE_INNER_TIMEOUT;
+    let mut message = if timed_out {
+        format!(
+            "The synthetic worker denial probe timed out: PowerShell did not finish within {limit} (the probe ran {ran} and was stopped by its own time limit), so no denial result exists."
+        )
+    } else {
+        let ended = match status {
+            CliExit::Exited {
+                code: Some(code), ..
+            } => format!("exited with code {code}"),
+            CliExit::Exited { code: None, .. } => "ended without an exit code".to_string(),
+            CliExit::Failed(reason) => format!("could not be confirmed stopped ({reason})"),
+        };
+        let printed = if output.is_empty() {
+            "printed nothing".to_string()
+        } else {
+            format!("printed: {}", diag::excerpt(output, 200))
+        };
+        format!("The synthetic worker denial probe failed: it {ended} after {ran} and {printed}.")
+    };
+    if !stderr.is_empty() {
+        message.push_str(&format!(" Its stderr: {stderr}"));
+    }
+    check(message)
+}
+
+/// `collect`: the probe's stdout (at most 4096 bytes, within [`PROBE_WAIT`]), then proof that its tree stopped. It must
 /// exit 0. Output that is too long, or an exit that fails, is a failed probe; an unconfirmed stop is a `Termination`.
 async fn collect(child: CliChild) -> Result<String, Failure> {
     let CliChild {
         stdin,
         mut stdout,
-        mut stderr,
+        stderr,
         exit,
         kill_tree,
         retirement,
-        ..
+        pid,
     } = child;
     drop(stdin);
-    let drain = tokio::spawn(async move {
-        let _ = tokio::io::copy(&mut stderr, &mut tokio::io::sink()).await;
-    });
-    let reading = tokio::time::timeout(PROBE, async {
+    // Tokio's clock, so that a test can run a probe's whole time limit without waiting for it.
+    let began = tokio::time::Instant::now();
+    let (stderr_tail, drain) = keep_tail(stderr);
+    let reading = tokio::time::timeout(PROBE_WAIT, async {
         let (mut bytes, mut chunk) = (Vec::new(), [0u8; 1024]);
         loop {
             let count = stdout.read(&mut chunk).await.unwrap_or(0);
@@ -612,22 +770,56 @@ async fn collect(child: CliChild) -> Result<String, Failure> {
     .await;
     let result = match reading {
         Err(_) => {
-            let _ = kill_tree().await;
+            diag::problem(format!(
+                "probe (process {pid:?}): TERMINATION: no result within {}s; stopping the tree by force. stderr: {}",
+                PROBE_WAIT.as_secs(),
+                tail_text(&stderr_tail)
+            ));
+            let forced = kill_tree().await;
+            diag::problem(format!("probe: the forced stop gave {forced:?}"));
             Err(Failure::Termination)
         }
-        Ok(None) => match kill_tree().await {
-            Ok(()) => Err(check(PROBE_FAILED)),
-            Err(_) => Err(Failure::Termination),
-        },
-        Ok(Some((bytes, status))) => match retired(retirement, &kill_tree).await {
-            Err(failure) => Err(failure),
-            Ok(()) => match status {
-                CliExit::Exited { code: Some(0), .. } => {
-                    Ok(String::from_utf8_lossy(&bytes).into_owned())
+        Ok(None) => {
+            diag::problem(format!(
+                "probe (process {pid:?}): printed more than {PROBE_OUTPUT_LIMIT} bytes; stopping the tree. stderr: {}",
+                tail_text(&stderr_tail)
+            ));
+            match kill_tree().await {
+                Ok(()) => Err(check(PROBE_FAILED)),
+                Err(message) => {
+                    diag::problem(format!(
+                        "probe: TERMINATION: the stop after too much output was not confirmed ({message})"
+                    ));
+                    Err(Failure::Termination)
                 }
-                _ => Err(check(PROBE_FAILED)),
-            },
-        },
+            }
+        }
+        Ok(Some((bytes, status))) => {
+            diag::note(format!(
+                "probe (process {pid:?}): exited {status:?} after {}ms, printing {}; stderr: {}",
+                began.elapsed().as_millis(),
+                diag::excerpt(&bytes, 400),
+                tail_text(&stderr_tail)
+            ));
+            match retired("probe", retirement, &kill_tree).await {
+                Err(failure) => Err(failure),
+                Ok(()) => match status {
+                    CliExit::Exited { code: Some(0), .. } => {
+                        Ok(String::from_utf8_lossy(&bytes).into_owned())
+                    }
+                    other => {
+                        let failure = probe_failure(
+                            &other,
+                            began.elapsed(),
+                            &bytes,
+                            &tail_text(&stderr_tail),
+                        );
+                        diag::problem(format!("probe: {failure}"));
+                        Err(failure)
+                    }
+                },
+            }
+        }
     };
     drain.abort();
     result
@@ -644,6 +836,7 @@ pub struct WindowsSteps {
     native: Arc<dyn WorkerNative>,
     cli: Arc<dyn CliProbe>,
     credentials: Arc<dyn Credentials>,
+    desktop: Arc<dyn OwnerDesktop>,
     installed: Mutex<Option<InstalledWorkers>>,
     marker: PathBuf,
     credential: String,
@@ -711,29 +904,55 @@ impl WindowsSteps {
             pid,
             stdin,
             mut stdout,
-            mut stderr,
+            stderr,
             kill_tree,
             retirement,
             ..
         } = child;
-        // Nothing the fixture prints after `ready` is wanted, but an unread pipe must not stall it.
+        let began = std::time::Instant::now();
+        diag::note(format!(
+            "peer fixture ({}): process {pid:?} started; waiting for it to say ready",
+            peer.as_str()
+        ));
+        // Nothing the fixture prints after `ready` is wanted, but an unread pipe must not stall it. Its first bytes of
+        // stderr (PowerShell's own errors, if it has any) are kept for the diagnosis.
+        let (stderr_tail, stderr_task) = keep_tail(stderr);
         let (ready, rest) = tokio::sync::oneshot::channel();
         let drain = tokio::spawn(async move {
             let _ = ready.send(read_ready(&mut stdout).await);
-            let (mut sink_out, mut sink_err) = (tokio::io::sink(), tokio::io::sink());
-            let _ = tokio::join!(
-                tokio::io::copy(&mut stdout, &mut sink_out),
-                tokio::io::copy(&mut stderr, &mut sink_err)
-            );
+            let mut sink_out = tokio::io::sink();
+            let _ = tokio::io::copy(&mut stdout, &mut sink_out).await;
+            let _ = stderr_task.await;
         });
-        let waited = match tokio::time::timeout(READY, rest).await {
+        let waited = match tokio::time::timeout(READY_WAIT, rest).await {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => Err(check("The peer fixture closed before ready.")),
             Err(_) => {
-                let _ = kill_tree().await;
+                diag::problem(format!(
+                    "peer fixture ({}): TERMINATION: it did not say ready within {}s; stopping it by force. stderr: {}",
+                    peer.as_str(),
+                    READY_WAIT.as_secs(),
+                    tail_text(&stderr_tail)
+                ));
+                let forced = kill_tree().await;
+                diag::problem(format!("peer fixture: the forced stop gave {forced:?}"));
                 Err(Failure::Termination)
             }
         };
+        match &waited {
+            Ok(()) => diag::note(format!(
+                "peer fixture ({}): ready after {}ms",
+                peer.as_str(),
+                began.elapsed().as_millis()
+            )),
+            Err(Failure::Check(message)) => diag::problem(format!(
+                "peer fixture ({}): {message} after {}ms; stderr: {}",
+                peer.as_str(),
+                began.elapsed().as_millis(),
+                tail_text(&stderr_tail)
+            )),
+            Err(Failure::Termination) => {}
+        }
         // `peer.receipts().find(wrapperPid === child.pid)`: a process the boundary has no receipt for is one it cannot
         // account for.
         let accounted = pid.filter(|pid| {
@@ -753,7 +972,13 @@ impl WindowsSteps {
         let problem = match (waited, accounted) {
             (Ok(()), Some(_)) => return Ok(held),
             (Err(failure), _) => failure,
-            (Ok(()), None) => Failure::Termination,
+            (Ok(()), None) => {
+                diag::problem(format!(
+                    "peer fixture: TERMINATION: process {pid:?} has no receipt in the {} boundary, so it cannot be accounted for",
+                    peer.as_str()
+                ));
+                Failure::Termination
+            }
         };
         // Whatever went wrong, the fixture is stopped and confirmed gone before anything else happens.
         held.release().await?;
@@ -780,6 +1005,10 @@ impl WindowsSteps {
             "write": scratch.join("write.txt").to_string_lossy(),
         });
         let node = config.runtime_root.join("node.exe");
+        diag::note(format!(
+            "probe ({}): starting it against the live peer fixture (process {peer_pid})",
+            active.as_str()
+        ));
         let child = boundary
             .spawn(
                 &node.to_string_lossy(),
@@ -788,7 +1017,20 @@ impl WindowsSteps {
                 &[],
             )
             .await?;
-        let denials = Denials::parse(&collect(child).await?)?;
+        let report = collect(child).await?;
+        let denials = Denials::parse(&report).inspect_err(|_| {
+            diag::problem(format!(
+                "probe ({}): its output is not the nine expected booleans: {}",
+                active.as_str(),
+                diag::excerpt(report.as_bytes(), 400)
+            ));
+        })?;
+        diag::note(format!(
+            "probe ({}): reported {}; not proven: {:?}",
+            active.as_str(),
+            diag::excerpt(report.as_bytes(), 400),
+            denials.unproven()
+        ));
         // As in 0.4.2, where a false denial threw inside the round: an identity that has just shown it is not isolated
         // is not asked to start either CLI.
         not_held(active, &denials.unproven())?;
@@ -805,15 +1047,29 @@ impl WindowsSteps {
 impl Steps for WindowsSteps {
     fn prepare(&self) -> BoxFuture<'_, Result<(), Failure>> {
         Box::pin(async move {
+            // The positive control of the desktop denial, first of all and by the owner's own process: the desktop
+            // the workers are refused must exist, or their refusal says nothing. Nothing has been launched or made yet.
+            self.desktop.reachable().map_err(|refusal| {
+                diag::problem(format!(
+                    "prepare: the owner cannot reach its own desktop, so the desktop denial cannot be proven: {refusal}"
+                ));
+                no_desktop(&refusal)
+            })?;
             // The daemon's own readiness check, run here so a refusal says why (a restart is due, a provider CLI is
             // running, a runtime file is writable) instead of the boundary's one fixed sentence.
             for config in [&self.provider_config, &self.review_config] {
+                let began = std::time::Instant::now();
                 self.native.verify(config, &[]).await.map_err(|reason| {
                     check(format!(
                         "The {} worker is not ready to be checked: {reason}",
                         config.purpose.as_str()
                     ))
                 })?;
+                diag::note(format!(
+                    "prepare: the {} identity passed the readiness check in {}ms",
+                    config.purpose.as_str(),
+                    began.elapsed().as_millis()
+                ));
             }
             for folder in &self.scratch {
                 std::fs::create_dir(folder).map_err(|error| {
@@ -834,6 +1090,12 @@ impl Steps for WindowsSteps {
         Box::pin(async move {
             let verified = AtomicBool::new(false);
             let peer = active.peer();
+            let began = std::time::Instant::now();
+            diag::note(format!(
+                "round: the {} identity is proved against a live {} fixture",
+                active.as_str(),
+                peer.as_str()
+            ));
             let denials = self
                 .scoped(peer, &verified, async {
                     let held = self.hold(peer).await?;
@@ -847,7 +1109,19 @@ impl Steps for WindowsSteps {
                     // A tree that cannot be confirmed stopped outranks whatever the check found.
                     held.release().await.and(proved)
                 })
-                .await?;
+                .await
+                .inspect_err(|failure| {
+                    diag::problem(format!(
+                        "round ({}): failed after {}ms with: {failure}",
+                        active.as_str(),
+                        began.elapsed().as_millis()
+                    ));
+                })?;
+            diag::note(format!(
+                "round ({}): finished in {}ms",
+                active.as_str(),
+                began.elapsed().as_millis()
+            ));
             Ok(Round {
                 denials,
                 claude_started: true,
@@ -897,6 +1171,34 @@ impl Steps for WindowsSteps {
     }
 }
 
+/// A failure as text for the owner. The launch path answers with two fixed sentences, a termination's and a refused
+/// launch's, which say nothing of their cause. Those carry the problems the launch path recorded since the run began
+/// (`win::diag`): a few short lines, the cause first (which route, which Win32 call and its error, which processes a
+/// job still held, why a launch was refused). With `TJOMMIE_WORKER_DIAG=1` they also carry the last 120 lines of
+/// everything it recorded. Any other failure names its own cause and is left alone.
+pub fn explained(failure: Failure, mark: u64) -> String {
+    let text = failure.to_string();
+    if !text.contains(crate::cli::WORKER_TERMINATION) && !text.contains(crate::win::worker::FAILURE)
+    {
+        return text;
+    }
+    let mut explained = text;
+    let causes = diag::problems_since(mark, 8);
+    if !causes.is_empty() {
+        explained.push_str(
+            "\n\nWhat went wrong (earliest first; each line follows from the ones before it):\n",
+        );
+        explained.push_str(&causes.join("\n"));
+    }
+    if diag::verbose() {
+        explained.push_str(
+            "\n\nEverything the worker launch path recorded (the last 120 lines, oldest first):\n",
+        );
+        explained.push_str(&diag::recent(120).join("\n"));
+    }
+    explained
+}
+
 /// Runs the check for the install at `root` with the real Windows layer and CLIs. Returns what to tell the owner.
 pub async fn accept_worker(root: &Path) -> Result<String, String> {
     let exe = std::env::current_exe().map_err(|error| error.to_string())?;
@@ -911,6 +1213,8 @@ pub async fn accept_with(
     native: Arc<dyn WorkerNative>,
     seams: Seams,
 ) -> Result<String, String> {
+    // Where this run's problems start, for the error it may end with.
+    let mark = diag::mark();
     // First of all, before the configuration is even read: every way out of this function, an early failure included,
     // starts from "no receipts" (`run` clears them again for the checks it makes).
     clear_earlier(&receipt_paths(root)).map_err(|failure| failure.to_string())?;
@@ -941,6 +1245,7 @@ pub async fn accept_with(
     let credentials = seams
         .credentials
         .unwrap_or_else(|| Arc::new(CredentialManager));
+    let desktop = seams.desktop.unwrap_or_else(|| Arc::new(SignedInDesktop));
     let cli = seams.cli.unwrap_or_else(|| {
         Arc::new(InstalledClis {
             provider: SystemCli::with_worker(Arc::new(provider.clone()))
@@ -970,11 +1275,12 @@ pub async fn accept_with(
         native,
         cli,
         credentials,
+        desktop,
         installed: Mutex::new(installed),
     };
     run(&steps, &provider_config, &review_config)
         .await
-        .map_err(|failure| failure.to_string())?;
+        .map_err(|failure| explained(failure, mark))?;
     Ok(format!(
         "Acceptance passed for the separate provider and review identities: denied owner and peer file, registry, process, credential and desktop access, permitted writes to their own folders, both CLI versions under both identities, and an unchanged review policy before and after. Wrote {} and {}. No model turn was run and no owner credential was read.",
         receipt_path(root, Purpose::Provider).display(),
