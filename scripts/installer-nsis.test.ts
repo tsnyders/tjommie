@@ -347,6 +347,14 @@ describe("tjommie.nsi after the T8.2 review", () => {
     for (const section of [installSection, uninstallSection]) expect(section).toMatch(/\$\{ElseIf\} \$R2 != 0\s+MessageBox[^\n]*\$R3/);
   });
 
+  // Run 3: `Uninstall.exe /S _?=C:\` exited 2, not 5. NSIS's own start-up code validates the _?= path before un.onInit runs and, with
+  // AllowRootDirInstall at its default (false), rejects a drive root and exits 2 ("uninstaller initialisation error"). That is a stricter
+  // refusal than the script's guard and it happens first, so the script must never switch it on: it would remove that net.
+  it("leaves NSIS's own refusal of a drive root in place, and says so (exit 2)", () => {
+    expect(nsi).not.toMatch(/AllowRootDirInstall\s+(true|1|on|yes)/i);
+    expect(script).toMatch(/2 NSIS itself refused the folder named by _\?=/);
+  });
+
   it("schedules a file that is locked at that moment for the next boot instead of silently keeping it (F13)", () => {
     expect(nsi).toContain('RMDir /r /REBOOTOK "$INSTDIR"');
   });

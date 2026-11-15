@@ -192,7 +192,13 @@ Invoke-Step 'S5 the uninstaller refuses when InstallLocation is not its own inst
     # uninstaller can be. It must refuse that too (exit 5), and the folders it was pointed at, the data roots among them, must be whole.
     foreach ($target in @($dataRoots['local'], $dataRoots['roaming'], 'C:\', (Join-Path $programs 'other'), (Join-Path $programs 'tjommie-rs'))) {
         $redirected = Invoke-Setup (Join-Path $folder "Uninstall $($prod.product).exe") "/S _?=$target"
-        Assert-Check ($redirected['exitCode'] -eq 5) "S5: with the right InstallLocation but _?=$target, the uninstaller refuses (exit 5)" $redirected['exitCode']
+        # A drive root is refused by NSIS's own start-up code, before this script's un.onInit runs: the stub validates the _?= path and,
+        # with AllowRootDirInstall left at its default (false, and installer/tjommie.nsi never turns it on), rejects a root such as C:\ and
+        # exits 2 ("uninstaller initialisation error"). That is a stricter, earlier refusal than this script's guard (exit 5), and run 3
+        # saw exactly that. Every other target reaches the guard, which exits 5. Both must leave everything untouched, checked below.
+        $isDriveRoot = ($target.TrimEnd('\').Length -le 2)
+        $expected = if ($isDriveRoot) { @(2, 5) } else { @(5) }
+        Assert-Check ($expected -contains $redirected['exitCode']) "S5: with the right InstallLocation but _?=$target, the uninstaller refuses (exit $($expected -join ' or '))" $redirected['exitCode']
         $differences = @(Compare-Snapshot $before (Get-TreeSnapshot $folder))
         Assert-Check ($differences.Count -eq 0) "S5: ...and nothing in the install folder is touched (_?=$target)" $differences
         Test-DataUnchanged "by an uninstaller pointed at $target"

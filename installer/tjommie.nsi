@@ -41,6 +41,9 @@
 ; It carries its own helper scripts and runs them from its own temp folder, so nothing in the install folder is needed to remove it.
 ;
 ; Exit codes (silent or not)
+;   2 NSIS itself refused the folder named by _?= or /D= before this script ran: NSIS's start-up code validates it and, with
+;   AllowRootDirInstall at its default (false), rejects a drive root such as C:\ and exits 2. That is an earlier and stricter refusal
+;   than the guard below, so this script never turns AllowRootDirInstall on. Nothing is touched.
 ;   0 done.  3 something is still running from the install folder.  4 the old uninstaller failed.  5 the uninstaller refused
 ;   (InstallLocation is not this identity's install folder).  6 the install folder is not allowed for this identity.
 ;   7 this identity is installed somewhere else.  8 a helper could not run (PowerShell missing or blocked by policy).
