@@ -20,7 +20,7 @@ use gpui::{
     div, img, svg,
 };
 use gpui_kit::base::input::{InputEvent, InputState};
-use protocol::model::Bot;
+use protocol::model::{Bot, BotState};
 
 use super::chrome::{self, Chrome};
 use super::local::{self, LocalBrowser};
@@ -29,6 +29,7 @@ use super::panel_variant::{CpuMeter, PanelVariant};
 use super::stream::RemotePicture;
 use super::{BrowserCommand, BrowserData, BrowserView};
 use crate::guard::{guarded, guarded_async};
+use crate::model::labels::{autonomy_line, model_label, state_label};
 use crate::model::panel_layout::{
     Pane, PanelView, choose_pane, clamp_width, pane_spec, panel_for, set_expanded, width_bounds,
 };
@@ -620,12 +621,7 @@ impl BrowserPanel {
             } else {
                 "Expand browser"
             };
-            IconButton::new(
-                "browser.expand",
-                if expanded { "minimize-2" } else { "maximize-2" },
-                label,
-            )
-            .on_press(move |_, cx| {
+            IconButton::new("browser.expand", "maximize-2", label).on_press(move |_, cx| {
                 entity.update(cx, |this, cx| {
                     let bot = this.view.bot.clone();
                     this.view = set_expanded(&this.view, &bot, !expanded);
@@ -638,7 +634,7 @@ impl BrowserPanel {
             IconButton::new("browser.settings", "settings", "Agent settings")
                 .on_press(move |_, cx| cx.navigate(Route::BotSettings(id.clone())))
         };
-        let hide = IconButton::new("browser.hide", "chevrons-right", "Hide panel").on_press(
+        let hide = IconButton::new("browser.hide", "panel-right", "Hide panel").on_press(
             move |window, cx| {
                 let trigger = Trigger::of(window);
                 entity.update(cx, |this, cx| this.set_open(false, trigger, cx));
@@ -672,6 +668,33 @@ impl BrowserPanel {
                 cx.notify();
             })
         };
+        // bot-panel.tsx `Summary`: what the bot alone says. Its usage and limits read the store, which T1.4 wires.
+        let model = format!(
+            "{}{}",
+            model_label(bot.provider, &bot.model),
+            if bot.using_fallback == Some(true) {
+                " (fallback)"
+            } else {
+                ""
+            }
+        );
+        let state = (bot.state != BotState::Idle).then(|| {
+            state_label(
+                bot.state,
+                bot.limited_until.as_deref(),
+                &jiff::tz::TimeZone::system(),
+            )
+        });
+        let row = |id: &'static str, text: String| {
+            div()
+                .semantic(id, Role::Paragraph)
+                .aria_label(text.clone())
+                .min_w_0()
+                .truncate()
+                .type_style(&theme.typography.desktop.small)
+                .text_color(hsla(colors.text.secondary))
+                .child(text)
+        };
         let card = |child: gpui::Div| {
             child
                 .flex()
@@ -688,18 +711,61 @@ impl BrowserPanel {
             .gap(r(theme.space.s16))
             .px(r(theme.space.s16))
             .pb(r(theme.space.s16))
-            .child(card(div()).child(BotAvatar::new(bot.color, bot.shape, theme.size.avatar40)).child(
-                div()
-                    .semantic("browser.details.name", Role::Heading)
-                    .aria_label(bot.name.clone())
-                    .type_style(&theme.typography.desktop.display_s)
-                    .text_color(hsla(colors.text.primary))
-                    .child(bot.name.clone()),
-            ))
+            .child(
+                card(div())
+                    .items_start()
+                    .child(BotAvatar::new(bot.color, bot.shape, theme.size.avatar40))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap(r(theme.space.s6))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(r(theme.space.s12))
+                                    .child(
+                                        div()
+                                            .semantic("browser.details.name", Role::Heading)
+                                            .aria_label(bot.name.clone())
+                                            .flex_1()
+                                            .min_w_0()
+                                            .truncate()
+                                            .type_style(&theme.typography.desktop.display_s)
+                                            .text_color(hsla(colors.text.primary))
+                                            .child(bot.name.clone()),
+                                    )
+                                    .children(state.map(|state| {
+                                        div()
+                                            .semantic("browser.details.state", Role::Status)
+                                            .aria_label(state.clone())
+                                            .flex_none()
+                                            .h(r(22.))
+                                            .px(r(theme.space.s8))
+                                            .flex()
+                                            .items_center()
+                                            .rounded_full()
+                                            .bg(hsla(colors.surface.sunk))
+                                            .type_style(&theme.typography.desktop.meta)
+                                            .text_color(hsla(colors.text.primary))
+                                            .child(state)
+                                    })),
+                            )
+                            .child(row("browser.details.model", model))
+                            .child(row("browser.details.autonomy", autonomy_line(bot.autonomy).to_owned()))
+                            .child(row("browser.details.home", "Home folder".to_owned()))
+                            .children(bot.project_folder.as_ref().map(|folder| {
+                                row("browser.details.project", format!("Project folder: {folder}"))
+                            })),
+                    ),
+            )
             .when(bot.browser, |pane| {
                 pane.child(
                     card(div())
-                        .child(svg().path("icons/i/175/globe.svg").size(r(20.)).text_color(hsla(colors.icon.base)))
+                        .child(svg().path("icons/i/175/monitor.svg").size(r(20.)).text_color(hsla(colors.icon.base)))
                         .child(
                             div()
                                 .flex_1()

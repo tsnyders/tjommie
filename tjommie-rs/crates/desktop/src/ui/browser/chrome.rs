@@ -203,13 +203,7 @@ impl Chrome<'_> {
                         guarded("select a browser tab", || select(window, cx));
                     })
                 })
-                .child(
-                    svg()
-                        .path("icons/i/175/globe.svg")
-                        .size(r(15.))
-                        .flex_none()
-                        .text_color(hsla(colors.icon.base)),
-                )
+                // The design's tab icon is the site's favicon, which the engine doesn't report: the title stands alone.
                 .child(div().flex_1().min_w_0().truncate().child(title.clone()))
                 .child(
                     div()

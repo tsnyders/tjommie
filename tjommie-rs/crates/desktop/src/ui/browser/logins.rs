@@ -95,7 +95,7 @@ pub fn menu(state: &BrowserState, window: &mut Window, cx: &mut App) -> AnyEleme
         }
     };
     let fill =
-        MenuItem::new("browser.logins.fill", "Fill a saved login", saved.clone()).icon("key-round");
+        MenuItem::new("browser.logins.fill", "Fill a saved login", saved.clone()).icon("log-in");
     let fill = if target.is_some() {
         fill
     } else {
@@ -112,7 +112,7 @@ pub fn menu(state: &BrowserState, window: &mut Window, cx: &mut App) -> AnyEleme
     .offset(px(6.))
     .note(format!("Logins for {site}"))
     .item(fill)
-    .item(MenuItem::new("browser.logins.saved", "Saved logins", saved).icon("list"))
+    .item(MenuItem::new("browser.logins.saved", "Saved logins", saved).icon("key-round"))
     .item(
         MenuItem::new("browser.logins.manage", "Manage logins", |_, cx| {
             cx.navigate(Route::Settings(Section::Logins))

@@ -341,6 +341,40 @@ fn offers_details_and_browser_hide_and_settings(cx: &mut gpui::TestAppContext) {
     assert!(!cx.update(|_, cx| panel.read(cx).is_open()));
 }
 
+// bot-panel.tsx `Summary`: the model, the state (when not idle), the autonomy, and the folders, from the bot.
+#[gpui::test]
+fn the_details_summary_says_the_bots_model_state_autonomy_and_folders(
+    cx: &mut gpui::TestAppContext,
+) {
+    let mut working = bot("bot-1", true);
+    working.state = BotState::Working;
+    working.project_folder = Some("D:/work/site".into());
+    let (_, _, cx) = panel_window(cx, working, None);
+    cx.simulate_keystrokes("ctrl-b");
+    draw(cx);
+    for id in [
+        "browser.details.model",
+        "browser.details.state",
+        "browser.details.autonomy",
+        "browser.details.home",
+        "browser.details.project",
+    ] {
+        assert!(cx.debug_bounds(id).is_some(), "{id}");
+    }
+    cx.update(|_, cx| {
+        if let Some(bot) = cx.global_mut::<BrowserData>().bots.first_mut() {
+            bot.state = BotState::Idle;
+            bot.project_folder = None;
+        }
+    });
+    draw(cx);
+    assert!(
+        cx.debug_bounds("browser.details.state").is_none(),
+        "an idle bot shows no state"
+    );
+    assert!(cx.debug_bounds("browser.details.project").is_none());
+}
+
 // browser-panel.test.tsx: "labels its parts and offers Take control while the bot drives", "shows the bot's controls
 // disabled".
 #[gpui::test]
@@ -716,6 +750,38 @@ fn explains_an_offline_remote_host(cx: &mut gpui::TestAppContext) {
     open_browser(&panel, cx);
     assert!(cx.debug_bounds("browser.error").is_some());
     assert!(cx.debug_bounds("browser.viewport").is_some());
+}
+
+/// An icon that isn't baked draws nothing: every icon the panel and the Logins windows name is in `design/icons`.
+#[test]
+fn every_icon_the_panel_draws_is_baked() {
+    let sources = [
+        include_str!("chrome.rs"),
+        include_str!("panel.rs"),
+        include_str!("logins.rs"),
+        include_str!("../vault_entry.rs"),
+    ];
+    let named = regex::Regex::new(
+        r#"icons/i/175/([a-z0-9-]+)\.svg|IconButton::new\(\s*"[^"]+",\s*"([a-z0-9-]+)"|\.icon\("([a-z0-9-]+)"\)"#,
+    )
+    .unwrap();
+    let icons: Vec<String> = sources
+        .iter()
+        .flat_map(|source| named.captures_iter(source))
+        .filter_map(|found| {
+            found
+                .iter()
+                .skip(1)
+                .flatten()
+                .next()
+                .map(|name| name.as_str().to_owned())
+        })
+        .collect();
+    assert!(icons.len() >= 10, "the panel's icons were found: {icons:?}");
+    for icon in icons {
+        let path = format!("icons/i/175/{icon}.svg");
+        assert!(crate::assets::icon(&path).is_some(), "{path} is not baked");
+    }
 }
 
 #[test]
