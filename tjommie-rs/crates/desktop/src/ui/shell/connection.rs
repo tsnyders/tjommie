@@ -1,17 +1,15 @@
 //! The connection screen, the status pill and the failed-load row (Phase 3 plan T2.1; `connection-screen.tsx`,
 //! `app-shell.tsx`'s `StatusPill`, `failed-load.tsx`).
 
-use std::time::Duration;
-
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    Animation, AnimationExt as _, AnyElement, App, InteractiveElement as _, IntoElement,
-    ParentElement as _, Role, SharedString, StatefulInteractiveElement as _, Styled as _,
-    Transformation, Window, div, percentage, svg,
+    AnyElement, App, InteractiveElement as _, IntoElement, ParentElement as _, Role, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Transformation, Window, div, percentage, svg,
 };
 
 use super::data::{Command, Connection, OfflineReason, SavedHost, ShellData};
 use crate::guard::guarded;
+use crate::motion::{clock, reduced};
 use crate::semantic::SemanticExt as _;
 use crate::ui::primitives::button::{Pill, PillVariant};
 use crate::ui::style::{TypeExt as _, hsla, palette, r, shadows, theme};
@@ -141,6 +139,7 @@ pub(super) fn screen(
             });
         }
     }
+    let spinner = words.spinner.then(|| spinner(20., window, cx));
     let theme = theme(cx);
     let colors = palette(cx);
     let problem = (data.connection == Connection::Removed)
@@ -155,9 +154,7 @@ pub(super) fn screen(
         .gap(r(theme.space.s12))
         .px(r(theme.space.s32))
         .pb(r(theme.size.titlebar_height))
-        .when(words.spinner, |screen| {
-            screen.child(spinner("connection.spinner", 20., cx))
-        })
+        .children(spinner)
         .child(
             div()
                 .semantic("connection.title", Role::Heading)
@@ -225,19 +222,23 @@ pub(super) fn status(connection: &Connection) -> Option<(&'static str, bool)> {
 
 /// The status pill, top centre over the main column. Nothing in it listens for the mouse, so it takes no clicks and
 /// the screen under it still works.
-pub(super) fn status_pill(connection: &Connection, cx: &App) -> Option<AnyElement> {
+pub(super) fn status_pill(
+    connection: &Connection,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<AnyElement> {
     let (text, spins) = status(connection)?;
-    let theme = theme(cx);
-    let colors = palette(cx);
     let icon = if spins {
-        spinner("shell.status.spinner", 14., cx)
+        spinner(14., window, cx)
     } else {
         svg()
             .path("icons/i/175/wifi-off.svg")
             .size(r(14.))
-            .text_color(hsla(colors.icon.base))
+            .text_color(hsla(palette(cx).icon.base))
             .into_any_element()
     };
+    let theme = theme(cx);
+    let colors = palette(cx);
     Some(
         div()
             .absolute()
@@ -267,17 +268,21 @@ pub(super) fn status_pill(connection: &Connection, cx: &App) -> Option<AnyElemen
     )
 }
 
-/// A turning loader, for connections (spinners remain only for tools and connections).
-pub(crate) fn spinner(id: &'static str, size: f32, cx: &App) -> AnyElement {
-    let turn = Duration::from_secs_f32(theme(cx).motion.duration.spin / 1000.);
-    svg()
+/// A turning loader, for connections (spinners remain only for tools and connections). It turns on the motion clock,
+/// so it keeps to the inactive window's 30 fps, and stands still under reduced motion.
+pub(crate) fn spinner(size: f32, window: &mut Window, cx: &mut App) -> AnyElement {
+    let loader = svg()
         .path("icons/i/175/loader-circle.svg")
         .size(r(size))
         .flex_none()
-        .text_color(hsla(palette(cx).icon.base))
-        .with_animation(id, Animation::new(turn).repeat(), |loader, turned| {
-            loader.with_transformation(Transformation::rotate(percentage(turned)))
-        })
+        .text_color(hsla(palette(cx).icon.base));
+    if reduced::is_on(cx) {
+        return loader.into_any_element();
+    }
+    let turned = (clock::now(cx) / (theme(cx).motion.duration.spin / 1000.)).fract();
+    clock::keep_moving(window, cx);
+    loader
+        .with_transformation(Transformation::rotate(percentage(turned)))
         .into_any_element()
 }
 

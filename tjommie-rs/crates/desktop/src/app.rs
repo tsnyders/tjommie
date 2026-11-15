@@ -24,6 +24,7 @@ pub fn run(identity: Identity, after_crash: bool, instance: Option<Instance>) {
         .run(move |cx: &mut App| {
             gpui_kit::init(cx);
             notices::init(cx);
+            crate::motion::init(cx);
             // What the shell shows of the daemon: connecting, until the store (T1.4) is wired to it.
             cx.set_global(ShellData::default());
             match Theme::aegis() {

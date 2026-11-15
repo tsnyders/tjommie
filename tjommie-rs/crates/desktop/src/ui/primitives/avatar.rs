@@ -1,7 +1,8 @@
 //! An agent's avatar (bots-avatar.html; `bot-avatar.tsx`): two SVG layers from `design/icons/bot/<shape>`, the body
 //! tinted the agent's colour and the eyes white. The eyes are the cropped layer, placed over their box, so a pose
-//! scales them about their own centre (GPUI transforms an SVG about the centre of its bounds). Poses are static here;
-//! blinking, scanning and glancing come with the motion runtime (T2.3).
+//! scales them about their own centre (GPUI transforms an SVG about the centre of its bounds). A pose is a still look;
+//! `motion::eyes` gives a living avatar its gaze each frame (blinks, the scan, glances). Sizes are in rems, so the
+//! avatar follows the app zoom.
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
@@ -10,7 +11,7 @@ use gpui::{
 };
 use protocol::model::{BotColor, BotShape};
 
-use crate::ui::style::{hsla, palette, theme};
+use crate::ui::style::{hsla, palette, r, theme};
 
 /// The eyes' state (bots-status.html): each agent state has its look, so a still frame still reads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -26,12 +27,35 @@ pub enum Pose {
     Paused,
 }
 
+/// Where the eyes are: the lids' scale (1 open, 0.08 shut) and the look's offset, in units of the 40-unit avatar.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Gaze {
+    pub lid: f32,
+    pub x: f32,
+    pub y: f32,
+}
+
+impl Gaze {
+    /// A pose's still look (bots-status.html).
+    pub fn of(pose: Pose) -> Gaze {
+        let (lid, y) = match pose {
+            Pose::Idle => (1.0, 0.0),
+            Pose::Waiting => (1.0, -1.7),
+            Pose::Working => (0.7, 0.0),
+            Pose::Limited => (0.4, 1.0),
+            Pose::Paused => (0.16, 0.0),
+        };
+        Gaze { lid, x: 0., y }
+    }
+}
+
 #[derive(IntoElement)]
 pub struct BotAvatar {
     color: BotColor,
     shape: BotShape,
     size: f32,
     pose: Pose,
+    gaze: Option<Gaze>,
 }
 
 impl BotAvatar {
@@ -42,6 +66,7 @@ impl BotAvatar {
             shape,
             size,
             pose: Pose::Idle,
+            gaze: None,
         }
     }
 
@@ -49,17 +74,26 @@ impl BotAvatar {
         self.pose = pose;
         self
     }
+
+    /// This frame's gaze, for a living avatar; otherwise the pose's still look.
+    pub fn gaze(mut self, gaze: Gaze) -> Self {
+        self.gaze = Some(gaze);
+        self
+    }
 }
 
 impl RenderOnce for BotAvatar {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let folder = format!("icons/bot/{}", shape_name(self.shape));
         let unit = self.size / 40.0;
+        // The eyes' offset is a transformation, in pixels: design px times the zoom's rem.
+        let zoom = f32::from(window.rem_size()) / 16.0;
         let eyes = eye_box(self.shape);
+        let gaze = self.gaze.unwrap_or(Gaze::of(self.pose));
         div()
             .relative()
             .flex_none()
-            .size(px(self.size))
+            .size(r(self.size))
             .child(
                 svg()
                     .path(format!("{folder}/body.svg"))
@@ -67,25 +101,20 @@ impl RenderOnce for BotAvatar {
                     .text_color(hsla(bot_color(self.color, cx))),
             )
             .when_some(eyes, |avatar, [x, y, width, height]| {
-                let (scale_y, drop) = match self.pose {
-                    Pose::Idle => (1.0, 0.0),
-                    Pose::Waiting => (1.0, -1.7),
-                    Pose::Working => (0.7, 0.0),
-                    Pose::Limited => (0.4, 1.0),
-                    Pose::Paused => (0.16, 0.0),
-                };
                 avatar.child(
                     svg()
                         .path(format!("{folder}/eyes-crop.svg"))
                         .absolute()
-                        .left(px(x * unit))
-                        .top(px(y * unit))
-                        .w(px(width * unit))
-                        .h(px(height * unit))
+                        .left(r(x * unit))
+                        .top(r(y * unit))
+                        .w(r(width * unit))
+                        .h(r(height * unit))
                         .text_color(hsla(palette(cx).avatar.eye))
                         .with_transformation(
-                            Transformation::scale(size(1.0, scale_y))
-                                .with_translation(point(px(0.), px(drop * unit))),
+                            Transformation::scale(size(1.0, gaze.lid)).with_translation(point(
+                                px(gaze.x * unit * zoom),
+                                px(gaze.y * unit * zoom),
+                            )),
                         ),
                 )
             })

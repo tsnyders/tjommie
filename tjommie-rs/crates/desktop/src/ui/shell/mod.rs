@@ -81,6 +81,7 @@ impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         #[cfg(feature = "test-driver")]
         crate::test_driver::begin_frame();
+        crate::motion::clock::begin_frame(cx);
         let route = route::current(cx);
         let data = cx.try_global::<ShellData>().cloned().unwrap_or_default();
         let sidebar = sidebar::sidebar(&route, &data, window, cx);
@@ -88,7 +89,7 @@ impl Render for Shell {
             Some(words) => connection::screen(&data, words, window, cx),
             None => screen(&route, &data, cx),
         };
-        let status = connection::status_pill(&data.connection, cx);
+        let status = connection::status_pill(&data.connection, window, cx);
         let theme = cx.global::<Theme>();
         let colors = &theme.color.light;
         div()
@@ -148,6 +149,7 @@ impl Render for Shell {
             )
             .child(caption_buttons(theme))
             .child(crate::ui::primitives::toast::toasts(cx))
+            .child(crate::motion::clock::painted())
     }
 }
 

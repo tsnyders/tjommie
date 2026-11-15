@@ -55,6 +55,11 @@ impl gpui::Render for TestHost {
         cx: &mut gpui::Context<Self>,
     ) -> impl gpui::IntoElement {
         use gpui::{ParentElement as _, Styled as _};
-        gpui::div().size_full().child((self.0)(window, cx))
+        // Each frame on the motion clock, as the shell's are.
+        crate::motion::clock::begin_frame(cx);
+        gpui::div()
+            .size_full()
+            .child((self.0)(window, cx))
+            .child(crate::motion::clock::painted())
     }
 }

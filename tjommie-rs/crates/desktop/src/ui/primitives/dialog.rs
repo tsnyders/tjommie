@@ -124,9 +124,19 @@ mod tests {
         assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
         assert!(cx.update(|_, cx| BrowserShield::is_raised(cx)));
 
+        let before = cx.update(|_, cx| crate::motion::clock::frames(cx).len());
         cx.simulate_keystrokes("escape");
         // Gone in the same update, with no exit transition left to draw, and the shield is down with it.
         assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
         assert!(!cx.update(|_, cx| BrowserShield::is_raised(cx)));
+        // And the motion clock drew no moving frame after Escape (T2.3): nothing animated out.
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let frames = cx.update(|_, cx| crate::motion::clock::frames(cx));
+        assert!(frames.len() > before, "the close was drawn");
+        assert!(
+            frames[before..].iter().all(|frame| !frame.moving),
+            "{frames:?}"
+        );
     }
 }

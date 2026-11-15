@@ -10,6 +10,7 @@ pub mod links;
 pub mod log;
 pub mod owner_safety;
 pub mod paths;
+pub mod perf;
 pub mod shell;
 pub mod spawn;
 pub mod speech;
