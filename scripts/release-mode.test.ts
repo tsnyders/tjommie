@@ -1,9 +1,12 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
-import { releaseMode } from "./release-mode.ts";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { checkedVersion, releaseMode } from "./release-mode.ts";
+
+// Some of these start node (the command line), which on a busy PC can take longer than vitest's 10 s.
+vi.setConfig({ testTimeout: 60_000 });
 
 // T8.3: whether a run of release.yml may publish. Only a push of a v* tag does. Anything else, however it was started, is a dry run that
 // builds and uploads workflow artifacts and creates no release. The default for anything unexpected is the dry run.
@@ -58,6 +61,30 @@ describe("the release mode", () => {
     expect(run("push", "refs/tags/v0.6.0").split("\n").filter(Boolean)).toEqual(["dry_run=false", `version=${version}`]);
     expect(run("workflow_dispatch", "refs/heads/x").split("\n").filter(Boolean)).toEqual(["dry_run=true", `version=${version}`]);
     expect(run("push", "refs/heads/release-dryrun-a").split("\n").filter(Boolean)).toEqual(["dry_run=true", `version=${version}`]);
+  });
+
+  // The review's F5: package.json's version reaches $GITHUB_OUTPUT, which GitHub reads line by line.
+  it("accepts a release version and refuses anything that could write an output line of its own", () => {
+    expect(checkedVersion("0.6.0")).toBe("0.6.0");
+    expect(checkedVersion("10.20.30")).toBe("10.20.30");
+    for (const bad of ["0.6.0\ndry_run=false", "0.6.0\r\nx=1", "0.6.0 ", " 0.6.0", "0.6", "0.6.0-rc.1", "v0.6.0", "", "0.6.0\n", undefined, null, 6, { x: 1 }]) {
+      expect(() => checkedVersion(bad), JSON.stringify(bad)).toThrow(/not a release version/);
+    }
+  });
+
+  it("writes nothing, and exits 1, when the version is not a release version", () => {
+    const dir = mkdtempSync(join(tmpdir(), "tjommie-mode-version-test-"));
+    folders.push(dir);
+    // A copy of the script beside a package.json of its own, so the real one is not touched.
+    mkdirSync(join(dir, "scripts"));
+    writeFileSync(join(dir, "scripts", "release-mode.ts"), readFileSync(script));
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "x", version: "0.6.0\ndry_run=false" }));
+    const output = join(dir, "output.txt");
+    writeFileSync(output, "");
+    const result = spawnSync(process.execPath, [join(dir, "scripts", "release-mode.ts")], { encoding: "utf8", windowsHide: true, env: { ...process.env, GITHUB_EVENT_NAME: "push", GITHUB_REF: "refs/heads/release-dryrun-1", GITHUB_OUTPUT: output } });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("not a release version");
+    expect(readFileSync(output, "utf8")).toBe("");
   });
 
   it("is a dry run, and says so, when it is run with nothing set", () => {
