@@ -15,6 +15,8 @@ use crate::assets::{self, Assets, MONO_FAMILY, TEXT_FAMILY};
 use crate::guard::{guarded, guarded_async};
 use crate::notices::{self, Notice};
 use crate::theme::Theme;
+use crate::ui::browser::local::LocalBrowser;
+use crate::ui::browser::panel::BrowserPanel;
 use crate::ui::shell::data::ShellData;
 use crate::ui::shell::{self, Shell};
 use crate::zoom::Zoom;
@@ -28,6 +30,7 @@ pub fn run(identity: Identity, root: PathBuf, after_crash: bool, instance: Optio
             gpui_kit::init(cx);
             notices::init(cx);
             crate::motion::init(cx);
+            crate::ui::browser::init(cx);
             // What the shell shows of the daemon: connecting, until the store (T1.4) is wired to it.
             cx.set_global(ShellData::default());
             match Theme::aegis() {
@@ -52,14 +55,24 @@ pub fn run(identity: Identity, root: PathBuf, after_crash: bool, instance: Optio
                 notices::raise(Notice::ClosedUnexpectedly);
             }
             match gpui_kit::open_window(window_options(&identity, cx), cx, |window, cx| {
-                cx.new(|cx| Shell::new(window, cx))
+                // This PC's bots' browsers live under the window; nothing of WebView2 starts until a page is shown.
+                LocalBrowser::start(window, identity, cx);
+                let panel = BrowserPanel::create(window, cx);
+                cx.new(|cx| {
+                    let mut shell = Shell::new(window, cx);
+                    shell.set_panel(Some(panel.into()), cx);
+                    shell
+                })
             }) {
                 Ok((window, _)) => {
                     if let Some(instance) = instance {
                         show_on_second_launch(instance, window, cx);
                     }
                     #[cfg(feature = "test-driver")]
-                    crate::test_driver::start(window, cx);
+                    {
+                        crate::test_driver::start(window, cx);
+                        crate::ui::browser::e2e_fixture(cx);
+                    }
                 }
                 Err(error) => {
                     log::error!("Could not open the window: {error:#}");

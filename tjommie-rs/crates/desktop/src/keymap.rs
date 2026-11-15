@@ -10,6 +10,11 @@
 //! else. T3.7 handles `Dismiss` (closing the browser panel) wherever it likes, the shell's root or `App::on_action`;
 //! it needs no overlay checks of its own. `keymap::tests::escape_in_an_overlay_closes_the_overlay_alone` holds this.
 //!
+//! A Logins window (`LOGINS`, `ui::vault_entry`) is a window of its own, but GPUI's bindings and `App::on_action` are
+//! app-wide, so the main window's keys would reach the browser panel from it (T3.7 review F1). In it, `Dismiss` and
+//! `TogglePanel` stand aside, and Escape is `CancelLogins`: it cancels that window, from its body or a field (gpui-kit's
+//! text field passes Escape on). `ui::vault_entry::tests::escape_and_ctrl_b_in_a_logins_window_stay_there` holds this.
+//!
 //! The shortcut forwarding source, for the Browser lane's T3.5 (gate condition 2). While a bot's page in WebView2 has
 //! the keyboard, its keys go to the page, except the app-wide chords with Ctrl or Alt, and Escape:
 //! - T3.5's `AcceleratorKeyPressed` handler turns the event into a `gpui::Keystroke`: the virtual key as GPUI names
@@ -35,6 +40,8 @@ actions!(
         TogglePanel,
         /// Closes the browser panel when no overlay is open; an overlay takes Escape first (T3.7).
         Dismiss,
+        /// Cancels the Logins window it is typed in (Escape; T3.7 review F1).
+        CancelLogins,
         /// Approves in the focused approval card (T4.2).
         Approve,
         /// Sends the composer's message (T4.3).
@@ -69,8 +76,10 @@ pub const APPROVAL: &str = "Approval";
 pub const BUTTON: &str = "Button";
 /// A group whose items the arrow keys move between (T5.6): up and left go back, down and right go on.
 pub const LIST: &str = "List";
-/// Not inside an open overlay: gpui-kit's dialog, sheet and menu (popover content) contexts.
-pub const OUTSIDE_OVERLAYS: &str = "!Sheet && !Dialog && !PopoverContent";
+/// A Logins window: the main window's panel keys stand aside in it, and its Escape cancels it.
+pub const LOGINS: &str = "Logins";
+/// Not inside an open overlay: gpui-kit's dialog, sheet and menu (popover content) contexts, or a Logins window.
+pub const OUTSIDE_OVERLAYS: &str = "!Sheet && !Dialog && !PopoverContent && !Logins";
 
 /// Every binding. App-wide first.
 pub fn bindings() -> Vec<KeyBinding> {
@@ -84,6 +93,7 @@ pub fn bindings() -> Vec<KeyBinding> {
         KeyBinding::new("tab", MentionPick, Some(MENTIONS)),
         KeyBinding::new("enter", MentionPick, Some(MENTIONS)),
         KeyBinding::new("escape", MentionClose, Some(MENTIONS)),
+        KeyBinding::new("escape", CancelLogins, Some(LOGINS)),
         KeyBinding::new("enter", Press, Some(BUTTON)),
         KeyBinding::new("space", Press, Some(BUTTON)),
         KeyBinding::new("up", Prev, Some(LIST)),
@@ -94,14 +104,15 @@ pub fn bindings() -> Vec<KeyBinding> {
     bindings
 }
 
-/// The bindings that work wherever the focus is in the app's window (`Dismiss` stands aside inside an open overlay).
+/// The bindings that work wherever the focus is in the app's window (`Dismiss` stands aside inside an open overlay, and
+/// both panel keys in a Logins window).
 pub fn app_wide() -> Vec<KeyBinding> {
     vec![
         KeyBinding::new("ctrl-=", ZoomIn, None),
         KeyBinding::new("ctrl-+", ZoomIn, None),
         KeyBinding::new("ctrl--", ZoomOut, None),
         KeyBinding::new("ctrl-0", ZoomReset, None),
-        KeyBinding::new("ctrl-b", TogglePanel, None),
+        KeyBinding::new("ctrl-b", TogglePanel, Some("!Logins")),
         KeyBinding::new("escape", Dismiss, Some(OUTSIDE_OVERLAYS)),
     ]
 }

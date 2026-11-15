@@ -122,11 +122,11 @@ Frame "WF4 Logins (dark)", 1440x900. Rail with lucide:settings active.
   - Header: "Logins" (Inter 20 semibold), under it "Stored in Windows Credential Manager. Bots fill logins without seeing your passwords." (Inter 13 #989898, lucide:shield-check 14px #3FA37A before it).
   - Actions row: search input (w 280, h 36), and at right "Import from Chrome" (#262626 pill with logos:chrome 14px), "Import CSV" (#262626 pill, lucide:upload), "Add login" (white pill, lucide:plus).
   - List (rows h 60, divider 1px #1C1C1C between rows only): columns: site (28px rounded-square favicon tile with the first letter or lucide:globe on #1A1A1A, site Inter 14 #F5F5F5), username (Inter 13 #BDBDBD), password "••••••••••" (Inter 13 #989898), "Bots" (overlapping 18px mini avatars), last used (Inter 12 #989898), lucide:more-horizontal. Column header row (Inter 12 #6E6E6E): Site, Username, Password, Bots with access, Last used.
-    - pnet.co.za, tyrel.jobs@gmail.com, Pnet apply, "2 min ago" (row SELECTED: fill #111111, radius 10)
-    - careers24.com, tyrel.jobs@gmail.com, Careers24 scout + Pnet apply, "Yesterday"
-    - linkedin.com, tyrel.jobs@gmail.com, Pnet apply + Careers24 scout, "3 days ago"
-    - mail.google.com, tyrel.jobs@gmail.com, Inbox Triage + Chief of Staff, "Today"
-- Detail drawer (x 1060, w 380, fill #0B0B0B, left 1px #1C1C1C): favicon tile 40px + "pnet.co.za" (Inter 17 semibold) + lucide:x close; fields (label Inter 12 #989898, value Inter 14): Username "tyrel.jobs@gmail.com" with lucide:copy; Password "••••••••••" with "Show" (Inter 13 #459FFF) and helper "Asks for Windows Hello first" (Inter 12 #6E6E6E).
+    - pnet.co.za, owner@example.com, Pnet apply, "2 min ago" (row SELECTED: fill #111111, radius 10)
+    - careers24.com, owner@example.com, Careers24 scout + Pnet apply, "Yesterday"
+    - linkedin.com, owner@example.com, Pnet apply + Careers24 scout, "3 days ago"
+    - mail.google.com, owner@example.com, Inbox Triage + Chief of Staff, "Today"
+- Detail drawer (x 1060, w 380, fill #0B0B0B, left 1px #1C1C1C): favicon tile 40px + "pnet.co.za" (Inter 17 semibold) + lucide:x close; fields (label Inter 12 #989898, value Inter 14): Username "owner@example.com" with lucide:copy; Password "••••••••••" with "Show" (Inter 13 #459FFF) and helper "Asks for Windows Hello first" (Inter 12 #6E6E6E).
   - "Bots that can use this login" (Inter 13 semibold #9C9C9C): list of all six bots, each row h 40: 24px avatar, name, toggle switch at right (on = #F5F5F5 track with #070707 knob; off = #303030 track with #989898 knob). On: Pnet apply. Off: the others.
   - "Signed in on" : "Pnet apply's Chrome profile" with logos:chrome 14px.
   - "Last used by Pnet apply, 2 minutes ago" (Inter 12 #989898).

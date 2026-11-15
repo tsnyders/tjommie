@@ -2,6 +2,7 @@
 
 pub mod agents;
 pub mod bots;
+pub mod browser;
 pub mod fields;
 pub mod primitives;
 pub mod projects;
@@ -12,3 +13,4 @@ pub mod store;
 pub mod style;
 #[cfg(test)]
 pub mod testing;
+pub mod vault_entry;

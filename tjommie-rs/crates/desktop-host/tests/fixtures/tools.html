@@ -1,0 +1,89 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Tools fixture</title>
+<style>
+  html, body { margin: 0; font: 15px/1.4 system-ui; background: #fff; }
+  main { padding: 16px; display: grid; gap: 10px; width: 700px; }
+  .row { display: flex; gap: 12px; align-items: center; }
+  #moving { transition: none; }
+  #cover { position: fixed; left: 0; top: 0; right: 0; bottom: 0; background: rgba(255,255,255,.01); display: none; z-index: 20; }
+  #tall { height: 1800px; position: relative; background: linear-gradient(#fff, #cdd); }
+  #from, #to { width: 110px; height: 44px; border: 2px solid #345; display: grid; place-items: center; user-select: none; }
+  #zone { width: 200px; height: 60px; border: 2px dashed #345; display: grid; place-items: center; }
+</style>
+<div id="cover"></div>
+<main>
+  <h1>Tools fixture</h1>
+  <div class="row">
+    <button id="save" type="button">Save</button>
+    <button id="double" type="button">Double</button>
+    <button id="menu" type="button">Menu</button>
+    <output id="clicks">0</output>
+    <output id="last">none</output>
+  </div>
+  <div class="row">
+    <label>Name <input id="name" aria-label="Name"></label>
+    <label>Notes <textarea id="notes" aria-label="Notes" rows="2" cols="20"></textarea></label>
+    <label>Password <input id="password" type="password" aria-label="Password" value="NEVER-EXPOSE"></label>
+  </div>
+  <div class="row">
+    <label><input id="agree" type="checkbox"> Agree</label>
+    <label><input id="small" name="plan" type="radio" value="s"> Small plan</label>
+    <label>Size <select id="size" aria-label="Size"><option value="small">Small</option><option value="medium">Medium</option><option value="large">Large</option></select></label>
+    <label>Range <input id="range" type="range" min="0" max="10" value="1" aria-label="Range"></label>
+  </div>
+  <div class="row">
+    <label>Upload <input id="upload" type="file" aria-label="Upload"></label>
+    <output id="uploaded">no file</output>
+  </div>
+  <div class="row">
+    <div id="from">Drag me</div>
+    <div id="to">Here</div>
+    <output id="dragged">not dragged</output>
+  </div>
+  <div class="row"><div id="zone">Drop zone</div><output id="dropped">nothing dropped</output></div>
+  <div class="row">
+    <button id="log" type="button">Log</button>
+    <button id="fetch" type="button">Fetch</button>
+    <button id="alert" type="button">Alert</button>
+    <button id="alertnow" type="button">Alert now</button>
+    <button id="busyalert" type="button">Busy alert</button>
+    <button id="later" type="button">Later</button>
+    <a id="next" href="/tools2.html">Next page</a>
+  </div>
+  <p id="status">ready</p>
+  <div id="tall"><button id="far" type="button" style="position:absolute; top:1500px; left:20px; width:240px; height:60px; background:#c33; color:#fff; border:0">Far away</button></div>
+</main>
+<script>
+  const $ = (id) => document.getElementById(id);
+  let clicks = 0;
+  $("save").onclick = (e) => { clicks++; $("clicks").value = clicks; $("last").value = "save:" + e.button; };
+  $("double").ondblclick = () => { $("last").value = "double"; };
+  $("menu").oncontextmenu = (e) => { e.preventDefault(); $("last").value = "context"; };
+  $("far").onclick = () => { $("last").value = "far"; };
+  $("save").onmouseenter = () => { $("status").textContent = "hovered"; };
+  $("name").oninput = () => { $("status").textContent = "name=" + $("name").value; };
+  $("name").onkeydown = (e) => { if (e.key === "Enter") $("status").textContent = "submitted:" + $("name").value; };
+  $("notes").onkeydown = (e) => { $("last").value = "key:" + (e.ctrlKey ? "Ctrl+" : "") + e.key; };
+  $("upload").onchange = () => { $("uploaded").value = [...$("upload").files].map((f) => f.name + ":" + f.size).join(","); };
+  // A pointer drag, the way a slider or a canvas handle sees it.
+  let dragging = false;
+  $("from").onmousedown = () => { dragging = true; $("dragged").value = "down"; };
+  addEventListener("mousemove", (e) => { if (dragging) $("dragged").value = "move:" + Math.round(e.clientX) + "," + Math.round(e.clientY); });
+  addEventListener("mouseup", (e) => { if (dragging) { dragging = false; const hit = document.elementFromPoint(e.clientX, e.clientY); $("dragged").value = "up-on:" + (hit && hit.id); } });
+  $("zone").ondragover = (e) => e.preventDefault();
+  $("zone").ondrop = (e) => {
+    e.preventDefault();
+    const files = [...e.dataTransfer.files].map((f) => f.name).join(",");
+    $("dropped").value = "text=" + e.dataTransfer.getData("text/plain") + ";files=" + files;
+  };
+  $("log").onclick = () => { console.log("logged-message"); console.error("error-message"); };
+  $("fetch").onclick = () => { fetch("/tools2.html?fetched=1", { headers: { Authorization: "Bearer SECRET-TOKEN", Accept: "text/html" } }).then((response) => response.text()).then(() => { $("status").textContent = "fetched"; }); };
+  $("busyalert").onclick = () => { setTimeout(() => { const start = Date.now(); while (Date.now() - start < 300); alert("late dialog"); }, 0); };
+  $("alertnow").onclick = () => { alert("sync dialog"); };
+  $("alert").onclick = () => { setTimeout(() => { alert("a dialog"); }, 0); };
+  $("later").onclick = () => { setTimeout(() => { $("status").textContent = "later-arrived"; }, 600); };
+  window.pageState = () => JSON.stringify({ clicks, name: $("name").value, agree: $("agree").checked, size: $("size").value, range: $("range").value, small: $("small").checked });
+  window.cover = (on) => { $("cover").style.display = on ? "block" : "none"; };
+  window.slowForever = () => new Promise(() => {});
+</script>

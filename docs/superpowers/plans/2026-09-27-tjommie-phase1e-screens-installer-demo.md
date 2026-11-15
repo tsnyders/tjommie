@@ -853,7 +853,7 @@ describe("cardView", () => {
   });
 
   it("shows the account, and whether Codex's sandbox still needs setting up", () => {
-    expect(cardView(claude({ signedIn: true, account: "tyrel.jobs@gmail.com", plan: "max" }), quiet)).toEqual({ kind: "signed_in", account: "tyrel.jobs@gmail.com", plan: "max", sandbox: null });
+    expect(cardView(claude({ signedIn: true, account: "owner@example.com", plan: "max" }), quiet)).toEqual({ kind: "signed_in", account: "owner@example.com", plan: "max", sandbox: null });
     expect(cardView(codex({ signedIn: true }), quiet)).toMatchObject({ kind: "signed_in", sandbox: "needed" });
     expect(cardView(codex({ signedIn: true, sandbox: "updateRequired" }), quiet)).toMatchObject({ sandbox: "needed" });
     expect(cardView(codex({ signedIn: true }), { signingIn: false, preparing: true })).toMatchObject({ sandbox: "preparing" });
