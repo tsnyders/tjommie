@@ -47,13 +47,73 @@ pub struct Clock {
     last_moving: Option<Instant>,
     /// Something asked for another frame during this frame.
     moving: bool,
-    /// A throttled frame is on its way.
+    /// A throttled frame is on its way: only its own timer clears this, so a redraw in between starts no second
+    /// chain (review F2).
     throttled: bool,
+    /// When the pending `wake_in` frame comes.
+    wake_at: Option<Instant>,
     log: VecDeque<Frame>,
     trace: Option<BufWriter<File>>,
 }
 
 impl Global for Clock {}
+
+/// How a motion's next frame comes.
+#[derive(Debug, PartialEq, Eq)]
+enum Next {
+    /// At the display's rate.
+    Display,
+    /// A throttled frame after the delay: start its timer.
+    Timer(Duration),
+    /// A throttled frame is already on its way.
+    Pending,
+}
+
+impl Clock {
+    fn begin(&mut self) {
+        let now = Instant::now();
+        self.dt = self
+            .last_moving
+            .map_or(FIRST, |last| (now - last).as_secs_f32());
+        self.frame = now;
+        self.frame_qpc = qpc();
+        self.moving = false;
+    }
+
+    /// Something moves and asks for the next frame.
+    fn request(&mut self, active: bool, live: bool) -> Next {
+        self.moving = true;
+        match next_frame(active, live) {
+            None => Next::Display,
+            Some(_) if self.throttled => Next::Pending,
+            Some(delay) => {
+                self.throttled = true;
+                Next::Timer(delay)
+            }
+        }
+    }
+
+    /// The throttled frame's timer fired.
+    fn fired(&mut self) {
+        self.throttled = false;
+    }
+
+    /// Whether a wake at `at` needs a timer: not while an earlier or equal one is pending.
+    fn wake(&mut self, at: Instant) -> bool {
+        if self.wake_at.is_some_and(|pending| pending <= at) {
+            return false;
+        }
+        self.wake_at = Some(at);
+        true
+    }
+
+    /// The wake at `at` fired.
+    fn woke(&mut self, at: Instant) {
+        if self.wake_at == Some(at) {
+            self.wake_at = None;
+        }
+    }
+}
 
 impl Default for Clock {
     fn default() -> Self {
@@ -66,6 +126,7 @@ impl Default for Clock {
             last_moving: None,
             moving: false,
             throttled: false,
+            wake_at: None,
             log: VecDeque::with_capacity(LOG),
             trace: None,
         }
@@ -93,15 +154,7 @@ pub fn init(trace: Option<PathBuf>, cx: &mut App) {
 
 /// Starts a frame: the root view calls this first in its render.
 pub fn begin_frame(cx: &mut App) {
-    let clock = cx.default_global::<Clock>();
-    let now = Instant::now();
-    clock.dt = clock
-        .last_moving
-        .map_or(FIRST, |last| (now - last).as_secs_f32());
-    clock.frame = now;
-    clock.frame_qpc = qpc();
-    clock.moving = false;
-    clock.throttled = false;
+    cx.default_global::<Clock>().begin();
 }
 
 /// The seconds every motion steps by this frame: the time since the last frame that moved (1/100 s to start one).
@@ -119,21 +172,21 @@ pub fn now(cx: &App) -> f32 {
 /// nothing live shows.
 pub fn keep_moving(window: &mut Window, cx: &mut App) {
     let live = Live::any(cx);
-    let clock = cx.default_global::<Clock>();
-    clock.moving = true;
-    match next_frame(window.is_window_active(), live) {
-        None => window.request_animation_frame(),
-        Some(delay) => {
-            if !std::mem::replace(&mut clock.throttled, true) {
-                refresh_after(delay, window, cx);
-            }
-        }
+    let active = window.is_window_active();
+    match cx.default_global::<Clock>().request(active, live) {
+        Next::Display => window.request_animation_frame(),
+        Next::Timer(delay) => timed_frame(delay, window, cx, Clock::fired),
+        Next::Pending => {}
     }
 }
 
-/// A frame after `delay`, for something that next changes then (a blink, a beat).
+/// A frame after `delay`, for something that next changes then (a blink, a beat). One wake is pending at a time, the
+/// earliest; a later one is asked for again at the frames before it.
 pub fn wake_in(delay: Duration, window: &mut Window, cx: &mut App) {
-    refresh_after(delay, window, cx);
+    let at = Instant::now() + delay;
+    if cx.default_global::<Clock>().wake(at) {
+        timed_frame(delay, window, cx, move |clock| clock.woke(at));
+    }
 }
 
 /// When a motion's next frame comes: `None` at the display's rate, or after a delay (gate condition 5).
@@ -141,13 +194,22 @@ pub fn next_frame(active: bool, live: bool) -> Option<Duration> {
     (!active && !live).then_some(INACTIVE)
 }
 
-fn refresh_after(delay: Duration, window: &mut Window, cx: &mut App) {
+/// Draws a frame after `delay`, settling the clock's state for it first.
+fn timed_frame(
+    delay: Duration,
+    window: &mut Window,
+    cx: &mut App,
+    settle: impl FnOnce(&mut Clock) + 'static,
+) {
     let timer = cx.background_executor().timer(delay);
     window
         .spawn(cx, async move |cx| {
             guarded_async("draw a timed frame", async move {
                 timer.await;
-                let _ = cx.update(|window, _| window.refresh());
+                let _ = cx.update(|window, cx| {
+                    settle(cx.default_global::<Clock>());
+                    window.refresh();
+                });
             })
             .await
         })
@@ -231,6 +293,54 @@ mod tests {
             "inactive, but live: the display's rate"
         );
         assert_eq!(next_frame(true, true), None);
+    }
+
+    #[test]
+    fn a_redraw_mid_interval_starts_no_second_chain() {
+        let mut clock = Clock::default();
+        assert_eq!(
+            clock.request(false, false),
+            Next::Timer(INACTIVE),
+            "inactive: a 30 fps chain starts"
+        );
+        // A hover, a notice or a store update redraws the window before the timer fires.
+        clock.begin();
+        assert_eq!(
+            clock.request(false, false),
+            Next::Pending,
+            "no second chain"
+        );
+        clock.begin();
+        assert_eq!(clock.request(false, false), Next::Pending, "nor a third");
+        // The chain's own frame schedules its next one.
+        clock.fired();
+        clock.begin();
+        assert_eq!(clock.request(false, false), Next::Timer(INACTIVE));
+        assert_eq!(
+            clock.request(true, false),
+            Next::Display,
+            "active again: the display's rate"
+        );
+    }
+
+    #[test]
+    fn one_wake_pends_and_the_earliest_wins() {
+        let mut clock = Clock::default();
+        let at = |secs| clock.started + Duration::from_secs(secs);
+        let (one, two, three, five) = (at(1), at(2), at(3), at(5));
+        assert!(clock.wake(three), "the first wake");
+        assert!(
+            !clock.wake(five),
+            "a later one waits: its owner asks again at the next frame"
+        );
+        assert!(clock.wake(one), "an earlier one goes first");
+        clock.woke(one);
+        assert!(clock.wake(two), "after it, the next");
+        clock.woke(three);
+        assert!(
+            !clock.wake(five),
+            "the stale 3 s timer left the 2 s wake pending"
+        );
     }
 
     #[gpui::test]
