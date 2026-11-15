@@ -342,6 +342,11 @@ pub fn begin_frame() {
     NODES.with(|nodes| nodes.borrow_mut().clear());
 }
 
+/// The semantic elements of the last frame drawn on this thread: what `snapshot` answers, for view tests.
+pub fn nodes() -> Vec<UiNode> {
+    NODES.with(|nodes| nodes.borrow().clone())
+}
+
 /// An element registered with `semantic()`, observed for the snapshot. Everything else, its accessibility included,
 /// it forwards to the element unchanged.
 pub struct Observed<E> {

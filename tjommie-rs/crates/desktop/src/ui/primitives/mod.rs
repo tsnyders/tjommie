@@ -56,8 +56,9 @@ impl gpui::Render for TestHost {
         cx: &mut gpui::Context<Self>,
     ) -> impl gpui::IntoElement {
         use gpui::{ParentElement as _, Styled as _};
-        // Each frame on the motion clock, as the shell's are.
+        // Each frame on the motion clock, and a fresh semantic tree, as the shell's are.
         crate::motion::clock::begin_frame(cx);
+        crate::test_driver::begin_frame();
         gpui::div()
             .size_full()
             .child((self.0)(window, cx))

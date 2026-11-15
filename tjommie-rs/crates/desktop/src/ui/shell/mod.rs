@@ -68,7 +68,7 @@ impl Shell {
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        #[cfg(feature = "test-driver")]
+        #[cfg(any(test, feature = "test-driver"))]
         crate::test_driver::begin_frame();
         crate::motion::clock::begin_frame(cx);
         let route = route::current(cx);
