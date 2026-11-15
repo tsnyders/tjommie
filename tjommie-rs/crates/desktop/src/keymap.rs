@@ -1,6 +1,6 @@
 //! The keymap (Phase 3 plan T2.4; gate condition 2): the one list of the app's key bindings, bound at start. The
 //! app-wide ones (`app_wide()`) work wherever the focus is in the app's window. A context binding works inside an
-//! element with that `key_context` (`COMPOSER`, `MENTIONS`, `APPROVAL`, `BUTTON`). Any binding added later goes in
+//! element with that `key_context` (`COMPOSER`, `MENTIONS`, `APPROVAL`, `BUTTON`, `LIST`). Any binding added later goes in
 //! `bindings()`.
 //!
 //! Escape and the overlays, for the Browser UI lane's T3.7 (M2 review F4): GPUI doesn't rank a deeper context's binding
@@ -52,6 +52,10 @@ actions!(
         /// Presses the focused button (Enter or Space): a binding, so the button's context beats a dialog's own
         /// Enter (review F1).
         Press,
+        /// The item before in a group: a radio group, a segmented control, a list, Recents, a tab row (T5.6).
+        Prev,
+        /// The item after.
+        Next,
     ]
 );
 
@@ -63,6 +67,8 @@ pub const MENTIONS: &str = "Mentions";
 pub const APPROVAL: &str = "Approval";
 /// A focused button: a pill, an icon button, a toggle, a sidebar row (`ui::primitives::button::pressable`).
 pub const BUTTON: &str = "Button";
+/// A group whose items the arrow keys move between (T5.6): up and left go back, down and right go on.
+pub const LIST: &str = "List";
 /// Not inside an open overlay: gpui-kit's dialog, sheet and menu (popover content) contexts.
 pub const OUTSIDE_OVERLAYS: &str = "!Sheet && !Dialog && !PopoverContent";
 
@@ -80,6 +86,10 @@ pub fn bindings() -> Vec<KeyBinding> {
         KeyBinding::new("escape", MentionClose, Some(MENTIONS)),
         KeyBinding::new("enter", Press, Some(BUTTON)),
         KeyBinding::new("space", Press, Some(BUTTON)),
+        KeyBinding::new("up", Prev, Some(LIST)),
+        KeyBinding::new("left", Prev, Some(LIST)),
+        KeyBinding::new("down", Next, Some(LIST)),
+        KeyBinding::new("right", Next, Some(LIST)),
     ]);
     bindings
 }

@@ -71,6 +71,10 @@ pub enum Request {
     Key {
         chord: String,
     },
+    /// Types `text` into whatever has the focus, with no click: the keyboard-only way in.
+    Text {
+        text: String,
+    },
     Snapshot,
     Wait {
         id: String,
@@ -253,6 +257,14 @@ impl Client {
         .map(drop)
     }
 
+    /// Types into the focused element (`Text`), as the keyboard does.
+    pub fn text(&mut self, text: &str) -> io::Result<()> {
+        self.expect_ok(&Request::Text {
+            text: text.to_owned(),
+        })
+        .map(drop)
+    }
+
     pub fn click(&mut self, id: &str) -> io::Result<()> {
         self.expect_ok(&Request::Click { id: id.to_owned() })
             .map(drop)
@@ -368,6 +380,12 @@ impl<E> Observed<E> {
             id,
             focus: None,
         }
+    }
+
+    /// The snapshot reads `focus` as this element's, without the element tracking it (`SemanticFocus`).
+    pub fn with_focus(mut self, focus: &FocusHandle) -> Self {
+        self.focus = Some(focus.clone());
+        self
     }
 }
 
@@ -645,19 +663,15 @@ fn handle(request: Request, window: &mut Window, cx: &mut App) -> Response {
         Request::Type { id, text } => match center(&id) {
             Some(position) => {
                 click(position, window, cx);
-                for typed in text.chars() {
-                    let key_char = typed.to_string();
-                    let keystroke = Keystroke {
-                        modifiers: Modifiers::default(),
-                        key: key_char.to_lowercase(),
-                        key_char: Some(key_char),
-                    };
-                    window.dispatch_keystroke(keystroke, cx);
-                }
+                type_text(&text, window, cx);
                 Response::done()
             }
             None => Response::failed(format!("{id} is not on screen")),
         },
+        Request::Text { text } => {
+            type_text(&text, window, cx);
+            Response::done()
+        }
         Request::Key { chord } => match Keystroke::parse_with_os(&chord, cx.platform_info().os) {
             Ok(keystroke) => {
                 window.dispatch_keystroke(keystroke, cx);
@@ -666,6 +680,18 @@ fn handle(request: Request, window: &mut Window, cx: &mut App) -> Response {
             Err(error) => Response::failed(format!("{chord}: {error}")),
         },
         Request::Wait { .. } => Response::failed("wait is answered off the UI thread"),
+    }
+}
+
+fn type_text(text: &str, window: &mut Window, cx: &mut App) {
+    for typed in text.chars() {
+        let key_char = typed.to_string();
+        let keystroke = Keystroke {
+            modifiers: Modifiers::default(),
+            key: key_char.to_lowercase(),
+            key_char: Some(key_char),
+        };
+        window.dispatch_keystroke(keystroke, cx);
     }
 }
 

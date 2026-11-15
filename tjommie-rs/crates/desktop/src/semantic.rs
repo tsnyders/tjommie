@@ -19,6 +19,26 @@ pub trait SemanticExt: InteractiveElement + Element {
     fn semantic(self, id: impl Into<SharedString>, role: Role) -> Semantic<Stateful<Self>>;
 }
 
+/// For an element that wraps a focusable child it doesn't own (a text field around gpui-kit's input): the snapshot
+/// reads the child's focus as the element's. Without the test driver it does nothing.
+pub trait SemanticFocus: Sized {
+    fn semantic_focus(self, focus: &gpui::FocusHandle) -> Self;
+}
+
+#[cfg(any(test, feature = "test-driver"))]
+impl<E> SemanticFocus for crate::test_driver::Observed<E> {
+    fn semantic_focus(self, focus: &gpui::FocusHandle) -> Self {
+        self.with_focus(focus)
+    }
+}
+
+#[cfg(not(any(test, feature = "test-driver")))]
+impl<E> SemanticFocus for E {
+    fn semantic_focus(self, _focus: &gpui::FocusHandle) -> Self {
+        self
+    }
+}
+
 impl<E: InteractiveElement + Element> SemanticExt for E {
     fn semantic(self, id: impl Into<SharedString>, role: Role) -> Semantic<Stateful<E>> {
         let id: SharedString = id.into();
