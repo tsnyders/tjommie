@@ -82,6 +82,10 @@ RequestExecutionLevel user
 !define UNINSTALLER "Uninstall ${PRODUCT_NAME}.exe"
 !define POWERSHELL '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File'
 
+; How long any PowerShell helper may take (milliseconds). nsExec returns the word "timeout" after that, which the callers read as a helper
+; that could not run: the install or uninstall stops, and nothing has been touched.
+!define HELPER_TIMEOUT 90000
+
 !define EXIT_RUNNING 3
 !define EXIT_OLD_UNINSTALLER 4
 !define EXIT_REFUSED 5
@@ -223,19 +227,38 @@ FunctionEnd
 Function ${un}StopRunning
   System::Call 'kernel32::GetCurrentProcessId() i .r0'
   StrCpy $MyPid $0
-  nsExec::ExecToStack '${POWERSHELL} "$R1" -Folder "$R0" -ExceptProcessId $MyPid'
+  nsExec::ExecToStack /TIMEOUT=${HELPER_TIMEOUT} '${POWERSHELL} "$R1" -Folder "$R0" -ExceptProcessId $MyPid'
   Pop $R2
   Pop $R3
+  Call ${un}LogHelper
   DetailPrint "$R3"
 FunctionEnd
 
 ; $R0 = the folder, $R1 = the helper script (unlink-reparse-points.ps1). $R2 out: its exit code (0: no link is left in the folder), or
-; "error" if PowerShell could not be started. Same quoting rule as above.
+; "error" if PowerShell could not be started, or "timeout". Same quoting rule as above.
 Function ${un}Unlink
-  nsExec::ExecToStack '${POWERSHELL} "$R1" -Folder "$R0"'
+  nsExec::ExecToStack /TIMEOUT=${HELPER_TIMEOUT} '${POWERSHELL} "$R1" -Folder "$R0"'
   Pop $R2
   Pop $R3
+  Call ${un}LogHelper
   DetailPrint "$R3"
+FunctionEnd
+
+; $R1 = the helper script, $R2 = its exit code, $R3 = what it printed. Appended to %TEMP%\tjommie-installer-logs\installer.log, in the
+; folder the helpers write their own logs to, so a run that fails leaves the helper's words behind even when the installer is silent and
+; no message box is shown. Nothing here can fail the install: if the file cannot be opened, nothing is written.
+Function ${un}LogHelper
+  Push $R4
+  CreateDirectory "$TEMP\tjommie-installer-logs"
+  ClearErrors
+  FileOpen $R4 "$TEMP\tjommie-installer-logs\installer.log" a
+  ${IfNot} ${Errors}
+    FileSeek $R4 0 END
+    FileWrite $R4 "$R1 exit $R2$\r$\n$R3$\r$\n"
+    FileClose $R4
+  ${EndIf}
+  ClearErrors
+  Pop $R4
 FunctionEnd
 
 !macroend
@@ -281,7 +304,7 @@ Function MakeShortcut
     Return
   ${EndIf}
   CreateShortCut "$R0" "$INSTDIR\${EXE_NAME}" "" "$INSTDIR\${EXE_NAME}" 0 SW_SHOWNORMAL "" "${COMMENTS}"
-  nsExec::ExecToStack '${POWERSHELL} "$PLUGINSDIR\set-shortcut-aumid.ps1" -Path "$R0" -AppUserModelId "${APP_ID}"'
+  nsExec::ExecToStack /TIMEOUT=${HELPER_TIMEOUT} '${POWERSHELL} "$PLUGINSDIR\set-shortcut-aumid.ps1" -Path "$R0" -AppUserModelId "${APP_ID}"'
   Pop $R2
   Pop $R3
   ; Without the ID the app still starts and works; its notifications do not appear. The acceptance run checks for it.
@@ -293,6 +316,7 @@ FunctionEnd
 Section "Install"
   SetShellVarContext current
   SetOutPath "$PLUGINSDIR"
+  File "${__FILEDIR__}\helper-log.ps1"
   File "${__FILEDIR__}\scoped-processes.ps1"
   File "${__FILEDIR__}\stop-install-processes.ps1"
   File "${__FILEDIR__}\unlink-reparse-points.ps1"
@@ -313,7 +337,7 @@ Section "Install"
       SetErrorLevel ${EXIT_RUNNING}
       Abort
     ${ElseIf} $R2 != 0
-      MessageBox MB_OK|MB_ICONSTOP "The installer could not check whether ${PRODUCT_NAME} is running (PowerShell did not run the helper: $R2). Nothing was changed." /SD IDOK
+      MessageBox MB_OK|MB_ICONSTOP "The installer could not check whether ${PRODUCT_NAME} is running (the helper ended with: $R2). $R3 Nothing was changed. The details are in %TEMP%\tjommie-installer-logs." /SD IDOK
       SetErrorLevel ${EXIT_HELPER}
       Abort
     ${EndIf}
@@ -328,7 +352,7 @@ Section "Install"
       SetErrorLevel ${EXIT_LINK}
       Abort
     ${ElseIf} $R2 != 0
-      MessageBox MB_OK|MB_ICONSTOP "The installer could not check the ${PRODUCT_NAME} folder for links (PowerShell did not run the helper: $R2). Nothing was changed." /SD IDOK
+      MessageBox MB_OK|MB_ICONSTOP "The installer could not check the ${PRODUCT_NAME} folder for links (the helper ended with: $R2). $R3 Nothing was changed. The details are in %TEMP%\tjommie-installer-logs." /SD IDOK
       SetErrorLevel ${EXIT_HELPER}
       Abort
     ${EndIf}
@@ -433,6 +457,7 @@ Section "Uninstall"
   ; The helpers are unpacked from the uninstaller itself into its own temp folder: nothing in the install folder, which may have been
   ; quarantined, locked or edited, is needed to remove the app, and none of it is run.
   SetOutPath "$PLUGINSDIR"
+  File "${__FILEDIR__}\helper-log.ps1"
   File "${__FILEDIR__}\scoped-processes.ps1"
   File "${__FILEDIR__}\stop-install-processes.ps1"
   File "${__FILEDIR__}\unlink-reparse-points.ps1"
@@ -446,7 +471,7 @@ Section "Uninstall"
     SetErrorLevel ${EXIT_RUNNING}
     Abort
   ${ElseIf} $R2 != 0
-    MessageBox MB_OK|MB_ICONSTOP "The uninstaller could not check whether ${PRODUCT_NAME} is running (PowerShell did not run the helper: $R2). Nothing was removed." /SD IDOK
+    MessageBox MB_OK|MB_ICONSTOP "The uninstaller could not check whether ${PRODUCT_NAME} is running (the helper ended with: $R2). $R3 Nothing was removed. The details are in %TEMP%\tjommie-installer-logs." /SD IDOK
     SetErrorLevel ${EXIT_HELPER}
     Abort
   ${EndIf}
@@ -462,7 +487,7 @@ Section "Uninstall"
     SetErrorLevel ${EXIT_LINK}
     Abort
   ${ElseIf} $R2 != 0
-    MessageBox MB_OK|MB_ICONSTOP "The uninstaller could not check the ${PRODUCT_NAME} folder for links (PowerShell did not run the helper: $R2). Nothing was removed." /SD IDOK
+    MessageBox MB_OK|MB_ICONSTOP "The uninstaller could not check the ${PRODUCT_NAME} folder for links (the helper ended with: $R2). $R3 Nothing was removed. The details are in %TEMP%\tjommie-installer-logs." /SD IDOK
     SetErrorLevel ${EXIT_HELPER}
     Abort
   ${EndIf}

@@ -271,7 +271,7 @@ describe("tjommie.nsi after the T8.2 review", () => {
     }
     expect(installSection).toContain('File "${__FILEDIR__}\\set-shortcut-aumid.ps1"');
     // They run from the uninstaller's own temp folder, never from the install folder it is about to delete.
-    expect(uninstallSection).toMatch(/SetOutPath "\$PLUGINSDIR"\s+File "\$\{__FILEDIR__\}\\scoped-processes\.ps1"/);
+    expect(uninstallSection).toMatch(/SetOutPath "\$PLUGINSDIR"\s+File "\$\{__FILEDIR__\}\\helper-log\.ps1"\s+File "\$\{__FILEDIR__\}\\scoped-processes\.ps1"/);
     expect(uninstallSection).toContain('StrCpy $R1 "$PLUGINSDIR\\stop-install-processes.ps1"');
     expect(uninstallSection).not.toMatch(/\$INSTDIR\\[^"\n]*\.ps1/);
     expect(unOnInit).toContain("InitPluginsDir");
@@ -315,6 +315,36 @@ describe("tjommie.nsi after the T8.2 review", () => {
     const prompt = unOnInit.indexOf("MessageBox MB_YESNO");
     expect(prompt).toBeGreaterThan(unOnInit.indexOf("SetErrorLevel ${EXIT_REFUSED}"));
     expect(unOnInit).toMatch(/\$\{If\} \$Updated != 1\s+\$\{AndIfNot\} \$\{Silent\}\s+MessageBox MB_YESNO\|MB_ICONQUESTION[^\n]*\/SD IDYES IDYES \+2\s+Quit/);
+  });
+
+  // The first runner run of the fix round: the stop helper failed with an exit code and no reason, and (with a 120 s wait for each
+  // folder that never went) the fresh job crawled. Every helper call now has a time limit, its words are kept, and the log library is
+  // carried with the helpers.
+  it("carries the helpers' log library, in the installer and in the uninstaller", () => {
+    expect(installSection).toContain('File "${__FILEDIR__}\\helper-log.ps1"');
+    expect(uninstallSection).toContain('File "${__FILEDIR__}\\helper-log.ps1"');
+  });
+
+  it("gives every PowerShell helper a time limit, and reads a timeout as a helper that could not run, so it fails closed", () => {
+    expect(nsi).toContain("!define HELPER_TIMEOUT 90000");
+    const calls = nsi.match(/nsExec::ExecToStack[^\n]*/g) ?? [];
+    expect(calls.length).toBeGreaterThanOrEqual(3); // stop, unlink and the AUMID helper
+    for (const call of calls) expect(call, call).toContain("/TIMEOUT=${HELPER_TIMEOUT}");
+    // A timeout returns the word "timeout", which is neither 0, 3, 4 nor 5, so it takes the exit-8 branch before anything is touched.
+    expect(nsi).not.toMatch(/\$R2 == "?timeout/i);
+  });
+
+  it("keeps each helper's exit code and output in an installer log next to the helpers' own logs, after every call", () => {
+    expect(nsi).toContain('FileOpen $R4 "$TEMP\\tjommie-installer-logs\\installer.log" a');
+    for (const fn of ["Function ${un}StopRunning", "Function ${un}Unlink"]) {
+      const start = nsi.indexOf(fn);
+      expect(start, fn).toBeGreaterThan(-1);
+      const body = nsi.slice(start, nsi.indexOf("FunctionEnd", start));
+      expect(body, fn).toContain("Call ${un}LogHelper");
+      expect(body.indexOf("Pop $R3"), fn).toBeLessThan(body.indexOf("Call ${un}LogHelper"));
+    }
+    // The helper's own words are in the message too, not only its exit code.
+    for (const section of [installSection, uninstallSection]) expect(section).toMatch(/\$\{ElseIf\} \$R2 != 0\s+MessageBox[^\n]*\$R3/);
   });
 
   it("schedules a file that is locked at that moment for the next boot instead of silently keeping it (F13)", () => {

@@ -1,7 +1,7 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { codeOf, installer, powershell, runBody, temp, windows } from "./ps-support.ts";
+import { codeOf, installer, powershell, runBody, runWith, temp, windows, windowsPowerShells } from "./ps-support.ts";
 
 // T8.2: the NSIS installer (installer/tjommie.nsi) and the scripts it runs. Nothing in this file runs an installer or an
 // uninstaller, here or anywhere but a GitHub-hosted runner: it reads the script's text, compiles it when a compiler is
@@ -227,6 +227,183 @@ describe.skipIf(!windows)("the helper that removes links from an install folder 
     expect(readFileSync(join(target, "keep.txt"), "utf8")).toBe("must survive");
     expect(powershell(helper, ["-Folder", "C:\\"], { ...process.env }).status).not.toBe(0);
     expect(powershell(helper, ["-Folder", join(root, "missing")], { ...process.env }).status).toBe(0);
+  });
+});
+
+// The first runner run of the T8.2 fix round: the installer exited 8 ("the helper could not run") over a real R1, with no reason, and
+// every uninstall after it failed the same way. The helpers are now exercised the way the installer runs them: under the Windows
+// PowerShell engines (32-bit first), with -File, through an Electron-like tree, and the failure path must say what failed.
+describe.skipIf(!windows)("the helpers, under the engines the installer runs them with", () => {
+  it("has the engines it needs", () => {
+    expect(windowsPowerShells.map(([label]) => label).join(",")).toContain("32-bit");
+  });
+
+  // Nothing in the helper path may compile code: Add-Type starts csc.exe, which the runner's Defender and a locked-down machine can
+  // refuse, and then the helper fails closed for a reason that has nothing to do with the install. (The AUMID helper still uses it, and
+  // an install without the ID is allowed to finish.)
+  it("needs no compiler: no stop, unlink or library code calls Add-Type or P/Invokes", () => {
+    for (const name of ["scoped-processes.ps1", "stop-install-processes.ps1", "unlink-reparse-points.ps1", "helper-log.ps1"]) {
+      const code = codeOf(join(installer, name));
+      expect(code, name).not.toMatch(/Add-Type|DllImport|\[System\.Runtime\.InteropServices/i);
+    }
+  });
+
+  it.each(windowsPowerShells)("%s: closes an Electron-like tree by path, keeps the excluded process and the decoys, and logs every decision", (label, engine) => {
+    const root = temp();
+    const inside = join(root, "install");
+    const outside = join(root, "elsewhere");
+    const logs = join(root, "logs");
+    mkdirSync(inside);
+    mkdirSync(outside);
+    const driver = join(root, "tree.ps1");
+    writeFileSync(driver, String.raw`
+      $ErrorActionPreference = 'Stop'
+      $system = "$env:SystemRoot\System32"
+      Copy-Item "$system\cmd.exe" '${join(inside, "Tjommie.exe")}'
+      Copy-Item "$system\cmd.exe" '${join(inside, "launcher.exe")}'
+      Copy-Item "$system\ping.exe" '${join(inside, "tjommie-daemon.exe")}'
+      Copy-Item "$system\ping.exe" '${join(inside, "Uninstall Tjommie.exe")}'
+      Copy-Item "$system\cmd.exe" '${join(outside, "Tjommie.exe")}'
+      $started = @()
+      try {
+        # The app, with its daemon in the folder and a command-line tool outside it; the uninstaller that runs the helper (excluded by id);
+        # a same-named program elsewhere; and a launcher whose child outlives it, so that child's parent no longer exists.
+        $app = Start-Process '${join(inside, "Tjommie.exe")}' -ArgumentList '/c','ping -n 88 127.0.0.1 >nul' -WindowStyle Hidden -PassThru
+        $daemon = Start-Process '${join(inside, "tjommie-daemon.exe")}' -ArgumentList '-n','87','127.0.0.1' -WindowStyle Hidden -PassThru
+        $excluded = Start-Process '${join(inside, "Uninstall Tjommie.exe")}' -ArgumentList '-n','87','127.0.0.1' -WindowStyle Hidden -PassThru
+        $decoy = Start-Process '${join(outside, "Tjommie.exe")}' -ArgumentList '/c','ping -n 87 127.0.0.1 >nul' -WindowStyle Hidden -PassThru
+        $launcher = Start-Process '${join(inside, "launcher.exe")}' -ArgumentList '/c','start /b ping -n 86 127.0.0.1 >nul' -WindowStyle Hidden -PassThru
+        $started += $app, $daemon, $excluded, $decoy
+        $pings = @()
+        for ($i = 0; $i -lt 80 -and $pings.Count -lt 1; $i++) { Start-Sleep -Milliseconds 100; $pings = @(Get-CimInstance Win32_Process -Filter "ParentProcessId=$($app.Id)" | Where-Object { $_.Name -eq 'PING.EXE' }) }
+        if ($pings.Count -lt 1) { throw 'The stub app never started its children.' }
+        Start-Sleep -Milliseconds 800
+        $children = @(Get-CimInstance Win32_Process -Filter "ParentProcessId=$($app.Id)" | ForEach-Object { [int]$_.ProcessId })
+        $orphans = @(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'ping -n 86 127' -or ($_.Name -eq 'PING.EXE' -and $_.CommandLine -match '-n 86 127') } | ForEach-Object { [int]$_.ProcessId })
+        $env:TJOMMIE_HELPER_LOG_DIR = '${logs}'
+        $output = & '${engine}' -NoProfile -NonInteractive -ExecutionPolicy Bypass -File '${join(installer, "stop-install-processes.ps1")}' -Folder '${inside}' -ExceptProcessId $excluded.Id 2>&1 | Out-String
+        $code = $LASTEXITCODE
+        Start-Sleep -Milliseconds 500
+        $alive = { param($id) [bool](Get-Process -Id $id -ErrorAction SilentlyContinue) }
+        [ordered]@{
+          code = $code; output = $output.Trim()
+          appAlive = (& $alive $app.Id); daemonAlive = (& $alive $daemon.Id); excludedAlive = (& $alive $excluded.Id); decoyAlive = (& $alive $decoy.Id)
+          childrenAlive = @($children | Where-Object { & $alive $_ }).Count; childCount = $children.Count
+          orphansAlive = @($orphans | Where-Object { & $alive $_ }).Count; orphanCount = $orphans.Count
+          appId = $app.Id; excludedId = $excluded.Id
+        } | ConvertTo-Json -Compress
+      } finally {
+        foreach ($process in $started) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue }
+        foreach ($id in @(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match '-n 8[678] 127' } | ForEach-Object { [int]$_.ProcessId })) { Stop-Process -Id $id -Force -ErrorAction SilentlyContinue }
+      }
+    `);
+    const run = powershell(driver, [], { ...process.env });
+    expect(run.status, `${run.stdout}${run.stderr}`).toBe(0);
+    const result = JSON.parse(run.stdout) as { code: number; output: string; appAlive: boolean; daemonAlive: boolean; excludedAlive: boolean; decoyAlive: boolean; childrenAlive: number; childCount: number; orphansAlive: number; orphanCount: number; appId: number; excludedId: number };
+    expect(result.code, `${label}: ${result.output}`).toBe(0);
+    expect(result.appAlive).toBe(false);
+    expect(result.daemonAlive).toBe(false); // in the folder, though nothing in the tree started it
+    expect(result.childCount).toBeGreaterThanOrEqual(1);
+    expect(result.childrenAlive).toBe(0); // the daemon in the folder, and the tool it started outside it
+    expect(result.excludedAlive).toBe(true); // the caller itself: an uninstaller that runs from inside the folder
+    expect(result.decoyAlive).toBe(true); // the same name, another folder
+    expect(result.orphanCount).toBeGreaterThanOrEqual(1);
+    expect(result.orphansAlive).toBe(result.orphanCount); // a child whose parent is gone is nobody's child: left alone
+    // The log says what it did: what it ran as, and each process it chose, with the reason.
+    const log = readdirSync(logs).filter((file) => file.startsWith("stop-install-processes-"));
+    expect(log).toHaveLength(1);
+    const text = readFileSync(join(logs, log[0] ?? ""), "utf8");
+    expect(text).toContain("started: PowerShell 5.1");
+    expect(text).toContain(label.startsWith("32") ? "32-bit process" : "64-bit process");
+    expect(text, text).toMatch(new RegExp(`select ${result.appId} Tjommie\\.exe .*\\(in the folder\\)`));
+    expect(text, text).toMatch(/select \d+ tjommie-daemon\.exe .*\(in the folder\)/);
+    expect(text, text).toMatch(/select \d+ \S+ .*\(child of \d+\)/);
+    expect(text, text).toMatch(/nothing runs from the folder any more/);
+    expect(text, text).not.toContain(`select ${result.excludedId} `);
+  });
+
+  it.each(windowsPowerShells)("%s: an unexpected error exits 1, says what it was, and leaves the exception and its stack in the log", (label, engine) => {
+    const root = temp();
+    const logs = join(root, "logs");
+    const env = { ...process.env, TJOMMIE_HELPER_LOG_DIR: logs };
+    const run = runWith(engine, join(installer, "stop-install-processes.ps1"), ["-Folder", "C:\\", "-ExceptProcessId", "0"], env);
+    expect(run.status, label).toBe(1);
+    expect(run.stdout).toMatch(/HELPER FAILED: System\.Management\.Automation\.RuntimeException: Refusing to stop processes in C:: it is too broad/);
+    expect(run.stdout).toContain(logs);
+    const text = readFileSync(join(logs, readdirSync(logs)[0] ?? ""), "utf8");
+    expect(text).toMatch(/FAILED: .*too broad/);
+    expect(text).toMatch(/stack: .*Assert-NarrowFolder/);
+  });
+
+  // What went wrong last time may have been the library failing to load, before any of the helper's own code ran. That must be
+  // caught and reported too, not left as a bare exit code.
+  it.each(windowsPowerShells)("%s: a library that fails to load is reported, with its message, and the helper exits 1", (label, engine) => {
+    const root = temp();
+    const copy = join(root, "helpers");
+    const logs = join(root, "logs");
+    mkdirSync(copy);
+    for (const name of ["stop-install-processes.ps1", "helper-log.ps1"]) writeFileSync(join(copy, name), readFileSync(join(installer, name)));
+    writeFileSync(join(copy, "scoped-processes.ps1"), "throw 'the library could not load'\n");
+    const run = runWith(engine, join(copy, "stop-install-processes.ps1"), ["-Folder", join(root, "install"), "-ExceptProcessId", "0"], { ...process.env, TJOMMIE_HELPER_LOG_DIR: logs });
+    expect(run.status, label).toBe(1);
+    expect(run.stdout).toContain("HELPER FAILED");
+    expect(run.stdout).toContain("the library could not load");
+    expect(readFileSync(join(logs, readdirSync(logs)[0] ?? ""), "utf8")).toContain("the library could not load");
+  });
+
+  // Windows PowerShell 5.1 (.NET Framework) throws PathTooLongException past 260 characters. A developer's deep tree must not make the
+  // link remover refuse an install it can see no link in, nor miss a link that is deep.
+  it.each(windowsPowerShells)("%s: walks a tree deeper than 260 characters, and removes a junction that sits in it", (label, engine) => {
+    const root = temp();
+    const install = join(root, "install");
+    const outside = join(root, "outside");
+    const logs = join(root, "logs");
+    mkdirSync(install);
+    mkdirSync(outside);
+    writeFileSync(join(outside, "sentinel.txt"), "keep");
+    const deep = Array.from({ length: 12 }, (_, index) => `level-${index}-${"x".repeat(24)}`);
+    const make = join(temp(), "make.ps1");
+    writeFileSync(make, String.raw`
+      $ErrorActionPreference = 'Stop'
+      $path = '${install}'
+      foreach ($part in @(${deep.map((part) => `'${part}'`).join(",")})) { $path = Join-Path $path $part }
+      [void][IO.Directory]::CreateDirectory('\\?\' + $path)
+      [IO.File]::WriteAllText('\\?\' + (Join-Path $path 'deep.txt'), 'x')
+      # a junction one level above the deepest folder, made with a path that is still short enough for mklink
+      New-Item -ItemType Junction -Path '${join(install, "shallow-link")}' -Target '${outside}' | Out-Null
+      "$($path.Length)"
+    `);
+    const made = powershell(make, [], { ...process.env });
+    expect(made.status, `${made.stdout}${made.stderr}`).toBe(0);
+    expect(Number(made.stdout.trim())).toBeGreaterThan(260);
+    const run = runWith(engine, join(installer, "unlink-reparse-points.ps1"), ["-Folder", install], { ...process.env, TJOMMIE_HELPER_LOG_DIR: logs });
+    expect(run.status, `${label}: ${run.stdout}${run.stderr}`).toBe(0);
+    expect(run.stdout).toMatch(/Removed 1 link/);
+    expect(readFileSync(join(outside, "sentinel.txt"), "utf8")).toBe("keep");
+  });
+
+  it.each(windowsPowerShells)("%s: the link remover logs the links it removed, and fails with a reason for a folder that is itself a link", (label, engine) => {
+    const root = temp();
+    const install = join(root, "install");
+    const outside = join(root, "outside");
+    const logs = join(root, "logs");
+    mkdirSync(join(install, "resources"), { recursive: true });
+    mkdirSync(outside);
+    writeFileSync(join(outside, "sentinel.txt"), "keep");
+    const make = join(temp(), "make.ps1");
+    writeFileSync(make, `New-Item -ItemType Junction -Path '${join(install, "resources", "linked")}' -Target '${outside}' | Out-Null\nNew-Item -ItemType Junction -Path '${join(root, "install-link")}' -Target '${install}' | Out-Null\n`);
+    expect(powershell(make, [], { ...process.env }).status).toBe(0);
+    const env = { ...process.env, TJOMMIE_HELPER_LOG_DIR: logs };
+    const removed = runWith(engine, join(installer, "unlink-reparse-points.ps1"), ["-Folder", install], env);
+    expect(removed.status, `${label}: ${removed.stdout}${removed.stderr}`).toBe(0);
+    expect(removed.stdout).toMatch(/Removed 1 link/);
+    expect(readFileSync(join(outside, "sentinel.txt"), "utf8")).toBe("keep");
+    const refused = runWith(engine, join(installer, "unlink-reparse-points.ps1"), ["-Folder", join(root, "install-link")], env);
+    expect(refused.status).toBe(4);
+    expect(refused.stdout).toMatch(/is itself a link/);
+    const texts = readdirSync(logs).map((file) => readFileSync(join(logs, file), "utf8")).join("\n");
+    expect(texts).toMatch(/removed link .*linked/);
+    expect(texts).toMatch(/is itself a link/);
   });
 });
 
