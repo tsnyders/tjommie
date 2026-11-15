@@ -13,37 +13,19 @@
 
 mod common;
 
-use std::io::{BufReader, Read as _, Write as _};
+use std::io::{Read as _, Write as _};
 use std::net::TcpListener;
 use std::sync::Arc;
 use std::time::Duration;
 
 use common::Rig;
-use rustls::pki_types::CertificateDer;
 use rustls::server::WebPkiClientVerifier;
 use rustls::{RootCertStore, ServerConfig, ServerConnection, Stream};
 
-fn tls_fixture_dir() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("fixtures")
-        .join("tls")
-}
-
-/// An HTTPS server on loopback that asks every client for a certificate (and accepts one without). Test-only
-/// certificate and key, committed with the fixtures.
+/// An HTTPS server on loopback that asks every client for a certificate (and accepts one without). Its identity is made
+/// for this run (`common::tls_identity`).
 fn start_tls_server() -> u16 {
-    let dir = tls_fixture_dir();
-    let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut BufReader::new(
-        std::fs::File::open(dir.join("cert.pem")).expect("cert"),
-    ))
-    .collect::<Result<_, _>>()
-    .expect("certificates");
-    let key = rustls_pemfile::private_key(&mut BufReader::new(
-        std::fs::File::open(dir.join("key.pem")).expect("key"),
-    ))
-    .expect("key file")
-    .expect("a key");
+    let (certs, key) = common::tls_identity();
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let mut roots = RootCertStore::empty();
     roots.add(certs[0].clone()).expect("root");

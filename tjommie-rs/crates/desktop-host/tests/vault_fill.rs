@@ -13,7 +13,7 @@
 
 mod common;
 
-use std::io::{BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::sync::{Arc, Once};
 use std::time::Duration;
@@ -24,7 +24,6 @@ use desktop_host::browser::tools::Automation;
 use desktop_host::vault::storage::VaultSecret;
 use protocol::native_browser::NativeBrowserToolCommand;
 use protocol::vault::{LoginOrigin, VaultFillTarget};
-use rustls::pki_types::CertificateDer;
 use rustls::{ServerConfig, ServerConnection, Stream};
 use serde_json::json;
 
@@ -51,22 +50,9 @@ fn page_for(path: &str) -> &'static str {
     }
 }
 
-/// An HTTPS server on loopback with the committed test certificate and key.
+/// An HTTPS server on loopback. Its identity is made for this run (`common::tls_identity`).
 fn https_server() -> u16 {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("fixtures")
-        .join("tls");
-    let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut BufReader::new(
-        std::fs::File::open(dir.join("cert.pem")).expect("cert"),
-    ))
-    .collect::<Result<_, _>>()
-    .expect("certificates");
-    let key = rustls_pemfile::private_key(&mut BufReader::new(
-        std::fs::File::open(dir.join("key.pem")).expect("key"),
-    ))
-    .expect("key file")
-    .expect("a key");
+    let (certs, key) = common::tls_identity();
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let config = Arc::new(
         ServerConfig::builder_with_provider(provider)

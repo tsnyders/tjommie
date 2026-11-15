@@ -48,8 +48,10 @@ zeroize = { version = "1.8", features = ["serde"] }
 [dev-dependencies]
 # The real broker and server the bridge is tested against (the daemon's own, in-process, on loopback).
 daemon = { path = "../daemon" }
+# The TLS fixture servers' certificate, generated per test run.
+rcgen.workspace = true
 # A TLS fixture server that asks for a client certificate (F2).
-rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rustls ={ version = "0.23", default-features = false, features = ["ring", "std"] }
 rustls-pemfile = "2"
 tokio = { version = "1.54.1", features = ["sync", "rt", "rt-multi-thread", "time", "macros", "net", "io-util"] }
 

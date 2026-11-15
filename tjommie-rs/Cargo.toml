@@ -17,6 +17,8 @@ gpui = { package = "gpui-pre", version = "=0.3.12" }
 # gpui-component ships inside gpui-kit since 0.9; pinned to the v0.9.1 tag commit.
 gpui-kit = { git = "https://github.com/longbridge/gpui-kit", rev = "39ab849a93b5f15507b969164d49891db8d5b470" }
 webview2-com = "=0.39.1"
+# A self-signed certificate for the HTTPS loopback fixtures of the browser tests, made in the test (no key is committed).
+rcgen = { version = "=0.14.10", default-features = false, features = ["crypto", "ring"] }
 
 # No panics at UI boundaries (Phase 3 plan T0.4): the desktop crates (client, desktop-host, desktop) opt in with
 # `[lints] workspace = true`; the daemon doesn't. clippy.toml allows the first four in tests.

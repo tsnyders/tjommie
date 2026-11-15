@@ -327,6 +327,25 @@ pub fn after(time: Duration) -> futures::future::LocalBoxFuture<'static, ()> {
     })
 }
 
+/// The identity of the TLS fixture servers: a self-signed certificate for `127.0.0.1`, made for this test run. Nothing is
+/// committed (not even a test key), so a fresh checkout has everything the tests need.
+pub fn tls_identity() -> (
+    Vec<rustls::pki_types::CertificateDer<'static>>,
+    rustls::pki_types::PrivateKeyDer<'static>,
+) {
+    let key = rcgen::KeyPair::generate().expect("a key pair");
+    let mut params = rcgen::CertificateParams::new(vec!["127.0.0.1".to_string()])
+        .expect("certificate parameters");
+    params
+        .distinguished_name
+        .push(rcgen::DnType::CommonName, "127.0.0.1");
+    let cert = params.self_signed(&key).expect("a self-signed certificate");
+    (
+        vec![cert.der().clone()],
+        rustls::pki_types::PrivateKeyDer::Pkcs8(key.serialize_der().into()),
+    )
+}
+
 pub struct Rig {
     pub ui: Ui,
     pub sink: Rc<RefCell<Sink>>,
