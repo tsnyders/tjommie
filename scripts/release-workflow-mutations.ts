@@ -57,6 +57,20 @@ export const mutations: Mutation[] = [
   { label: "the kept NSIS hashes are uploaded on a release too", from: "if: ${{ always() && needs.verify.outputs.dry_run == 'true' }}", to: "if: ${{ always() }}" },
   { label: "the production identity is dropped from the cargo build", from: "          TJOMMIE_IDENTITY: production" + nl + "        run: cargo build", to: "          TJOMMIE_IDENTITY: dev" + nl + "        run: cargo build" },
   { label: "npm run package comes back", from: installNsis, to: "      - run: npm run package" + nl + installNsis },
+  // The owner's F2 decision (2026-11-15): a release has to be strictly newer than the latest one.
+  { label: "the version guard accepts the same version", from: 'if [[ "$verdict" == equal && -n "$pre" ]]; then verdict=newer; fi', to: 'if [[ "$verdict" == equal ]]; then verdict=newer; fi' },
+  {
+    label: "the version guard compares text, not numbers",
+    from: "            if (( a > b )); then verdict=newer; break; fi" + nl + "            if (( a < b )); then verdict=older; break; fi",
+    to: '            if [[ "$a" > "$b" ]]; then verdict=newer; break; fi' + nl + '            if [[ "$a" < "$b" ]]; then verdict=older; break; fi',
+  },
+  {
+    label: "the version guard lets a failed read through",
+    from: '            echo "Refusing to publish: the latest release could not be read: $(cat "$errors")" >&2' + nl + "            exit 1",
+    to: '            echo "could not be read: $(cat "$errors")" >&2' + nl + "            exit 0",
+  },
+  { label: "the version guard lets a latest it cannot parse through", from: 'if [[ ! "${latest#v}" =~ ^$core\\.$core\\.$core$prerelease$build$ ]]; then', to: "if false; then" },
+  { label: "the version guard is removed", from: "      - name: The release is newer than the latest one", to: "      - name: A step that checks nothing" },
   // The triggers and the mode.
   { label: "the push trigger takes every branch", from: "branches: ['release-dryrun-*']", to: "branches: ['**']" },
   { label: "the verify job stops writing the mode", from: '        run: node scripts/release-mode.ts >> "$GITHUB_OUTPUT"', to: '        run: echo dry_run=false >> "$GITHUB_OUTPUT"' },
