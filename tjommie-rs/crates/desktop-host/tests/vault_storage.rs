@@ -22,12 +22,44 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use tempfile::TempDir;
 use uuid::Uuid;
 
 /// A password that no record, log or fixture output may contain.
 const SECRET: &str = "Synthetic-Login-Secret-ABSENT-FROM-OUTPUT-7d14";
 const TIME: &str = "2026-11-15T10:00:00.000Z";
+
+/// The two node-backed tests each start a PowerShell that compiles the TypeScript side's Credential Manager bridge, and the
+/// TypeScript transport kills it after 15 s. Two at once on a busy PC can both run out of time, so they take turns.
+static NODE_TURN: Mutex<()> = Mutex::new(());
+/// How many TypeScript fixtures run right now: more than one means a test forgot to take its turn.
+static NODE_RUNNING: AtomicUsize = AtomicUsize::new(0);
+
+fn node_turn() -> MutexGuard<'static, ()> {
+    NODE_TURN.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Counts one running fixture, and says so if it is not alone.
+struct FixtureRun;
+
+impl FixtureRun {
+    fn begin() -> Self {
+        let before = NODE_RUNNING.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(
+            before, 0,
+            "two TypeScript fixtures ran at once: a test did not take its turn (node_turn)"
+        );
+        Self
+    }
+}
+
+impl Drop for FixtureRun {
+    fn drop(&mut self) {
+        NODE_RUNNING.fetch_sub(1, Ordering::SeqCst);
+    }
+}
 
 /// A test's folder, its Credential Manager namespace and every reference it created. Dropping it deletes those targets,
 /// so a failing test leaves nothing behind in Credential Manager.
@@ -201,6 +233,7 @@ fn run_fixture<T: DeserializeOwned>(operation: &str, root: &Path, request: &impl
         .join("tests")
         .join("fixtures")
         .join("vault_crossimpl.ts");
+    let _running = FixtureRun::begin();
     let mut command = spawn::command("node");
     command
         .arg("--disable-warning=ExperimentalWarning")
@@ -221,10 +254,13 @@ fn run_fixture<T: DeserializeOwned>(operation: &str, root: &Path, request: &impl
         .expect("the request is written");
     drop(stdin);
     let output = child.wait_with_output().expect("node finishes");
+    // Everything node said, as it said it: a failure here is read from this message alone.
     assert!(
         output.status.success(),
-        "the TypeScript fixture failed: {}",
-        String::from_utf8_lossy(&output.stderr)
+        "the TypeScript fixture `{operation}` ended with {}\n--- stderr ---\n{}\n--- stdout ---\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
     );
     serde_json::from_slice(&output.stdout).expect("the fixture prints JSON")
 }
@@ -558,6 +594,7 @@ fn the_typescript_vault_writes_a_login_that_rust_reads() {
         eprintln!("skipped: node is not on PATH, so the TypeScript side cannot run");
         return;
     }
+    let _turn = node_turn();
     let mut sandbox = Sandbox::new();
     let id = Uuid::new_v4().to_string();
     let entry = login(&id, "bot", 1);
@@ -607,6 +644,7 @@ fn rust_writes_a_login_that_the_typescript_vault_reads() {
         eprintln!("skipped: node is not on PATH, so the TypeScript side cannot run");
         return;
     }
+    let _turn = node_turn();
     let mut sandbox = Sandbox::new();
     let id = Uuid::new_v4().to_string();
     let entry = login(&id, "bot", 1);
