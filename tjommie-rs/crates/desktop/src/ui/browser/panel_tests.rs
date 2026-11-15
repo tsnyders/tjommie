@@ -486,6 +486,55 @@ fn shows_a_page_dialog_answerable_only_by_the_user(cx: &mut gpui::TestAppContext
     );
 }
 
+// Escape in the page's dialog (its answer field, its buttons) cancels the dialog and keeps the panel, as
+// `right-panel.tsx` kept Escape for an alertdialog (review F7). While the bot holds the page, the person can't answer:
+// Escape there is the panel's, as everywhere else (T2.4).
+#[gpui::test]
+fn escape_in_a_page_dialog_cancels_it_and_keeps_the_panel(cx: &mut gpui::TestAppContext) {
+    let dialog = BrowserDialog {
+        page_id: "p1".into(),
+        kind: "prompt".into(),
+        message: "Your name?".into(),
+        default_value: String::new(),
+    };
+    let mut mine = state(BrowserControl::Human);
+    mine.dialog = Some(dialog.clone());
+    let (panel, sent, cx) = panel_window(cx, bot("b1", true), Some(shown(mine)));
+    open_browser(&panel, cx);
+    let answer = cx.update(|_, cx| panel.read(cx).prompt.clone());
+    let type_in_the_answer = |cx: &mut VisualTestContext| {
+        cx.update(|window, cx| answer.update(cx, |input, cx| input.focus(window, cx)));
+        draw(cx);
+    };
+    type_in_the_answer(cx);
+    cx.simulate_keystrokes("escape");
+    draw(cx);
+    assert_eq!(
+        *sent.borrow(),
+        [BrowserCommand::Dialog {
+            accept: false,
+            prompt_text: None
+        }],
+        "the dialog is cancelled"
+    );
+    assert!(
+        cx.update(|_, cx| panel.read(cx).is_open()),
+        "the panel stays"
+    );
+
+    let mut watching = state(BrowserControl::Bot);
+    watching.dialog = Some(dialog);
+    set_remote(shown(watching), cx);
+    type_in_the_answer(cx);
+    cx.simulate_keystrokes("escape");
+    draw(cx);
+    assert_eq!(sent.borrow().len(), 1, "nothing more sent");
+    assert!(
+        !cx.update(|_, cx| panel.read(cx).is_open()),
+        "the panel closed"
+    );
+}
+
 // browser-panel.test.tsx: "says why it can't open, with a way to try again"
 #[gpui::test]
 fn says_why_it_cant_open_with_a_way_to_try_again(cx: &mut gpui::TestAppContext) {
@@ -500,37 +549,38 @@ fn says_why_it_cant_open_with_a_way_to_try_again(cx: &mut gpui::TestAppContext) 
     assert_eq!(*sent.borrow(), [BrowserCommand::Retry]);
 }
 
-// browser-panel.test.tsx: "suppresses private pixels even if an unexpected frame reaches the pane"
+// browser-panel.test.tsx: "suppresses private pixels even if an unexpected frame reaches the pane". The frame is a real
+// picture that decodes and draws, so only the private filter keeps it off (review F2); the same frame shows once the
+// interaction is over.
 #[gpui::test]
 fn suppresses_private_pixels_and_the_control_pill(cx: &mut gpui::TestAppContext) {
     let mut private = state(BrowserControl::Human);
     private.private_active = Some(true);
-    let frame = BrowserFrame {
-        data: "AAAA".into(),
-        mime: FrameMime::Jpeg,
-        width: 800,
-        height: 600,
-        sequence: 1,
-        viewport_width: None,
-        viewport_height: None,
-        page_id: None,
-        viewport_revision: None,
-        stream_id: None,
-        control_epoch: None,
-        private_epoch: None,
-    };
-    let view = BrowserView {
-        state: Some(private),
-        frame: Some(frame),
-        ..BrowserView::default()
-    };
-    let (panel, _, cx) = panel_window(cx, bot("b1", true), Some(view));
+    let mut view = shown(private);
+    view.frame = Some(jpeg_frame(1));
+    let (panel, sent, cx) = panel_window(cx, bot("b1", true), Some(view.clone()));
     open_browser(&panel, cx);
+    // As long as a drawn picture would take to be reported (bounded: it never is).
+    draw_until_drawn(&sent, 0, cx);
     assert!(cx.debug_bounds("browser.control").is_none());
     assert!(
         cx.update(|_, cx| panel.read(cx).picture.frame().is_none()),
         "no picture while private"
     );
+    assert!(drawn(&sent).is_empty(), "and none reported drawn");
+
+    // The control: private off, the same frame is drawn and reported.
+    if let Some(state) = view.state.as_mut() {
+        state.private_active = None;
+    }
+    set_remote(view, cx);
+    draw_until_drawn(&sent, 0, cx);
+    assert_eq!(
+        cx.update(|_, cx| panel.read(cx).picture.frame().map(|frame| frame.sequence)),
+        Some(1),
+        "the picture shows"
+    );
+    assert_eq!(drawn(&sent), [1]);
 }
 
 /// A 4x3 JPEG, base64 as a frame carries it.
@@ -575,7 +625,9 @@ fn draw_until_drawn(sent: &Sent, before: usize, cx: &mut VisualTestContext) {
 }
 
 // The remote live view (browser.streamFrame): each frame is reported drawn once it is on screen, once, in order, so the
-// session acknowledges it (browser.streamAck) and the stream sends the next.
+// session acknowledges it (browser.streamAck) and the stream sends the next. These counts would also pass for a report
+// sent when the frame arrives: that it follows the paint is by construction (`stream.rs`, the picture's paint defers the
+// report), not by this test (review F12).
 #[gpui::test]
 fn reports_each_streamed_frame_once_it_is_drawn(cx: &mut gpui::TestAppContext) {
     let mut view = shown(state(BrowserControl::Bot));

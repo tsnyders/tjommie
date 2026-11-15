@@ -53,7 +53,9 @@ struct Frames(OnFrame);
 
 impl Global for Frames {}
 
-/// Wires the panel to another PC's daemon: `rpc` is the connection, `live` whether it carries the stream's events.
+/// Wires the panel to another PC's daemon: `rpc` is the connection, `live` whether it carries the stream's events. Once per
+/// connection: a second call replaces the globals and leaves the earlier driver's sessions open on the old connection
+/// until it drops, so T1.4's host switching closes them first (review F12).
 pub fn wire<R: Rpc + 'static>(rpc: Arc<R>, live: bool, cx: &mut App) {
     let driver = Rc::new(Driver {
         rpc,

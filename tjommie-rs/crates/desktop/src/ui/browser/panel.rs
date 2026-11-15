@@ -323,6 +323,9 @@ impl BrowserPanel {
     }
 
     fn refresh_snapshot(&mut self, cx: &mut Context<Self>) {
+        if self.private_page(cx) {
+            return;
+        }
         let Some(capture) = self
             .mounted
             .as_deref()
@@ -345,11 +348,23 @@ impl BrowserPanel {
         }));
     }
 
+    /// The page in the panel is in a private interaction: the panel takes no picture of it and keeps none (review F6).
+    fn private_page(&self, cx: &App) -> bool {
+        self.mounted
+            .as_deref()
+            .is_some_and(|bot| chrome::private(LocalBrowser::view(bot, cx).state.as_ref()))
+    }
+
     /// An overlay opened over the page (a menu, a dialog, a sheet): a picture of the page stands in while its window is out
     /// of the way. Closing the overlay brings the live page back.
     fn follow_shield(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let wanted = BrowserShield::is_raised(cx) && self.mounted.is_some();
         match (&self.shield, wanted) {
+            // A private page's window steps aside with no picture taken: a plain cover stands in.
+            (ShieldState::Down, true) if self.private_page(cx) => {
+                self.shield = ShieldState::Up(None);
+                cx.notify();
+            }
             (ShieldState::Down, true) => {
                 let Some(raise) = self
                     .mounted
@@ -363,7 +378,8 @@ impl BrowserPanel {
                     guarded_async("raise the browser shield", async move {
                         let png = raise.await;
                         let _ = this.update(cx, |this, cx| {
-                            let picture = (!png.is_empty())
+                            // Taken as the page turned private: not kept.
+                            let picture = (!png.is_empty() && !this.private_page(cx))
                                 .then(|| Arc::new(Image::from_bytes(ImageFormat::Png, png)));
                             this.shield = ShieldState::Up(picture);
                             cx.notify();
@@ -482,6 +498,11 @@ impl Render for BrowserPanel {
             self.motion.set_open_width(width as f32);
         }
         self.follow(bot.as_ref(), window, cx);
+        // A page turned private: no picture of it is kept, nor one being taken (review F6).
+        if self.private_page(cx) {
+            self.snapshot_task = None;
+            self.drop_image(ImageSlot::Snapshot, cx);
+        }
         self.follow_shield(window, cx);
         let streams = bot.as_ref().is_some_and(|bot| {
             self.motion.width.value > 0.
@@ -491,11 +512,7 @@ impl Render for BrowserPanel {
                     .try_global::<BrowserData>()
                     .and_then(|data| data.remote.get(&bot.id))
                     .is_some_and(|view| {
-                        view.frame.is_some()
-                            && view
-                                .state
-                                .as_ref()
-                                .is_none_or(|state| state.private_active != Some(true))
+                        view.frame.is_some() && !chrome::private(view.state.as_ref())
                     })
         });
         if streams {
@@ -910,10 +927,7 @@ impl BrowserPanel {
             .size_full()
         });
         let waiting = view.state.is_none() && view.error.is_none();
-        let private = view
-            .state
-            .as_ref()
-            .is_some_and(|state| state.private_active == Some(true));
+        let private = chrome::private(view.state.as_ref());
         let remote_picture = remote
             .then(|| {
                 self.picture.take(view.frame.as_ref(), private, window, cx);

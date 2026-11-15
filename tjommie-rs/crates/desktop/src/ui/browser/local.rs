@@ -4,6 +4,7 @@
 //! Win32 calls made from a draw or a handler are queued with `defer`.
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -110,6 +111,21 @@ pub fn clip_to(page: &RECT, panel: &RECT) -> RECT {
     }
 }
 
+/// The engine's settings: the app's window as its pages' parent, its waits on GPUI's timer (M3b L7), and its tasks on
+/// the UI thread.
+fn engine_config(parent: HWND, root: &Path, identity: Identity, cx: &App) -> EngineConfig {
+    let mut config = EngineConfig::new(parent, root.join("data").join("webview2"), identity);
+    let timers = cx.background_executor().clone();
+    config.sleep = Rc::new(move |duration| Box::pin(timers.timer(duration)));
+    let executor = cx.foreground_executor().clone();
+    config.spawn = Some(Rc::new(move |task: LocalBoxFuture<'static, ()>| {
+        let task = guarded_async("a browser task", task);
+        // unguarded: a future, not a closure; guarded_async wraps it on the line above
+        executor.spawn(task).detach();
+    }));
+    config
+}
+
 fn window_hwnd(window: &Window) -> Option<HWND> {
     match raw_window_handle::HasWindowHandle::window_handle(window)
         .ok()?
@@ -135,13 +151,7 @@ impl LocalBrowser {
         let root = identity.data_root()?;
         let (events, inbox) = async_channel::unbounded::<HostEvent>();
         let (notify, notices) = async_channel::unbounded::<Notification>();
-        let mut config = EngineConfig::new(parent, root.join("data").join("webview2"), identity);
-        let executor = cx.foreground_executor().clone();
-        config.spawn = Some(Rc::new(move |task: LocalBoxFuture<'static, ()>| {
-            let task = guarded_async("a browser task", task);
-            // unguarded: a future, not a closure; guarded_async wraps it on the line above
-            executor.spawn(task).detach();
-        }));
+        let config = engine_config(parent, &root, identity, cx);
         let engine = Engine::new(config, events, notify).map_err(|error| error.to_string())?;
         let chords = keymap::page_forwarded()
             .into_iter()
@@ -200,6 +210,7 @@ impl LocalBrowser {
     }
 
     /// The engine, for what drives it besides the panel once wired: the `/browser-host` bridge (T3.2) and a clean quit.
+    /// The bridge also calls `Engine::daemon_restarted` when the daemon restarts (M3b L4; nothing calls it yet).
     pub fn engine(cx: &App) -> Option<Rc<Engine>> {
         cx.try_global::<LocalBrowser>()
             .map(|local| local.engine.clone())
@@ -485,6 +496,31 @@ fn hear(notification: Notification, handle: AnyWindowHandle, cx: &mut App) {
 mod tests {
     use super::*;
     use gpui::{point, px, size};
+
+    /// The engine waits on GPUI's timer (M3b L7, review F8), not on a thread of its own: the app's clock ends a wait.
+    #[gpui::test]
+    async fn the_engine_waits_on_the_apps_timer(cx: &mut gpui::TestAppContext) {
+        use std::cell::Cell;
+
+        let root = std::env::temp_dir();
+        let config =
+            cx.update(|cx| engine_config(HWND::default(), &root, desktop_host::identity::E2E, cx));
+        let woke = Rc::new(Cell::new(false));
+        let waking = woke.clone();
+        let wait = (config.sleep)(Duration::from_secs(30));
+        let executor = cx.foreground_executor().clone();
+        // unguarded: a test's task, not a UI handler
+        let task = executor.spawn(async move {
+            wait.await;
+            waking.set(true);
+        });
+        task.detach();
+        cx.run_until_parked();
+        assert!(!woke.get(), "it waits");
+        cx.executor().advance_clock(Duration::from_secs(30));
+        cx.run_until_parked();
+        assert!(woke.get(), "and the app's clock ends the wait");
+    }
 
     #[test]
     fn every_forwarded_app_chord_has_an_engine_chord() {

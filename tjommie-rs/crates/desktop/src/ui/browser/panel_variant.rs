@@ -6,7 +6,10 @@
 //! What the fallback cannot do:
 //! - it decides per motion, so the first live motion after the load rises can still miss;
 //! - it cannot rescue a saturated CPU: at 100% CPU both variants missed in the spike (live 46–53 ms, snapshot 27–66 ms);
-//! - snapshot frames are lighter but still do layout, so the panel needs a mostly quiet PC to meet 16.7 ms.
+//! - snapshot frames are lighter but still do layout, so the panel needs a mostly quiet PC to meet 16.7 ms;
+//! - the 16.7 ms budget assumes a display of 60 Hz or faster: on a slower one (a 30 Hz television, a 48 Hz battery-saving
+//!   laptop panel) every live motion's p95 is at least one refresh (20.8 ms at 48 Hz), so after the first motion the
+//!   panel stays on the snapshot variant, trying live again once a minute and missing each time (review F10).
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};

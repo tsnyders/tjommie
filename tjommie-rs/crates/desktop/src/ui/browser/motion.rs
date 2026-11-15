@@ -52,6 +52,8 @@ impl PanelMotion {
         self.open_width = width;
         if self.is_open() {
             self.width.snap(width);
+            // A motion the snap cut short is over, unmeasured (review F12).
+            self.started_qpc = None;
         }
     }
 
@@ -254,5 +256,25 @@ mod tests {
         motion.set_open(false, false, PanelVariant::Snapshot, 5_000);
         motion.finish(&[5_000, 5_010, 5_020], 1000, now);
         assert_eq!(motion.choose(now, 0.), PanelVariant::Snapshot);
+    }
+
+    /// The window resized mid-opening (review F12): the panel snaps to its new width, and the motion it cut short is over,
+    /// unmeasured. Its few frames leave no p95, and the next motion starts afresh in the variant chosen for it.
+    #[test]
+    fn a_resize_mid_motion_ends_it_unmeasured() {
+        let now = Instant::now();
+        let mut motion = PanelMotion::new(W, &calm());
+        motion.set_open(true, false, PanelVariant::Live, 1_000);
+        motion.step(DT);
+        motion.set_open_width(W - 100.);
+        assert!(!motion.is_moving(), "a resize never animates");
+        motion.finish(&[1_000, 1_030, 1_060], 1000, now);
+        assert_eq!(
+            motion.choose(now, 0.),
+            PanelVariant::Live,
+            "two slow frames of a cut-short motion are no miss"
+        );
+        motion.set_open(false, false, PanelVariant::Snapshot, 9_000);
+        assert_eq!(motion.variant(), PanelVariant::Snapshot, "a fresh choice");
     }
 }

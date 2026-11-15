@@ -37,6 +37,11 @@ pub fn human(state: Option<&BrowserState>) -> bool {
     })
 }
 
+/// Whether the page is in a private interaction: no picture of it is shown, taken or kept.
+pub fn private(state: Option<&BrowserState>) -> bool {
+    state.is_some_and(|state| state.private_active == Some(true))
+}
+
 /// Who is in control, in words (Aegis "Who is in control").
 pub fn who(state: &BrowserState, bot_name: &str) -> String {
     if state.private_active == Some(true) {
@@ -416,9 +421,24 @@ fn page_dialog(
             cx,
         );
     };
+    let cancel = send(BrowserCommand::Dialog {
+        accept: false,
+        prompt_text: None,
+    });
     div()
         .semantic("browser.dialog", Role::AlertDialog)
         .aria_label("The page asks")
+        // Escape in the dialog (its answer, its buttons) cancels it and keeps the panel, as `right-panel.tsx` kept
+        // Escape for an alertdialog (review F7). The bot's dialog isn't the person's to answer: Escape goes on.
+        .on_action(move |_: &Dismiss, window, cx| {
+            guarded("cancel the page's dialog by key", || {
+                if human {
+                    cancel(window, cx);
+                } else {
+                    cx.propagate();
+                }
+            });
+        })
         .flex()
         .flex_col()
         .gap(r(theme.space.s8))
