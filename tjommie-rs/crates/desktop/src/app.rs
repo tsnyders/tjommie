@@ -42,7 +42,7 @@ pub fn run(identity: Identity, after_crash: bool, instance: Option<Instance>) {
             kit.font_family = TEXT_FAMILY.into();
             kit.mono_font_family = MONO_FAMILY.into();
             shell::set_rem(Zoom::default(), cx);
-            cx.bind_keys(shell::zoom_bindings());
+            cx.bind_keys(crate::keymap::bindings());
             if after_crash {
                 notices::raise(Notice::ClosedUnexpectedly);
             }

@@ -11,29 +11,18 @@ mod sidebar;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, AnyView, App, Context, FocusHandle, InteractiveElement as _, IntoElement,
-    KeyBinding, ParentElement as _, Render, Role, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Subscription, Window, WindowControlArea, actions, div, px, svg,
+    ParentElement as _, Render, Role, SharedString, StatefulInteractiveElement as _, Styled as _,
+    Subscription, Window, WindowControlArea, div, px, svg,
 };
 
 use self::data::ShellData;
 use self::route::Route;
 use crate::guard::guarded;
+use crate::keymap::{ZoomIn, ZoomOut, ZoomReset};
 use crate::semantic::SemanticExt as _;
 use crate::theme::Theme;
 use crate::ui::style::{TypeExt as _, hsla, r, shadows};
 use crate::zoom::Zoom;
-
-actions!(desktop, [ZoomIn, ZoomOut, ZoomReset]);
-
-/// Ctrl+= (or Ctrl++) and Ctrl+- step the zoom, Ctrl+0 resets it. T2.4 moves them into the keymap.
-pub fn zoom_bindings() -> [KeyBinding; 4] {
-    [
-        KeyBinding::new("ctrl-=", ZoomIn, None),
-        KeyBinding::new("ctrl-+", ZoomIn, None),
-        KeyBinding::new("ctrl--", ZoomOut, None),
-        KeyBinding::new("ctrl-0", ZoomReset, None),
-    ]
-}
 
 /// The rem follows the zoom: gpui-kit's root sets the window's rem from its theme's font size every frame.
 pub fn set_rem(zoom: Zoom, cx: &mut App) {
