@@ -279,13 +279,26 @@ describe.skipIf(!windows)("the helpers, under the engines the installer runs the
         $excluded = Start-Process '${join(inside, "Uninstall Tjommie.exe")}' -ArgumentList '-n','87','127.0.0.1' -WindowStyle Hidden -PassThru
         $decoy = Start-Process '${join(outside, "Tjommie.exe")}' -ArgumentList '/c','ping -n 87 127.0.0.1 >nul' -WindowStyle Hidden -PassThru
         $launcher = Start-Process '${join(inside, "launcher.exe")}' -ArgumentList '/c','start /b ping -n 86 127.0.0.1 >nul' -WindowStyle Hidden -PassThru
+        $null = $launcher.Handle
         $started += $app, $daemon, $excluded, $decoy
         $pings = @()
         for ($i = 0; $i -lt 80 -and $pings.Count -lt 1; $i++) { Start-Sleep -Milliseconds 100; $pings = @(Get-CimInstance Win32_Process -Filter "ParentProcessId=$($app.Id)" | Where-Object { $_.Name -eq 'PING.EXE' }) }
         if ($pings.Count -lt 1) { throw 'The stub app never started its children.' }
         Start-Sleep -Milliseconds 800
         $children = @(Get-CimInstance Win32_Process -Filter "ParentProcessId=$($app.Id)" | ForEach-Object { [int]$_.ProcessId })
-        $orphans = @(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'ping -n 86 127' -or ($_.Name -eq 'PING.EXE' -and $_.CommandLine -match '-n 86 127') } | ForEach-Object { [int]$_.ProcessId })
+        # The orphan: the launcher's child, once the launcher is gone. Two things this has to get right, and an earlier version did not. (1) The
+        # launcher must really have exited before the helper runs, or its child is a child of a live process and is stopped with it, which is
+        # not what is being tried. (2) The child is found by its parent's id, and the launcher itself is never in the list: matching on the
+        # command line ('ping -n 86 127') also matched the launcher's own, so a launcher that was slow to exit was counted as an orphan, and
+        # then stopped, because it runs from the folder. No marker on the command line could tell them apart: whatever the child is given is
+        # in the launcher's command line too. The child may take a moment to appear, so it is waited for, with a limit.
+        if (-not $launcher.WaitForExit(20000)) { throw 'The launcher did not exit, so its child would not be an orphan.' }
+        $orphans = @()
+        for ($i = 0; $i -lt 100 -and $orphans.Count -lt 1; $i++) {
+          $orphans = @(Get-CimInstance Win32_Process -Filter "ParentProcessId=$($launcher.Id)" | Where-Object { $_.Name -eq 'PING.EXE' } | ForEach-Object { [int]$_.ProcessId })
+          if ($orphans.Count -lt 1) { Start-Sleep -Milliseconds 100 }
+        }
+        if ($orphans.Count -lt 1) { throw 'The launcher never started its child.' }
         $env:TJOMMIE_HELPER_LOG_DIR = '${logs}'
         $output = & '${engine}' -NoProfile -NonInteractive -ExecutionPolicy Bypass -File '${join(installer, "stop-install-processes.ps1")}' -Folder '${inside}' -ExceptProcessId $excluded.Id 2>&1 | Out-String
         $code = $LASTEXITCODE
@@ -295,7 +308,8 @@ describe.skipIf(!windows)("the helpers, under the engines the installer runs the
           code = $code; output = $output.Trim()
           appAlive = (& $alive $app.Id); daemonAlive = (& $alive $daemon.Id); excludedAlive = (& $alive $excluded.Id); decoyAlive = (& $alive $decoy.Id)
           childrenAlive = @($children | Where-Object { & $alive $_ }).Count; childCount = $children.Count
-          orphansAlive = @($orphans | Where-Object { & $alive $_ }).Count; orphanCount = $orphans.Count
+          orphansAlive = @($orphans | Where-Object { & $alive $_ }).Count; orphanCount = $orphans.Count; launcherId = $launcher.Id; launcherGone = $launcher.HasExited
+          orphanIds = @($orphans)
           appId = $app.Id; excludedId = $excluded.Id
         } | ConvertTo-Json -Compress
       } finally {
@@ -305,7 +319,7 @@ describe.skipIf(!windows)("the helpers, under the engines the installer runs the
     `);
     const run = powershell(driver, [], { ...process.env });
     expect(run.status, `${run.stdout}${run.stderr}`).toBe(0);
-    const result = JSON.parse(run.stdout) as { code: number; output: string; appAlive: boolean; daemonAlive: boolean; excludedAlive: boolean; decoyAlive: boolean; childrenAlive: number; childCount: number; orphansAlive: number; orphanCount: number; appId: number; excludedId: number };
+    const result = JSON.parse(run.stdout) as { code: number; output: string; appAlive: boolean; daemonAlive: boolean; excludedAlive: boolean; decoyAlive: boolean; childrenAlive: number; childCount: number; orphansAlive: number; orphanCount: number; launcherId: number; launcherGone: boolean; orphanIds: number[]; appId: number; excludedId: number };
     expect(result.code, `${label}: ${result.output}`).toBe(0);
     expect(result.appAlive).toBe(false);
     expect(result.daemonAlive).toBe(false); // in the folder, though nothing in the tree started it
@@ -313,7 +327,9 @@ describe.skipIf(!windows)("the helpers, under the engines the installer runs the
     expect(result.childrenAlive).toBe(0); // the daemon in the folder, and the tool it started outside it
     expect(result.excludedAlive).toBe(true); // the caller itself: an uninstaller that runs from inside the folder
     expect(result.decoyAlive).toBe(true); // the same name, another folder
+    expect(result.launcherGone, "the launcher had exited before the helper ran").toBe(true);
     expect(result.orphanCount).toBeGreaterThanOrEqual(1);
+    expect(result.orphanIds, "the launcher is not one of its own orphans").not.toContain(result.launcherId);
     expect(result.orphansAlive).toBe(result.orphanCount); // a child whose parent is gone is nobody's child: left alone
     // The log says what it did: what it ran as, and each process it chose, with the reason.
     const log = readdirSync(logs).filter((file) => file.startsWith("stop-install-processes-"));
