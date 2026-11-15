@@ -168,6 +168,47 @@ pub(super) fn watch_screencast(
     })
 }
 
+/// A protection of the browser that needs a newer WebView2 runtime than this PC may have.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Protection {
+    ScreenCapture,
+    Password,
+    ClientCertificate,
+    Downloads,
+}
+
+/// The interface a protection needs, if the runtime has it. When it does not, that protection is off: this is said in the
+/// log and to the person, never skipped silently (a prompt nobody can see would otherwise hang the page).
+fn present<T>(
+    found: windows::core::Result<T>,
+    protection: Protection,
+    events: &Sender<HostEvent>,
+    bot_id: &str,
+) -> Option<T> {
+    match found {
+        Ok(interface) => Some(interface),
+        Err(error) => {
+            let cannot = match protection {
+                Protection::ScreenCapture => "refuse a page's screen sharing",
+                Protection::Password => "refuse a page's password prompt",
+                Protection::ClientCertificate => "refuse a page's client certificate prompt",
+                Protection::Downloads => "keep downloads in the agent's folder",
+            };
+            log::error!("the WebView2 runtime is too old for {protection:?}: {error}");
+            push(
+                events,
+                HostEvent::Notice {
+                    bot_id: bot_id.to_string(),
+                    message: format!(
+                        "This PC's web component is out of date, so Tjommie's browser cannot {cannot}. Update Microsoft Edge WebView2."
+                    ),
+                },
+            );
+            None
+        }
+    }
+}
+
 /// The app chord a key press is, if any. It runs inside a COM callback, which must never panic: a list that cannot be
 /// borrowed (it is being replaced) leaves the key to the page.
 fn forwarded_hit(
@@ -411,7 +452,12 @@ pub(super) fn watch(
 
         // Prompts nobody could see, because a bot's page is parked or hidden, are cancelled: the screen picker
         // (`getDisplayMedia`), a password dialog and a client-certificate picker. Electron denied them all.
-        if let Ok(webview) = webview.cast::<ICoreWebView2_27>() {
+        if let Some(webview) = present(
+            webview.cast::<ICoreWebView2_27>(),
+            Protection::ScreenCapture,
+            events,
+            bot_id,
+        ) {
             let (events_for_capture, bot) = (events.clone(), bot_id.to_string());
             webview.add_ScreenCaptureStarting(
                 &ScreenCaptureStartingEventHandler::create(Box::new(move |_, args| {
@@ -430,7 +476,12 @@ pub(super) fn watch(
                 &mut token,
             )?;
         }
-        if let Ok(webview) = webview.cast::<ICoreWebView2_10>() {
+        if let Some(webview) = present(
+            webview.cast::<ICoreWebView2_10>(),
+            Protection::Password,
+            events,
+            bot_id,
+        ) {
             let (events_for_password, bot) = (events.clone(), bot_id.to_string());
             webview.add_BasicAuthenticationRequested(
                 &BasicAuthenticationRequestedEventHandler::create(Box::new(move |_, args| {
@@ -451,7 +502,12 @@ pub(super) fn watch(
                 &mut token,
             )?;
         }
-        if let Ok(webview) = webview.cast::<ICoreWebView2_5>() {
+        if let Some(webview) = present(
+            webview.cast::<ICoreWebView2_5>(),
+            Protection::ClientCertificate,
+            events,
+            bot_id,
+        ) {
             let (events_for_certificate, bot) = (events.clone(), bot_id.to_string());
             webview.add_ClientCertificateRequested(
                 &ClientCertificateRequestedEventHandler::create(Box::new(move |_, args| {
@@ -495,7 +551,12 @@ pub(super) fn watch(
         )?;
 
         // Downloads go to the agent's own browser-files folder, up to 100 MB, and the person is told how they ended.
-        if let Ok(webview) = webview.cast::<ICoreWebView2_4>() {
+        if let Some(webview) = present(
+            webview.cast::<ICoreWebView2_4>(),
+            Protection::Downloads,
+            events,
+            bot_id,
+        ) {
             let (events_for_download, bot, home) = (
                 events.clone(),
                 bot_id.to_string(),
@@ -655,6 +716,30 @@ mod tests {
             None,
             "Ctrl+W is not listed"
         );
+    }
+
+    #[test]
+    fn a_protection_the_runtime_lacks_is_said_to_the_person_not_skipped() {
+        let (events, inbox) = async_channel::unbounded();
+        let found: windows::core::Result<()> =
+            Err(windows::Win32::Foundation::E_NOINTERFACE.into());
+        assert!(present(found, Protection::ClientCertificate, &events, "alpha").is_none());
+        match inbox.try_recv() {
+            Ok(HostEvent::Notice { bot_id, message }) => {
+                assert_eq!(bot_id, "alpha");
+                assert!(
+                    message.contains("out of date") && message.contains("client certificate"),
+                    "{message}"
+                );
+            }
+            other => panic!("expected a notice, got {other:?}"),
+        }
+        // One that is there says nothing.
+        assert_eq!(
+            present(Ok(7), Protection::Downloads, &events, "alpha"),
+            Some(7)
+        );
+        assert!(inbox.try_recv().is_err());
     }
 
     #[test]
