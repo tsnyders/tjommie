@@ -604,7 +604,7 @@ describe("release.yml", () => {
   it("has a mutation script that has not gone stale", () => {
     // LF, as the mutations are written: a Windows checkout may have CRLF.
     const text = readFileSync(join(workflowDir, "release.yml"), "utf8").replaceAll("\r\n", "\n");
-    expect(mutations.length).toBeGreaterThanOrEqual(34);
+    expect(mutations.length).toBeGreaterThanOrEqual(37);
     for (const { label, from } of mutations) expect(text.split(from).length - 1, `"${label}": its text is found once in release.yml`).toBe(1);
   });
 
@@ -729,6 +729,35 @@ describe("release.yml", () => {
       expect(build["working-directory"]).toBe("tjommie-rs");
       expect(build.env).toEqual({ TJOMMIE_IDENTITY: "production" });
       expect(build.run).toBe("cargo build --release --locked -p daemon -p desktop");
+    });
+
+    // The provider-fixtures review's F2: the daemon is built under the production identity too, which is what makes the fixtures' compile_error!
+    // fire if they were ever switched on. It is one cargo invocation for both crates, so one environment covers both; nothing else builds a
+    // crate of this repository in a job of this workflow (a second, bare `cargo build -p daemon` would have no identity).
+    it("builds the daemon only in the invocation that sets the production identity, and builds nothing anywhere else", () => {
+      const builders = everyStep().filter(({ step }) => /\bcargo(?:\.exe)?\s+(?:build|install|run|rustc|test|check|clippy|doc)\b/.test(step.run ?? ""));
+      expect(builders.map(({ job, step }) => `${job}: ${step.run}`)).toEqual(["windows: cargo build --release --locked -p daemon -p desktop"]);
+      const [only] = builders;
+      expect(only.step.env?.TJOMMIE_IDENTITY).toBe("production");
+      expect(only.step.run).toContain("-p daemon");
+      expect(only.step.run).toContain("-p desktop");
+      // No identity is set anywhere but there: not at the job, so a step cannot quietly depend on it, and not to anything else.
+      expect(JSON.stringify(jobs.windows.env ?? {})).not.toContain("IDENTITY");
+    });
+
+    // And the finished daemon is looked at, on the raw file, before NSIS: the production-binary check names the very files cargo wrote.
+    it("checks the raw daemon cargo wrote, ahead of the installer, for the test driver and the provider fixtures", () => {
+      const names = windows().map((step) => `${step.name ?? ""}\n${step.run ?? ""}`);
+      const check = names.findIndex((text) => /check-production-binaries\.ps1/.test(text));
+      const nsis = names.findIndex((text) => /choco install nsis/.test(text));
+      const assemble = names.findIndex((text) => /assemble-payload\.ps1/.test(text));
+      expect(check, "the check is there").toBeGreaterThanOrEqual(0);
+      expect(check).toBeLessThan(assemble);
+      expect(check).toBeLessThan(nsis);
+      const step = findStep("windows", /check-production-binaries\.ps1/);
+      expect(step.name).toBe("The production binaries have the update feed, no test driver and no provider fixtures");
+      expect(step.run).toContain("-Daemon tjommie-rs\\target\\release\\tjommie-daemon.exe");
+      expect(step.run).toContain("-Desktop tjommie-rs\\target\\release\\tjommie-desktop.exe");
     });
 
     it("runs its steps in the order that makes each check meaningful", () => {

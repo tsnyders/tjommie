@@ -149,6 +149,68 @@ describe.skipIf(!windows)("the production binary check (the M0 review's N3)", ()
     const missing = powershell("check-production-binaries.ps1", ["-Desktop", join(temp(), "none.exe"), "-Daemon", join(temp(), "none2.exe")]);
     expect(missing.status).not.toBe(0);
   });
+
+  // The provider-fixtures review's F2: a daemon built with the fixtures swaps the real claude and codex for scripted ones, and must never ship.
+  // Its marker is a constant that only that build has (provider_fixtures.rs: BUILD_MARKER).
+  const MARKER = "TJOMMIE-PROVIDER-FIXTURES-BUILD-7f3a9c41";
+
+  it("fails a daemon that carries the provider-fixtures marker, naming it, alongside any other problem", () => {
+    const fixtures = check(filler(FEED), filler(`a daemon ${MARKER} with scripted providers`));
+    expect(fixtures.status).not.toBe(0);
+    expect(fixtures.output).toContain(MARKER);
+    expect(fixtures.output).toMatch(/daemon[\s\S]*provider-fixtures/);
+    const everything = check(filler("a dev build"), filler(`tjommie-ui-${MARKER}`));
+    expect(everything.status).not.toBe(0);
+    for (const reported of ["does not contain the update feed", "test driver", MARKER]) expect(everything.output, reported).toContain(reported);
+    // The marker is looked for in the daemon, wherever it sits among other bytes: first, last, and in a file that is nothing else.
+    for (const daemon of [Buffer.from(MARKER), Buffer.concat([Buffer.from(MARKER), filler("x")]), Buffer.concat([filler("x"), Buffer.from(MARKER)])]) {
+      expect(check(filler(FEED), daemon).status, daemon.length.toString()).not.toBe(0);
+    }
+  });
+
+  describe("shows that its search can find before it trusts an absence", () => {
+    const run = (script: string, folder: string, scratch: string): Run => {
+      const stubs = temp();
+      writeFileSync(join(stubs, "d.exe"), filler(FEED));
+      writeFileSync(join(stubs, "n.exe"), filler("a daemon"));
+      const result = spawnSync(shell, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script, "-Desktop", join(stubs, "d.exe"), "-Daemon", join(stubs, "n.exe")], {
+        encoding: "utf8",
+        windowsHide: true,
+        env: { ...process.env, RUNNER_TEMP: scratch },
+        cwd: folder,
+      });
+      return { status: result.status, output: `${result.stdout}${result.stderr}` };
+    };
+
+    it("plants a file of its own in the job's temp folder, finds every string in it, and takes it away again", () => {
+      const scratch = temp();
+      const result = run(join(installer, "check-production-binaries.ps1"), scratch, scratch);
+      expect(result.status, result.output).toBe(0);
+      expect(readdirSync(scratch), "no planted file is left behind").toEqual([]);
+    });
+
+    it("stops, and says nothing was checked, when the search finds nothing in what it planted", () => {
+      // A copy of the script whose reader returns nothing, so every absence check would pass: the self-test has to stop it before any of them.
+      const original = readFileSync(join(installer, "check-production-binaries.ps1"), "utf8");
+      const broken = original.replace(/return \[Text\.Encoding\]::GetEncoding\(28591\)[^\r\n]*/, "return ''");
+      expect(broken, "the reader was found, and broken").not.toBe(original);
+      const folder = temp();
+      writeFileSync(join(folder, "check-production-binaries.ps1"), broken);
+      const scratch = temp();
+      const result = run(join(folder, "check-production-binaries.ps1"), folder, scratch);
+      expect(result.status).not.toBe(0);
+      expect(result.output).toContain("could not find a string planted");
+      expect(result.output).toContain("Nothing was checked");
+      expect(readdirSync(scratch), "the planted file is removed even when it fails").toEqual([]);
+    });
+
+    it("plants every string it looks for, so the search for each is shown, not only one of them", () => {
+      const text = readFileSync(join(installer, "check-production-binaries.ps1"), "utf8");
+      expect(text).toContain("Assert-SearchFinds @($feed, $driver, $fixturesMarker)");
+      // And it runs before any real binary is read.
+      expect(text.indexOf("Assert-SearchFinds @(")).toBeLessThan(text.indexOf("Read-Binary $Desktop"));
+    });
+  });
 });
 
 describe.skipIf(!windows)("the release manifest", () => {

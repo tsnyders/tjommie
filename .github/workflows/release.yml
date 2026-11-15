@@ -116,8 +116,10 @@ jobs:
         env:
           TJOMMIE_IDENTITY: production
         run: cargo build --release --locked -p daemon -p desktop
-      # The M0 review's N3: a release has the update feed and no test driver. rust-dev.yml checks the opposite for a dev build.
-      - name: The production binaries have the update feed and no test driver
+      # The M0 review's N3: a release has the update feed and no test driver. rust-dev.yml checks the opposite for a dev build. And the
+      # provider-fixtures review's F2: the daemon has no provider-fixtures build marker. This is the raw file cargo just wrote, before NSIS
+      # compresses anything into an installer, and the check first shows that its search can find a string it planted.
+      - name: The production binaries have the update feed, no test driver and no provider fixtures
         shell: pwsh
         run: ./installer/check-production-binaries.ps1 -Desktop tjommie-rs\target\release\tjommie-desktop.exe -Daemon tjommie-rs\target\release\tjommie-daemon.exe
       # The crates that ship must be the version being released. A dry run reports a mismatch as a warning (a branch may not be bumped yet).

@@ -57,6 +57,22 @@ export const mutations: Mutation[] = [
   { label: "the kept NSIS hashes are uploaded on a release too", from: "if: ${{ always() && needs.verify.outputs.dry_run == 'true' }}", to: "if: ${{ always() }}" },
   { label: "the production identity is dropped from the cargo build", from: "          TJOMMIE_IDENTITY: production" + nl + "        run: cargo build", to: "          TJOMMIE_IDENTITY: dev" + nl + "        run: cargo build" },
   { label: "npm run package comes back", from: installNsis, to: "      - run: npm run package" + nl + installNsis },
+  // The provider-fixtures review's F2: the daemon is built under the production identity, and its finished file is checked.
+  {
+    label: "the daemon is built outside the production identity",
+    from: "        run: cargo build --release --locked -p daemon -p desktop",
+    to: "        run: cargo build --release --locked -p desktop" + nl + "      - name: Build the daemon" + nl + "        working-directory: tjommie-rs" + nl + "        run: cargo build --release --locked -p daemon",
+  },
+  {
+    label: "the production-binary check is removed",
+    from: "        run: ./installer/check-production-binaries.ps1 -Desktop tjommie-rs\\target\\release\\tjommie-desktop.exe -Daemon tjommie-rs\\target\\release\\tjommie-daemon.exe",
+    to: "        run: Write-Output 'skipped'",
+  },
+  {
+    label: "the production-binary check looks at a daemon that was not built here",
+    from: "-Desktop tjommie-rs\\target\\release\\tjommie-desktop.exe -Daemon tjommie-rs\\target\\release\\tjommie-daemon.exe" + nl + "      # The crates that ship",
+    to: "-Desktop tjommie-rs\\target\\release\\tjommie-desktop.exe -Daemon tjommie-rs\\target\\debug\\tjommie-daemon.exe" + nl + "      # The crates that ship",
+  },
   // The owner's F2 decision (2026-11-15): a release has to be strictly newer than the latest one.
   { label: "the version guard accepts the same version", from: 'if [[ "$verdict" == equal && -n "$pre" ]]; then verdict=newer; fi', to: 'if [[ "$verdict" == equal ]]; then verdict=newer; fi' },
   {
