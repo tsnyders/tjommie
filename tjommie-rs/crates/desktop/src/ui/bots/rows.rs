@@ -301,7 +301,7 @@ pub fn autonomy(
     let group_id = format!("{id}.levels");
     row(
         id,
-        "shield",
+        "shield-check",
         "Autonomy",
         value,
         true,

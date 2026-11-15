@@ -147,11 +147,11 @@ fn screen(route: &Route, data: &ShellData, window: &mut gpui::Window, cx: &mut A
     let (key, title): (&str, SharedString) = match route {
         Route::Agents => return crate::ui::agents::screen(window, cx),
         Route::Projects => return crate::ui::projects::screen(window, cx),
+        Route::Routines => return crate::ui::routines::screen(window, cx),
         Route::Settings(section) => return crate::ui::settings::screen(*section, window, cx),
         Route::Chat(id) => ("chat", data.name_of(id)),
         Route::Rooms => ("rooms", "Rooms".into()),
         Route::Room(id) => ("room", data.name_of(id)),
-        Route::Routines => ("routines", "Routines".into()),
         Route::NewBot => ("new", "New agent".into()),
         Route::BotSettings(id) => (
             "bot_settings",

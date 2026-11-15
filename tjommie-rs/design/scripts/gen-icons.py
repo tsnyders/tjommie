@@ -8,11 +8,14 @@ cropped to the eyes' box (its viewBox is that box in the 40-unit avatar): a blin
 eyes about their own centre.
 
 Run (the chat screen has most icons and 7 avatars; the avatar card adds the pill; the host switcher adds monitor,
-wifi-off, qr-code and chevron-down; the browser panel card adds log-in, eye-off and smartphone):
+wifi-off, qr-code and chevron-down; the browser panel card adds log-in, eye-off and smartphone; the other Aegis
+files add the screens' icons; lucide-extra.html, last, adds the Lucide icons no Aegis file defines):
   python -I tjommie-rs/design/scripts/gen-icons.py design/claude-design/aegis/screens/desktop-chat.html \
     design/claude-design/aegis/components/bots-avatar.html \
     design/claude-design/aegis/components/navigation-host-switcher.html \
-    design/claude-design/aegis/components/browser-panel.html tjommie-rs/design/icons
+    design/claude-design/aegis/components/browser-panel.html \
+    <every other design/claude-design/aegis/screens/*.html and components/*.html> \
+    tjommie-rs/design/scripts/lucide-extra.html tjommie-rs/design/icons
 The first file to define a symbol wins.
 """
 

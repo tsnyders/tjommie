@@ -97,6 +97,9 @@ pub fn open_room_form(room: Option<Room>, window: &mut Window, cx: &mut App) {
         dialog
             .w(window.rem_size() * 26.25)
             .title(title(heading, cx))
+            // Enter in the name saves (the form's submit): it never closes the form through the dialog's Confirm.
+            // unguarded: returns a constant, nothing in it can panic
+            .on_ok(|_, _, _| false)
             .child(body)
     });
     // The name has the focus (`initialFocus`), after the dialog takes it.
@@ -344,6 +347,44 @@ mod tests {
                 name: None,
                 bot_ids: Some(ids(&["b1", "b3"]))
             }
+        );
+    }
+
+    /// The form's submit: Enter in the name saves (and isn't the dialog's Confirm, which would close it unsaved).
+    #[gpui::test]
+    fn enter_in_the_name_saves_the_room(cx: &mut gpui::TestAppContext) {
+        let rpc = FakeRpc::new().on::<method::RoomsCreate>(|_| {
+            Ok(Room {
+                id: "r9".into(),
+                name: "Launch crew".into(),
+                bot_ids: vec!["b1".into()],
+                everyone: false,
+                created_at: Some("2026-11-15T09:00:00.000Z".into()),
+            })
+        });
+        let (cx, calls) = app(
+            cx,
+            Route::Agents,
+            state(vec![bot("b1", "Forge", BotState::Idle)], vec![], vec![]),
+            rpc,
+        );
+        click(cx, "agents.new_room");
+        click(cx, "room_form.members.b1");
+        click(cx, "room_form.name");
+        cx.simulate_input("Launch crew");
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert!(
+            calls
+                .calls()
+                .iter()
+                .any(|(name, _)| *name == "rooms.create"),
+            "{:?}",
+            calls.calls()
+        );
+        assert_eq!(
+            cx.update(|_, cx| crate::ui::shell::route::current(cx)),
+            Route::Room("r9".into())
         );
     }
 

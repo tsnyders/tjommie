@@ -67,7 +67,7 @@ fn state_pill(bot: &Bot, cx: &App) -> AnyElement {
     let colors = palette(cx);
     let (label, icon): (&str, Option<&str>) = match bot.state {
         BotState::Waiting => ("Waiting for you", None),
-        BotState::Working => (short_state(bot.state), Some("loader")),
+        BotState::Working => (short_state(bot.state), Some("loader-circle")),
         BotState::Paused => (short_state(bot.state), Some("pause")),
         BotState::Limited => (short_state(bot.state), Some("hourglass")),
         BotState::NeedsSetup => (short_state(bot.state), Some("plug")),

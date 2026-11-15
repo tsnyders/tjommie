@@ -496,6 +496,34 @@ mod tests {
     }
 
     #[gpui::test]
+    fn the_rpc_handle_calls_where_request_does(cx: &mut gpui::TestAppContext) {
+        use client::Rpc as _;
+        let none = cx.update(|cx| rpc(cx));
+        let refused = futures::executor::block_on(none.call::<method::BotsPause>(BotsPause {
+            id: "bot-1".into(),
+            paused: true,
+        }));
+        assert!(
+            matches!(&refused, Err(client::RpcError::Closed(reason)) if reason.code == 1006),
+            "{refused:?}"
+        );
+        let calls = cx.update(|cx| {
+            fake(
+                cx,
+                AppState::default(),
+                FakeRpc::new().on::<method::BotsPause>(|_| Ok(forge(true))),
+            )
+        });
+        let handle = cx.update(|cx| rpc(cx));
+        let paused = futures::executor::block_on(handle.call::<method::BotsPause>(BotsPause {
+            id: "bot-1".into(),
+            paused: true,
+        }));
+        assert_eq!(paused.map(|bot| bot.paused), Ok(true));
+        assert_eq!(calls.calls()[0].0, "bots.pause");
+    }
+
+    #[gpui::test]
     fn a_conversation_loads_its_newest_page_once(cx: &mut gpui::TestAppContext) {
         let rpc = cx.update(|cx| {
             fake(

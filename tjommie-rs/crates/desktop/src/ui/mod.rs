@@ -7,6 +7,7 @@ pub mod fields;
 pub mod primitives;
 pub mod projects;
 pub mod rooms;
+pub mod routines;
 pub mod settings;
 pub mod shell;
 pub mod store;
