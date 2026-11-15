@@ -12,7 +12,9 @@ param(
     [Parameter(Mandatory)][ValidateSet('true', 'false')][string]$DryRun,
     [string]$Rustc = '',
     [string]$Nsis = '',
-    [string]$VersionCheck = 'passed'
+    [string]$VersionCheck = 'passed',
+    # What check-tool-hashes.ps1 saw of NSIS (its -Observed file): recorded here so the manifest says which compiler built the installer.
+    [string]$ToolHashes = ''
 )
 
 Set-StrictMode -Version Latest
@@ -52,6 +54,10 @@ $manifest = [ordered]@{
     binaries  = [ordered]@{ desktop = $desktopFacts; daemon = $daemonFacts }
     payload   = $payload
     checks    = [ordered]@{ productionBinaries = 'passed'; installerMatchesLatestYml = 'passed'; crateVersions = $VersionCheck }
+}
+if ($ToolHashes) {
+    if (-not (Test-Path -LiteralPath $ToolHashes -PathType Leaf)) { throw "Missing: $ToolHashes" }
+    $manifest['tools'] = [ordered]@{ nsis = (Get-Content -LiteralPath $ToolHashes -Raw | ConvertFrom-Json) }
 }
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent ([IO.Path]::GetFullPath($Out))) | Out-Null
 ($manifest | ConvertTo-Json -Depth 8) | Set-Content -LiteralPath $Out -Encoding UTF8

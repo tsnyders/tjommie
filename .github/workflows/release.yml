@@ -10,6 +10,8 @@ name: Release
 #     release-manifest.json as workflow ARTIFACTS ONLY (release-dryrun-windows). It never creates a release, never pushes a tag, never touches a
 #     latest.yml on any release, and skips the Android build (its signing secrets are for a real release). Start one with
 #     `gh workflow run release.yml --ref <branch>` (workflow_dispatch), or by pushing a branch named release-dryrun-<anything>.
+#     That artifact is FOR INSPECTION ONLY: it is a production-identity installer on a public repository, so never install one. (It is
+#     not on any update feed, and release-manifest.json says dryRun: true, published: false.)
 #     scripts/release-mode.ts decides which it is, from the event and the ref, and defaults to a dry run; scripts/release-workflow.test.ts
 #     proves no step outside the publish job can create a release.
 
@@ -143,6 +145,17 @@ jobs:
           ./installer/assemble-payload.ps1 -OutDir "$env:RUNNER_TEMP\payload" -ManifestPath "$env:RUNNER_TEMP\payload-manifest.json" -Desktop tjommie-rs\target\release\tjommie-desktop.exe -Daemon tjommie-rs\target\release\tjommie-daemon.exe -SpeechDir .cache\speech-runtime @more
       - name: Install NSIS
         run: choco install nsis --version=3.11 --no-progress -y
+      # NSIS is fetched by version only, and its compiler, stubs and plugins end up in the installer R1 installs, so what Chocolatey put there
+      # is checked against the SHA-256 values recorded in installer/tool-hashes.json. A mismatch fails the build. A release is not built
+      # until the values are recorded; a dry run records what it saw in its artifact. (pdfium.dll gets the same check, with
+      # `-Tool pdfium -Path <the file>`, when the Chat lane adds its source in T4.4.)
+      - name: The NSIS compiler is the one that was recorded
+        shell: pwsh
+        run: |
+          $more = @{}
+          if ($env:DRY_RUN -ne 'true') { $more['Release'] = $true }
+          New-Item -ItemType Directory -Force -Path dist-desktop | Out-Null
+          ./installer/check-tool-hashes.ps1 -Tool nsis -Path "${env:ProgramFiles(x86)}\NSIS" -Observed dist-desktop\tool-hashes-nsis.json @more
       - name: Build the installer
         shell: pwsh
         run: |
@@ -166,7 +179,7 @@ jobs:
           $rustc = (& rustc --version | Out-String).Trim()
           Pop-Location
           $root = $env:GITHUB_WORKSPACE
-          ./installer/write-release-manifest.ps1 -Version $env:VERSION -Installer "$root\dist-desktop\installer\Tjommie-Setup-$env:VERSION.exe" -LatestYml "$root\dist-desktop\installer\latest.yml" -PayloadManifest "$env:RUNNER_TEMP\payload-manifest.json" -Desktop "$root\tjommie-rs\target\release\tjommie-desktop.exe" -Daemon "$root\tjommie-rs\target\release\tjommie-daemon.exe" -Out "$root\dist-desktop\release-manifest.json" -DryRun $env:DRY_RUN -Rustc $rustc -Nsis $nsis -VersionCheck $env:CRATE_VERSIONS
+          ./installer/write-release-manifest.ps1 -Version $env:VERSION -Installer "$root\dist-desktop\installer\Tjommie-Setup-$env:VERSION.exe" -LatestYml "$root\dist-desktop\installer\latest.yml" -PayloadManifest "$env:RUNNER_TEMP\payload-manifest.json" -Desktop "$root\tjommie-rs\target\release\tjommie-desktop.exe" -Daemon "$root\tjommie-rs\target\release\tjommie-daemon.exe" -Out "$root\dist-desktop\release-manifest.json" -DryRun $env:DRY_RUN -Rustc $rustc -Nsis $nsis -VersionCheck $env:CRATE_VERSIONS -ToolHashes "$root\dist-desktop\tool-hashes-nsis.json"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ needs.verify.outputs.dry_run == 'false' }}
         with:
@@ -184,7 +197,17 @@ jobs:
             dist-desktop/installer/Tjommie-Setup-*.exe
             dist-desktop/installer/latest.yml
             dist-desktop/release-manifest.json
+            dist-desktop/tool-hashes-nsis.json
           if-no-files-found: error
+          retention-days: 14
+      # What the NSIS check saw, kept even when it failed (the build stops there, before the upload above): a person reviewing a difference,
+      # or recording the values the first time, needs what the runner really has.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ always() && needs.verify.outputs.dry_run == 'true' }}
+        with:
+          name: release-dryrun-tool-hashes
+          path: dist-desktop/tool-hashes-nsis.json
+          if-no-files-found: ignore
           retention-days: 14
 
   # The Android APK is signed with the release keystore (repository secrets), so a dry run does not build it.
