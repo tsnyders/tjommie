@@ -17,6 +17,10 @@
 //!    `Tjommie daemon: provider fixtures ON (<folder>): no real provider will be started.` (Fixture contents are never
 //!    logged.)
 //!
+//! A build **without** the feature refuses to start when the variable is set at all, empty included (a build with the
+//! feature refuses an empty value too, so every build answers the same way: exit code 1, and the value is never echoed):
+//! ignoring it would run the real Claude and Codex in a run that meant to replay recorded conversations.
+//!
 //! A desktop run uses `TJOMMIE_DAEMON_EXE` to name the feature build's exe, and the variable rides in with the rest of
 //! the environment (only `TJOMMIE_SKIP_*` is stripped).
 //!
@@ -43,7 +47,9 @@
 //! its init and result lines, including the acceptance fixture's nonce reply.
 //!
 //! `tjommie-daemon accept-worker` (which starts the real provider CLIs to prove the worker accounts) refuses to run while
-//! the variable is set, in every build. The other subcommands start no provider.
+//! the variable is set, empty included, in every build. The refusal is in the library function that does the work
+//! (`win::acceptance::accept_worker_in`), so any caller is covered, and `main.rs` asks first so that it prints nothing.
+//! The other subcommands start no provider.
 //!
 //! # Where files go and what they are called
 //!
@@ -771,10 +777,19 @@ impl ProviderSession for FixtureSession {
         done()
     }
 
-    /// Takes the next turn of the agent's file now, and plays it. Like a session whose process has gone, a session
-    /// that isn't running does nothing.
+    /// Takes the next turn of the agent's file now, and plays it. A session that was never started is an error (the
+    /// message is not dropped silently, which would leave the caller waiting for a turn that never ends, and it uses up no
+    /// turn). Like a session whose process has gone, a session that was closed does nothing.
     fn send(&self, text: &str) -> BoxFuture<'static, Result<(), ProviderError>> {
         let mut state = lock(&self.0.state);
+        if !state.started {
+            return Box::pin(async {
+                Err(ProviderError::Failed(
+                    "Provider fixtures: the session was not started, so the message was not sent."
+                        .into(),
+                ))
+            });
+        }
         if let Some(queue) = &state.queue {
             let planned = Planned {
                 turn: self.0.fixtures.next_turn(&self.0.agent, text),

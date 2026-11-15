@@ -18,8 +18,8 @@ use daemon::provider_fixtures::{
     ENV_VAR, FixtureHost, Fixtures, file_stem, fixture_session_factory,
 };
 use daemon::providers::{
-    Approval, ApprovalAnswer, Limit, LimitState, LimitWindow, ProviderEvent, ProviderSession,
-    StartOptions, TokenUsage, TurnResult, Usage,
+    Approval, ApprovalAnswer, Limit, LimitState, LimitWindow, ProviderError, ProviderEvent,
+    ProviderSession, StartOptions, TokenUsage, TurnResult, Usage,
 };
 use daemon::setup::{Account, Setup};
 use protocol::model::{
@@ -501,6 +501,36 @@ async fn closing_ends_the_session_and_nothing_plays_after_it() {
     assert_eq!(session.pid(), None);
     // Closing twice is harmless.
     session.close();
+}
+
+#[tokio::test]
+async fn sending_to_a_session_that_was_never_started_is_an_error_and_uses_no_turn() {
+    let folder = Folder::new();
+    folder.write(
+        "default.json",
+        &json!({ "version": 1, "turns": [ { "events": [ { "type": "text", "delta": "first" } ] } ] }),
+    );
+    let session =
+        fixture_session_factory(folder.fixtures.clone())(&bot("Ada"), options(None)).unwrap();
+    let mut events = session.subscribe();
+
+    // Not a silent drop that leaves the caller waiting for a turn that never ends.
+    let error = session
+        .send("hello")
+        .await
+        .expect_err("a session that was never started can't take a message");
+    assert_eq!(
+        error,
+        ProviderError::Failed(
+            "Provider fixtures: the session was not started, so the message was not sent.".into()
+        )
+    );
+    quiet(&mut events).await;
+
+    // The refused message used up no turn: once the session is started, its first message plays the first turn.
+    session.start().await.unwrap();
+    session.send("hello").await.unwrap();
+    assert_eq!(turn(&mut events).await[1], text("first"));
 }
 
 #[tokio::test]

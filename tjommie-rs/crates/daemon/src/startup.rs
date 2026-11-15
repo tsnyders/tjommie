@@ -329,29 +329,31 @@ use crate::provider_fixtures::Fixtures;
 enum Fixtures {}
 
 /// `accept-worker` starts the real Claude and Codex to prove the worker accounts, so it must not run while
-/// `TJOMMIE_PROVIDER_FIXTURES` is set: a run that is meant to start no provider must never be what starts one. Any build
-/// refuses, whether or not it has the `provider-fixtures` feature, and never says what the variable held.
+/// `TJOMMIE_PROVIDER_FIXTURES` is set, empty included: a run that is meant to start no provider must never be what starts
+/// one. Any build refuses, whether or not it has the `provider-fixtures` feature, and never says what the variable held.
+/// `win::acceptance::accept_worker_in` calls this, so the library function is covered, not only `main.rs`.
 pub fn refuse_accept_worker_with_fixtures(
     value: Option<std::ffi::OsString>,
 ) -> Result<(), StartupError> {
     match value {
-        Some(value) if !value.is_empty() => Err(plain(
+        Some(_) => Err(plain(
             "TJOMMIE_PROVIDER_FIXTURES is set, and accept-worker starts the real Claude and Codex. Unset it first.",
         )),
-        _ => Ok(()),
+        None => Ok(()),
     }
 }
 
-/// A daemon without the `provider-fixtures` feature can't play fixtures. If `TJOMMIE_PROVIDER_FIXTURES` is set anyway
-/// (not empty), starting would run the real Claude and Codex, with real accounts and paid turns, in a run that was meant
-/// to replay recorded conversations. So it refuses, and never says what the variable held.
+/// A daemon without the `provider-fixtures` feature can't play fixtures. If `TJOMMIE_PROVIDER_FIXTURES` is set anyway,
+/// starting would run the real Claude and Codex, with real accounts and paid turns, in a run that was meant to replay
+/// recorded conversations. So it refuses, and never says what the variable held. Set means set: an empty value is
+/// refused too, as a build with the feature refuses it, so every build answers the same way (exit code 1, no echo).
 #[cfg(not(feature = "provider-fixtures"))]
 fn refuse_unbuilt_fixtures(value: Option<std::ffi::OsString>) -> Result<(), StartupError> {
     match value {
-        Some(value) if !value.is_empty() => Err(plain(
+        Some(_) => Err(plain(
             "TJOMMIE_PROVIDER_FIXTURES is set, but this daemon was built without the provider-fixtures feature, so it would use the real Claude and Codex. Unset it, or build the daemon with --features provider-fixtures (tests only).",
         )),
-        _ => Ok(()),
+        None => Ok(()),
     }
 }
 

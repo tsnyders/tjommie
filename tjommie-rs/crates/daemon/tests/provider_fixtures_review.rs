@@ -4,6 +4,11 @@
 //! them (`Fixtures::review_options_hook` over the real account resolver and the fixture host), with an API-key account
 //! configured in this test's own temporary data root and a fake key held in memory. No real credential, no Credential
 //! Manager, no CLI and no network is touched.
+//!
+//! **The reason string is the oracle.** The review's `reason` must be exactly the refusal's text. The host's launch counter
+//! is NOT: the reviewer's CLI is the placeholder, which is no path, so without the refusal the review would still stop at
+//! that placeholder before it asked the host for anything, and the counter would stay 0. The second test below shows
+//! exactly that, so nobody "simplifies" the first down to the counter.
 #![cfg(feature = "provider-fixtures")]
 
 mod common;
@@ -17,10 +22,12 @@ use daemon::account_quota::now_ms;
 use daemon::account_runtime::{AccountRuntime, AccountRuntimeOptions, CredentialStore};
 use daemon::accounts_store::{AccountInput, create_account};
 use daemon::bots::{create_bot, update_bot};
-use daemon::cli::BoxFuture;
+use daemon::cli::{BoxFuture, CliHost};
 use daemon::context::Db;
 use daemon::project_checks::{CheckError, CheckRuntime, HostCheckRuntime};
-use daemon::project_review::{ReviewContext, ReviewInstructions, ReviewRuntime, ReviewSnapshot};
+use daemon::project_review::{
+    ReviewContext, ReviewInstructions, ReviewResult, ReviewRuntime, ReviewSnapshot,
+};
 use daemon::project_review_account::review_account_resolver;
 use daemon::project_review_runtime::{ProjectReviewOptions, create_project_review_runtime};
 use daemon::provider_fixtures::{Fixtures, REVIEW_REFUSED};
@@ -77,8 +84,18 @@ fn snapshot() -> ReviewSnapshot {
     )
 }
 
-#[tokio::test]
-async fn a_review_in_fixtures_mode_is_refused_before_any_account_credential_or_launch() {
+/// An API-key account, which is what a real review needs, its key in memory, a bot pinned to it, and fixtures.
+struct Scene {
+    root: tempfile::TempDir,
+    fixtures: Fixtures,
+    keys: Arc<Keys>,
+    db: Db,
+    accounts: AccountRuntime,
+    server: Server,
+    context: ReviewContext,
+}
+
+async fn scene() -> Scene {
     let root = tempfile::tempdir().unwrap();
     let (accounts_dir, bots_dir) = (root.path().join("accounts"), root.path().join("bots"));
     std::fs::create_dir_all(&bots_dir).unwrap();
@@ -86,7 +103,6 @@ async fn a_review_in_fixtures_mode_is_refused_before_any_account_credential_or_l
     std::fs::create_dir_all(&fixtures_dir).unwrap();
     let fixtures = Fixtures::open(&fixtures_dir).unwrap();
 
-    // An API-key account, which is what a real review needs, with its key held in memory.
     let connection = common::test_db(root.path());
     common::no_cli_setup()
         .ensure_accounts(&connection, &accounts_dir, root.path())
@@ -164,28 +180,8 @@ async fn a_review_in_fixtures_mode_is_refused_before_any_account_credential_or_l
     })
     .await
     .unwrap();
-    // Reading is allowed from here on: the setup above wrote and checked the key, and the review must not read it.
+    // The setup above wrote and checked the key. From here on, any read is the review's.
     keys.reads.store(0, Ordering::SeqCst);
-
-    // The review runtime, as `m5::install` makes it in a fixtures daemon: the real resolver over these accounts, the
-    // fixture host, and the options adjusted by the fixtures' hook.
-    let options = ProjectReviewOptions {
-        root: root.path().join("data").join("reviewer"),
-        resolve: review_account_resolver(db.clone(), accounts.clone(), server.broadcaster()),
-        host: fixtures.host(),
-        worker: None,
-        cli: None,
-        machine_policy_hash: None,
-    };
-    let options = (fixtures.review_options_hook())(options);
-    assert!(options.worker.is_none(), "no worker can launch a reviewer");
-    let command = options.cli.as_ref().and_then(|find| find());
-    assert!(
-        command.is_some_and(|command| !Path::new(&command.file).exists()),
-        "the reviewer's CLI is the placeholder, no path"
-    );
-    let runtime = create_project_review_runtime(options).unwrap();
-
     let context = ReviewContext {
         bot_id: bot.id,
         project_id: "project".into(),
@@ -203,38 +199,120 @@ async fn a_review_in_fixtures_mode_is_refused_before_any_account_credential_or_l
             acceptance: Vec::new(),
         },
     };
-    let result = runtime
-        .review(&snapshot(), &CancellationToken::new(), &context)
-        .await
-        .expect("a refused review is a result, not a failed call");
+    Scene {
+        root,
+        fixtures,
+        keys,
+        db,
+        accounts,
+        server,
+        context,
+    }
+}
 
+impl Scene {
+    /// The review options before any hook: the real resolver over these accounts and the fixture host.
+    fn options(&self) -> ProjectReviewOptions {
+        ProjectReviewOptions {
+            root: self.root.path().join("data").join("reviewer"),
+            resolve: review_account_resolver(
+                self.db.clone(),
+                self.accounts.clone(),
+                self.server.broadcaster(),
+            ),
+            host: self.fixtures.host(),
+            worker: None,
+            cli: None,
+            machine_policy_hash: None,
+        }
+    }
+
+    async fn review(&self, options: ProjectReviewOptions) -> ReviewResult {
+        create_project_review_runtime(options)
+            .unwrap()
+            .review(&snapshot(), &CancellationToken::new(), &self.context)
+            .await
+            .expect("a review that can't run is a result, not a failed call")
+    }
+}
+
+#[tokio::test]
+async fn a_review_in_fixtures_mode_is_refused_before_any_account_credential_or_launch() {
+    let scene = scene().await;
+
+    // The review runtime, as `m5::install` makes it in a fixtures daemon: the options adjusted by the fixtures' hook.
+    let options = (scene.fixtures.review_options_hook())(scene.options());
+    assert!(options.worker.is_none(), "no worker can launch a reviewer");
+    let command = options.cli.as_ref().and_then(|find| find());
+    assert!(
+        command.is_some_and(|command| !Path::new(&command.file).exists()),
+        "the reviewer's CLI is the placeholder, no path"
+    );
+    let result = scene.review(options).await;
+
+    // THE ORACLE: the exact reason. Take the refusal out and the review reads the key and fails for another reason.
     assert_eq!(result.state, EvaluationState::Unavailable);
     assert_eq!(
         result.reason.as_deref(),
         Some(format!("review_isolation_unavailable: {REVIEW_REFUSED}").as_str())
     );
     assert!(result.findings.is_empty() && result.coverage.is_none());
-    // Nothing was asked of the host, the credential store or the account, and nothing was left behind.
+    // The rest says it was refused first: no credential read and no lease, and nothing left behind. The launch counter
+    // is only a backstop (see the module docs): it is 0 with or without the refusal.
     assert_eq!(
-        fixtures.host().launch_attempts(),
-        0,
-        "refused before any launch was attempted"
-    );
-    assert_eq!(
-        keys.reads.load(Ordering::SeqCst),
+        scene.keys.reads.load(Ordering::SeqCst),
         0,
         "the key was never read"
     );
-    assert!(!accounts.in_use("review-api"), "no account was leased");
     assert!(
-        !root.path().join("data/reviewer/receipts").exists()
-            && !root.path().join("data/reviewer/evaluations").exists()
+        !scene.accounts.in_use("review-api"),
+        "no account was leased"
+    );
+    assert_eq!(scene.fixtures.host().launch_attempts(), 0);
+    assert!(
+        !scene.root.path().join("data/reviewer/receipts").exists()
+            && !scene.root.path().join("data/reviewer/evaluations").exists()
     );
     assert!(
         !format!("{result:?}").contains(FAKE_KEY),
         "the key is nowhere in the result"
     );
-    server.close().await;
+    scene.server.close().await;
+}
+
+#[tokio::test]
+async fn without_the_refusal_the_review_reads_the_key_and_the_launch_counter_still_reads_zero() {
+    // The control for the oracle above. Everything but the refusing resolver: the real resolver, the fixture host, no
+    // worker and the placeholder CLI (never a lookup on PATH). The review goes on to the account and its key, then stops
+    // at the placeholder, which can't be opened as a file, before it asks the host to launch anything.
+    let scene = scene().await;
+    let host = scene.fixtures.host();
+    let placeholder = host.clone();
+    let options = ProjectReviewOptions {
+        host: host.clone(),
+        worker: None,
+        cli: Some(Arc::new(move || placeholder.find_cli(Provider::Claude))),
+        ..scene.options()
+    };
+    let result = scene.review(options).await;
+
+    assert_eq!(result.state, EvaluationState::Unavailable);
+    let reason = result.reason.unwrap();
+    assert_ne!(
+        reason,
+        format!("review_isolation_unavailable: {REVIEW_REFUSED}"),
+        "this review was not refused"
+    );
+    assert!(
+        scene.keys.reads.load(Ordering::SeqCst) > 0,
+        "it read the key"
+    );
+    assert_eq!(
+        host.launch_attempts(),
+        0,
+        "and still nothing was launched, so the counter can't tell a refused review from one that was not"
+    );
+    scene.server.close().await;
 }
 
 #[tokio::test]

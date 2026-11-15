@@ -1,7 +1,8 @@
-//! A daemon built WITHOUT the `provider-fixtures` feature must refuse to start when `TJOMMIE_PROVIDER_FIXTURES` is set.
-//! Ignoring it would be the one dangerous outcome of the switch: an end-to-end run that believes it is replaying
-//! recorded conversations would start the real Claude and Codex, with real accounts and paid turns. This file is
-//! compiled and run only without the feature (the feature build's own handling is in `provider_fixtures_startup.rs`).
+//! A daemon built WITHOUT the `provider-fixtures` feature must refuse to start when `TJOMMIE_PROVIDER_FIXTURES` is set,
+//! empty included: a build with the feature refuses an empty value too, so every build answers the same way. Ignoring it
+//! would be the one dangerous outcome of the switch: an end-to-end run that believes it is replaying recorded
+//! conversations would start the real Claude and Codex, with real accounts and paid turns. This file is compiled and run
+//! only without the feature (the feature build's own handling is in `provider_fixtures_startup.rs`).
 #![cfg(not(feature = "provider-fixtures"))]
 
 mod common;
@@ -31,13 +32,14 @@ async fn refuses_to_start_when_the_variable_is_set_and_the_feature_is_not_built(
         .join("no-such-folder-5d27c1")
         .to_string_lossy()
         .into_owned();
-    // Whatever it names, a good folder, a bad one or a path that is not even absolute, and a blank that is still
-    // something.
+    // Whatever it holds: a good folder, a bad one, a path that is not even absolute, a blank, or nothing at all (set
+    // but empty, which the feature build refuses as well).
     for value in [
         existing,
         missing,
         "relative-folder-5d27c1".to_owned(),
         " ".to_owned(),
+        String::new(),
     ] {
         let root = TempRoot::new();
         let home = root.0.clone();
@@ -58,27 +60,22 @@ async fn refuses_to_start_when_the_variable_is_set_and_the_feature_is_not_built(
 }
 
 #[tokio::test]
-async fn an_empty_or_unset_variable_changes_nothing() {
+async fn an_unset_variable_changes_nothing() {
     // PATH is an empty folder, so even a daemon that went wrong could find no provider to start.
     let nowhere = TempRoot::new();
     let path = nowhere.0.to_string_lossy().into_owned();
-    for variable in [Some(""), None] {
-        let root = TempRoot::new();
-        let home = root.0.clone();
-        let mut env = vec![("PATH", path.as_str())];
-        env.extend(variable.map(|value| (VARIABLE, value)));
-        let daemon = launch(&["--dev"], root, &env);
-        let port = daemon.ready().await;
-        assert!(
-            !daemon.stderr().contains(REFUSAL)
-                && !daemon.stderr_raw().contains("provider fixtures"),
-            "{variable:?}: {}",
-            daemon.stderr_raw()
-        );
-        let mut client = connect(port).await;
-        client.hello(&token(&home)).await;
-        let listed = client.call(1, "bots.list", json!({})).await;
-        assert_eq!(listed["ok"], true, "{variable:?}: {listed}");
-        client.close().await;
-    }
+    let root = TempRoot::new();
+    let home = root.0.clone();
+    let daemon = launch(&["--dev"], root, &[("PATH", path.as_str())]);
+    let port = daemon.ready().await;
+    assert!(
+        !daemon.stderr().contains(REFUSAL) && !daemon.stderr_raw().contains("provider fixtures"),
+        "{}",
+        daemon.stderr_raw()
+    );
+    let mut client = connect(port).await;
+    client.hello(&token(&home)).await;
+    let listed = client.call(1, "bots.list", json!({})).await;
+    assert_eq!(listed["ok"], true, "{listed}");
+    client.close().await;
 }
