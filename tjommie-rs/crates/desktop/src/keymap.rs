@@ -114,6 +114,21 @@ pub fn bindings() -> Vec<KeyBinding> {
     bindings
 }
 
+/// Tab and Shift+Tab leave a text field (T5.6). gpui-kit's multi-line field takes them for indenting, which traps the
+/// keyboard in it; these run gpui-kit's own focus moves (`root::Tab`, `root::TabPrev`, which keep the focus inside an
+/// open dialog) at the field's depth. Bind them after `gpui_kit::init` and before `bindings()`: at the same depth the
+/// later binding wins, so they beat the indent, and an open mention list's Tab (`Mentions > Input`) beats them.
+pub fn field_tab(cx: &gpui::App) -> Vec<KeyBinding> {
+    [("tab", "root::Tab"), ("shift-tab", "root::TabPrev")]
+        .into_iter()
+        .filter_map(|(keys, name)| {
+            let action = cx.build_action(name, None).ok()?;
+            let field = gpui::KeyBindingContextPredicate::parse("Input").ok()?;
+            KeyBinding::load(keys, action, Some(std::rc::Rc::new(field)), false, None, cx).ok()
+        })
+        .collect()
+}
+
 /// The bindings that work wherever the focus is in the app's window (`Dismiss` stands aside inside an open overlay, and
 /// both panel keys in a Logins window).
 pub fn app_wide() -> Vec<KeyBinding> {

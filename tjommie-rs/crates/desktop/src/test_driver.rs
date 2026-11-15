@@ -154,6 +154,9 @@ pub struct UiNode {
     /// A switch that is on, a pressed toggle button, a checked radio (AccessKit's toggled state).
     #[serde(default)]
     pub toggled: bool,
+    /// A control, by its role: the keyboard must reach it (T5.6, `e2e_keyboard_navigation`).
+    #[serde(default)]
+    pub interactive: bool,
     /// In window coordinates, logical px.
     pub bounds: UiBounds,
 }
@@ -442,6 +445,20 @@ impl<E: Element> Element for Observed<E> {
             enabled: !node.is_disabled(),
             selected: node.is_selected().unwrap_or(false),
             toggled: matches!(node.toggled(), Some(gpui::Toggled::True)),
+            interactive: matches!(
+                role,
+                Some(
+                    gpui::Role::Button
+                        | gpui::Role::Link
+                        | gpui::Role::TextInput
+                        | gpui::Role::ComboBox
+                        | gpui::Role::Switch
+                        | gpui::Role::RadioButton
+                        | gpui::Role::Tab
+                        | gpui::Role::MenuItem
+                        | gpui::Role::MenuItemRadio
+                )
+            ),
             focused: self
                 .focus
                 .as_ref()

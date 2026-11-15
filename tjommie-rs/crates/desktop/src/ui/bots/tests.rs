@@ -264,3 +264,17 @@ fn an_unknown_agent_has_no_settings_and_goes_home(cx: &mut TestAppContext) {
     draw(cx);
     assert_eq!(cx.update(|_, cx| route::current(cx)), Route::Agents);
 }
+
+/// T5.6: Tab leaves a multi-line field (gpui-kit's would indent, trapping the keyboard), and Shift+Tab comes back.
+#[gpui::test]
+fn tab_leaves_the_instructions_and_shift_tab_comes_back(cx: &mut TestAppContext) {
+    let (cx, _) = app(cx, Route::NewBot, state(vec![], vec![], vec![]), FakeRpc::new());
+    click(cx, "bot_form.instructions");
+    assert!(node("bot_form.instructions").unwrap().focused);
+    cx.simulate_keystrokes("tab");
+    draw(cx);
+    assert!(!node("bot_form.instructions").unwrap().focused, "Tab moved on");
+    cx.simulate_keystrokes("shift-tab");
+    draw(cx);
+    assert!(node("bot_form.instructions").unwrap().focused, "Shift+Tab came back");
+}

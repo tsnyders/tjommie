@@ -50,6 +50,7 @@ fn window_with(
     use gpui::AppContext as _;
     cx.update(|cx| {
         gpui_kit::init(cx);
+        cx.bind_keys(crate::keymap::field_tab(cx));
         cx.bind_keys(crate::keymap::bindings());
         cx.set_global(crate::theme::Theme::aegis().unwrap());
     });

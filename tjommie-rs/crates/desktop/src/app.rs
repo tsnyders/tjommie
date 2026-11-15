@@ -48,6 +48,7 @@ pub fn run(identity: Identity, root: PathBuf, after_crash: bool, instance: Optio
             kit.font_family = TEXT_FAMILY.into();
             kit.mono_font_family = MONO_FAMILY.into();
             shell::set_rem(Zoom::default(), cx);
+            cx.bind_keys(crate::keymap::field_tab(cx));
             cx.bind_keys(crate::keymap::bindings());
             // The daemon and the connection (M5): until it's ready the shell says "Starting Tjommie".
             crate::live::start(identity, root.clone(), cx);

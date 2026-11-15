@@ -1,21 +1,25 @@
 //! The Aegis menu (overlays.html `.menu`): a raised card of rows beside its trigger, on gpui-kit's popover. It raises
 //! the browser shield while open; Escape closes it at once. Selecting a row runs its handler (guarded here) and closes
-//! the menu. Arrow-key movement between rows comes with full keyboard navigation (T5.6).
+//! the menu. From the keyboard (T5.6): the first row takes the focus when the menu opens, the arrows move between rows,
+//! and Enter or Space chooses one, as a click does.
 
 use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    Anchor, AnyElement, App, ElementId, Entity, InteractiveElement as _, IntoElement,
-    ParentElement as _, Pixels, RenderOnce, Role, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Toggled, Window, div, px, svg,
+    Anchor, AnyElement, App, ElementId, Entity, FocusHandle,
+    InteractiveElement as _, IntoElement, ParentElement as _, Pixels, RenderOnce, Role,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Toggled, Window, div, px, svg,
 };
 use gpui_kit::base::{Popover, PopoverState};
 
+use super::button::pressable;
+use super::focus_handle;
 use super::shield::{BrowserShield, ShieldGuard};
 use crate::guard::guarded;
 use crate::semantic::SemanticExt as _;
-use crate::ui::style::{TypeExt as _, hsla, palette, r, shadows, theme};
+use crate::ui::fields::arrows;
+use crate::ui::style::{TypeExt as _, focus_ring, focus_visible, hsla, palette, r, shadows, theme};
 
 type Trigger = Box<dyn FnOnce(bool, &Window, &App) -> AnyElement>;
 type Handler = Rc<dyn Fn(&mut Window, &mut App)>;
@@ -143,7 +147,20 @@ impl RenderOnce for Menu {
         // The guard outlives this render: it lives in the element's state while the menu is open.
         let shield = window.use_keyed_state(self.id.clone(), cx, |_, _| None::<ShieldGuard>);
         let entries = self.entries;
-        Popover::new(self.id)
+        // Each row's focus, made here so the popover can give the first row the keyboard as it opens.
+        let focuses: Vec<Option<FocusHandle>> = entries
+            .iter()
+            .map(|entry| match entry {
+                Entry::Item(item) => Some(focus_handle(&item.id, window, cx)),
+                Entry::Rule | Entry::Note(_) => None,
+            })
+            .collect();
+        let popover = Popover::new(self.id);
+        let popover = match focuses.iter().flatten().next() {
+            Some(first) => popover.track_focus(first),
+            None => popover,
+        };
+        popover
             .anchor(self.anchor)
             .offset(self.offset)
             .trigger_with(self.trigger)
@@ -155,11 +172,20 @@ impl RenderOnce for Menu {
                     });
                 });
             })
-            .content(move |_, _, cx| {
+            .content(move |_, window, cx| {
                 let popover = cx.entity();
+                let list = window
+                    .use_keyed_state("menu.rows", cx, |_, cx| cx.focus_handle())
+                    .read(cx)
+                    .clone();
+                let rows: Vec<AnyElement> = entries
+                    .into_iter()
+                    .zip(focuses)
+                    .map(|(entry, focus)| entry_row(entry, focus, &popover, window, cx))
+                    .collect();
                 let theme = theme(cx);
                 let colors = palette(cx);
-                div()
+                arrows(div(), &list)
                     .min_w(r(240.))
                     .p(r(theme.space.s6))
                     .flex()
@@ -169,30 +195,48 @@ impl RenderOnce for Menu {
                     .border_t_1()
                     .border_color(hsla(colors.overlay.highlight))
                     .shadow(shadows(&theme.shadow.light.raised))
-                    .children(entries.into_iter().map(|entry| {
-                        match entry {
-                            Entry::Item(item) => row(item, popover.clone(), cx),
-                            Entry::Rule => div()
-                                .mx(r(theme.space.s4))
-                                .my(r(theme.space.s6))
-                                .h(px(1.))
-                                .bg(hsla(colors.line.base))
-                                .into_any_element(),
-                            Entry::Note(text) => div()
-                                .px(r(theme.space.s10))
-                                .pt(r(theme.space.s6))
-                                .pb(r(theme.space.s8))
-                                .type_style(&theme.typography.desktop.small)
-                                .text_color(hsla(colors.text.tertiary))
-                                .child(text)
-                                .into_any_element(),
-                        }
-                    }))
+                    .children(rows)
             })
     }
 }
 
-fn row(item: MenuItem, popover: Entity<PopoverState>, cx: &App) -> AnyElement {
+fn entry_row(
+    entry: Entry,
+    focus: Option<FocusHandle>,
+    popover: &Entity<PopoverState>,
+    window: &Window,
+    cx: &App,
+) -> AnyElement {
+    let theme = theme(cx);
+    let colors = palette(cx);
+    match (entry, focus) {
+        (Entry::Item(item), Some(focus)) => row(item, focus, popover.clone(), window, cx),
+        (Entry::Rule, _) => div()
+            .mx(r(theme.space.s4))
+            .my(r(theme.space.s6))
+            .h(px(1.))
+            .bg(hsla(colors.line.base))
+            .into_any_element(),
+        (Entry::Note(text), _) => div()
+            .px(r(theme.space.s10))
+            .pt(r(theme.space.s6))
+            .pb(r(theme.space.s8))
+            .type_style(&theme.typography.desktop.small)
+            .text_color(hsla(colors.text.tertiary))
+            .child(text)
+            .into_any_element(),
+        // Every row has its focus (made with the entries); none is left out.
+        (Entry::Item(_), None) => div().into_any_element(),
+    }
+}
+
+fn row(
+    item: MenuItem,
+    focus: FocusHandle,
+    popover: Entity<PopoverState>,
+    window: &Window,
+    cx: &App,
+) -> AnyElement {
     let theme = theme(cx);
     let colors = palette(cx);
     let on_select = item.on_select;
@@ -207,9 +251,12 @@ fn row(item: MenuItem, popover: Entity<PopoverState>, cx: &App) -> AnyElement {
         Some(detail) => format!("{}, {detail}", item.label).into(),
         None => item.label.clone(),
     };
-    div()
+    let ring = focus_visible(&focus, window);
+    let chosen = div()
         .semantic(item.id, role)
         .aria_label(label)
+        .track_focus(&focus)
+        .relative()
         .when_some(item.checked, |row, checked| {
             row.aria_toggled(if checked {
                 Toggled::True
@@ -231,12 +278,6 @@ fn row(item: MenuItem, popover: Entity<PopoverState>, cx: &App) -> AnyElement {
         .text_color(hsla(colors.text.primary))
         .when(on, |row| row.bg(hsla(colors.state.hover)))
         .hover(|style| style.bg(hsla(colors.state.hover)))
-        .on_click(move |_, window, cx| {
-            guarded("choose a menu row", || {
-                on_select(window, cx);
-                popover.update(cx, |state, cx| state.dismiss(window, cx));
-            });
-        })
         .when_some(item.icon, |row, icon| {
             row.child(
                 svg()
@@ -286,7 +327,16 @@ fn row(item: MenuItem, popover: Entity<PopoverState>, cx: &App) -> AnyElement {
                     .text_color(hsla(colors.text.primary)),
             )
         })
-        .into_any_element()
+        .when(ring, |row| row.child(focus_ring(theme.radius.sm, cx)));
+    // A click, Enter or Space: the row's handler, then the menu closes (`pressable` guards both).
+    pressable(
+        chosen,
+        Some(Rc::new(move |window: &mut Window, cx: &mut App| {
+            on_select(window, cx);
+            popover.update(cx, |state, cx| state.dismiss(window, cx));
+        })),
+    )
+    .into_any_element()
 }
 
 #[cfg(test)]
@@ -294,6 +344,49 @@ mod tests {
     use super::*;
     use crate::ui::primitives::test_window;
     use gpui::{Modifiers, point};
+
+    /// T5.6: Enter on the trigger opens the menu with its first row focused; the arrows move; Enter chooses.
+    #[gpui::test]
+    fn the_keyboard_opens_moves_through_and_chooses_rows(cx: &mut gpui::TestAppContext) {
+        use std::cell::Cell;
+        let chosen = Rc::new(Cell::new(""));
+        let (first, second) = (chosen.clone(), chosen.clone());
+        let trigger = cx.update(|cx| cx.focus_handle());
+        let held = trigger.clone();
+        let cx = crate::ui::primitives::keyboard_window(cx, move |_, _| {
+            let (first, second, held) = (first.clone(), second.clone(), held.clone());
+            Menu::new("test.menu", move |_, _, _| {
+                div()
+                    .id("test.trigger")
+                    .track_focus(&held)
+                    .size(px(20.))
+                    .into_any_element()
+            })
+            .item(MenuItem::new("test.one", "One", move |_, _| first.set("one")))
+            .item(MenuItem::new("test.two", "Two", move |_, _| second.set("two")))
+            .into_any_element()
+        });
+        cx.update(|window, cx| trigger.focus(window, cx));
+        crate::ui::testing::draw(cx);
+        cx.simulate_keystrokes("enter");
+        crate::ui::testing::draw(cx);
+        crate::ui::testing::draw(cx);
+        let focused = || {
+            crate::test_driver::nodes()
+                .into_iter()
+                .filter(|node| node.focused)
+                .map(|node| node.id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(focused(), ["test.one"], "the first row has the keyboard");
+        cx.simulate_keystrokes("down");
+        crate::ui::testing::draw(cx);
+        assert_eq!(focused(), ["test.two"]);
+        cx.simulate_keystrokes("enter");
+        crate::ui::testing::draw(cx);
+        assert_eq!(chosen.get(), "two");
+        assert!(crate::ui::testing::node("test.two").is_none(), "and the menu closed");
+    }
 
     #[gpui::test]
     fn raises_shield(cx: &mut gpui::TestAppContext) {

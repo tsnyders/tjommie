@@ -92,3 +92,36 @@ Needs the store wired (T1.4), so a chat has a bot with its browser on. Quiet PC,
 - [ ] The panel's width moves on the calm spring, as the plan says (T3.7); motion card 12 says ease-out over 397 ms for
   260 px. The content's fade matches the card. The plan wins unless you rule otherwise.
 
+
+## M5 screens: the keyboard-only pass (T5.6, owner decision 4; the Screens lane)
+
+One pass with the mouse put away, on the dev identity. `e2e_keyboard_navigation` already proves every control on each
+screen and dialog is reached by Tab; this pass is for what a test can't judge: that the order reads naturally, that the
+focus ring is always visible, and that nothing feels stuck.
+
+### Getting around
+- [ ] From launch, Tab reaches the sidebar: Agents, Rooms, Projects, Routines, Settings, then Recents, View all, the PC
+  button and New agent, in that order. Up and Down also move between the sections and between Recents.
+- [ ] Enter on a section opens it. On each screen, Tab then moves through the page top to bottom, left to right, with the
+  ring visible on every stop. Shift+Tab goes back the same way.
+- [ ] On a long screen (Settings, a project's task detail), Tab to a control below the fold: note whether the page
+  scrolls to show it (GPUI does not scroll focus into view by itself; a stop off screen is a known gap to rule on).
+- [ ] The PC button: Enter opens the PC list on its first row; Up and Down move; Enter picks; Escape closes it and the
+  focus is back on the button.
+
+### Doing things
+- [ ] New agent: type a name, Tab through the form (Tab leaves Instructions; it never indents), Enter on Create agent.
+- [ ] An agent card's More: Enter opens it, the arrows move, Enter on Agent settings opens them; Delete agent's question
+  takes the focus, Escape closes it.
+- [ ] A room: type `@` in the composer, Up and Down move through the agents, Enter or Tab puts the name in, Enter sends,
+  Shift+Enter starts a new line. Escape closes the list and keeps what you typed.
+- [ ] Every dialog (New room, Edit room, New project team, New task, a routine, Delete confirmations): the focus starts
+  inside it, Tab stays inside it, Escape closes it and returns the focus to what opened it.
+- [ ] Settings: every section from its row in the list; radio groups (Theme, Text size, Spacing, the Agents filter) are
+  one Tab stop each, and the arrows change the choice.
+- [ ] Projects: a task card takes the focus and Enter shows its detail, which takes the focus once; a refresh never
+  moves the focus.
+
+### Not in this pass (other lanes)
+- Approving a card with Ctrl+Enter (Chat lane, T4.2), sending in an agent's chat (T4.3), and moving into and out of a
+  bot's page (Browser lane, T3.5): their own checklist lines.

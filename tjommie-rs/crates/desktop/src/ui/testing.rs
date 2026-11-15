@@ -25,6 +25,7 @@ pub fn app(
 ) -> (&mut VisualTestContext, Arc<FakeRpc>) {
     let calls = cx.update(|cx| {
         gpui_kit::init(cx);
+        cx.bind_keys(crate::keymap::field_tab(cx));
         cx.bind_keys(crate::keymap::bindings());
         cx.set_global(Theme::aegis().unwrap());
         crate::notices::init(cx);
