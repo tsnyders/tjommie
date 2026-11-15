@@ -55,11 +55,37 @@ pub fn uploads(
     Ok(files)
 }
 
-/// A file name the model chose for saved output: one plain name, nothing that is a path or that Windows forbids.
+/// Whether Windows reads `name` as a device, not a file: `CON`, `PRN`, `AUX`, `NUL`, `CONIN$`, `CONOUT$`, `COM1`-`COM9` and
+/// `LPT1`-`LPT9` (the superscript digits too), in any case, with any extension (`nul.txt`), and with spaces before the dot.
+/// Opening one writes to the device and says it saved a file.
+fn is_device(name: &str) -> bool {
+    let stem = name.split('.').next().unwrap_or("").trim_end_matches(' ');
+    let upper = stem.to_uppercase();
+    if matches!(
+        upper.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+    ) {
+        return true;
+    }
+    ["COM", "LPT"].iter().any(|prefix| {
+        upper.strip_prefix(prefix).is_some_and(|digit| {
+            let mut chars = digit.chars();
+            matches!(
+                (chars.next(), chars.next()),
+                (Some('1'..='9' | '\u{b9}' | '\u{b2}' | '\u{b3}'), None)
+            )
+        })
+    })
+}
+
+/// A file name the model chose for saved output: one plain name, nothing that is a path or that Windows forbids (a device
+/// name, or a name ending in a dot or a space, which Windows drops).
 fn plain_filename(name: &str) -> Result<&str, ToolError> {
     let plain = !name.is_empty()
         && name != "."
         && name != ".."
+        && !name.ends_with(['.', ' '])
+        && !is_device(name)
         && !name
             .chars()
             .any(|c| matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*' | '/' | '\\') || c < ' ')
@@ -206,5 +232,50 @@ mod tests {
             "an existing file is never overwritten"
         );
         assert_eq!(std::fs::read(&saved).unwrap(), b"synthetic-image");
+    }
+
+    #[test]
+    fn output_is_never_named_for_a_windows_device() {
+        let home = root();
+        // Opening one of these writes to the device (or fails), whatever the extension, in any case.
+        for refused in [
+            "NUL",
+            "nul",
+            "NUL.txt",
+            "nul.tar.gz",
+            "con",
+            "Aux.log",
+            "PRN",
+            "COM1",
+            "com9.png",
+            "LPT3",
+            "lpt1.txt",
+            "CONIN$",
+            "conout$.txt",
+            "NUL .txt",
+            "COM\u{b9}",
+            "LPT\u{b2}.txt",
+            // Windows drops a trailing dot or space, so the file would not be the one named.
+            "report.",
+            "report ",
+        ] {
+            assert_eq!(
+                write_output(home.path(), refused, b"x").unwrap_err().0,
+                "Use a plain filename inside this agent's browser-files folder.",
+                "{refused:?}"
+            );
+        }
+        // Names that only look like devices are fine.
+        for fine in [
+            "console.png",
+            "nullable.txt",
+            "com10.txt",
+            "comma.csv",
+            "aux-1.txt",
+            "lpt.txt",
+            "a.nul",
+        ] {
+            assert!(write_output(home.path(), fine, b"x").is_ok(), "{fine:?}");
+        }
     }
 }
