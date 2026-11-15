@@ -4,48 +4,35 @@
 # name: "Tjommie.exe" is also the name of the owner's own app on a real PC. The hosted-runner guard (hosted-runner.ps1) is
 # the first defence against that PC; this is the second, so a lost guard still can't reach a Tjommie that lives somewhere
 # else. Nothing in this repository stops, kills or looks up a process by its image name.
+#
+# Nothing here compiles code (no Add-Type): the helpers that use this run inside an installer, where a compiler that is slow, blocked
+# or scanned would make them fail for a reason that has nothing to do with the install.
 
 Set-StrictMode -Version Latest
 
-if (-not ('TjommieLongPath' -as [type])) {
-    Add-Type -TypeDefinition @'
-using System;
-using System.Runtime.InteropServices;
-using System.Text;
-
-public static class TjommieLongPath
-{
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern uint GetLongPathNameW(string shortPath, StringBuilder longPath, uint size);
-
-    // The path with its 8.3 names (RUNNER~1) spelled out, or the path as given if it does not exist.
-    public static string Get(string path)
-    {
-        StringBuilder buffer = new StringBuilder(32768);
-        uint length = GetLongPathNameW(path, buffer, (uint)buffer.Capacity);
-        if (length == 0 || length >= buffer.Capacity) return path;
-        return buffer.ToString();
-    }
-}
-'@
-}
-
-# The full path with 8.3 names spelled out, even where its last parts do not exist yet (the existing part is resolved, the rest is
-# appended as given). A process started through a short name such as RUNNER~1 reports that spelling, and so may a folder.
+# The full path with 8.3 names spelled out (RUNNER~1 becomes runneradmin), even where its last parts do not exist yet. A process
+# started through a short name reports that spelling, and so may a folder. Only a part that looks like an 8.3 alias (it holds a
+# tilde and a digit) is looked up, by listing its parent for that name, which Windows answers with the long entry; every other part
+# is kept as given, because case does not matter to the comparisons. Never throws: if a part cannot be resolved it is kept as given.
 function Get-LongPath([string]$Path) {
-    $full = [IO.Path]::GetFullPath($Path)
-    $rest = @()
-    $current = $full.TrimEnd('\')
-    while ($current -and -not [IO.File]::Exists($current) -and -not [IO.Directory]::Exists($current)) {
-        $parent = [IO.Path]::GetDirectoryName($current)
-        if (-not $parent) { return $full }
-        $rest = @([IO.Path]::GetFileName($current)) + $rest
-        $current = $parent
-    }
-    if (-not $current) { return $full }
-    $long = [TjommieLongPath]::Get($current)
-    foreach ($part in $rest) { $long = $long.TrimEnd('\') + '\' + $part }
-    return $long
+    try { $full = [IO.Path]::GetFullPath($Path) } catch { return $Path }
+    if ($full -notmatch '~\d') { return $full }
+    try {
+        $root = [IO.Path]::GetPathRoot($full)
+        $result = $root.TrimEnd('\')
+        foreach ($part in $full.Substring($root.Length).Split('\')) {
+            if (-not $part) { continue }
+            $resolved = $null
+            if ($part -match '~\d') {
+                try {
+                    $entries = @([IO.Directory]::GetFileSystemEntries($result + '\', $part))
+                    if ($entries.Count -eq 1) { $resolved = $entries[0] }
+                } catch { }
+            }
+            $result = if ($resolved) { $resolved } else { $result + '\' + $part }
+        }
+        return $result
+    } catch { return $full }
 }
 
 # Whether $Path is inside $Folder, spelled however Windows would resolve it (case-insensitive, `..` folded, 8.3 names spelled out).
@@ -78,25 +65,29 @@ function Test-OwnsVisibleWindow([int]$ProcessId) {
     try { return ([Diagnostics.Process]::GetProcessById($ProcessId).MainWindowHandle -ne [IntPtr]::Zero) } catch { return $false }
 }
 
-# What Select-ProcessesInFolder left alone on its last call because it had a window: process id -> process.
+# What Select-ProcessesInFolder left alone on its last call because it had a window: process id -> process. And why it chose each
+# process it did: process id -> "in the folder" or "child of <id>". For a helper to log; both are replaced on every call.
 $script:LastSkippedWindowed = @{}
+$script:LastReasons = @{}
 
 # The processes whose executable is inside $Folder, and the processes they started, however deep, as a table of process id to
 # process. A child counts only if it started after its parent, so a process id Windows has reused for something else is not
-# mistaken for a child. A child whose executable is outside the folder and which owns a visible window is left out, with
-# everything it started: closing an app must not close the browser it opened (the table $script:LastSkippedWindowed lists those).
-# This script's own process is never in it, and neither is any id in $ExceptIds (an uninstaller that runs from inside the folder it
-# removes must not stop itself). Has no effect.
+# mistaken for a child; one whose parent is gone is nobody's child and is left alone. A child whose executable is outside the folder
+# and which owns a visible window is left out, with everything it started: closing an app must not close the browser it opened (the
+# table $script:LastSkippedWindowed lists those). This script's own process is never in it, and neither is any id in $ExceptIds (an
+# uninstaller that runs from inside the folder it removes must not stop itself). The process list is asked for with a time limit.
+# Has no effect.
 function Select-ProcessesInFolder([string]$Folder, [int[]]$ExceptIds = @()) {
     Assert-NarrowFolder $Folder
-    $all = @(Get-CimInstance Win32_Process)
+    $all = @(Get-CimInstance Win32_Process -OperationTimeoutSec 30)
     $left = @($PID) + $ExceptIds
     $selected = @{}
     $skipped = @{}
+    $reasons = @{}
     foreach ($process in $all) {
         $id = [int]$process.ProcessId
         if ($left -contains $id -or -not $process.ExecutablePath) { continue }
-        if (Test-PathInFolder $process.ExecutablePath $Folder) { $selected[$id] = $process }
+        if (Test-PathInFolder $process.ExecutablePath $Folder) { $selected[$id] = $process; $reasons[$id] = 'in the folder' }
     }
     do {
         $added = $false
@@ -107,11 +98,13 @@ function Select-ProcessesInFolder([string]$Folder, [int[]]$ExceptIds = @()) {
             if ($selected.ContainsKey($parent) -and $process.CreationDate -ge $selected[$parent].CreationDate) {
                 if (Test-OwnsVisibleWindow $id) { $skipped[$id] = $process; continue }
                 $selected[$id] = $process
+                $reasons[$id] = "child of $parent"
                 $added = $true
             }
         }
     } while ($added)
     $script:LastSkippedWindowed = $skipped
+    $script:LastReasons = $reasons
     return $selected
 }
 
