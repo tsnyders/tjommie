@@ -36,6 +36,8 @@ New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 $factsPath = Join-Path $OutDir 'r1-install-facts.json'
 
 $install = Get-Content -LiteralPath $InstallResult -Raw | ConvertFrom-Json
+# The install result says which folder this script starts, stops and uninstalls from: only one made on this run, on a fresh runner.
+Assert-InstallResultBoundToThisRun $install
 $folder = [string]$install.installFolder
 
 $productName = 'Tjommie'

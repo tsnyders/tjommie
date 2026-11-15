@@ -1,13 +1,83 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { installer, powershell, runBody, temp, windows } from "./ps-support.ts";
+import { codeOf, installer, powershell, runBody, temp, windows } from "./ps-support.ts";
 
 // T8.2: the NSIS installer (installer/tjommie.nsi) and the scripts it runs. Nothing in this file runs an installer or an
 // uninstaller, here or anywhere but a GitHub-hosted runner: it reads the script's text, compiles it when a compiler is
 // there (compiling only writes an .exe into a temp folder), and starts PowerShell helpers against stubs it makes itself.
 
 vi.setConfig({ testTimeout: 90_000 });
+
+// F2 of the T8.2 review: the guard was two environment variables, which anything can set. It now also needs what a real hosted runner
+// is, as T8.1 recorded it (user runneradmin, RUNNER_TEMP under D:\a\_temp, a run id and attempt), and the install result that a
+// script reads must carry this run's id and attempt. Both are pure functions of the facts they are given, so every missing
+// condition is tried here without a script that installs anything being started, and without pretending to be another user.
+describe.skipIf(!windows)("the hosted-runner guard", () => {
+  const hosted = { GITHUB_ACTIONS: "true", RUNNER_ENVIRONMENT: "github-hosted", RUNNER_TEMP: "D:\\a\\_temp", GITHUB_RUN_ID: "43653342616", GITHUB_RUN_ATTEMPT: "1" };
+  const problems = (user: string, environment: Record<string, string>): string[] => {
+    const pairs = Object.entries(environment).map(([key, value]) => `'${key}' = '${value}'`).join("; ");
+    return runBody("hosted-runner.ps1", `ConvertTo-Json -Compress -InputObject @(Get-HostedRunnerProblems '${user}' @{ ${pairs} })`) as string[];
+  };
+
+  it("accepts what a real hosted runner is, and nothing less", () => {
+    expect(problems("runneradmin", hosted)).toEqual([]);
+    expect(problems("RunnerAdmin", hosted)).toEqual([]); // Windows user names do not care about case
+    expect(problems("runneradmin", { ...hosted, RUNNER_TEMP: "D:\\a\\_temp\\r1-latest" })).toEqual([]);
+  });
+
+  it.each([
+    ["GITHUB_ACTIONS is not true", "runneradmin", { ...hosted, GITHUB_ACTIONS: "" }],
+    ["GITHUB_ACTIONS is not true", "runneradmin", { ...hosted, GITHUB_ACTIONS: "yes" }],
+    ["RUNNER_ENVIRONMENT is not github-hosted", "runneradmin", { ...hosted, RUNNER_ENVIRONMENT: "self-hosted" }],
+    ["the user is not runneradmin", "owner", hosted],
+    ["the user is not runneradmin", "", hosted],
+    ["RUNNER_TEMP is not under D:\\a\\_temp", "runneradmin", { ...hosted, RUNNER_TEMP: "" }],
+    ["RUNNER_TEMP is not under D:\\a\\_temp", "runneradmin", { ...hosted, RUNNER_TEMP: "C:\\Users\\alice\\AppData\\Local\\Temp" }],
+    ["RUNNER_TEMP is not under D:\\a\\_temp", "runneradmin", { ...hosted, RUNNER_TEMP: "D:\\a\\_temporary" }], // a prefix of the name, not a folder inside it
+    ["RUNNER_TEMP is not under D:\\a\\_temp", "runneradmin", { ...hosted, RUNNER_TEMP: "D:\\a\\_temp\\..\\.." }],
+    ["GITHUB_RUN_ID is not a run id", "runneradmin", { ...hosted, GITHUB_RUN_ID: "" }],
+    ["GITHUB_RUN_ID is not a run id", "runneradmin", { ...hosted, GITHUB_RUN_ID: "run-1" }],
+    ["GITHUB_RUN_ATTEMPT is not an attempt number", "runneradmin", { ...hosted, GITHUB_RUN_ATTEMPT: "" }],
+  ])("refuses when %s", (reason, user, environment) => {
+    const found = problems(user, environment);
+    expect(found).toHaveLength(1);
+    expect(found[0]).toBe(reason);
+  });
+
+  it("names every condition that fails, not just the first", () => {
+    expect(problems("owner", {})).toHaveLength(6);
+  });
+
+  // The install result that accept-over-r1.ps1 and collect-r1-facts.ps1 read says which R1 to act on. A hand-written one, or one left by
+  // another run, must not be accepted.
+  it("accepts an install result that carries this run's id and attempt, and nothing else", () => {
+    const binding = (result: string, runId: string, attempt: string): string[] =>
+      runBody("hosted-runner.ps1", `$result = '${result}' | ConvertFrom-Json\nConvertTo-Json -Compress -InputObject @(Get-InstallResultBindingProblems $result '${runId}' '${attempt}')`) as string[];
+    const bound = JSON.stringify({ installFolder: "C:\\x", githubRunId: "7", githubRunAttempt: "2", fresh: true });
+    expect(binding(bound, "7", "2")).toEqual([]);
+    expect(binding(JSON.stringify({ installFolder: "C:\\x" }), "7", "2")).toEqual(["the install result does not carry githubRunId", "the install result does not carry githubRunAttempt", "the install result was not made on a fresh runner"]);
+    expect(binding(bound, "8", "2")).toEqual(["the install result is from another run (githubRunId is 7, this run's is 8)"]);
+    expect(binding(bound, "7", "3")).toEqual(["the install result is from another run (githubRunAttempt is 2, this run's is 3)"]);
+    expect(binding(bound, "", "")).toHaveLength(2); // no run id here at all: it cannot be this run's
+    expect(binding(JSON.stringify({ installFolder: "C:\\x", githubRunId: "7", githubRunAttempt: "2", fresh: false }), "7", "2")).toEqual(["the install result was not made on a fresh runner"]);
+  });
+
+  it("makes every script that installs, uninstalls or stops anything check the guard first, and the ones that read an install result check its binding", () => {
+    for (const name of ["accept-fresh.ps1", "accept-over-r1.ps1", "collect-r1-facts.ps1", "install-latest-r1.ps1"]) expect(codeOf(join(installer, name)), name).toContain("Assert-HostedRunner");
+    for (const name of ["accept-over-r1.ps1", "collect-r1-facts.ps1"]) {
+      const text = codeOf(join(installer, name));
+      expect(text, name).toContain("Assert-InstallResultBoundToThisRun");
+      // Before anything that acts on the install it names.
+      expect(text.indexOf("Assert-InstallResultBoundToThisRun"), name).toBeLessThan(text.search(/Start-Process|Invoke-Step|Invoke-Phase|Stop-ProcessesInFolder|Add-Sentinels/));
+    }
+    const install = codeOf(join(installer, "install-latest-r1.ps1"));
+    expect(install).toMatch(/githubRunId\s*=\s*\$env:GITHUB_RUN_ID/);
+    expect(install).toMatch(/githubRunAttempt\s*=\s*\$env:GITHUB_RUN_ATTEMPT/);
+    expect(install).toMatch(/fresh\s*=\s*\$true/);
+    expect(install.indexOf("Assert-FreshRunner")).toBeLessThan(install.indexOf("fresh"));
+  });
+});
 
 describe.skipIf(!windows)("the installer's helper that sets a shortcut's AppUserModelID", () => {
   // NSIS's CreateShortCut cannot set the property that Windows keys notifications by, so the installer makes the shortcut and
