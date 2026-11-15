@@ -473,9 +473,21 @@ pub fn start(identity: Identity, root: PathBuf, cx: &mut App) {
     let keys = DeviceKeys::new(&root)
         .inspect_err(|error| log::warn!("No device keys: {error}"))
         .ok();
+    let settings = Arc::new(LocalSettings::load(&root));
+    // This device's appearance shows from the first frame; Settings, Appearance saves its changes through the file.
+    let stored = settings.read();
+    crate::ui::style::show_appearance(
+        crate::ui::style::Appearance {
+            mode: stored.theme,
+            text: stored.text_size,
+            density: stored.density,
+        },
+        cx,
+    );
+    cx.set_global(DeviceFile(Arc::clone(&settings)));
     let shared = Arc::new(Shared {
         runtime: runtime.handle().clone(),
-        settings: Arc::new(LocalSettings::load(&root)),
+        settings,
         root,
         daemon,
         keys,
@@ -497,6 +509,11 @@ pub fn start(identity: Identity, root: PathBuf, cx: &mut App) {
 
 /// This run's data root (`main`'s, checked with `owner_safety`): where an agent's notes.md lives (`<root>/bots`).
 pub struct DataRoot(pub PathBuf);
+
+/// This device's settings file (`desktop-ui.json`), for the sections that change it (Appearance).
+pub struct DeviceFile(pub Arc<LocalSettings>);
+
+impl gpui::Global for DeviceFile {}
 
 impl gpui::Global for DataRoot {}
 

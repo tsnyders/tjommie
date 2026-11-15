@@ -126,7 +126,7 @@ impl Render for RoomsList {
                         div()
                             .grid()
                             .grid_cols(columns)
-                            .gap(r(theme.space.s16))
+                            .gap(crate::ui::style::card_gap(cx))
                             .children(cards),
                     ),
             )

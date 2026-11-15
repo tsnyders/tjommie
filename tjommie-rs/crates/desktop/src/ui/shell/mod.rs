@@ -24,9 +24,11 @@ use crate::theme::Theme;
 use crate::ui::style::{TypeExt as _, hsla, r, shadows};
 use crate::zoom::Zoom;
 
-/// The rem follows the zoom: gpui-kit's root sets the window's rem from its theme's font size every frame.
+/// The rem follows the zoom and the text size (Settings, Appearance): gpui-kit's root sets the window's rem from its
+/// theme's font size every frame.
 pub fn set_rem(zoom: Zoom, cx: &mut App) {
-    gpui_kit::component::Theme::global_mut(cx).font_size = px(zoom.rem_px(1.0));
+    let scale = crate::ui::style::appearance(cx).text_scale();
+    gpui_kit::component::Theme::global_mut(cx).font_size = px(zoom.rem_px(1.0) * scale);
 }
 
 pub struct Shell {
