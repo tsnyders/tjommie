@@ -307,7 +307,7 @@ Every item below is a vertical auto-layout frame named "Item / <caption>", gap 8
 1. **"Your message, queued":** a clone of "User bubble" with its text set to "Also check careers24.com". Under it, right-aligned, the text "Queued" (Inter 11, `#909090`).
 2. **"Your message, sent":** a clone of "User bubble", text "Skip senior roles for the rest of today."
 3. **"Bot reply, streaming":** a clone of "Bot bubble 1" with its text set to "Looking at the six listings now. Two of them want Angular, so I'll ask CV Writer". Right after the text, inside the bubble, add a RECTANGLE 2 × 16 `#F5F5F5` as the typing caret.
-4. **"Long reply wraps":** a clone of "Bot bubble 1" with its text set to "Applied to Full Stack Developer at Sabenza IT in Pretoria. Pnet showed the confirmation page and sent a copy to tyrel.jobs@gmail.com. The next listing on my list is Senior React Engineer at Takealot, which I skipped because you asked me to leave senior roles alone today." It must wrap onto several lines inside the 600 px bubble.
+4. **"Long reply wraps":** a clone of "Bot bubble 1" with its text set to "Applied to Full Stack Developer at Sabenza IT in Pretoria. Pnet showed the confirmation page and sent a copy to owner@example.com. The next listing on my list is Senior React Engineer at Takealot, which I skipped because you asked me to leave senior roles alone today." It must wrap onto several lines inside the 600 px bubble.
 5. **"Activity row, collapsed":** a clone of "Activity row (collapsed)".
 6. **"Activity row, expanded":** a vertical auto-layout frame, width 560, padding 12, gap 6, radius 10, fill `#070707`, 1 px `#252525` stroke.
    - First a clone of "Activity row (collapsed)" with its chevron changed to `lucide:chevron-up`.
@@ -838,7 +838,7 @@ Positions below are in each card.
 
 1. **"Card / Claude signed in"** at (384, 224), 370 × 200.
    - Icon `lucide:sparkles`; name "Claude Code"; version "Version 2.1.280".
-   - At (20, 88): `lucide:circle-check` (16, `#3FA37A`), then "Signed in as tyrel.jobs@gmail.com" (Inter 13, `#F5F5F5`) at x 44, and "Max plan" (Inter 12, `#989898`) at (44, 110).
+   - At (20, 88): `lucide:circle-check` (16, `#3FA37A`), then "Signed in as owner@example.com" (Inter 13, `#F5F5F5`) at x 44, and "Max plan" (Inter 12, `#989898`) at (44, 110).
    - "Use a different account" (Inter 13, `#459FFF`) at (20, 156).
 2. **"Card / Codex signing in"** at (774, 224), 370 × 200.
    - Icon `lucide:terminal`; name "Codex"; version "Version 0.155.1".

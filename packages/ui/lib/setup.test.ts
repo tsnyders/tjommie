@@ -19,7 +19,7 @@ describe("cardView", () => {
   });
 
   it("shows the account, and whether Codex's sandbox still needs setting up", () => {
-    expect(cardView(claude({ signedIn: true, account: "tyrel.jobs@gmail.com", plan: "max" }), quiet)).toEqual({ kind: "signed_in", account: "tyrel.jobs@gmail.com", plan: "max", sandbox: null });
+    expect(cardView(claude({ signedIn: true, account: "owner@example.com", plan: "max" }), quiet)).toEqual({ kind: "signed_in", account: "owner@example.com", plan: "max", sandbox: null });
     expect(cardView(codex({ signedIn: true }), quiet)).toMatchObject({ kind: "signed_in", sandbox: "needed" });
     expect(cardView(codex({ signedIn: true, sandbox: "updateRequired" }), quiet)).toMatchObject({ sandbox: "needed" });
     expect(cardView(codex({ signedIn: true }), { signingIn: false, preparing: true })).toMatchObject({ sandbox: "preparing" });
@@ -33,8 +33,8 @@ describe("cardView", () => {
     const signedOut = claude();
     expect(sameSignIn({ ...signedOut, version: "2.1.281" }, signedOut)).toBe(true); // a new check, a new object
     expect(sameSignIn(failedSetup("The check failed")[0], signedOut)).toBe(true);
-    expect(sameSignIn(claude({ signedIn: true, account: "tyrel.jobs@gmail.com" }), signedOut)).toBe(false);
-    const signedIn = codex({ signedIn: true, account: "tyrel.jobs@gmail.com" });
+    expect(sameSignIn(claude({ signedIn: true, account: "owner@example.com" }), signedOut)).toBe(false);
+    const signedIn = codex({ signedIn: true, account: "owner@example.com" });
     expect(sameSignIn({ ...signedIn, sandbox: "ready" }, signedIn)).toBe(true);
     expect(sameSignIn({ ...signedIn, account: "work@example.com" }, signedIn)).toBe(false);
   });
