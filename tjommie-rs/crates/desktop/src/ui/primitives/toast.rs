@@ -1,10 +1,13 @@
 //! Toasts (navigation-shell `.toasts`, overlays `.toast`): the `Notices` global's notices, as near-black pills in a
 //! column at the top centre, under the header. Each closes from its own button.
 
-use gpui::{App, IntoElement, ParentElement as _, Styled as _, div};
+use gpui::{
+    App, IntoElement, ParentElement as _, Role, StatefulInteractiveElement as _, Styled as _, div,
+};
 
 use super::button::{IconButton, IconVariant};
 use crate::notices::{self, Notices};
+use crate::semantic::SemanticExt as _;
 use crate::ui::style::{TypeExt as _, hsla, palette, r, shadows, theme};
 
 /// The toast layer, laid over the window; empty when nothing is raised.
@@ -25,7 +28,10 @@ pub fn toasts(cx: &App) -> impl IntoElement + use<> {
         .items_center()
         .gap(r(theme.space.s8))
         .children(notices.into_iter().enumerate().map(|(index, notice)| {
+            // A status, as the design's toast is, so Windows reads it out (M2 review F8).
             div()
+                .semantic(format!("toast.{index}"), Role::Status)
+                .aria_label(notice.text())
                 .flex()
                 .items_center()
                 .gap(r(theme.space.s12))
@@ -44,4 +50,22 @@ pub fn toasts(cx: &App) -> impl IntoElement + use<> {
                         .on_press(move |_, cx| notices::dismiss(index, cx)),
                 )
         }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::notices::Notice;
+    use crate::ui::primitives::test_window;
+
+    #[gpui::test]
+    fn a_notice_is_a_status_toast(cx: &mut gpui::TestAppContext) {
+        let cx = test_window(cx, |_, cx| toasts(cx).into_any_element());
+        cx.update(|_, cx| cx.set_global(Notices(vec![Notice::SomethingWentWrong])));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            cx.debug_bounds("toast.0").is_some(),
+            "found by its id, as UI Automation finds it"
+        );
+    }
 }

@@ -62,7 +62,7 @@ impl RenderOnce for SettingsRow {
                     .min_w_0()
                     .flex()
                     .flex_col()
-                    .gap(r(2.))
+                    .gap(r(theme.space.s2))
                     .child(
                         div()
                             .type_style(&theme.typography.desktop.ui_strong)
