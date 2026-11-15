@@ -256,6 +256,32 @@ describe.skipIf(!windows)("the acceptance library's pure helpers", () => {
     expect(result.dev).toContain("TjommieRS.exe");
   });
 
+  // A GitHub-hosted runner spells its profile and temp folders with an 8.3 alias (a profile folder such as RUNNER~1). Resolve-Path keeps an alias as it
+  // was given while Get-ChildItem returns the long spelling, so a path made relative by the length of the root came out with debris on the
+  // front ("ta\new.txt"), and a real install's file list would never have matched its expected one. The same folder must give the same
+  // relative paths however its root is spelled; where the volume makes no 8.3 name the two spellings are one and only that is checked.
+  it("gives the same relative paths whether a folder is named by its long name or its 8.3 alias", () => {
+    const folder = join(temp(), "tjommie-a-long-install-folder-name");
+    mkdirSync(join(folder, "resources", "daemon"), { recursive: true });
+    for (const file of ["Tjommie.exe", "resources\\daemon\\tjommie-daemon.exe"]) writeFileSync(join(folder, file), "x");
+    const result = runBody("accept-lib.ps1", String.raw`
+      $long = '${folder}'
+      $short = (New-Object -ComObject Scripting.FileSystemObject).GetFolder($long).ShortPath
+      [ordered]@{
+        differs        = ($short -ine $long)
+        installedLong  = @(Get-InstalledFiles $long)
+        installedShort = @(Get-InstalledFiles $short)
+        snapshotLong   = @((Get-TreeSnapshot $long).Keys)
+        snapshotShort  = @((Get-TreeSnapshot $short).Keys)
+      } | ConvertTo-Json -Compress
+    `) as { differs: boolean; installedLong: string[]; installedShort: string[]; snapshotLong: string[]; snapshotShort: string[] };
+    const expected = ["Tjommie.exe", "resources\\daemon\\tjommie-daemon.exe"].sort();
+    for (const [name, found] of Object.entries({ installedLong: result.installedLong, installedShort: result.installedShort, snapshotLong: result.snapshotLong, snapshotShort: result.snapshotShort })) {
+      expect([...found].sort(), name).toEqual(expected);
+    }
+    if (!result.differs) console.warn("This volume has no 8.3 name for the test folder, so only the long spelling was exercised.");
+  });
+
   it("records checks and notes, saves them as it goes, and fails the run only at the end", () => {
     const out = temp();
     const result = runBody("accept-lib.ps1", String.raw`

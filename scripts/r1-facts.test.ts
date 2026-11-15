@@ -192,6 +192,38 @@ describe.skipIf(!windows)("the R1 install-facts scripts", () => {
     expect(inventory.files.map((file) => file.path)).toEqual(["resources\\app.asar", "resources\\daemon\\Uninstall Other.exe", "Tjommie.exe", "Uninstall Tjommie.exe"]);
   });
 
+  // A hosted runner spells its profile and temp folders with an 8.3 alias (a profile folder such as RUNNER~1). Resolve-Path keeps an alias as given while
+  // Get-ChildItem returns the long spelling, so paths made relative by the length of the root had debris on the front ("nu\Tjommie.lnk"),
+  // and the uninstaller at the top of the folder was no longer recognised as one. Same folder, same relative paths, whichever way it is named.
+  it("gives the same relative paths whether a folder is named by its long name or its 8.3 alias", () => {
+    const folder = join(temp(), "tjommie-a-long-folder-name");
+    mkdirSync(join(folder, "Sub"), { recursive: true });
+    writeFileSync(join(folder, "Tjommie.exe"), "12345");
+    writeFileSync(join(folder, "Uninstall Tjommie.exe"), "123");
+    writeFileSync(join(folder, "Sub", "Uninstall Other.exe"), "1");
+    const result = readers(String.raw`
+      $long = '${folder}'
+      $short = (New-Object -ComObject Scripting.FileSystemObject).GetFolder($long).ShortPath
+      $wsh = New-Object -ComObject WScript.Shell
+      foreach ($path in (Join-Path $long 'Tjommie.lnk'), (Join-Path $long 'Sub\Plain.lnk')) {
+        $link = $wsh.CreateShortcut($path)
+        $link.TargetPath = 'C:\Windows\System32\notepad.exe'
+        $link.Save()
+      }
+      $inventory = Get-FileInventory $short
+      [ordered]@{
+        differs      = ($short -ine $long)
+        files        = @($inventory.files | ForEach-Object { $_.path })
+        uninstallers = @($inventory.uninstallers)
+        shortcuts    = @(Get-ShortcutFacts $short | ForEach-Object { $_.path })
+      } | ConvertTo-Json -Compress
+    `) as { differs: boolean; files: string[]; uninstallers: string[]; shortcuts: string[] };
+    expect(result.files).toEqual(["Sub\\Plain.lnk", "Sub\\Uninstall Other.exe", "Tjommie.exe", "Tjommie.lnk", "Uninstall Tjommie.exe"]);
+    expect(result.uninstallers).toEqual(["Uninstall Tjommie.exe"]);
+    expect(result.shortcuts).toEqual(["Sub\\Plain.lnk", "Tjommie.lnk"]);
+    if (!result.differs) console.warn("This volume has no 8.3 name for the test folder, so only the long spelling was exercised.");
+  });
+
   it("lists what is directly inside a folder, never its contents, and says when there is no folder", () => {
     const dir = temp();
     mkdirSync(join(dir, "speech"));
