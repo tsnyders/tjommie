@@ -14,7 +14,7 @@ use crate::ui::shell::route::{self, Route};
 use crate::ui::store;
 use crate::ui::testing::{app, bot, click, draw, node, state};
 
-fn message(id: &str, author: &str, body: &str, minute: usize) -> Message {
+pub(super) fn message(id: &str, author: &str, body: &str, minute: usize) -> Message {
     Message {
         id: id.into(),
         conversation_id: "b1".into(),
@@ -31,14 +31,14 @@ fn message(id: &str, author: &str, body: &str, minute: usize) -> Message {
     }
 }
 
-fn with(kind: MessageKind, data: Value, mut message: Message) -> Message {
+pub(super) fn with(kind: MessageKind, data: Value, mut message: Message) -> Message {
     message.kind = kind;
     message.data = data.as_object().cloned();
     message
 }
 
 /// A turn of `count` messages, yours and Forge's in turn.
-fn turns(count: usize) -> Vec<Message> {
+pub(super) fn turns(count: usize) -> Vec<Message> {
     (0..count)
         .map(|n| {
             let author = if n % 2 == 0 { "you" } else { "b1" };
@@ -48,7 +48,7 @@ fn turns(count: usize) -> Vec<Message> {
 }
 
 /// Forge's chat, loaded with `messages`.
-fn chat(messages: Vec<Message>, has_more: bool) -> AppState {
+pub(super) fn chat(messages: Vec<Message>, has_more: bool) -> AppState {
     let mut state = state(vec![bot("b1", "Forge", BotState::Idle)], vec![], vec![]);
     state.conversations.insert(
         "b1".into(),
@@ -62,7 +62,7 @@ fn chat(messages: Vec<Message>, has_more: bool) -> AppState {
     state
 }
 
-fn calls_to(rpc: &FakeRpc, name: &str) -> Vec<Value> {
+pub(super) fn calls_to(rpc: &FakeRpc, name: &str) -> Vec<Value> {
     rpc.calls()
         .into_iter()
         .filter(|(method, _)| *method == name)
@@ -103,11 +103,11 @@ fn a_long_thread_sits_at_the_bottom_and_draws_only_what_shows(cx: &mut TestAppCo
     assert!(node("bubble.m298").is_some(), "the newest of yours shows");
     assert!(node("prose.m299").is_some(), "and the reply under it");
     assert!(node("bubble.m0").is_none(), "the oldest isn't drawn");
-    let screen = cx.debug_bounds("screen.chat").unwrap();
+    let thread = cx.debug_bounds("chat.thread").unwrap();
     let last = cx.debug_bounds("prose.m299").unwrap();
     assert!(
-        screen.bottom() - last.bottom() < px(48.),
-        "bottom-anchored: {last:?} in {screen:?}"
+        thread.bottom() - last.bottom() < px(48.),
+        "bottom-anchored: {last:?} in {thread:?}"
     );
 }
 

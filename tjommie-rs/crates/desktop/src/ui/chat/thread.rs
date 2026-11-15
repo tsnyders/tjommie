@@ -11,8 +11,8 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, App, FollowMode, IntoElement, ListAlignment, ListState, ParentElement as _,
-    SharedString, Styled as _, Window, div, list, px,
+    AnyElement, App, FollowMode, IntoElement, ListAlignment, ListState, ParentElement as _, Role,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Window, div, list, px,
 };
 use jiff::Zoned;
 use jiff::civil::Date;
@@ -21,6 +21,7 @@ use protocol::model::{Message, MessageStatus};
 use super::message_view::{self, MessageContext, shown};
 use super::notices;
 use crate::model::timeline::{TimelineItem, timeline};
+use crate::semantic::SemanticExt as _;
 use crate::ui::store;
 use crate::ui::style::{r, theme};
 
@@ -209,7 +210,7 @@ impl Thread {
         top_drawn.set(false);
         let theme = theme(cx);
         let (side, gap, bottom) = (theme.space.s28, theme.space.s10, theme.space.s12);
-        list(
+        let list = list(
             self.list.clone(),
             move |ix, window: &mut Window, cx: &mut App| {
                 if ix == 0 {
@@ -244,10 +245,15 @@ impl Thread {
                     .into_any_element()
             },
         )
-        .flex_1()
-        .min_h_0()
-        .w_full()
-        .into_any_element()
+        .size_full();
+        div()
+            .semantic("chat.thread", Role::Log)
+            .aria_label("Messages")
+            .flex_1()
+            .min_h_0()
+            .w_full()
+            .child(list)
+            .into_any_element()
     }
 }
 

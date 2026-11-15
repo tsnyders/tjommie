@@ -4,6 +4,7 @@
 
 pub mod approval;
 pub mod bubbles;
+pub mod composer;
 pub mod header;
 pub mod message_view;
 pub mod notices;
@@ -11,15 +12,17 @@ pub mod rows;
 #[cfg(test)]
 mod tests;
 pub mod thread;
+pub mod voice;
 
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, App, Context, IntoElement, ParentElement as _, Render, Role, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Task, Window, div,
+    AnyElement, App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render,
+    Role, SharedString, StatefulInteractiveElement as _, Styled as _, Task, Window, div,
 };
 use jiff::Zoned;
 
+use self::composer::Composer;
 use self::header::HeaderActions;
 use self::message_view::{MessageContext, shown};
 use self::thread::Thread;
@@ -56,6 +59,8 @@ pub struct ChatScreen {
     /// The exchange open beside the chat.
     exchange: Option<SharedString>,
     panel_open: bool,
+    /// Made once the agent is known: its placeholder and model come from it.
+    composer: Option<Entity<Composer>>,
 }
 
 impl ChatScreen {
@@ -68,6 +73,7 @@ impl ChatScreen {
             older_from: None,
             exchange: None,
             panel_open: true,
+            composer: None,
         }
     }
 
@@ -203,6 +209,10 @@ impl Render for ChatScreen {
             _ => div().flex_1().into_any_element(),
         };
         let header = header::header(&bot, &actions, window, cx);
+        let composer = self
+            .composer
+            .get_or_insert_with(|| cx.new(|cx| Composer::new(&bot, window, cx)))
+            .clone();
         div()
             .semantic("screen.chat", Role::Group)
             .aria_label(SharedString::from(format!("Chat with {}", bot.name)))
@@ -213,6 +223,7 @@ impl Render for ChatScreen {
             .flex_col()
             .child(header)
             .child(body)
+            .child(composer)
     }
 }
 
