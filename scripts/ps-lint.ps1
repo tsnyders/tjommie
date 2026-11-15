@@ -17,6 +17,27 @@ $automatic = @('_', 'PSItem', 'PSScriptRoot', 'PSCommandPath', 'PSVersionTable',
 
 function Get-Unqualified([string]$Path) { return ($Path -replace '^(script|global|local|private):', '') }
 
+# Adds to $Assigned every variable $Ast assigns, takes as a parameter or loops over, and does the same for each library it dot-sources
+# (a script may read what its library set at its top level, such as $script:name).
+function Add-AssignedNames($Ast, $Assigned, [string]$Folder, $Seen) {
+    foreach ($parameter in $Ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.ParameterAst] }, $true)) { [void]$Assigned.Add((Get-Unqualified $parameter.Name.VariablePath.UserPath)) }
+    foreach ($assignment in $Ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.AssignmentStatementAst] }, $true)) {
+        $left = $assignment.Left
+        while ($left -is [System.Management.Automation.Language.ConvertExpressionAst]) { $left = $left.Child }
+        if ($left -is [System.Management.Automation.Language.VariableExpressionAst]) { [void]$Assigned.Add((Get-Unqualified $left.VariablePath.UserPath)) }
+    }
+    foreach ($loop in $Ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.ForEachStatementAst] }, $true)) { [void]$Assigned.Add((Get-Unqualified $loop.Variable.VariablePath.UserPath)) }
+    foreach ($dot in $Ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] -and $node.InvocationOperator -eq 'Dot' }, $true)) {
+        if ($dot.Extent.Text -notmatch "'([\w.-]+\.ps1)'") { continue }
+        $library = Join-Path $Folder $Matches[1]
+        if (-not (Test-Path -LiteralPath $library) -or -not $Seen.Add($library)) { continue }
+        $libraryTokens = $null
+        $libraryErrors = $null
+        $libraryAst = [System.Management.Automation.Language.Parser]::ParseFile($library, [ref]$libraryTokens, [ref]$libraryErrors)
+        Add-AssignedNames $libraryAst $Assigned $Folder $Seen
+    }
+}
+
 $report = [ordered]@{}
 foreach ($name in ($Files -split ',')) {
     $path = Join-Path $Installer $name
@@ -28,14 +49,8 @@ foreach ($name in ($Files -split ',')) {
 
     $functions = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) | ForEach-Object { $_.Name })
     $assigned = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
-    foreach ($parameter in $ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.ParameterAst] }, $true)) { [void]$assigned.Add((Get-Unqualified $parameter.Name.VariablePath.UserPath)) }
-    foreach ($assignment in $ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.AssignmentStatementAst] }, $true)) {
-        $left = $assignment.Left
-        while ($left -is [System.Management.Automation.Language.ConvertExpressionAst]) { $left = $left.Child }
-        if ($left -is [System.Management.Automation.Language.VariableExpressionAst]) { [void]$assigned.Add((Get-Unqualified $left.VariablePath.UserPath)) }
-    }
-    foreach ($loop in $ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.ForEachStatementAst] }, $true)) { [void]$assigned.Add((Get-Unqualified $loop.Variable.VariablePath.UserPath)) }
-    # Variables the library assigns at its top level and the script may read as $script:name are the library's own business.
+    $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    Add-AssignedNames $ast $assigned $Installer $seen
     foreach ($variable in $ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.VariableExpressionAst] }, $true)) {
         $variablePath = $variable.VariablePath
         if ($variablePath.IsDriveQualified) { continue }

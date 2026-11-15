@@ -3,7 +3,8 @@
 # the one about to start is what the hand-over from R1 must never allow.
 #
 # A process is stopped only because its executable is inside -Folder (and its children, however deep), never because of its
-# name: a real PC may have another Tjommie.exe running from somewhere else, and that one is left alone. -ExceptProcessId
+# name: a real PC may have another Tjommie.exe running from somewhere else, and that one is left alone. A child of the app that
+# lives outside the folder and owns a visible window (a browser the app opened) is left running too. -ExceptProcessId
 # names the caller itself; an uninstaller that runs from inside the folder (R1's installer starts it with `_?=<folder>`)
 # must not stop itself.
 #
@@ -27,7 +28,12 @@ try {
     $deadline = (Get-Date).AddSeconds(15)
     while ($true) {
         $remaining = Select-ProcessesInFolder $Folder $ExceptProcessId
-        if ($remaining.Count -eq 0) { exit 0 }
+        if ($remaining.Count -eq 0) {
+            # What the app started but is not part of it, and has a window of its own (a browser it opened), is left running.
+            $left = @($script:LastSkippedWindowed.Values | ForEach-Object { $_.Name + ' (' + $_.ProcessId + ')' })
+            if ($left.Count -gt 0) { Write-Output ('Left running, outside the folder, with a window of its own: ' + ($left -join ', ')) }
+            exit 0
+        }
         if ((Get-Date) -ge $deadline) {
             Write-Output ('Still running from ' + $Folder + ': ' + (($remaining.Values | ForEach-Object { $_.Name + ' (' + $_.ProcessId + ')' }) -join ', '))
             exit 3

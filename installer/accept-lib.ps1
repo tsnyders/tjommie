@@ -85,14 +85,31 @@ function Get-TreeSnapshot([string]$Root) {
 }
 
 # What differs between two snapshots: files gone, files whose content changed, and (unless told to ignore them) files added.
-function Compare-Snapshot($Before, $After, [switch]$IgnoreAdded) {
+# -IgnorePaths names relative paths that are not to be reported at all, whatever happened to them (case does not matter): the
+# files a program has only while it runs. Nothing else is ignored, so a real loss is still reported.
+function Compare-Snapshot($Before, $After, [switch]$IgnoreAdded, [string[]]$IgnorePaths = @()) {
     $differences = @()
+    $ignored = @($IgnorePaths | ForEach-Object { $_.ToLowerInvariant() })
     foreach ($path in $Before.Keys) {
+        if ($ignored -contains $path.ToLowerInvariant()) { continue }
         if (-not $After.Contains($path)) { $differences += "missing: $path"; continue }
         if ($Before[$path] -ne 'unreadable' -and $After[$path] -ne 'unreadable' -and $Before[$path] -ne $After[$path]) { $differences += "changed: $path" }
     }
-    if (-not $IgnoreAdded) { foreach ($path in $After.Keys) { if (-not $Before.Contains($path)) { $differences += "added: $path" } } }
+    if (-not $IgnoreAdded) { foreach ($path in $After.Keys) { if (-not $Before.Contains($path) -and $ignored -notcontains $path.ToLowerInvariant()) { $differences += "added: $path" } } }
     return $differences
+}
+
+# What R1 has in its data folders while it runs and not once it has been stopped: the entries its first start left (T8.1's
+# firstStart) that its folders no longer held after it was stopped and uninstalled (T8.1's uninstall). Electron's lockfile is one.
+# These come and go with the process, so a snapshot taken with R1 running must not count them as data that was lost.
+function Get-R1RuntimeOnlyEntries($Facts) {
+    $names = @()
+    foreach ($pair in @(@($Facts.firstStart.userDataEntries, $Facts.uninstall.userDataEntries), @($Facts.firstStart.dataRootEntries, $Facts.uninstall.dataRootEntries))) {
+        $running = @($pair[0] | ForEach-Object { $_.name })
+        $stopped = @($pair[1] | ForEach-Object { $_.name })
+        $names += @($running | Where-Object { $stopped -notcontains $_ })
+    }
+    return @($names | Sort-Object -Unique)
 }
 
 # A few nested binary files in a data root, like a real one's, to be found again byte for byte. Returns their relative paths.
@@ -112,10 +129,10 @@ function Add-Sentinels([string]$Root) {
     return $made
 }
 
-# The files a stub-payload install holds: the identity's exe and daemon, the uninstaller NSIS writes, and the two helpers the
-# uninstaller needs. Sorted, relative, backslashes.
+# The files a stub-payload install holds: the identity's exe and daemon, and the uninstaller NSIS writes. (The helper scripts the
+# uninstaller needs are inside the uninstaller, not beside the app.) Sorted, relative, backslashes.
 function Get-ExpectedFiles([string]$Product, [string]$Exe) {
-    return @($Exe, 'resources\daemon\tjommie-daemon.exe', "Uninstall $Product.exe", 'installer-helpers\scoped-processes.ps1', 'installer-helpers\stop-install-processes.ps1') | Sort-Object
+    return @($Exe, 'resources\daemon\tjommie-daemon.exe', "Uninstall $Product.exe") | Sort-Object
 }
 
 function Get-InstalledFiles([string]$Folder) {

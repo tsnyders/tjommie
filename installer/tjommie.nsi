@@ -14,22 +14,37 @@
 ;   silent. After a silent install without --force-run it starts nothing (R1 doesn't either).
 ;
 ; Over an existing install (R1's, or an earlier one of this installer's)
+;   0. Before it extracts or stops anything (in .onInit) it reads HKCU\Software\<GUID>\InstallLocation. If that is set to any folder
+;      but this identity's own it stops with exit 7 and touches nothing, and never "corrects" the value. R1's uninstaller, which
+;      step 3 runs, deletes the folder that value names whenever it is set, and ignores the folder it is told; a stale, wrong or
+;      planted value would have it delete somewhere else. This is the mechanism that destroyed the owner's install on 2026-10-25.
 ;   1. It closes the processes whose executable is inside the install folder, and their children (stop-install-processes.ps1),
-;      by path and never by name. A Tjommie running from another folder is left alone.
-;   2. It runs the existing uninstaller from a temp copy with the arguments R1's own upgrade uses (recorded in the facts):
+;      by path and never by name. A Tjommie running from another folder is left alone, and so is a program with a window of its
+;      own that the app opened (a browser).
+;   2. It removes the directory links (junctions) inside the install folder as links (unlink-reparse-points.ps1), because the
+;      deletions that follow, R1's and its own, would otherwise follow them into whatever they point at.
+;   3. It runs the existing uninstaller from a temp copy with the arguments R1's own upgrade uses (recorded in the facts):
 ;        old-uninstaller.exe /S /KEEP_APP_DATA /currentuser --keep-shortcuts --updated _?=<install folder>
-;   3. It copies the payload, writes the uninstaller and the registry keys, and (re)makes the shortcuts.
-;   If either of steps 1 and 2 fails it installs nothing, so the old app and the new one never run on one data root.
+;   4. It copies the payload, writes the uninstaller and the registry keys, and (re)makes the shortcuts.
+;   If any of steps 0 to 3 fails it installs nothing, so the old app and the new one never run on one data root.
+;   One thing here is not this script's to promise: R1's uninstaller stops programs on its own. T8.2's review found that, when
+;   PowerShell is usable, it stops every process whose path starts with the install folder's path with no trailing separator
+;   (so one running from ...\Programs\tjommie-rs or ...\tjommie-updatetest too), and otherwise every Tjommie.exe of the user by
+;   image name. Close the dev and update-test apps before updating production.
 ;
 ; The uninstaller deletes only the install folder, its own registry keys and its shortcuts. The data roots (%LOCALAPPDATA%\Tjommie
 ; and %APPDATA%\Tjommie) are never touched, and nothing here names them. It refuses to run, and deletes nothing, unless
 ; HKCU\Software\<GUID>\InstallLocation is exactly the install folder this identity installs to AND is the folder the
 ; uninstaller is running for. That guard is what stands between this and the test uninstaller that once deleted the owner's
-; install: deletion always targets the folder the uninstaller runs from, never a registry value.
+; install: deletion always targets the folder the uninstaller runs from, never a registry value. If the value is ever missing
+; (a cleaner, a hand edit), run this installer again: it rewrites it, and the uninstaller then works.
+; It carries its own helper scripts and runs them from its own temp folder, so nothing in the install folder is needed to remove it.
 ;
 ; Exit codes (silent or not)
 ;   0 done.  3 something is still running from the install folder.  4 the old uninstaller failed.  5 the uninstaller refused
 ;   (InstallLocation is not this identity's install folder).  6 the install folder is not allowed for this identity.
+;   7 this identity is installed somewhere else.  8 a helper could not run (PowerShell missing or blocked by policy).
+;   9 the install folder is a link, or a link in it could not be removed.
 
 Unicode true
 SetCompressor /SOLID lzma
@@ -65,13 +80,15 @@ RequestExecutionLevel user
 !define INSTALL_KEY "Software\${APP_GUID}"
 !define RUN_KEY "Software\Microsoft\Windows\CurrentVersion\Run"
 !define UNINSTALLER "Uninstall ${PRODUCT_NAME}.exe"
-!define HELPERS "installer-helpers"
 !define POWERSHELL '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File'
 
 !define EXIT_RUNNING 3
 !define EXIT_OLD_UNINSTALLER 4
 !define EXIT_REFUSED 5
 !define EXIT_BAD_FOLDER 6
+!define EXIT_ELSEWHERE 7
+!define EXIT_HELPER 8
+!define EXIT_LINK 9
 
 Name "${PRODUCT_NAME}"
 OutFile "${OUT_FILE}"
@@ -202,10 +219,20 @@ FunctionEnd
 
 ; $R0 = the folder, $R1 = the helper script. $R2 out: its exit code (0: nothing runs from the folder any more), or "error" if
 ; PowerShell could not be started. This process's own id is passed so an uninstaller running from inside the folder survives.
+; $R0 has no trailing backslash (Normalize took it off): inside quotes a final \ would escape the closing quote.
 Function ${un}StopRunning
   System::Call 'kernel32::GetCurrentProcessId() i .r0'
   StrCpy $MyPid $0
   nsExec::ExecToStack '${POWERSHELL} "$R1" -Folder "$R0" -ExceptProcessId $MyPid'
+  Pop $R2
+  Pop $R3
+  DetailPrint "$R3"
+FunctionEnd
+
+; $R0 = the folder, $R1 = the helper script (unlink-reparse-points.ps1). $R2 out: its exit code (0: no link is left in the folder), or
+; "error" if PowerShell could not be started. Same quoting rule as above.
+Function ${un}Unlink
+  nsExec::ExecToStack '${POWERSHELL} "$R1" -Folder "$R0"'
   Pop $R2
   Pop $R3
   DetailPrint "$R3"
@@ -232,6 +259,19 @@ Function .onInit
     SetErrorLevel ${EXIT_BAD_FOLDER}
     Quit
   ${EndIf}
+  ; An install that this identity's own key says is somewhere else is not this installer's to replace. The old uninstaller that the
+  ; install section runs deletes the folder this value names (it ignores the one it is given), so a stale or planted value must
+  ; stop the install here, before anything is extracted, stopped or run. The value is never "corrected": owner data may be at stake.
+  ReadRegStr $R1 HKCU "${INSTALL_KEY}" "InstallLocation"
+  ${If} $R1 != ""
+    StrCpy $R0 $INSTDIR
+    Call SamePath
+    ${If} $R2 != 1
+      MessageBox MB_OK|MB_ICONSTOP "${PRODUCT_NAME} is recorded as installed in $R1, not in $INSTDIR, so nothing was changed. Remove that install first, or fix the entry by hand." /SD IDOK
+      SetErrorLevel ${EXIT_ELSEWHERE}
+      Quit
+    ${EndIf}
+  ${EndIf}
 FunctionEnd
 
 ; $R0 = the shortcut's path. Makes it as R1 does, then sets its AppUserModelID. An update leaves out a shortcut the user removed.
@@ -255,6 +295,7 @@ Section "Install"
   SetOutPath "$PLUGINSDIR"
   File "${__FILEDIR__}\scoped-processes.ps1"
   File "${__FILEDIR__}\stop-install-processes.ps1"
+  File "${__FILEDIR__}\unlink-reparse-points.ps1"
   File "${__FILEDIR__}\set-shortcut-aumid.ps1"
 
   StrCpy $HadInstall 0
@@ -262,38 +303,62 @@ Section "Install"
     StrCpy $HadInstall 1
   ${EndIf}
 
-  ; 1. Nothing may run from the folder: not the old app, and not its daemon, on the data root the new app is about to use.
   ${If} ${FileExists} "$INSTDIR\*.*"
+    ; 1. Nothing may run from the folder: not the old app, and not its daemon, on the data root the new app is about to use.
     StrCpy $R0 "$INSTDIR"
     StrCpy $R1 "$PLUGINSDIR\stop-install-processes.ps1"
     Call StopRunning
-    ${If} $R2 != 0
+    ${If} $R2 == 3
       MessageBox MB_OK|MB_ICONSTOP "${PRODUCT_NAME} is running and could not be closed. Close it and run the installer again." /SD IDOK
       SetErrorLevel ${EXIT_RUNNING}
+      Abort
+    ${ElseIf} $R2 != 0
+      MessageBox MB_OK|MB_ICONSTOP "The installer could not check whether ${PRODUCT_NAME} is running (PowerShell did not run the helper: $R2). Nothing was changed." /SD IDOK
+      SetErrorLevel ${EXIT_HELPER}
+      Abort
+    ${EndIf}
+
+    ; 2. No link inside the folder may be left for a deletion to follow: not R1's uninstaller's, which is next, and not this one's.
+    StrCpy $R0 "$INSTDIR"
+    StrCpy $R1 "$PLUGINSDIR\unlink-reparse-points.ps1"
+    Call Unlink
+    ${If} $R2 == 4
+    ${OrIf} $R2 == 5
+      MessageBox MB_OK|MB_ICONSTOP "The ${PRODUCT_NAME} folder is, or holds, a link that cannot be removed safely, so nothing was changed: $R3" /SD IDOK
+      SetErrorLevel ${EXIT_LINK}
+      Abort
+    ${ElseIf} $R2 != 0
+      MessageBox MB_OK|MB_ICONSTOP "The installer could not check the ${PRODUCT_NAME} folder for links (PowerShell did not run the helper: $R2). Nothing was changed." /SD IDOK
+      SetErrorLevel ${EXIT_HELPER}
       Abort
     ${EndIf}
   ${EndIf}
 
-  ; 2. The old version removes its own files first, from a temp copy of its uninstaller, in keep-data mode, as an update does.
+  ; 3. The old version removes its own files first, from a temp copy of its uninstaller, in keep-data mode, as an update does.
   ${If} $HadInstall == 1
+    ClearErrors
     CopyFiles /SILENT "$INSTDIR\${UNINSTALLER}" "$PLUGINSDIR\old-uninstaller.exe"
+    ${If} ${Errors}
+      MessageBox MB_OK|MB_ICONSTOP "The old version of ${PRODUCT_NAME} could not be prepared for removal. Nothing was changed." /SD IDOK
+      SetErrorLevel ${EXIT_OLD_UNINSTALLER}
+      Abort
+    ${EndIf}
+    ; $R0 must not still hold something from above when the program fails to start: it starts as "not run", which is not 0.
+    StrCpy $R0 "not run"
+    ClearErrors
     ExecWait '"$PLUGINSDIR\old-uninstaller.exe" /S /KEEP_APP_DATA /currentuser --keep-shortcuts --updated _?=$INSTDIR' $R0
-    ${If} $R0 != 0
+    ${If} ${Errors}
+    ${OrIf} $R0 != 0
       MessageBox MB_OK|MB_ICONSTOP "The old version of ${PRODUCT_NAME} could not be removed (code $R0). Run the installer again." /SD IDOK
       SetErrorLevel ${EXIT_OLD_UNINSTALLER}
       Abort
     ${EndIf}
   ${EndIf}
 
-  ; 3. The new files.
+  ; 4. The new files.
   SetOutPath "$INSTDIR"
   SetOverwrite on
   File /r "${PAYLOAD_DIR}\*.*"
-  ; What the uninstaller needs to close the app, which it cannot unpack itself.
-  SetOutPath "$INSTDIR\${HELPERS}"
-  File "${__FILEDIR__}\scoped-processes.ps1"
-  File "${__FILEDIR__}\stop-install-processes.ps1"
-  SetOutPath "$INSTDIR"
   WriteUninstaller "$INSTDIR\${UNINSTALLER}"
 
   ; HKCU\Software\<GUID>: where the install is recorded, read by the next install and by the uninstaller's guard.
@@ -338,6 +403,7 @@ FunctionEnd
 ; ---- the uninstaller --------------------------------------------------------------------------------------------------------
 ; Runs in the copy NSIS makes in %TEMP% (or in place when given _?=), with $INSTDIR already the folder it is removing.
 Function un.onInit
+  InitPluginsDir
   Call un.ReadFlags
   StrCpy $R0 $INSTDIR
   Call un.Normalize
@@ -353,22 +419,51 @@ Function un.onInit
     SetErrorLevel ${EXIT_REFUSED}
     Quit
   ${EndIf}
+  ; Started by hand (the Start menu, Apps & features), it asks first, as R1's does. An update, and anything silent, never asks.
+  ${If} $Updated != 1
+  ${AndIfNot} ${Silent}
+    MessageBox MB_YESNO|MB_ICONQUESTION "Remove ${PRODUCT_NAME} from this computer? Your data is kept." /SD IDYES IDYES +2
+    Quit
+  ${EndIf}
 FunctionEnd
 
 Section "Uninstall"
   SetShellVarContext current
 
+  ; The helpers are unpacked from the uninstaller itself into its own temp folder: nothing in the install folder, which may have been
+  ; quarantined, locked or edited, is needed to remove the app, and none of it is run.
+  SetOutPath "$PLUGINSDIR"
+  File "${__FILEDIR__}\scoped-processes.ps1"
+  File "${__FILEDIR__}\stop-install-processes.ps1"
+  File "${__FILEDIR__}\unlink-reparse-points.ps1"
+
   ; Nothing may run from the folder while it is removed.
   StrCpy $R0 "$INSTDIR"
-  StrCpy $R1 "$INSTDIR\${HELPERS}\stop-install-processes.ps1"
-  ${If} ${FileExists} "$R1"
-    Call un.StopRunning
-  ${Else}
-    StrCpy $R2 "no helper"
-  ${EndIf}
-  ${If} $R2 != 0
+  StrCpy $R1 "$PLUGINSDIR\stop-install-processes.ps1"
+  Call un.StopRunning
+  ${If} $R2 == 3
     MessageBox MB_OK|MB_ICONSTOP "${PRODUCT_NAME} is running and could not be closed. Close it and run the uninstaller again." /SD IDOK
     SetErrorLevel ${EXIT_RUNNING}
+    Abort
+  ${ElseIf} $R2 != 0
+    MessageBox MB_OK|MB_ICONSTOP "The uninstaller could not check whether ${PRODUCT_NAME} is running (PowerShell did not run the helper: $R2). Nothing was removed." /SD IDOK
+    SetErrorLevel ${EXIT_HELPER}
+    Abort
+  ${EndIf}
+
+  ; No link inside the folder may be left for the deletion below to follow. A folder that is itself a link, or a link that will not
+  ; go, stops the uninstall here, before the registry or a shortcut or a file has been touched.
+  StrCpy $R0 "$INSTDIR"
+  StrCpy $R1 "$PLUGINSDIR\unlink-reparse-points.ps1"
+  Call un.Unlink
+  ${If} $R2 == 4
+  ${OrIf} $R2 == 5
+    MessageBox MB_OK|MB_ICONSTOP "The ${PRODUCT_NAME} folder is, or holds, a link that cannot be removed safely, so nothing was removed: $R3" /SD IDOK
+    SetErrorLevel ${EXIT_LINK}
+    Abort
+  ${ElseIf} $R2 != 0
+    MessageBox MB_OK|MB_ICONSTOP "The uninstaller could not check the ${PRODUCT_NAME} folder for links (PowerShell did not run the helper: $R2). Nothing was removed." /SD IDOK
+    SetErrorLevel ${EXIT_HELPER}
     Abort
   ${EndIf}
 
@@ -395,6 +490,7 @@ Section "Uninstall"
 
   ; The install folder, which the guard in un.onInit has shown to be this identity's own. Run from a temp copy, the uninstaller
   ; removes itself with it; run in place (_?=) it cannot, and the installer that follows overwrites it.
+  ; /REBOOTOK: a file that something holds open at this moment (a virus scanner) is deleted at the next restart, not skipped.
   SetOutPath "$TEMP"
-  RMDir /r "$INSTDIR"
+  RMDir /r /REBOOTOK "$INSTDIR"
 SectionEnd

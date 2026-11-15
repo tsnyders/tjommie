@@ -72,7 +72,7 @@ describe.skipIf(!windows)("the installer scripts, linted", () => {
   };
 
   it("finds no variable that is read and never assigned, and no command that is not defined", () => {
-    const files = ["accept-fresh.ps1", "accept-over-r1.ps1", "accept-lib.ps1", "build-installer.ps1", "build-acceptance-installers.ps1", "build-stub-payload.ps1", "stop-install-processes.ps1", "set-shortcut-aumid.ps1"];
+    const files = ["accept-fresh.ps1", "accept-over-r1.ps1", "accept-lib.ps1", "build-installer.ps1", "build-acceptance-installers.ps1", "build-stub-payload.ps1", "stop-install-processes.ps1", "unlink-reparse-points.ps1", "set-shortcut-aumid.ps1", "hosted-runner.ps1", "install-latest-r1.ps1"];
     const report = lint(installer, files);
     for (const file of files) expect(report[file], file).toEqual([]);
   });
@@ -120,11 +120,37 @@ describe.skipIf(!windows)("the acceptance library's pure helpers", () => {
     expect(result.sizes).toEqual([4096]);
   });
 
+  // The first runner run failed O3 and O4 with "missing: lockfile": Electron's lockfile exists only while R1 runs, and the "before"
+  // snapshot is taken with R1 running. The comparison ignores exactly the entries R1 has while it runs and not after, read from the
+  // T8.1 facts (what its first start left, against what was left after it was stopped), and nothing else.
+  it("ignores only the files R1 has while it runs, read from the facts, and a real missing file still fails", () => {
+    const result = runBody("accept-lib.ps1", String.raw`
+      $facts = Read-Json '${join(installer, "r1-install-facts.json")}'
+      $before = [ordered]@{ 'lockfile' = 'AA'; 'sentinel\acceptance.db' = 'BB'; 'bots\x.db' = 'CC'; 'Cache\f_1' = 'DD' }
+      $after  = [ordered]@{ 'sentinel\acceptance.db' = 'BB'; 'bots\x.db' = 'CC' }
+      $runtime = @(Get-R1RuntimeOnlyEntries $facts)
+      [ordered]@{
+        runtime         = $runtime
+        unfiltered      = @(Compare-Snapshot $before $after -IgnoreAdded)
+        filtered        = @(Compare-Snapshot $before $after -IgnoreAdded -IgnorePaths $runtime)
+        realMissing     = @(Compare-Snapshot $before ([ordered]@{ 'sentinel\acceptance.db' = 'BB'; 'Cache\f_1' = 'DD' }) -IgnoreAdded -IgnorePaths $runtime)
+        sentinelChanged = @(Compare-Snapshot $before ([ordered]@{ 'sentinel\acceptance.db' = 'XX'; 'bots\x.db' = 'CC'; 'Cache\f_1' = 'DD' }) -IgnoreAdded -IgnorePaths $runtime)
+        caseless        = @(Compare-Snapshot $before $after -IgnoreAdded -IgnorePaths @('LOCKFILE', 'cache\F_1'))
+      } | ConvertTo-Json -Compress
+    `) as { runtime: string[]; unfiltered: string[]; filtered: string[]; realMissing: string[]; sentinelChanged: string[]; caseless: string[] };
+    expect(result.runtime).toEqual(["lockfile"]); // what the committed facts say R1 has only while it runs
+    expect([...result.unfiltered].sort()).toEqual(["missing: Cache\\f_1", "missing: lockfile"]);
+    expect(result.filtered).toEqual(["missing: Cache\\f_1"]); // lockfile is ignored, a rotated cache file is not named so it still counts
+    expect(result.realMissing).toEqual(["missing: bots\\x.db"]);
+    expect(result.sentinelChanged).toEqual(["changed: sentinel\\acceptance.db"]);
+    expect(result.caseless).toEqual([]);
+  });
+
   it("lists the files a stub install holds, and the files under a folder, the same way", () => {
     const root = temp();
     mkdirSync(join(root, "resources", "daemon"), { recursive: true });
-    mkdirSync(join(root, "installer-helpers"), { recursive: true });
-    for (const file of ["Tjommie.exe", "resources\\daemon\\tjommie-daemon.exe", "Uninstall Tjommie.exe", "installer-helpers\\scoped-processes.ps1", "installer-helpers\\stop-install-processes.ps1"]) writeFileSync(join(root, file), "x");
+    // The payload and the uninstaller, and nothing else: the helpers live inside the uninstaller since the T8.2 review (F3).
+    for (const file of ["Tjommie.exe", "resources\\daemon\\tjommie-daemon.exe", "Uninstall Tjommie.exe"]) writeFileSync(join(root, file), "x");
     const result = runBody("accept-lib.ps1", String.raw`
       [ordered]@{
         expected  = @(Get-ExpectedFiles 'Tjommie' 'Tjommie.exe')
@@ -134,6 +160,7 @@ describe.skipIf(!windows)("the acceptance library's pure helpers", () => {
       } | ConvertTo-Json -Compress
     `) as { expected: string[]; installed: string[]; none: string[]; dev: string[] };
     expect(result.installed).toEqual(result.expected);
+    expect([...result.expected].sort()).toEqual(["Tjommie.exe", "Uninstall Tjommie.exe", "resources\\daemon\\tjommie-daemon.exe"]);
     expect(result.none).toEqual([]);
     expect(result.dev).toContain("Uninstall Tjommie RS.exe");
     expect(result.dev).toContain("TjommieRS.exe");
