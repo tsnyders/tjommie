@@ -452,6 +452,8 @@ pub fn start(identity: Identity, root: PathBuf, cx: &mut App) {
             return;
         }
     };
+    // This device's local dictation runs on the same runtime.
+    crate::speech::start(&identity, &root, runtime.handle(), cx);
     let base: Env = std::env::vars().collect();
     let env = launch_env(&identity, &root, &base);
     let daemon = if identity.kind == Kind::Dev && root.join("daemon-token").exists() {

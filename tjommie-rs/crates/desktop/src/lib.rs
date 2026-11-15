@@ -9,6 +9,7 @@ pub mod model;
 pub mod motion;
 pub mod notices;
 pub mod semantic;
+pub mod speech;
 #[cfg(any(test, feature = "test-driver"))]
 pub mod test_driver;
 pub mod theme;

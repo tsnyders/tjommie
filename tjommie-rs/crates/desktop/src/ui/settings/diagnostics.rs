@@ -129,8 +129,7 @@ pub(super) fn report(info: &SystemInfo, cx: &App) -> String {
             .as_ref()
             .and_then(|host| serde_json::to_value(host).ok())
             .unwrap_or(Value::Null),
-        // ponytail: this device's speech status joins the report when Voice wires the speech runtime.
-        speech: Value::Null,
+        speech: crate::speech::status_value(cx),
         connection: connection_value(&state.connection),
         paired: state.host.is_some(),
         platform: "windows",
