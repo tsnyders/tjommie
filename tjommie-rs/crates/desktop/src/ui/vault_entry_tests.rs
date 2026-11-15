@@ -15,7 +15,10 @@ fn start(cx: &mut TestAppContext) -> Arc<EntryWindows> {
         cx.bind_keys(crate::keymap::bindings());
         cx.set_global(Theme::aegis().unwrap());
         crate::notices::init(cx);
-        EntryWindows::start(cx)
+        let windows = EntryWindows::start(cx);
+        // The test platform's windows have no HWND for Windows to hide; screen capture is out of the picture.
+        cx.set_global(HideFromCapture(|_| true));
+        windows
     })
 }
 
@@ -92,6 +95,10 @@ async fn an_entry_is_typed_in_its_own_window_and_handed_over(cx: &mut TestAppCon
     );
     cx.run_until_parked();
     assert!(shown(cx).is_some(), "the entry window opened");
+    assert!(
+        on_screen("logins.password", cx) && !on_screen("logins.capture", cx),
+        "hidden from capture, it takes a login and says nothing of capture"
+    );
     type_fields(["  Docs  ", "https://docs.rs", "forge", "secret-1"], cx);
     let (_, view) = shown(cx).unwrap();
     confirm(cx);
@@ -185,6 +192,168 @@ async fn the_vault_cancelling_closes_the_window(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert_eq!(answer.await, Ok(false));
     assert!(shown(cx).is_none(), "closed");
+}
+
+/// Draws the open window, as Windows does once it shows: keys reach what its last frame holds.
+fn draw(cx: &mut TestAppContext) -> AnyWindowHandle {
+    let (handle, _) = shown(cx).expect("a Logins window");
+    cx.update_window(handle, |_, window, cx| window.draw(cx).clear(cx))
+        .unwrap();
+    handle
+}
+
+/// Whether the open window draws `id`.
+fn on_screen(id: &'static str, cx: &mut TestAppContext) -> bool {
+    let window = draw(cx);
+    gpui::VisualTestContext::from_window(window, cx)
+        .debug_bounds(id)
+        .is_some()
+}
+
+/// Closing the window with its X is a cancel, and frees it at once (review F4): the next request opens straight away,
+/// not when the two-minute timer ends, and nothing keeps the fields typed into it.
+#[gpui::test]
+async fn closing_the_window_frees_it_at_once(cx: &mut TestAppContext) {
+    let windows = start(cx);
+    let (_fire, cancel) = Cancel::pair();
+    let asking = windows.clone();
+    let answer = ask(
+        cx,
+        async move { asking.entry("b1".into(), None, cancel).await },
+    );
+    cx.run_until_parked();
+    type_fields(["Docs", "https://docs.rs", "forge", "secret-1"], cx);
+    let (window, view) = shown(cx)
+        .map(|(window, view)| (window, view.downgrade()))
+        .unwrap();
+    // Windows asks the window first (its X), then closes it.
+    let mut closing = gpui::VisualTestContext::from_window(window, cx);
+    assert!(closing.simulate_close(), "it may close");
+    assert!(shown(cx).is_none(), "and is off the record at once");
+    cx.update_window(window, |_, window, _| window.remove_window())
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(
+        answer.await.map(|input| input.is_none()),
+        Ok(true),
+        "a cancel"
+    );
+    assert!(view.upgrade().is_none(), "nothing keeps its fields");
+
+    let (_fire, cancel) = Cancel::pair();
+    let asking = windows.clone();
+    let next = ask(cx, async move {
+        asking.confirm(Confirmation::Unlock, cancel).await
+    });
+    cx.run_until_parked();
+    assert!(shown(cx).is_some(), "the next request opens at once");
+    confirm(cx);
+    assert_eq!(next.await, Ok(true));
+}
+
+/// When Windows won't keep the window out of screen capture (review F3), an entry window takes no login: no fields, no
+/// Save, only Cancel, and it says why. A confirmation shows no secret: it still asks, and says capture can see it.
+#[gpui::test]
+async fn a_window_screen_capture_can_see_takes_no_login(cx: &mut TestAppContext) {
+    let windows = start(cx);
+    cx.update(|cx| cx.set_global(HideFromCapture(|_| false)));
+    let (_fire, cancel) = Cancel::pair();
+    let asking = windows.clone();
+    let answer = ask(
+        cx,
+        async move { asking.entry("b1".into(), None, cancel).await },
+    );
+    cx.run_until_parked();
+    assert!(on_screen("logins.capture", cx), "it says why");
+    for id in [
+        "logins.name",
+        "logins.origin",
+        "logins.username",
+        "logins.password",
+        "logins.confirm",
+    ] {
+        assert!(!on_screen(id, cx), "{id} is not drawn");
+    }
+    assert!(on_screen("logins.cancel", cx), "Cancel is");
+    let window = draw(cx);
+    cx.simulate_keystrokes(window, "escape");
+    assert_eq!(answer.await.map(|input| input.is_none()), Ok(true));
+
+    let (_fire, cancel) = Cancel::pair();
+    let asking = windows.clone();
+    let answer = ask(cx, async move {
+        asking.confirm(Confirmation::Unlock, cancel).await
+    });
+    cx.run_until_parked();
+    assert!(on_screen("logins.capture", cx), "a confirmation warns");
+    assert!(on_screen("logins.confirm", cx), "and still asks");
+    confirm(cx);
+    assert_eq!(answer.await, Ok(true));
+}
+
+/// Escape and Ctrl+B typed in a Logins window are its own (review F1): GPUI's bindings and `App::on_action` are app-wide,
+/// so without the `Logins` context they reached the browser panel's handlers and could hand the browser back to the
+/// agent mid-confirmation. Escape cancels the window, from its body and from a field.
+#[gpui::test]
+async fn escape_and_ctrl_b_in_a_logins_window_stay_there(cx: &mut TestAppContext) {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use crate::keymap::{Dismiss, TogglePanel};
+
+    let windows = start(cx);
+    // The browser panel's handlers, as `ui::browser::init` registers them: app-wide.
+    let heard = Rc::new(Cell::new(0));
+    cx.update(|cx| {
+        let on_dismiss = heard.clone();
+        cx.on_action(move |_: &Dismiss, _: &mut App| {
+            guarded("test dismiss", || on_dismiss.set(on_dismiss.get() + 1));
+        });
+        let on_toggle = heard.clone();
+        cx.on_action(move |_: &TogglePanel, _: &mut App| {
+            guarded("test toggle", || on_toggle.set(on_toggle.get() + 1));
+        });
+    });
+
+    let (_fire, cancel) = Cancel::pair();
+    let asking = windows.clone();
+    let answer = ask(cx, async move {
+        asking.confirm(Confirmation::Unlock, cancel).await
+    });
+    cx.run_until_parked();
+    let window = draw(cx);
+    cx.simulate_keystrokes(window, "ctrl-b");
+    assert_eq!(heard.get(), 0, "Ctrl+B leaves the browser panel alone");
+    assert!(shown(cx).is_some(), "and the Logins window open");
+    cx.simulate_keystrokes(window, "escape");
+    assert_eq!(heard.get(), 0, "Escape leaves the browser panel alone");
+    assert_eq!(answer.await, Ok(false), "and cancels the Logins window");
+    assert!(shown(cx).is_none(), "which closed");
+
+    // Typing in a field: the field passes Escape on, and it cancels the entry.
+    let (_fire, cancel) = Cancel::pair();
+    let asking = windows.clone();
+    let answer = ask(
+        cx,
+        async move { asking.entry("b1".into(), None, cancel).await },
+    );
+    cx.run_until_parked();
+    let window = draw(cx);
+    let (_, view) = shown(cx).unwrap();
+    cx.update_window(window, |_, window, cx| {
+        let password = view.read(cx).fields.as_ref().unwrap().password.clone();
+        password.update(cx, |input, cx| input.focus(window, cx));
+        window.draw(cx).clear(cx);
+    })
+    .unwrap();
+    cx.simulate_keystrokes(window, "ctrl-b escape");
+    assert_eq!(heard.get(), 0, "the panel heard nothing from the field");
+    assert_eq!(
+        answer.await.map(|input| input.is_none()),
+        Ok(true),
+        "Escape cancelled the entry"
+    );
+    assert!(shown(cx).is_none());
 }
 
 #[test]

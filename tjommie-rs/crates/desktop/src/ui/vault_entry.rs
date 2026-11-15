@@ -1,9 +1,12 @@
 //! The trusted Logins windows (Phase 3 plan T3.6; `vault-entry.ts`, `vault-entry.html`, `vault-entry.js`): a login is typed
 //! into a window of its own, never into the panel or a page, and each Logins step the vault asks the person to confirm is
-//! answered there. One window at a time. It closes after two minutes, when the vault cancels or locks, or when the person
-//! closes it, and each of those is a cancel. The username and password fields are emptied the moment a form is handed
-//! over, and `EntryForm` wipes its copies when it drops. Screen capture can't see the window (`WDA_EXCLUDEFROMCAPTURE`,
-//! as Electron's content protection). It has no test-driver hooks outside test-driver builds.
+//! answered there. One window at a time, modal over the app's window. It closes after two minutes, when the vault
+//! cancels or locks, or when the person closes it or presses Escape, and each of those is a cancel. The username and
+//! password fields are emptied the moment a form is handed over, and `EntryForm` wipes its copies when it drops; the
+//! fields' own copies (gpui-kit's text rope and its undo history) are freed, not wiped, as gpui-kit has no zeroing.
+//! Screen capture can't see the window (`WDA_EXCLUDEFROMCAPTURE`, as Electron's content protection); when Windows won't
+//! hide it, the failure is logged, an entry window takes no login (no fields, only Cancel), and a confirmation, which
+//! shows no secret, says capture can see it. It has no test-driver hooks outside test-driver builds.
 //!
 //! The vault asks from its own thread: `EntryWindows` sends each request to the UI thread and awaits its answer.
 
@@ -17,14 +20,16 @@ use futures::channel::oneshot;
 use futures::future::BoxFuture;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyWindowHandle, App, AppContext as _, Bounds, Context, Entity, Global, IntoElement,
-    ParentElement as _, Render, Role, SharedString, StatefulInteractiveElement as _, Styled as _,
-    TitlebarOptions, Window, WindowBounds, WindowOptions, div, px, size,
+    AnyWindowHandle, App, AppContext as _, Bounds, Context, Entity, FocusHandle, Global,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, Role, SharedString,
+    StatefulInteractiveElement as _, Styled as _, TitlebarOptions, Window, WindowBounds,
+    WindowKind, WindowOptions, div, px, size,
 };
 use gpui_kit::base::input::InputState;
 use protocol::vault::{FinishMode, LoginEntry};
 
 use crate::guard::{guarded, guarded_async};
+use crate::keymap::{CancelLogins, LOGINS};
 use crate::semantic::SemanticExt as _;
 use crate::ui::primitives::button::{Pill, PillVariant};
 use crate::ui::style::{TypeExt as _, hsla, palette, r, theme};
@@ -138,11 +143,25 @@ struct Open(Option<(AnyWindowHandle, Entity<EntryView>)>);
 
 impl Global for Open {}
 
+/// How a window is kept out of screen capture: `hide_from_capture`, or a test's stand-in (the test platform's windows
+/// have no HWND). Whether it worked.
+#[derive(Clone, Copy)]
+struct HideFromCapture(fn(&Window) -> bool);
+
+impl Global for HideFromCapture {}
+
+impl Default for HideFromCapture {
+    fn default() -> Self {
+        HideFromCapture(hide_from_capture)
+    }
+}
+
 impl EntryWindows {
     /// Starts taking the vault's requests on the UI thread.
     pub fn start(cx: &mut App) -> Arc<EntryWindows> {
         let (requests, inbox) = async_channel::unbounded::<Request>();
         cx.default_global::<Open>();
+        cx.default_global::<HideFromCapture>();
         cx.spawn(async move |cx| {
             guarded_async("open the Logins windows", async move {
                 while let Ok(request) = inbox.recv().await {
@@ -242,16 +261,29 @@ fn open(ask: Ask, cancel: Cancel, answer: Answer, cx: &mut App) {
             ..TitlebarOptions::default()
         }),
         is_resizable: false,
+        // Modal over the app's window while it asks (GPUI disables the active window, and enables it again when this
+        // one is destroyed); minimized, it would leave that window disabled with nothing to answer.
+        kind: WindowKind::Dialog,
+        is_minimizable: false,
         ..WindowOptions::default()
     };
+    let hide = cx.global::<HideFromCapture>().0;
     let opened = gpui_kit::open_window(options, cx, |window, cx| {
-        hide_from_capture(window);
-        let view = cx.new(|cx| EntryView::new(ask, answer, window, cx));
-        let closing = view.clone();
+        let hidden = hide(window);
+        let view = cx.new(|cx| EntryView::new(ask, answer, hidden, window, cx));
+        // The keyboard starts in the window, so its own keys (Escape) are its.
+        let focus = view.read(cx).focus.clone();
+        focus.focus(window, cx);
+        // Weak, here and in the timer below: only the window keeps the typed fields.
+        let closing = view.downgrade();
         // unguarded: it must answer Windows with a bool; its work runs in guarded inside
         window.on_window_should_close(cx, move |_, cx| {
             guarded("close the Logins window", || {
-                closing.update(cx, |view, _| view.cancel())
+                if let Some(view) = closing.upgrade() {
+                    view.update(cx, |view, _| view.cancel());
+                    // Off the record now: the next request needn't wait for the timer (review F4).
+                    forget(&view, cx);
+                }
             });
             true
         });
@@ -262,10 +294,15 @@ fn open(ask: Ask, cancel: Cancel, answer: Answer, cx: &mut App) {
             cx.global_mut::<Open>().0 = Some((handle, view.clone()));
             // The vault cancelling (or locking), and two minutes with no answer, close it as a cancel.
             let timer = cx.background_executor().timer(ENTRY_TIMEOUT);
+            let view = view.downgrade();
             cx.spawn(async move |cx| {
                 guarded_async("close the Logins window when it is over", async move {
                     futures::future::select(Box::pin(cancel.cancelled()), Box::pin(timer)).await;
-                    cx.update(|cx| finish(&view, cx));
+                    cx.update(|cx| {
+                        if let Some(view) = view.upgrade() {
+                            finish(&view, cx);
+                        }
+                    });
                 })
                 .await
             })
@@ -285,22 +322,46 @@ fn close(cx: &mut App) {
 /// Answers `view`'s request with a cancel if it is still open, and closes its window.
 fn finish(view: &Entity<EntryView>, cx: &mut App) {
     view.update(cx, |view, _| view.cancel());
-    let open = cx.global_mut::<Open>();
-    if open.0.as_ref().is_some_and(|(_, shown)| shown == view)
-        && let Some((handle, _)) = open.0.take()
-    {
+    if let Some(handle) = forget(view, cx) {
         let _ = handle.update(cx, |_, window, _| window.remove_window());
     }
 }
 
-/// Keeps the window out of screenshots and screen recordings.
-fn hide_from_capture(window: &Window) {
-    if let Ok(handle) = raw_window_handle::HasWindowHandle::window_handle(window)
-        && let raw_window_handle::RawWindowHandle::Win32(handle) = handle.as_raw()
-    {
-        desktop_host::vault::entry::exclude_from_capture(handle.hwnd.get());
+/// Takes `view` off the record if it is the open window, and gives back its window.
+fn forget(view: &Entity<EntryView>, cx: &mut App) -> Option<AnyWindowHandle> {
+    let open = cx.global_mut::<Open>();
+    if open.0.as_ref().is_some_and(|(_, shown)| shown == view) {
+        open.0.take().map(|(handle, _)| handle)
+    } else {
+        None
     }
 }
+
+/// Keeps the window out of screenshots and screen recordings. Whether Windows did; a failure is logged loudly.
+fn hide_from_capture(window: &Window) -> bool {
+    let hidden = match raw_window_handle::HasWindowHandle::window_handle(window)
+        .map(|handle| handle.as_raw())
+    {
+        Ok(raw_window_handle::RawWindowHandle::Win32(handle)) => {
+            desktop_host::vault::entry::exclude_from_capture(handle.hwnd.get())
+                .map_err(|error| error.to_string())
+        }
+        Ok(other) => Err(format!("not a Win32 window: {other:?}")),
+        Err(error) => Err(error.to_string()),
+    };
+    if let Err(error) = &hidden {
+        log::error!(
+            "Screen capture can see the Logins window ({error}): it takes no login, and its confirmations warn"
+        );
+    }
+    hidden.is_ok()
+}
+
+/// What an entry window says when Windows won't keep it out of screen capture: it takes no login (review F3).
+const CAPTURE_REFUSED: &str =
+    "This PC can't keep this window out of screen capture, so it won't take a login.";
+/// What a confirmation says then: it shows no secret, so it still asks.
+const CAPTURE_WARNING: &str = "This PC can't keep this window out of screen capture.";
 
 /// The typed fields of an entry window.
 struct Fields {
@@ -315,12 +376,22 @@ pub struct EntryView {
     fields: Option<Fields>,
     problem: Option<&'static str>,
     answer: Option<Answer>,
+    /// Screen capture can't see the window.
+    hidden: bool,
+    focus: FocusHandle,
 }
 
 impl EntryView {
-    fn new(ask: Ask, answer: Answer, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(
+        ask: Ask,
+        answer: Answer,
+        hidden: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let fields = match &ask {
-            Ask::Entry { previous, .. } => {
+            // Screen capture could see what is typed: no fields (review F3).
+            Ask::Entry { previous, .. } if hidden => {
                 let input =
                     |value: String, masked: bool, window: &mut Window, cx: &mut Context<Self>| {
                         cx.new(|cx| {
@@ -350,13 +421,15 @@ impl EntryView {
                     password: input(String::new(), true, window, cx),
                 })
             }
-            Ask::Confirm(_) => None,
+            Ask::Entry { .. } | Ask::Confirm(_) => None,
         };
         EntryView {
             ask,
             fields,
             problem: None,
             answer: Some(answer),
+            hidden,
+            focus: cx.focus_handle(),
         }
     }
 
@@ -373,8 +446,9 @@ impl EntryView {
         };
         match (answer, &self.fields) {
             (Answer::Entry(answer), Some(fields)) => {
-                let read =
-                    |input: &Entity<InputState>, cx: &App| input.read(cx).value().to_string();
+                // Straight from the field's rope into the form's own string, which it wipes: `value()` would leave
+                // one more copy, in a shared string nothing wipes (review F11).
+                let read = |input: &Entity<InputState>, cx: &App| input.read(cx).text().to_string();
                 let form = EntryForm::new(
                     read(&fields.name, cx),
                     read(&fields.origin, cx),
@@ -405,11 +479,7 @@ impl EntryView {
     }
 
     fn done(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let me = cx.entity();
-        let open = cx.global_mut::<Open>();
-        if open.0.as_ref().is_some_and(|(_, shown)| *shown == me) {
-            open.0 = None;
-        }
+        forget(&cx.entity(), cx);
         window.remove_window();
     }
 }
@@ -460,9 +530,18 @@ impl Render for EntryView {
         let confirm = move |window: &mut Window, cx: &mut App| {
             entity.update(cx, |view, cx| view.submit(window, cx))
         };
+        let asks = self.fields.is_some() || matches!(self.ask, Ask::Confirm(_));
         div()
             .semantic("logins.window", Role::Dialog)
             .aria_label(words.title)
+            .key_context(LOGINS)
+            .track_focus(&self.focus)
+            .on_action(cx.listener(|view, _: &CancelLogins, window, cx| {
+                guarded("cancel the Logins window by key", || {
+                    view.cancel();
+                    view.done(window, cx);
+                });
+            }))
             .size_full()
             .flex()
             .flex_col()
@@ -479,6 +558,20 @@ impl Render for EntryView {
                     .child(words.title),
             )
             .child(div().text_color(hsla(colors.text.secondary)).child(words.description))
+            .when(!self.hidden, |body| {
+                let said = if matches!(self.ask, Ask::Entry { .. }) {
+                    CAPTURE_REFUSED
+                } else {
+                    CAPTURE_WARNING
+                };
+                body.child(
+                    div()
+                        .semantic("logins.capture", Role::Alert)
+                        .aria_label(said)
+                        .text_color(hsla(theme.color.bot.red))
+                        .child(said),
+                )
+            })
             .when(!words.destination.is_empty(), |body| {
                 body.child(
                     div()
@@ -509,11 +602,14 @@ impl Render for EntryView {
                     .justify_end()
                     .gap(r(theme.space.s8))
                     .child(Pill::new("logins.cancel", "Cancel").on_press(cancel))
-                    .child(
-                        Pill::new("logins.confirm", words.button)
-                            .variant(PillVariant::Primary)
-                            .on_press(confirm),
-                    ),
+                    // An entry window that takes no login has nothing to save.
+                    .when(asks, |buttons| {
+                        buttons.child(
+                            Pill::new("logins.confirm", words.button)
+                                .variant(PillVariant::Primary)
+                                .on_press(confirm),
+                        )
+                    }),
             )
             .child(
                 div()
