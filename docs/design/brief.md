@@ -91,7 +91,7 @@ All shapes use `viewBox="0 0 40 40"`; set `size` to the pixel size you want (20,
 
 ## 6. Roster and scenario (use the same data in all three directions)
 
-User: Tyrel (initials avatar "T", gray). South African job hunt plus admin.
+User: the owner (initials avatar "O", gray). South African job hunt plus admin.
 
 | Bot | Shape + color | Job | State in the frames |
 |---|---|---|---|
@@ -116,10 +116,10 @@ Remote screen content: a Chrome window on `pnet.co.za/jobs/full-stack-developer-
 Logins (vault) rows:
 | Site | Login | Last used |
 |---|---|---|
-| pnet.co.za | tyrel.jobs@gmail.com | 2 min ago |
-| careers24.com | tyrel.jobs@gmail.com | Yesterday |
-| linkedin.com | tyrel.jobs@gmail.com | 3 days ago |
-| mail.google.com | tyrel.jobs@gmail.com | Today |
+| pnet.co.za | owner@example.com | 2 min ago |
+| careers24.com | owner@example.com | Yesterday |
+| linkedin.com | owner@example.com | 3 days ago |
+| mail.google.com | owner@example.com | Today |
 Passwords always masked as 10 dots.
 
 Routines (Pnet apply): "Pnet apply 9am (3h)" Weekdays at 8:48 AM; "Pnet apply 1pm (3h)" Weekdays at 12:47 PM; "Pnet apply 5pm (3h)" Weekdays at 4:45 PM (paused one uses a pause icon).
