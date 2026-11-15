@@ -22,7 +22,10 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
     ICoreWebView2Settings4,
 };
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
-use windows::Win32::Graphics::Gdi::{CreateSolidBrush, MapWindowPoints};
+use windows::Win32::Graphics::Gdi::{
+    COMPLEXREGION, CreateRectRgn, CreateSolidBrush, DeleteObject, GDI_REGION_TYPE, GetRgnBox,
+    GetWindowRgn, MapWindowPoints, SIMPLEREGION, SetWindowRgn,
+};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, GetFocus, SetFocus};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -186,6 +189,9 @@ pub struct Panel {
     pub rect: RECT,
     /// A menu or dialog is over the page: its window is out of the way, but it stays awake.
     pub occluded: bool,
+    /// While the panel moves, the part of the page window inside the panel, in the window's own coordinates: the window is
+    /// clipped to it (the live variant, T3.7). `None` at rest: the whole window shows.
+    pub clip: Option<RECT>,
 }
 
 /// What a test or a status line can read about a bot's browser: the engine's own record and WebView2's truth.
@@ -203,6 +209,8 @@ pub struct BotSnapshot {
     pub container_shown: bool,
     /// The container's rectangle in the parent's client coordinates.
     pub container: Option<RECT>,
+    /// The bounds of the container's window region, in its own coordinates: `None` when it has none (it shows whole).
+    pub clip: Option<RECT>,
     pub memory: MemoryLevel,
     pub generation: String,
 }
@@ -261,6 +269,7 @@ struct Applied {
     plan: Plan,
     rect: Option<RECT>,
     occluded: bool,
+    clip: Option<RECT>,
     active: Option<String>,
     tabs: usize,
     memory: MemoryLevel,
@@ -922,10 +931,12 @@ impl Engine {
                 Placement::Parked => Some(parked_rect(state.viewport)),
                 Placement::Hidden => None,
             };
+            let clip = panel.and_then(|panel| panel.clip);
             let applied = Applied {
                 plan,
                 rect,
                 occluded,
+                clip,
                 active: state.active.clone(),
                 tabs: state.tabs.len(),
                 memory,
@@ -935,6 +946,7 @@ impl Engine {
                 return;
             }
             let mut resized = false;
+            // The page keeps its size while the panel moves and clips it, so a moving panel is no resize.
             if let (Placement::Panel, Some(rect)) = (plan.placement, rect) {
                 resized = state.viewport != rect_size(&rect);
                 state.viewport = rect_size(&rect);
@@ -964,7 +976,7 @@ impl Engine {
             return;
         };
         if plan.suspend {
-            Self::place(container, &tabs, None, false);
+            Self::place(container, &tabs, None, false, None);
             Self::set_visible(&tabs, None);
             for tab in &tabs {
                 if super::lifecycle::loading_blocks_suspend(tab.loading.get(), now) {
@@ -997,7 +1009,13 @@ impl Engine {
                 }
                 com::set_memory_level(&tab.webview, applied.memory);
             }
-            Self::place(container, &tabs, applied.rect, applied.occluded);
+            Self::place(
+                container,
+                &tabs,
+                applied.rect,
+                applied.occluded,
+                applied.clip,
+            );
             Self::set_visible(&tabs, applied.active.as_deref());
         }
         self.set_interactive(container, applied.interactive);
@@ -1020,7 +1038,13 @@ impl Engine {
         }
     }
 
-    fn place(container: HWND, tabs: &[Rc<Tab>], rect: Option<RECT>, window_hidden: bool) {
+    fn place(
+        container: HWND,
+        tabs: &[Rc<Tab>],
+        rect: Option<RECT>,
+        window_hidden: bool,
+        clip: Option<RECT>,
+    ) {
         // SAFETY: plain Win32 and COM calls on windows and controllers this engine owns, on the UI thread.
         unsafe {
             match rect {
@@ -1048,6 +1072,10 @@ impl Engine {
                             bottom: height,
                         });
                     }
+                    // The region is the window's from here on (SetWindowRgn owns it); none shows the whole window.
+                    let region = clip
+                        .map(|clip| CreateRectRgn(clip.left, clip.top, clip.right, clip.bottom));
+                    let _ = SetWindowRgn(container, region, true);
                     if window_hidden {
                         let _ = ShowWindow(container, SW_HIDE);
                     }
@@ -1393,6 +1421,18 @@ impl Engine {
                 bottom: corners[1].y,
             })
         });
+        let clip = container.and_then(|window| {
+            let mut bounds = RECT::default();
+            // SAFETY: a region this function creates, filled by GetWindowRgn and deleted here; the window is ours.
+            unsafe {
+                let region = CreateRectRgn(0, 0, 0, 0);
+                let kind = GetWindowRgn(window, region);
+                let read = (kind == SIMPLEREGION || kind == COMPLEXREGION)
+                    && GetRgnBox(region, &mut bounds) != GDI_REGION_TYPE(0);
+                let _ = DeleteObject(region.into());
+                read.then_some(bounds)
+            }
+        });
         Some(BotSnapshot {
             open: state.open,
             tabs: state.tabs.len(),
@@ -1405,6 +1445,7 @@ impl Engine {
             suspended: active.is_some_and(|tab| com::is_suspended(&tab.webview).unwrap_or(false)),
             container_shown,
             container: container_rect,
+            clip,
             memory: state
                 .applied
                 .as_ref()

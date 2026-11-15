@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use common::{Rig, webview_processes};
-use desktop_host::browser::engine::{DeleteOutcome, Notification};
+use desktop_host::browser::engine::{DeleteOutcome, Notification, Panel};
 use desktop_host::browser::lifecycle::{MemoryLevel, Placement};
 use desktop_host::browser::{flags, policy, profiles};
 use windows::Win32::Foundation::RECT;
@@ -159,6 +159,50 @@ fn tool_on_suspended_bot_resumes_first() {
     assert!(snap.open && !snap.suspended && snap.visible && snap.placement == Placement::Parked);
     assert_eq!(rig.eval("beta", "1 + 1"), "2");
     guard.end();
+}
+
+/// T3.7's live panel variant: while the panel moves, the page window keeps its whole rectangle and is clipped to the part
+/// inside the panel (spike `place_clipped`); at rest it shows whole.
+#[test]
+fn a_moving_panel_clips_the_page_window_and_a_resting_one_does_not() {
+    let mut rig = Rig::new();
+    rig.open("alpha");
+    rig.show("alpha");
+    assert_eq!(rig.engine.snapshot("alpha").expect("snapshot").clip, None);
+    let panel = rig.panel();
+    let (width, height) = (
+        panel.rect.right - panel.rect.left,
+        panel.rect.bottom - panel.rect.top,
+    );
+    let clip = RECT {
+        left: 0,
+        top: 0,
+        right: width / 3,
+        bottom: height,
+    };
+    rig.engine
+        .set_panel(
+            "alpha",
+            Some(Panel {
+                clip: Some(clip),
+                ..panel
+            }),
+        )
+        .expect("set panel");
+    let moving = rig.engine.snapshot("alpha").expect("snapshot");
+    assert_eq!(moving.clip, Some(clip), "clipped to the panel");
+    assert_eq!(
+        moving.container,
+        Some(panel.rect),
+        "the window keeps the page's whole rectangle"
+    );
+    assert!(moving.container_shown && moving.placement == Placement::Panel);
+    rig.show("alpha");
+    assert_eq!(
+        rig.engine.snapshot("alpha").expect("snapshot").clip,
+        None,
+        "at rest the whole window shows"
+    );
 }
 
 #[test]
