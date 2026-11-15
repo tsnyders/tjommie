@@ -7,9 +7,9 @@ mod editors;
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
 
 use client::{ClientMethod, Rpc as _, RpcError};
+use futures::StreamExt as _;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, Context, FocusHandle, InteractiveElement as _, IntoElement,
@@ -36,10 +36,18 @@ use crate::ui::shell::route::{Navigate as _, Route};
 use crate::ui::store;
 use crate::ui::style::{TypeExt as _, focus_ring, focus_visible, hsla, palette, r, theme};
 
-/// How often the screen reads the projects again while it shows.
-/// ponytail: a timer, where the TypeScript listened for `project.updated` and `task.*`: the connection has no event hook
-/// for a screen yet (`AppConnection` is the Client lane's); one would replace this.
-const REFRESH: Duration = Duration::from_secs(5);
+/// The events the screen reads everything again on (`project.updated`, `task.*`), as the TypeScript's did.
+fn project_event(event: &protocol::Event) -> bool {
+    use protocol::Event;
+    matches!(
+        event,
+        Event::ProjectUpdated(_)
+            | Event::TaskUpdated(_)
+            | Event::TaskAttemptUpdated(_)
+            | Event::TaskEvaluationUpdated(_)
+            | Event::TaskIntegrationUpdated(_)
+    )
+}
 
 /// A new id for a request the daemon must not run twice (`crypto.randomUUID()`): unique in this run, and the time
 /// keeps it apart from another run's.
@@ -152,10 +160,12 @@ pub struct ProjectsScreen {
 impl ProjectsScreen {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let _ = window;
+        let mut feed = store::events(cx, project_event);
         let refresh = cx.spawn(async move |this, cx| {
-            guarded_async("refresh the projects", async move {
-                loop {
-                    cx.background_executor().timer(REFRESH).await;
+            guarded_async("follow the projects' events", async move {
+                while feed.arrivals.next().await.is_some() {
+                    // A burst of task events is one read.
+                    while let Ok(()) = feed.arrivals.try_recv() {}
                     if this.update(cx, |this, cx| this.reload(cx)).is_err() {
                         break;
                     }

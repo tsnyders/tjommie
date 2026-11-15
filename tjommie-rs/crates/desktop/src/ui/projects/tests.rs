@@ -1,8 +1,6 @@
 //! Projects (T5.3): `project-workspace.test.tsx`, `task-detail.test.tsx` and `task-diff.test.tsx` one for one, through
 //! the store's fake. Sample data is invented.
 
-use std::time::Duration;
-
 use gpui::{IntoElement as _, TestAppContext};
 use protocol::model::BotState;
 use protocol::projects::{Project, ProjectTask, TaskDetail, TaskDiff};
@@ -126,10 +124,12 @@ fn a_chosen_task_takes_the_focus_once_and_a_refresh_leaves_it(cx: &mut TestAppCo
     draw(cx);
     assert!(!node("projects.detail").unwrap().focused);
     let reads = calls_of(&calls.calls(), "tasks.get").len();
-    cx.executor().advance_clock(Duration::from_secs(6));
+    cx.update(|_, cx| {
+        crate::ui::store::fake_event(cx, &protocol::Event::ProjectUpdated(project(json!([]))))
+    });
     draw(cx);
     draw(cx);
-    assert!(calls_of(&calls.calls(), "tasks.get").len() > reads, "it read again");
+    assert!(calls_of(&calls.calls(), "tasks.get").len() > reads, "a project event read it again");
     assert!(!node("projects.detail").unwrap().focused, "and left the focus where it was");
     // Choosing it again brings it again.
     click(cx, "projects.task.task-1");

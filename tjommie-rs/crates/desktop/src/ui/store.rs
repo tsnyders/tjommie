@@ -162,6 +162,86 @@ fn handle(cx: &App) -> Handle {
     }
 }
 
+/// A screen's feed of the daemon events it reads again on (`wanted`), for what the state doesn't keep (projects,
+/// devices, usage): each one arriving sends `()` to `arrivals`. Dropping the feed stops it. Without a live connection
+/// it never sends; a view test sends with `fake_event`.
+pub struct EventFeed {
+    pub arrivals: futures::channel::mpsc::UnboundedReceiver<()>,
+    _stop: Option<StopFeed>,
+}
+
+struct StopFeed {
+    live: std::sync::Weak<Live>,
+    id: crate::model::store::SubscriptionId,
+}
+
+impl Drop for StopFeed {
+    fn drop(&mut self) {
+        if let Some(live) = self.live.upgrade() {
+            live.unsubscribe(self.id);
+        }
+    }
+}
+
+/// `daemon().subscribe` for a screen: a feed of the events `wanted` accepts.
+pub fn events(cx: &mut App, wanted: fn(&protocol::Event) -> bool) -> EventFeed {
+    let (sender, arrivals) = futures::channel::mpsc::unbounded();
+    match handle(cx) {
+        Handle::Live(live) => {
+            // unguarded: the connection's own listener, not a GPUI handler; it only sends a signal (inside the connection's lock)
+            let id = live.subscribe_events(move |event| {
+                if wanted(event) {
+                    let _ = sender.unbounded_send(());
+                }
+            });
+            EventFeed {
+                arrivals,
+                _stop: Some(StopFeed {
+                    live: Arc::downgrade(&live),
+                    id,
+                }),
+            }
+        }
+        #[cfg(test)]
+        Handle::Fake(_) => {
+            cx.default_global::<FakeEvents>().0.push((wanted, sender));
+            EventFeed {
+                arrivals,
+                _stop: None,
+            }
+        }
+        Handle::None => EventFeed {
+            arrivals,
+            _stop: None,
+        },
+    }
+}
+
+/// The view tests' event feeds.
+#[cfg(test)]
+#[derive(Default)]
+struct FakeEvents(Vec<FakeFeed>);
+
+/// One fake feed: what it wants, and where it sends.
+#[cfg(test)]
+type FakeFeed = (fn(&protocol::Event) -> bool, futures::channel::mpsc::UnboundedSender<()>);
+
+#[cfg(test)]
+impl Global for FakeEvents {}
+
+/// A view test's daemon event: applied to the fake state, and sent to the feeds that want it.
+#[cfg(test)]
+pub fn fake_event(cx: &mut App, event: &protocol::Event) {
+    update(cx, |state| crate::model::state::apply_event(state, event));
+    if let Some(feeds) = cx.try_global::<FakeEvents>() {
+        for (wanted, sender) in &feeds.0 {
+            if wanted(event) {
+                let _ = sender.unbounded_send(());
+            }
+        }
+    }
+}
+
 /// `loadConversation`: loads a conversation's newest page once; events keep it current from then on, and a reconnect
 /// catches it up. The load finishes even if the task is dropped.
 pub fn load_conversation(cx: &mut App, conversation_id: &str, history: History) -> Task<()> {
