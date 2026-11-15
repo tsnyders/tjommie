@@ -139,7 +139,7 @@ pub(super) fn report(info: &SystemInfo, cx: &App) -> String {
 }
 
 /// A value at a row's right, in secondary text.
-pub(super) fn value(id: &'static str, text: impl Into<SharedString>, cx: &App) -> AnyElement {
+pub(super) fn value(id: impl Into<SharedString>, text: impl Into<SharedString>, cx: &App) -> AnyElement {
     let text = text.into();
     div()
         .semantic(id, Role::Paragraph)
