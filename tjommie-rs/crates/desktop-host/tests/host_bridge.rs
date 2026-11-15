@@ -128,6 +128,19 @@ where
     }
 }
 
+/// An executor that only counts how often it is told the daemon is lost.
+struct CountsLosses(Arc<AtomicUsize>);
+
+impl Executor for CountsLosses {
+    fn execute(&self, _job: Job) -> BoxFuture<'static, Result<Reply, String>> {
+        Box::pin(async { Ok(Reply::empty()) })
+    }
+
+    fn daemon_lost(&self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
 fn kind_of(job: &Job) -> &'static str {
     match &job.command {
         NativeBrowserCommand::Ui(ui) => match ui {
@@ -404,6 +417,38 @@ async fn a_bridge_with_the_wrong_token_reports_errors_and_still_closes_at_once()
         "closing took {:?}",
         closing.elapsed()
     );
+    fixture.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_executor_is_told_the_daemon_is_lost_once_per_outage_not_once_per_error() {
+    let fixture = fixture('h', Duration::from_secs(5)).await;
+    let (errors, losses) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+    let counted = errors.clone();
+    let bridge = HostBridge::start(
+        BridgeConfig {
+            port: fixture.port,
+            // A refused token: every poll fails, again and again.
+            token: secret('x'),
+        },
+        Arc::new(CountsLosses(losses.clone())),
+        Arc::new(move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+        }),
+    )
+    .expect("bridge");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while errors.load(Ordering::SeqCst) < 3 {
+        assert!(Instant::now() < deadline, "the errors keep coming");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(
+        losses.load(Ordering::SeqCst),
+        1,
+        "{} errors, one outage",
+        errors.load(Ordering::SeqCst)
+    );
+    bridge.close();
     fixture.close().await;
 }
 

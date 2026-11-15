@@ -254,13 +254,17 @@ fn e2e_daemon_restart_with_panel_open() {
     );
 
     // The old daemon's connections are gone with it, and so are their holds on browsers: no `disconnect` job will
-    // ever come for the phone, so the engine hands its browser back itself.
+    // ever come for the phone, so the engine hands its browser back itself. Nothing here tells it to: the bridge saw the
+    // daemon go, and said so (`Executor::daemon_lost`), once, to the engine's own thread.
     let engine = rig.engine.clone();
-    rig.ui.run(async move { engine.daemon_restarted().await });
-    assert_eq!(
-        rig.state("gamma").control,
-        protocol::browser::BrowserControl::Bot,
-        "the phone's hold is gone"
+    rig.ui.wait_until(
+        "the phone's hold to be handed back when the daemon is lost",
+        Duration::from_secs(15),
+        move || {
+            engine
+                .state("gamma", "local")
+                .is_ok_and(|state| state.control == protocol::browser::BrowserControl::Bot)
+        },
     );
 
     // The new daemon has another port and another token; the bridge reconnects to it, and the same engine serves it.

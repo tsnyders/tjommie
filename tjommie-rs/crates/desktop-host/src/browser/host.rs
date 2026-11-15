@@ -12,10 +12,13 @@ use super::engine::{Engine, Reply};
 use super::host_bridge::{Executor, Job};
 use super::tools::Automation;
 
-/// A job on its way to the UI thread, with where its answer goes.
-pub struct Queued {
-    pub job: Job,
-    pub reply: oneshot::Sender<Result<Reply, String>>,
+/// What is on its way to the UI thread: a job, with where its answer goes, or the news that the daemon is gone.
+pub enum Queued {
+    Job {
+        job: Job,
+        reply: oneshot::Sender<Result<Reply, String>>,
+    },
+    DaemonLost,
 }
 
 /// The bridge's executor: it queues each job for the UI thread and waits for the answer.
@@ -33,7 +36,7 @@ impl JobQueue {
 impl Executor for JobQueue {
     fn execute(&self, job: Job) -> BoxFuture<'static, Result<Reply, String>> {
         let (reply, answer) = oneshot::channel();
-        let sent = self.sender.try_send(Queued { job, reply });
+        let sent = self.sender.try_send(Queued::Job { job, reply });
         Box::pin(async move {
             if sent.is_err() {
                 return Err("The native browser is not ready.".to_string());
@@ -42,6 +45,10 @@ impl Executor for JobQueue {
                 .await
                 .unwrap_or_else(|_| Err("The native browser is not ready.".to_string()))
         })
+    }
+
+    fn daemon_lost(&self) {
+        let _ = self.sender.try_send(Queued::DaemonLost);
     }
 }
 
@@ -54,12 +61,19 @@ pub async fn serve(
 ) {
     let automation = Automation::new(engine.clone());
     while let Ok(queued) = jobs.recv().await {
-        let engine = engine.clone();
-        let automation = automation.clone();
-        spawn(Box::pin(async move {
-            let result = run(&engine, &automation, queued.job).await;
-            let _ = queued.reply.send(result);
-        }));
+        match queued {
+            Queued::Job { job, reply } => {
+                let engine = engine.clone();
+                let automation = automation.clone();
+                spawn(Box::pin(async move {
+                    let result = run(&engine, &automation, job).await;
+                    let _ = reply.send(result);
+                }));
+            }
+            // The old daemon's connections are gone with it: no `disconnect` job will ever come for a phone that held a
+            // browser, so the engine lets go of those holds now (before the next job, which may be the new daemon's).
+            Queued::DaemonLost => engine.daemon_restarted().await,
+        }
     }
 }
 

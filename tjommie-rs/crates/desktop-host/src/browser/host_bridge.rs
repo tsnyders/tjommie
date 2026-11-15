@@ -7,7 +7,7 @@
 //! The bridge lives on a thread and tokio runtime of its own. It never touches WebView2 or the UI: a job crosses to the
 //! UI thread through the [`Executor`] (see `host`), and what comes back is plain typed data.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -59,6 +59,11 @@ impl Job {
 /// must hand the work to whoever owns the browser.
 pub trait Executor: Send + Sync + 'static {
     fn execute(&self, job: Job) -> BoxFuture<'static, Result<Reply, String>>;
+
+    /// The bridge lost the daemon (it could not be reached, or refused): once for each outage, from the bridge's thread.
+    /// What the old daemon's connections held is gone with it, so whoever owns the browsers lets go of it. The default
+    /// does nothing.
+    fn daemon_lost(&self) {}
 }
 
 pub struct BridgeConfig {
@@ -84,6 +89,8 @@ struct Shared {
     token: String,
     executor: Arc<dyn Executor>,
     on_error: Arc<dyn Fn() + Send + Sync>,
+    /// The daemon is out of reach now, and the executor has been told.
+    lost: AtomicBool,
     /// Normal-lane jobs running now.
     active: AtomicUsize,
     /// Answers the daemon refused (a status other than 204): they were not delivered.
@@ -97,6 +104,14 @@ enum Polled {
 }
 
 impl Shared {
+    /// The daemon could not be reached or refused: the app is told every time, the executor once per outage.
+    fn failed(&self) {
+        (self.on_error)();
+        if !self.lost.swap(true, Ordering::SeqCst) {
+            self.executor.daemon_lost();
+        }
+    }
+
     async fn poll(&self, control: bool) -> Result<Polled, reqwest::Error> {
         let url = if control {
             format!("{}?control=1", self.url)
@@ -173,7 +188,7 @@ impl Shared {
                 log::warn!("the daemon did not take a browser answer in time");
                 self.undelivered.fetch_add(1, Ordering::SeqCst);
             }
-            Err(_) => (self.on_error)(),
+            Err(_) => self.failed(),
         }
     }
 
@@ -199,6 +214,10 @@ async fn lane(shared: Arc<Shared>, control: bool, mut stop: watch::Receiver<bool
             polled = shared.poll(control) => polled,
             _ = stop.changed() => break,
         };
+        if polled.is_ok() {
+            // The daemon answered: the next loss is a new outage.
+            shared.lost.store(false, Ordering::SeqCst);
+        }
         match polled {
             Ok(Polled::Nothing) => {}
             Ok(Polled::Job(bytes)) => match serde_json::from_slice::<Job>(&bytes) {
@@ -231,7 +250,7 @@ async fn lane(shared: Arc<Shared>, control: bool, mut stop: watch::Receiver<bool
                 }
             },
             Err(_) => {
-                (shared.on_error)();
+                shared.failed();
                 tokio::select! {
                     () = tokio::time::sleep(RETRY_AFTER_ERROR) => {}
                     _ = stop.changed() => break,
@@ -267,6 +286,7 @@ impl HostBridge {
             token: config.token,
             executor,
             on_error,
+            lost: AtomicBool::new(false),
             active: AtomicUsize::new(0),
             undelivered: AtomicUsize::new(0),
             finished: Notify::new(),

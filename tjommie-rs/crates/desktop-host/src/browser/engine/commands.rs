@@ -342,6 +342,10 @@ impl Engine {
     /// controller's hold on a browser: the daemon never got to send their `disconnect` jobs, and the new daemon names
     /// its connections afresh. Each such hold is handed back to the bot, the old controllers' late commands are
     /// refused, and every ticket and frame from before the restart goes stale. The person's own hold is kept.
+    ///
+    /// The `/browser-host` bridge calls this itself when it loses the daemon (`Executor::daemon_lost`, queued to the UI
+    /// thread by `host::JobQueue` and run by `host::serve`): an app that uses that pair has nothing to wire. Calling it
+    /// again is harmless.
     pub async fn daemon_restarted(self: &Rc<Self>) {
         let now = self.now();
         for life in self.controllers.borrow_mut().values_mut() {
