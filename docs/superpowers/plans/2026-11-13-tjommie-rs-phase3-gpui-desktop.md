@@ -803,6 +803,11 @@ Implement each card in `design/claude-design/aegis/components/motion.html` with 
 2. Add `["0.6.0", <next>]` to `packages/mobile/scripts/apply-native.mjs`.
 3. Rename `## Unreleased` to `## 0.6.0 — <date>` and add a fresh empty `## Unreleased`.
 4. Ops merges to `main` and pushes `v0.6.0`. GitHub Actions builds and publishes. Never package locally.
+5. **No 0.5.x release after 0.6.0 ships** (owner decision, 2026-11-15; this closes the T8.3 review's F2).
+   - **Why:** GitHub's "latest release" is what both updaters follow. R1's electron-updater reads `releases/latest`, and the Rust updater reads `releases/latest/download/latest.yml`. Neither takes a version that is not newer than the one installed.
+   - **What would go wrong:** a 0.5.x tagged after 0.6.0 would become the latest release. 0.6.0 would then no longer be offered, and R1 users who took that 0.5.x would be told they are up to date.
+   - **So:** every 0.5.x release, including the T1.6 export patch, comes before 0.6.0. Rollback is reinstalling an existing 0.5.x asset (§"Rollback"), never a new release.
+   - **How it is enforced:** the release workflow's publish job reads the latest release's tag before `gh release create`, and refuses unless this tag's version is strictly greater (semantic versioning), with a message that says why. It is tested against every case in `scripts/release-workflow.test.ts` and has mutations in the committed runner. A release made with `--latest=false` is not needed, and is not used.
 - **CHANGELOG lines added here** (if not already added by their tasks):
   - the new look (T5);
   - the crash restart (T0.4);
@@ -814,7 +819,7 @@ Implement each card in `design/claude-design/aegis/components/motion.html` with 
 ---
 
 ## Rollback
-- **Rollback is reinstalling R1** (0.5.x) from GitHub Releases over 0.6.0. To keep that possible:
+- **Rollback is reinstalling R1** (0.5.x) from GitHub Releases over 0.6.0. That is an existing 0.5.x asset: no new 0.5.x release is made after 0.6.0 (T8.6, item 5). To keep that possible:
   - no migration 13 or later;
   - secrets stay byte-compatible (the same Credential Manager targets: device keys, logins, accounts);
   - the Electron browser profiles in `data/native-browser/` are kept through 0.6.x;
@@ -1011,7 +1016,7 @@ Both decision points and the 5-day budget are **accepted** by owner decision 8 (
 - **0.5.x with the export** was published at least 7 days before 0.6.0 (decision 3).
 
 ## Tracked follow-ups (after 0.6.0)
-- **Screen-reader support** (decision 4). Owner-accepted for the first GPUI release only. Track it as an issue: "Desktop: screen reader support (UI Automation)". Revisit at every GPUI pin upgrade, and do it upstream if GPUI gains an accessibility layer, or with a UI Automation provider fed from the `test_id` semantic tree. Spec §9 lists it.
+- **Screen-reader support** (decision 4). **Owner decision, 2026-11-15: it comes after 0.6.0**, once the machine has RAM and storage to spare for it, and it is not scheduled before then. Until then every element keeps getting its `.semantic()` id and role, so the later work is about exposing what is already labelled. Owner-accepted for the first GPUI release only. Track it as an issue: "Desktop: screen reader support (UI Automation)". Revisit at every GPUI pin upgrade, and do it upstream if GPUI gains an accessibility layer, or with a UI Automation provider fed from the `test_id` semantic tree. Spec §9 lists it.
 - **Prune `data/native-browser/`** one release after 0.6.0, after the owner says so (§"Rollback").
 
 ## Risks
