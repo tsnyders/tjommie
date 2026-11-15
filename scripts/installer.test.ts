@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { codeOf, installer, powershell, runBody, temp, windows } from "./ps-support.ts";
@@ -99,6 +99,134 @@ describe.skipIf(!windows)("the installer's helper that sets a shortcut's AppUser
     expect(facts[0]?.target.toLowerCase()).toBe(`${process.env.SystemRoot ?? "C:\\Windows"}\\System32\\cmd.exe`.toLowerCase());
     expect(facts[0]?.description).toBe("a test shortcut");
     expect(powershell(helper, ["-Path", join(folder, "missing.lnk"), "-AppUserModelId", "x.y"], { ...process.env }).status).not.toBe(0);
+  });
+});
+
+// F10: a process started through an 8.3 path (RUNNER~1) reports that path, and a folder given the other way round must still match.
+describe.skipIf(!windows)("process scoping and long and short names", () => {
+  it("matches a path and a folder however either is spelled, 8.3 names included", () => {
+    const root = temp();
+    const folder = join(root, "tjommie-a-long-folder-name");
+    mkdirSync(folder);
+    writeFileSync(join(folder, "Tjommie.exe"), "x");
+    const result = runBody("scoped-processes.ps1", String.raw`
+      $folder = '${folder}'
+      $fso = New-Object -ComObject Scripting.FileSystemObject
+      $short = $fso.GetFolder($folder).ShortPath
+      [ordered]@{
+        short       = $short
+        differs     = ($short -ine $folder)
+        longOfShort = (Get-LongPath $short)
+        shortPathInLong  = (Test-PathInFolder (Join-Path $short 'Tjommie.exe') $folder)
+        longPathInShort  = (Test-PathInFolder (Join-Path $folder 'Tjommie.exe') $short)
+        missingLeaf = (Get-LongPath (Join-Path $short 'not-there\deeper.txt'))
+        sibling     = (Test-PathInFolder (Join-Path (Split-Path $short -Parent) 'tjommie-a-long-folder-name-2\Tjommie.exe') $folder)
+        elsewhere   = (Test-PathInFolder 'D:\nowhere\Tjommie.exe' $folder)
+      } | ConvertTo-Json -Compress
+    `) as { short: string; differs: boolean; longOfShort: string; shortPathInLong: boolean; longPathInShort: boolean; missingLeaf: string; sibling: boolean; elsewhere: boolean };
+    // Where the volume makes no 8.3 names, the two spellings are one and the checks still hold.
+    expect(result.longOfShort.toLowerCase()).toBe(folder.toLowerCase());
+    expect(result.shortPathInLong).toBe(true);
+    expect(result.longPathInShort).toBe(true);
+    expect(result.missingLeaf.toLowerCase()).toBe(join(folder, "not-there", "deeper.txt").toLowerCase());
+    expect(result.sibling).toBe(false);
+    expect(result.elsewhere).toBe(false);
+    if (!result.differs) console.warn("This volume has no 8.3 name for the test folder, so only the long spelling was exercised.");
+  });
+});
+
+// F6: the walk that takes the app's children with it must not take a program the user is looking at (a browser the app opened).
+describe.skipIf(!windows)("closing the app's children, but not a program with a window of its own", () => {
+  it("leaves a descendant outside the folder that owns a visible window, closes the rest, and says which it left", () => {
+    const root = temp();
+    const inside = join(root, "install");
+    mkdirSync(inside);
+    const result = runBody("scoped-processes.ps1", String.raw`
+      $system = "$env:SystemRoot\System32"
+      Copy-Item "$system\cmd.exe" '${join(inside, "Tjommie.exe")}'
+      $started = @()
+      $windowed = 0
+      try {
+        # The stub app, with a child outside the folder: ping, which stands in for a browser and is given a window below.
+        $app = Start-Process -FilePath '${join(inside, "Tjommie.exe")}' -ArgumentList '/c','ping -n 60 127.0.0.1' -WindowStyle Hidden -PassThru
+        $started += $app
+        $children = @()
+        for ($i = 0; $i -lt 60 -and $children.Count -lt 1; $i++) { Start-Sleep -Milliseconds 100; $children = @(Get-CimInstance Win32_Process -Filter "ParentProcessId=$($app.Id)" | Where-Object { $_.Name -eq 'PING.EXE' }) }
+        if ($children.Count -lt 1) { throw 'The stub app never started a child.' }
+        $windowed = [int]$children[0].ProcessId
+        $real = Test-OwnsVisibleWindow $windowed
+        # A real program with a window is not needed: the probe is replaced for this one id.
+        function Test-OwnsVisibleWindow([int]$ProcessId) { return ($ProcessId -eq $windowed) }
+        $stopped = @(Stop-ProcessesInFolder '${inside}')
+        Start-Sleep -Milliseconds 700
+        $alive = { param($id) [bool](Get-Process -Id $id -ErrorAction SilentlyContinue) }
+        [ordered]@{
+          realProbeOnAHiddenProcess = $real
+          appAlive      = (& $alive $app.Id)
+          windowedAlive = (& $alive $windowed)
+          stopped       = @($stopped | ForEach-Object { $_['id'] })
+          windowedId    = $windowed
+          skipped       = @($script:LastSkippedWindowed.Keys)
+        } | ConvertTo-Json -Compress
+      } finally {
+        foreach ($process in $started) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue }
+        if ($windowed) { Stop-Process -Id $windowed -Force -ErrorAction SilentlyContinue }
+      }
+    `) as { realProbeOnAHiddenProcess: boolean; appAlive: boolean; windowedAlive: boolean; stopped: number[]; windowedId: number; skipped: number[] };
+    expect(result.realProbeOnAHiddenProcess).toBe(false); // a hidden console program owns no visible window
+    expect(result.appAlive).toBe(false);
+    expect(result.windowedAlive).toBe(true);
+    expect(result.stopped).not.toContain(result.windowedId);
+    expect(result.skipped).toEqual([result.windowedId]);
+  });
+});
+
+// F4: NSIS's RMDir /r follows junctions, so before anything is deleted the links inside the install folder are removed as links.
+describe.skipIf(!windows)("the helper that removes links from an install folder before it is deleted", () => {
+  const helper = join(installer, "unlink-reparse-points.ps1");
+  const seed = (folder: string): void => {
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(join(folder, "keep.txt"), "must survive");
+    mkdirSync(join(folder, "deeper"), { recursive: true });
+    writeFileSync(join(folder, "deeper", "secret.bin"), "also must survive");
+  };
+
+  it("removes a junction (and one nested deeper) as a link and never touches what it points at, and leaves real folders alone", () => {
+    const root = temp();
+    const install = join(root, "install");
+    const outside = join(root, "outside-sentinel");
+    seed(install);
+    seed(outside);
+    const link = (path: string): string => `New-Item -ItemType Junction -Path '${path}' -Target '${outside}' | Out-Null`;
+    const make = join(temp(), "make.ps1");
+    writeFileSync(make, `${link(join(install, "resources-link"))}\n${link(join(install, "deeper", "nested-link"))}\n`);
+    expect(powershell(make, [], { ...process.env }).status).toBe(0);
+    const first = powershell(helper, ["-Folder", install], { ...process.env });
+    expect(first.status, `${first.stdout}${first.stderr}`).toBe(0);
+    expect(first.stdout).toMatch(/Removed 2 link/);
+    for (const kept of [join(outside, "keep.txt"), join(outside, "deeper", "secret.bin"), join(install, "keep.txt"), join(install, "deeper", "secret.bin")]) expect(readFileSync(kept, "utf8").length, kept).toBeGreaterThan(0);
+    expect(existsSync(join(install, "resources-link"))).toBe(false);
+    expect(existsSync(join(install, "deeper", "nested-link"))).toBe(false);
+    // Nothing is left to remove the second time.
+    const second = powershell(helper, ["-Folder", install], { ...process.env });
+    expect(second.status).toBe(0);
+    expect(second.stdout).not.toMatch(/Removed/);
+  });
+
+  it("refuses an install folder that is itself a link, and one that is too broad, and does nothing for one that is not there", () => {
+    const root = temp();
+    const target = join(root, "real");
+    seed(target);
+    const asLink = join(root, "install-link");
+    const make = join(temp(), "make.ps1");
+    writeFileSync(make, `New-Item -ItemType Junction -Path '${asLink}' -Target '${target}' | Out-Null\n`);
+    expect(powershell(make, [], { ...process.env }).status).toBe(0);
+    const linked = powershell(helper, ["-Folder", asLink], { ...process.env });
+    expect(linked.status).toBe(4);
+    expect(linked.stdout).toMatch(/is itself a link/);
+    expect(readFileSync(join(target, "keep.txt"), "utf8")).toBe("must survive");
+    expect(powershell(helper, ["-Folder", "C:\\"], { ...process.env }).status).not.toBe(0);
+    expect(powershell(helper, ["-Folder", join(root, "missing")], { ...process.env }).status).toBe(0);
   });
 });
 

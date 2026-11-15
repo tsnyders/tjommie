@@ -204,7 +204,7 @@ describe("tjommie.nsi against R1's recorded install", () => {
     expect(onInit).not.toMatch(/RMDir|Delete/);
     // Deletion has exactly one target, the folder the uninstaller runs for: never a registry value, never a wildcard.
     expect(nsi.match(/\bRMDir\b/g)).toHaveLength(1);
-    expect(nsi).toContain('RMDir /r "$INSTDIR"');
+    expect(nsi).toContain('RMDir /r /REBOOTOK "$INSTDIR"');
     expect(nsi.match(/^\s*Delete\s/gm)).toHaveLength(2); // the two shortcuts
     // The programs policy is exact: the folder is %LOCALAPPDATA%\Programs\<folder>, not "somewhere under it".
     expect(nsi).toContain('StrCpy $R1 "$LOCALAPPDATA\\Programs\\${FOLDER_NAME}"');
@@ -228,6 +228,97 @@ describe("tjommie.nsi against R1's recorded install", () => {
     const given = [...build.matchAll(/"\/D(\w+)=/g)].map((match) => match[1] ?? "").filter((name) => name !== "IDENTITY").sort();
     expect(given).toEqual(required);
     for (const file of nsi.match(/\$\{__FILEDIR__\}\\[\w.-]+/g) ?? []) expect(existsSync(join(installer, file.split("\\")[1] ?? "")), file).toBe(true);
+  });
+});
+
+// The T8.2 security review's fixes, pinned by where they sit in the script: each guard comes before what it guards.
+describe("tjommie.nsi after the T8.2 review", () => {
+  const between = (from: string, to: string): string => {
+    const start = nsi.indexOf(from);
+    expect(start, from).toBeGreaterThan(-1);
+    const end = nsi.indexOf(to, start + from.length);
+    expect(end, to).toBeGreaterThan(start);
+    return nsi.slice(start, end);
+  };
+  const onInit = between("Function .onInit", "Function MakeShortcut");
+  const installSection = between('Section "Install"', "Function .onInstSuccess");
+  const unOnInit = between("Function un.onInit", 'Section "Uninstall"');
+  const uninstallSection = nsi.slice(nsi.indexOf('Section "Uninstall"'));
+
+  // F1: R1's uninstaller, which the install section runs, deletes the folder named by HKCU\Software\<GUID>\InstallLocation whenever
+  // that value is set, and ignores the folder it is given. So the installer refuses, before it touches anything, when that value
+  // names any other folder than this identity's.
+  it("refuses to install over an install that its own key says is somewhere else, before it extracts, stops or runs anything (F1)", () => {
+    expect(nsi).toContain("!define EXIT_ELSEWHERE 7");
+    expect(onInit).toContain('ReadRegStr $R1 HKCU "${INSTALL_KEY}" "InstallLocation"');
+    expect(onInit).toMatch(/\$\{If\} \$R1 != ""\s+StrCpy \$R0 \$INSTDIR\s+Call SamePath\s+\$\{If\} \$R2 != 1/);
+    expect(onInit).toMatch(/SetErrorLevel \$\{EXIT_ELSEWHERE\}\s+Quit/);
+    // After the folder check, and never "fixing" the value: nothing in .onInit writes the registry or a file.
+    expect(onInit.indexOf("Call FolderAllowed")).toBeLessThan(onInit.indexOf("InstallLocation"));
+    expect(onInit).not.toMatch(/WriteReg|DeleteReg|CopyFiles|ExecWait|\bFile\b|RMDir|Delete\b/);
+    // And it is all before the install section, where the old uninstaller runs.
+    expect(nsi.indexOf("Function .onInit")).toBeLessThan(nsi.indexOf('Section "Install"'));
+  });
+
+  // F3: the uninstaller carries its own helpers, so a quarantined or missing file in the install folder cannot make every
+  // uninstall fail (and rollback to R1 with it).
+  it("embeds the helper scripts in the uninstaller and no longer installs them next to the app (F3)", () => {
+    expect(nsi).not.toContain("installer-helpers");
+    expect(nsi).not.toContain("${HELPERS}");
+    for (const helper of ["scoped-processes.ps1", "stop-install-processes.ps1", "unlink-reparse-points.ps1"]) {
+      expect(uninstallSection, helper).toContain(`File "\${__FILEDIR__}\\${helper}"`);
+      expect(installSection, helper).toContain(`File "\${__FILEDIR__}\\${helper}"`);
+    }
+    expect(installSection).toContain('File "${__FILEDIR__}\\set-shortcut-aumid.ps1"');
+    // They run from the uninstaller's own temp folder, never from the install folder it is about to delete.
+    expect(uninstallSection).toMatch(/SetOutPath "\$PLUGINSDIR"\s+File "\$\{__FILEDIR__\}\\scoped-processes\.ps1"/);
+    expect(uninstallSection).toContain('StrCpy $R1 "$PLUGINSDIR\\stop-install-processes.ps1"');
+    expect(uninstallSection).not.toMatch(/\$INSTDIR\\[^"\n]*\.ps1/);
+    expect(unOnInit).toContain("InitPluginsDir");
+  });
+
+  it("tells a helper that could not run (exit 8) from an app that is still running (exit 3), in the installer and the uninstaller", () => {
+    expect(nsi).toContain("!define EXIT_HELPER 8");
+    for (const [name, section] of [["install", installSection], ["uninstall", uninstallSection]] as const) {
+      expect(section, name).toMatch(/\$\{If\} \$R2 == 3[\s\S]*?SetErrorLevel \$\{EXIT_RUNNING\}/);
+      expect(section, name).toMatch(/\$\{ElseIf\} \$R2 != 0[\s\S]*?SetErrorLevel \$\{EXIT_HELPER\}/);
+    }
+  });
+
+  // F4: NSIS's RMDir /r, and R1's uninstaller, follow a junction into whatever it points at. The links inside the folder are removed
+  // as links first, and a folder that is itself a link, or a link that cannot be removed, stops everything before anything is deleted.
+  it("removes the links in the install folder before the old uninstaller runs and before anything is deleted (F4)", () => {
+    expect(nsi).toContain("!define EXIT_LINK 9");
+    expect(installSection.indexOf("unlink-reparse-points.ps1\"")).toBeGreaterThan(-1);
+    const installCall = installSection.indexOf('StrCpy $R1 "$PLUGINSDIR\\unlink-reparse-points.ps1"');
+    expect(installCall).toBeGreaterThan(installSection.indexOf("Call StopRunning"));
+    expect(installCall).toBeLessThan(installSection.indexOf("CopyFiles /SILENT"));
+    expect(installCall).toBeLessThan(installSection.indexOf("ExecWait"));
+    const uninstallCall = uninstallSection.indexOf('StrCpy $R1 "$PLUGINSDIR\\unlink-reparse-points.ps1"');
+    expect(uninstallCall).toBeGreaterThan(uninstallSection.indexOf("Call un.StopRunning"));
+    for (const deletion of ["DeleteRegValue", "DeleteRegKey", "Delete \"", "RMDir"]) expect(uninstallCall, deletion).toBeLessThan(uninstallSection.indexOf(deletion));
+    for (const section of [installSection, uninstallSection]) expect(section).toMatch(/SetErrorLevel \$\{EXIT_LINK\}/);
+  });
+
+  // F8: a failed copy or a failed start of the old uninstaller must be an error, not a register that happens to hold something.
+  it("treats a failed copy or start of the old uninstaller as an error, whatever the registers hold (F8)", () => {
+    // The old-uninstaller step: from the first ClearErrors in the install section to where the new files go.
+    const step = installSection.slice(installSection.indexOf("ClearErrors"), installSection.indexOf("SetOverwrite on"));
+    expect(step).toContain("CopyFiles");
+    expect(step).toMatch(/ClearErrors\s+CopyFiles \/SILENT/);
+    expect(step).toMatch(/CopyFiles[^\n]*\n\s+\$\{If\} \$\{Errors\}/);
+    expect(step).toMatch(/StrCpy \$R0 "not run"\s+ClearErrors\s+ExecWait/);
+    expect(step).toMatch(/ExecWait[^\n]*\n\s+\$\{If\} \$\{Errors\}\s+\$\{OrIf\} \$R0 != 0/);
+  });
+
+  it("asks before it removes the app when it is started by hand, never when silent or updating, and after the guard (F12)", () => {
+    const prompt = unOnInit.indexOf("MessageBox MB_YESNO");
+    expect(prompt).toBeGreaterThan(unOnInit.indexOf("SetErrorLevel ${EXIT_REFUSED}"));
+    expect(unOnInit).toMatch(/\$\{If\} \$Updated != 1\s+\$\{AndIfNot\} \$\{Silent\}\s+MessageBox MB_YESNO\|MB_ICONQUESTION[^\n]*\/SD IDYES IDYES \+2\s+Quit/);
+  });
+
+  it("schedules a file that is locked at that moment for the next boot instead of silently keeping it (F13)", () => {
+    expect(nsi).toContain('RMDir /r /REBOOTOK "$INSTDIR"');
   });
 });
 
