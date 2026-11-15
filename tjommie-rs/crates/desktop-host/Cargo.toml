@@ -10,9 +10,11 @@ publish.workspace = true
 async-channel = "2.5.0"
 # Screenshots: the browser hands the image over as base64.
 base64 = "0.23.1"
+client = { path = "../client" }
 cpal.workspace = true
 futures = "0.3.34"
 futures-util = "0.3.34"
+getrandom = "0.4.3"
 jiff = "0.2.41"
 log = { version = "0.4.35", features = ["std"] }
 protocol = { version = "0.5.0", path = "../protocol" }
@@ -65,6 +67,7 @@ windows = { version = "0.62.2", features = ["Win32_System_Diagnostics_ToolHelp"]
 # A TLS fixture server that asks for a client certificate (F2).
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 rustls-pemfile = "2"
+tokio-tungstenite = "0.29"
 tokio = { version = "1.54.1", features = ["sync", "rt", "rt-multi-thread", "time", "macros", "net", "io-util", "test-util"] }
 
 [lints]
