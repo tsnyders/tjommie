@@ -19,7 +19,7 @@
 
 **On approval:** the planner's only step is to write this plan to `docs/superpowers/plans/2026-10-25-phase3-remote-access.md`, then stop. No product code, no installs, no git.
 
-**Base:** worktree `C:/Users/tyrel/.paseo/worktrees/2cb7zj88/tjommie-phase1-completion`, branch `phase2-accounts-mobile-20261022` @ `81104d4`. The ops agent cuts `phase3-remote-20261025` from it, and each task branches from that.
+**Base:** worktree `%USERPROFILE%/.paseo/worktrees/2cb7zj88/tjommie-phase1-completion`, branch `phase2-accounts-mobile-20261022` @ `81104d4`. The ops agent cuts `phase3-remote-20261025` from it, and each task branches from that.
 
 ## Context
 

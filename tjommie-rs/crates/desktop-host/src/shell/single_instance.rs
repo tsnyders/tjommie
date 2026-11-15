@@ -63,14 +63,15 @@ pub fn acquire(app_id: &str) -> windows::core::Result<Launch> {
 
 impl Instance {
     /// Calls `on_show`, on a thread of its own, each time a later launch asks for the window. The lock is held as long
-    /// as that thread runs: the app's lifetime.
+    /// as that thread runs: the app's lifetime. A panic in `on_show` is caught (and logged by the crash hook), so it
+    /// can't end the thread and drop the lock while the app runs on.
     pub fn on_show(self, on_show: impl Fn() + Send + 'static) {
         std::thread::spawn(move || {
             // The whole instance moves in (a closure would capture only the fields it reads, and drop the lock).
             let instance = self;
             // SAFETY: `instance` owns the event handle and lives as long as this thread.
             while unsafe { WaitForSingleObject(instance.show.0, INFINITE) } == WAIT_OBJECT_0 {
-                on_show();
+                let _ = crate::crash::catching(&on_show);
             }
         });
     }

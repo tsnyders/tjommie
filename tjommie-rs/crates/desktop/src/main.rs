@@ -5,7 +5,7 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use desktop_host::identity::{self, DataRoot, Identity};
+use desktop_host::identity::{self, Identity};
 use desktop_host::owner_safety;
 use desktop_host::shell::single_instance::{self, Launch};
 
@@ -34,14 +34,34 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// One app per identity, and per root for the disposable identities (Electron locks per profile), so parallel e2e runs
-/// don't take each other's lock.
+/// One app per data root (Electron locks per profile), so parallel e2e runs and dev runs on other TJOMMIE_HOME roots
+/// don't take each other's lock (review F9). Object names are case-sensitive and paths aren't, hence the lowercase.
+/// Production keeps one lock whatever its root (review note N1: M8 hands it over from Electron's).
 fn lock_name(identity: &Identity, root: &Path) -> String {
-    match identity.data_root {
-        DataRoot::Disposable => {
-            let root = root.display().to_string().replace(['\\', '/', ':'], "_");
-            format!("{}.{root}", identity.app_id)
-        }
-        DataRoot::LocalAppData(_) => identity.app_id.to_owned(),
+    if identity.name == "production" {
+        return identity.app_id.to_owned();
+    }
+    let root = root.display().to_string().to_lowercase();
+    format!(
+        "{}.{}",
+        identity.app_id,
+        root.replace(['\\', '/', ':'], "_")
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use desktop_host::identity::{DEV, E2E, PRODUCTION};
+
+    #[test]
+    fn one_lock_per_root_but_production() {
+        let (a, b) = (Path::new("C:/Temp/A"), Path::new("C:/Temp/B"));
+        assert_ne!(lock_name(&DEV, a), lock_name(&DEV, b));
+        assert_ne!(lock_name(&E2E, a), lock_name(&E2E, b));
+        // The same folder, spelled in another case.
+        assert_eq!(lock_name(&DEV, a), lock_name(&DEV, Path::new("c:/temp/a")));
+        // Production keeps one lock whatever its root (review note N1: M8 hands it over from Electron's).
+        assert_eq!(lock_name(&PRODUCTION, a), lock_name(&PRODUCTION, b));
     }
 }
