@@ -123,7 +123,14 @@ pub struct M5Deps {
     pub review_worker: Option<Arc<WorkerBoundary>>,
     /// The cell the runner's hooks read; it must be the one `LateTasks::hooks` was called on.
     pub late: LateTasks,
+    /// Adjusts the review runtime's options before it is made. `None` in every daemon but one that plays provider
+    /// fixtures, which uses it to refuse reviews (`provider_fixtures`).
+    pub review_options: Option<ReviewOptionsHook>,
 }
+
+/// See [`M5Deps::review_options`].
+pub type ReviewOptionsHook =
+    Arc<dyn Fn(ProjectReviewOptions) -> ProjectReviewOptions + Send + Sync>;
 
 /// What shutdown and the bot lifecycle still need after [`install`].
 pub struct M5 {
@@ -168,14 +175,18 @@ pub fn install(handlers: &mut Handlers, deps: M5Deps) -> Result<M5, RpcError> {
         .with_emit(Arc::new(move |event| events.send(event)))
         .with_assert_available(bot_available(switching, deleting)),
     );
-    let review = create_project_review_runtime(ProjectReviewOptions {
+    let mut review_options = ProjectReviewOptions {
         root: deps.root.join("data").join("reviewer"),
         resolve: review_account_resolver(deps.db.clone(), deps.accounts, deps.events),
         host: deps.host.clone(),
         worker: deps.review_worker,
         cli: None,
         machine_policy_hash: None,
-    })?;
+    };
+    if let Some(adjust) = &deps.review_options {
+        review_options = adjust(review_options);
+    }
+    let review = create_project_review_runtime(review_options)?;
     let tasks = Tasks::new(
         projects.clone(),
         Arc::new(deps.runner),
