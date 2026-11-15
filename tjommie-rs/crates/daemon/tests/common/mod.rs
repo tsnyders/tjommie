@@ -283,7 +283,14 @@ pub fn launch(args: &[&str], root: TempRoot, env: &[(&str, &str)]) -> Daemon {
         .args(args)
         .env("TJOMMIE_HOME", &root.0)
         .env("TJOMMIE_PORT", "0");
-    for key in ["TJOMMIE_DEV", "TJOMMIE_ACCOUNTS_DIR", "TJOMMIE_LAN_PORT"] {
+    // A feature build with TJOMMIE_PROVIDER_FIXTURES in this PC's environment must not play fixtures in tests that
+    // never asked for them (only the provider-fixtures tests pass it, through `env`).
+    for key in [
+        "TJOMMIE_DEV",
+        "TJOMMIE_ACCOUNTS_DIR",
+        "TJOMMIE_LAN_PORT",
+        "TJOMMIE_PROVIDER_FIXTURES",
+    ] {
         command.env_remove(key);
     }
     // Never the production 0.0.0.0 bind on this PC: it would raise a Windows Firewall prompt. Loopback, and an

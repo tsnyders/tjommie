@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "turns": [
+    {
+      "expect": "git status",
+      "events": [
+        { "type": "text", "delta": "I will check the repository." },
+        { "type": "text_end" },
+        {
+          "type": "approval",
+          "id": "ask-1",
+          "tool": "Bash",
+          "summary": "Run git status",
+          "detail": "{\n  \"command\": \"git status\"\n}",
+          "rule": "Bash(git status:*)",
+          "then": {
+            "once": [
+              { "type": "tool", "id": "tool-1", "name": "Running a command", "summary": "git status" },
+              { "type": "tool_done", "id": "tool-1", "ok": true },
+              { "type": "text", "delta": "The working tree is clean." },
+              { "type": "text_end" }
+            ],
+            "always": [
+              { "type": "tool", "id": "tool-1", "name": "Running a command", "summary": "git status" },
+              { "type": "tool_done", "id": "tool-1", "ok": true },
+              { "type": "text", "delta": "The working tree is clean, and I will not ask again." },
+              { "type": "text_end" }
+            ],
+            "deny": [
+              { "type": "text", "delta": "Understood. I will not run it." },
+              { "type": "text_end" }
+            ]
+          }
+        },
+        { "type": "usage", "model": "sonnet", "input": 40, "output": 12 }
+      ]
+    },
+    {
+      "events": [
+        { "type": "text", "delta": "Ada here." },
+        { "type": "text_end" }
+      ]
+    }
+  ]
+}
