@@ -164,6 +164,24 @@ fn shift_tab_leaves_page() {
 }
 
 #[test]
+fn a_page_cannot_hand_the_keyboard_off_with_a_synthetic_shift_tab() {
+    let mut rig = Rig::new();
+    held_in_panel(&mut rig, "tools.html");
+    rig.eval("alpha", "document.getElementById('name').focus(); 1");
+    rig.notifications();
+    // The page's own script makes the key up: a DOM event crosses into the isolated world, but it is not a trusted one.
+    rig.eval(
+        "alpha",
+        "document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true, cancelable: true })); 1",
+    );
+    rig.ui.settle(Duration::from_millis(800));
+    assert!(
+        focus_returns(&rig).is_empty(),
+        "only the person's own Shift+Tab hands the keyboard to the app"
+    );
+}
+
+#[test]
 fn shift_tab_still_leaves_the_page_after_a_private_interaction() {
     let mut rig = Rig::new();
     held_in_panel(&mut rig, "tools.html");

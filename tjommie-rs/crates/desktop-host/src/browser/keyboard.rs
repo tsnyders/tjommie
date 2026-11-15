@@ -23,9 +23,11 @@ pub enum FocusDirection {
     Previous,
 }
 
-/// Runs in the isolated world of every document: Shift+Tab goes to the host, not into the page.
+/// Runs in the isolated world of every document: Shift+Tab goes to the host, not into the page. Only a key the browser
+/// itself made (`isTrusted`) counts: a page can dispatch a keydown of its own, which crosses into this world like any DOM
+/// event, and must not be able to move the person's keyboard out of the panel.
 pub const HANDOFF_SCRIPT: &str = r#"addEventListener("keydown", (event) => {
-  if (event.key === "Tab" && event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
+  if (event.isTrusted && event.key === "Tab" && event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
     event.preventDefault();
     event.stopImmediatePropagation();
     tjommieFocusReturn("previous");
