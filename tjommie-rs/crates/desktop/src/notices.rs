@@ -7,8 +7,6 @@ use futures::StreamExt as _;
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 use gpui::{App, Global};
 
-use crate::guard::guarded;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Notice {
     /// A UI handler panicked and `guard` caught it.
@@ -33,6 +31,17 @@ impl Notice {
 pub struct Notices(pub Vec<Notice>);
 
 impl Global for Notices {}
+
+impl Notices {
+    /// Adds `notice` unless the same one is already waiting, so a panic storm shows one toast (review F7).
+    fn add(&mut self, notice: Notice) -> bool {
+        let new = !self.0.contains(&notice);
+        if new {
+            self.0.push(notice);
+        }
+        new
+    }
+}
 
 thread_local! {
     static OUTBOX: RefCell<Option<UnboundedSender<Notice>>> = const { RefCell::new(None) };
@@ -62,16 +71,40 @@ pub fn listen() -> UnboundedReceiver<Notice> {
 pub fn init(cx: &mut App) {
     cx.set_global(Notices::default());
     let mut inbox = listen();
+    // A panic while showing a notice is only logged: guarded would raise it as another notice into this same loop,
+    // which would show it and panic again (review F8).
+    // unguarded: the notice sink
     cx.spawn(async move |cx| {
         while let Some(notice) = inbox.next().await {
             cx.update(|cx| {
-                guarded("show a notice", || {
-                    log::info!("Notice: {}", notice.text());
-                    cx.global_mut::<Notices>().0.push(notice);
-                    cx.refresh_windows();
-                })
+                let shown = desktop_host::crash::catching(|| {
+                    if cx.global_mut::<Notices>().add(notice) {
+                        log::info!("Notice: {}", notice.text());
+                        cx.refresh_windows();
+                    }
+                });
+                if shown.is_err() {
+                    log::error!("Showing a notice panicked; its backtrace is in desktop-crash.log");
+                }
             });
         }
     })
     .detach();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_waiting_notice_is_not_added_twice() {
+        let mut notices = Notices::default();
+        assert!(notices.add(Notice::SomethingWentWrong));
+        assert!(!notices.add(Notice::SomethingWentWrong));
+        assert!(notices.add(Notice::ClosedUnexpectedly));
+        assert_eq!(
+            notices.0,
+            [Notice::SomethingWentWrong, Notice::ClosedUnexpectedly]
+        );
+    }
 }

@@ -60,7 +60,8 @@ jobs:
       - run: rustup toolchain install
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      # The UI boundary rule (Phase 3 plan T0.4): every desktop UI handler's closure starts with guarded(.
+      # The UI boundary rule (Phase 3 plan T0.4, M0 review F5): every handler registration in the desktop crate runs its
+      # whole closure inside guarded(.
       - run: ./tools/check-guarded.ps1 -SelfTest
       - run: ./tools/check-guarded.ps1
       # --no-fail-fast: one run shows every failing test binary, not only the first one cargo stops at.
@@ -68,6 +69,25 @@ jobs:
         env:
           # Hosted service logons can't reliably reach Credential Manager; those tests run on real PCs.
           TJOMMIE_CI_HOSTED: '1'
+      # Spec §3.10: only the production build carries the update feed (Phase 3 plan T0.6). --workspace reuses the test
+      # build's dependencies instead of compiling GPUI again.
+      - name: The dev and e2e desktop builds have no update feed
+        run: |
+          function Assert-NoFeed {
+            $text = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes('target\debug\tjommie-desktop.exe'))
+            if ($text.Contains('github.com/tsnyders/tjommie')) { throw "The $env:TJOMMIE_IDENTITY desktop build contains the update feed." }
+          }
+          $env:TJOMMIE_IDENTITY = 'dev'
+          cargo build --workspace --locked
+          Assert-NoFeed
+          $env:TJOMMIE_IDENTITY = 'e2e'
+          cargo build --workspace --locked --features desktop/test-driver
+          Assert-NoFeed
+      # The e2e tests drive that e2e build through its test driver, each on a temp root (Phase 3 plan T0.5).
+      - name: Desktop e2e tests
+        run: cargo test --workspace --locked --features desktop/test-driver --test 'e2e_*'
+        env:
+          TJOMMIE_IDENTITY: e2e
       # The desktop's daemon-process test hosts the Rust exe when TJOMMIE_DAEMON_EXE names it (plan T9.1). Build it here so
       # that test runs on every change instead of being skipped. It needs the node_modules the step above installed.
       - run: cargo build --locked -p daemon --bin tjommie-daemon

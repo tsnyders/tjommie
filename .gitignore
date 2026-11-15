@@ -22,3 +22,7 @@ design/_smoke.fig
 # Grok Bot screenshots and scraped tokens: xAI's material, kept on this PC only
 docs/reference/
 /tjommie-rs/target/
+
+# Python bytecode: it embeds the absolute path of the script it came from.
+__pycache__/
+*.pyc

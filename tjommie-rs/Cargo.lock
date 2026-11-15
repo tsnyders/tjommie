@@ -1417,8 +1417,10 @@ dependencies = [
  "gpui-kit",
  "gpui-pre",
  "log",
+ "rust-embed",
  "serde",
  "serde_json",
+ "windows 0.62.2",
 ]
 
 [[package]]
