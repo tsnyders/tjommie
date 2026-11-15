@@ -254,6 +254,42 @@ fn the_pointer_moves_the_live_variant_on_the_spring_and_holds_live_until_rest(
 }
 
 #[gpui::test]
+fn a_key_mid_motion_lets_go_of_live(cx: &mut gpui::TestAppContext) {
+    let (panel, _, cx) = panel_window(cx, bot("bot-1", true), None);
+    cx.update(|_, cx| panel.update(cx, |panel, cx| panel.set_open(true, Trigger::Pointer, cx)));
+    std::thread::sleep(std::time::Duration::from_millis(16));
+    draw(cx);
+    assert!(
+        cx.update(|_, cx| Live::any(cx)),
+        "the live opening holds Live"
+    );
+    cx.simulate_keystrokes("ctrl-b");
+    draw(cx);
+    assert!(
+        !cx.update(|_, cx| panel.read(cx).motion.is_moving()),
+        "the key snapped it shut"
+    );
+    assert!(
+        !cx.update(|_, cx| Live::any(cx)),
+        "and nothing live is moving, so an inactive window may throttle again"
+    );
+}
+
+// The throttle rule (gate condition 5): a remote live stream showing in the panel keeps the display's rate.
+#[gpui::test]
+fn a_remote_stream_showing_holds_live(cx: &mut gpui::TestAppContext) {
+    let mut view = shown(state(BrowserControl::Bot));
+    view.frame = Some(jpeg_frame(1));
+    let (panel, _, cx) = panel_window(cx, bot("b1", true), Some(view));
+    assert!(!cx.update(|_, cx| Live::any(cx)), "closed: nothing live");
+    open_browser(&panel, cx);
+    assert!(cx.update(|_, cx| Live::any(cx)), "the stream shows");
+    cx.simulate_keystrokes("ctrl-b");
+    draw(cx);
+    assert!(!cx.update(|_, cx| Live::any(cx)), "closed again");
+}
+
+#[gpui::test]
 fn opens_only_beside_a_chat(cx: &mut gpui::TestAppContext) {
     let (panel, _, cx) = panel_window(cx, bot("bot-1", true), None);
     cx.update(|_, cx| cx.navigate(Route::Agents));

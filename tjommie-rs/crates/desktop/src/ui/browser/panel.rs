@@ -71,6 +71,8 @@ pub struct BrowserPanel {
     shield: ShieldState,
     /// Holds `Live` while the live variant moves, so an inactive window keeps the display's rate.
     live: Option<LiveGuard>,
+    /// Holds `Live` while another PC's live stream shows in the panel (the throttle rule, gate condition 5).
+    stream_live: Option<LiveGuard>,
     address: Entity<InputState>,
     /// The person is typing an address: the bar shows what they typed, not the page's.
     address_draft: Rc<Cell<bool>>,
@@ -107,6 +109,7 @@ impl BrowserPanel {
                 snapshot_task: None,
                 shield: ShieldState::Down,
                 live: None,
+                stream_live: None,
                 address,
                 address_draft,
                 prompt,
@@ -259,8 +262,10 @@ impl BrowserPanel {
         let want = wants_page.then(|| id.to_owned());
         if self.mounted != want {
             if let Some(gone) = self.mounted.take() {
+                // The page leaves with its shield: hiding it is all the engine needs.
+                self.drop_image(ImageSlot::Shield, cx);
+                self.shield = ShieldState::Down;
                 LocalBrowser::hide(&gone, cx);
-                self.lower_shield(&gone, window, cx);
             }
             if let (Some(bot), Some(_)) = (bot, &want) {
                 LocalBrowser::mount(bot, self.panel_rect(window).unwrap_or(HIDDEN_PANEL), cx);
@@ -431,6 +436,10 @@ impl Render for BrowserPanel {
                 self.rested(cx);
             }
         }
+        // A motion a key or a closing chat cut short is over too.
+        if !self.motion.is_moving() {
+            self.live = None;
+        }
         // The pane's own width, within the room the window has (the browser expanded takes all of it).
         let pane = if bot.as_ref().is_some_and(|bot| bot.browser) {
             self.view.pane
@@ -448,6 +457,26 @@ impl Render for BrowserPanel {
         }
         self.follow(bot.as_ref(), window, cx);
         self.follow_shield(window, cx);
+        let streams = bot.as_ref().is_some_and(|bot| {
+            self.motion.width.value > 0.
+                && pane == Pane::Browser
+                && is_remote(cx)
+                && cx
+                    .try_global::<BrowserData>()
+                    .and_then(|data| data.remote.get(&bot.id))
+                    .is_some_and(|view| {
+                        view.frame.is_some()
+                            && view
+                                .state
+                                .as_ref()
+                                .is_none_or(|state| state.private_active != Some(true))
+                    })
+        });
+        if streams {
+            self.stream_live.get_or_insert_with(|| Live::hold(cx));
+        } else {
+            self.stream_live = None;
+        }
         if window.scale_factor() != self.scale {
             self.scale = window.scale_factor();
             LocalBrowser::rescaled(window, cx);
