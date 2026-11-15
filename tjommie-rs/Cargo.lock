@@ -1115,6 +1115,18 @@ checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 [[package]]
 name = "client"
 version = "0.5.1"
+dependencies = [
+ "base64 0.23.1",
+ "daemon",
+ "futures-util",
+ "protocol",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-tungstenite",
+ "transport",
+ "url",
+]
 
 [[package]]
 name = "cocoa"
@@ -1675,15 +1687,21 @@ dependencies = [
 name = "desktop"
 version = "0.5.1"
 dependencies = [
+ "base64 0.23.1",
+ "client",
  "desktop-host",
  "futures",
  "gpui-kit",
  "gpui-pre",
+ "jiff",
  "log",
  "protocol",
+ "regex",
  "rust-embed",
  "serde",
  "serde_json",
+ "tokio",
+ "url",
  "windows 0.62.2",
 ]
 
@@ -1692,8 +1710,11 @@ name = "desktop-host"
 version = "0.5.1"
 dependencies = [
  "base64 0.23.1",
+ "client",
  "cpal",
+ "daemon",
  "futures-util",
+ "getrandom 0.4.3",
  "jiff",
  "log",
  "protocol",
@@ -1704,9 +1725,11 @@ dependencies = [
  "sha2 0.10.9",
  "tempfile",
  "tokio",
+ "tokio-tungstenite",
  "url",
  "uuid",
  "windows 0.62.2",
+ "zeroize",
 ]
 
 [[package]]
