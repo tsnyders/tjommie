@@ -43,6 +43,9 @@ actions!(
         MentionPick,
         /// Closes the list, keeping what was typed.
         MentionClose,
+        /// Presses the focused button (Enter or Space): a binding, so the button's context beats a dialog's own
+        /// Enter (review F1).
+        Press,
     ]
 );
 
@@ -52,6 +55,8 @@ pub const COMPOSER: &str = "Composer";
 pub const MENTIONS: &str = "Mentions";
 /// A focused approval card.
 pub const APPROVAL: &str = "Approval";
+/// A focused button: a pill, an icon button, a toggle, a sidebar row (`ui::primitives::button::pressable`).
+pub const BUTTON: &str = "Button";
 
 /// Every binding. App-wide first.
 pub fn bindings() -> Vec<KeyBinding> {
@@ -70,6 +75,8 @@ pub fn bindings() -> Vec<KeyBinding> {
         KeyBinding::new("tab", MentionPick, Some(MENTIONS)),
         KeyBinding::new("enter", MentionPick, Some(MENTIONS)),
         KeyBinding::new("escape", MentionClose, Some(MENTIONS)),
+        KeyBinding::new("enter", Press, Some(BUTTON)),
+        KeyBinding::new("space", Press, Some(BUTTON)),
     ]
 }
 
@@ -161,10 +168,8 @@ mod tests {
     fn a_context_binding_wins_inside_its_element(cx: &mut gpui::TestAppContext) {
         let (closed, dismissed) = (Rc::new(Cell::new(false)), Rc::new(Cell::new(false)));
         let (on_close, on_dismiss) = (closed.clone(), dismissed.clone());
-        let focus = cx.update(|cx| {
-            cx.bind_keys(bindings());
-            cx.focus_handle()
-        });
+        // The test window binds the app's keymap.
+        let focus = cx.update(|cx| cx.focus_handle());
         let list = focus.clone();
         let cx = test_window(cx, move |_, _| {
             let (on_close, on_dismiss) = (on_close.clone(), on_dismiss.clone());

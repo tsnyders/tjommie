@@ -6,13 +6,14 @@ use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    App, Div, InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, RenderOnce,
-    Rgba, Role, SharedString, Stateful, StatefulInteractiveElement as _, Styled as _, Window, div,
-    relative, svg,
+    App, Div, InteractiveElement as _, IntoElement, ParentElement as _, RenderOnce, Rgba, Role,
+    SharedString, Stateful, StatefulInteractiveElement as _, Styled as _, Window, div, relative,
+    svg,
 };
 
 use super::focus_handle;
 use crate::guard::guarded;
+use crate::keymap::{self, Press};
 use crate::semantic::{Semantic, SemanticExt as _};
 use crate::ui::style::{TypeExt as _, focus_ring, focus_visible, hsla, palette, r, shadows, theme};
 
@@ -257,7 +258,9 @@ fn press_fill(group: SharedString, fill: Rgba, hover: Rgba) -> Stateful<Div> {
         })
 }
 
-/// Click, Enter and Space press the button, each through the guard.
+/// A click presses the button, and so do Enter and Space while it has the focus: they are the keymap's `Press`
+/// binding in the `Button` context, which beats an enclosing dialog's own Enter (review F1) and ignores Shift+Enter
+/// and the like (F5). Each runs through the guard.
 pub(crate) fn pressable(
     element: Semantic<Stateful<Div>>,
     on_press: Option<Handler>,
@@ -267,15 +270,11 @@ pub(crate) fn pressable(
     };
     let on_key = on_press.clone();
     element
+        .key_context(keymap::BUTTON)
         .on_click(move |_, window, cx| {
             guarded("press a button", || on_press(window, cx));
         })
-        .on_key_down(move |event: &KeyDownEvent, window, cx| {
-            guarded("press a button by key", || {
-                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                    cx.stop_propagation();
-                    on_key(window, cx);
-                }
-            });
+        .on_action(move |_: &Press, window, cx| {
+            guarded("press a button by key", || on_key(window, cx));
         })
 }
