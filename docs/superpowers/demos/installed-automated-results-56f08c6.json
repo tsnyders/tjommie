@@ -2,7 +2,7 @@
   "startedAt": "2026-10-21T23:29:12.824Z",
   "sourceCommit": "56f08c6d5be322c964154b33cc9898448cafb2e6",
   "inputsSha256": "a048cede175ab61a39463b98a45307bf0e0ebf5d3741e1e9184d250b6f26581b",
-  "executable": "C:\\Users\\tyrel\\AppData\\Local\\Programs\\Tjommie\\Tjommie.exe",
+  "executable": "C:\\Users\\owner\\AppData\\Local\\Programs\\Tjommie\\Tjommie.exe",
   "executableSha256": "1ce2e7b70cb1e2c022f7737f0b5b12a8e4b0157abdf605e1e117be4ecd95a02c",
   "checks": {
     "installed providers ready": "Pass",

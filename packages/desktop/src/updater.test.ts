@@ -60,6 +60,69 @@ describe("desktop updater", () => {
     updates.stop();
   });
 
+  it("exports the paired PCs and appearance first, then quits, when restarting for an update", async () => {
+    const fake = fakeUpdater();
+    const order: string[] = [];
+    const quit = vi.fn(() => { order.push("quit"); });
+    const updates = createUpdater(true, fake as unknown as typeof autoUpdater, {}, quit, async () => { order.push("export"); });
+    fake.emit("update-downloaded", { version: "0.5.1" });
+    updates.restart();
+    expect(quit).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(quit).toHaveBeenCalledOnce());
+    expect(order).toEqual(["export", "quit"]);
+    updates.installOnQuit();
+    expect(fake.quitAndInstall).toHaveBeenCalledExactlyOnceWith(true, true);
+    updates.stop();
+  });
+
+  it("a hung export can't hold the update install past 2 seconds", async () => {
+    vi.useFakeTimers();
+    const fake = fakeUpdater();
+    const quit = vi.fn(), gate = { open: (): void => {} };
+    const updates = createUpdater(true, fake as unknown as typeof autoUpdater, {}, quit, () => new Promise<void>((resolve) => { gate.open = resolve; }));
+    fake.emit("update-downloaded", { version: "0.5.1" });
+    updates.restart();
+    await vi.advanceTimersByTimeAsync(1_999);
+    expect(quit).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(quit).toHaveBeenCalledOnce();
+    // The page answers at last, too late: that must not quit a second time.
+    gate.open();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(quit).toHaveBeenCalledOnce();
+    updates.installOnQuit();
+    expect(fake.quitAndInstall).toHaveBeenCalledExactlyOnceWith(true, true);
+    updates.stop();
+  });
+
+  it("an export that fails doesn't stop the update install", async () => {
+    const fake = fakeUpdater();
+    const quit = vi.fn();
+    const updates = createUpdater(true, fake as unknown as typeof autoUpdater, {}, quit, async () => { throw new Error("The page is gone."); });
+    fake.emit("update-downloaded", { version: "0.5.1" });
+    updates.restart();
+    await vi.waitFor(() => expect(quit).toHaveBeenCalledOnce());
+    updates.installOnQuit();
+    expect(fake.quitAndInstall).toHaveBeenCalledExactlyOnceWith(true, true);
+    updates.stop();
+  });
+
+  it("restarting again while the export runs quits only once", async () => {
+    const fake = fakeUpdater();
+    const quit = vi.fn();
+    const started = vi.fn(), gate = { open: (): void => {} };
+    const updates = createUpdater(true, fake as unknown as typeof autoUpdater, {}, quit, () => new Promise<void>((resolve) => { started(); gate.open = resolve; }));
+    fake.emit("update-downloaded", { version: "0.5.1" });
+    updates.restart();
+    updates.restart();
+    await vi.waitFor(() => expect(started).toHaveBeenCalledOnce());
+    gate.open();
+    await vi.waitFor(() => expect(quit).toHaveBeenCalledOnce());
+    await new Promise((resolve) => { setImmediate(resolve); });
+    expect(quit).toHaveBeenCalledOnce();
+    updates.stop();
+  });
+
   it("cancels installation when daemon shutdown fails", () => {
     const fake = fakeUpdater();
     const quit = vi.fn();

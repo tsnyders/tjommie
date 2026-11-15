@@ -1,12 +1,13 @@
 //! Keeps every build but production off the owner's data (spec §4): %LOCALAPPDATA%\Tjommie (the data folder) and
-//! %APPDATA%\Tjommie (Electron's profile), and anything inside them, however the path is spelled. Disposable identities
-//! (e2e, the update test) must also stay under %TEMP%.
+//! %APPDATA%\Tjommie (Electron's profile), and anything inside them, however the path is spelled. They also keep to
+//! local drives and refuse to start when LOCALAPPDATA or APPDATA is unset. Disposable identities (e2e, the update test)
+//! must also stay under %TEMP%.
 //!
 //! Electron's `owner-safety.ts` is a different guard: a test-only snapshot of the owner's folders and registry before
 //! and after a run. That one is ported when a Phase 3 test runs an installer or a real app (M8).
 
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf, Prefix};
 
 use crate::identity::{DataRoot, Identity};
 
@@ -22,8 +23,12 @@ impl std::fmt::Display for Refused {
 /// Refuses `root` unless `identity` may use it: production may use any root; every other identity is refused the
 /// owner's folders, and a disposable identity anything outside %TEMP%.
 pub fn assert_root_allowed(root: &Path, identity: &Identity) -> Result<(), Refused> {
-    let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
-    let roaming = std::env::var_os("APPDATA").map(PathBuf::from);
+    let folder = |name| {
+        std::env::var_os(name)
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+    };
+    let (local, roaming) = (folder("LOCALAPPDATA"), folder("APPDATA"));
     check(root, identity, local.as_deref(), roaming.as_deref())?;
     if identity.data_root == DataRoot::Disposable && !within(root, &std::env::temp_dir()) {
         return Err(Refused(format!(
@@ -57,11 +62,26 @@ fn check(
     if identity.name == "production" {
         return Ok(());
     }
-    for owner in [local, roaming]
-        .into_iter()
-        .flatten()
-        .map(|base| base.join("Tjommie"))
-    {
+    // Unknown owner folders rule nothing out (review F3).
+    let (Some(local), Some(roaming)) = (local, roaming) else {
+        return Err(Refused(format!(
+            "{} needs LOCALAPPDATA and APPDATA set to keep off the owner's data",
+            identity.product
+        )));
+    };
+    // A share reaches the owner's folder under another name (\\localhost\C$\...), so local drives only (review F2).
+    let local_drive = matches!(
+        resolve(root).components().next(),
+        Some(Component::Prefix(prefix)) if matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_))
+    );
+    if !local_drive {
+        return Err(Refused(format!(
+            "{} keeps its data on a local drive, not {}",
+            identity.product,
+            root.display()
+        )));
+    }
+    for owner in [local, roaming].map(|base| base.join("Tjommie")) {
         if within(root, &owner) {
             return Err(Refused(format!(
                 "{} must not use the owner's {} (resolved from {})",
@@ -156,5 +176,46 @@ mod tests {
         assert!(assert_root_allowed(first.path(), &E2E).is_ok());
         // A disposable identity outside %TEMP%.
         assert!(assert_root_allowed(Path::new("C:\\Tjommie-e2e"), &E2E).is_err());
+    }
+
+    /// Review F3: without LOCALAPPDATA or APPDATA the owner's folders are unknown, so a non-production root is refused
+    /// (Electron's owner-safety.ts threw).
+    #[test]
+    fn refuses_without_the_owner_folders_known() {
+        let base = tempfile::tempdir().unwrap();
+        let root = base.path().join("Tjommie-rs");
+        assert!(check(&root, &DEV, None, Some(base.path())).is_err());
+        assert!(check(&root, &DEV, Some(base.path()), None).is_err());
+        assert!(check(&root, &PRODUCTION, None, None).is_ok());
+    }
+
+    /// Review F2: the owner's folder through the loopback admin share is still the owner's folder. Nothing is written.
+    #[test]
+    fn refuses_unc_alias() {
+        let base = tempfile::tempdir().unwrap();
+        let local = base.path().join("Local");
+        let roaming = base.path().join("Roaming");
+        std::fs::create_dir_all(local.join("Tjommie")).unwrap();
+        let owner = local.join("Tjommie").display().to_string();
+        let (drive, rest) = owner.split_once(":\\").unwrap();
+        for alias in [
+            format!(r"\\localhost\{drive}$\{rest}"),
+            format!(r"\\127.0.0.1\{drive}$\{rest}"),
+            format!(r"\\?\UNC\localhost\{drive}$\{rest}"),
+        ] {
+            assert!(
+                check(Path::new(&alias), &DEV, Some(&local), Some(&roaming)).is_err(),
+                "{alias}"
+            );
+        }
+        assert!(
+            check(
+                &local.join("Tjommie-rs"),
+                &DEV,
+                Some(&local),
+                Some(&roaming)
+            )
+            .is_ok()
+        );
     }
 }

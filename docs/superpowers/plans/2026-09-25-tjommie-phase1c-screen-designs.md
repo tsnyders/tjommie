@@ -191,8 +191,8 @@ In "Chat":
    - Height 32, padding 0 12, gap 8, radius 10, fill `#070707`.
    - Inside: `lucide:list-checks` (14, `#909090`), the text "4 steps: Opened the Sabenza IT listing on pnet.co.za" (Inter 13, `#989898`), then `lucide:chevron-down` (14, `#6E6E6E`).
 4. **Approval card:** rename "Waiting card" to "Approval card".
-   - Set "Body" to "Pnet apply wants to save CV-Sabenza-Angular.pdf in C:\Users\tyrel\Documents\Job applications, outside its own folder."
-   - After "Body", insert a text named "Detail": "Write · C:\Users\tyrel\Documents\Job applications\CV-Sabenza-Angular.pdf" (Inter 12, `#989898`, fill width).
+   - Set "Body" to "Pnet apply wants to save CV-Sabenza-Angular.pdf in C:\Users\owner\Documents\Job applications, outside its own folder."
+   - After "Body", insert a text named "Detail": "Write · C:\Users\owner\Documents\Job applications\CV-Sabenza-Angular.pdf" (Inter 12, `#989898`, fill width).
    - In "Actions":
      - "Button / Take over": delete its hand icon, set its label to "Allow once", and rename it "Button / Allow once". Keep the white pill.
      - "Button / Reply with code": set its label to "Always allow" and rename it "Button / Always allow".

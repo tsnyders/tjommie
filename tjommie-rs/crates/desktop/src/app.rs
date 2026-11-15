@@ -10,7 +10,7 @@ use gpui::{
 };
 
 use crate::assets::{self, Assets, MONO_FAMILY, TEXT_FAMILY};
-use crate::guard::guarded;
+use crate::guard::{guarded, guarded_async};
 use crate::notices::{self, Notice};
 use crate::theme::Theme;
 use crate::ui::shell::{self, Shell};
@@ -86,17 +86,21 @@ fn window_options(identity: &Identity, cx: &App) -> WindowOptions {
 /// A later launch asks this one for its window (Electron's `second-instance` → `showWindow`).
 fn show_on_second_launch(instance: Instance, window: AnyWindowHandle, cx: &mut App) {
     let (asked, mut asks) = futures::channel::mpsc::unbounded();
+    // unguarded: desktop-host calls it on its waiter thread, under crash::catching
     instance.on_show(move || {
         let _ = asked.unbounded_send(());
     });
     cx.spawn(async move |cx| {
-        while asks.next().await.is_some() {
-            cx.update(|cx| {
-                guarded("show the window", || {
-                    window.update(cx, |_, window, _| window.activate_window())
+        guarded_async("listen for a second launch", async move {
+            while asks.next().await.is_some() {
+                cx.update(|cx| {
+                    guarded("show the window", || {
+                        window.update(cx, |_, window, _| window.activate_window())
+                    });
                 });
-            });
-        }
+            }
+        })
+        .await
     })
     .detach();
 }

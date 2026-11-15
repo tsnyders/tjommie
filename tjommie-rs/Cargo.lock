@@ -986,7 +986,7 @@ dependencies = [
 
 [[package]]
 name = "client"
-version = "0.5.0"
+version = "0.5.1"
 
 [[package]]
 name = "cocoa"
@@ -1403,7 +1403,7 @@ dependencies = [
 
 [[package]]
 name = "daemon"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -1492,7 +1492,7 @@ dependencies = [
 
 [[package]]
 name = "desktop"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "desktop-host",
  "futures",
@@ -1507,7 +1507,7 @@ dependencies = [
 
 [[package]]
 name = "desktop-host"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "base64 0.23.1",
  "cpal",
@@ -5613,7 +5613,7 @@ dependencies = [
 
 [[package]]
 name = "protocol"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "base64 0.23.1",
  "jiff",
@@ -7578,7 +7578,7 @@ dependencies = [
 
 [[package]]
 name = "transport"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "snow",
  "zeroize",

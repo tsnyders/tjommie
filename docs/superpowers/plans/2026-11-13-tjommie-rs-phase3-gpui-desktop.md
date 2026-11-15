@@ -4,7 +4,7 @@
 
 - **Status:** draft, 2026-11-13. The owner answered all 8 open questions on 2026-11-13; see §"Owner decisions (resolved 2026-11-13)".
 - **Spec:** `docs/superpowers/specs/2026-11-09-tjommie-rust-rewrite-spec.md`. The parts that matter most here are §1, §2, §3.6, §3.9, §3.10, §4, §5 (Phase 0, the Phase 2 decision record, Phase 3), §6 (the D rows), §7, §8 and §10. Executors read the spec and this plan together.
-- **Evidence:** the spike report, code and scripts at `C:\Users\tyrel\.paseo\worktrees\2cb7zj88\rs-gpui-spike\tjommie-rs\spikes\gpui\` (branch `rs/gpui-spike`, commit `a1b1f59`). The browser memory research is at `C:\Users\tyrel\tmp\orchestrator\webview2-memory-research.md`. Below, "spike `src/x.rs`" means a file in that folder, and "research #n" means the n-th row of the research's ranked recommendations.
+- **Evidence:** the spike report, code and scripts at `%USERPROFILE%\.paseo\worktrees\2cb7zj88\rs-gpui-spike\tjommie-rs\spikes\gpui\` (branch `rs/gpui-spike`, commit `a1b1f59`). The browser memory research is at `%USERPROFILE%\tmp\orchestrator\webview2-memory-research.md`. Below, "spike `src/x.rs`" means a file in that folder, and "research #n" means the n-th row of the research's ranked recommendations.
 - **Branch:** `rust-rewrite`. Each lane works in its own worktree. The ops agent merges, pushes and tags.
 - **Note:** TypeScript references (`packages/daemon/...`) point at the `legacy` branch since R1.
 
@@ -785,7 +785,7 @@ Implement each card in `design/claude-design/aegis/components/motion.html` with 
 
 ### T8.5 Owner parity run and smoke (owner present)
 - Every D row on the owner's PC with the dev identity, ticking `tjommie-rs/phase3-checklist.md` (one line per D row, with how it was checked).
-- The real-Claude smoke test: copy `C:\Users\tyrel\tmp\orchestrator\smoke-claude-checklist.md` to `tjommie-rs/smoke-desktop-checklist.md`, rewritten for the GPUI app:
+- The real-Claude smoke test: copy `%USERPROFILE%\tmp\orchestrator\smoke-claude-checklist.md` to `tjommie-rs/smoke-desktop-checklist.md`, rewritten for the GPUI app:
   - a Haiku bot on Always ask;
   - checks 1–8 (sign in, create the bot, PONG, a file write that asks, a Bash command that asks, stop mid-turn, steer, quit and relaunch with nothing lost);
   - plus: open the bot's browser and run one tool; the panel opens live; the logins menu works; a notification arrives while the window is hidden; dictation fills a draft.
