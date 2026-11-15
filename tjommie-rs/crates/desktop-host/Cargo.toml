@@ -8,8 +8,10 @@ publish.workspace = true
 
 [dependencies]
 base64 = "0.23.1"
+client = { path = "../client" }
 cpal.workspace = true
 futures-util = "0.3.34"
+getrandom = "0.4.3"
 jiff = "0.2.41"
 log = { version = "0.4.35", features = ["std"] }
 protocol = { version = "0.5.0", path = "../protocol" }
@@ -31,6 +33,7 @@ windows = { version = "0.62.2", features = [
   "Win32_Graphics_Dxgi",
   "Win32_Graphics_Gdi",
   "Win32_Security",
+  "Win32_Security_Credentials",
   "Win32_Storage_FileSystem",
   "Win32_System_LibraryLoader",
   "Win32_System_ProcessStatus",
@@ -40,9 +43,12 @@ windows = { version = "0.62.2", features = [
   "Win32_UI_Shell",
   "Win32_UI_WindowsAndMessaging",
 ] }
+zeroize = "1.8"
 
 [dev-dependencies]
+daemon = { path = "../daemon" }
 tokio = { version = "1.54.1", features = ["test-util"] }
+tokio-tungstenite = "0.29"
 
 [lints]
 workspace = true

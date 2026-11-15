@@ -4,6 +4,7 @@ pub mod app;
 pub mod assets;
 pub mod guard;
 pub mod keymap;
+pub mod model;
 pub mod motion;
 pub mod notices;
 pub mod semantic;

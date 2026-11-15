@@ -28,8 +28,8 @@ pub mod wire;
 
 pub use contract::{Invalid, Wire, assert_valid, parse, validate};
 pub use wire::{
-    ClientMessage, DecodeError, EVENTS, ErrorCode, Event, METHODS, PROTOCOL_VERSION, Request,
-    Response, ServerMessage,
+    ClientMessage, ClientMethod, DecodeError, EVENTS, ErrorCode, Event, METHODS, Method,
+    PROTOCOL_VERSION, Request, Response, ServerMessage,
 };
 
 /// `nullable().optional()` fields: absent is `None`, `null` is `Some(None)`. Patches need the difference.

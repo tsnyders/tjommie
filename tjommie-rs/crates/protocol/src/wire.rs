@@ -304,6 +304,8 @@ macro_rules! methods {
                     }
                 }
             }
+
+            impl ClientMethod for method::$variant {}
         )*
     };
 }
@@ -317,6 +319,10 @@ pub trait Method {
     /// The params, if `request` is this method's.
     fn take(request: Request) -> Option<Self::Params>;
 }
+
+/// A method as its caller sees it: params it can send and a result it can read back. `methods!` implements it for every
+/// method, so one whose types can't make that trip fails to build here, not at a call site (`client::Client::call`).
+pub trait ClientMethod: Method<Params: Serialize, Result: serde::de::DeserializeOwned> {}
 
 methods! {
     "vault.status" => VaultStatus(Empty) -> vault::VaultStatus,
