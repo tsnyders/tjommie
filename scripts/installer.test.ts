@@ -116,6 +116,7 @@ describe.skipIf(!windows)("process scoping and long and short names", () => {
       [ordered]@{
         short       = $short
         differs     = ($short -ine $folder)
+        spelledOut  = (Get-Item -LiteralPath $folder).FullName
         longOfShort = (Get-LongPath $short)
         shortPathInLong  = (Test-PathInFolder (Join-Path $short 'Tjommie.exe') $folder)
         longPathInShort  = (Test-PathInFolder (Join-Path $folder 'Tjommie.exe') $short)
@@ -123,12 +124,17 @@ describe.skipIf(!windows)("process scoping and long and short names", () => {
         sibling     = (Test-PathInFolder (Join-Path (Split-Path $short -Parent) 'tjommie-a-long-folder-name-2\Tjommie.exe') $folder)
         elsewhere   = (Test-PathInFolder 'D:\nowhere\Tjommie.exe' $folder)
       } | ConvertTo-Json -Compress
-    `) as { short: string; differs: boolean; longOfShort: string; shortPathInLong: boolean; longPathInShort: boolean; missingLeaf: string; sibling: boolean; elsewhere: boolean };
+    `) as { short: string; differs: boolean; spelledOut: string; longOfShort: string; shortPathInLong: boolean; longPathInShort: boolean; missingLeaf: string; sibling: boolean; elsewhere: boolean };
+    // The long spelling expected is what the file system says, not what this test built the folder from: on a GitHub-hosted runner tmpdir()
+    // is itself spelled with an 8.3 alias (a profile folder such as RUNNER~1), and Get-LongPath rightly spells that out (runneradmin), so comparing with
+    // `folder` as built would expect the alias back. PowerShell's own FullName is the independent answer to check it against.
     // Where the volume makes no 8.3 names, the two spellings are one and the checks still hold.
-    expect(result.longOfShort.toLowerCase()).toBe(folder.toLowerCase());
+    const longFolder = result.spelledOut;
+    expect(longFolder, "the folder's long spelling has no alias left in it").not.toMatch(/~\d/);
+    expect(result.longOfShort.toLowerCase()).toBe(longFolder.toLowerCase());
     expect(result.shortPathInLong).toBe(true);
     expect(result.longPathInShort).toBe(true);
-    expect(result.missingLeaf.toLowerCase()).toBe(join(folder, "not-there", "deeper.txt").toLowerCase());
+    expect(result.missingLeaf.toLowerCase()).toBe(join(longFolder, "not-there", "deeper.txt").toLowerCase());
     expect(result.sibling).toBe(false);
     expect(result.elsewhere).toBe(false);
     if (!result.differs) console.warn("This volume has no 8.3 name for the test folder, so only the long spelling was exercised.");

@@ -108,11 +108,12 @@ function Wait-Until([scriptblock]$Condition, [int]$Seconds = 60) {
 function Get-TreeSnapshot([string]$Root) {
     $map = [ordered]@{}
     if (-not (Test-Path -LiteralPath $Root -PathType Container)) { return $map }
-    $base = (Resolve-Path -LiteralPath $Root).ProviderPath.TrimEnd('\')
-    foreach ($file in (Get-ChildItem -LiteralPath $base -Recurse -File -Force | Sort-Object FullName)) {
+    # Get-FilesUnder (r1-facts-lib.ps1) takes the relative path off a root spelled as the file system spells it, so an 8.3 alias in $Root
+    # (a profile folder such as RUNNER~1) cannot leave debris on the front of the keys.
+    foreach ($item in @(Get-FilesUnder $Root)) {
         $hash = 'unreadable'
-        try { $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash } catch { }
-        $map[$file.FullName.Substring($base.Length + 1)] = $hash
+        try { $hash = (Get-FileHash -LiteralPath $item.File.FullName -Algorithm SHA256).Hash } catch { }
+        $map[$item.Relative] = $hash
     }
     return $map
 }
@@ -170,8 +171,7 @@ function Get-ExpectedFiles([string]$Product, [string]$Exe) {
 
 function Get-InstalledFiles([string]$Folder) {
     if (-not (Test-Path -LiteralPath $Folder -PathType Container)) { return @() }
-    $base = (Resolve-Path -LiteralPath $Folder).ProviderPath.TrimEnd('\')
-    return @(Get-ChildItem -LiteralPath $base -Recurse -File -Force | ForEach-Object { $_.FullName.Substring($base.Length + 1) } | Sort-Object)
+    return @(Get-FilesUnder $Folder | ForEach-Object { $_.Relative } | Sort-Object)
 }
 
 # ---- registry ---------------------------------------------------------------------------------------------------------------

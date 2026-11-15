@@ -146,16 +146,30 @@ function Get-InstallLocationKeys([string]$Hive, [string]$ParentKey, [string]$Vie
         } finally { $parent.Close() }
     } finally { $base.Close() }
 }
+# Every file under $Folder (sorted), each with its path relative to the folder. The relative path is taken off a root that is spelled as
+# the file system spells it: Resolve-Path keeps an 8.3 alias as it was given (a profile folder such as RUNNER~1), where Get-Item and Get-ChildItem
+# return the long spelling (runneradmin), so a prefix cut off by the length of a root as given left debris on the front ("ta\new.txt")
+# on a GitHub-hosted runner, whose profile and temp folders are spelled that way. Here the root and the files come from the same
+# listing, and a file that is not under that root is an error, never a wrong path.
+# Returns objects with File (the FileInfo) and Relative; nothing if the folder holds no file. Throws if the folder is not there.
+function Get-FilesUnder([string]$Folder, [string]$Filter = '*') {
+    $base = (Get-Item -LiteralPath $Folder).FullName.TrimEnd('\')
+    foreach ($file in @(Get-ChildItem -LiteralPath $base -Recurse -File -Force -Filter $Filter | Sort-Object FullName)) {
+        if (-not $file.FullName.StartsWith($base + '\', [StringComparison]::OrdinalIgnoreCase)) { throw "$($file.FullName) is not under $base." }
+        [pscustomobject]@{ File = $file; Relative = $file.FullName.Substring($base.Length + 1) }
+    }
+}
+
 # Every file under $Dir, with sizes: the install's file inventory. Paths are relative, with backslashes, as Windows shows
 # them; the uninstaller NSIS adds is counted apart, because a fresh build's folder has none.
 function Get-FileInventory([string]$Dir, [string]$UninstallerPattern = 'Uninstall *.exe') {
-    $root = (Resolve-Path -LiteralPath $Dir).Path.TrimEnd('\')
-    $files = @(Get-ChildItem -LiteralPath $root -Recurse -File -Force | Sort-Object FullName)
+    $files = @(Get-FilesUnder $Dir)
     $list = @()
     $uninstallers = @()
     $bytes = 0L
-    foreach ($file in $files) {
-        $relative = $file.FullName.Substring($root.Length + 1)
+    foreach ($item in $files) {
+        $file = $item.File
+        $relative = $item.Relative
         $list += , ([ordered]@{ path = $relative; bytes = $file.Length })
         $bytes += $file.Length
         if ($relative -notlike '*\*' -and $file.Name -like $UninstallerPattern) { $uninstallers += $relative }
@@ -199,11 +213,11 @@ function Get-FolderEntries([string]$Dir) {
 # its AppUserModelID. The ID is a property of the .lnk file, read through the shell as the Details pane reads it.
 function Get-ShortcutFacts([string]$Folder) {
     if (-not (Test-Path -LiteralPath $Folder -PathType Container)) { return @() }
-    $root = (Resolve-Path -LiteralPath $Folder).Path.TrimEnd('\')
     $wsh = New-Object -ComObject WScript.Shell
     $shell = New-Object -ComObject Shell.Application
     $found = @()
-    foreach ($file in (Get-ChildItem -LiteralPath $root -Recurse -File -Filter '*.lnk' -Force | Sort-Object FullName)) {
+    foreach ($entry in @(Get-FilesUnder $Folder '*.lnk')) {
+        $file = $entry.File
         $link = $wsh.CreateShortcut($file.FullName)
         $item = $shell.NameSpace($file.DirectoryName).ParseName($file.Name)
         $aumid = $null
@@ -213,7 +227,7 @@ function Get-ShortcutFacts([string]$Folder) {
             $activator = $item.ExtendedProperty('System.AppUserModel.ToastActivatorCLSID')
         }
         $found += , ([ordered]@{
-            path                 = $file.FullName.Substring($root.Length + 1)
+            path                 = $entry.Relative
             target               = $link.TargetPath
             arguments            = $link.Arguments
             workingDirectory     = $link.WorkingDirectory
