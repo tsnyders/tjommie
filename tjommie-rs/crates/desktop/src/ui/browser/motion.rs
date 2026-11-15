@@ -126,7 +126,11 @@ impl PanelMotion {
         if self.variant != PanelVariant::Live {
             return;
         }
-        let own: Vec<i64> = frame_starts.iter().copied().filter(|start| *start >= started).collect();
+        let own: Vec<i64> = frame_starts
+            .iter()
+            .copied()
+            .filter(|start| *start >= started)
+            .collect();
         if let Some(p95) = panel_variant::p95_interval_ms(&own, frequency) {
             self.last_live = Some((p95, now));
         }
@@ -228,7 +232,11 @@ mod tests {
         motion.width.value = 0.65 * W;
         assert!(motion.content_opacity() > 0., "still fading at 35% closed");
         motion.width.value = 0.55 * W;
-        assert_eq!(motion.content_opacity(), 0., "gone after the first 40% of a closing");
+        assert_eq!(
+            motion.content_opacity(),
+            0.,
+            "gone after the first 40% of a closing"
+        );
     }
 
     #[test]
@@ -237,7 +245,9 @@ mod tests {
         let mut motion = PanelMotion::new(W, &calm());
         motion.set_open(true, false, PanelVariant::Live, 1_000);
         // Frames before the motion don't count; inside it, 1 ms ticks, 30 ms apart: a miss.
-        let starts: Vec<i64> = std::iter::once(0).chain((0..20).map(|n| 1_000 + n * 30)).collect();
+        let starts: Vec<i64> = std::iter::once(0)
+            .chain((0..20).map(|n| 1_000 + n * 30))
+            .collect();
         motion.finish(&starts, 1000, now);
         assert_eq!(motion.choose(now, 0.), PanelVariant::Snapshot);
         // A snapshot motion leaves the live record as it was.

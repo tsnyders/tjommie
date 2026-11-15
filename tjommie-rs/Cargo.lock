@@ -1743,6 +1743,7 @@ dependencies = [
 name = "desktop"
 version = "0.5.1"
 dependencies = [
+ "async-channel",
  "base64 0.23.1",
  "client",
  "desktop-host",
@@ -1752,6 +1753,7 @@ dependencies = [
  "jiff",
  "log",
  "protocol",
+ "raw-window-handle",
  "regex",
  "rust-embed",
  "serde",

@@ -38,7 +38,9 @@ impl PanelVariant {
         system_cpu_1s: f32,
     ) -> Self {
         let recent_miss = match (last_live_p95, last_live_at) {
-            (Some(p95), Some(at)) => p95 > BUDGET_MS && now.saturating_duration_since(at) < MISS_MEMORY,
+            (Some(p95), Some(at)) => {
+                p95 > BUDGET_MS && now.saturating_duration_since(at) < MISS_MEMORY
+            }
             _ => false,
         };
         if recent_miss || system_cpu_1s > CPU_LIMIT {
@@ -77,7 +79,10 @@ pub struct CpuTimes {
 
 /// The CPU use between two readings, in percent; `None` when no time passed between them.
 pub fn cpu_percent(earlier: CpuTimes, later: CpuTimes) -> Option<f32> {
-    let total = later.total.checked_sub(earlier.total).filter(|total| *total > 0)?;
+    let total = later
+        .total
+        .checked_sub(earlier.total)
+        .filter(|total| *total > 0)?;
     let idle = later.idle.checked_sub(earlier.idle)?.min(total);
     Some(((total - idle) as f64 * 100. / total as f64) as f32)
 }
@@ -87,10 +92,15 @@ impl CpuTimes {
     pub fn now() -> Option<CpuTimes> {
         use windows::Win32::Foundation::FILETIME;
         use windows::Win32::System::Threading::GetSystemTimes;
-        let (mut idle, mut kernel, mut user) = (FILETIME::default(), FILETIME::default(), FILETIME::default());
+        let (mut idle, mut kernel, mut user) = (
+            FILETIME::default(),
+            FILETIME::default(),
+            FILETIME::default(),
+        );
         // SAFETY: three FILETIMEs Windows writes into; nothing else is touched.
         unsafe { GetSystemTimes(Some(&mut idle), Some(&mut kernel), Some(&mut user)) }.ok()?;
-        let ticks = |time: FILETIME| (u64::from(time.dwHighDateTime) << 32) | u64::from(time.dwLowDateTime);
+        let ticks =
+            |time: FILETIME| (u64::from(time.dwHighDateTime) << 32) | u64::from(time.dwLowDateTime);
         Some(CpuTimes {
             idle: ticks(idle),
             total: ticks(kernel).saturating_add(ticks(user)),
@@ -110,20 +120,20 @@ impl CpuMeter {
     pub fn start() -> CpuMeter {
         let samples = Arc::new(Mutex::new(VecDeque::with_capacity(CPU_KEPT + 1)));
         let weak = Arc::downgrade(&samples);
-        let spawned = std::thread::Builder::new()
-            .name("cpu-meter".into())
-            .spawn(move || {
-                while let Some(samples) = weak.upgrade() {
-                    if let (Some(times), Ok(mut samples)) = (CpuTimes::now(), samples.lock()) {
-                        samples.push_back((Instant::now(), times));
-                        if samples.len() > CPU_KEPT {
-                            samples.pop_front();
-                        }
+        let thread = std::thread::Builder::new().name("cpu-meter".into());
+        // unguarded: a thread of its own, off the UI thread, where a panic ends only it
+        let spawned = thread.spawn(move || {
+            while let Some(samples) = weak.upgrade() {
+                if let (Some(times), Ok(mut samples)) = (CpuTimes::now(), samples.lock()) {
+                    samples.push_back((Instant::now(), times));
+                    if samples.len() > CPU_KEPT {
+                        samples.pop_front();
                     }
-                    drop(samples);
-                    std::thread::sleep(CPU_SAMPLE);
                 }
-            });
+                drop(samples);
+                std::thread::sleep(CPU_SAMPLE);
+            }
+        });
         if let Err(error) = spawned {
             log::warn!("No CPU meter for the panel's fallback: {error}");
         }
@@ -172,7 +182,11 @@ mod tests {
     #[test]
     fn the_meter_reads_the_system_once_a_reading_is_old_enough() {
         let meter = CpuMeter::start();
-        assert_eq!(meter.last_second(), 0., "just started: unknown reads as quiet");
+        assert_eq!(
+            meter.last_second(),
+            0.,
+            "just started: unknown reads as quiet"
+        );
         std::thread::sleep(Duration::from_millis(1100));
         let cpu = meter.last_second();
         assert!((0. ..=100.).contains(&cpu), "{cpu}");
@@ -231,7 +245,11 @@ mod tests {
             starts.push(starts.last().copied().unwrap() + gap);
         }
         assert_eq!(p95_interval_ms(&starts, 1000), Some(40.));
-        assert_eq!(p95_interval_ms(&[5], 1000), None, "one frame has no interval");
+        assert_eq!(
+            p95_interval_ms(&[5], 1000),
+            None,
+            "one frame has no interval"
+        );
         assert_eq!(p95_interval_ms(&[], 1000), None);
     }
 }
