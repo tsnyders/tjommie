@@ -4,8 +4,19 @@
 
 use std::path::PathBuf;
 
+/// Which of the four apps this is, for code that behaves differently per app (the updater, the login item, the
+/// notification id, the diagnostics report). One match on this, never string compares on `name`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Production,
+    UpdateTest,
+    Dev,
+    E2e,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Identity {
+    pub kind: Kind,
     /// The TJOMMIE_IDENTITY value.
     pub name: &'static str,
     pub app_id: &'static str,
@@ -36,7 +47,19 @@ pub struct Ports {
     pub lan: u16,
 }
 
+/// The release feed (`latest.yml` of the newest GitHub release). The address is written only in a production build,
+/// so a dev, e2e or update-test binary has no way to look for an update and doesn't even contain the address (spec
+/// §3.10). A `const` holding it in every build wouldn't reach the binary while nothing refers to it, but one non-test
+/// use (a comparison, a log line) would put it there; `tests/no_feed_in_binary.rs` and CI's binary scan are the
+/// backstop for that.
+#[cfg(tjommie_identity = "production")]
+const PRODUCTION_FEED: Option<&str> =
+    Some("https://github.com/tsnyders/tjommie/releases/latest/download/latest.yml");
+#[cfg(not(tjommie_identity = "production"))]
+const PRODUCTION_FEED: Option<&str> = None;
+
 pub const PRODUCTION: Identity = Identity {
+    kind: Kind::Production,
     name: "production",
     app_id: "com.tsnyders.tjommie",
     product: "Tjommie",
@@ -46,11 +69,12 @@ pub const PRODUCTION: Identity = Identity {
         app: 47100,
         lan: 47101,
     },
-    update_feed: Some("https://github.com/tsnyders/tjommie/releases/latest/download/latest.yml"),
+    update_feed: PRODUCTION_FEED,
     login_item: true,
 };
 
 pub const DEV: Identity = Identity {
+    kind: Kind::Dev,
     name: "dev",
     app_id: "com.tsnyders.tjommie-rs",
     product: "Tjommie RS",
@@ -66,6 +90,7 @@ pub const DEV: Identity = Identity {
 
 /// The isolated update-test app (`packages/desktop/scripts/update-test-guards.ts`). The test hands it its feed.
 pub const UPDATE_TEST: Identity = Identity {
+    kind: Kind::UpdateTest,
     name: "updatetest",
     app_id: "com.tsnyders.tjommie.updatetest",
     product: "Tjommie Update Test",
@@ -78,6 +103,7 @@ pub const UPDATE_TEST: Identity = Identity {
 
 /// The e2e tests' app: a temp root, any free port.
 pub const E2E: Identity = Identity {
+    kind: Kind::E2e,
     name: "e2e",
     app_id: "com.tsnyders.tjommie.e2e",
     product: "Tjommie E2E",
@@ -128,7 +154,27 @@ mod tests {
             assert_eq!(identity.update_feed, None, "{}", identity.name);
             assert!(!identity.login_item, "{}", identity.name);
         }
-        assert_ne!(PRODUCTION.update_feed, None);
+        // Production carries the feed in a production build, and in no other: its address isn't compiled in.
+        assert_eq!(
+            PRODUCTION.update_feed.is_some(),
+            cfg!(tjommie_identity = "production")
+        );
+    }
+
+    #[test]
+    fn kind_matches_the_name() {
+        for (identity, kind) in [
+            (PRODUCTION, Kind::Production),
+            (UPDATE_TEST, Kind::UpdateTest),
+            (DEV, Kind::Dev),
+            (E2E, Kind::E2e),
+        ] {
+            assert_eq!(identity.kind, kind, "{}", identity.name);
+        }
+        assert_eq!(
+            CURRENT.kind == Kind::Production,
+            cfg!(tjommie_identity = "production")
+        );
     }
 
     #[test]
