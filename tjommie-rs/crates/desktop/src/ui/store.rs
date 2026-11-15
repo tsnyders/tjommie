@@ -1,18 +1,23 @@
 //! The app state as the screens read it (Phase 3 plan M4, M5): `state` is store.ts's `useApp`, `update` its
-//! `update`, and `request` connection.ts's `request`. The live source is T1.3's `AppConnection`, wired after T5.1;
-//! until then (and in a test that installs nothing) every request fails as "not connected". View tests install a
-//! fake: the state they give, and calls answered from a table (`model::testing::FakeRpc`), which records them.
+//! `update`, and `request` connection.ts's `request`. The conversation helpers are connection.ts's
+//! `loadConversation`, `retryConversation`, `loadOlder` and `closeConversation`.
+//!
+//! The live source is T1.3's `AppConnection` (`crate::live`): calls and conversations go straight to it, and its state
+//! is mirrored here after each change. Before it is wired (and in a test that installs nothing) every request fails as
+//! "not connected". View tests install a fake: the state they give, and calls answered from a table
+//! (`model::testing::FakeRpc`), which records them.
 //!
 //! Screens don't keep the state: they read it as they render, so a change shows on the next frame.
 
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 
 use futures::FutureExt as _;
 use futures::future::BoxFuture;
-use gpui::{App, Global};
+use gpui::{App, AppContext as _, Global, Task};
 use protocol::ClientMethod;
 
-use crate::model::connection::RequestError;
+use crate::live::Live;
+use crate::model::connection::{FetchPage, RequestError};
 use crate::model::state::AppState;
 
 #[derive(Default)]
@@ -28,8 +33,9 @@ enum Source {
     /// Nothing to call: every request fails as not connected.
     #[default]
     None,
+    Live(Arc<Live>),
     #[cfg(test)]
-    Fake(std::sync::Arc<crate::model::testing::FakeRpc>),
+    Fake(Arc<crate::model::testing::FakeRpc>),
 }
 
 /// The state before anything is wired: connecting, with nothing listed.
@@ -41,9 +47,25 @@ pub fn state(cx: &App) -> &AppState {
         .map_or(&EMPTY, |store| &store.state)
 }
 
-/// `update(change)`: `change` edits the state and says whether it changed it; the windows redraw when it did.
+/// `update(change)`: `change` edits the state and says whether it changed it; the windows redraw when it did. With
+/// the live connection the change is the connection's, and the copy here follows at once.
 pub fn update(cx: &mut App, change: impl FnOnce(&mut AppState) -> bool) {
-    if change(&mut cx.default_global::<Store>().state) {
+    let store = cx.default_global::<Store>();
+    let changed = match &store.source {
+        Source::Live(live) => {
+            let mut changed = false;
+            live.update(|state| {
+                changed = change(state);
+                changed
+            });
+            if changed {
+                store.state = live.state();
+            }
+            changed
+        }
+        _ => change(&mut store.state),
+    };
+    if changed {
         cx.refresh_windows();
     }
 }
@@ -59,12 +81,238 @@ pub fn request<M: ClientMethod>(
             let _ = params;
             futures::future::ready(Err(RequestError::NotConnected)).boxed()
         }
+        Some(Source::Live(live)) => {
+            use client::Rpc as _;
+            match live.daemon() {
+                Ok(daemon) => {
+                    async move { daemon.call::<M>(params).await.map_err(RequestError::Rpc) }.boxed()
+                }
+                Err(error) => futures::future::ready(Err(error)).boxed(),
+            }
+        }
         #[cfg(test)]
         Some(Source::Fake(rpc)) => {
             use client::Rpc as _;
-            let rpc = std::sync::Arc::clone(rpc);
+            let rpc = Arc::clone(rpc);
             async move { rpc.call::<M>(params).await.map_err(RequestError::Rpc) }.boxed()
         }
+    }
+}
+
+/// Which pages a conversation reads (connection.ts's `botHistory`, `roomHistory` and `exchangePage`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum History {
+    Bot(String),
+    Room(String),
+    Exchange(String),
+}
+
+/// What a helper works through: the live connection, a test's fake, or nothing yet.
+enum Handle {
+    None,
+    Live(Arc<Live>),
+    #[cfg(test)]
+    Fake(Arc<crate::model::testing::FakeRpc>),
+}
+
+fn handle(cx: &App) -> Handle {
+    match cx.try_global::<Store>().map(|store| &store.source) {
+        None | Some(Source::None) => Handle::None,
+        Some(Source::Live(live)) => Handle::Live(Arc::clone(live)),
+        #[cfg(test)]
+        Some(Source::Fake(rpc)) => Handle::Fake(Arc::clone(rpc)),
+    }
+}
+
+/// `loadConversation`: loads a conversation's newest page once; events keep it current from then on, and a reconnect
+/// catches it up. The load finishes even if the task is dropped.
+pub fn load_conversation(cx: &mut App, conversation_id: &str, history: History) -> Task<()> {
+    let id = conversation_id.to_owned();
+    match handle(cx) {
+        Handle::None => Task::ready(()),
+        Handle::Live(live) => {
+            let pages = pages(&live, &history);
+            cx.background_spawn(async move { live.load_conversation(&id, pages).await })
+        }
+        #[cfg(test)]
+        Handle::Fake(rpc) => {
+            // unguarded: the view tests' fake, never in the app
+            cx.spawn(async move |cx| fake::load(&rpc, id, history, cx).await)
+        }
+    }
+}
+
+/// `retryConversation`: after "Couldn't load this chat.", forgets the failed load and loads it again.
+pub fn retry_conversation(cx: &mut App, conversation_id: &str, history: History) -> Task<()> {
+    let id = conversation_id.to_owned();
+    match handle(cx) {
+        Handle::None => Task::ready(()),
+        Handle::Live(live) => {
+            let pages = pages(&live, &history);
+            cx.background_spawn(async move { live.retry_conversation(&id, pages).await })
+        }
+        #[cfg(test)]
+        Handle::Fake(rpc) => {
+            update(cx, |state| {
+                crate::model::state::forget_conversation(state, &id)
+            });
+            // unguarded: the view tests' fake, never in the app
+            cx.spawn(async move |cx| fake::load(&rpc, id, history, cx).await)
+        }
+    }
+}
+
+/// `loadOlder`: the page before the oldest loaded message, above what's shown.
+pub fn load_older(
+    cx: &mut App,
+    conversation_id: &str,
+    history: History,
+) -> Task<Result<(), RequestError>> {
+    let id = conversation_id.to_owned();
+    match handle(cx) {
+        Handle::None => Task::ready(Ok(())),
+        Handle::Live(live) => {
+            let pages = pages(&live, &history);
+            cx.background_spawn(async move { live.load_older(&id, pages).await })
+        }
+        #[cfg(test)]
+        Handle::Fake(rpc) => {
+            // unguarded: the view tests' fake, never in the app
+            cx.spawn(async move |cx| fake::older(&rpc, id, history, cx).await)
+        }
+    }
+}
+
+/// `closeConversation`: a closed view's conversation (an exchange) is forgotten, so it stops following events.
+pub fn close_conversation(cx: &mut App, conversation_id: &str) {
+    match handle(cx) {
+        Handle::None => {}
+        Handle::Live(live) => {
+            live.close_conversation(conversation_id);
+            mirror(cx, live.state());
+        }
+        #[cfg(test)]
+        Handle::Fake(_) => update(cx, |state| {
+            crate::model::state::forget_conversation(state, conversation_id)
+        }),
+    }
+}
+
+fn pages(live: &Arc<Live>, history: &History) -> FetchPage {
+    match history {
+        History::Bot(id) => live.bot_history(id),
+        History::Room(id) => live.room_history(id),
+        History::Exchange(id) => live.exchange_page(id),
+    }
+}
+
+/// The fake's conversations: what `AppConnection` does with its pages, on the store's own state.
+#[cfg(test)]
+mod fake {
+    use client::Rpc as _;
+    use gpui::AsyncApp;
+    use protocol::wire::{ChatHistory, Id, RoomHistory, method};
+
+    use super::{History, update};
+    use crate::model::connection::{PAGE, RequestError};
+    use crate::model::state::{ConversationStatus, Page, add_older, finish_loading, start_loading};
+    use crate::model::testing::FakeRpc;
+
+    async fn page(
+        rpc: &FakeRpc,
+        history: &History,
+        before: Option<String>,
+    ) -> Result<Page, RequestError> {
+        let page = match history {
+            History::Bot(bot_id) => rpc
+                .call::<method::ChatHistory>(ChatHistory {
+                    bot_id: bot_id.clone(),
+                    before,
+                    limit: PAGE,
+                })
+                .await
+                .map(|page| (page.messages, page.has_more)),
+            History::Room(room_id) => rpc
+                .call::<method::RoomHistory>(RoomHistory {
+                    before,
+                    limit: PAGE,
+                    room_id: room_id.clone(),
+                })
+                .await
+                .map(|page| (page.messages, page.has_more)),
+            History::Exchange(id) => rpc
+                .call::<method::ExchangesGet>(Id { id: id.clone() })
+                .await
+                .map(|view| (view.messages, false)),
+        };
+        page.map(|(messages, has_more)| Page { messages, has_more })
+            .map_err(RequestError::Rpc)
+    }
+
+    pub(super) async fn load(rpc: &FakeRpc, id: String, history: History, cx: &mut AsyncApp) {
+        let started = cx.update(|cx| {
+            let known = super::state(cx).conversations.contains_key(&id);
+            if !known {
+                update(cx, |state| start_loading(state, &id));
+            }
+            !known
+        });
+        if !started {
+            return;
+        }
+        let loaded = page(rpc, &history, None).await;
+        cx.update(|cx| {
+            update(cx, |state| match loaded {
+                Ok(page) => finish_loading(state, &id, page),
+                Err(_) => match state.conversations.get_mut(&id) {
+                    Some(chat) if chat.status == ConversationStatus::Loading => {
+                        chat.status = ConversationStatus::Failed;
+                        chat.pending.clear();
+                        true
+                    }
+                    _ => false,
+                },
+            })
+        });
+    }
+
+    pub(super) async fn older(
+        rpc: &FakeRpc,
+        id: String,
+        history: History,
+        cx: &mut AsyncApp,
+    ) -> Result<(), RequestError> {
+        let before = cx.update(|cx| {
+            super::state(cx).conversations.get(&id).and_then(|chat| {
+                (chat.status == ConversationStatus::Ready && chat.has_more)
+                    .then(|| chat.messages.first().map(|first| first.id.clone()))
+                    .flatten()
+            })
+        });
+        let Some(before) = before else {
+            return Ok(());
+        };
+        let older = page(rpc, &history, Some(before)).await?;
+        cx.update(|cx| update(cx, |state| add_older(state, &id, older)));
+        Ok(())
+    }
+}
+
+/// The live connection becomes the store's source (`crate::live::start`).
+pub(crate) fn connect(cx: &mut App, live: Arc<Live>) {
+    cx.set_global(Store {
+        state: live.state(),
+        source: Source::Live(live),
+    });
+    cx.refresh_windows();
+}
+
+/// The live connection's state after a change.
+pub(crate) fn mirror(cx: &mut App, state: AppState) {
+    let store = cx.default_global::<Store>();
+    if store.state != state {
+        store.state = state;
+        cx.refresh_windows();
     }
 }
 
@@ -74,11 +322,11 @@ pub fn fake(
     cx: &mut App,
     state: AppState,
     rpc: crate::model::testing::FakeRpc,
-) -> std::sync::Arc<crate::model::testing::FakeRpc> {
-    let rpc = std::sync::Arc::new(rpc);
+) -> Arc<crate::model::testing::FakeRpc> {
+    let rpc = Arc::new(rpc);
     cx.set_global(Store {
         state,
-        source: Source::Fake(std::sync::Arc::clone(&rpc)),
+        source: Source::Fake(Arc::clone(&rpc)),
     });
     rpc
 }
@@ -86,10 +334,12 @@ pub fn fake(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::state::Connection;
+    use crate::model::state::{Connection, ConversationStatus};
     use crate::model::testing::FakeRpc;
-    use protocol::model::{Autonomy, Bot, BotColor, BotShape, BotState, Provider};
-    use protocol::wire::{BotsPause, method};
+    use protocol::model::{
+        Autonomy, Bot, BotColor, BotShape, BotState, Message, MessageKind, MessageStatus, Provider,
+    };
+    use protocol::wire::{BotsPause, MessagePage, method};
 
     fn forge(paused: bool) -> Bot {
         Bot {
@@ -118,6 +368,23 @@ mod tests {
             limited_until: None,
             created_at: "2026-11-01T09:00:00.000Z".into(),
         }
+    }
+
+    fn said(id: &str, conversation: &str, body: &str) -> Message {
+        Message {
+            id: id.into(),
+            conversation_id: conversation.into(),
+            author: "you".into(),
+            kind: MessageKind::Text,
+            body: body.into(),
+            data: None,
+            status: MessageStatus::Done,
+            created_at: "2026-11-03T09:00:00.000Z".into(),
+        }
+    }
+
+    fn page(messages: Vec<Message>, has_more: bool) -> MessagePage {
+        MessagePage { messages, has_more }
     }
 
     #[gpui::test]
@@ -187,6 +454,109 @@ mod tests {
             // A change that changed nothing leaves the state as it was.
             update(cx, |_| false);
             assert_eq!(state(cx).bots.len(), 1);
+        });
+    }
+
+    #[gpui::test]
+    fn a_conversation_loads_its_newest_page_once(cx: &mut gpui::TestAppContext) {
+        let rpc = cx.update(|cx| {
+            fake(
+                cx,
+                AppState::default(),
+                FakeRpc::new().on::<method::ChatHistory>(|_| {
+                    Ok(page(
+                        vec![said("m1", "bot-1", "Hi"), said("m2", "bot-1", "Again")],
+                        true,
+                    ))
+                }),
+            )
+        });
+        cx.update(|cx| load_conversation(cx, "bot-1", History::Bot("bot-1".into())))
+            .detach();
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let chat = &state(cx).conversations["bot-1"];
+            assert_eq!(chat.status, ConversationStatus::Ready);
+            assert_eq!(chat.messages.len(), 2);
+            assert!(chat.has_more);
+        });
+        // Loaded: opening it again reads nothing.
+        cx.update(|cx| load_conversation(cx, "bot-1", History::Bot("bot-1".into())))
+            .detach();
+        cx.run_until_parked();
+        let calls = rpc.calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "chat.history");
+        assert_eq!(calls[0].1["botId"], "bot-1");
+    }
+
+    #[gpui::test]
+    fn a_failed_load_says_so_and_retry_loads_it_again(cx: &mut gpui::TestAppContext) {
+        let tries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = Arc::clone(&tries);
+        cx.update(|cx| {
+            fake(
+                cx,
+                AppState::default(),
+                FakeRpc::new().on::<method::RoomHistory>(move |_| {
+                    if counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                        Err(client::RpcError::BadResult("down".into()))
+                    } else {
+                        Ok(page(vec![said("m1", "room-1", "Hello all")], false))
+                    }
+                }),
+            );
+        });
+        cx.update(|cx| load_conversation(cx, "room-1", History::Room("room-1".into())))
+            .detach();
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert_eq!(
+                state(cx).conversations["room-1"].status,
+                ConversationStatus::Failed
+            )
+        });
+        cx.update(|cx| retry_conversation(cx, "room-1", History::Room("room-1".into())))
+            .detach();
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let room = &state(cx).conversations["room-1"];
+            assert_eq!(room.status, ConversationStatus::Ready);
+            assert_eq!(room.messages.len(), 1);
+        });
+    }
+
+    #[gpui::test]
+    fn older_pages_go_above_and_a_closed_conversation_is_forgotten(cx: &mut gpui::TestAppContext) {
+        let rpc = cx.update(|cx| {
+            fake(
+                cx,
+                AppState::default(),
+                FakeRpc::new().on::<method::ChatHistory>(|params| {
+                    Ok(if params.get("before").is_some() {
+                        page(vec![said("m0", "bot-1", "First")], false)
+                    } else {
+                        page(vec![said("m1", "bot-1", "Second")], true)
+                    })
+                }),
+            )
+        });
+        cx.update(|cx| load_conversation(cx, "bot-1", History::Bot("bot-1".into())))
+            .detach();
+        cx.run_until_parked();
+        let older = cx.update(|cx| load_older(cx, "bot-1", History::Bot("bot-1".into())));
+        cx.run_until_parked();
+        assert_eq!(futures::executor::block_on(older), Ok(()));
+        cx.update(|cx| {
+            let chat = &state(cx).conversations["bot-1"];
+            let ids: Vec<&str> = chat.messages.iter().map(|m| m.id.as_str()).collect();
+            assert_eq!(ids, ["m0", "m1"]);
+            assert!(!chat.has_more);
+        });
+        assert_eq!(rpc.calls()[1].1["before"], "m1");
+        cx.update(|cx| {
+            close_conversation(cx, "bot-1");
+            assert!(!state(cx).conversations.contains_key("bot-1"));
         });
     }
 }
