@@ -1484,7 +1484,11 @@ impl Engine {
                     );
                 }
             }
-            HostEvent::Shortcut { bot_id, chord } => self.on_shortcut(&bot_id, chord),
+            HostEvent::Shortcut { bot_id, chord } => {
+                if let Some(bot) = self.live_bot(&bot_id) {
+                    self.on_shortcut(&bot, chord);
+                }
+            }
             HostEvent::ScreencastFrame {
                 bot_id,
                 tab_id,

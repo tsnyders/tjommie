@@ -168,6 +168,23 @@ pub(super) fn watch_screencast(
     })
 }
 
+/// The app chord a key press is, if any. It runs inside a COM callback, which must never panic: a list that cannot be
+/// borrowed (it is being replaced) leaves the key to the page.
+fn forwarded_hit(
+    forwarded: &RefCell<Vec<Chord>>,
+    key: u32,
+    ctrl: bool,
+    shift: bool,
+    alt: bool,
+) -> Option<Chord> {
+    forwarded
+        .try_borrow()
+        .ok()?
+        .iter()
+        .find(|chord| chord.matches(key, ctrl, shift, alt))
+        .copied()
+}
+
 /// Registers the keyboard hand-off of a bot's page: Shift+Tab (through the isolated world's binding), Tab past either end
 /// of the page, and the app's own chords. The handlers only hand a typed message on.
 pub(super) fn watch_keyboard(
@@ -199,12 +216,7 @@ pub(super) fn watch_keyboard(
     })?;
     let (sender, id) = (events.clone(), bot_id.to_string());
     super::super::com::subscribe_accelerators(controller, move |key, ctrl, shift, alt| {
-        let hit = forwarded
-            .borrow()
-            .iter()
-            .find(|chord| chord.matches(key, ctrl, shift, alt))
-            .copied();
-        match hit {
+        match forwarded_hit(&forwarded, key, ctrl, shift, alt) {
             Some(chord) => {
                 push(
                     &sender,
@@ -612,4 +624,46 @@ pub(super) fn watch(
         )?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn chords(names: &[&str]) -> RefCell<Vec<Chord>> {
+        RefCell::new(names.iter().filter_map(|name| Chord::parse(name)).collect())
+    }
+
+    #[test]
+    fn a_key_press_is_an_app_chord_only_when_its_chord_is_listed() {
+        let list = chords(&["Ctrl+T", "F11"]);
+        assert_eq!(
+            forwarded_hit(&list, 0x54, true, false, false),
+            Chord::parse("Ctrl+T")
+        );
+        assert_eq!(
+            forwarded_hit(&list, 0x7A, false, false, false),
+            Chord::parse("F11")
+        );
+        assert_eq!(
+            forwarded_hit(&list, 0x54, false, false, false),
+            None,
+            "a bare T is the page's"
+        );
+        assert_eq!(
+            forwarded_hit(&list, 0x57, true, false, false),
+            None,
+            "Ctrl+W is not listed"
+        );
+    }
+
+    #[test]
+    fn a_list_being_replaced_does_not_panic_the_callback() {
+        // COM calls this inside a callback: a borrow that cannot be had is the page's key, never a panic.
+        let list = chords(&["Ctrl+T"]);
+        let replacing = list.borrow_mut();
+        assert_eq!(forwarded_hit(&list, 0x54, true, false, false), None);
+        drop(replacing);
+        assert!(forwarded_hit(&list, 0x54, true, false, false).is_some());
+    }
 }

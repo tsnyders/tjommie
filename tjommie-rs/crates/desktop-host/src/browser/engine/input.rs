@@ -144,13 +144,7 @@ impl Engine {
     /// Focus leaves a bot's page by the keyboard (`direction`), if the person is the one typing into it: it goes to the
     /// app, which moves it to the next or previous control. Input a phone sends through the browser never steals it.
     pub(super) fn focus_leaves(&self, bot: &Rc<Bot>, direction: FocusDirection) {
-        if !bot
-            .state
-            .borrow()
-            .applied
-            .as_ref()
-            .is_some_and(|applied| applied.interactive)
-        {
+        if !person_is_typing(bot) {
             return;
         }
         self.focus_app();
@@ -170,13 +164,27 @@ impl Engine {
         }
     }
 
-    /// An app chord was pressed with a page in focus.
-    pub(super) fn on_shortcut(&self, bot_id: &str, chord: Chord) {
+    /// An app chord was pressed with a page in focus. It is the app's command only if the person is the one typing:
+    /// a key that reaches a page the person is not holding must not open or close a tab for them.
+    pub(super) fn on_shortcut(&self, bot: &Rc<Bot>, chord: Chord) {
+        if !person_is_typing(bot) {
+            return;
+        }
         let _ = self.notify.try_send(Notification::Shortcut {
-            bot_id: bot_id.to_string(),
+            bot_id: bot.identity.id.clone(),
             chord,
         });
     }
+}
+
+/// Whether the bot's page is placed for the person to type into (they hold it, and it is on screen): only then is a key
+/// that reaches it the person's.
+fn person_is_typing(bot: &Rc<Bot>) -> bool {
+    bot.state
+        .borrow()
+        .applied
+        .as_ref()
+        .is_some_and(|applied| applied.interactive)
 }
 
 #[cfg(test)]

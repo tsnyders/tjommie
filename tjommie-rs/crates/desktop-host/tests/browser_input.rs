@@ -19,7 +19,7 @@ mod common;
 use std::time::{Duration, Instant};
 
 use common::Rig;
-use desktop_host::browser::engine::{Notification, png_size};
+use desktop_host::browser::engine::{HostEvent, Notification, png_size};
 use desktop_host::browser::keyboard::{Chord, FocusDirection};
 use serde_json::json;
 use windows::Win32::Foundation::RECT;
@@ -428,35 +428,48 @@ fn alignment_rule_at_this_scale() {
     );
 }
 
+/// An app chord the browser reports for `alpha`, as WebView2's accelerator callback hands it on.
+fn press(rig: &mut Rig, chord: &str) {
+    let chord = Chord::parse(chord).unwrap_or_else(|| panic!("{chord} is a chord"));
+    let (engine, bot_id) = (rig.engine.clone(), "alpha".to_string());
+    rig.ui.run(async move {
+        engine
+            .apply_event(HostEvent::Shortcut { bot_id, chord })
+            .await
+    });
+}
+
+fn shortcuts(rig: &Rig) -> usize {
+    rig.notifications()
+        .into_iter()
+        .filter(|item| matches!(item, Notification::Shortcut { .. }))
+        .count()
+}
+
 #[test]
-fn forwarded_chords_are_reported_and_the_rest_are_the_pages() {
-    // The matching is pure and tested in `keyboard.rs`; what reaches the engine is its list. A real key press into the page
-    // is the owner's step (`TJOMMIE_OWNER_INPUT=1`, below).
+fn an_app_chord_in_a_page_the_person_holds_is_the_apps() {
+    let mut rig = Rig::new();
+    held_in_panel(&mut rig, "tools.html");
+    rig.notifications();
+    press(&mut rig, "Ctrl+T");
+    assert_eq!(shortcuts(&rig), 1);
+}
+
+#[test]
+fn an_app_chord_is_not_the_apps_when_the_person_is_not_the_one_typing() {
     let mut rig = Rig::new();
     rig.open("alpha");
-    let chords: Vec<Chord> = [
-        "Ctrl+T",
-        "Ctrl+W",
-        "Ctrl+Tab",
-        "Ctrl+Shift+Tab",
-        "Alt+Left",
-        "F11",
-        "Ctrl+=",
-        "Ctrl+-",
-        "Ctrl+0",
-    ]
-    .iter()
-    .map(|text| Chord::parse(text).unwrap_or_else(|| panic!("{text} is a chord")))
-    .collect();
-    rig.engine.set_forwarded_chords(chords.clone());
-    for chord in &chords {
-        assert!(chord.matches(chord.key, chord.ctrl, chord.shift, chord.alt));
-    }
-    assert!(
-        !chords
-            .iter()
-            .any(|chord| chord.matches(0x41, false, false, false)),
-        "a plain letter is the page's"
+    rig.load("alpha", "tools.html");
+    rig.show("alpha");
+    rig.ui.settle(Duration::from_millis(500));
+    // Nobody holds the browser here (the bot does): a key that reaches it is not the person's to act on, so it never
+    // becomes a command of the app (a new tab, a closed one).
+    rig.notifications();
+    press(&mut rig, "Ctrl+T");
+    assert_eq!(
+        shortcuts(&rig),
+        0,
+        "no app command for input that is not the person's"
     );
 }
 
