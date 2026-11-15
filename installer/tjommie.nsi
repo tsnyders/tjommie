@@ -74,10 +74,14 @@ RequestExecutionLevel user
 !insertmacro RequireDefine PAYLOAD_DIR   ; the folder whose contents become the install folder
 !insertmacro RequireDefine OUT_FILE      ; the installer to write
 
-; Owner decision pending (2026-11-14): R1's uninstaller leaves the "start at login" value behind, pointing at a deleted exe. By
-; default this one removes it, but only when its data points into the install folder being removed, and never during an
-; update (--updated). Comment this line out to leave the value as R1 does.
-!define REMOVE_RUN_VALUE_ON_UNINSTALL
+; Owner decision pending (2026-11-15): R1's uninstaller leaves the "start at login" value behind, pointing at a deleted exe. This one does
+; the same BY DEFAULT: removing it would leave start-at-login off after an uninstall and a reinstall, because the login-item-set marker,
+; which says the default was already made, survives in %APPDATA%\Tjommie (a data root, never touched), so the reinstalled app would never
+; write the value again; R1's dangling value, by contrast, keeps working. To remove it instead, uncomment the line below (or build with
+; -RemoveRunValueOnUninstall, which the acceptance does to keep this code tested). The value then goes only when its data points into the
+; install folder being removed, and never during an update (--updated). scripts/installer-nsis.test.ts pins the default, so flipping it is
+; a deliberate change to that test too.
+; !define REMOVE_RUN_VALUE_ON_UNINSTALL
 
 !define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_GUID}"
 !define INSTALL_KEY "Software\${APP_GUID}"

@@ -177,7 +177,11 @@ describe("tjommie.nsi against R1's recorded install", () => {
   it("names the start-at-login value after the app id and removes it only when it points into the install folder", () => {
     expect(facts.firstStart.run.values[0]?.name).toBe(production.appId);
     expect(String(facts.firstStart.run.values[0]?.data)).toBe(`"${installFolder}\\${production.exe}" --hidden`);
-    expect(script).toMatch(/^!define REMOVE_RUN_VALUE_ON_UNINSTALL$/m); // the one-line switch, at the top level
+    // The owner has not decided, so the default is R1's: the value is left behind (removing it would leave start-at-login off after an
+    // uninstall and a reinstall, because the login-item-set marker survives in %APPDATA%\Tjommie). The switch is one commented-out line;
+    // the owner flips it by uncommenting it, and this test, which pins the default, is then changed on purpose.
+    expect(script).not.toMatch(/^!define REMOVE_RUN_VALUE_ON_UNINSTALL/m);
+    expect(script).toMatch(/^; ?!define REMOVE_RUN_VALUE_ON_UNINSTALL$/m);
     const removal = nsi.slice(nsi.indexOf("!ifdef REMOVE_RUN_VALUE_ON_UNINSTALL"), nsi.indexOf("DeleteRegKey HKCU"));
     expect(removal).toContain('ReadRegStr $R0 HKCU "${RUN_KEY}" "${APP_ID}"');
     expect(removal).toContain('${AndIf} $R3 == "$INSTDIR\\"');
@@ -225,8 +229,11 @@ describe("tjommie.nsi against R1's recorded install", () => {
   it("is given by the build script exactly the defines it requires", () => {
     const required = [...nsi.matchAll(/^!insertmacro RequireDefine (\w+)/gm)].map((match) => match[1] ?? "").sort();
     const build = codeOf(join(installer, "build-installer.ps1"));
+    // IDENTITY is for the log only, and REMOVE_RUN_VALUE_ON_UNINSTALL is the optional switch (-RemoveRunValueOnUninstall), not required.
     const given = [...build.matchAll(/"\/D(\w+)=/g)].map((match) => match[1] ?? "").filter((name) => name !== "IDENTITY").sort();
     expect(given).toEqual(required);
+    expect(build).toContain("[switch]$RemoveRunValueOnUninstall");
+    expect(build).toMatch(/if \(\$RemoveRunValueOnUninstall\) \{ \$arguments \+= '\/DREMOVE_RUN_VALUE_ON_UNINSTALL' \}/);
     for (const file of nsi.match(/\$\{__FILEDIR__\}\\[\w.-]+/g) ?? []) expect(existsSync(join(installer, file.split("\\")[1] ?? "")), file).toBe(true);
   });
 });
@@ -398,6 +405,10 @@ describe.skipIf(!windows)("the build script", () => {
     mkdirSync(join(payload, "resources", "daemon"), { recursive: true });
     writeFileSync(join(payload, "resources", "daemon", "tjommie-daemon.exe"), "stub");
     const wide = (text: string): Buffer => Buffer.from(text, "utf16le");
+    // The start-at-login switch, turned on at build time, compiles too: the code behind it stays built and tested while the default is off.
+    const variant = run(["-Identity", "production", "-Version", "0.6.0", "-PayloadDir", payload, "-OutFile", join(outputs, "production-removerun.exe"), "-RemoveRunValueOnUninstall"]);
+    expect(variant.status, `${variant.stdout}${variant.stderr}`).toBe(0);
+    expect(variant.stdout).not.toMatch(/warning/i);
     for (const [name, row] of Object.entries(table.identities)) {
       const out = join(outputs, `${name}.exe`);
       const result = run(["-Identity", name, "-Version", "0.6.0", "-PayloadDir", payload, "-OutFile", out]);

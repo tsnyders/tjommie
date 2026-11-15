@@ -20,6 +20,8 @@
 #       folder that is itself a link is refused (exit 9)
 #   S9  production, dev and updatetest installs do not touch each other; a folder an identity may not use is refused
 #   S10 /D= cannot move production's install
+#   S13 a variant built with the start-at-login switch on removes only a value that points into the folder, never in an update; the default
+#       build leaves the value (S2, S8), as R1 does
 #
 # Every check is recorded in installer-acceptance-fresh.json (written after every step, so a red run still has what it saw).
 param(
@@ -59,6 +61,7 @@ $installers = [ordered]@{
     new        = Join-Path $InstallersDir "production-$NewVersion.exe"
     dev        = Join-Path $InstallersDir "dev-$OldVersion.exe"
     updatetest = Join-Path $InstallersDir "updatetest-$OldVersion.exe"
+    removerun  = Join-Path $InstallersDir "production-$OldVersion-removerun.exe"
 }
 foreach ($name in $installers.Keys) { if (-not (Test-Path -LiteralPath $installers[$name] -PathType Leaf)) { throw "The $name installer is not at $($installers[$name])." } }
 $state = @{}
@@ -368,6 +371,31 @@ Invoke-Step 'S9 production, dev and updatetest do not touch each other' {
     $gone = Invoke-RegisteredUninstall $guid $folder
     Assert-Check $gone 'S9: production is removed last'
     Test-DataUnchanged 'by the identities test'
+}
+
+Invoke-Step 'S13 the start-at-login switch, turned on, removes a value that points into the folder and no other' {
+    # The default build leaves the value, as R1 does (S2, S8). This is the build with the switch on, so that code is known to work whatever the
+    # default is: it removes the value the app writes ("<exe>" --hidden, quoted, pointing into this folder), leaves one that points elsewhere
+    # or at a sibling folder, and never removes it during an update.
+    $first = Invoke-Setup $installers['removerun'] '/S'
+    Assert-Check ($first['exitCode'] -eq 0) 'S13: the variant installs' $first['exitCode']
+    Set-RunValue $prod.appId $runData
+    $update = Invoke-Setup $installers['removerun'] '/S --updated'
+    Assert-Check ($update['exitCode'] -eq 0) 'S13: an update over it exits 0' $update['exitCode']
+    Assert-Check ((Get-RunValue $prod.appId) -ceq $runData) 'S13: an update keeps the start-at-login value' (Get-RunValue $prod.appId)
+    $gone = Invoke-RegisteredUninstall $guid $folder
+    Assert-Check $gone 'S13: the variant is uninstalled'
+    Assert-Check ($null -eq (Get-RunValue $prod.appId)) 'S13: the value, which points into the folder, is removed' (Get-RunValue $prod.appId)
+    foreach ($other in @('"C:\elsewhere\Tjommie\Tjommie.exe" --hidden', "`"$(Join-Path $programs 'tjommie-old')\Tjommie.exe`" --hidden")) {
+        $again = Invoke-Setup $installers['removerun'] '/S'
+        Assert-Check ($again['exitCode'] -eq 0) 'S13: the variant installs again' $again['exitCode']
+        Set-RunValue $prod.appId $other
+        $gone = Invoke-RegisteredUninstall $guid $folder
+        Assert-Check $gone "S13: uninstalled (value: $other)"
+        Assert-Check ((Get-RunValue $prod.appId) -ceq $other) "S13: a value that points elsewhere is left: $other" (Get-RunValue $prod.appId)
+        Set-RunValue $prod.appId $null
+    }
+    Test-DataUnchanged 'by the variant''s uninstalls'
 }
 
 Invoke-Step 'S10 /D= cannot move production''s install' {

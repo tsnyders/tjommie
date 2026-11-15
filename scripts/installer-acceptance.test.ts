@@ -93,6 +93,25 @@ describe.skipIf(!windows)("the installer acceptance scripts", () => {
     expect(fresh).toContain("[IO.Directory]::Delete($folder)"); // the link is removed as a link in the test too
   });
 
+  // The default leaves the start-at-login value, as R1 does. The code that removes it (only when it points into the folder, never in an
+  // update) stays built behind a switch, and a variant installer built with the switch on keeps it exercised on the runner.
+  it("keeps the start-at-login removal tested through a variant installer, whatever the default is", () => {
+    const fresh = codeOf(join(installer, "accept-fresh.ps1"));
+    const build = codeOf(join(installer, "build-acceptance-installers.ps1"));
+    expect(build).toContain("-RemoveRunValueOnUninstall");
+    expect(build).toMatch(/removerun/);
+    expect(fresh).toMatch(/removerun\s*=\s*Join-Path \$InstallersDir "production-\$OldVersion-removerun\.exe"/);
+    const step = fresh.slice(fresh.indexOf("'S13 "));
+    expect(step).toContain("$installers['removerun']");
+    // Removed only for a value that points into the folder (quoted); left for one elsewhere or at a sibling; kept by an update.
+    expect(step).toMatch(/\$null -eq \(Get-RunValue \$prod\.appId\)/);
+    expect(step).toContain("tjommie-old");
+    expect(step).toContain("C:\\elsewhere");
+    expect(step).toContain("/S --updated");
+    // The scenarios that follow the build's own default read it from the script, so flipping the default does not break them.
+    expect(fresh).toMatch(/\$removeRun = \[bool\]\(\(Get-Content -LiteralPath \(Join-Path \$PSScriptRoot 'tjommie\.nsi'\) -Raw\) -match '\(\?m\)\^!define REMOVE_RUN_VALUE_ON_UNINSTALL/);
+  });
+
   it("points the uninstaller at the data roots with the right InstallLocation, the half of the guard that protects them (F7)", () => {
     const fresh = codeOf(join(installer, "accept-fresh.ps1"));
     expect(fresh).toMatch(/foreach \(\$target in @\(\$dataRoots\['local'\], \$dataRoots\['roaming'\], 'C:\\', /);
