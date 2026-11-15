@@ -4,3 +4,5 @@ pub mod primitives;
 pub mod shell;
 pub mod store;
 pub mod style;
+#[cfg(test)]
+pub mod testing;

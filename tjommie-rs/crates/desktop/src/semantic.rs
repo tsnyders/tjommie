@@ -10,9 +10,9 @@ use gpui::{
     Element, InteractiveElement, Role, SharedString, Stateful, StatefulInteractiveElement as _,
 };
 
-#[cfg(feature = "test-driver")]
+#[cfg(any(test, feature = "test-driver"))]
 pub type Semantic<E> = crate::test_driver::Observed<E>;
-#[cfg(not(feature = "test-driver"))]
+#[cfg(not(any(test, feature = "test-driver")))]
 pub type Semantic<E> = E;
 
 pub trait SemanticExt: InteractiveElement + Element {
@@ -28,7 +28,7 @@ impl<E: InteractiveElement + Element> SemanticExt for E {
             .id(id.clone())
             .accessibility_id(id.clone())
             .role(role);
-        #[cfg(feature = "test-driver")]
+        #[cfg(any(test, feature = "test-driver"))]
         let element = crate::test_driver::Observed::new(element, id);
         element
     }

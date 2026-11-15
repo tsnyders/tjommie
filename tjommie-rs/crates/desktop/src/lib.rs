@@ -4,11 +4,12 @@ pub mod app;
 pub mod assets;
 pub mod guard;
 pub mod keymap;
+pub mod live;
 pub mod model;
 pub mod motion;
 pub mod notices;
 pub mod semantic;
-#[cfg(feature = "test-driver")]
+#[cfg(any(test, feature = "test-driver"))]
 pub mod test_driver;
 pub mod theme;
 pub mod ui;
