@@ -1,6 +1,6 @@
-//! Rolling numbers (motion.html "numbers"): when a count or an amount changes, each digit's column of 0 to 9 slides on
-//! the snappy spring to its new digit, lined up from the right so the units stay the units. Other characters change at
-//! once, and so does everything after a key or under reduced motion.
+//! Rolling numbers (motion.html "numbers", `roll`): when a count or an amount changes, each digit's column of 0 to 9
+//! slides on the spring it is given (the design's is playful) to its new digit. Other characters change at once, and
+//! so does the whole number when its length changes, after a key, or under reduced motion.
 
 use gpui::{IntoElement, ParentElement as _, SharedString, Styled as _, div};
 
@@ -16,7 +16,7 @@ pub struct Rolling {
 }
 
 impl Rolling {
-    /// Shows `text`, on `tokens` (the theme's snappy spring).
+    /// Shows `text`, on `tokens` (the theme's playful spring, as the design rolls).
     pub fn new(text: impl Into<SharedString>, tokens: &theme::Spring) -> Self {
         let mut rolling = Rolling {
             text: SharedString::default(),
@@ -28,9 +28,10 @@ impl Rolling {
     }
 
     /// Changes to `text`: a digit that was a digit rolls to its new value; the rest changes at once, as everything does
-    /// with `snap`.
+    /// with `snap` or when the length changes (motion.html's `roll`).
     pub fn set(&mut self, text: impl Into<SharedString>, snap: bool) {
         let text = text.into();
+        let snap = snap || text.chars().count() != self.text.chars().count();
         let old: Vec<char> = self.text.chars().rev().collect();
         let mut columns = Vec::with_capacity(text.len());
         for (at, char) in text.chars().rev().enumerate() {
@@ -100,7 +101,7 @@ mod tests {
     use crate::theme::Theme;
 
     fn rolling(text: &str) -> Rolling {
-        Rolling::new(text, &Theme::aegis().unwrap().motion.spring.snappy)
+        Rolling::new(text, &Theme::aegis().unwrap().motion.spring.playful)
     }
 
     fn settled(rolling: &mut Rolling) -> Vec<(char, Option<f32>)> {
@@ -124,16 +125,11 @@ mod tests {
     }
 
     #[test]
-    fn digits_line_up_from_the_right() {
+    fn a_length_change_snaps_the_whole_number() {
         let mut count = rolling("9");
         count.set("10", false);
-        assert_eq!(
-            count.positions()[0],
-            ('1', Some(1.)),
-            "a new tens digit appears at once"
-        );
-        assert!(count.step(0.016), "the units roll from 9 to 0");
-        assert_eq!(settled(&mut count), [('1', Some(1.)), ('0', Some(0.))]);
+        assert!(!count.step(0.016), "nothing rolls");
+        assert_eq!(count.positions(), [('1', Some(1.)), ('0', Some(0.))]);
     }
 
     #[test]
