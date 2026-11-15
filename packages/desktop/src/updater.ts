@@ -10,11 +10,17 @@ export type UpdateState =
   | { status: "error"; message: string }
   | { status: "unsupported" };
 
+// How long Restart to update waits for beforeRestart. A page that never answers must not hold an update up.
+const BEFORE_RESTART_MS = 2_000;
+
+// beforeRestart runs, bounded, before quit() when the user restarts to update. Quitting closes every window before the install
+// starts (will-quit comes after the windows are gone), so anything that needs the page has to happen here, not in installOnQuit.
 export function createUpdater(
   packaged: boolean,
   updater: typeof autoUpdater,
   env: NodeJS.ProcessEnv = process.env,
   quit: () => void = () => {},
+  beforeRestart?: () => Promise<void>,
 ) {
   let current: UpdateState = { status: packaged && env.TJOMMIE_UPDATES !== "off" ? "idle" : "unsupported" };
   let restartRequested = false;
@@ -51,7 +57,17 @@ export function createUpdater(
       return () => listeners.delete(listener);
     },
     check,
-    restart: (): void => { if (current.status === "ready" && !restartRequested) { restartRequested = true; updater.autoInstallOnAppQuit = true; quit(); } },
+    restart: (): void => {
+      if (current.status !== "ready" || restartRequested) return;
+      restartRequested = true;
+      updater.autoInstallOnAppQuit = true;
+      if (!beforeRestart) { quit(); return; }
+      // Whichever comes first, the hook finishing (or failing) or the time running out, quits once.
+      let quitting = false;
+      const go = (): void => { if (quitting) return; quitting = true; clearTimeout(timer); quit(); };
+      const timer = setTimeout(go, BEFORE_RESTART_MS);
+      void Promise.resolve().then(beforeRestart).catch(() => {}).finally(go);
+    },
     installOnQuit: (): void => { if (restartRequested) { restartRequested = false; updater.quitAndInstall(true, true); } },
     shutdownFailed: (): void => {
       restartRequested = false;

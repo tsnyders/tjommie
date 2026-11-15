@@ -18,6 +18,7 @@ import { getLoginItem, setLoginItem, startsHidden, syncLoginItem } from "./login
 import { createUpdater, trayTemplate } from "./updater.ts";
 import { RemoteWires } from "./remote-wire.ts";
 import { createDeviceKeys } from "./device-keys.ts";
+import { keepDesktopUiExported } from "./desktop-ui-export.ts";
 import { localFilePath } from "./local-file-path.ts";
 import { createDesktopDiagnostics } from "./diagnostics.ts";
 import { DesktopDeviceBridge, attachmentSaveName, isAttachmentUrl } from "./local-device-bridge.ts";
@@ -88,6 +89,7 @@ const vaultCommands = new VaultCommandGate({ vault: () => loginVault, ready: () 
 let vaultHost: ReturnType<typeof startVaultHost> | null = null;
 let deviceQuitReady = false;
 let deviceQuitCleanup: Promise<void> | null = null;
+let exportPairedPcsAndAppearance: (() => Promise<void>) | null = null; // the window's own export, for just before an update restarts
 const disabledNativeBots = new Set<string>();
 let restarts: number[] = [];
 let pageTheme: keyof typeof THEMES = "dark";
@@ -224,7 +226,7 @@ function start(): void {
     TJOMMIE_UPDATES: (process.env.TJOMMIE_USER_DATA && APP_ID === "com.tsnyders.tjommie") ||
       (packageIdentity.testDataRoot && !process.env.TJOMMIE_UPDATE_FEED) ? "off" : process.env.TJOMMIE_UPDATES,
     TJOMMIE_UPDATE_FEED: packageIdentity.testDataRoot ? process.env.TJOMMIE_UPDATE_FEED : undefined,
-  }, () => app.quit());
+  }, () => app.quit(), async () => { await exportPairedPcsAndAppearance?.(); });
   updates.onState((state) => {
     if (win && !win.isDestroyed()) win.webContents.send("updates:state", state);
     refreshTray();
@@ -650,6 +652,8 @@ function createWindow(): void {
     paintTitleBar();
   });
   window.webContents.on("did-navigate-in-page", (_event, url, isMainFrame) => { if (isMainFrame) appDocumentReady = speechOrigin(url, production); });
+  // A copy of the paired PCs and appearance for the next desktop app, kept current on every load and every hide to the tray.
+  exportPairedPcsAndAppearance = keepDesktopUiExported(window, { production, dataRoot, log });
   window.webContents.on("did-start-navigation", (_event, url, _inPlace, isMainFrame) => {
     if (!isMainFrame || navigationFor(url, production) !== "stay" || isAttachmentUrl(url)) return;
     appDocumentReady = false; void revokeLocalDevice();

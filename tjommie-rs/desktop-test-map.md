@@ -174,7 +174,7 @@ Location kinds: `(unit)` is a `#[cfg(test)]` module, `(view)` is a GPUI `TestApp
 | `packages/desktop/src/speech-delivery.test.ts` | CI check of the speech recipe; `crates/desktop-host/src/speech/runtime.rs` (unit) | T6.5 | The pinned speech build runs in CI and before release packaging. |
 | `packages/desktop/src/speech-model-cleanup.test.ts` | `crates/desktop-host/src/speech/model.rs` (unit) | T6.5 | A failed cancel stays failed until restart verifies the partial is gone. |
 | `packages/desktop/src/speech-model.test.ts` | `crates/desktop-host/src/speech/model.rs` (unit) | T6.5 | Model file and digest. |
-| `packages/desktop/src/speech-permissions.test.ts` | `crates/desktop-host/src/speech/permissions.rs` (unit) | T6.5 | Microphone-off status text. |
+| `packages/desktop/src/speech-permissions.test.ts` | `crates/desktop-host/src/speech/permission.rs` (unit; the Electron media-permission handler is n/a) | T6.5 | Microphone-off status text. |
 | `packages/desktop/src/speech-resources.test.ts` | `crates/desktop-host/src/speech/resources.rs` (unit) | T6.5 | Runtime files and digests. |
 | `packages/desktop/src/speech-runtime.test.ts` | `crates/desktop-host/src/speech/runtime.rs` (unit) | T6.5 | Includes `speech::stops_on_blur` and `wav_header_16k`. |
 | `packages/desktop/src/test-acl.test.ts` | `n/a: test-harness workaround that removes the Codex sandbox's deny entries from test folders; Phase 3 tests never run under Codex` | - | Not owner safety: `owner_safety::test_root()` is T0.6's own test. |

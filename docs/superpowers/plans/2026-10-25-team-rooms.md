@@ -9,7 +9,7 @@ Today there is exactly one room: conversation id `"team"` (`TEAM_ROOM_ID`, `pack
 - Room membership does **not** change `message_bot` reach. `canMessage` (`bot_links`) still controls that.
 - Rooms appear as cards on the Agents overview. The rail/tab room icon opens a **rooms list** page that has a "New room" button.
 
-**Base:** all paths are in the active worktree `C:/Users/tyrel/.paseo/worktrees/2cb7zj88/tjommie-phase1-completion` (branch `phase2-accounts-mobile-20261022`). It has about 186 uncommitted files, including the room screen's phone work, so commit or land that first. Then build this on a new branch cut from it.
+**Base:** all paths are in the active worktree `%USERPROFILE%/.paseo/worktrees/2cb7zj88/tjommie-phase1-completion` (branch `phase2-accounts-mobile-20261022`). It has about 186 uncommitted files, including the room screen's phone work, so commit or land that first. Then build this on a new branch cut from it.
 
 ## Data model (daemon)
 `packages/daemon/src/db.ts`: append **migration 8** to the `migrations` array:
