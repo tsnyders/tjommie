@@ -752,6 +752,7 @@ Implement each card in `design/claude-design/aegis/components/motion.html` with 
 - It accepts electron-updater's arguments (`--updated`, `--force-run`) and relaunches `Tjommie.exe --updated`.
 - **Over an existing install:** it closes running `Tjommie.exe` processes in the install folder only, runs the existing uninstaller silently in keep-data mode (as electron-builder's upgrade does; the facts from T8.1 say how), then copies the new files.
 - **Its uninstaller** deletes only the install folder's own files and its own registry keys and shortcuts. It **refuses** to run if `InstallLocation` is not under `%LOCALAPPDATA%\Programs\` or doesn't end with the product name. This guards against a repeat of the test uninstaller that once deleted the owner's install.
+- **Start at login on uninstall: the value is left, as R1 leaves it (owner decision pending, 2026-11-15).** Removing it would leave start-at-login off after an uninstall and a reinstall: the `login-item-set` marker, which says the default was already made, survives in `%APPDATA%\Tjommie` (a data root, never touched), so the reinstalled app would not write the value again. R1's dangling value keeps working. `REMOVE_RUN_VALUE_ON_UNINSTALL` in `installer/tjommie.nsi` is the one commented-out line the owner flips; the acceptance builds a variant with it on, so that code stays tested.
 - **Payload:**
   - `Tjommie.exe` (the `desktop` binary, production identity);
   - `resources\tjommie-daemon.exe`;

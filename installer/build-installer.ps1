@@ -9,13 +9,17 @@
 #   -Makensis    the compiler; else $env:MAKENSIS, else makensis on PATH, else NSIS under Program Files.
 #   -AllowElectronBuilderCache  also look in electron-builder's cache (an old NSIS, for a local compile check only; releases
 #                never use it).
+#   -RemoveRunValueOnUninstall  build the variant whose uninstaller removes the start-at-login value (see REMOVE_RUN_VALUE_ON_UNINSTALL
+#                in tjommie.nsi). Not for a release while the owner's default (leave it, as R1 does) stands: the acceptance builds it
+#                to keep that code tested.
 param(
     [Parameter(Mandatory)][ValidateSet('production', 'dev', 'updatetest')][string]$Identity,
     [Parameter(Mandatory)][string]$Version,
     [Parameter(Mandatory)][string]$PayloadDir,
     [Parameter(Mandatory)][string]$OutFile,
     [string]$Makensis = $env:MAKENSIS,
-    [switch]$AllowElectronBuilderCache
+    [switch]$AllowElectronBuilderCache,
+    [switch]$RemoveRunValueOnUninstall
 )
 
 Set-StrictMode -Version Latest
@@ -65,9 +69,10 @@ $arguments = @(
     "/DPUBLISHER=$($table.publisher)",
     "/DCOMMENTS=$($table.comments)",
     "/DPAYLOAD_DIR=$payload",
-    "/DOUT_FILE=$out",
-    (Join-Path $PSScriptRoot 'tjommie.nsi')
+    "/DOUT_FILE=$out"
 )
+if ($RemoveRunValueOnUninstall) { $arguments += '/DREMOVE_RUN_VALUE_ON_UNINSTALL' }
+$arguments += (Join-Path $PSScriptRoot 'tjommie.nsi') # the script is last
 & $compiler @arguments
 if ($LASTEXITCODE -ne 0) { throw "makensis failed with exit code $LASTEXITCODE." }
 if (-not (Test-Path -LiteralPath $out -PathType Leaf)) { throw "makensis did not write $out." }
