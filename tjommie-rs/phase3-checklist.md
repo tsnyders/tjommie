@@ -33,3 +33,29 @@ finish. Run on the dev identity (`TJOMMIE_IDENTITY=dev`, Tjommie RS), beside the
 - [ ] Windows Settings > Privacy > Microphone > "Let desktop apps access your microphone" off: the status says "Microphone
   access is off for desktop apps in Windows Settings".
 - [ ] Download the speech model, dictate a sentence, remove the model.
+
+## T3.7 browser panel (the Browser UI lane)
+
+Needs the store wired (T1.4), so a chat has a bot with its browser on. Quiet PC, nothing else building.
+
+### Motion, by eye (owner step F again)
+- [ ] Open and close the panel with the mouse (the chat header's control, or Hide) ten times: the page moves with the
+  panel, no gap opens at its moving edge, the chat column never jumps, and it settles without a bounce (calm spring).
+- [ ] Turn it around mid-flight (click again while it moves): it turns smoothly from where it is, no jump.
+- [ ] Ctrl+B and Escape: open and shut at once, no frames in between.
+- [ ] Load the PC (two Rust builds), then open the panel twice: the second opening may slide a still picture of the page
+  (the fallback). It comes back live when the panel stops. A minute after the load ends, it is live again.
+- [ ] Windows Animation effects off: every open and close is instant. Turn it back on.
+
+### Alignment sweep (owner step A again; `owner-checks-scale.ps1` restores the scale)
+- [ ] At 100%, 125% and 150% display scale, and at app zoom 80%, 100% and 125%: at rest, the page's edges are within 1 px
+  of the panel's page frame; while it moves, the page stays clipped to the panel.
+- [ ] Move the window to a monitor with another scale while the panel is open: the page follows with no restart.
+
+### Keyboard and overlays
+- [ ] Take control, click into the page, press Shift+Tab: the keyboard lands on Return to agent. Tab past the page's last
+  control: it goes on to the next control.
+- [ ] With the page focused, Ctrl+= zooms the app, Ctrl+B closes the panel. (Escape also closes the panel: see the report.)
+- [ ] Open the logins menu over the page: a picture of the page stands in under the menu; closing the menu brings the live
+  page back.
+

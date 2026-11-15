@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- The browser panel slides open with the live page moving with it.
+- Paired devices and the panel use the same live view of a bot's browser.
+
 ## 0.5.1 — 2026-11-14
 
 - Bots are now called agents throughout the app.
