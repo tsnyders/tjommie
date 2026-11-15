@@ -110,6 +110,49 @@ mod tests {
     use super::*;
     use crate::ui::primitives::test_window;
     use gpui::IntoElement as _;
+    use std::cell::Cell;
+
+    /// Opens the Remove agent confirm; the count is how many times it removed.
+    fn remove_confirm(cx: &mut gpui::VisualTestContext) -> Rc<Cell<u32>> {
+        let removed = Rc::new(Cell::new(0));
+        let on_remove = removed.clone();
+        cx.update(|window, cx| {
+            open_confirm(
+                window,
+                cx,
+                "Remove Forge?",
+                "Its chats stay on this PC.",
+                "Remove",
+                true,
+                move |_, _| on_remove.set(on_remove.get() + 1),
+            )
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        removed
+    }
+
+    #[gpui::test]
+    fn enter_presses_the_focused_pill(cx: &mut gpui::TestAppContext) {
+        let cx = test_window(cx, |_, _| div().into_any_element());
+        let removed = remove_confirm(cx);
+        // Tab to Cancel, then to Remove (the dialog keeps the focus). Shift+Enter is not a press (review F5); Enter is.
+        cx.simulate_keystrokes("tab tab shift-enter");
+        assert_eq!(removed.get(), 0, "Shift+Enter doesn't press");
+        assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
+        cx.simulate_keystrokes("enter");
+        assert_eq!(removed.get(), 1, "Enter on Remove removes");
+        assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
+    }
+
+    #[gpui::test]
+    fn enter_on_cancel_removes_nothing(cx: &mut gpui::TestAppContext) {
+        let cx = test_window(cx, |_, _| div().into_any_element());
+        let removed = remove_confirm(cx);
+        cx.simulate_keystrokes("tab enter");
+        assert_eq!(removed.get(), 0, "Enter on Cancel cancels");
+        assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
+    }
 
     #[gpui::test]
     fn escape_closes_without_frames(cx: &mut gpui::TestAppContext) {
