@@ -7,13 +7,20 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+async-channel = "2.5.0"
+# Screenshots: the browser hands the image over as base64.
 base64 = "0.23.1"
 cpal.workspace = true
+futures = "0.3.34"
 futures-util = "0.3.34"
 jiff = "0.2.41"
 log = { version = "0.4.35", features = ["std"] }
 protocol = { version = "0.5.0", path = "../protocol" }
+# The tools' search patterns (`browser_find`, `browser_network_requests`).
+regex = "1.13.1"
 reqwest = { version = "0.12.28", default-features = false, features = ["native-tls"] }
+# The login vault's records (`data/logins.sqlite`): the same bundled SQLite the daemon uses.
+rusqlite = { version = "0.41.1", features = ["bundled"] }
 semver.workspace = true
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
@@ -23,6 +30,7 @@ tempfile = "3.27.0"
 tokio = { version = "1.54.1", features = ["rt", "rt-multi-thread", "macros", "net", "sync", "time", "fs", "io-util", "process"] }
 url = "2.5.8"
 uuid = { version = "1.26.0", features = ["v4"] }
+webview2-com.workspace = true
 windows = { version = "0.62.2", features = [
   "Data_Xml_Dom",
   "Foundation",
@@ -31,18 +39,33 @@ windows = { version = "0.62.2", features = [
   "Win32_Graphics_Dxgi",
   "Win32_Graphics_Gdi",
   "Win32_Security",
+  "Win32_Security_Credentials",
   "Win32_Storage_FileSystem",
+  "Win32_System_Com",
+  "Win32_System_Com_StructuredStorage",
   "Win32_System_LibraryLoader",
   "Win32_System_ProcessStatus",
   "Win32_System_Recovery",
   "Win32_System_Registry",
   "Win32_System_Threading",
+  "Win32_UI_Input_KeyboardAndMouse",
   "Win32_UI_Shell",
   "Win32_UI_WindowsAndMessaging",
 ] }
+# Secrets of the login vault are wiped from memory after they are written or filled.
+zeroize = { version = "1.8", features = ["serde"] }
 
 [dev-dependencies]
-tokio = { version = "1.54.1", features = ["test-util"] }
+# The real broker and server the bridge is tested against (the daemon's own, in-process, on loopback).
+daemon = { path = "../daemon" }
+# The TLS fixture servers' certificate, generated per test run.
+rcgen.workspace = true
+# Counts this process's threads (the timer test): the same `windows` crate, one more module.
+windows = { version = "0.62.2", features = ["Win32_System_Diagnostics_ToolHelp"] }
+# A TLS fixture server that asks for a client certificate (F2).
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rustls-pemfile = "2"
+tokio = { version = "1.54.1", features = ["sync", "rt", "rt-multi-thread", "time", "macros", "net", "io-util", "test-util"] }
 
 [lints]
 workspace = true

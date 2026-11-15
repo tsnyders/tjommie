@@ -3,6 +3,7 @@
 //! Its tests build without compiling GPUI.
 
 pub mod app_dirs;
+pub mod browser;
 pub mod crash;
 pub mod diagnostics;
 pub mod identity;
@@ -15,3 +16,4 @@ pub mod shell;
 pub mod spawn;
 pub mod speech;
 pub mod updater;
+pub mod vault;
