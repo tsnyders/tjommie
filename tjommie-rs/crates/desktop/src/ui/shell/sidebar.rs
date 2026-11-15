@@ -46,10 +46,7 @@ pub(super) fn sidebar(
     let nav: Vec<AnyElement> = sections
         .into_iter()
         .map(|(key, icon, label, to)| {
-            let selected = match (&to, route) {
-                (Route::Settings(_), Route::Settings(_)) => true,
-                (to, route) => to == route,
-            };
+            let selected = section_selected(&to, route);
             nav_row(key, icon, label, selected, to, window, cx)
         })
         .collect();
@@ -141,6 +138,15 @@ pub(super) fn sidebar(
                 ),
         )
         .into_any_element()
+}
+
+/// Whether the section that goes `to` shows as selected on `route`: Settings in any section, and Rooms in a room
+/// too, as `rail.tsx` kept it for `/room/?id=` (M2 review F7).
+fn section_selected(to: &Route, route: &Route) -> bool {
+    match (to, route) {
+        (Route::Settings(_), Route::Settings(_)) | (Route::Rooms, Route::Room(_)) => true,
+        (to, route) => to == route,
+    }
 }
 
 /// A sidebar row that goes somewhere: a link and a tab stop, followed by a click, Enter or Space. The selected row sits
@@ -656,6 +662,24 @@ mod tests {
                 initial: None,
             }
         );
+    }
+
+    #[test]
+    fn rooms_stays_selected_in_a_room() {
+        assert!(section_selected(&Route::Rooms, &Route::Rooms));
+        assert!(section_selected(
+            &Route::Rooms,
+            &Route::Room("launch-crew".into())
+        ));
+        assert!(section_selected(
+            &Route::Settings(Section::General),
+            &Route::Settings(Section::Devices)
+        ));
+        assert!(!section_selected(
+            &Route::Agents,
+            &Route::Chat("forge".into())
+        ));
+        assert!(!section_selected(&Route::Rooms, &Route::Agents));
     }
 
     #[test]

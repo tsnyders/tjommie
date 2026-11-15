@@ -5,12 +5,16 @@
 
 use std::rc::Rc;
 
-use gpui::{App, Div, ParentElement as _, SharedString, Styled as _, Window, div};
+use gpui::{
+    App, Div, ParentElement as _, Role, SharedString, Stateful, StatefulInteractiveElement as _,
+    Styled as _, Window, div,
+};
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::dialog::{Dialog, DialogEntrance};
 
 use super::button::{Pill, PillVariant};
 use super::shield::BrowserShield;
+use crate::semantic::{Semantic, SemanticExt as _};
 use crate::ui::style::{TypeExt as _, hsla, palette, r, shadows, theme};
 
 /// Opens a dialog. `build` fills the styled surface; gpui-kit may run it again while the dialog is open, so it creates
@@ -38,12 +42,15 @@ pub fn open_dialog(
     });
 }
 
-/// A dialog's title in the display face.
-pub fn title(text: impl Into<SharedString>, cx: &App) -> Div {
+/// A dialog's title in the display face: its heading (M2 review F8).
+pub fn title(text: impl Into<SharedString>, cx: &App) -> Semantic<Stateful<Div>> {
+    let text = text.into();
     div()
+        .semantic("dialog.title", Role::Heading)
+        .aria_label(text.clone())
         .type_style(&theme(cx).typography.desktop.display_s)
         .text_color(hsla(palette(cx).text.primary))
-        .child(text.into())
+        .child(text)
 }
 
 /// A yes-or-no question (the Full auto warning, Remove agent), as `ConfirmDialog` in `dialog.tsx`: the body reads
@@ -75,7 +82,7 @@ pub fn open_confirm(
                 div()
                     .flex()
                     .flex_col()
-                    .gap(r(20.))
+                    .gap(r(theme(cx).space.s20))
                     .child(
                         div()
                             .type_style(&theme(cx).typography.desktop.body)
@@ -86,7 +93,7 @@ pub fn open_confirm(
                         div()
                             .flex()
                             .justify_end()
-                            .gap(r(8.))
+                            .gap(r(theme(cx).space.s8))
                             .child(
                                 Pill::new("dialog.cancel", "Cancel")
                                     .variant(PillVariant::Grey)
@@ -136,6 +143,10 @@ mod tests {
     fn enter_presses_the_focused_pill(cx: &mut gpui::TestAppContext) {
         let cx = test_window(cx, |_, _| div().into_any_element());
         let removed = remove_confirm(cx);
+        assert!(
+            cx.debug_bounds("dialog.title").is_some(),
+            "the title is the dialog's heading"
+        );
         // Tab to Cancel, then to Remove (the dialog keeps the focus). Shift+Enter is not a press (review F5); Enter is.
         cx.simulate_keystrokes("tab tab shift-enter");
         assert_eq!(removed.get(), 0, "Shift+Enter doesn't press");
