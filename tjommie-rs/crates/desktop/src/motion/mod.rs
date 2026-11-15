@@ -20,7 +20,8 @@ use gpui::App;
 /// Starts the runtime from the command line: the clock (`--trace <csv>` writes its frame log) and reduced motion
 /// (`--force-reduced`, for tests).
 pub fn init(cx: &mut App) {
-    let args: Vec<String> = std::env::args().collect();
+    // args_os: a non-Unicode argument must not panic the start (M2 review F12).
+    let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
     let trace = args
         .iter()
         .position(|arg| arg == "--trace")
