@@ -245,7 +245,7 @@ fn save(form: &Entity<RoomForm>, cx: &mut App) {
             cx.spawn(async move |cx| {
                 guarded_async("create a room", async move {
                     let made = call.await;
-                    cx.update(|cx| finish(&form, made.map(|room| Some(room.id)), cx));
+                    cx.update(|cx| finish(&form, made.map(Some), cx));
                 })
                 .await;
             })
@@ -255,10 +255,11 @@ fn save(form: &Entity<RoomForm>, cx: &mut App) {
 }
 
 /// After the save: close the dialog (and open a new room), or say why it failed. A save that ends after the dialog
-/// was closed does neither.
+/// was closed does neither. A new room goes into the store before its screen opens: the daemon's `room.updated` may
+/// reach the store after the answer, and the room's screen takes a room it can't find for one that's gone.
 fn finish(
     form: &Entity<RoomForm>,
-    saved: Result<Option<String>, crate::model::connection::RequestError>,
+    saved: Result<Option<Room>, crate::model::connection::RequestError>,
     cx: &mut App,
 ) {
     let window = form.read(cx).window;
@@ -269,7 +270,11 @@ fn finish(
         match saved {
             Ok(made) => {
                 window.close_dialog(cx);
-                if let Some(id) = made {
+                if let Some(room) = made {
+                    let id = room.id.clone();
+                    store::update(cx, |state| {
+                        crate::model::state::apply_event(state, &protocol::wire::Event::RoomUpdated(room))
+                    });
                     cx.navigate(Route::Room(id));
                 }
             }

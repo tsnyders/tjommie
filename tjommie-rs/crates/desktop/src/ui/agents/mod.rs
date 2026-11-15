@@ -6,7 +6,7 @@
 //! conversations once (`ui::store::load_conversation`), and events keep them current, as the TypeScript's digests and
 //! `useRoomPosts` did.
 
-mod cards;
+pub(crate) mod cards;
 
 use std::collections::{HashMap, HashSet};
 
@@ -166,10 +166,21 @@ impl Render for AgentsScreen {
                 state
                     .rooms
                     .iter()
-                    .map(|room| cards::room_card(room, messages(&room.id), &state.bots, &now, cx)),
+                    .map(|room| {
+                        cards::room_card(
+                            "agents.room",
+                            room,
+                            messages(&room.id),
+                            &state.bots,
+                            None,
+                            &now,
+                            cx,
+                        )
+                    }),
             );
             grid.push(cards::new_bot_tile(window, cx));
             grid.push(cards::new_room_tile(
+                "agents.new_room",
                 |window, cx| crate::ui::rooms::open_room_form(None, window, cx),
                 window,
                 cx,
@@ -367,7 +378,7 @@ fn section_label(text: &'static str, cx: &App) -> gpui::Div {
 }
 
 /// The grid's columns: as many 280 px cards as the main column holds (`minmax(280px, 1fr)`), one to four.
-fn columns(window: &Window, cx: &App) -> u16 {
+pub(crate) fn columns(window: &Window, cx: &App) -> u16 {
     let theme = theme(cx);
     let rem = f32::from(window.rem_size()) / 16.0;
     let chrome = (theme.size.sidebar + theme.space.s12 + 2.0 * theme.space.s32) * rem;

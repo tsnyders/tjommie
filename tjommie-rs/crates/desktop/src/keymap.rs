@@ -93,6 +93,16 @@ pub fn bindings() -> Vec<KeyBinding> {
         KeyBinding::new("tab", MentionPick, Some(MENTIONS)),
         KeyBinding::new("enter", MentionPick, Some(MENTIONS)),
         KeyBinding::new("escape", MentionClose, Some(MENTIONS)),
+        // In a text field the field's own bindings (gpui-kit's `Input`: Enter, the arrows, Tab and Escape) sit deeper
+        // than a Composer or Mentions element around it, and GPUI ranks the deeper binding first. These rank at the
+        // field's depth; bound after gpui-kit's, they come first there (same depth: the later binding). Mentions'
+        // Enter is after Composer's, so it picks while the list is open.
+        KeyBinding::new("enter", Send, Some("Composer > Input")),
+        KeyBinding::new("up", MentionUp, Some("Mentions > Input")),
+        KeyBinding::new("down", MentionDown, Some("Mentions > Input")),
+        KeyBinding::new("tab", MentionPick, Some("Mentions > Input")),
+        KeyBinding::new("enter", MentionPick, Some("Mentions > Input")),
+        KeyBinding::new("escape", MentionClose, Some("Mentions > Input")),
         KeyBinding::new("escape", CancelLogins, Some(LOGINS)),
         KeyBinding::new("enter", Press, Some(BUTTON)),
         KeyBinding::new("space", Press, Some(BUTTON)),

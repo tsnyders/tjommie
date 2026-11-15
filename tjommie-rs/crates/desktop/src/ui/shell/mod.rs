@@ -154,9 +154,9 @@ fn screen(route: &Route, data: &ShellData, window: &mut gpui::Window, cx: &mut A
         Route::Account { .. } => {
             return crate::ui::settings::screen(route::Section::Accounts, window, cx);
         }
+        Route::Rooms => return crate::ui::rooms::list::screen(window, cx),
+        Route::Room(id) => return crate::ui::rooms::screen::screen(id, window, cx),
         Route::Chat(id) => ("chat", data.name_of(id)),
-        Route::Rooms => ("rooms", "Rooms".into()),
-        Route::Room(id) => ("room", data.name_of(id)),
     };
     let theme = cx.global::<Theme>();
     div()

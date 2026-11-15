@@ -122,6 +122,16 @@ fn create(screen: &Entity<NewBot>, cx: &mut App) {
                     return;
                 }
             };
+            // The agent goes into the store at once: the daemon's `bot.updated` may reach it after this answer, and
+            // the agent's chat opens next.
+            cx.update(|cx| {
+                store::update(cx, |state| {
+                    crate::model::state::apply_event(
+                        state,
+                        &protocol::wire::Event::BotUpdated(bot.clone()),
+                    )
+                })
+            });
             let mut failed = Vec::new();
             for routine in &routines {
                 if let Err(error) = save_routine(&rpc, &bot.id, None, routine).await {

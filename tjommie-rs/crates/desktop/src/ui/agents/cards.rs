@@ -62,7 +62,7 @@ pub(crate) fn pose(state: BotState) -> Pose {
 }
 
 /// The chip beside the avatar (`StateChip`; `.pill-needs`, `.pill-working`, `.pill-quiet`, `.pill-idle`).
-fn state_pill(bot: &Bot, cx: &App) -> AnyElement {
+pub(crate) fn state_pill(bot: &Bot, cx: &App) -> AnyElement {
     let theme = theme(cx);
     let colors = palette(cx);
     let (label, icon): (&str, Option<&str>) = match bot.state {
@@ -337,7 +337,7 @@ pub(super) fn bot_card(
 }
 
 /// The More button that opens a card's menu: a tab stop, so Enter or Space opens it.
-fn more_trigger(
+pub(crate) fn more_trigger(
     id: String,
     label: SharedString,
     open: bool,
@@ -497,17 +497,40 @@ fn exchange_posts(messages: &[Message]) -> Vec<(&Message, String)> {
 }
 
 /// A room's card (`TeamRoomCard`): its last two agent-to-agent posts and its newest post. While its posts are being read
-/// (`None`) it says nothing of them.
-pub(super) fn room_card(
+/// (`None`) it says nothing of them. Its ids start with `prefix` ("agents.room" on Agents); with `members` (the rooms
+/// list's), the room's agents are drawn beside its name, five and then "+N".
+pub(crate) fn room_card(
+    prefix: &str,
     room: &Room,
     messages: Option<&[Message]>,
     bots: &[Bot],
+    members: Option<&[&Bot]>,
     now: &Zoned,
     cx: &App,
 ) -> AnyElement {
     let theme = theme(cx);
     let colors = palette(cx);
-    let id = format!("agents.room.{}", room.id);
+    let id = format!("{prefix}.{}", room.id);
+    let stack = members.map(|members| {
+        div()
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(r(theme.space.s6))
+            .child(div().flex().pl(px(4.)).children(members.iter().take(5).map(|bot| {
+                div()
+                    .ml(px(-4.))
+                    .child(BotAvatar::new(bot.color, bot.shape, 18.))
+            })))
+            .when(members.len() > 5, |stack| {
+                stack.child(
+                    div()
+                        .type_style(&theme.typography.desktop.meta)
+                        .text_color(hsla(colors.text.tertiary))
+                        .child(format!("+{}", members.len() - 5)),
+                )
+            })
+    });
     let posts = exchange_posts(messages.unwrap_or(&[]));
     let preview: AnyElement = if posts.is_empty() {
         match messages {
@@ -598,12 +621,14 @@ pub(super) fn room_card(
                 )
                 .child(
                     div()
+                        .flex_1()
                         .min_w_0()
                         .truncate()
                         .type_style(&theme.typography.desktop.display_s)
                         .text_color(hsla(colors.text.primary))
                         .child(room.name.clone()),
-                ),
+                )
+                .children(stack),
         )
         .child(
             div()
@@ -698,13 +723,14 @@ pub(super) fn new_bot_tile(window: &mut Window, cx: &mut App) -> AnyElement {
     )
 }
 
-pub(super) fn new_room_tile(
+pub(crate) fn new_room_tile(
+    id: &'static str,
     on_press: impl Fn(&mut Window, &mut App) + 'static,
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
     new_tile(
-        "agents.new_room",
+        id,
         "New room",
         "Choose which agents are in it",
         on_press,
