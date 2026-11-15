@@ -9,10 +9,15 @@
 #       unchanged byte for byte
 #   S3  a start-at-login value that points elsewhere, or at a sibling folder, is left alone
 #   S4  an update (--updated) runs the old uninstaller as R1's upgrade did, keeps the start-at-login value, and replaces the version
-#   S5  the uninstaller refuses, and deletes nothing, when InstallLocation is C:\, another folder, or missing
+#   S5  the uninstaller refuses, and deletes nothing, when InstallLocation is C:\, another folder, or missing; and when it is right but
+#       the uninstaller is pointed (_?=) at the data roots, C:\ or another folder
+#   S5b an update refuses (exit 7), before it closes, extracts or runs anything, when InstallLocation names C:\, a scratch folder or a
+#       sibling folder; none of them loses a byte, the value is not "corrected", and the old uninstaller is never run
 #   S6  an update closes what runs from the install folder, and a same-named program running from another folder is left running
 #   S7  --force-run starts the app again, with --updated
 #   S8  the uninstaller closes the app first
+#   S12 a junction inside the install folder is removed as a link by an update and by an uninstall, and its target survives; an install
+#       folder that is itself a link is refused (exit 9)
 #   S9  production, dev and updatetest installs do not touch each other; a folder an identity may not use is refused
 #   S10 /D= cannot move production's install
 #
@@ -78,7 +83,7 @@ function Test-ProductionInstalled([string]$Version, [string]$Label) {
     Assert-Check ($names -ccontains $prod.folder) "$Label`: the install folder is $($prod.folder), in lowercase" $names
     $files = @(Get-InstalledFiles $folder)
     $expected = @(Get-ExpectedFiles $prod.product $prod.exe)
-    Assert-Check (($files -join '|') -ceq ($expected -join '|')) "$Label`: the install holds the payload, the uninstaller and the helpers, and nothing else" @{ files = $files; expected = $expected }
+    Assert-Check (($files -join '|') -ceq ($expected -join '|')) "$Label`: the install holds the payload and the uninstaller, and nothing else" @{ files = $files; expected = $expected }
     Test-InstalledAsR1Did $facts $folder $Version $Label
     Test-ShortcutsAsR1Had $facts $folder $prod.product $prod.exe $prod.appId $Label
 }
@@ -182,6 +187,48 @@ Invoke-Step 'S5 the uninstaller refuses when InstallLocation is not its own inst
     }
     Set-InstallLocation $guid $folder
     Test-DataUnchanged 'by the refused uninstalls'
+
+    # The other half of the guard: the right InstallLocation, but the uninstaller is pointed (_?=) at some other folder, as R1's
+    # uninstaller can be. It must refuse that too (exit 5), and the folders it was pointed at, the data roots among them, must be whole.
+    foreach ($target in @($dataRoots['local'], $dataRoots['roaming'], 'C:\', (Join-Path $programs 'other'), (Join-Path $programs 'tjommie-rs'))) {
+        $redirected = Invoke-Setup (Join-Path $folder "Uninstall $($prod.product).exe") "/S _?=$target"
+        Assert-Check ($redirected['exitCode'] -eq 5) "S5: with the right InstallLocation but _?=$target, the uninstaller refuses (exit 5)" $redirected['exitCode']
+        $differences = @(Compare-Snapshot $before (Get-TreeSnapshot $folder))
+        Assert-Check ($differences.Count -eq 0) "S5: ...and nothing in the install folder is touched (_?=$target)" $differences
+        Test-DataUnchanged "by an uninstaller pointed at $target"
+    }
+}
+
+Invoke-Step 'S5b an update refuses when InstallLocation names another folder, and changes nothing' {
+    # The old uninstaller that an update runs deletes the folder InstallLocation names (R1's does, and ignores the folder it is given),
+    # so the installer must stop first, before it closes, extracts or runs anything. Each folder below holds files of known content.
+    $scratch = Join-Path $env:LOCALAPPDATA 'Temp\tjommie-f1-scratch'
+    $siblings = @((Join-Path $programs 'tjommie-rs'), (Join-Path $programs 'tjommie-old'))
+    $others = [ordered]@{}
+    foreach ($path in (@($scratch) + $siblings)) { [void](Add-Sentinels $path); $others[$path] = Get-TreeSnapshot $path }
+    $installBefore = Get-TreeSnapshot $folder
+    $app = Start-Stub (Join-Path $folder $prod.exe)
+    Assert-Check (Wait-Until { @(Get-RunningFrom $folder).Count -ge 1 } 20) 'S5b: the app stub is running from the install folder'
+    foreach ($planted in @('C:\', $scratch, $siblings[0], $siblings[1])) {
+        Set-InstallLocation $guid $planted
+        $update = Invoke-Setup $installers['new'] '/S --updated' -Watch
+        Assert-Check ($update['exitCode'] -eq 7) "S5b: with InstallLocation $planted the update refuses (exit 7)" $update['exitCode']
+        Assert-Check (@($update['processes'] | Where-Object { $_['name'] -eq 'old-uninstaller.exe' }).Count -eq 0) "S5b: ...and the old uninstaller is never run (InstallLocation $planted)"
+        $differences = @(Compare-Snapshot $installBefore (Get-TreeSnapshot $folder))
+        Assert-Check ($differences.Count -eq 0) "S5b: ...the install folder is untouched (InstallLocation $planted)" $differences
+        foreach ($path in $others.Keys) {
+            $differences = @(Compare-Snapshot $others[$path] (Get-TreeSnapshot $path))
+            Assert-Check ($differences.Count -eq 0) "S5b: ...$path is untouched (InstallLocation $planted)" $differences
+        }
+        Assert-Check (Test-Alive $app.Id) "S5b: ...nothing was closed (InstallLocation $planted)"
+        Assert-Check ((Get-InstallLocation $guid) -ceq $planted) "S5b: ...and the value was not corrected (InstallLocation $planted)" (Get-InstallLocation $guid)
+    }
+    Set-InstallLocation $guid $folder
+    [void](Stop-ProcessesInFolder $folder)
+    Test-DataUnchanged 'by the refused updates'
+    $ok = Invoke-Setup $installers['new'] '/S --updated'
+    Assert-Check ($ok['exitCode'] -eq 0) 'S5b: with InstallLocation as it should be, the same update goes through' $ok['exitCode']
+    foreach ($path in (@($scratch) + $siblings)) { Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue }
 }
 
 Invoke-Step 'S6 an update closes what runs from the install folder, and nothing else' {
@@ -225,6 +272,50 @@ Invoke-Step 'S8 the uninstaller closes the app before it removes anything' {
     Assert-Check ($removeRun -eq ($null -eq (Get-RunValue $prod.appId))) 'S8: the start-at-login value follows the switch' (Get-RunValue $prod.appId)
     Set-RunValue $prod.appId $null
     Test-DataUnchanged 'by the uninstall of a running app'
+}
+
+Invoke-Step 'S12 a junction inside the install folder is removed as a link, and what it points at survives' {
+    # NSIS's RMDir /r (and R1's uninstaller) would follow a junction into its target and empty it. A developer who has made one inside
+    # the install folder must not lose the folder it points at, to an update or to an uninstall.
+    $target = Join-Path $env:LOCALAPPDATA 'Temp\tjommie-link-target'
+    [void](Add-Sentinels $target)
+    $targetBefore = Get-TreeSnapshot $target
+    $links = @((Join-Path $folder 'linked-a'), (Join-Path $folder 'resources\linked-b'))
+    $first = Invoke-Setup $installers['old'] '/S'
+    Assert-Check ($first['exitCode'] -eq 0) 'S12: production is installed' $first['exitCode']
+    foreach ($link in $links) { New-Junction $link $target }
+    $update = Invoke-Setup $installers['new'] '/S --updated'
+    Assert-Check ($update['exitCode'] -eq 0) 'S12: an update over an install with junctions in it exits 0' $update['exitCode']
+    foreach ($link in $links) { Assert-Check (-not (Test-Path -LiteralPath $link)) "S12: the update removed the link $link" }
+    $differences = @(Compare-Snapshot $targetBefore (Get-TreeSnapshot $target))
+    Assert-Check ($differences.Count -eq 0) 'S12: what the junctions pointed at is untouched by the update' $differences
+    Test-ProductionInstalled $NewVersion 'S12 after the update'
+    foreach ($link in $links) { New-Junction $link $target }
+    $gone = Invoke-RegisteredUninstall $guid $folder
+    Assert-Check $gone 'S12: the uninstall of an install with junctions in it removes the folder'
+    $differences = @(Compare-Snapshot $targetBefore (Get-TreeSnapshot $target))
+    Assert-Check ($differences.Count -eq 0) 'S12: what the junctions pointed at is untouched by the uninstall' $differences
+    Test-ProductionRemoved 'S12'
+
+    # An install folder that is itself a link: the folder that would be deleted is somewhere else, so nothing may be deleted (exit 9).
+    $again = Invoke-Setup $installers['old'] '/S'
+    Assert-Check ($again['exitCode'] -eq 0) 'S12: production is installed again' $again['exitCode']
+    $real = Join-Path $programs 'tjommie-real'
+    Rename-Item -LiteralPath $folder -NewName 'tjommie-real'
+    New-Junction $folder $real
+    $realBefore = Get-TreeSnapshot $real
+    $redirected = Invoke-Setup (Join-Path $folder "Uninstall $($prod.product).exe") "/S _?=$folder"
+    Assert-Check ($redirected['exitCode'] -eq 9) 'S12: an uninstaller whose folder is itself a link refuses (exit 9)' $redirected['exitCode']
+    $blocked = Invoke-Setup $installers['new'] '/S --updated'
+    Assert-Check ($blocked['exitCode'] -eq 9) 'S12: an update over an install folder that is itself a link refuses (exit 9)' $blocked['exitCode']
+    $differences = @(Compare-Snapshot $realBefore (Get-TreeSnapshot $real))
+    Assert-Check ($differences.Count -eq 0) 'S12: the folder the link pointed at is untouched' $differences
+    [IO.Directory]::Delete($folder)
+    Rename-Item -LiteralPath $real -NewName $prod.folder
+    $gone = Invoke-RegisteredUninstall $guid $folder
+    Assert-Check $gone 'S12: with the link gone, the install is removed'
+    Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue
+    Test-DataUnchanged 'by the junction tests'
 }
 
 Invoke-Step 'S9 production, dev and updatetest do not touch each other' {

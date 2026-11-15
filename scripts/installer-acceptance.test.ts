@@ -49,6 +49,71 @@ describe.skipIf(!windows)("the installer acceptance scripts", () => {
     expect(lib).toMatch(/function Invoke-Step[\s\S]*catch[\s\S]*Save-Acceptance/);
   });
 
+  // The review's scenarios (F1, F4, F5, F7 and the data-root comparison), pinned by their shape: what each must assert, and the order
+  // that makes it mean something.
+  it("plants a stray InstallLocation before an update, over a fresh install and over the real R1, and asserts nothing was touched (F1)", () => {
+    const fresh = codeOf(join(installer, "accept-fresh.ps1"));
+    const over = codeOf(join(installer, "accept-over-r1.ps1"));
+    for (const [name, text] of [["accept-fresh", fresh], ["accept-over-r1", over]] as const) {
+      expect(text, name).toMatch(/exitCode'\]\s*-eq 7\)/);
+      expect(text, name).toContain("old-uninstaller.exe");
+      expect(text, name).toMatch(/Set-InstallLocation \$guid \$planted/);
+      expect(text, name).toContain("the value was not corrected");
+      for (const planted of ["'C:\\'", "$scratch"]) expect(text, `${name}: ${planted}`).toContain(planted);
+    }
+    // A sibling folder, and the dev folder, hold files of known content that must survive.
+    expect(fresh).toContain("tjommie-old");
+    expect(fresh).toMatch(/Join-Path \$programs 'tjommie-rs'/);
+    expect(over).toMatch(/\$sibling = Join-Path \$programs 'tjommie-rs'/);
+    // Over R1 it happens before R1 is started, so R1's files can be compared byte for byte.
+    expect(over.indexOf("'O1b ")).toBeGreaterThan(over.indexOf("'O1 "));
+    expect(over.indexOf("'O1b ")).toBeLessThan(over.indexOf("'O2 "));
+    expect(over.indexOf("'O1b ")).toBeLessThan(over.indexOf("Start-Process -FilePath (Join-Path $folder $prod.exe)"));
+  });
+
+  it("compares the data roots ignoring only the named run-time set, and everything else that is missing still counts (harness fix)", () => {
+    const over = codeOf(join(installer, "accept-over-r1.ps1"));
+    expect(over).toContain("$r1RuntimeOnly = @(Get-R1RuntimeOnlyEntries $facts)");
+    const compares = over.match(/Compare-Snapshot \$state\['dataBefore'\][^\n]*/g) ?? [];
+    expect(compares).toHaveLength(1); // one shared comparison, used by O3 and O4
+    expect(compares[0]).toContain("-IgnorePaths $r1RuntimeOnly");
+    expect(over).toMatch(/Test-DataRootsKept 'O3'/);
+    expect(over).toMatch(/Test-DataRootsKept 'O4'/);
+    // Nothing else is filtered out: the only filter is the one that keeps missing files and changed sentinels.
+    expect(compares[0]).toContain("'missing:*'");
+    expect(over).not.toMatch(/-IgnorePaths @\(/);
+  });
+
+  it("puts a junction in the install folder before an update and an uninstall, and refuses a folder that is itself a link (F4)", () => {
+    const fresh = codeOf(join(installer, "accept-fresh.ps1"));
+    expect(fresh).toMatch(/New-Junction \$link \$target/);
+    expect(fresh).toContain("what the junctions pointed at is untouched by the update");
+    expect(fresh).toContain("what the junctions pointed at is untouched by the uninstall");
+    expect(fresh).toMatch(/exitCode'\]\s*-eq 9\)/);
+    expect(fresh).toContain("[IO.Directory]::Delete($folder)"); // the link is removed as a link in the test too
+  });
+
+  it("points the uninstaller at the data roots with the right InstallLocation, the half of the guard that protects them (F7)", () => {
+    const fresh = codeOf(join(installer, "accept-fresh.ps1"));
+    expect(fresh).toMatch(/foreach \(\$target in @\(\$dataRoots\['local'\], \$dataRoots\['roaming'\], 'C:\\', /);
+    expect(fresh).toContain('"/S _?=$target"');
+    expect(fresh).toMatch(/\$redirected\['exitCode'\] -eq 5/);
+  });
+
+  it("records what R1's own uninstaller closes, by prefix and by image name, as notes and never as promises (F5)", () => {
+    const over = codeOf(join(installer, "accept-over-r1.ps1"));
+    expect(over).toContain("tjommie-sibling");
+    expect(over).toContain("TjommieRS.exe");
+    expect(over).toMatch(/Add-Note "O3: \$\(\$pair\[0\]\) was/);
+    expect(over).toMatch(/Add-Note "O3: processes with tjommie in their path/);
+    // Neither decoy is asserted: that would promise what only R1's code decides.
+    expect(over).not.toMatch(/Assert-Check \(?Test-Alive \$state\['(sameName|sibling)'\]/);
+    const plan = readFileSync(join(repo, "docs", "superpowers", "plans", "2026-11-13-tjommie-rs-phase3-gpui-desktop.md"), "utf8");
+    expect(plan).toContain("Close the dev (`Tjommie RS`) and update-test apps first");
+    expect(plan).toContain("*starts with* the install folder's path");
+    expect(plan).toContain("Recovery:** run the Phase 3 installer again");
+  });
+
   it("never plants or removes a value outside the identity under test", () => {
     // Registry writes in the scripts are to the Run value named by an app id, and to HKCU\Software\<GUID>\InstallLocation.
     for (const name of [...acceptance, "accept-lib.ps1"]) {

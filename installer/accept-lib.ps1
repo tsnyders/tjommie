@@ -169,6 +169,28 @@ function Set-InstallLocation([string]$Guid, $Location) {
     } finally { $key.Close() }
 }
 
+# What HKCU\Software\<GUID>\InstallLocation holds now, or $null if it is not set.
+function Get-InstallLocation([string]$Guid) {
+    $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey("Software\$Guid")
+    if ($null -eq $key) { return $null }
+    try { return $key.GetValue('InstallLocation') } finally { $key.Close() }
+}
+
+# A directory junction: what a developer makes inside an install folder with `mklink /J`. Needs no privilege.
+function New-Junction([string]$Link, [string]$Target) {
+    New-Item -ItemType Junction -Path $Link -Target $Target | Out-Null
+}
+
+# The processes whose executable path contains a word (case does not matter), as process id -> path: to see afterwards which of them
+# are gone. Looks by path, never by name.
+function Get-ProcessPathsMatching([string]$Word) {
+    $found = [ordered]@{}
+    foreach ($process in (Get-CimInstance Win32_Process)) {
+        if ($process.ExecutablePath -and $process.ExecutablePath -match [regex]::Escape($Word)) { $found[[int]$process.ProcessId] = [string]$process.ExecutablePath }
+    }
+    return $found
+}
+
 function Test-KeyExists([string]$SubKey) {
     $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($SubKey)
     if ($null -eq $key) { return $false }
