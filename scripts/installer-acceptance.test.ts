@@ -97,7 +97,13 @@ describe.skipIf(!windows)("the installer acceptance scripts", () => {
     const fresh = codeOf(join(installer, "accept-fresh.ps1"));
     expect(fresh).toMatch(/foreach \(\$target in @\(\$dataRoots\['local'\], \$dataRoots\['roaming'\], 'C:\\', /);
     expect(fresh).toContain('"/S _?=$target"');
-    expect(fresh).toMatch(/\$redirected\['exitCode'\] -eq 5/);
+    // Only a drive root may exit 2 (NSIS refuses it itself, before the guard runs); every other target must reach the guard and exit 5.
+    expect(fresh).toMatch(/\$isDriveRoot = \(\$target\.TrimEnd\('\\'\)\.Length -le 2\)/);
+    expect(fresh).toMatch(/\$expected = if \(\$isDriveRoot\) \{ @\(2, 5\) \} else \{ @\(5\) \}/);
+    expect(fresh).toMatch(/\$expected -contains \$redirected\['exitCode'\]/);
+    // And nothing is weakened: for every target, the install folder and the data roots are still compared byte for byte.
+    expect(fresh).toContain("...and nothing in the install folder is touched (_?=$target)");
+    expect(fresh).toContain('Test-DataUnchanged "by an uninstaller pointed at $target"');
   });
 
   it("records what R1's own uninstaller closes, by prefix and by image name, as notes and never as promises (F5)", () => {
