@@ -16,21 +16,49 @@ Set-StrictMode -Version Latest
 $script:Checks = New-Object System.Collections.Generic.List[object]
 $script:Scenario = ''
 $script:ResultPath = ''
+$script:Deadline = [DateTime]::MaxValue
+$script:BudgetMinutes = 0
 
 # ---- results ----------------------------------------------------------------------------------------------------------------
 
-function Start-Acceptance([string]$Scenario, [string]$OutDir) {
+# Starts a run. It has a time budget (minutes): a step that would start after it is skipped, and says so, so a run that has gone slow
+# or wrong stops spending the job's time and still uploads what it saw. (The job's own timeout is the last resort and loses the evidence.)
+function Start-Acceptance([string]$Scenario, [string]$OutDir, [int]$BudgetMinutes = 30) {
     New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
     $script:Scenario = $Scenario
     $script:ResultPath = Join-Path $OutDir "installer-acceptance-$Scenario.json"
     $script:Checks.Clear()
+    $script:BudgetMinutes = $BudgetMinutes
+    $script:Deadline = (Get-Date).AddMinutes($BudgetMinutes)
 }
 
+# The logs the installer and its helpers wrote (installer/helper-log.ps1; the installer's own installer.log is among them): the last
+# lines of each, so a failed run carries the helper's exception, its stack and its decisions. Empty if there are none.
+function Get-HelperLogs {
+    $folder = if ($env:TJOMMIE_HELPER_LOG_DIR) { $env:TJOMMIE_HELPER_LOG_DIR } else { Join-Path ([IO.Path]::GetTempPath()) 'tjommie-installer-logs' }
+    if (-not (Test-Path -LiteralPath $folder -PathType Container)) { return @() }
+    $logs = @()
+    foreach ($file in @(Get-ChildItem -LiteralPath $folder -File | Sort-Object Name | Select-Object -Last 60)) {
+        $logs += , ([ordered]@{ file = $file.Name; lines = @(Get-Content -LiteralPath $file.FullName -Tail 150 -ErrorAction SilentlyContinue) })
+    }
+    return $logs
+}
+
+# Writes the evidence file: every check so far and the helper logs, and copies the logs themselves next to it (helper-logs\), because
+# a log is easier to read as a file than as JSON. Saving must never fail a run, so the copy is best effort.
 function Save-Acceptance {
     $failed = @($script:Checks | Where-Object { -not $_['ok'] }).Count
     # .ToArray(), not @(...): in PowerShell 7, @() of a generic List inside a dictionary literal throws "Argument types do not match".
-    [ordered]@{ scenario = $script:Scenario; passed = ($failed -eq 0); failed = $failed; checks = $script:Checks.ToArray() } |
+    [ordered]@{ scenario = $script:Scenario; passed = ($failed -eq 0); failed = $failed; checks = $script:Checks.ToArray(); helperLogs = @(Get-HelperLogs) } |
         ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $script:ResultPath -Encoding UTF8
+    try {
+        $source = if ($env:TJOMMIE_HELPER_LOG_DIR) { $env:TJOMMIE_HELPER_LOG_DIR } else { Join-Path ([IO.Path]::GetTempPath()) 'tjommie-installer-logs' }
+        if (Test-Path -LiteralPath $source -PathType Container) {
+            $target = Join-Path (Split-Path -Parent $script:ResultPath) 'helper-logs'
+            New-Item -ItemType Directory -Force -Path $target | Out-Null
+            Copy-Item -Path (Join-Path $source '*') -Destination $target -Force -ErrorAction SilentlyContinue
+        }
+    } catch { }
 }
 
 function Assert-Check([bool]$Condition, [string]$Message, $Detail = $null) {
@@ -49,6 +77,11 @@ function Add-Note([string]$Message, $Detail = $null) {
 # Runs one step. A step that throws is recorded as a failed check and the next step still runs; the file is saved after it.
 function Invoke-Step([string]$Name, [scriptblock]$Body) {
     Write-Output "--- $Name ---"
+    if ((Get-Date) -gt $script:Deadline) {
+        Assert-Check $false "$Name was skipped: this run's time budget of $($script:BudgetMinutes) minutes is spent, so a step before it took far longer than it should"
+        Save-Acceptance
+        return
+    }
     try { & $Body } catch { Assert-Check $false "$Name stopped: $($_.Exception.Message)" ([string]$_.ScriptStackTrace) }
     Save-Acceptance
 }
@@ -182,9 +215,10 @@ function New-Junction([string]$Link, [string]$Target) {
 }
 
 # The processes whose executable path contains a word (case does not matter), as process id -> path: to see afterwards which of them
-# are gone. Looks by path, never by name.
+# are gone. Looks by path, never by name. A plain hashtable, not an ordered dictionary: an ordered dictionary reads an int index as a
+# position, so $found[$id] with a process id threw "Specified argument was out of the range" on the runner.
 function Get-ProcessPathsMatching([string]$Word) {
-    $found = [ordered]@{}
+    $found = @{}
     foreach ($process in (Get-CimInstance Win32_Process)) {
         if ($process.ExecutablePath -and $process.ExecutablePath -match [regex]::Escape($Word)) { $found[[int]$process.ProcessId] = [string]$process.ExecutablePath }
     }
@@ -236,8 +270,20 @@ function Invoke-RegisteredUninstall([string]$Guid, [string]$Folder, [switch]$Exp
     $null = $process.Handle
     [void]$process.WaitForExit(60000)
     if ($ExpectRemoval) {
-        $gone = Wait-Until { -not (Test-Path -LiteralPath $Folder) } $Seconds
-        Start-Sleep -Seconds 3
+        # The uninstaller removes the folder from a copy of itself in %TEMP%\~nsu*.tmp. Wait for the folder to go, but not for a folder that
+        # cannot go: once that copy has run and ended, or never started, the folder is not going to disappear, and waiting out the
+        # whole limit for every failed uninstall is what made the fresh job crawl. (The limit stays the last resort.)
+        $watch = [Diagnostics.Stopwatch]::StartNew()
+        $sawUninstaller = $false
+        $gone = $false
+        while ($watch.Elapsed.TotalSeconds -lt $Seconds) {
+            if (-not (Test-Path -LiteralPath $Folder)) { $gone = $true; break }
+            if ((Get-ProcessPathsMatching '~nsu').Count -gt 0) { $sawUninstaller = $true }
+            elseif ($sawUninstaller -or $watch.Elapsed.TotalSeconds -gt 20) { break }
+            Start-Sleep -Milliseconds 500
+        }
+        if (-not $gone) { $gone = -not (Test-Path -LiteralPath $Folder) }
+        if ($gone) { Start-Sleep -Seconds 3 }
         return $gone
     }
     Start-Sleep -Seconds 15

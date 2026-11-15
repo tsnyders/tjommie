@@ -137,7 +137,7 @@ describe.skipIf(!windows)("the installer scripts, linted", () => {
   };
 
   it("finds no variable that is read and never assigned, and no command that is not defined", () => {
-    const files = ["accept-fresh.ps1", "accept-over-r1.ps1", "accept-lib.ps1", "build-installer.ps1", "build-acceptance-installers.ps1", "build-stub-payload.ps1", "stop-install-processes.ps1", "unlink-reparse-points.ps1", "set-shortcut-aumid.ps1", "hosted-runner.ps1", "install-latest-r1.ps1"];
+    const files = ["accept-fresh.ps1", "accept-over-r1.ps1", "accept-lib.ps1", "build-installer.ps1", "build-acceptance-installers.ps1", "build-stub-payload.ps1", "stop-install-processes.ps1", "unlink-reparse-points.ps1", "helper-log.ps1", "scoped-processes.ps1", "set-shortcut-aumid.ps1", "hosted-runner.ps1", "install-latest-r1.ps1"];
     const report = lint(installer, files);
     for (const file of files) expect(report[file], file).toEqual([]);
   });
@@ -276,6 +276,82 @@ describe.skipIf(!windows)("the acceptance library's pure helpers", () => {
     expect(lib).toMatch(/if \(\$null -eq \$Location\) \{ \$key\.DeleteValue/);
   });
 
+  // The second runner run failed O2 with "Specified argument was out of the range of valid values (Parameter 'index')": a process table
+  // kept in an ordered dictionary, which reads an int as a position. Every table keyed by a process id is a plain hashtable.
+  it("keeps a table of processes by process id that can be read by id", () => {
+    const result = runBody("accept-lib.ps1", String.raw`
+      $table = Get-ProcessPathsMatching '.exe'
+      $own = [int]$PID
+      [ordered]@{
+        type     = $table.GetType().FullName
+        count    = $table.Count
+        hasOwn   = $table.ContainsKey($own)
+        ownPath  = [string]$table[$own]
+        expected = (Get-Process -Id $PID).Path
+      } | ConvertTo-Json -Compress
+    `) as { type: string; count: number; hasOwn: boolean; ownPath: string; expected: string };
+    expect(result.type).toBe("System.Collections.Hashtable");
+    expect(result.count).toBeGreaterThan(5);
+    expect(result.hasOwn).toBe(true);
+    expect(result.ownPath.toLowerCase()).toBe(result.expected.toLowerCase());
+  });
+
+  it("never indexes an ordered dictionary by a process id, in any installer script", () => {
+    for (const name of ["accept-fresh.ps1", "accept-over-r1.ps1", "accept-lib.ps1", "collect-r1-facts.ps1", "r1-facts-lib.ps1", "scoped-processes.ps1", "stop-install-processes.ps1", "unlink-reparse-points.ps1"]) {
+      const code = codeOf(join(installer, name));
+      for (const match of code.matchAll(/\$(\w+)\[\[int\]/g)) expect(code, `${name}: $${match[1]}`).not.toMatch(new RegExp(`\\$${match[1]} = \\[ordered\\]@\\{\\}`));
+    }
+  });
+
+  // The helper and installer logs travel with the evidence: a failed run must carry the helper's own exception and stack.
+  it("puts the helper logs into the evidence file and copies them next to it", () => {
+    const root = temp();
+    const logs = join(root, "logs");
+    const out = join(root, "out");
+    mkdirSync(logs);
+    writeFileSync(join(logs, "stop-install-processes-20261115-024200-1234.log"), "02:42:00.000 started\n02:42:01.000 FAILED: System.Exception: boom\n02:42:01.001 stack: at here\n");
+    writeFileSync(join(logs, "installer.log"), "C:\\x\\stop-install-processes.ps1 exit 1\nHELPER FAILED: boom\n");
+    const result = runBody("accept-lib.ps1", String.raw`
+      $env:TJOMMIE_HELPER_LOG_DIR = '${logs}'
+      Start-Acceptance 'unit' '${out}'
+      Assert-Check $true 'a check' | Out-Null
+      Save-Acceptance
+      $saved = Get-Content -LiteralPath '${join(out, "installer-acceptance-unit.json")}' -Raw | ConvertFrom-Json
+      [ordered]@{
+        files   = @($saved.helperLogs | ForEach-Object { $_.file })
+        failed  = @($saved.helperLogs | ForEach-Object { $_.lines } | Where-Object { $_ -match 'FAILED' })
+        copied  = @(Get-ChildItem '${join(out, "helper-logs")}' | ForEach-Object { $_.Name })
+      } | ConvertTo-Json -Compress
+    `) as { files: string[]; failed: string[]; copied: string[] };
+    expect(result.files).toEqual(["installer.log", "stop-install-processes-20261115-024200-1234.log"]);
+    expect(result.failed.join("\n")).toContain("FAILED: System.Exception: boom");
+    expect(result.failed.join("\n")).toContain("HELPER FAILED: boom");
+    expect(result.copied).toEqual(result.files);
+  });
+
+  it("skips a step once the run's time budget is spent, and says so, instead of running on", () => {
+    const out = temp();
+    const marker = join(out, "ran.txt");
+    const result = runBody("accept-lib.ps1", String.raw`
+      Start-Acceptance 'unit' '${out}' 0
+      Start-Sleep -Milliseconds 50
+      Invoke-Step 'a step after the budget' { Set-Content -LiteralPath '${marker}' 'it ran' } | Out-Null
+      $saved = Get-Content -LiteralPath '${join(out, "installer-acceptance-unit.json")}' -Raw | ConvertFrom-Json
+      [ordered]@{ failed = $saved.failed; message = [string]@($saved.checks | ForEach-Object { $_.check })[0] } | ConvertTo-Json -Compress
+    `) as { failed: number; message: string };
+    expect(result.failed).toBe(1);
+    expect(result.message).toMatch(/was skipped: this run's time budget of 0 minutes is spent/);
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  it("does not wait out the whole limit for an uninstall that cannot finish (the fresh job crawled for that)", () => {
+    const lib = codeOf(join(installer, "accept-lib.ps1"));
+    const wait = lib.slice(lib.indexOf("function Invoke-RegisteredUninstall"), lib.indexOf("# ---- processes"));
+    expect(wait).toContain("Get-ProcessPathsMatching '~nsu'"); // the uninstaller's temp copy runs from %TEMP%\~nsu*.tmp
+    expect(wait).toMatch(/elseif \(\$sawUninstaller -or \$watch\.Elapsed\.TotalSeconds -gt 20\) \{ break \}/);
+    expect(wait).not.toMatch(/Wait-Until \{ -not \(Test-Path -LiteralPath \$Folder\) \} \$Seconds/);
+  });
+
   it("starts a stub only when asked and reads the stub log, or nothing, safely", () => {
     const folder = temp();
     const result = runBody("accept-lib.ps1", String.raw`
@@ -315,6 +391,8 @@ describe("the desktop-acceptance workflow's installer jobs", () => {
     expect(upload).toMatch(/if: \$\{\{ always\(\) \}\}/);
     expect(upload).toMatch(/if-no-files-found: warn/);
     expect(upload).toContain(`installer-acceptance-${name === "installer-fresh" ? "fresh" : "over-r1"}.json`);
+    // The logs the installer and its helpers wrote travel with it: a failed helper must leave its exception and its decisions.
+    expect(upload).toContain("installer-acceptance/helper-logs");
   });
 
   it("runs each scenario script, and installs the real R1 only where the scenario needs it", () => {

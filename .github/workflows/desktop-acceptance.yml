@@ -124,6 +124,7 @@ jobs:
           path: |
             ${{ runner.temp }}/installer-acceptance/installer-acceptance-fresh.json
             ${{ runner.temp }}/installer-acceptance/stub.log
+            ${{ runner.temp }}/installer-acceptance/helper-logs
           if-no-files-found: warn
           retention-days: 30
 
@@ -169,5 +170,6 @@ jobs:
           path: |
             ${{ runner.temp }}/installer-acceptance/installer-acceptance-over-r1.json
             ${{ runner.temp }}/installer-acceptance/stub.log
+            ${{ runner.temp }}/installer-acceptance/helper-logs
           if-no-files-found: warn
           retention-days: 30

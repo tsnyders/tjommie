@@ -19,7 +19,8 @@ function Get-Unqualified([string]$Path) { return ($Path -replace '^(script|globa
 
 # Adds to $Assigned every variable $Ast assigns, takes as a parameter or loops over, and does the same for each library it dot-sources
 # (a script may read what its library set at its top level, such as $script:name).
-function Add-AssignedNames($Ast, $Assigned, [string]$Folder, $Seen) {
+function Add-AssignedNames($Ast, $Assigned, [string]$Folder, $Seen, $Functions) {
+    foreach ($definition in $Ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)) { [void]$Functions.Add($definition.Name) }
     foreach ($parameter in $Ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.ParameterAst] }, $true)) { [void]$Assigned.Add((Get-Unqualified $parameter.Name.VariablePath.UserPath)) }
     foreach ($assignment in $Ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.AssignmentStatementAst] }, $true)) {
         $left = $assignment.Left
@@ -34,7 +35,7 @@ function Add-AssignedNames($Ast, $Assigned, [string]$Folder, $Seen) {
         $libraryTokens = $null
         $libraryErrors = $null
         $libraryAst = [System.Management.Automation.Language.Parser]::ParseFile($library, [ref]$libraryTokens, [ref]$libraryErrors)
-        Add-AssignedNames $libraryAst $Assigned $Folder $Seen
+        Add-AssignedNames $libraryAst $Assigned $Folder $Seen $Functions
     }
 }
 
@@ -47,10 +48,12 @@ foreach ($name in ($Files -split ',')) {
     $problems = @()
     foreach ($error_ in $errors) { $problems += "parse error at line $($error_.Extent.StartLineNumber): $($error_.Message)" }
 
-    $functions = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) | ForEach-Object { $_.Name })
+    # The functions the script defines, and those its dot-sourced libraries define (the libraries are not loaded here, only parsed).
+    $functionSet = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
     $assigned = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
     $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
-    Add-AssignedNames $ast $assigned $Installer $seen
+    Add-AssignedNames $ast $assigned $Installer $seen $functionSet
+    $functions = @($functionSet)
     foreach ($variable in $ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.VariableExpressionAst] }, $true)) {
         $variablePath = $variable.VariablePath
         if ($variablePath.IsDriveQualified) { continue }

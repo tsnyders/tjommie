@@ -67,6 +67,11 @@ $r1RuntimeOnly = @(Get-R1RuntimeOnlyEntries $facts)
 # Nothing R1 or the test put in a data root is gone, and the files of known content are byte for byte the same. R1's run-time files
 # are the one thing ignored, by name; anything else that is missing is a loss.
 function Test-DataRootsKept([string]$Label) {
+    # If O2 did not finish there is nothing to compare with: say that, once, instead of failing on a missing table and burying the cause.
+    if (-not $state.ContainsKey('dataBefore')) {
+        Assert-Check $false "$Label`: there is no snapshot of the data roots to compare with (O2 did not finish)"
+        return
+    }
     foreach ($name in $dataRoots.Keys) {
         $differences = @(Compare-Snapshot $state['dataBefore'][$name] (Get-TreeSnapshot $dataRoots[$name]) -IgnoreAdded -IgnorePaths $r1RuntimeOnly | Where-Object { $_ -like 'missing:*' -or $_ -like 'changed: sentinel\*' })
         Assert-Check ($differences.Count -eq 0) "$Label`: the $name data root lost nothing, and its sentinel files are unchanged" $differences
@@ -140,6 +145,14 @@ Invoke-Step 'O2 R1 runs, on data roots that hold files of known content' {
 }
 
 Invoke-Step 'O3 the installer takes over from R1' {
+    # O3 needs what O2 recorded (R1 running, the decoys, the snapshot). Without it the hand-over would run over an R1 that was never
+    # started and every check below would say something misleading, so it does not run.
+    foreach ($needed in 'r1Ids', 'sameName', 'sibling', 'watched', 'dataBefore', 'decoyFolders') {
+        if (-not $state.ContainsKey($needed)) {
+            Assert-Check $false "O3 did not run: O2 did not finish, so '$needed' was never recorded"
+            return
+        }
+    }
     $update = Invoke-Setup $installer '/S --updated' -Watch
     Assert-Check ($update['exitCode'] -eq 0) 'O3: the installer exits 0' $update['exitCode']
     # R1's own uninstaller, from a temp copy, with the arguments R1's upgrade uses (T8.1).
