@@ -182,22 +182,42 @@ mod tests {
         assert!(uploads(home.path(), None, &[one, two]).is_err());
     }
 
+    /// The 8.3 spelling of an existing path, if it has one that differs from the path as given.
+    fn short_name(path: &Path) -> Option<PathBuf> {
+        use windows::Win32::Storage::FileSystem::GetShortPathNameW;
+        use windows::core::HSTRING;
+        let mut buffer = [0u16; 1024];
+        // SAFETY: the call writes at most the buffer's length into it.
+        let length =
+            unsafe { GetShortPathNameW(&HSTRING::from(path.as_os_str()), Some(&mut buffer)) }
+                as usize;
+        if length == 0 || length >= buffer.len() {
+            return None;
+        }
+        let short = PathBuf::from(String::from_utf16(&buffer[..length]).ok()?);
+        (short != path).then_some(short)
+    }
+
+    // The alias comes from the API that makes them. It once came from a `cmd /c for %~sI` whose quotes Rust escaped for a command
+    // line cmd does not read that way, so it printed the path back, garbled and with no 8.3 name made; the test took its "no 8.3
+    // names here" exit on a PC whose own path has no `~` and checked nothing, and failed on a hosted runner, where the profile
+    // folder's own `~` got past that exit and the garbled alias was refused.
     #[test]
     fn an_8_3_alias_uploads_the_canonical_file() {
         let home = root();
         let file = home.path().join("upload-with-a-long-name.txt");
         std::fs::write(&file, "local").unwrap();
-        let listing = crate::spawn::command("cmd.exe")
-            .args(["/d", "/c"])
-            .arg(format!("for %I in (\"{}\") do @echo %~sI", file.display()))
-            .output()
-            .unwrap();
-        let alias = String::from_utf8_lossy(&listing.stdout).trim().to_string();
-        if !alias.contains('~') {
-            return; // 8.3 names are switched off on this volume: nothing to check
-        }
+        let Some(alias) = short_name(&file) else {
+            eprintln!("8.3 names are switched off on this volume: nothing to check");
+            return;
+        };
+        assert!(
+            alias.to_string_lossy().contains('~'),
+            "an 8.3 spelling has a tilde: {}",
+            alias.display()
+        );
         let canonical = downloads::plain(std::fs::canonicalize(&file).unwrap());
-        let sent = uploads(home.path(), None, &[alias]).unwrap();
+        let sent = uploads(home.path(), None, &[alias.to_string_lossy().into_owned()]).unwrap();
         assert_eq!(sent, vec![canonical.to_string_lossy().into_owned()]);
     }
 

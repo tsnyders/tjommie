@@ -66,7 +66,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 rustls-pemfile = "2"
 tokio = { version = "1.54.1", features = ["sync", "rt", "rt-multi-thread", "time", "macros", "net", "io-util", "test-util"] }
 # Counts this process's threads (the timer test): the same `windows` crate, one more module.
-windows = { version = "0.62.2", features = ["Win32_System_Diagnostics_ToolHelp"] }
+windows = { version = "0.62.2", features = ["Win32_System_Diagnostics_ToolHelp", "Win32_Storage_FileSystem"] }
 
 [lints]
 workspace = true
