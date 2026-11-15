@@ -46,7 +46,8 @@ export function runBody(library: string, body: string): unknown {
 
 // A script's code without its comment lines: comments may name the commands the tests forbid.
 export function codeOf(path: string): string {
-  return readFileSync(path, "utf8").split("\n").filter((line) => !line.trim().startsWith("#") && !line.trim().startsWith(";")).join("\n");
+  // Line endings are normalised: git checks files out as CRLF on Windows, and a test that matches across lines must not care.
+  return readFileSync(path, "utf8").replace(/\r\n/g, "\n").split("\n").filter((line) => !line.trim().startsWith("#") && !line.trim().startsWith(";")).join("\n");
 }
 
 export const scriptsIn = (extension: string): string[] => (existsSync(installer) ? readdirSync(installer).filter((name) => name.endsWith(extension)) : []);
