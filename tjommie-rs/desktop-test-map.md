@@ -1,5 +1,7 @@
 # Desktop test map (Phase 3 plan T0.6)
 
+This file has two parts: the file-level map (T0.6), then Part 2, the `packages/ui/lib` cases (T1.4).
+
 This map covers every TypeScript test file in the `packages/ui` tree (the desktop UI) and in `packages/desktop/src` (the Electron main process). Each file is mapped to the Rust test that will cover the same behaviour in the GPUI desktop, or marked `n/a:` with a reason; the owning plan task writes that Rust test. The row counts in the Counts section must equal the `git ls-files` lists, and each path appears in exactly one row.
 
 Location kinds: `(unit)` is a `#[cfg(test)]` module, `(view)` is a GPUI `TestAppContext` view test, `(e2e)` is a test-driver file under `crates/desktop/tests/`. The crate and folder come from the plan; file names inside a folder are derived where the plan names none.
@@ -207,9 +209,7 @@ git ls-files ':(glob)packages/desktop/src/**/*.test.ts'                         
 
 Each path from both `git ls-files` lists appears in exactly one row (verified by script), and no other test path appears in either table. The 176 rows are 112 + 64. Of the 16 real tests, 4 are phone-only n/a rows, 4 are owner-run or never automated, and 8 are mapped to automated Rust tests. The desktop n/a rows include those 4 phone-only real tests.
 
----
-
-# Desktop test map: `packages/ui/lib/*` tests to the view models (Phase 3 plan T1.4)
+## Part 2: packages/ui/lib cases (T1.4)
 
 Each TypeScript module in `packages/ui/lib` that carries logic is ported to `crates/desktop/src/model/<module>.rs`, with its
 test cases ported one for one as `model::<module>::tests::...` (same fixtures, same expected values; times are pinned to UTC
@@ -219,7 +219,7 @@ The TypeScript tests live on the `legacy` branch's `packages/ui/lib`.
 Run without compiling GPUI: the models are plain Rust. In CI they run with the rest of the workspace
 (`cargo test -p desktop model::`).
 
-## Not ported, with the reason
+### Not ported, with the reason
 | TypeScript module | Why |
 |---|---|
 | `push`, `phone-nav`, `use-phone`, `use-keyboard`, `mobile-identity`, `mobile-style`, `keep-alive`, `native-capability` | phone only (Phase 4) |
@@ -236,8 +236,8 @@ Run without compiling GPUI: the models are plain Rust. In CI they run with the r
 | `dependencies.test.ts` (1 case) | a `package.json` dependency check; there is no equivalent for the Rust crate (`Cargo.lock` is checked by `--locked` and `tests/pins.rs`) |
 | `appearance-settings`, `theme` storage | device-local settings: T1.5 (`desktop-host::device_settings`) |
 
-# Ported tests
-## accounts (packages/ui/lib/accounts.ts)
+## Ported tests
+### accounts (packages/ui/lib/accounts.ts)
 | TypeScript test (file: title) | Rust test (model::accounts::tests::...) |
 |---|---|
 | accounts.test.ts: "limit labels and values: names the 5-hour and weekly windows, other lengths, and a window with no length" | names_the_5_hour_and_weekly_windows_other_lengths_and_a_window_with_no_length |
@@ -288,7 +288,7 @@ Run without compiling GPUI: the models are plain Rust. In CI they run with the r
 | (extra, not in TypeScript) | credits_group_thousands_and_round_half_up_as_intl_does |
 | (extra, not in TypeScript) | subscription_label_joins_the_plan_and_the_account |
 
-## activity (packages/ui/lib/activity.ts)
+### activity (packages/ui/lib/activity.ts)
 | TypeScript test (file: title) | Rust test (model::activity::tests::...) |
 |---|---|
 | activity.test.ts: "lists the newest steps first, each with its turn's time, up to the limit" | lists_the_newest_steps_first_each_with_its_turns_time_up_to_the_limit |
@@ -296,7 +296,7 @@ Run without compiling GPUI: the models are plain Rust. In CI they run with the r
 
 Extra tests (no TypeScript case): none.
 
-## approval (packages/ui/lib/approval.ts)
+### approval (packages/ui/lib/approval.ts)
 | TypeScript test (file: title) | Rust test (model::approval::tests::...) |
 |---|---|
 | approval.test.ts: "picks the path, command or address out of Claude's tool input" | picks_the_path_command_or_address_out_of_claudes_tool_input |
@@ -305,7 +305,7 @@ Extra tests (no TypeScript case): none.
 
 Extra tests (no TypeScript case): shows_text_that_is_not_a_known_input_as_it_is (non-object input shown as it is; a Codex list that isn't a non-empty text list is shown as it is).
 
-## attachment_transfer (packages/ui/lib/attachment-transfer.ts)
+### attachment_transfer (packages/ui/lib/attachment-transfer.ts)
 | TypeScript test (file: title) | Rust test (model::attachment_transfer::tests::...) |
 |---|---|
 | attachment-transfer.test.ts: "bounded attachment client: reports failed URI cleanup after %s fails and still closes its transfer" (it.each: reauth, revision, activation) | reports_failed_uri_cleanup_after_reauth_revision_or_activation_fails_and_still_closes_its_transfer |
@@ -328,7 +328,7 @@ The file has 15 `it` blocks (the brief's count was 12). Extra test: `says_why_an
 
 Decisions: the daemon client is `&impl client::Rpc`; a `ClientConnectionError` is `RpcError::Closed`, a `ClientRpcError` is `RpcError::Daemon`. The TypeScript's detached promises (late replies that must still be closed) are `Retirements`, futures the caller drives. `read` returns decoded bytes. The `strictRetirement` flag is dropped: close errors propagate from a preview and are ignored by a download, as the TypeScript does without a retirement.
 
-## attachments (packages/ui/lib/attachments.ts)
+### attachments (packages/ui/lib/attachments.ts)
 | TypeScript test (file: title) | Rust test (model::attachments::tests::...) |
 |---|---|
 | attachments.test.ts: "adds picked or dropped files once each, and skips dropped items that aren't files" | adds_picked_or_dropped_files_once_each_and_skips_dropped_items_that_arent_files |
@@ -337,7 +337,7 @@ Decisions: the daemon client is `&impl client::Rpc`; a `ClientConnectionError` i
 
 Extra tests (no TypeScript case): none (the POSIX separator is checked inside shows_a_files_name_from_its_windows_path).
 
-## bot_form (packages/ui/lib/bot-form.ts)
+### bot_form (packages/ui/lib/bot-form.ts)
 | TypeScript test (file: title) | Rust test (model::bot_form::tests::...) |
 |---|---|
 | bot-form.test.ts: "the bot form: sends only what the person changed" | sends_only_what_the_person_changed |
@@ -351,7 +351,7 @@ Extra tests (no TypeScript case): none (the POSIX separator is checked inside sh
 | bot-form.test.ts: "the account: reads a bot's pin, and sends it only when it changed, apart from the provider and model" | reads_a_bots_pin_and_sends_it_only_when_it_changed_apart_from_the_provider_and_model |
 | (extra, not in TypeScript) | a_name_is_measured_in_javascript_characters_so_an_emoji_counts_twice |
 
-## browser_geometry (packages/ui/lib/browser-geometry.ts)
+### browser_geometry (packages/ui/lib/browser-geometry.ts)
 
 | TypeScript test (file: title) | Rust test (model::browser_geometry::tests::...) |
 |---|---|
@@ -376,14 +376,14 @@ Extra tests (no TypeScript case): none (the POSIX separator is checked inside sh
 
 Extra (no TypeScript case): model::browser_geometry::tests::address_bar_fallbacks_and_host_shapes, the address bar's regex edges (localhost, host, one-letter suffix).
 
-## browser_preview (packages/ui/lib/browser-preview.ts)
+### browser_preview (packages/ui/lib/browser-preview.ts)
 
 | TypeScript test (file: title) | Rust test (model::browser_preview::tests::...) |
 |---|---|
 | browser-preview.test.ts: "polls once a second only while visible and clears retained pixels when hidden/private" | model::browser_preview::tests::polls_once_a_second_only_while_visible_and_clears_retained_pixels_when_hidden_private |
 | browser-preview.test.ts: "drops late hidden replies and never has a second request queued" | model::browser_preview::tests::drops_late_hidden_replies_and_never_has_a_second_request_queued |
 
-## browser_session (packages/ui/lib/browser-session.ts)
+### browser_session (packages/ui/lib/browser-session.ts)
 
 | TypeScript test (file: title) | Rust test (model::browser_session::tests::...) |
 |---|---|
@@ -433,7 +433,7 @@ Extra (no TypeScript case): model::browser_geometry::tests::address_bar_fallback
 | browser-session.test.ts: "lets Shift+Tab leave the page, waits on paste, and sends other keys" | model::browser_session::tests::lets_shifttab_leave_the_page_waits_on_paste_and_sends_other_keys |
 | browser-session.test.ts: "keeps the requested viewport 4:3 and inside the daemon's limits" | model::browser_session::tests::keeps_the_requested_viewport_4_3_and_inside_the_daemons_limits |
 
-## dictation (packages/ui/lib/dictation.ts, and the logic of packages/ui/lib/use-dictation.ts)
+### dictation (packages/ui/lib/dictation.ts, and the logic of packages/ui/lib/use-dictation.ts)
 | TypeScript test (file: title) | Rust test (model::dictation::tests::...) |
 |---|---|
 | dictation.test.ts: "draft insertion: moves the original range across typed edits before and after it" | moves_the_original_range_across_typed_edits_before_and_after_it |
@@ -445,7 +445,7 @@ use-dictation.ts has no test file. Its logic is ported as decisions (extra tests
 
 Not ported (the hook's effects, React or the platform): `useDictation` itself, the `localSpeech` bridge and `claimSpeech`, `capturePcm` (Web Audio), the 59.75 s listen timer, the `beforeinput` and `visibilitychange`/`pagehide`/`blur` listeners, `localStorage` preferences, `navigator.mediaDevices` device list, and React state. The desktop drives these decisions from its own speech bridge.
 
-## document_ranges (packages/ui/lib/document-ranges.ts)
+### document_ranges (packages/ui/lib/document-ranges.ts)
 | TypeScript test (file: title) | Rust test (model::document_ranges::tests::...) |
 |---|---|
 | document-ranges.test.ts: "delivers all 800 full-size PDF callbacks serially, one exact chunk each, without the provisional queue/range cap" | delivers_all_800_full_size_pdf_callbacks_serially_one_exact_chunk_each_without_the_provisional_queue_range_cap |
@@ -457,7 +457,7 @@ Extra tests (no TypeScript case; decisions the port makes): `refuses_a_reply_tha
 
 Not ported: `Number.isSafeInteger` checks (u64 inputs make them unnecessary beyond the size bound); the `AbortSignal` is `Signal`, a cancel flag.
 
-## exchange (packages/ui/lib/exchange.ts)
+### exchange (packages/ui/lib/exchange.ts)
 | TypeScript test (file: title) | Rust test (model::exchange::tests::...) |
 |---|---|
 | exchange.test.ts: "says when the exchange was asked and how it ended" | says_when_the_exchange_was_asked_and_how_it_ended |
@@ -466,7 +466,7 @@ Not ported: `Number.isSafeInteger` checks (u64 inputs make them unnecessary beyo
 
 Extra tests (no TypeScript case): says_how_long_the_answer_took_in_words_rounding_halves_up_like_javascript (30 seconds is a minute; 89 minutes is an hour; 90 minutes is two hours).
 
-## file_thumbnails (packages/ui/lib/file-thumbnails.ts)
+### file_thumbnails (packages/ui/lib/file-thumbnails.ts)
 | TypeScript test (file: title) | Rust test (model::file_thumbnails::tests::...) |
 |---|---|
 | file-thumbnails.test.ts: "admits ordinary phone photos and rejects large automatic resources" | admits_ordinary_phone_photos_and_rejects_large_automatic_resources |
@@ -486,7 +486,7 @@ Extra test: `refuses_text_with_control_characters_as_not_a_text_thumbnail`.
 
 Not ported: the canvas draw (`draw`, `canvas()`), the pdf.js loader, and the wait on native cleanup of an invalidated generation (`invalidateThumbnailWork` bumps the generation and aborts the running work; the caller awaits its own native cleanup before it queues again). `readFileThumbnail`'s `nativeInvalidated` race is also the caller's.
 
-## google_connection (packages/ui/lib/google-connection.ts)
+### google_connection (packages/ui/lib/google-connection.ts)
 | TypeScript test (file: title) | Rust test (model::google_connection::tests::...) |
 |---|---|
 | google-connection.test.ts: "google status: is set up, connect, waiting or connected" | is_set_up_connect_waiting_or_connected |
@@ -505,7 +505,7 @@ Not ported: the canvas draw (`draw`, `canvas()`), the pdf.js loader, and the wai
 
 Decisions: the wire `GoogleStatus` has no `access` field (protocol google.ts), so `needs_reconsent` and `card_line` take the daemon's `access` as a parameter. `watch_google` runs until it is dropped (the TypeScript `stop`); the poll interval is a parameter (`POLL` = 1 s). The `GoogleApi` type's Electron-side `connect`/`cancel`/`onChanged` are not ported (the desktop opens the consent page itself).
 
-## logins (packages/ui/lib/logins.ts)
+### logins (packages/ui/lib/logins.ts)
 The three TypeScript tests need the Electron bridge (`desktop.ts`, n/a in Rust) and `daemon()` (connection.ts): the Rust port takes both as the `Desktop`, `NativeVault` and `LiveState` traits, and the test fakes stand in for them. `LOGINS_PROBLEM` is asserted in the third test.
 
 | TypeScript test (file: title) | Rust test (model::logins::tests::...) |
@@ -520,7 +520,7 @@ The three TypeScript tests need the Electron bridge (`desktop.ts`, n/a in Rust) 
 | (extra, not in TypeScript) | a_daemon_answer_of_the_wrong_shape_reads_as_the_problem |
 | (extra, not in TypeScript) | with_no_daemon_while_offline_nothing_is_sent_and_the_request_reads_as_the_problem |
 
-## markdown_document (packages/ui/lib/markdown-document.ts)
+### markdown_document (packages/ui/lib/markdown-document.ts)
 markdown-document.ts has no test file of its own. Its three cases are in document-ranges.test.ts:
 
 | TypeScript test (file: title) | Rust test (model::markdown_document::tests::...) |
@@ -533,7 +533,7 @@ Extra tests (decisions the port makes): `an_empty_document_is_one_empty_section_
 
 Note: search offsets are byte positions taken from the lowercased text, as in the TypeScript; a case mapping that changes length would shift them the same way.
 
-## mentions (packages/ui/lib/mentions.ts)
+### mentions (packages/ui/lib/mentions.ts)
 | TypeScript test (file: title) | Rust test (model::mentions::tests::...) |
 |---|---|
 | mentions.test.ts: "finds the @ being typed, and ignores email addresses" | finds_the_at_being_typed_and_ignores_email_addresses |
@@ -542,7 +542,7 @@ Note: search offsets are byte positions taken from the lowercased text, as in th
 
 Extra tests (no TypeScript case): reads_carets_the_way_the_composer_gives_them (carets past the end clamp as in JavaScript's `slice`; a caret inside a character is no mention; the 40-unit query limit counts UTF-16 units).
 
-## native_browser_session (packages/ui/lib/native-browser-session.ts)
+### native_browser_session (packages/ui/lib/native-browser-session.ts)
 
 | TypeScript test (file: title) | Rust test (model::native_browser_session::tests::...) |
 |---|---|
@@ -575,7 +575,7 @@ Extra tests (no TypeScript case): reads_carets_the_way_the_composer_gives_them (
 | native-browser-session.test.ts: "shows a state as the shared chrome expects it, with no frame" | model::native_browser_session::tests::shows_a_state_as_the_shared_chrome_expects_it_with_no_frame |
 | native-browser-session.test.ts: "compares rectangles, with null as hidden" | model::native_browser_session::tests::compares_rectangles_with_null_as_hidden |
 
-## overview (packages/ui/lib/overview.ts)
+### overview (packages/ui/lib/overview.ts)
 | TypeScript test (file: title) | Rust test (model::overview::tests::...) |
 |---|---|
 | overview.test.ts: "sums up the bots and filters them" | sums_up_the_bots_and_filters_them |
@@ -592,7 +592,7 @@ Extra tests (no TypeScript case): reads_carets_the_way_the_composer_gives_them (
 
 Extra tests (no TypeScript case): none. Decisions: the TypeScript `Pick<Bot, ...>` arguments are the whole protocol `Bot`; `taskLine` takes `now` (the zone for a limited bot's time, which the TypeScript read from the machine).
 
-## panel_layout (packages/ui/lib/panel-layout.ts)
+### panel_layout (packages/ui/lib/panel-layout.ts)
 | TypeScript test (file: title) | Rust test (model::panel_layout::tests::...) |
 |---|---|
 | panel-layout.test.ts: "panel width: keeps the chat's minimum beside the panel, and the pane's own minimum" | keeps_the_chat_minimum_beside_the_panel_and_the_panes_own_minimum |
@@ -608,14 +608,14 @@ Extra tests (no TypeScript case): none. Decisions: the TypeScript `Pick<Bot, ...
 
 Storage: `WidthStorage` stands in for `Pick<Storage, ...>`; the test uses a HashMap.
 
-## projects (packages/ui/lib/projects.ts)
+### projects (packages/ui/lib/projects.ts)
 | TypeScript test (file: title) | Rust test (model::projects::tests::...) |
 |---|---|
 | projects.test.ts: "enables exact integration only for fresh independent results and a clean completed attempt" | enables_exact_integration_only_for_fresh_independent_results_and_a_clean_completed_attempt |
 | (extra, not in TypeScript) | an_empty_reviewer_is_no_reviewer_as_in_javascript |
 | (extra, not in TypeScript) | short_sha_cuts_to_twelve_characters_and_says_when_none |
 
-## routine_form (packages/ui/lib/routine-form.ts)
+### routine_form (packages/ui/lib/routine-form.ts)
 | TypeScript test (file: title) | Rust test (model::routine_form::tests::...) |
 |---|---|
 | routine-form.test.ts: "the routine editor: edits days and times" | edits_days_and_times |
@@ -624,7 +624,7 @@ Storage: `WidthStorage` stands in for `Pick<Storage, ...>`; the test uses a Hash
 | (extra, not in TypeScript) | a_run_with_an_empty_or_unreadable_time_or_note_is_as_if_it_had_none |
 | (extra, not in TypeScript) | zone_line_gives_only_the_zone_when_the_name_is_missing_or_the_same |
 
-## routines (packages/ui/lib/routines.ts)
+### routines (packages/ui/lib/routines.ts)
 There is no `routines.test.ts`: 0 TypeScript test cases. The three tests below check the daemon calls the port makes.
 | TypeScript test (file: title) | Rust test (model::routines::tests::...) |
 |---|---|
@@ -633,7 +633,7 @@ There is no `routines.test.ts`: 0 TypeScript test cases. The three tests below c
 | (extra, not in TypeScript) | an_existing_routine_is_updated_with_its_whole_draft_and_no_limit_is_sent_as_null |
 | (extra, not in TypeScript) | removing_a_routine_deletes_it_by_its_id |
 
-## setup (packages/ui/lib/setup.ts)
+### setup (packages/ui/lib/setup.ts)
 | TypeScript test (file: title) | Rust test (model::setup::tests::...) |
 |---|---|
 | setup.test.ts: "cardView: shows checking, not installed, a failed check, signed out and signing in" | shows_checking_not_installed_a_failed_check_signed_out_and_signing_in |
@@ -645,7 +645,7 @@ There is no `routines.test.ts`: 0 TypeScript test cases. The three tests below c
 | setup.test.ts: "liveSignIns: ends only the provider whose report changed" | ends_only_the_provider_whose_report_changed |
 | (extra, not in TypeScript) | an_empty_error_or_plan_is_no_problem_and_no_plan_label_as_in_javascript |
 
-## state (packages/ui/lib/state.ts)
+### state (packages/ui/lib/state.ts)
 | TypeScript test (file: title) | Rust test (model::state::tests::...) |
 |---|---|
 | state.test.ts: "freezes the reconnect timing contract" | freezes_the_reconnect_timing_contract |
@@ -672,7 +672,7 @@ There is no `routines.test.ts`: 0 TypeScript test cases. The three tests below c
 | (extra, not in TypeScript) | forget_conversation_drops_a_chat_and_says_whether_it_was_there |
 | (extra, not in TypeScript) | only_a_loaded_chat_takes_older_pages_and_only_a_loading_one_finishes |
 
-## store (packages/ui/lib/store.ts)
+### store (packages/ui/lib/store.ts)
 There is no `store.test.ts`: 0 TypeScript test cases. The six tests below are the port's own, for the subscriber mechanism that replaces the TypeScript's listener set.
 | TypeScript test (file: title) | Rust test (model::store::tests::...) |
 |---|---|
@@ -685,19 +685,19 @@ There is no `store.test.ts`: 0 TypeScript test cases. The six tests below are th
 | (extra, not in TypeScript) | subscribers_are_told_in_the_order_they_subscribed |
 | (n/a: `useApp`) | n/a: `useApp` is React's `useSyncExternalStore` hook over `getState`; there is no React in the Rust port, and the screens read the store through GPUI (M5) |
 
-## suggestions (packages/ui/lib/suggestions.ts)
+### suggestions (packages/ui/lib/suggestions.ts)
 | TypeScript test (file: title) | Rust test (model::suggestions::tests::...) |
 |---|---|
 | suggestions.test.ts: "Suggestions: every suggestion is a valid bot with valid routines" (`BotInput.parse` and `RoutineInput.parse`: checked with `protocol::wire::Request::decode` for `bots.create` and `routines.create`, the manifest's params schemas that zod's parse mirrors) | every_suggestion_is_a_valid_bot_with_valid_routines |
 
-## timeline (packages/ui/lib/timeline.ts)
+### timeline (packages/ui/lib/timeline.ts)
 | TypeScript test (file: title) | Rust test (model::timeline::tests::...) |
 |---|---|
 | timeline.test.ts: "labels the first message, gaps of 15 minutes or more, and each new day" | labels_the_first_message_gaps_of_15_minutes_or_more_and_each_new_day |
 
 Extra tests (no TypeScript case): none.
 
-## usage (packages/ui/lib/usage.ts)
+### usage (packages/ui/lib/usage.ts)
 | TypeScript test (file: title) | Rust test (model::usage::tests::...) |
 |---|---|
 | usage.test.ts: "changes identity at local midnight and on timezone changes" | changes_identity_at_local_midnight_and_on_timezone_changes |
@@ -739,7 +739,7 @@ Left out, with the reason: `localZone` (reads the machine's zone; the caller pas
 
 Extra tests (no TypeScript case): rounds_money_to_cents_the_way_javascript_does_on_exact_ties; a_zone_this_build_does_not_know_gives_no_range_and_no_days.
 
-## format (packages/ui/lib/format.ts)
+### format (packages/ui/lib/format.ts)
 | TypeScript test (file: title) | Rust test (model::format::tests::...) |
 |---|---|
 | format.test.ts: "writes times the way the wireframes do" | writes_times_the_way_the_wireframes_do |
@@ -748,12 +748,12 @@ Extra tests (no TypeScript case): rounds_money_to_cents_the_way_javascript_does_
 | format.test.ts: "names tomorrow and the coming week, and writes long dates" | names_tomorrow_and_the_coming_week_and_writes_long_dates |
 | format.test.ts: "says how long ago and how long" | says_how_long_ago_and_how_long |
 
-## labels (packages/ui/lib/labels.ts)
+### labels (packages/ui/lib/labels.ts)
 | TypeScript test (file: title) | Rust test (model::labels::tests::...) |
 |---|---|
 | format.test.ts (describe "labels"): "names bots, models and states, and says when a bot is gone" | names_bots_models_and_states_and_says_when_a_bot_is_gone |
 
-## connection (packages/ui/lib/connection.ts)
+### connection (packages/ui/lib/connection.ts)
 Five TypeScript files, 36 `it(...)` titles (37 cases: `connection-host.test.ts`'s `it.each(["forget", "refused"])` runs twice, and has a row for each). The rows use the same pinned fixture ids as the TypeScript (`HOST`, the synthetic PC); the PC is `FakePc` in the tests, standing in for `remote-pc-fixture.ts`, and time is a clock the tests move (`advance` is `vi.advanceTimersByTimeAsync`, `settle` is `settle`).
 
 | TypeScript test (file: title) | Rust test (model::connection::tests::...) |
