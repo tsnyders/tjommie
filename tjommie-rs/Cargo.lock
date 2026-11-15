@@ -1751,6 +1751,7 @@ dependencies = [
  "gpui-pre",
  "jiff",
  "log",
+ "markdown",
  "protocol",
  "regex",
  "rust-embed",

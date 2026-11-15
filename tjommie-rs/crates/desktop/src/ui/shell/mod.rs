@@ -76,7 +76,7 @@ impl Render for Shell {
         let sidebar = sidebar::sidebar(&route, &data, window, cx);
         let shown = match connection::words(&data.connection, data.host.as_deref(), &data.saved) {
             Some(words) => connection::screen(&data, words, window, cx),
-            None => screen(&route, &data, cx),
+            None => screen(&route, &data, window, cx),
         };
         let status = connection::status_pill(&data.connection, window, cx);
         let theme = cx.global::<Theme>();
@@ -143,7 +143,10 @@ impl Render for Shell {
 }
 
 /// The route's screen. The screens come with their own tasks (M4, M5); until then each shows its name.
-fn screen(route: &Route, data: &ShellData, cx: &App) -> AnyElement {
+fn screen(route: &Route, data: &ShellData, window: &mut Window, cx: &mut App) -> AnyElement {
+    if let Route::Chat(id) = route {
+        return crate::ui::chat::screen(id, window, cx);
+    }
     let (key, title): (&str, SharedString) = match route {
         Route::Agents => ("agents", "Agents".into()),
         Route::Chat(id) => ("chat", data.name_of(id)),

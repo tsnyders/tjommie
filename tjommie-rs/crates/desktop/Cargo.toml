@@ -19,6 +19,8 @@ gpui.workspace = true
 gpui-kit.workspace = true
 jiff = "0.2.41"
 log = "0.4.35"
+# Chat Markdown is rewritten before gpui-kit's TextView draws it (ui::files::markdown): the same parser it uses.
+markdown = "1.0.0"
 protocol = { path = "../protocol" }
 regex = "1.13.1"
 rust-embed = "8.14.0"

@@ -1,0 +1,251 @@
+//! The chat (Phase 3 plan M4; desktop-chat.html, `chat-screen.tsx`): an agent's header, its thread, and the composer
+//! pinned under it. The thread loads when the chat opens, and again when a new connection clears it; older pages load
+//! as you reach the top. An unknown or deleted agent has no chat: the app goes back to Agents.
+
+pub mod approval;
+pub mod bubbles;
+pub mod header;
+pub mod message_view;
+pub mod notices;
+pub mod rows;
+#[cfg(test)]
+mod tests;
+pub mod thread;
+
+use std::rc::Rc;
+
+use gpui::{
+    AnyElement, App, Context, IntoElement, ParentElement as _, Render, Role, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Task, Window, div,
+};
+use jiff::Zoned;
+
+use self::header::HeaderActions;
+use self::message_view::{MessageContext, shown};
+use self::thread::Thread;
+use crate::guard::{guarded, guarded_async};
+use crate::model::labels::autonomy_hint;
+use crate::model::state::{Connection, ConversationStatus};
+use crate::semantic::SemanticExt as _;
+use crate::ui::primitives::avatar::{BotAvatar, Pose};
+use crate::ui::shell::connection::failed_load;
+use crate::ui::shell::route::{Navigate as _, Route};
+use crate::ui::store::{self, History};
+use crate::ui::style::{TypeExt as _, hsla, palette, r, theme};
+
+/// The chat with `bot_id`, kept while the route shows it.
+pub fn screen(bot_id: &str, window: &mut Window, cx: &mut App) -> AnyElement {
+    let id = SharedString::from(bot_id.to_owned());
+    window
+        .use_keyed_state(SharedString::from(format!("chat.{bot_id}")), cx, |_, _| {
+            ChatScreen::new(id)
+        })
+        .into_any_element()
+}
+
+pub struct ChatScreen {
+    bot_id: SharedString,
+    thread: Thread,
+    /// The newest page was asked for, and the conversation hasn't appeared since.
+    asked: bool,
+    /// The older page on its way, if any.
+    older: Option<Task<()>>,
+    /// The oldest message when an older page was last asked for: a page that didn't come isn't asked for again until
+    /// the conversation changes.
+    older_from: Option<String>,
+    /// The exchange open beside the chat.
+    exchange: Option<SharedString>,
+    panel_open: bool,
+}
+
+impl ChatScreen {
+    pub fn new(bot_id: SharedString) -> Self {
+        ChatScreen {
+            thread: Thread::new(bot_id.clone()),
+            bot_id,
+            asked: false,
+            older: None,
+            older_from: None,
+            exchange: None,
+            panel_open: true,
+        }
+    }
+
+    fn history(&self) -> History {
+        History::Bot(self.bot_id.to_string())
+    }
+
+    /// Loads the newest page when the chat opens, and again when a new connection clears it.
+    fn load(&mut self, cx: &mut Context<Self>) {
+        let state = store::state(cx);
+        let ready = state.connection == Connection::Ready;
+        let missing = !state.conversations.contains_key(self.bot_id.as_ref());
+        if !missing {
+            self.asked = false;
+        } else if ready && !self.asked {
+            self.asked = true;
+            let history = self.history();
+            store::load_conversation(cx, &self.bot_id, history).detach();
+        }
+    }
+
+    /// Loads the page before the oldest message once the top of the thread is in reach.
+    fn load_older(&mut self, cx: &mut Context<Self>) {
+        let state = store::state(cx);
+        let Some(conversation) = state.conversations.get(self.bot_id.as_ref()) else {
+            return;
+        };
+        let first = conversation
+            .messages
+            .first()
+            .map(|message| message.id.clone());
+        if conversation.status != ConversationStatus::Ready
+            || !conversation.has_more
+            || self.older.is_some()
+            || first == self.older_from
+            || !self.thread.top_in_reach()
+        {
+            return;
+        }
+        self.older_from = first;
+        let page = store::load_older(cx, &self.bot_id, self.history());
+        self.older = Some(cx.spawn(async move |this, cx| {
+            guarded_async("load an older page", async move {
+                // A page that didn't come is left: the top asks again once the conversation changes.
+                let _ = page.await;
+                let _ = this.update(cx, |this, cx| {
+                    this.older = None;
+                    cx.notify();
+                });
+            })
+            .await;
+        }));
+    }
+
+    fn open_exchange(&mut self, id: SharedString, cx: &mut Context<Self>) {
+        self.exchange = Some(id);
+        cx.notify();
+    }
+
+    fn toggle_panel(&mut self, cx: &mut Context<Self>) {
+        if self.exchange.take().is_none() {
+            self.panel_open = !self.panel_open;
+        }
+        cx.notify();
+    }
+}
+
+impl Render for ChatScreen {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.load(cx);
+        let state = store::state(cx);
+        let ready = state.connection == Connection::Ready;
+        let bots = Rc::new(state.bots.clone());
+        let Some(bot) = bots.iter().find(|bot| *bot.id == *self.bot_id).cloned() else {
+            if ready {
+                cx.defer(|cx| {
+                    guarded("leave a chat with no agent", || cx.navigate(Route::Agents));
+                });
+            }
+            return div().semantic("screen.chat", Role::Group).flex_1();
+        };
+        let conversation = state.conversations.get(self.bot_id.as_ref());
+        let status = conversation.map(|conversation| conversation.status);
+        let empty =
+            conversation.is_some_and(|conversation| !conversation.messages.iter().any(shown));
+        if let Some(conversation) = conversation
+            && conversation.status == ConversationStatus::Ready
+        {
+            self.thread.sync(&conversation.messages, &Zoned::now());
+        }
+        self.load_older(cx);
+
+        let this = cx.entity().downgrade();
+        let context = MessageContext {
+            bots: bots.clone(),
+            conversation_id: self.bot_id.clone(),
+            open_exchange: self.exchange.clone(),
+            on_open_exchange: Rc::new(move |id, _, cx| {
+                let _ = this.update(cx, |chat, cx| chat.open_exchange(id, cx));
+            }),
+        };
+        let toggle = cx.entity().downgrade();
+        let actions = HeaderActions {
+            panel_open: self.panel_open || self.exchange.is_some(),
+            on_toggle_panel: Rc::new(move |_, cx| {
+                let _ = toggle.update(cx, |chat, cx| chat.toggle_panel(cx));
+            }),
+            on_open_browser: {
+                let chat = cx.entity().downgrade();
+                Rc::new(move |_, cx| {
+                    let _ = chat.update(cx, |chat, cx| {
+                        chat.exchange = None;
+                        chat.panel_open = true;
+                        cx.notify();
+                    });
+                })
+            },
+        };
+        let body = match status {
+            Some(ConversationStatus::Failed) => {
+                let id = self.bot_id.clone();
+                failed_load(
+                    "chat.failed",
+                    "Couldn't load this chat.",
+                    move |_, cx| {
+                        store::retry_conversation(cx, &id, History::Bot(id.to_string())).detach();
+                    },
+                    cx,
+                )
+            }
+            Some(ConversationStatus::Ready) if empty => empty_chat(&bot, cx),
+            Some(ConversationStatus::Ready) => self.thread.render(context, cx),
+            _ => div().flex_1().into_any_element(),
+        };
+        let header = header::header(&bot, &actions, window, cx);
+        div()
+            .semantic("screen.chat", Role::Group)
+            .aria_label(SharedString::from(format!("Chat with {}", bot.name)))
+            .flex_1()
+            .min_h_0()
+            .w_full()
+            .flex()
+            .flex_col()
+            .child(header)
+            .child(body)
+    }
+}
+
+/// A chat with nothing in it yet: the agent, ready, and how it works.
+fn empty_chat(bot: &protocol::model::Bot, cx: &App) -> AnyElement {
+    let theme = theme(cx);
+    let colors = palette(cx);
+    let title = SharedString::from(format!("{} is ready", bot.name));
+    div()
+        .flex_1()
+        .flex()
+        .flex_col()
+        .items_center()
+        .justify_center()
+        .gap(r(theme.space.s12))
+        .px(r(theme.space.s32))
+        .child(BotAvatar::new(bot.color, bot.shape, theme.size.avatar64).pose(Pose::of(bot.state)))
+        .child(
+            div()
+                .semantic("chat.empty", Role::Heading)
+                .aria_label(title.clone())
+                .mt(r(theme.space.s6))
+                .type_style(&theme.typography.desktop.display_m)
+                .text_color(hsla(colors.text.primary))
+                .child(title),
+        )
+        .child(
+            div()
+                .max_w(r(340.))
+                .text_center()
+                .type_style(&theme.typography.desktop.ui)
+                .text_color(hsla(colors.text.secondary))
+                .child(autonomy_hint(bot.autonomy)),
+        )
+        .into_any_element()
+}
