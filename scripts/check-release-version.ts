@@ -12,11 +12,33 @@ import { fileURLToPath } from "node:url";
 
 const SHIPPED_CRATES = ["desktop", "daemon"] as const;
 
-// A crate's version: its own `version = "x"`, or the workspace's when it says `version.workspace = true`.
+// The lines of one TOML table: after its `[header]` line, up to the next line that opens any table (`[x]` or `[[x]]`), or the end of the
+// file. null if there is no such table. Reading a value from this, and not from the whole file, is what keeps `authors = [...]` above
+// the version from cutting the table short, and a dependency's `[dependencies.foo]` table (which has a `version` of its own) from being
+// read as the crate's.
+export function tableBody(toml: string, header: string): string | null {
+  const opens = (line: string): string | null => /^\s*\[{1,2}\s*([^\]]*?)\s*\]{1,2}\s*(?:#.*)?$/.exec(line)?.[1]?.replace(/\s+/g, "") ?? null;
+  const lines = toml.split(/\r?\n/);
+  const start = lines.findIndex((line) => opens(line) === header && !/^\s*\[\[/.test(line));
+  if (start === -1) return null;
+  const rest = lines.slice(start + 1);
+  const end = rest.findIndex((line) => opens(line) !== null);
+  return (end === -1 ? rest : rest.slice(0, end)).join("\n");
+}
+
+// A table's own `version = "x"` (a TOML basic or literal string), or undefined.
+function versionIn(body: string): string | undefined {
+  return /^\s*version\s*=\s*(["'])([^"']+)\1\s*(?:#.*)?$/m.exec(body)?.[2];
+}
+
+// A crate's version: its own `version = "x"` in `[package]`, or the workspace's when it says `version.workspace = true` (or
+// `version = { workspace = true }`).
 export function crateVersion(manifest: string, workspaceVersion: string): string {
-  const own = /^version\s*=\s*"([^"]+)"/m.exec(manifest);
-  if (own?.[1]) return own[1];
-  if (/^version\.workspace\s*=\s*true/m.test(manifest)) return workspaceVersion;
+  const pkg = tableBody(manifest, "package");
+  if (pkg === null) throw new Error("the crate manifest has no [package] table");
+  const own = versionIn(pkg);
+  if (own) return own;
+  if (/^\s*version\s*\.\s*workspace\s*=\s*true\b/m.test(pkg) || /^\s*version\s*=\s*\{\s*workspace\s*=\s*true\s*\}/m.test(pkg)) return workspaceVersion;
   throw new Error("the crate manifest has no version");
 }
 
@@ -25,8 +47,8 @@ export type VersionCheck = { packageVersion: string; crates: Record<string, stri
 export function checkReleaseVersion(root: string): VersionCheck {
   const packageVersion = (JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { version: string }).version;
   const workspace = readFileSync(join(root, "tjommie-rs", "Cargo.toml"), "utf8");
-  const section = /\[workspace\.package\][^[]*/.exec(workspace)?.[0] ?? "";
-  const workspaceVersion = /^version\s*=\s*"([^"]+)"/m.exec(section)?.[1];
+  const section = tableBody(workspace, "workspace.package");
+  const workspaceVersion = section === null ? undefined : versionIn(section);
   if (!workspaceVersion) throw new Error("tjommie-rs/Cargo.toml has no [workspace.package] version");
   const crates: Record<string, string> = {};
   const problems: string[] = [];
