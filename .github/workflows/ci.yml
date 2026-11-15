@@ -60,6 +60,10 @@ jobs:
       - run: rustup toolchain install
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # The daemon's provider-fixtures switch (a feature for tests only; replays recorded conversations in place of a real
+      # Claude or Codex) is off in every other step, and every test that proves it is gated on the feature, so those steps
+      # lint and run none of it. This one lints it. It is a separate step on purpose: the default build stays feature-off.
+      - run: cargo clippy -p daemon --all-targets --features provider-fixtures --locked -- -D warnings
       # The UI boundary rule (Phase 3 plan T0.4, M0 review F5): every handler registration in the desktop crate runs its
       # whole closure inside guarded(.
       - run: ./tools/check-guarded.ps1 -SelfTest
@@ -96,4 +100,13 @@ jobs:
         run: npx vitest run packages/desktop/src/daemon-process.test.ts
         env:
           TJOMMIE_DAEMON_EXE: ${{ github.workspace }}\tjommie-rs\target\debug\tjommie-daemon.exe
+          TJOMMIE_CI_HOSTED: '1'
+      # The provider-fixtures switch's own tests: the replay, the review refusal, the startup wiring check, the end-to-end
+      # daemon and the compile-fail guards. Separate from the workspace run, which is feature-off. It comes last on purpose:
+      # building these tests also builds target\debug\tjommie-daemon.exe WITH the feature, and the desktop daemon-process
+      # test above must run the feature-off exe. The compile-fail guards run a nested `cargo build` and `cargo rustc` on the
+      # daemon crate from its own folder (the same workspace target folder), which adds about a minute and makes the
+      # daemon rebuild once. The env is the workspace test step's.
+      - run: cargo test -p daemon --features provider-fixtures --locked --no-fail-fast
+        env:
           TJOMMIE_CI_HOSTED: '1'

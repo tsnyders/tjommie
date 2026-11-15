@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "turns": [
+    {
+      "expect": "hello",
+      "events": [
+        { "type": "text", "delta": "Hello" },
+        { "type": "text", "delta": " from the fixture." },
+        { "type": "text_end" },
+        { "type": "usage", "model": "sonnet", "input": 12, "cached_input": 0, "output": 5, "cost_usd": 0.0001 }
+      ],
+      "result": { "ok": true }
+    },
+    {
+      "events": [
+        { "type": "tool", "id": "tool-1", "name": "Reading a file", "summary": "src/lib.rs" },
+        { "type": "tool_done", "id": "tool-1", "ok": true },
+        { "type": "text", "delta": "The file looks fine." },
+        { "type": "text_end" },
+        { "type": "usage", "model": "sonnet", "input": 30, "output": 8 }
+      ]
+    },
+    {
+      "events": [
+        { "type": "error", "message": "The provider is down." }
+      ]
+    }
+  ]
+}
