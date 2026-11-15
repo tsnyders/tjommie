@@ -1,6 +1,6 @@
 # Desktop test map (Phase 3 plan T0.6)
 
-This file has two parts: the file-level map (T0.6), then Part 2, the `packages/ui/lib` cases (T1.4).
+This file has two parts: the first maps every TypeScript test file in `packages/ui` and `packages/desktop/src` to its Rust test (T0.6); Part 2 maps each `packages/ui/lib` test case to its `model::` test (T1.4).
 
 This map covers every TypeScript test file in the `packages/ui` tree (the desktop UI) and in `packages/desktop/src` (the Electron main process). Each file is mapped to the Rust test that will cover the same behaviour in the GPUI desktop, or marked `n/a:` with a reason; the owning plan task writes that Rust test. The row counts in the Counts section must equal the `git ls-files` lists, and each path appears in exactly one row.
 
