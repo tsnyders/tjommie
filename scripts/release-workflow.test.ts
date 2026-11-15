@@ -63,6 +63,85 @@ function parseWorkflow(file: string): Workflow {
   return JSON.parse(result.stdout) as Workflow;
 }
 
+// What a script can run, as opposed to what it says. The release test follows the scripts a workflow step runs, and the scripts those
+// name, so it must not follow a name that only appears in a comment. This removes the comments and leaves strings alone (a `;` or `#` or
+// `//` inside a string is not a comment). It is a small scanner, not a parser, and goes as far as these scripts do: line comments,
+// PowerShell <# #> and NSIS/JavaScript /* */ blocks, quoted strings, PowerShell here-strings. Known limit: a JavaScript regex literal that
+// ends in `//` is taken for a comment, and the rest of its line is lost.
+type Syntax = "powershell" | "bash" | "nsis" | "script";
+const syntaxOfFile = (path: string): Syntax => (/\.ps1$/i.test(path) ? "powershell" : /\.(?:nsi|nsh)$/i.test(path) ? "nsis" : "script");
+
+function withoutComments(text: string, syntax: Syntax): string {
+  const shell = syntax === "powershell" || syntax === "bash";
+  // The index after the string that opens at `from`, by this syntax's own escapes.
+  const stringEnd = (from: number, quote: string): number => {
+    for (let j = from + 1; j < text.length; j++) {
+      const c = text[j];
+      if (syntax === "nsis") {
+        if (c === "$" && text[j + 1] === "\\") { j++; continue; }
+        if (c === "\n") return j; // an NSIS string does not run over a line
+      } else if (syntax === "powershell") {
+        if (c === "`" && quote === '"') { j++; continue; }
+        if (c === quote && text[j + 1] === quote) { j++; continue; } // '' and "" are a quote inside
+      } else if (syntax === "bash") {
+        if (c === "\\" && quote === '"') { j++; continue; }
+      } else {
+        if (c === "\\") { j++; continue; }
+        if (c === "\n" && quote !== "`") return j;
+      }
+      if (c === quote) return j + 1;
+    }
+    return text.length;
+  };
+  let out = "";
+  let i = 0;
+  while (i < text.length) {
+    const c = text[i];
+    const two = text.slice(i, i + 2);
+    if (syntax === "powershell" && two === "<#") {
+      const end = text.indexOf("#>", i + 2);
+      out += " ";
+      i = end === -1 ? text.length : end + 2;
+      continue;
+    }
+    if ((syntax === "nsis" || syntax === "script") && two === "/*") {
+      const end = text.indexOf("*/", i + 2);
+      out += " ";
+      i = end === -1 ? text.length : end + 2;
+      continue;
+    }
+    // A shell or NSIS comment starts at the start of a word, so `a#b` and `"x;y"` are not one.
+    const startsWord = i === 0 || /[\s;(){},|&=]/.test(text[i - 1]);
+    const lineComment = shell ? c === "#" && startsWord : syntax === "nsis" ? (c === ";" || c === "#") && startsWord : two === "//";
+    if (lineComment) {
+      while (i < text.length && text[i] !== "\n") i++;
+      continue;
+    }
+    if (syntax === "powershell" && c === "@" && (text[i + 1] === "'" || text[i + 1] === '"') && /^[ \t]*\r?\n/.test(text.slice(i + 2, i + 202))) {
+      const terminator = `\n${text[i + 1]}@`; // a here-string ends on a line that starts with '@ or "@
+      const end = text.indexOf(terminator, i + 2);
+      const stop = end === -1 ? text.length : end + terminator.length;
+      out += text.slice(i, stop);
+      i = stop;
+      continue;
+    }
+    if (c === "'" || c === '"' || (c === "`" && (syntax === "nsis" || syntax === "script"))) {
+      const end = stringEnd(i, c);
+      out += text.slice(i, end);
+      i = end;
+      continue;
+    }
+    if (syntax === "bash" && c === "\\") {
+      out += text.slice(i, i + 2); // an escaped character, which may be a # or a quote
+      i += 2;
+      continue;
+    }
+    out += c;
+    i++;
+  }
+  return out;
+}
+
 const folders: string[] = [];
 afterEach(() => { for (const folder of folders.splice(0)) rmSync(folder, { recursive: true, force: true }); });
 
@@ -102,21 +181,35 @@ describe("release.yml", () => {
     expect(found.length, `${job}: exactly one step matches ${pattern}`).toBe(1);
     return found[0];
   };
-  // The repository scripts a run: block names, and the scripts those name in turn (a path in their own text, or a file of their own folder
-  // by name), so a step that runs a script is judged by the script as well. An `npm run` is not followed.
+  // The repository scripts a run: block names, and the scripts those name in turn, and so on until nothing new is named (to a fixed point,
+  // not one level), so a step that runs a script is judged by every script it can reach. "Name" is read from CODE: each script has its
+  // comments removed first (withoutComments), because a name in a comment is not a call (dry run 2: hosted-runner.ps1 says in a comment
+  // that install-latest-r1.ps1 is something else, and that script uses `gh release` and is run by another workflow). What is named is a
+  // path in the code (scripts/x.ts, installer/y.ps1), or a file of the same folder by name (Join-Path $PSScriptRoot 'x.ps1', an NSIS
+  // `File "...\x.ps1"`). A name inside a string that is not a call is followed too, which only widens what is checked. An `npm run` is
+  // not followed.
   const SCRIPT_PATH = /\b((?:scripts|installer|packages)[\\/][\w.\\/-]+\.(?:ts|mjs|ps1|nsi))\b/g;
-  const scriptsCalledBy = (text: string): string[] => {
+  const named = (code: string): string[] => [...code.matchAll(SCRIPT_PATH)].map((match) => match[1].replaceAll("\\", "/"));
+  const namesFile = (code: string, name: string): boolean => new RegExp(`(?<![\\w.-])${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w-])`, "i").test(code);
+  const scriptsCalledBy = (text: string, syntax: Syntax, root = repo): string[] => {
     const found = new Set<string>();
-    const queue = [...text.matchAll(SCRIPT_PATH)].map((match) => match[1].replaceAll("\\", "/"));
+    const queue = named(withoutComments(text, syntax));
     for (let path = queue.pop(); path !== undefined; path = queue.pop()) {
-      if (found.has(path) || !existsSync(join(repo, path))) continue;
+      if (found.has(path) || !existsSync(join(root, path))) continue;
       found.add(path);
-      const body = readFileSync(join(repo, path), "utf8");
+      const code = withoutComments(readFileSync(join(root, path), "utf8"), syntaxOfFile(path));
+      queue.push(...named(code));
       const folder = path.slice(0, path.lastIndexOf("/") + 1);
-      for (const match of body.matchAll(SCRIPT_PATH)) queue.push(match[1].replaceAll("\\", "/"));
-      for (const sibling of readdirSync(join(repo, folder))) if (/\.(?:ts|mjs|ps1)$/.test(sibling) && `${folder}${sibling}` !== path && body.includes(sibling)) queue.push(`${folder}${sibling}`);
+      for (const sibling of readdirSync(join(root, folder))) {
+        if (/\.(?:ts|mjs|ps1|nsi|nsh)$/.test(sibling) && `${folder}${sibling}` !== path && namesFile(code, sibling)) queue.push(`${folder}${sibling}`);
+      }
     }
     return [...found];
+  };
+  // The syntax of a step's own text: the shell it runs under (pwsh on a Windows runner unless it says otherwise, bash elsewhere).
+  const syntaxOfStep = (job: string, step: Step): Syntax => {
+    const shell = step.shell ?? ((jobs[job]["runs-on"] ?? "").includes("windows") ? "pwsh" : "bash");
+    return shell === "pwsh" || shell === "powershell" ? "powershell" : "bash";
   };
 
   // Anything in a step's own text that creates a release, moves a tag or code, calls the GitHub API or posts to a service. Only the
@@ -149,6 +242,10 @@ describe("release.yml", () => {
     /\boctokit\b|\bcreateRelease\b|\bcreate_release\b/i,
   ];
   const publishingIn = (text: string, patterns: RegExp[] = PUBLISHING): RegExp[] => patterns.filter((pattern) => pattern.test(text));
+  // The scripts a step's text can reach that reach GitHub's write side. The scripts are read as they are, comments and all: a comment that
+  // says `gh release create` fails here too, which is the safe way round (only which scripts are followed ignores comments).
+  const publishingScripts = (text: string, syntax: Syntax, root = repo): string[] =>
+    scriptsCalledBy(text, syntax, root).filter((path) => publishingIn(readFileSync(join(root, path), "utf8"), PUBLISHING_IN_SCRIPTS).length > 0);
   const ALLOWED_ACTIONS = ["actions/checkout", "actions/setup-node", "actions/setup-java", "actions/upload-artifact"];
 
   it("starts on a v* tag, a release-dryrun-* branch or a manual dispatch, and on nothing else", () => {
@@ -266,15 +363,89 @@ describe("release.yml", () => {
       for (const { step } of everyStep()) if (step.uses?.startsWith("actions/checkout@")) expect(step.with?.["persist-credentials"]).toBe(false);
     });
 
-    // The review's F3(2): a step that runs a repository script is judged by what the script does as well as by its own text. One level of
-    // calls, plus the files of the same folder that a script names; an `npm run` is not followed (the header says what this is).
+    // The review's F3(2): a step that runs a repository script is judged by every script it can reach, by what they do as well as by its
+    // own text. Followed to a fixed point, by what is named in code and not in comments (see scriptsCalledBy); an `npm run` is not followed.
     it("has no script, run from outside the publish job, that reaches GitHub's write side or a credential", () => {
       const called = new Set<string>();
-      for (const { job, step } of everyStep()) if (job !== "release") for (const path of scriptsCalledBy(step.run ?? "")) called.add(path);
-      expect(called.size, "it found the scripts the steps run").toBeGreaterThan(8);
-      for (const path of called) {
-        expect(publishingIn(readFileSync(join(repo, path), "utf8"), PUBLISHING_IN_SCRIPTS).map(String), `${path} must not publish`).toEqual([]);
+      for (const { job, step } of everyStep()) {
+        if (job === "release") continue;
+        const syntax = syntaxOfStep(job, step);
+        for (const path of scriptsCalledBy(step.run ?? "", syntax)) called.add(path);
+        expect(publishingScripts(step.run ?? "", syntax), `${job}: "${step.name ?? step.run}" can reach a script that publishes`).toEqual([]);
       }
+      expect(called.size, "it found the scripts the steps run").toBeGreaterThan(8);
+    });
+
+    describe("following the scripts a step runs", () => {
+      const publishes = "gh release create v1 --notes x\n";
+      const fixture = (files: Record<string, string>): string => {
+        const root = mkdtempSync(join(tmpdir(), "tjommie-follow-test-"));
+        folders.push(root);
+        for (const [name, content] of Object.entries(files)) {
+          mkdirSync(join(root, name, ".."), { recursive: true });
+          writeFileSync(join(root, name), content);
+        }
+        return root;
+      };
+
+      it("takes comments out of each kind of script and leaves what is in a string", () => {
+        const text = withoutComments;
+        // PowerShell
+        expect(text("Write-Output 'a # b' # gone\nnext", "powershell")).toBe("Write-Output 'a # b' \nnext");
+        const quoted = text('Write-Output "a # b `" # still a string" # gone', "powershell");
+        expect(quoted).toContain("still a string");
+        expect(quoted).not.toContain("gone");
+        expect(text("a <# gone\nstill gone #> b", "powershell")).not.toContain("gone");
+        const here = text("$s = @'\n# kept\n'@\n# gone\n", "powershell");
+        expect(here).toContain("# kept");
+        expect(here).not.toContain("gone");
+        expect(text("$a = 'it''s # kept' # gone", "powershell")).toContain("it''s # kept");
+        // bash
+        expect(text('echo "a # b" # gone', "bash")).toBe('echo "a # b" ');
+        expect(text("echo a\\#b # gone", "bash")).toBe("echo a\\#b ");
+        // NSIS
+        expect(text('File "a;b.ps1" ; gone\n!define X "y" # gone\n/* gone */ Nop', "nsis")).toBe('File "a;b.ps1" \n!define X "y" \n  Nop');
+        // TypeScript and JavaScript
+        expect(text('const a = "http://x"; // gone\n/* gone */ x = `a//b`;', "script")).toBe('const a = "http://x"; \n  x = `a//b`;');
+      });
+
+      // Dry run 2: hosted-runner.ps1 names install-latest-r1.ps1 in a comment, that script uses `gh release`, and the release workflow never runs it.
+      it("does not follow a script that is only named in a comment, and does follow a real call two levels down and catches it there", () => {
+        const root = fixture({
+          "installer/a.ps1": "# the other one, c.ps1, is not run from here\n. (Join-Path $PSScriptRoot 'b.ps1')\n<# nor e.ps1 #>\n",
+          "installer/b.ps1": "# see c.ps1\n& (Join-Path $PSScriptRoot 'd.ps1')\n",
+          "installer/c.ps1": publishes,
+          "installer/d.ps1": publishes,
+          "installer/e.ps1": publishes,
+        });
+        expect(scriptsCalledBy("./installer/a.ps1", "powershell", root).sort()).toEqual(["installer/a.ps1", "installer/b.ps1", "installer/d.ps1"]);
+        expect(publishingScripts("./installer/a.ps1", "powershell", root)).toEqual(["installer/d.ps1"]); // two levels down, a real call: caught
+        // A step's own comment does not name a script either.
+        expect(scriptsCalledBy("# ./installer/c.ps1\n./installer/a.ps1", "powershell", root)).not.toContain("installer/c.ps1");
+        expect(publishingScripts("./installer/c.ps1", "powershell", root)).toEqual(["installer/c.ps1"]); // but a step that does run it is caught
+      });
+
+      it("follows what an NSIS script includes, through the script that builds it, and not what it only mentions", () => {
+        const root = fixture({
+          "installer/build.ps1": "# Compiles installer/e.nsi, and nothing about h.ps1\n$nsi = Join-Path $PSScriptRoot 'e.nsi'\n",
+          "installer/e.nsi": '; File "${__FILEDIR__}\\g.ps1"\n  File "${__FILEDIR__}\\f.ps1"\n',
+          "installer/f.ps1": "Write-Output 'a helper'\n",
+          "installer/g.ps1": publishes,
+          "installer/h.ps1": publishes,
+        });
+        expect(scriptsCalledBy("./installer/build.ps1", "powershell", root).sort()).toEqual(["installer/build.ps1", "installer/e.nsi", "installer/f.ps1"]);
+        expect(publishingScripts("./installer/build.ps1", "powershell", root)).toEqual([]);
+      });
+
+      // The same, on the real scripts: the helpers the installer really `File`s are reached, and the one that is only mentioned in a comment is not.
+      it.skipIf(!existsSync(join(repo, "installer", "tjommie.nsi")))("reaches the helpers the real installer includes, and not install-latest-r1.ps1", () => {
+        const called = new Set<string>();
+        for (const { job, step } of everyStep()) if (job !== "release") for (const path of scriptsCalledBy(step.run ?? "", syntaxOfStep(job, step))) called.add(path);
+        for (const helper of ["tjommie.nsi", "helper-log.ps1", "scoped-processes.ps1", "stop-install-processes.ps1", "unlink-reparse-points.ps1", "set-shortcut-aumid.ps1"]) {
+          expect([...called], helper).toContain(`installer/${helper}`);
+        }
+        expect([...called], "named only in comments").not.toContain("installer/install-latest-r1.ps1");
+      });
     });
 
     // What the review named, and what must stay allowed: the list is the net, and the net has to catch what it was widened for.
