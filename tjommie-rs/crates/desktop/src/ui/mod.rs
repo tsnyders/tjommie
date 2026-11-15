@@ -4,3 +4,4 @@ pub mod browser;
 pub mod primitives;
 pub mod shell;
 pub mod style;
+pub mod vault_entry;

@@ -13,6 +13,17 @@ use zeroize::Zeroizing;
 use super::login::{Cancel, LoginError};
 use super::storage::{VaultSecret, validate_vault_secret};
 
+/// Keeps a window out of screen capture, as Electron's `setContentProtection` kept the Logins window: Windows shows it
+/// black in screenshots and recordings. `hwnd` is the window's handle. Whether Windows took it.
+pub fn exclude_from_capture(hwnd: isize) -> bool {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE,
+    };
+    // SAFETY: a plain Win32 call on a window handle; a stale handle only makes it fail.
+    unsafe { SetWindowDisplayAffinity(HWND(hwnd as *mut _), WDA_EXCLUDEFROMCAPTURE) }.is_ok()
+}
+
 /// The window closes itself, and the answer is a cancel, after this long without an answer (`vault-entry.ts`).
 pub const ENTRY_TIMEOUT: Duration = Duration::from_secs(120);
 

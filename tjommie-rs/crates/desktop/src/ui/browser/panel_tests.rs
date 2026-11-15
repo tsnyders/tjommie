@@ -511,10 +511,17 @@ fn reports_each_streamed_frame_once_it_is_drawn(cx: &mut gpui::TestAppContext) {
     open_browser(&panel, cx);
     draw_until_drawn(&sent, 0, cx);
     assert_eq!(drawn(&sent), [1]);
-    assert_eq!(cx.update(|_, cx| panel.read(cx).picture.frame().map(|frame| frame.sequence)), Some(1));
+    assert_eq!(
+        cx.update(|_, cx| panel.read(cx).picture.frame().map(|frame| frame.sequence)),
+        Some(1)
+    );
     draw(cx);
     draw(cx);
-    assert_eq!(drawn(&sent), [1], "once per frame, however often the panel draws");
+    assert_eq!(
+        drawn(&sent),
+        [1],
+        "once per frame, however often the panel draws"
+    );
     view.frame = Some(jpeg_frame(2));
     set_remote(view, cx);
     draw_until_drawn(&sent, 1, cx);
