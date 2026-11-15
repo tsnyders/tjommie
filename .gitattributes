@@ -1,3 +1,6 @@
 # Rust embeds these byte for byte, and SQLite stores their text in sqlite_master: never convert line endings.
 tjommie-rs/crates/daemon/migrations/*.sql -text
 tjommie-rs/crates/daemon/tests/fixtures/*.db binary
+
+# A real electron-builder latest.yml (v0.5.1), compared byte for byte by scripts/release-assets.test.ts: never convert line endings.
+scripts/fixtures/*.yml -text
