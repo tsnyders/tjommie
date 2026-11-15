@@ -50,6 +50,8 @@ zeroize = { version = "1.8", features = ["serde"] }
 daemon = { path = "../daemon" }
 # The TLS fixture servers' certificate, generated per test run.
 rcgen.workspace = true
+# Counts this process's threads (the timer test): the same `windows` crate, one more module.
+windows = { version = "0.62.2", features = ["Win32_System_Diagnostics_ToolHelp"] }
 # A TLS fixture server that asks for a client certificate (F2).
 rustls ={ version = "0.23", default-features = false, features = ["ring", "std"] }
 rustls-pemfile = "2"

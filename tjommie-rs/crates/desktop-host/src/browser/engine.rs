@@ -47,6 +47,7 @@ mod commands;
 mod events;
 mod input;
 mod stream;
+mod timer;
 mod vault;
 
 pub use automation::{AutomationSession, ToolView};
@@ -172,22 +173,11 @@ impl EngineConfig {
             start_url: BROWSER_START_URL.to_string(),
             timeouts: Timeouts::default(),
             clock: Rc::new(Instant::now),
-            sleep: Rc::new(thread_sleep),
+            sleep: Rc::new(timer::shared_sleep),
             on_stream: None,
             spawn: None,
         }
     }
-}
-
-fn thread_sleep(duration: Duration) -> LocalBoxFuture<'static, ()> {
-    let (tx, rx) = futures::channel::oneshot::channel();
-    std::thread::spawn(move || {
-        std::thread::sleep(duration);
-        let _ = tx.send(());
-    });
-    Box::pin(async move {
-        let _ = rx.await;
-    })
 }
 
 /// The panel's page frame, in physical pixels in the parent's client coordinates.
