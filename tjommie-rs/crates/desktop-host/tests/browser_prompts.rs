@@ -16,7 +16,7 @@ mod common;
 use std::io::{Read as _, Write as _};
 use std::net::TcpListener;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use common::Rig;
 use rustls::server::WebPkiClientVerifier;
@@ -112,22 +112,47 @@ fn a_basic_auth_prompt_is_cancelled_and_the_page_reports_the_401() {
         rig.server.url("basic-auth"),
     );
     // A credential dialog would hold this navigation for good.
-    let finished = rig.ui.run_within(
-        Duration::from_secs(30),
-        async move { tab.navigate(&url).await },
-    );
-    assert!(
-        finished.is_some(),
-        "the navigation was held by a credential dialog"
-    );
+    let wanted = url.clone();
+    let finished = rig.ui.run_within(Duration::from_secs(30), async move {
+        tab.navigate(&wanted).await
+    });
+    let reported = finished.expect("the navigation was held by a credential dialog");
+    // `navigate` returning does not mean the page is there. WebView2 ends a navigation whose password prompt was cancelled at once, and
+    // reports it as failed (the page needs credentials); the 401 document is committed and loaded after that. Read in the same task right
+    // after `navigate`, the page was still "loading", with no body, in about 4 runs in 10 here (and `document.body` was null in CI, which
+    // `eval` reports as "undefined"). So the page is waited for the way `Rig::load` waits for one: until it says it is this page and is
+    // complete, within a limit, and a failure says where the browser was and what it saw.
     let tab = awake.tab().expect("active tab");
-    let body = rig
-        .ui
-        .run(async move { common::eval(&tab, "document.body.innerText").await });
+    let (loaded, body, seen) = rig.ui.run(async move {
+        let wanted = format!("complete|{url}");
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut seen = String::new();
+        while Instant::now() < deadline {
+            match common::try_eval(&tab, "document.readyState + '|' + location.href").await {
+                Ok(answer) => seen = answer,
+                // The one error a page gives for a moment while it is between documents; any other is not that.
+                Err(error) if error.contains(common::TRANSIENT) => {
+                    seen = format!("refused: {error}")
+                }
+                Err(error) => panic!("evaluating the page: {error}"),
+            }
+            if seen == wanted {
+                let body =
+                    common::eval(&tab, "document.body ? document.body.innerText : 'no body'").await;
+                return (true, body, seen);
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        (false, String::new(), seen)
+    });
+    assert!(
+        loaded,
+        "the 401 page never finished loading: the browser is on {seen:?} (navigate said {reported:?})"
+    );
     assert_eq!(
         body.trim(),
         "unauthorized",
-        "the page shows the server's 401 body"
+        "the page shows the server's 401 body: the browser is on {seen:?} (navigate said {reported:?})"
     );
     assert_eq!(
         rig.wait_notice("password"),
