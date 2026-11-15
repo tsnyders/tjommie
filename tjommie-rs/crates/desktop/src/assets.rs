@@ -31,6 +31,11 @@ impl AssetSource for Assets {
     }
 }
 
+/// One of the baked icons, by its asset path (`icons/...`).
+pub fn icon(path: &str) -> Option<Cow<'static, [u8]>> {
+    Icons::get(path).map(|file| file.data)
+}
+
 /// The text families the theme names: Archivo (text), Archivo Expanded Tight (display) and JetBrains Mono.
 pub fn fonts() -> Vec<Cow<'static, [u8]>> {
     [

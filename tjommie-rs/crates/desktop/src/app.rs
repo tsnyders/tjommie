@@ -13,6 +13,7 @@ use crate::assets::{self, Assets, MONO_FAMILY, TEXT_FAMILY};
 use crate::guard::{guarded, guarded_async};
 use crate::notices::{self, Notice};
 use crate::theme::Theme;
+use crate::ui::shell::data::ShellData;
 use crate::ui::shell::{self, Shell};
 use crate::zoom::Zoom;
 
@@ -23,6 +24,9 @@ pub fn run(identity: Identity, after_crash: bool, instance: Option<Instance>) {
         .run(move |cx: &mut App| {
             gpui_kit::init(cx);
             notices::init(cx);
+            crate::motion::init(cx);
+            // What the shell shows of the daemon: connecting, until the store (T1.4) is wired to it.
+            cx.set_global(ShellData::default());
             match Theme::aegis() {
                 Ok(theme) => cx.set_global(theme),
                 Err(error) => {
@@ -38,7 +42,7 @@ pub fn run(identity: Identity, after_crash: bool, instance: Option<Instance>) {
             kit.font_family = TEXT_FAMILY.into();
             kit.mono_font_family = MONO_FAMILY.into();
             shell::set_rem(Zoom::default(), cx);
-            cx.bind_keys(shell::zoom_bindings());
+            cx.bind_keys(crate::keymap::bindings());
             if after_crash {
                 notices::raise(Notice::ClosedUnexpectedly);
             }

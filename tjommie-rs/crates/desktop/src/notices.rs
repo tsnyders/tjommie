@@ -47,6 +47,15 @@ thread_local! {
     static OUTBOX: RefCell<Option<UnboundedSender<Notice>>> = const { RefCell::new(None) };
 }
 
+/// Closes the notice at `index` (its toast's close button).
+pub fn dismiss(index: usize, cx: &mut App) {
+    let notices = &mut cx.default_global::<Notices>().0;
+    if index < notices.len() {
+        notices.remove(index);
+    }
+    cx.refresh_windows();
+}
+
 /// Raises a notice. Before anything listens on this thread, it is only logged.
 pub fn raise(notice: Notice) {
     let sent = OUTBOX.with(|outbox| {

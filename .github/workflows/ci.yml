@@ -69,8 +69,8 @@ jobs:
         env:
           # Hosted service logons can't reliably reach Credential Manager; those tests run on real PCs.
           TJOMMIE_CI_HOSTED: '1'
-      # Spec §3.10: only the production build carries the update feed (Phase 3 plan T0.6). --workspace reuses the test
-      # build's dependencies instead of compiling GPUI again.
+      # Spec §3.10: only the production build carries the update feed (Phase 3 plan T0.6). `cargo test --no-run` builds
+      # the app with the test run's dependency features (GPUI's test-support), so GPUI isn't compiled a second time.
       - name: The dev and e2e desktop builds have no update feed
         run: |
           function Assert-NoFeed {
@@ -78,10 +78,10 @@ jobs:
             if ($text.Contains('github.com/tsnyders/tjommie')) { throw "The $env:TJOMMIE_IDENTITY desktop build contains the update feed." }
           }
           $env:TJOMMIE_IDENTITY = 'dev'
-          cargo build --workspace --locked
+          cargo test --workspace --locked --no-run
           Assert-NoFeed
           $env:TJOMMIE_IDENTITY = 'e2e'
-          cargo build --workspace --locked --features desktop/test-driver
+          cargo test --workspace --locked --no-run --features desktop/test-driver
           Assert-NoFeed
       # The e2e tests drive that e2e build through its test driver, each on a temp root (Phase 3 plan T0.5).
       - name: Desktop e2e tests
