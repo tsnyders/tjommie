@@ -30,7 +30,7 @@ fn main() -> ExitCode {
     // Windows passes --after-crash when it restarts the app after a crash. Its --hidden (start in the tray) waits for
     // the tray (T6.1): until then the window shows, so a restarted app is never invisible.
     let after_crash = std::env::args_os().any(|arg| arg == "--after-crash");
-    desktop::app::run(identity, after_crash, instance);
+    desktop::app::run(identity, root, after_crash, instance);
     ExitCode::SUCCESS
 }
 

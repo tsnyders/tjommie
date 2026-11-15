@@ -169,8 +169,14 @@ pub struct Client {
 impl Client {
     /// Starts `exe` with `root` as TJOMMIE_HOME and connects to its pipe.
     pub fn launch(exe: &str, root: &Path) -> io::Result<Client> {
+        Self::launch_with(exe, root, &[])
+    }
+
+    /// `launch`, with more variables for the app, such as a test's TJOMMIE_DAEMON_EXE.
+    pub fn launch_with(exe: &str, root: &Path, vars: &[(&str, &str)]) -> io::Result<Client> {
         let mut app = desktop_host::spawn::command(exe)
             .env("TJOMMIE_HOME", root)
+            .envs(vars.iter().copied())
             .spawn()?;
         let name = pipe_name(app.id());
         let deadline = Instant::now() + Duration::from_secs(60);
