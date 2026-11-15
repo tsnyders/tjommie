@@ -199,6 +199,12 @@ impl LocalBrowser {
         Ok(())
     }
 
+    /// The engine, for what drives it besides the panel once wired: the `/browser-host` bridge (T3.2) and a clean quit.
+    pub fn engine(cx: &App) -> Option<Rc<Engine>> {
+        cx.try_global::<LocalBrowser>()
+            .map(|local| local.engine.clone())
+    }
+
     /// What the panel shows of a bot's browser: its state and what went wrong; the page itself is WebView2's.
     pub fn view(bot_id: &str, cx: &App) -> BrowserView {
         let Some(local) = cx.try_global::<LocalBrowser>() else {
@@ -237,10 +243,7 @@ impl LocalBrowser {
 
     /// Puts the open page where the panel's page area is this frame. Win32 work, so after the draw.
     pub fn place(bot_id: &str, panel: Option<Panel>, window: &Window, cx: &mut App) {
-        let Some(engine) = cx
-            .try_global::<LocalBrowser>()
-            .map(|local| local.engine.clone())
-        else {
+        let Some(engine) = Self::engine(cx) else {
             return;
         };
         let bot_id = bot_id.to_owned();
@@ -364,24 +367,21 @@ impl LocalBrowser {
         bot_id: &str,
         cx: &App,
     ) -> Option<impl Future<Output = Result<Vec<u8>, EngineError>> + use<>> {
-        let engine = cx.try_global::<LocalBrowser>()?.engine.clone();
+        let engine = Self::engine(cx)?;
         let bot_id = bot_id.to_owned();
         Some(async move { engine.capture_preview(&bot_id).await })
     }
 
     /// Raises the shield over the bot's page: a picture of it, then its window out of the way.
     pub fn raise_shield(bot_id: &str, cx: &App) -> Option<impl Future<Output = Vec<u8>> + use<>> {
-        let engine = cx.try_global::<LocalBrowser>()?.engine.clone();
+        let engine = Self::engine(cx)?;
         let bot_id = bot_id.to_owned();
         Some(async move { engine.raise_shield(&bot_id).await.png })
     }
 
     /// Lowers the shield: the live page comes back.
     pub fn lower_shield(bot_id: &str, window: &Window, cx: &mut App) {
-        let Some(engine) = cx
-            .try_global::<LocalBrowser>()
-            .map(|local| local.engine.clone())
-        else {
+        let Some(engine) = Self::engine(cx) else {
             return;
         };
         let bot_id = bot_id.to_owned();
@@ -392,10 +392,7 @@ impl LocalBrowser {
 
     /// The keyboard belongs to the app: a click landed outside the page.
     pub fn focus_app(window: &Window, cx: &mut App) {
-        let Some(engine) = cx
-            .try_global::<LocalBrowser>()
-            .map(|local| local.engine.clone())
-        else {
+        let Some(engine) = Self::engine(cx) else {
             return;
         };
         window.defer(cx, move |_, _| {
@@ -405,10 +402,7 @@ impl LocalBrowser {
 
     /// The display scale or the app zoom changed: every page is placed again.
     pub fn rescaled(window: &Window, cx: &mut App) {
-        let Some(engine) = cx
-            .try_global::<LocalBrowser>()
-            .map(|local| local.engine.clone())
-        else {
+        let Some(engine) = Self::engine(cx) else {
             return;
         };
         window.defer(cx, move |_, _| {
