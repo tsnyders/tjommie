@@ -469,6 +469,7 @@ pub fn start(identity: Identity, root: PathBuf, cx: &mut App) {
             Err(reason) => Daemon::Unavailable(reason),
         }
     };
+    cx.set_global(DataRoot(root.clone()));
     let keys = DeviceKeys::new(&root)
         .inspect_err(|error| log::warn!("No device keys: {error}"))
         .ok();
@@ -493,6 +494,11 @@ pub fn start(identity: Identity, root: PathBuf, cx: &mut App) {
     crate::ui::store::connect(cx, live);
     cx.set_global(Runtime(Some(runtime)));
 }
+
+/// This run's data root (`main`'s, checked with `owner_safety`): where an agent's notes.md lives (`<root>/bots`).
+pub struct DataRoot(pub PathBuf);
+
+impl gpui::Global for DataRoot {}
 
 /// The runtime lives as long as the app.
 struct Runtime(#[allow(dead_code, reason = "held, not read")] Option<tokio::runtime::Runtime>);

@@ -151,6 +151,9 @@ pub struct UiNode {
     pub focused: bool,
     /// The selected row of a set, such as the sidebar's section or Recents row on show.
     pub selected: bool,
+    /// A switch that is on, a pressed toggle button, a checked radio (AccessKit's toggled state).
+    #[serde(default)]
+    pub toggled: bool,
     /// In window coordinates, logical px.
     pub bounds: UiBounds,
 }
@@ -438,6 +441,7 @@ impl<E: Element> Element for Observed<E> {
             text: node.label().or(node.value()).unwrap_or_default().to_owned(),
             enabled: !node.is_disabled(),
             selected: node.is_selected().unwrap_or(false),
+            toggled: matches!(node.toggled(), Some(gpui::Toggled::True)),
             focused: self
                 .focus
                 .as_ref()

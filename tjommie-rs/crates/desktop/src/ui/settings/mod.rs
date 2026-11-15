@@ -255,6 +255,19 @@ mod tests {
     use crate::ui::shell::route::{self, Route, Section};
     use crate::ui::testing::{app, click, ids, node, state};
 
+    /// The chat's setup banner links to one account (`?section=accounts&account=…&action=signin`).
+    #[gpui::test]
+    fn an_account_link_opens_accounts(cx: &mut gpui::TestAppContext) {
+        let link = Route::Account {
+            account: "acct-1".into(),
+            action: Some(crate::ui::shell::route::AccountAction::SignIn),
+        };
+        let (_, _) = app(cx, link, state(vec![], vec![], vec![]), FakeRpc::new());
+        assert!(node("settings.accounts.title").is_some());
+        assert!(node("settings.nav.accounts").unwrap().selected);
+        assert!(node("sidebar.nav.settings").unwrap().selected);
+    }
+
     #[gpui::test]
     fn every_section_is_listed_and_a_link_opens_it(cx: &mut gpui::TestAppContext) {
         let (cx, _) = app(

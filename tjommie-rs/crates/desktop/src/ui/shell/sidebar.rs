@@ -144,7 +144,8 @@ pub(super) fn sidebar(
 /// too, as `rail.tsx` kept it for `/room/?id=` (M2 review F7).
 fn section_selected(to: &Route, route: &Route) -> bool {
     match (to, route) {
-        (Route::Settings(_), Route::Settings(_)) | (Route::Rooms, Route::Room(_)) => true,
+        (Route::Settings(_), Route::Settings(_) | Route::Account { .. })
+        | (Route::Rooms, Route::Room(_)) => true,
         (to, route) => to == route,
     }
 }

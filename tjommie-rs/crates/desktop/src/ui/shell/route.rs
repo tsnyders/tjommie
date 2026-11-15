@@ -26,6 +26,15 @@ pub enum Section {
     About,
 }
 
+/// What a link into an account asks of Settings (`?action=` in `/settings/?section=accounts&account=…`): start its
+/// sign-in, set its spending cap, or check its limit again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccountAction {
+    SignIn,
+    Cap,
+    Retry,
+}
+
 /// What the main column shows. The app opens on Agents.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum Route {
@@ -38,6 +47,13 @@ pub enum Route {
     Projects,
     Routines,
     Settings(Section),
+    /// Settings, Accounts, on one account: the deep link (`/settings/?section=accounts&account=<id>&action=<…>`) that
+    /// the chat's setup banner and limit notices follow. The Accounts section shows that account and runs `action`,
+    /// when there is one, once. The sidebar's Settings and the Accounts link show as selected.
+    Account {
+        account: String,
+        action: Option<AccountAction>,
+    },
     NewBot,
     BotSettings(BotId),
 }
@@ -81,6 +97,12 @@ mod tests {
             assert_eq!(current(cx), Route::Chat("bot-1".into()));
             cx.navigate(Route::Settings(Section::Devices));
             assert_eq!(current(cx), Route::Settings(Section::Devices));
+            let signin = Route::Account {
+                account: "acct-1".into(),
+                action: Some(AccountAction::SignIn),
+            };
+            cx.navigate(signin.clone());
+            assert_eq!(current(cx), signin);
         });
     }
 }

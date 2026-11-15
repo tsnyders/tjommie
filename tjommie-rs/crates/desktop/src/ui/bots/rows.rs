@@ -27,6 +27,11 @@ fn open_state(id: &str, default: bool, window: &mut Window, cx: &mut App) -> gpu
     })
 }
 
+/// Whether the row `id` is open now (`default` until it's toggled).
+pub fn is_open(id: &str, default: bool, window: &mut Window, cx: &mut App) -> bool {
+    *open_state(id, default, window, cx).read(cx)
+}
+
 /// A settings row (`Row`, `ROW_BUTTON`): 56 px on the card, an icon, the title and the value at the right, and, while
 /// open, its controls under the title. Its header is a button that says whether it is open.
 #[allow(clippy::too_many_arguments)]

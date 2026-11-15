@@ -148,15 +148,15 @@ fn screen(route: &Route, data: &ShellData, window: &mut gpui::Window, cx: &mut A
         Route::Agents => return crate::ui::agents::screen(window, cx),
         Route::Projects => return crate::ui::projects::screen(window, cx),
         Route::Routines => return crate::ui::routines::screen(window, cx),
+        Route::NewBot => return crate::ui::bots::new::screen(window, cx),
+        Route::BotSettings(id) => return crate::ui::bots::settings::screen(id, window, cx),
         Route::Settings(section) => return crate::ui::settings::screen(*section, window, cx),
+        Route::Account { .. } => {
+            return crate::ui::settings::screen(route::Section::Accounts, window, cx);
+        }
         Route::Chat(id) => ("chat", data.name_of(id)),
         Route::Rooms => ("rooms", "Rooms".into()),
         Route::Room(id) => ("room", data.name_of(id)),
-        Route::NewBot => ("new", "New agent".into()),
-        Route::BotSettings(id) => (
-            "bot_settings",
-            format!("{} settings", data.name_of(id)).into(),
-        ),
     };
     let theme = cx.global::<Theme>();
     div()
