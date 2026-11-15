@@ -518,7 +518,11 @@ fn a_hung_evaluation_times_out_and_is_ended_and_a_dialog_interrupts_one() {
     );
     assert!(words.contains("dialog"), "{words}");
     let dialog = tools.ok("browser_handle_dialog", json!({ "accept": true }));
-    assert!(dialog.contains("tools") || dialog.contains("Tools") || !dialog.is_empty());
+    // The answer is the page after the dialog: it no longer lists a dialog to handle.
+    assert!(
+        !dialog.is_empty() && !dialog.contains("Page dialog"),
+        "the dialog is closed: {dialog}"
+    );
     assert_eq!(
         tools.ok("browser_evaluate", json!({ "function": "() => 1 + 2" })),
         "3"
