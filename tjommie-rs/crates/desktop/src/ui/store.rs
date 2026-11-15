@@ -107,7 +107,45 @@ pub enum History {
     Exchange(String),
 }
 
+/// The daemon as an `Rpc`, for the view models that take one (`model::routines::save_routine` and the like): its calls
+/// go where `request`'s go, and fail as not connected while there is no connection.
+#[derive(Clone)]
+pub struct StoreRpc(Handle);
+
+/// `StoreRpc` for the store as it is now.
+pub fn rpc(cx: &App) -> StoreRpc {
+    StoreRpc(handle(cx))
+}
+
+impl client::Rpc for StoreRpc {
+    fn call<M: ClientMethod>(
+        &self,
+        params: M::Params,
+    ) -> impl Future<Output = Result<M::Result, client::RpcError>> + Send {
+        let handle = self.0.clone();
+        let not_connected = || {
+            client::RpcError::Closed(client::CloseReason {
+                code: 1006,
+                reason: "Tjommie isn't connected right now.".to_owned(),
+                opened: false,
+            })
+        };
+        async move {
+            match handle {
+                Handle::None => Err(not_connected()),
+                Handle::Live(live) => match live.daemon() {
+                    Ok(daemon) => daemon.call::<M>(params).await,
+                    Err(_) => Err(not_connected()),
+                },
+                #[cfg(test)]
+                Handle::Fake(rpc) => rpc.call::<M>(params).await,
+            }
+        }
+    }
+}
+
 /// What a helper works through: the live connection, a test's fake, or nothing yet.
+#[derive(Clone)]
 enum Handle {
     None,
     Live(Arc<Live>),
