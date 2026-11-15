@@ -17,7 +17,7 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use desktop_host::perf::qpc;
-use gpui::{App, Global, IntoElement, Styled as _, Window, canvas};
+use gpui::{App, Global, IntoElement, Styled as _, Window, canvas, deferred};
 
 use crate::guard::guarded_async;
 
@@ -216,11 +216,15 @@ fn timed_frame(
         .detach();
 }
 
-/// The element that ends each frame: the root view's last child, so its paint comes after the rest.
+/// The element that ends each frame: the root view's last child, deferred at the highest priority, so its paint comes
+/// after everything else's, the deferred overlays included (M2 review F10).
 pub fn painted() -> impl IntoElement {
-    canvas(|_, _, _| {}, |_, _, _, cx| end_frame(cx))
-        .absolute()
-        .size_0()
+    deferred(
+        canvas(|_, _, _| {}, |_, _, _, cx| end_frame(cx))
+            .absolute()
+            .size_0(),
+    )
+    .with_priority(usize::MAX)
 }
 
 fn end_frame(cx: &mut App) {
@@ -340,6 +344,33 @@ mod tests {
         assert!(
             !clock.wake(five),
             "the stale 3 s timer left the 2 s wake pending"
+        );
+    }
+
+    #[gpui::test]
+    fn the_frame_ends_after_the_overlays_paint(cx: &mut gpui::TestAppContext) {
+        use gpui::{IntoElement as _, ParentElement as _, deferred, div, px};
+        let overlay = Rc::new(Cell::new(0i64));
+        let painted_at = overlay.clone();
+        // An overlay, deferred as menus, dialogs and the flight are.
+        let cx = crate::ui::primitives::test_window(cx, move |_, _| {
+            let painted_at = painted_at.clone();
+            div()
+                .size_full()
+                .child(
+                    deferred(
+                        canvas(|_, _, _| {}, move |_, _, _, _| painted_at.set(qpc())).size(px(10.)),
+                    )
+                    .with_priority(2),
+                )
+                .into_any_element()
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let frame = cx.update(|_, cx| *frames(cx).last().expect("a frame"));
+        assert!(overlay.get() > 0, "the overlay painted");
+        assert!(
+            frame.painted_qpc >= overlay.get(),
+            "the frame's end is marked after the overlay's paint (M2 review F10)"
         );
     }
 
