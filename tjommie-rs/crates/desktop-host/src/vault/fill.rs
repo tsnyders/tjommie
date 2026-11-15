@@ -174,8 +174,8 @@ pub struct EvaluateReply {
     exception_details: Option<Ignored>,
 }
 
-/// One value passed to the page function. It is wiped when it drops; the encoded command is not this module's to wipe.
-/// It has no `Debug` on purpose: nothing can print it.
+/// One value passed to the page function. It is wiped when it drops, and so are the encoded command and its UTF-16 copy
+/// (`cdp::encode`, `com::call_devtools`). It has no `Debug` on purpose: nothing can print it.
 #[derive(Serialize)]
 pub struct SecretValue {
     value: Zeroizing<String>,

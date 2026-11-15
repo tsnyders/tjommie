@@ -145,6 +145,15 @@ pub async fn navigate(webview: &ICoreWebView2, url: &str) -> Result<bool, ComErr
     result
 }
 
+/// `text` as NUL-terminated UTF-16 in memory that is wiped when it drops, in one allocation (a buffer that grew would
+/// leave copies behind that nothing wipes).
+fn wide(text: &str) -> zeroize::Zeroizing<Vec<u16>> {
+    let mut units = zeroize::Zeroizing::new(Vec::with_capacity(text.encode_utf16().count() + 1));
+    units.extend(text.encode_utf16());
+    units.push(0);
+    units
+}
+
 /// One Chrome DevTools Protocol command. `params` and the answer are JSON text: typed encoding and decoding sit
 /// above this, in `browser::cdp`.
 pub async fn call_devtools(
@@ -158,14 +167,18 @@ pub async fn call_devtools(
             let _ = tx.send(result.map(|()| json).map_err(ComError::from));
             Ok(())
         }));
-    // SAFETY: plain COM call; the strings outlive it.
+    // The parameters may hold a secret, so they go over as a wiped buffer of ours rather than an `HSTRING`, which cannot
+    // be wiped.
+    let params = wide(params);
+    // SAFETY: plain COM call; `params` is NUL-terminated and outlives it (WebView2 copies the text before it returns).
     unsafe {
         webview.CallDevToolsProtocolMethod(
             &HSTRING::from(method),
-            &HSTRING::from(params),
+            PCWSTR(params.as_ptr()),
             &handler,
         )?;
     }
+    drop(params);
     rx.await.map_err(lost)?
 }
 
@@ -442,4 +455,20 @@ pub fn subscribe_accelerators(
     // SAFETY: plain COM call on a controller this engine owns; the handler is reference counted by COM.
     unsafe { controller.add_AcceleratorKeyPressed(&handler, &mut token)? };
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_wide_copy_of_a_command_is_one_exact_allocation_ending_in_nul() {
+        // A key emoji is a surrogate pair: two UTF-16 units for four UTF-8 bytes.
+        let text = "pass\u{1f511}word".repeat(300);
+        let wide = wide(&text);
+        let (nul, units) = wide.split_last().unwrap();
+        assert_eq!(*nul, 0);
+        assert_eq!(String::from_utf16(units).unwrap(), text);
+        assert_eq!(wide.capacity(), wide.len(), "growth leaves unwiped copies");
+    }
 }

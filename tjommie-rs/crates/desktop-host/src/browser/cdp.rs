@@ -47,14 +47,42 @@ pub struct Nothing {}
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct NoParams {}
 
+/// Counts the bytes written to it and keeps none.
+struct Count(usize);
+
+impl std::io::Write for Count {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0 += bytes.len();
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// The command's parameters as JSON, in memory that is wiped when it drops. A command may carry a secret (a login being
+/// filled), so the buffer is sized first and written once: a buffer that grew would leave copies behind that nothing wipes.
+pub(crate) fn encode<T: Serialize>(
+    params: &T,
+) -> Result<zeroize::Zeroizing<Vec<u8>>, serde_json::Error> {
+    let mut size = Count(0);
+    serde_json::to_writer(&mut size, params)?;
+    let mut json = zeroize::Zeroizing::new(Vec::with_capacity(size.0));
+    serde_json::to_writer(&mut *json, params)?;
+    Ok(json)
+}
+
 /// Runs one CDP method on a page.
 pub async fn call<M: Method>(
     webview: &ICoreWebView2,
     params: &M::Params,
 ) -> Result<M::Reply, CdpError> {
-    let encoded = serde_json::to_string(params)
+    let encoded =
+        encode(params).map_err(|error| CdpError::Shape(format!("{}: {error}", M::NAME)))?;
+    let encoded = std::str::from_utf8(&encoded)
         .map_err(|error| CdpError::Shape(format!("{}: {error}", M::NAME)))?;
-    let reply = com::call_devtools(webview, M::NAME, &encoded).await?;
+    let reply = com::call_devtools(webview, M::NAME, encoded).await?;
     // An empty reply stands for `{}`.
     let reply = if reply.trim().is_empty() {
         "{}"
@@ -182,6 +210,25 @@ method!(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_encoded_command_is_one_exact_allocation() {
+        // A long value, as a passphrase may be: a buffer that grew by doubling would leave its first copies behind, and
+        // only the last one would be wiped.
+        let params = InsertTextParams {
+            text: "p".repeat(5000),
+        };
+        let encoded = encode(&params).unwrap();
+        assert_eq!(
+            encoded.as_slice(),
+            serde_json::to_vec(&params).unwrap().as_slice()
+        );
+        assert_eq!(
+            encoded.capacity(),
+            encoded.len(),
+            "growth leaves unwiped copies"
+        );
+    }
 
     #[test]
     fn parameters_are_written_the_way_cdp_reads_them() {
