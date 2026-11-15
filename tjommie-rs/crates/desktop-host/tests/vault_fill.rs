@@ -1,6 +1,7 @@
 //! T3.6: the browser's side of filling a saved login, on real HTTPS pages (`native-browser-login.ts` and `native-browser.ts`
 //! `beginVault`, `writeVault`, `finishVault`). The pages are served over TLS on loopback with a test certificate that the
-//! browser is told to accept (`--ignore-certificate-errors`, set for this test binary only). Nothing real is touched: no
+//! browser is told to accept twice over: `--ignore-certificate-errors` for the process (this binary only), and, before each
+//! navigation, `Security.setIgnoreCertificateErrors` on the tab (as `browser_prompts.rs` does). Nothing real is touched: no
 //! account, no Credential Manager entry, no network beyond 127.0.0.1.
 
 // Test helpers may panic: a failure here is the test failing (the deny lints guard shipped code).
@@ -95,7 +96,8 @@ fn https_server() -> u16 {
     port
 }
 
-/// The browser accepts the test certificate: this binary only, and before any browser starts.
+/// The browser accepts the test certificate from the start: this binary only, and before any browser starts. WebView2 reads this
+/// only when its browser process starts, which a hosted runner's did not honour, so `go` also tells each tab (below).
 fn accept_the_test_certificate() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
@@ -139,21 +141,40 @@ impl Fixture {
         let url = format!("{}{path}", self.origin());
         let guard = self.rig.begin("alpha");
         let tab = guard.tab().expect("a tab");
-        let loaded = self.rig.ui.run(async move { tab.navigate(&url).await });
+        let loaded = self.rig.ui.run(async move {
+            // The fixture's certificate is self-signed, so this tab is told to ignore that before it navigates, as
+            // browser_prompts.rs does (and it passed on a hosted runner). The process-wide variable alone was not enough there:
+            // WebView2 reads it only when its browser process starts, and on a hosted runner every page here came back with the
+            // pathname "/" (what Chromium's own error page reports), where this PC's came back as the page. If that is still
+            // so, the message below says what the browser is on.
+            tab.call("Security.setIgnoreCertificateErrors", r#"{"ignore":true}"#)
+                .await
+                .expect("ignore the test certificate");
+            tab.navigate(&url).await
+        });
         guard.end();
-        // With the certificate error ignored WebView2 reports the navigation as unsuccessful although the page is there.
-        assert!(
-            loaded.is_ok(),
-            "the navigation to {path} was not refused: {loaded:?}"
-        );
+        // (This once accepted `Ok(false)` too, "because the certificate error is ignored". It was not the certificate: `navigate` took
+        // the cancelled start page's completion for its own, which browser_navigate.rs now pins.)
+        assert_eq!(loaded, Ok(true), "the navigation to {path} did not succeed");
         self.rig.eval_until(
             "alpha",
             "document.readyState",
             "complete",
             Duration::from_secs(30),
         );
+        // One read, not a wait for the path: a navigation that returned before the page committed must fail here, and say
+        // so, not be retried into passing.
         let seen = self.rig.eval("alpha", "location.pathname");
-        assert_eq!(seen, path, "the page {path} loaded");
+        if seen != path {
+            // Where the browser is, and, if that is an error page, the error it names (ERR_...).
+            let page = self.rig.eval(
+                "alpha",
+                "location.href + ' | ' + document.title + ' | ' + document.readyState + ' | ' + (document.body ? document.body.innerText.slice(0, 300) : '')",
+            );
+            panic!(
+                "the page {path} did not load: the browser is on {page} (the navigation said {loaded:?})"
+            );
+        }
     }
 
     fn target(&self) -> VaultFillTarget {
