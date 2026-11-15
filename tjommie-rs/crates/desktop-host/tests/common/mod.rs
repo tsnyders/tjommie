@@ -445,6 +445,7 @@ impl Rig {
                 bottom: client.bottom - 20,
             },
             occluded: false,
+            clip: None,
         }
     }
 

@@ -58,7 +58,7 @@ pub struct Cancel(watch::Receiver<bool>);
 
 impl Cancel {
     /// A new signal, and the sender that fires it.
-    pub(crate) fn pair() -> (watch::Sender<bool>, Cancel) {
+    pub fn pair() -> (watch::Sender<bool>, Cancel) {
         let (sender, receiver) = watch::channel(false);
         (sender, Cancel(receiver))
     }
