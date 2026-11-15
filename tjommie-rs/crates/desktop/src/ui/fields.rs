@@ -463,6 +463,84 @@ impl RenderOnce for Link {
     }
 }
 
+/// A number with a less and a more button (`controls.tsx`'s `Stepper`), from `min` to `max`. The value is read out
+/// with the label; each button is a tab stop, off at its end of the range.
+#[derive(IntoElement)]
+pub struct Stepper {
+    id: SharedString,
+    label: SharedString,
+    value: u32,
+    min: u32,
+    max: u32,
+    on_change: Option<OnChange<u32>>,
+}
+
+impl Stepper {
+    pub fn new(
+        id: impl Into<SharedString>,
+        label: impl Into<SharedString>,
+        value: u32,
+        min: u32,
+        max: u32,
+    ) -> Self {
+        Stepper {
+            id: id.into(),
+            label: label.into(),
+            value,
+            min,
+            max,
+            on_change: None,
+        }
+    }
+
+    /// Runs with the next value when a button is pressed, inside the button's guarded handler.
+    pub fn on_choose(mut self, on_change: impl Fn(u32, &mut Window, &mut App) + 'static) -> Self {
+        self.on_change = Some(Rc::new(on_change));
+        self
+    }
+}
+
+impl RenderOnce for Stepper {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let theme = theme(cx);
+        let colors = palette(cx);
+        let button = |key: &str, icon: &'static str, label: &str, next: Option<u32>| {
+            let mut button = crate::ui::primitives::button::IconButton::new(
+                format!("{}.{key}", self.id),
+                icon,
+                format!("{label}: {}", self.label),
+            )
+            .variant(crate::ui::primitives::button::IconVariant::Grey);
+            if let (Some(next), Some(on_change)) = (next, self.on_change.clone()) {
+                button = button.on_press(move |window, cx| on_change(next, window, cx));
+            }
+            div()
+                .opacity(if next.is_some() { 1.0 } else { 0.38 })
+                .child(button)
+        };
+        let less = (self.value > self.min).then(|| self.value.saturating_sub(1));
+        let more = (self.value < self.max).then(|| self.value.saturating_add(1));
+        div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(r(theme.space.s8))
+            .child(button("less", "minus", "Fewer", less))
+            .child(
+                div()
+                    .semantic(format!("{}.value", self.id), Role::Status)
+                    .aria_label(self.value.to_string())
+                    .min_w(r(28.))
+                    .text_center()
+                    .font_family(crate::assets::MONO_FAMILY)
+                    .type_style(&theme.typography.desktop.ui_strong)
+                    .text_color(hsla(colors.text.primary))
+                    .child(self.value.to_string()),
+            )
+            .child(button("more", "plus", "More", more))
+    }
+}
+
 /// The arrow keys step between a list's tab stops (Recents, a card grid, a menu's rows), staying inside it: at either
 /// end they stop there. `focus` is the list's own handle, kept by the caller.
 pub fn arrows<E: InteractiveElement>(element: E, focus: &FocusHandle) -> E {
