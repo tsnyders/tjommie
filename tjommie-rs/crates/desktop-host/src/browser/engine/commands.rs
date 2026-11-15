@@ -41,6 +41,10 @@ pub const LOCAL: &str = "local";
 const URL_CHARS: usize = 8192;
 const TITLE_CHARS: usize = 1024;
 
+/// What a person is told when a deleted bot's profile was cleared but Windows still holds its folder: the same words the
+/// TypeScript host uses.
+const LOCKED_PROFILE_NOTICE: &str = "Browser sign-in and storage were cleared. Locked profile files will be removed on a later startup.";
+
 /// A browser may have this many tabs open at once.
 const TAB_LIMIT: usize = 30;
 /// How long a disconnected remote controller is remembered, so its late commands are refused.
@@ -273,7 +277,23 @@ impl Engine {
                 return Ok(Reply::empty());
             }
             NativeBrowserCommand::Host(NativeBrowserHostCommand::DeleteProfile) => {
-                self.delete_profile(&bot.id).await?;
+                // The daemon deletes the bot's row only when this succeeds, so the outcome must be told truthfully:
+                // a profile that could not be cleared and still stands is a failure, never a quiet success.
+                match self.delete_profile(&bot.id).await? {
+                    DeleteOutcome::Removed => {}
+                    DeleteOutcome::ClearedButLocked => {
+                        // The bot's entry is gone by now, so this goes out directly (as the TypeScript host's notice does).
+                        let _ = self.notify.try_send(Notification::Notice {
+                            bot_id: bot.id.clone(),
+                            message: LOCKED_PROFILE_NOTICE.to_string(),
+                        });
+                    }
+                    DeleteOutcome::Remains => {
+                        return Err(EngineError::refused(
+                            "This agent's browser profile could not be cleared, so its sign-in and storage remain.",
+                        ));
+                    }
+                }
                 return Ok(Reply::empty());
             }
             NativeBrowserCommand::Host(NativeBrowserHostCommand::CancelTools) => {

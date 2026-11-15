@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use common::{Rig, webview_processes};
-use desktop_host::browser::engine::DeleteOutcome;
+use desktop_host::browser::engine::{DeleteOutcome, Notification};
 use desktop_host::browser::lifecycle::{MemoryLevel, Placement};
 use desktop_host::browser::{flags, policy, profiles};
 use windows::Win32::Foundation::RECT;
@@ -529,4 +529,86 @@ fn pruning_an_orphan_with_a_locked_file_clears_it_and_reports_what_remains() {
         rig.eval("gone", "String(localStorage.getItem('secret'))"),
         "null"
     );
+}
+
+/// The words the TypeScript host says when a profile's sign-in is cleared but its folder stays (`native-browser.ts`).
+const LOCKED_NOTICE: &str = "Browser sign-in and storage were cleared. Locked profile files will be removed on a later startup.";
+
+fn locked_file_in(folder: &std::path::Path) -> std::fs::File {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .share_mode(0)
+        .open(folder.join("held-open.tmp"))
+        .expect("a locked file")
+}
+
+fn notices(rig: &Rig) -> Vec<String> {
+    rig.notifications()
+        .into_iter()
+        .filter_map(|item| match item {
+            Notification::Notice { message, .. } => Some(message),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn the_delete_command_is_quiet_when_the_folder_is_removed() {
+    let mut rig = Rig::new();
+    rig.open("alpha");
+    rig.load("alpha", "blank.html");
+    let hash = policy::profile_name("alpha").expect("hash");
+    let folder = rig.engine.profile_root().join(profiles::folder_name(&hash));
+    rig.exec("alpha", serde_json::json!({ "kind": "delete_profile" }))
+        .expect("the delete to succeed");
+    assert!(!folder.exists(), "the profile folder must be gone");
+    assert!(
+        notices(&rig).is_empty(),
+        "a clean removal has nothing to say"
+    );
+}
+
+#[test]
+fn the_delete_command_tells_the_person_when_a_cleared_profile_stays_locked() {
+    let mut rig = Rig::new();
+    rig.open("alpha");
+    rig.open("beta"); // keeps the browser process, and so the profile's files, alive after alpha closes
+    rig.load("alpha", "blank.html");
+    rig.eval("alpha", "localStorage.setItem('secret', 'x'); 'ok'");
+    rig.show("alpha");
+    rig.hide("alpha");
+    rig.clock
+        .set(rig.clock.get() + Duration::from_secs(11 * 60));
+    let (engine, now) = (rig.engine.clone(), rig.clock.get());
+    rig.ui.run(async move { engine.tick(now).await });
+    let hash = policy::profile_name("alpha").expect("hash");
+    let folder = rig.engine.profile_root().join(profiles::folder_name(&hash));
+    let locked = locked_file_in(&folder);
+    // Cleared but held: the bot's deletion goes on, and the person is told what stays behind.
+    rig.exec("alpha", serde_json::json!({ "kind": "delete_profile" }))
+        .expect("a cleared profile is a success");
+    assert!(folder.exists(), "the folder is held");
+    assert_eq!(notices(&rig), vec![LOCKED_NOTICE.to_string()]);
+    drop(locked);
+}
+
+#[test]
+fn the_delete_command_fails_when_nothing_could_be_cleared_and_the_folder_remains() {
+    let mut rig = Rig::new();
+    // No browser has started this run, so there is nothing to clear the profile's sign-in with, and one file of an
+    // earlier run's profile is held: the folder (and what it holds) remains.
+    let hash = policy::profile_name("alpha").expect("hash");
+    let folder = rig.engine.profile_root().join(profiles::folder_name(&hash));
+    std::fs::create_dir_all(&folder).expect("an earlier run's profile");
+    let locked = locked_file_in(&folder);
+    let message = rig.exec_error("alpha", serde_json::json!({ "kind": "delete_profile" }));
+    assert!(
+        message.contains("could not be cleared"),
+        "the failure says the profile remains: {message}"
+    );
+    assert!(folder.exists(), "the folder is still there");
+    drop(locked);
 }
