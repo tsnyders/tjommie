@@ -262,4 +262,46 @@ mod tests {
         cx.simulate_keystrokes("escape");
         assert!(dismissed.get(), "Escape closes the browser panel");
     }
+
+    /// Ctrl+Shift+= as GPUI's Windows backend reports it on a US layout: the shifted key "+" with Shift folded into it
+    /// (gpui-pre-windows `get_keystroke_key` clears `shift` once it has the shifted key), so the `ctrl-+` alias is
+    /// reachable; on a layout with its own + key, Ctrl++ arrives the same way (M2 review F11).
+    #[gpui::test]
+    fn ctrl_plus_zooms_in_as_windows_reports_it(cx: &mut gpui::TestAppContext) {
+        let zoomed = Rc::new(Cell::new(0));
+        let on_zoom = zoomed.clone();
+        let root = cx.update(|cx| cx.focus_handle());
+        let held = root.clone();
+        let cx = test_window(cx, move |_, _| {
+            let on_zoom = on_zoom.clone();
+            div()
+                .track_focus(&held)
+                .size_full()
+                .on_action(move |_: &ZoomIn, _, _| {
+                    guarded("test zoom in", || on_zoom.set(on_zoom.get() + 1));
+                })
+                .into_any_element()
+        });
+        cx.update(|window, cx| root.focus(window, cx));
+        let from_windows = |key: &str, shift: bool| Keystroke {
+            modifiers: gpui::Modifiers {
+                control: true,
+                shift,
+                ..gpui::Modifiers::default()
+            },
+            key: key.into(),
+            key_char: None,
+        };
+        // Ctrl+Shift+= on a US layout (and Ctrl++ elsewhere), then Ctrl+=: both reach ZoomIn, from the app and the page.
+        for key in ["+", "="] {
+            assert!(is_forwarded(&from_windows(key, false)), "{key}");
+            assert!(
+                cx.update(|window, cx| window.dispatch_keystroke(from_windows(key, false), cx)),
+                "{key} was handled"
+            );
+        }
+        assert_eq!(zoomed.get(), 2);
+        // Windows never reports that chord as "=" with Shift held; it would match neither binding.
+        assert!(!is_forwarded(&from_windows("=", true)));
+    }
 }
