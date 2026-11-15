@@ -346,6 +346,8 @@ impl LocalBrowser {
             }),
             // This PC's page is WebView2's own: nothing is drawn by the app.
             BrowserCommand::Drawn(_) => None,
+            // The panel places and hides this PC's page itself (`mount`, `place`, `hide`).
+            BrowserCommand::Show | BrowserCommand::Hide => None,
         };
         let Some(ui) = ui else {
             return;

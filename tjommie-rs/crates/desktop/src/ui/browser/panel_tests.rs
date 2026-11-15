@@ -107,8 +107,11 @@ fn panel_window(
         };
         if let Some(view) = remote {
             data.remote.insert(bot.id.clone(), view);
+            // The person's commands; the panel's own Show and Hide are the remote tests' business.
             data.on_remote = Some(Rc::new(move |_, command, _, _| {
-                record.borrow_mut().push(command)
+                if !matches!(command, BrowserCommand::Show | BrowserCommand::Hide) {
+                    record.borrow_mut().push(command)
+                }
             }));
             cx.set_global(ShellData {
                 host: Some("studio".into()),
@@ -562,6 +565,147 @@ fn reports_each_streamed_frame_once_it_is_drawn(cx: &mut gpui::TestAppContext) {
     set_remote(view, cx);
     draw_until_drawn(&sent, 1, cx);
     assert_eq!(drawn(&sent), [1, 2]);
+}
+
+/// That PC's daemon, as T1.4's test double: a bot's browser with one page and its picture, and the live stream when
+/// `streams` (without it, `browser.stream` answers `unknown_method`, as an older daemon does).
+fn remote_daemon(streams: bool) -> crate::model::testing::FakeRpc {
+    use protocol::browser::BrowserFrameResult;
+    use protocol::wire::{Empty, method};
+    let page = state(BrowserControl::Bot);
+    let (open, pulled, streamed) = (page.clone(), page.clone(), page);
+    let rpc = crate::model::testing::FakeRpc::new()
+        .on::<method::BrowserOpen>(move |_| Ok(open.clone()))
+        .on::<method::BrowserFrame>(move |_| {
+            Ok(BrowserFrameResult {
+                state: pulled.clone(),
+                frame: Some(jpeg_frame(1)),
+                unchanged: None,
+            })
+        })
+        .on::<method::BrowserStreamAck>(|_| Ok(Empty {}));
+    if streams {
+        rpc.on::<method::BrowserStream>(move |_| Ok(streamed.clone()))
+    } else {
+        rpc
+    }
+}
+
+/// A window on another PC, its panel wired to that PC's daemon through `remote::wire`.
+fn remote_window(
+    cx: &mut gpui::TestAppContext,
+    rpc: std::sync::Arc<crate::model::testing::FakeRpc>,
+) -> (Entity<BrowserPanel>, &mut VisualTestContext) {
+    let (panel, _, cx) = panel_window(cx, bot("b1", true), Some(BrowserView::default()));
+    cx.update(|_, cx| {
+        let data = cx.global_mut::<BrowserData>();
+        data.remote.clear();
+        data.on_remote = None;
+        super::super::remote::wire(rpc, true, cx);
+    });
+    (panel, cx)
+}
+
+/// Lets the sessions' calls, timers and the picture's decoding run, drawing between them.
+fn settle(cx: &mut VisualTestContext) {
+    for _ in 0..10 {
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(1));
+        cx.run_until_parked();
+        draw(cx);
+    }
+}
+
+fn asked(rpc: &crate::model::testing::FakeRpc, name: &str) -> Vec<serde_json::Value> {
+    rpc.calls()
+        .into_iter()
+        .filter(|(method, _)| *method == name)
+        .map(|(_, params)| params)
+        .collect()
+}
+
+// The remote live view (T3.7): T1.4's session opens when the Browser pane shows, asks for the stream after its first
+// picture, and each streamed frame is acknowledged once it is drawn; closing the panel stops the stream.
+#[gpui::test]
+fn a_remote_stream_is_drawn_and_each_drawn_frame_acknowledged(cx: &mut gpui::TestAppContext) {
+    let rpc = std::sync::Arc::new(remote_daemon(true));
+    let (panel, cx) = remote_window(cx, rpc.clone());
+    open_browser(&panel, cx);
+    settle(cx);
+    assert!(
+        !asked(&rpc, "browser.open").is_empty(),
+        "the session opened"
+    );
+    assert!(
+        asked(&rpc, "browser.stream")
+            .iter()
+            .any(|params| params["on"] == true),
+        "and asked for the stream after its first picture"
+    );
+    cx.update(|_, cx| {
+        super::super::remote::stream_frame(
+            protocol::browser::BrowserStreamFrame {
+                bot_id: "b1".into(),
+                frame: Some(jpeg_frame(7)),
+            },
+            cx,
+        )
+    });
+    for _ in 0..5 {
+        settle(cx);
+    }
+    assert_eq!(
+        cx.update(|_, cx| panel.read(cx).picture.frame().map(|frame| frame.sequence)),
+        Some(7),
+        "the streamed frame is on screen"
+    );
+    let acks: Vec<_> = asked(&rpc, "browser.streamAck")
+        .into_iter()
+        .filter(|params| params["sequence"] == 7)
+        .collect();
+    assert_eq!(acks.len(), 1, "acknowledged once, after it was drawn");
+    cx.simulate_keystrokes("ctrl-b");
+    settle(cx);
+    assert!(
+        asked(&rpc, "browser.stream")
+            .iter()
+            .any(|params| params["on"] == false),
+        "closing the panel stops the stream"
+    );
+}
+
+// An older daemon has no browser.stream (unknown_method): the session falls back to polling browser.frame, and never
+// asks for the stream again.
+#[gpui::test]
+fn an_older_daemon_without_the_stream_is_polled(cx: &mut gpui::TestAppContext) {
+    let rpc = std::sync::Arc::new(remote_daemon(false));
+    let (panel, cx) = remote_window(cx, rpc.clone());
+    open_browser(&panel, cx);
+    settle(cx);
+    for _ in 0..4 {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(300));
+        settle(cx);
+    }
+    assert_eq!(
+        asked(&rpc, "browser.stream").len(),
+        1,
+        "asked once, refused"
+    );
+    assert!(
+        asked(&rpc, "browser.frame").len() >= 2,
+        "pictures are polled instead: {:?}",
+        rpc.calls()
+            .iter()
+            .map(|(name, _)| *name)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        cx.update(|_, cx| panel.read(cx).picture.frame().map(|frame| frame.sequence)),
+        Some(1),
+        "the polled picture is on screen"
+    );
 }
 
 // browser-panel.test.tsx: "explains an offline remote host without denying the remote Computer pane"

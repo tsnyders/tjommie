@@ -11,28 +11,23 @@ pub mod logins;
 pub mod motion;
 pub mod panel;
 pub mod panel_variant;
+pub mod remote;
 pub mod stream;
 
 use std::collections::HashMap;
 use std::rc::Rc;
 
 use gpui::{App, Global, Window};
-use protocol::browser::{BrowserControl, BrowserFrame, BrowserState, HistoryAction, TabAction};
+use protocol::browser::{BrowserControl, BrowserFrame, HistoryAction, TabAction};
 use protocol::model::Bot;
 
 use crate::guard::guarded;
 use crate::keymap::{Dismiss, TogglePanel};
 use crate::motion::keyboard::Trigger;
 
-/// What the panel shows of one bot's browser: T1.4's `model::browser_session::BrowserView`, field for field.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct BrowserView {
-    pub state: Option<BrowserState>,
-    /// A remote PC's page as a picture (`browser.streamFrame`, else `browser.frame`); this PC's page is WebView2's own.
-    pub frame: Option<BrowserFrame>,
-    pub error: Option<String>,
-    pub busy: bool,
-}
+/// What the panel shows of one bot's browser (T1.4): the state, a remote PC's page as a picture (this PC's page is
+/// WebView2's own), what went wrong, and whether a command is busy.
+pub use crate::model::browser_session::BrowserView;
 
 /// What the person asks of a bot's browser in the panel (`BrowserControls`, browser-panel.tsx).
 #[derive(Clone, Debug, PartialEq)]
@@ -52,6 +47,10 @@ pub enum BrowserCommand {
     Retry,
     /// A remote picture is on screen, so the live stream may send the next (`BrowserSession::drawn`).
     Drawn(BrowserFrame),
+    /// The panel starts showing a remote PC's bot's browser (the Browser pane is shown).
+    Show,
+    /// The panel stops showing it (closed, another pane, another bot): the browser goes back to the bot.
+    Hide,
 }
 
 /// Takes a remote panel's command for a bot to the store's session.

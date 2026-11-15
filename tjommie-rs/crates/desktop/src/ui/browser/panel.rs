@@ -65,6 +65,8 @@ pub struct BrowserPanel {
     panel_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
     /// The bot whose page is in the panel.
     mounted: Option<String>,
+    /// The bot whose remote browser the panel shows (on another PC).
+    remote_shown: Option<String>,
     /// The snapshot variant's picture of the page, taken at rest.
     snapshot: Option<Arc<Image>>,
     snapshot_task: Option<Task<Option<()>>>,
@@ -105,6 +107,7 @@ impl BrowserPanel {
                 },
                 panel_bounds: Rc::default(),
                 mounted: None,
+                remote_shown: None,
                 snapshot: None,
                 snapshot_task: None,
                 shield: ShieldState::Down,
@@ -259,6 +262,28 @@ impl BrowserPanel {
                 && (self.motion.is_open() || self.motion.is_moving())
                 && !is_remote(cx)
         });
+        // Another PC's bot's browser: its session opens while the Browser pane shows it, and closes when it doesn't.
+        let on_remote = cx
+            .try_global::<BrowserData>()
+            .and_then(|data| data.on_remote.clone());
+        let wants_remote = bot.is_some_and(|bot| {
+            bot.browser
+                && self.view.pane == Pane::Browser
+                && (self.motion.is_open() || self.motion.is_moving())
+                && is_remote(cx)
+        });
+        let remote_want = wants_remote.then(|| id.to_owned());
+        if let Some(on_remote) = on_remote
+            && self.remote_shown != remote_want
+        {
+            if let Some(gone) = self.remote_shown.take() {
+                on_remote(&gone, BrowserCommand::Hide, window, cx);
+            }
+            if let Some(shown) = &remote_want {
+                on_remote(shown, BrowserCommand::Show, window, cx);
+            }
+            self.remote_shown = remote_want;
+        }
         let want = wants_page.then(|| id.to_owned());
         if self.mounted != want {
             if let Some(gone) = self.mounted.take() {
