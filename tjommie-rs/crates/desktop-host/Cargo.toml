@@ -25,6 +25,8 @@ tempfile = "3.27.0"
 tokio = { version = "1.54.1", features = ["rt", "rt-multi-thread", "macros", "net", "sync", "time", "fs", "io-util", "process"] }
 url = "2.5.8"
 uuid = { version = "1.26.0", features = ["v4"] }
+# GPUI already builds windows with WindowsAndMessaging, LibraryLoader and Gdi (shell::animation's hidden window), so the
+# workspace's windows feature set, and GPUI's build, stay the same.
 windows = { version = "0.62.2", features = [
   "Data_Xml_Dom",
   "Foundation",
@@ -46,9 +48,14 @@ windows = { version = "0.62.2", features = [
 zeroize = "1.8"
 
 [dev-dependencies]
+client = { path = "../client" }
 daemon = { path = "../daemon" }
+protocol = { path = "../protocol" }
+tempfile = "3.27.0"
 tokio = { version = "1.54.1", features = ["test-util"] }
 tokio-tungstenite = "0.29"
+# crash::tests reads the restart registration back.
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_System_Threading"] }
 
 [lints]
 workspace = true
