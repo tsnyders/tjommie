@@ -6,5 +6,6 @@ pub mod crash;
 pub mod identity;
 pub mod log;
 pub mod owner_safety;
+pub mod perf;
 pub mod shell;
 pub mod spawn;
