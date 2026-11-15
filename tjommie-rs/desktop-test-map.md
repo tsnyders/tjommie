@@ -35,7 +35,7 @@ Location kinds: `(unit)` is a `#[cfg(test)]` module, `(view)` is a GPUI `TestApp
 | `packages/ui/components/chat/message-view.test.tsx` | `crates/desktop/src/ui/chat/message_view.rs` (view) | T4.1 | - |
 | `packages/ui/components/chat/notices.test.tsx` | `crates/desktop/src/ui/chat/notices.rs` (view) | T4.1 | The crash notice from T0.4 also lands here. |
 | `packages/ui/components/chat/pdf-file-viewer.test.tsx` | `crates/desktop/src/ui/files/pdf.rs` (view) | T4.4 | Range reads are `pdf::range_reads_only` in desktop-host. |
-| `packages/ui/components/chat/right-panel.test.tsx` | `crates/desktop/src/ui/browser/panel_tests.rs` (view) | T3.7 | `panel::tests::has_no_switch_and_never_the_browser_for_a_bot_without_one`, `offers_details_and_browser_hide_and_settings`, `opens_only_beside_a_chat`. n/a: the phone sheet (Phase 4). Not yet: the remembered width with its separator, and the overlay below 1000 px (the panel docks at its pane's width). |
+| `packages/ui/components/chat/right-panel.test.tsx` | `crates/desktop/src/ui/browser/panel_tests.rs` (view) | T3.7 | `panel::tests::has_no_switch_and_never_the_browser_for_a_bot_without_one`, `offers_details_and_browser_hide_and_settings`, `opens_only_beside_a_chat`; Escape kept by the page's dialog: `escape_in_a_page_dialog_cancels_it_and_keeps_the_panel`. n/a: the phone sheet (Phase 4). Not yet: the remembered width with its separator, and the overlay below 1000 px (the panel docks at its pane's width). |
 | `packages/ui/components/chat/setup-banner.test.tsx` | `crates/desktop/src/ui/chat/setup_banner.rs` (view) | T4.1 | - |
 | `packages/ui/components/chat/sign-in-toast.test.tsx` | `crates/desktop/src/ui/chat/sign_in_toast.rs` (view) | T4.1 | - |
 | `packages/ui/components/connection-screen.test.tsx` | `crates/desktop/src/ui/shell/connection.rs` (unit, view) | T2.1 | Every case but the phone's Pair again (Android only). |
@@ -188,7 +188,7 @@ Location kinds: `(unit)` is a `#[cfg(test)]` module, `(view)` is a GPUI `TestApp
 | `packages/desktop/src/updater.test.ts` | `crates/desktop-host/src/updater/` (unit) | T6.4 | Includes `updater::rejects_bad_sha512` and `rejects_foreign_app_id`. |
 | `packages/desktop/src/vault-assets.test.ts` | `n/a: Electron vault-entry bundle and preload bridge; the entry is a GPUI window` | T3.6 | - |
 | `packages/desktop/src/vault-command-gate.test.ts` | `crates/desktop-host/src/vault/` (unit, gate) | T3.6 | Accepted only while the window is visible, not minimized, and the app is ready. |
-| `packages/desktop/src/vault-entry.test.ts` | `crates/desktop/src/ui/vault_entry.rs` (view) | T3.6 | Secure entry window; secrets zeroed after write. |
+| `packages/desktop/src/vault-entry.test.ts` | `crates/desktop/src/ui/vault_entry.rs` (view) | T3.6 | Secure entry window; secrets zeroed after write (gpui-kit's own field copies are freed, not wiped). `vault_entry::tests::an_entry_is_typed_in_its_own_window_and_handed_over`, `refused_fields_keep_the_window_open_and_say_so`, `a_confirmation_answers_yes_and_one_window_at_a_time`, `the_vault_cancelling_closes_the_window`, `escape_and_ctrl_b_in_a_logins_window_stay_there`, `closing_the_window_frees_it_at_once`, `a_window_screen_capture_can_see_takes_no_login`. |
 | `packages/desktop/src/vault-host.test.ts` | `crates/desktop-host/src/vault/` (unit, host client) | T3.6 | The `/vault-host` client. |
 | `packages/desktop/src/worker-isolation.test.ts` | `crates/desktop-host/src/vault/` (unit, worker isolation) | T3.6 | `RemoteWorkerIsolation` over `/worker-host` (row 12). |
 
