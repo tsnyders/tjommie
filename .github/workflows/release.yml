@@ -334,6 +334,65 @@ jobs:
         with:
           name: android-assets
           path: release-assets
+      # The owner's decision on F2 (2026-11-15): no 0.5.x release after 0.6.0. GitHub's "latest release" is what both updaters follow (R1's
+      # electron-updater reads releases/latest, the Rust updater releases/latest/download/latest.yml), and neither takes a version that is
+      # not newer than the one installed, so a release that is not newer than the latest would reach nobody, or would strand whoever
+      # updated to the version it replaced. So before anything is created the latest release's tag is read, and this tag's version has to be
+      # strictly greater (semantic versioning: a plain release is newer than a prerelease of the same version, build metadata does not
+      # count). It only reads (`gh release view`), and anything it cannot read or understand refuses. scripts/release-workflow.test.ts
+      # runs this very text against a stand-in `gh`.
+      - name: The release is newer than the latest one
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          tag="$GITHUB_REF_NAME"
+          core='(0|[1-9][0-9]{0,8})'
+          if [[ ! "${tag#v}" =~ ^$core\.$core\.$core$ ]]; then
+            echo "Refusing to publish: the tag $tag is not v<major>.<minor>.<patch>." >&2
+            exit 1
+          fi
+          new=("${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}")
+          errors="$(mktemp)"
+          if latest="$(gh release view --json tagName --jq .tagName 2>"$errors")"; then
+            :
+          elif grep -qi "release not found" "$errors"; then
+            echo "There is no earlier release, so $tag is the first."
+            exit 0
+          else
+            echo "Refusing to publish: the latest release could not be read: $(cat "$errors")" >&2
+            exit 1
+          fi
+          prerelease='(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?'
+          build='(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?'
+          if [[ ! "${latest#v}" =~ ^$core\.$core\.$core$prerelease$build$ ]]; then
+            echo "Refusing to publish: the latest release is tagged \"$latest\", which is not a semantic version, so $tag cannot be compared with it." >&2
+            exit 1
+          fi
+          old=("${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}")
+          pre="${BASH_REMATCH[4]}"
+          verdict=equal
+          for i in 0 1 2; do
+            a=$((10#${new[i]}))
+            b=$((10#${old[i]}))
+            if (( a > b )); then verdict=newer; break; fi
+            if (( a < b )); then verdict=older; break; fi
+          done
+          if [[ "$verdict" == equal && -n "$pre" ]]; then verdict=newer; fi
+          case "$verdict" in
+            newer)
+              echo "$tag is newer than the latest release, $latest."
+              ;;
+            older)
+              echo "Refusing to publish: $tag is older than the latest release, $latest. No release is made after a newer one: the updaters would never offer it." >&2
+              exit 1
+              ;;
+            *)
+              echo "Refusing to publish: $tag is the same version as the latest release, $latest." >&2
+              exit 1
+              ;;
+          esac
       - name: Publish GitHub release
         shell: bash
         env:

@@ -302,14 +302,121 @@ describe("release.yml", () => {
       expect(script).toContain("--verify-tag");
     });
 
+    // The owner's F2 decision (2026-11-15): no 0.5.x release after 0.6.0. Before anything is created the latest release's version is read, and
+    // this tag has to be strictly greater. The step's own text is what runs here, against a stand-in `gh`, so what is tried is what ships.
+    describe("the release must be newer than the latest one", () => {
+      const name = "The release is newer than the latest one";
+      const guard = (): string => findStep("release", /The release is newer than the latest one/).run ?? "";
+
+      it("is a step of the publish job, ahead of the step that creates the release, and only reads", () => {
+        const names = stepsOf("release").map((step) => step.name ?? "");
+        expect(names.indexOf(name), "the guard is there").toBeGreaterThanOrEqual(0);
+        expect(names.indexOf(name), "and comes first").toBeLessThan(names.indexOf("Publish GitHub release"));
+        expect(findStep("release", /The release is newer than the latest one/).shell).toBe("bash");
+        const script = guard();
+        expect(script).toContain("gh release view --json tagName");
+        expect(script).not.toMatch(/gh release (?:create|edit|upload|delete)|--latest|\bgit\s+(?:push|tag)\b/);
+        for (const other of jobNames) if (other !== "release") expect(stepsOf(other).some((step) => step.name === name), `${other} has no such step`).toBe(false);
+      });
+
+      type Stub = { out?: string; err?: string; code?: number };
+      // Runs the guard as GitHub runs a bash step (bash -eo pipefail) with `gh` replaced by a function that answers only `gh release view
+      // --json tagName ...` and fails any other call, so a guard that did something else would show.
+      const runGuard = (tag: string, stub: Stub): { status: number | null; output: string } => {
+        const dir = mkdtempSync(join(tmpdir(), "tjommie-guard-test-"));
+        folders.push(dir);
+        writeFileSync(join(dir, "guard.sh"), guard());
+        writeFileSync(
+          join(dir, "run.sh"),
+          [
+            "gh() {",
+            '  if [[ "$1" == release && "$2" == view && "$3" == --json && "$4" == tagName ]]; then',
+            '    [[ -n "$STUB_ERR" ]] && echo "$STUB_ERR" >&2',
+            '    [[ -n "$STUB_OUT" ]] && echo "$STUB_OUT"',
+            '    return "${STUB_CODE:-0}"',
+            "  fi",
+            '  echo "unexpected gh call: $*" >&2',
+            "  return 99",
+            "}",
+            "source ./guard.sh",
+          ].join("\n"),
+        );
+        const run = spawnSync("bash", ["--noprofile", "--norc", "-eo", "pipefail", "run.sh"], {
+          cwd: dir,
+          encoding: "utf8",
+          windowsHide: true,
+          env: { ...process.env, GITHUB_REF_NAME: tag, STUB_OUT: stub.out ?? "", STUB_ERR: stub.err ?? "", STUB_CODE: String(stub.code ?? 0) },
+        });
+        return { status: run.status, output: `${run.stdout}${run.stderr}` };
+      };
+      const bashAvailable = spawnSync("bash", ["--version"], { windowsHide: true }).status === 0;
+
+      describe.skipIf(!bashAvailable)("against a stand-in gh (these need bash)", () => {
+      it.each([
+        ["the real case: 0.6.0 after 0.5.1", "v0.6.0", "v0.5.1"],
+        ["a newer patch", "v0.6.1", "v0.6.0"],
+        ["a newer minor over a larger patch", "v0.7.0", "v0.6.9"],
+        ["a newer major", "v1.0.0", "v0.99.99"],
+        ["numbers, not text: 0.10.0 is newer than 0.9.0", "v0.10.0", "v0.9.0"],
+        ["a release over a prerelease of the same version", "v0.6.0", "v0.6.0-rc.1"],
+        ["a release over a prerelease with build metadata", "v0.6.0", "v0.6.0-rc.1+build.5"],
+        ["a latest tagged without the v", "v0.6.0", "0.5.1"],
+      ])("lets %s through", (_label, tag, latest) => {
+        const run = runGuard(tag, { out: latest });
+        expect(run.status, run.output).toBe(0);
+        expect(run.output).toContain("is newer than the latest release");
+      });
+
+      it.each([
+        ["an older version (a 0.5.x after 0.6.0)", "v0.5.2", "v0.6.0", /older than the latest release, v0\.6\.0/],
+        ["an older version, by number and not by text", "v0.9.0", "v0.10.0", /older than the latest release/],
+        ["an older major", "v0.9.9", "v1.0.0", /older than the latest release/],
+        ["the same version", "v0.6.0", "v0.6.0", /same version as the latest release/],
+        ["the same version, the latest with build metadata", "v0.6.0", "v0.6.0+abc", /same version as the latest release/],
+        ["a prerelease of a later version being the latest", "v0.6.0", "v0.6.1-rc.1", /older than the latest release/],
+      ])("refuses %s, and says why", (_label, tag, latest, message) => {
+        const run = runGuard(tag, { out: latest });
+        expect(run.status, run.output).toBe(1);
+        expect(run.output).toMatch(message);
+      });
+
+      it.each(["latest", "v0.6","release-2026-11", "v1.2.3.4", "v01.2.3", "v0.6.0-", "v0.6.0-rc..1", "v0.6.99999999999", "v0.6.0\nv0.5.0", ""])(
+        "refuses a latest release it cannot compare with: %j",
+        (latest) => {
+          const run = runGuard("v0.7.0", { out: latest });
+          expect(run.status, run.output).toBe(1);
+          expect(run.output).toContain("not a semantic version");
+        },
+      );
+
+      it.each(["v0.6", "v0.6.0-rc.1","v00.6.0", "vX", "v0.6.0.1", "v"])("refuses a tag that is not v<major>.<minor>.<patch>: %s", (tag) => {
+        const run = runGuard(tag, { out: "v0.1.0" });
+        expect(run.status, run.output).toBe(1);
+        expect(run.output).toContain("is not v<major>.<minor>.<patch>");
+      });
+
+      it("lets the first release through, and refuses when the latest cannot be read at all", () => {
+        const first = runGuard("v0.6.0", { err: "release not found", code: 1 });
+        expect(first.status, first.output).toBe(0);
+        expect(first.output).toContain("is the first");
+        for (const err of ["HTTP 502: Bad Gateway", "gh: To use GitHub CLI in a GitHub Actions workflow, set the GH_TOKEN environment variable.", "could not resolve host"]) {
+          const run = runGuard("v0.6.0", { err, code: 1 });
+          expect(run.status, `${err}: ${run.output}`).toBe(1);
+          expect(run.output).toContain("could not be read");
+          expect(run.output).toContain(err);
+        }
+      });
+      });
+    });
+
     it("publishes the installer, latest.yml and the APK, with no block map", () => {
       const script = findStep("release", /Publish GitHub release/).run ?? "";
       for (const asset of ['"release-assets/Tjommie-Setup-$version.exe"', "release-assets/latest.yml", '"release-assets/Tjommie-Android-$version.apk"']) expect(script).toContain(asset);
       expect(script).not.toMatch(/blockmap/i);
     });
 
-    it("only downloads artifacts, apart from the publishing step", () => {
-      const others = stepsOf("release").filter((step) => !/Publish GitHub release/.test(step.name ?? ""));
+    it("only downloads artifacts, apart from the version guard and the publishing step", () => {
+      const others = stepsOf("release").filter((step) => !/Publish GitHub release|The release is newer than the latest one/.test(step.name ?? ""));
       for (const step of others) expect(step.uses ?? "", `${step.name ?? step.uses}`).toMatch(/^actions\/download-artifact@[0-9a-f]{40}\b/);
       expect(others.map((step) => step.with?.name).sort()).toEqual(["android-assets", "release-notes", "windows-assets"]);
     });
@@ -497,7 +604,7 @@ describe("release.yml", () => {
   it("has a mutation script that has not gone stale", () => {
     // LF, as the mutations are written: a Windows checkout may have CRLF.
     const text = readFileSync(join(workflowDir, "release.yml"), "utf8").replaceAll("\r\n", "\n");
-    expect(mutations.length).toBeGreaterThanOrEqual(29);
+    expect(mutations.length).toBeGreaterThanOrEqual(34);
     for (const { label, from } of mutations) expect(text.split(from).length - 1, `"${label}": its text is found once in release.yml`).toBe(1);
   });
 
