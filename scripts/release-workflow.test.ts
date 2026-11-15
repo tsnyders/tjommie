@@ -4,17 +4,29 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { releaseMode } from "./release-mode.ts";
+import { mutations } from "./release-workflow-mutations.ts";
 
 // T8.3: the release workflow has a dry run that cannot publish. GitHub only runs a workflow on a runner, so this file is how it is proved
 // here: every workflow is parsed with a real YAML parser (GitHub refuses a bad one before any job starts, with no log), and release.yml is
 // then walked as GitHub would walk it, for each kind of event, to show that outside a push of a v* tag no step creates a release, pushes a
 // tag or touches a latest.yml, and that the one job allowed to do so is skipped.
+//
+// What actually keeps a dry run from publishing is the permissions model: `contents: read` for the workflow, `contents: write` for the
+// release job alone, no checkout that keeps its credentials, no token outside that job, and the release job's own `if`. Those are pinned
+// exactly (the permission, token and condition tests below). The lists of commands that must not appear (PUBLISHING, and the one for
+// script files) are a REGRESSION NET, not a proof: text can always be spelled in a way a list does not know. They catch the obvious change
+// and the ones the review of this file named; they are not what the safety rests on.
+//
+// scripts/release-workflow-mutations.ts holds the deliberate breakages this file is checked against, and runs them
+// (`node scripts/release-workflow-mutations.ts`); a test here fails if one of them has gone stale.
 
 vi.setConfig({ testTimeout: 60_000 });
 
 const repo = resolve(import.meta.dirname, "..");
 const workflowDir = join(repo, ".github", "workflows");
 const parser = join(import.meta.dirname, "parse-yaml.mjs");
+// The mutation runner points this at a mutated copy of release.yml; the repository's own file is never touched.
+const releaseFile = process.env.TJOMMIE_RELEASE_WORKFLOW ?? join(workflowDir, "release.yml");
 
 type Step = {
   name?: string;
@@ -78,7 +90,7 @@ describe("every workflow", () => {
 });
 
 describe("release.yml", () => {
-  const workflow = parseWorkflow(join(workflowDir, "release.yml"));
+  const workflow = parseWorkflow(releaseFile);
   const jobs = workflow.jobs ?? {};
   const jobNames = Object.keys(jobs);
   const stepsOf = (name: string): Step[] => jobs[name]?.steps ?? [];
@@ -90,17 +102,53 @@ describe("release.yml", () => {
     expect(found.length, `${job}: exactly one step matches ${pattern}`).toBe(1);
     return found[0];
   };
+  // The repository scripts a run: block names, and the scripts those name in turn (a path in their own text, or a file of their own folder
+  // by name), so a step that runs a script is judged by the script as well. An `npm run` is not followed.
+  const SCRIPT_PATH = /\b((?:scripts|installer|packages)[\\/][\w.\\/-]+\.(?:ts|mjs|ps1|nsi))\b/g;
+  const scriptsCalledBy = (text: string): string[] => {
+    const found = new Set<string>();
+    const queue = [...text.matchAll(SCRIPT_PATH)].map((match) => match[1].replaceAll("\\", "/"));
+    for (let path = queue.pop(); path !== undefined; path = queue.pop()) {
+      if (found.has(path) || !existsSync(join(repo, path))) continue;
+      found.add(path);
+      const body = readFileSync(join(repo, path), "utf8");
+      const folder = path.slice(0, path.lastIndexOf("/") + 1);
+      for (const match of body.matchAll(SCRIPT_PATH)) queue.push(match[1].replaceAll("\\", "/"));
+      for (const sibling of readdirSync(join(repo, folder))) if (/\.(?:ts|mjs|ps1)$/.test(sibling) && `${folder}${sibling}` !== path && body.includes(sibling)) queue.push(`${folder}${sibling}`);
+    }
+    return [...found];
+  };
 
-  // Anything that creates a release, moves a tag or code, calls the GitHub API or posts to a service. Only the release job may have these.
+  // Anything in a step's own text that creates a release, moves a tag or code, calls the GitHub API or posts to a service. Only the
+  // release job may have these. A regression net (see the header), widened by the review's F3.
   const PUBLISHING: RegExp[] = [
-    /\bgh\s/,
-    // merge-base only reads history (the verify job asks whether the tag is on main), so "merge" must not be followed by "-base".
-    /\bgit\s+(push|tag|commit|remote|config|am|cherry-pick|merge(?![\w-]))/,
+    // The GitHub CLI in any spelling: gh, gh.exe, 'gh', "gh", & gh.exe, Start-Process -FilePath gh.exe. Not a word that merely holds "gh".
+    /(?<![\w.-])['"]?gh(?:\.exe)?['"]?(?=\s|$)/im,
+    // git with options before the subcommand (git -c user.name=x push) as well as directly. merge-base only reads history (the verify job
+    // asks whether the tag is on main), so "merge" must not be followed by "-base".
+    /\bgit(?:\.exe)?['"]?\b[^\n;|&]*?\s(?:push|tag|commit|remote|config|am|cherry-pick|update-ref|rebase|reset|merge(?![\w-]))\b/i,
     /--verify-tag/,
-    /\b(curl|wget|Invoke-WebRequest|Invoke-RestMethod|iwr|irm)\b/i,
-    /\b(npm|cargo|yarn|pnpm)\s+publish\b/,
+    // Calling out over HTTP from a step: command-line clients, the PowerShell cmdlets, .NET clients, BITS, and code built from text.
+    /\b(?:curl|wget|Invoke-WebRequest|Invoke-RestMethod|iwr|irm|Start-BitsTransfer|Invoke-Command|Invoke-Expression|iex)\b/i,
+    /\bNet\.(?:WebClient|Http\.HttpClient|WebRequest|Sockets)\b|\b(?:WebClient|HttpClient|HttpWebRequest)\b/i,
+    // Code run from the command line instead of from a file: node -e, and any inline script that fetches or opens an HTTP connection.
+    // (node -p "require('./package.json').version", which only reads a version, is fine.)
+    /\bnode(?:\.exe)?\s+(?:-e|--eval)\b/i,
+    /\bfetch\s*\(|\brequire\(\s*['"](?:node:)?https?['"]\s*\)|\bimport\s*\(\s*['"](?:node:)?https?['"]/i,
+    /\bnpx\b|\boctokit\b/i,
+    /\b(?:npm|cargo|yarn|pnpm)\s+publish\b/,
     /\bwrangler\b/i,
   ];
+  // The same, for a script file a step runs, where a download is ordinary (the speech runtime is fetched): only what reaches GitHub's
+  // write side, or a credential, counts there.
+  const PUBLISHING_IN_SCRIPTS: RegExp[] = [
+    /(?<![\w.-])['"]?gh(?:\.exe)?['"]?\s+(?:release|api|workflow|run|pr|issue|repo|secret|auth|gist)\b/i,
+    /\bapi\.github\.com\b|\buploads\.github\.com\b/i,
+    /\bgit(?:\.exe)?['"]?\b[^\n;|&]*?\s(?:push|tag|update-ref|merge(?![\w-]))\b/i,
+    /--verify-tag|\bGITHUB_TOKEN\b|\bGH_TOKEN\b|\bsecrets\./i,
+    /\boctokit\b|\bcreateRelease\b|\bcreate_release\b/i,
+  ];
+  const publishingIn = (text: string, patterns: RegExp[] = PUBLISHING): RegExp[] => patterns.filter((pattern) => pattern.test(text));
   const ALLOWED_ACTIONS = ["actions/checkout", "actions/setup-node", "actions/setup-java", "actions/upload-artifact"];
 
   it("starts on a v* tag, a release-dryrun-* branch or a manual dispatch, and on nothing else", () => {
@@ -188,10 +236,98 @@ describe("release.yml", () => {
       }
     });
 
-    it("never sees the workflow token, and leaves no credentials in the checkout", () => {
-      for (const name of others) expect(JSON.stringify(jobs[name]), `${name} has no token`).not.toMatch(/github\.token|GITHUB_TOKEN|secrets\.GITHUB/);
+    // An allowlist, not a search for one name: a token under any other name (`GH_TOKEN: ${{ secrets.RELEASE_PAT }}` on the Windows job) is
+    // as good as the workflow's own, so a secret may be named only where it is expected, and a secret-looking variable only there too.
+    it("keeps the workflow token and every secret where they belong, whatever they are called", () => {
+      const androidSecrets = ["ANDROID_KEYSTORE_BASE64", "GOOGLE_SERVICES_JSON_BASE64", "ANDROID_KEYSTORE_PASSWORD", "ANDROID_KEY_ALIAS", "ANDROID_KEY_PASSWORD"];
+      const androidSecretVariables = ["TJOMMIE_ANDROID_KEYSTORE_PASSWORD", "TJOMMIE_ANDROID_KEY_PASSWORD"];
+      const secretish = /TOKEN|SECRET|PASSWORD|PASSPHRASE|(?:^|_)PAT(?:$|_)|API_?KEY|PRIVATE_?KEY|CREDENTIAL/i;
+      const variablesOf = (job: Job): string[] => [...Object.keys(job.env ?? {}), ...(job.steps ?? []).flatMap((step) => Object.keys(step.env ?? {}))];
+      for (const name of jobNames) {
+        const text = JSON.stringify(jobs[name]);
+        const secrets = [...text.matchAll(/\bsecrets\.([A-Za-z0-9_]+)/g)].map((match) => match[1]);
+        const token = /\bgithub\.token\b|\bGITHUB_TOKEN\b|\bGH_TOKEN\b/.test(text);
+        const secretLooking = variablesOf(jobs[name]).filter((variable) => secretish.test(variable));
+        if (name === "release") {
+          expect(secrets, "release names no secret of its own").toEqual([]);
+          expect(token, "release holds the workflow token").toBe(true);
+        } else if (name === "android") {
+          for (const secret of secrets) expect(androidSecrets, `android may use secrets.${secret}`).toContain(secret);
+          expect(token, "android has no workflow token").toBe(false);
+          for (const variable of secretLooking) expect(androidSecretVariables, `android may set ${variable}`).toContain(variable);
+        } else {
+          expect(secrets, `${name} uses no secret`).toEqual([]);
+          expect(token, `${name} has no token`).toBe(false);
+          expect(secretLooking, `${name} sets no secret-looking variable`).toEqual([]);
+        }
+      }
+      // The ways to reach a secret without naming it.
+      expect(JSON.stringify(workflow)).not.toMatch(/\bsecrets\s*\[|toJSON\(\s*secrets|secrets:\s*inherit/);
       for (const { step } of everyStep()) if (step.uses?.startsWith("actions/checkout@")) expect(step.with?.["persist-credentials"]).toBe(false);
     });
+
+    // The review's F3(2): a step that runs a repository script is judged by what the script does as well as by its own text. One level of
+    // calls, plus the files of the same folder that a script names; an `npm run` is not followed (the header says what this is).
+    it("has no script, run from outside the publish job, that reaches GitHub's write side or a credential", () => {
+      const called = new Set<string>();
+      for (const { job, step } of everyStep()) if (job !== "release") for (const path of scriptsCalledBy(step.run ?? "")) called.add(path);
+      expect(called.size, "it found the scripts the steps run").toBeGreaterThan(8);
+      for (const path of called) {
+        expect(publishingIn(readFileSync(join(repo, path), "utf8"), PUBLISHING_IN_SCRIPTS).map(String), `${path} must not publish`).toEqual([]);
+      }
+    });
+
+    // What the review named, and what must stay allowed: the list is the net, and the net has to catch what it was widened for.
+    it("catches the spellings the review named, and leaves ordinary commands alone", () => {
+      const caught = [
+        "gh release create v1 --notes x",
+        "gh.exe release create v1",
+        "& 'gh' release create v1",
+        '& "gh" release create v1',
+        "Start-Process -FilePath gh.exe -ArgumentList release",
+        "git push origin HEAD",
+        "git -c user.name=x push origin HEAD",
+        "git.exe tag v9",
+        "git commit -m x",
+        "[Net.WebClient]::new().DownloadString('https://example.test')",
+        "[System.Net.Http.HttpClient]::new()",
+        "Start-BitsTransfer -Source https://example.test -Destination x",
+        `node -e "fetch('https://api.github.com/repos/x/releases', { method: 'POST' })"`,
+        "node --eval 'process.exit(0)'",
+        "npx octokit rest",
+        "Invoke-RestMethod -Method Post -Uri https://example.test",
+        "iwr https://example.test",
+        "curl -X POST https://example.test",
+        "Invoke-Expression $payload",
+        "gh release create v1 --verify-tag",
+        "cargo publish -p x",
+      ];
+      for (const text of caught) expect(publishingIn(text).length, text).toBeGreaterThan(0);
+      const allowed = [
+        `node -p "require('./package.json').version"`,
+        `git merge-base --is-ancestor "$GITHUB_SHA" origin/main`,
+        "node scripts/changelog-section.ts 0.6.0 > notes.md",
+        "cargo build --release --locked -p daemon -p desktop",
+        "npm ci",
+        "choco install nsis --version=3.11 --no-progress -y",
+        "echo through the high ghost",
+        "Get-ChildItem -Recurse",
+      ];
+      for (const text of allowed) expect(publishingIn(text).map(String), text).toEqual([]);
+      const scriptsCaught = ["gh release create v1", "Invoke-RestMethod https://api.github.com/repos/x/releases", "git push origin HEAD", "$env:GITHUB_TOKEN", "--verify-tag"];
+      for (const text of scriptsCaught) expect(publishingIn(text, PUBLISHING_IN_SCRIPTS).length, text).toBeGreaterThan(0);
+      const scriptsAllowed = ["Invoke-WebRequest https://example.test/model.bin -OutFile model.bin", "git clone https://example.test/repo.git", "git -C $source rev-parse HEAD", "git merge-base --is-ancestor a b"];
+      for (const text of scriptsAllowed) expect(publishingIn(text, PUBLISHING_IN_SCRIPTS).map(String), text).toEqual([]);
+    });
+  });
+
+  // The mutations scripts/release-workflow-mutations.ts runs against this file. Each replaces one piece of release.yml, so each has to be
+  // found exactly once: a mutation that matches nothing tests nothing, and "caught" would then mean nothing.
+  it("has a mutation script that has not gone stale", () => {
+    // LF, as the mutations are written: a Windows checkout may have CRLF.
+    const text = readFileSync(join(workflowDir, "release.yml"), "utf8").replaceAll("\r\n", "\n");
+    expect(mutations.length).toBeGreaterThanOrEqual(29);
+    for (const { label, from } of mutations) expect(text.split(from).length - 1, `"${label}": its text is found once in release.yml`).toBe(1);
   });
 
   // GitHub's own rules, applied by hand: a job runs when it has an `if` that holds and every job it needs ran; a step runs when its `if` holds.
@@ -252,12 +388,12 @@ describe("release.yml", () => {
       ["an event nobody listed", "schedule", "refs/heads/main"],
     ];
 
-    it.each(dryRuns)("%s builds and checks, publishes nothing, and uploads only the dry-run artifact", (_label, event, ref) => {
+    it.each(dryRuns)("%s builds and checks, publishes nothing, and uploads only the dry run's own artifacts", (_label, event, ref) => {
       const context = contextFor(event, ref);
       expect(context.dryRun).toBe("true");
       const run = walk(context);
       expect(run.jobs).toEqual(["verify", "windows"]);
-      expect(uploads(run.steps)).toEqual(["release-dryrun-windows"]);
+      expect(uploads(run.steps)).toEqual(["release-dryrun-tool-hashes", "release-dryrun-windows"]);
       for (const { job, step } of run.steps) {
         for (const pattern of PUBLISHING) expect(step.run ?? "", `${job}: "${step.name ?? step.uses}" ran in a dry run and matches ${pattern}`).not.toMatch(pattern);
         if (step.uses) expect(ALLOWED_ACTIONS).toContain(step.uses.split("@")[0]);
@@ -326,6 +462,7 @@ describe("release.yml", () => {
         /check-release-version\.ts/,
         /assemble-payload\.ps1/,
         /choco install nsis --version=3\.11/,
+        /check-tool-hashes\.ps1 -Tool nsis/,
         /\.\/installer\/build-installer\.ps1/,
         /make-latest-yml\.ts/,
         /check-release-installer\.ps1/,
@@ -374,6 +511,17 @@ describe("release.yml", () => {
       expect(check).toContain("-Version $env:VERSION");
     });
 
+    // The review's F1: NSIS is fetched by version only, so what Chocolatey installed is compared with recorded SHA-256 values before it compiles.
+    it("checks NSIS against the recorded hashes before it compiles, and holds a release to them", () => {
+      const run = findStep("windows", /check-tool-hashes\.ps1/).run ?? "";
+      expect(run).toContain('-Tool nsis -Path "${env:ProgramFiles(x86)}\\NSIS"');
+      expect(run).toContain("-Observed dist-desktop\\tool-hashes-nsis.json");
+      // Anything but an exact 'true' is a release, as for the payload: a lost mode output takes the strict path, where a tool nobody pinned fails.
+      expect(run).toContain("if ($env:DRY_RUN -ne 'true') { $more['Release'] = $true }");
+      expect(run).toMatch(/check-tool-hashes\.ps1 [^\n]*@more/);
+      expect(findStep("windows", /write-release-manifest\.ps1/).run).toContain('-ToolHashes "$root\\dist-desktop\\tool-hashes-nsis.json"');
+    });
+
     it("uploads the release's files under windows-assets only for a release, and the dry run's under its own name", () => {
       const release = windows().filter((step) => step.with?.name === "windows-assets");
       const dry = windows().filter((step) => step.with?.name === "release-dryrun-windows");
@@ -382,7 +530,13 @@ describe("release.yml", () => {
       expect(release[0].if).toBe("${{ needs.verify.outputs.dry_run == 'false' }}");
       expect(dry[0].if).toBe("${{ needs.verify.outputs.dry_run == 'true' }}");
       expect(String(release[0].with?.path)).not.toContain("release-manifest.json");
-      for (const expected of ["Tjommie-Setup-*.exe", "latest.yml", "release-manifest.json"]) expect(String(dry[0].with?.path)).toContain(expected);
+      for (const expected of ["Tjommie-Setup-*.exe", "latest.yml", "release-manifest.json", "tool-hashes-nsis.json"]) expect(String(dry[0].with?.path)).toContain(expected);
+      expect(String(release[0].with?.path)).not.toContain("tool-hashes");
+      // What the NSIS check saw is kept even when the check fails (the always()), for a dry run only, under a name of its own.
+      const seen = windows().filter((step) => step.with?.name === "release-dryrun-tool-hashes");
+      expect(seen).toHaveLength(1);
+      expect(seen[0].if).toBe("${{ always() && needs.verify.outputs.dry_run == 'true' }}");
+      expect(seen[0].with).toMatchObject({ path: "dist-desktop/tool-hashes-nsis.json", "if-no-files-found": "ignore" });
       expect(dry[0].with?.["if-no-files-found"]).toBe("error");
     });
 

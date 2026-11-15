@@ -162,9 +162,12 @@ describe.skipIf(!windows)("the release manifest", () => {
     const yml = join(stub.root, "latest.yml");
     expect(spawnSync(process.execPath, [join(repo, "scripts", "make-latest-yml.ts"), "--installer", setup, "--version", "0.6.0", "--out", yml], { windowsHide: true }).status).toBe(0);
     const manifest = join(stub.root, "release-manifest.json");
+    // What check-tool-hashes.ps1 writes for NSIS (its -Observed file), which the manifest carries so it says which compiler built the installer.
+    const toolHashes = join(stub.root, "tool-hashes-nsis.json");
+    writeFileSync(toolHashes, JSON.stringify({ tool: "nsis", version: "3.11", status: "verified", fileCount: 1, files: { "makensis.exe": "ab".repeat(32) } }));
     const run = spawnSync(shell, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", join(installer, "write-release-manifest.ps1"),
       "-Version", "0.6.0", "-Installer", setup, "-LatestYml", yml, "-PayloadManifest", payloadManifest, "-Desktop", stub.desktop, "-Daemon", stub.daemon,
-      "-Out", manifest, "-DryRun", "true", "-Rustc", "rustc 1.97.1 (stub)", "-Nsis", "v3.11", "-VersionCheck", "warning: the desktop crate is 0.5.1, but package.json is 0.6.0"],
+      "-Out", manifest, "-DryRun", "true", "-Rustc", "rustc 1.97.1 (stub)", "-Nsis", "v3.11", "-VersionCheck", "warning: the desktop crate is 0.5.1, but package.json is 0.6.0", "-ToolHashes", toolHashes],
     { encoding: "utf8", windowsHide: true, env: { ...process.env, GITHUB_SHA: "a".repeat(40), GITHUB_REF: "refs/heads/release-dryrun-1", GITHUB_EVENT_NAME: "workflow_dispatch", GITHUB_RUN_ID: "42", ImageVersion: "20261103.298.1" } });
     expect(run.status, `${run.stdout}${run.stderr}`).toBe(0);
     const written = JSON.parse(readFileSync(manifest, "utf8")) as {
@@ -172,6 +175,7 @@ describe.skipIf(!windows)("the release manifest", () => {
       build: { identity: string; profile: string; locked: boolean; rustc: string; nsis: string };
       installer: { name: string; bytes: number; sha256: string; sha512: string }; latestYml: { name: string; sha256: string; content: string };
       binaries: { desktop: { sha256: string }; daemon: { sha256: string } }; payload: { files: Array<{ path: string }>; pending: string[] }; checks: { crateVersions: string };
+      tools: { nsis: { status: string; version: string; files: Record<string, string> } };
     };
     expect(written).toMatchObject({ schema: 1, dryRun: true, published: false, version: "0.6.0", commit: "a".repeat(40), ref: "refs/heads/release-dryrun-1", event: "workflow_dispatch", runId: "42" });
     expect(written.build).toMatchObject({ identity: "production", profile: "release", locked: true, rustc: "rustc 1.97.1 (stub)", nsis: "v3.11" });
@@ -183,6 +187,7 @@ describe.skipIf(!windows)("the release manifest", () => {
     expect(written.payload.files.map((file) => file.path)).toContain("resources\\daemon\\tjommie-daemon.exe");
     expect(written.payload.pending).toEqual(["resources\\pdfium.dll"]);
     expect(written.checks.crateVersions).toMatch(/^warning: /);
+    expect(written.tools.nsis).toMatchObject({ status: "verified", version: "3.11", files: { "makensis.exe": "ab".repeat(32) } });
     // Nothing secret goes in it, and no token or release URL.
     expect(readFileSync(manifest, "utf8")).not.toMatch(/token|secret|password|releases\/download/i);
   });
