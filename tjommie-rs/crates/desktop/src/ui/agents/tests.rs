@@ -25,6 +25,8 @@ fn a_room_card_says_nothing_while_its_posts_are_read_and_that_it_has_none_once_t
     cx: &mut TestAppContext,
 ) {
     let mut reading = state(vec![], vec![room("r1", "Growth", &["b1"])], vec![]);
+    // Someone is signed in, so Agents shows its overview, not the first run (M5 review M6).
+    reading.setup = Some(vec![signed_in_claude()]);
     reading
         .conversations
         .insert("r1".into(), conversation(ConversationStatus::Loading));
@@ -237,4 +239,44 @@ fn a_card_asks_again_for_its_history_after_a_failure_and_a_reconnect(cx: &mut Te
     draw(cx);
     assert_eq!(tries.load(Ordering::SeqCst), 3, "asked again after the reconnect");
     assert_eq!(status(cx), Some(ConversationStatus::Ready));
+}
+
+/// A signed-in Claude report (invented version and account).
+fn signed_in_claude() -> protocol::model::ProviderSetup {
+    protocol::model::ProviderSetup::Claude(protocol::model::SetupFields {
+        installed: true,
+        version: Some("2.1.280".into()),
+        signed_in: true,
+        account: Some("fixture-account".into()),
+        plan: None,
+        error: None,
+    })
+}
+
+/// M5 review M6: with no agents and nobody signed in, Agents shows the first-run setup under its header; once a
+/// provider is signed in, it's the overview.
+#[gpui::test]
+fn no_agents_and_nobody_signed_in_shows_the_first_run_setup(cx: &mut TestAppContext) {
+    let (cx, _) = app(cx, Route::Agents, state(vec![], vec![], vec![]), FakeRpc::new());
+    assert_eq!(text("setup.title"), "Set up Tjommie");
+    assert!(node("setup.claude").is_some(), "Claude Code's card");
+    assert!(node("screen.agents").is_some(), "under the Agents header");
+    assert!(node("agents.new_bot").is_none(), "in place of the overview");
+    cx.update(|_, cx| {
+        crate::ui::store::update(cx, |state| {
+            state.setup = Some(vec![signed_in_claude()]);
+            true
+        })
+    });
+    draw(cx);
+    assert!(node("setup.claude").is_none(), "signed in: the overview");
+    assert!(node("agents.new_bot").is_some(), "with its New agent tile");
+}
+
+/// Create your first agent opens New agent.
+#[gpui::test]
+fn create_your_first_agent_opens_new_agent(cx: &mut TestAppContext) {
+    let (cx, _) = app(cx, Route::Agents, state(vec![], vec![], vec![]), FakeRpc::new());
+    click(cx, "setup.create");
+    assert_eq!(cx.update(|_, cx| route::current(cx)), Route::NewBot);
 }

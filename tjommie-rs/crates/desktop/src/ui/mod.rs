@@ -10,6 +10,7 @@ pub mod projects;
 pub mod rooms;
 pub mod routines;
 pub mod settings;
+pub mod setup;
 pub mod shell;
 pub mod store;
 pub mod style;
