@@ -5,12 +5,12 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 
 use desktop_host::diagnostics::{REPORT_FILE_NAME, ReportSaver, SaveOutcome};
 use gpui::{
-    AnyElement, App, ClipboardItem, Entity, IntoElement, ParentElement as _, Role,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Window, div,
+    AnyElement, App, AsyncApp, ClipboardItem, Entity, IntoElement, ParentElement as _, Role,
+    SharedString, StatefulInteractiveElement as _, Styled as _, WeakEntity, Window, div,
 };
 use protocol::diagnostics::HostDiagnostics;
 use protocol::wire::{Empty, method};
@@ -30,8 +30,12 @@ use crate::ui::style::{TypeExt as _, hsla, palette, r, theme};
 /// This app's version: this device's, as against the host's.
 pub(super) const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// One report save at a time, for the whole app (the second would open a second dialog over the first).
-static SAVER: LazyLock<ReportSaver> = LazyLock::new(ReportSaver::default);
+/// One report save at a time, for the whole app (the second would open a second dialog over the first). It's the app's,
+/// not the process's, so view tests running side by side don't share it.
+#[derive(Default)]
+struct Saver(Arc<ReportSaver>);
+
+impl gpui::Global for Saver {}
 
 /// What a settings section knows of this device and the host (`useSystemInfo`): the host's `diagnostics.get`, read
 /// again when the PC, the connection or a refresh changes, and never shown for another PC than the one it was read for.
@@ -178,6 +182,26 @@ impl Drop for Exports {
     }
 }
 
+/// Clears the export under way when its task ends, however it ends (a panic the guard caught included), so a failed
+/// save never leaves Refresh, Copy and Save dimmed.
+struct ClearAction {
+    exports: WeakEntity<Exports>,
+    cx: AsyncApp,
+}
+
+impl Drop for ClearAction {
+    fn drop(&mut self) {
+        let exports = self.exports.clone();
+        self.cx.update(|cx| {
+            let _ = exports.update(cx, |exports, cx| {
+                if exports.action.take().is_some() {
+                    cx.notify();
+                }
+            });
+        });
+    }
+}
+
 fn save(exports: &Entity<Exports>, report: String, cx: &mut App) {
     let gone = Arc::clone(&exports.read(cx).gone);
     exports.update(cx, |exports, cx| {
@@ -191,21 +215,28 @@ fn save(exports: &Entity<Exports>, report: String, cx: &mut App) {
         .map(PathBuf::from)
         .unwrap_or_default()
         .join("Documents");
+    // The save writes on Tokio's blocking pool while its picker is GPUI's: it's polled here with the live runtime
+    // entered (M5 review C1).
+    let tokio = cx.try_global::<crate::live::Tokio>().map(|tokio| tokio.0.clone());
+    let saver = Arc::clone(&cx.default_global::<Saver>().0);
     cx.spawn(async move |cx| {
         guarded_async("save the diagnostic report", async move {
+            let _clear = ClearAction {
+                exports: exports.clone(),
+                cx: cx.clone(),
+            };
             let picker = cx.clone();
-            let outcome = SAVER
-                .save_report(
-                    &report,
-                    move || async move {
-                        let picked = picker.update(|cx| {
-                            cx.prompt_for_new_path(&directory, Some(REPORT_FILE_NAME))
-                        });
-                        picked.await.ok().and_then(Result::ok).flatten()
-                    },
-                    move || gone.load(Ordering::SeqCst),
-                )
-                .await;
+            let saving = saver.save_report(
+                &report,
+                move || async move {
+                    let picked = picker.update(|cx| {
+                        cx.prompt_for_new_path(&directory, Some(REPORT_FILE_NAME))
+                    });
+                    picked.await.ok().and_then(Result::ok).flatten()
+                },
+                move || gone.load(Ordering::SeqCst),
+            );
+            let outcome = crate::live::in_runtime(tokio, saving).await;
             let _ = cx.update(|cx| {
                 exports.update(cx, |exports, cx| {
                     exports.action = None;
@@ -541,6 +572,36 @@ mod tests {
         draw(cx);
         assert_eq!(text("settings.diagnostics.notice"), "Save cancelled.");
         assert!(node("settings.diagnostics.problem").is_none(), "no claim of success or failure");
+    }
+
+    /// M5 review C1: Save report writes the report where the picker says. Its write runs on Tokio's blocking pool, so the
+    /// app's runtime is installed here as `live::start` installs it; before the fix the save panicked with no runtime.
+    #[gpui::test]
+    fn saves_the_report_where_the_picker_says(cx: &mut TestAppContext) {
+        // The write is a real Tokio thread, so its wake-ups aren't the test scheduler's own.
+        cx.executor().allow_parking();
+        let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
+        let root = desktop_host::owner_safety::test_root().unwrap();
+        let path = root.path().join("tjommie-diagnostics.json");
+        let rpc = FakeRpc::new().on::<method::DiagnosticsGet>(|_| Ok(host("0.3.2")));
+        let (cx, _) = app(cx, Route::Settings(Section::Diagnostics), state(vec![], vec![], vec![]), rpc);
+        cx.update(|_, cx| cx.set_global(crate::live::Tokio(runtime.handle().clone())));
+        let preview = text("settings.diagnostics.preview.body");
+        click(cx, "settings.diagnostics.save");
+        let chosen = path.clone();
+        cx.simulate_new_path_selection(move |_| Some(chosen.clone()));
+        // The write finishes on the runtime's own thread: draw until its answer has come back.
+        for _ in 0..300 {
+            draw(cx);
+            if node("settings.diagnostics.notice").is_some_and(|node| node.text == "Report saved on this device.") {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(text("settings.diagnostics.notice"), "Report saved on this device.");
+        let saved: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(saved, serde_json::from_str::<Value>(&preview).unwrap());
+        assert!(node("settings.diagnostics.save").is_some(), "Save is back, not stranded");
     }
 
     /// diagnostics-section.test.tsx: "shows unknown versions and safe errors when a bridge/check is unavailable".

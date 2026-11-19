@@ -208,8 +208,27 @@ impl Shared {
         })
     }
 
-    /// Starts a new supervisor (the first, or after "Try again"), and tells the connection whatever it reports.
-    fn supervise(&self) {
+    /// Starts a new supervisor (the first, or after "Try again"), and tells the connection whatever it reports. A Try
+    /// again comes from the UI thread, which has no Tokio runtime (`Supervisor::start` spawns on one): the start runs on
+    /// the live runtime, and only after the last supervisor and its daemon have stopped, so the new daemon never races
+    /// the old one for its port.
+    fn supervise(self: &Arc<Self>) {
+        let Daemon::Supervised { supervisor, .. } = &self.daemon else {
+            return;
+        };
+        let old = locked(supervisor).take();
+        let shared = Arc::clone(self);
+        // unguarded: a tokio task, off the UI thread, where a panic ends only that task
+        self.runtime.spawn(async move {
+            if let Some(old) = old {
+                let _ = old.stop_before_quit(daemon_process::QUIT_TIMEOUT).await;
+            }
+            shared.start_supervisor();
+        });
+    }
+
+    /// The supervisor's start, and the task that follows what it reports. Runs on the live runtime.
+    fn start_supervisor(&self) {
         let Daemon::Supervised {
             launch,
             supervisor,
@@ -399,7 +418,7 @@ impl Shared {
         }
     }
 
-    fn restart_daemon(&self) {
+    fn restart_daemon(self: &Arc<Self>) {
         match &self.daemon {
             Daemon::Supervised { .. } => self.supervise(),
             Daemon::Development { .. } | Daemon::Unavailable(_) => {
@@ -509,7 +528,25 @@ pub fn start(identity: Identity, root: PathBuf, cx: &mut App) {
         live.start_connection();
     }
     crate::ui::store::connect(cx, live);
+    cx.set_global(Tokio(runtime.handle().clone()));
     cx.set_global(Runtime(Some(runtime)));
+}
+
+/// The live runtime's handle, for UI code that calls a desktop-host function which spawns on Tokio while it also
+/// awaits the UI (Diagnostics' Save report: its write runs on `spawn_blocking`, its picker on GPUI). See [`in_runtime`].
+pub struct Tokio(pub tokio::runtime::Handle);
+
+impl gpui::Global for Tokio {}
+
+/// Polls `future` with the live runtime entered, so what it spawns on Tokio finds a runtime, while it stays on the
+/// thread that polls it (the UI's, for a future that awaits the UI). With no runtime it polls the future as it is.
+pub async fn in_runtime<T>(handle: Option<tokio::runtime::Handle>, future: impl Future<Output = T>) -> T {
+    let mut future = std::pin::pin!(future);
+    std::future::poll_fn(|cx| {
+        let _context = handle.as_ref().map(tokio::runtime::Handle::enter);
+        future.as_mut().poll(cx)
+    })
+    .await
 }
 
 /// This run's data root (`main`'s, checked with `owner_safety`): where an agent's notes.md lives (`<root>/bots`).

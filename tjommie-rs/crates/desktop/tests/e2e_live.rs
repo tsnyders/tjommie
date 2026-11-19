@@ -74,4 +74,21 @@ fn e2e_live_without_a_daemon_still_opens_and_says_why() {
             .any(|text| text.contains("names a daemon that is not there")),
         "the reason: {said:?}"
     );
+
+    // Try again starts the service again from the UI thread (M5 review C1). It fails the same way and says so, with no
+    // crash notice and no endless "Starting Tjommie".
+    app.click("connection.retry").unwrap();
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    app.wait(
+        "connection.title",
+        Predicate::Text("Tjommie's background service didn't start".into()),
+        30_000,
+    )
+    .unwrap();
+    let after = app.snapshot().unwrap();
+    assert!(after.node("connection.retry").is_some(), "Try again, again");
+    assert!(
+        after.nodes.iter().all(|node| !node.text.contains("Something went wrong")),
+        "no crash notice"
+    );
 }
