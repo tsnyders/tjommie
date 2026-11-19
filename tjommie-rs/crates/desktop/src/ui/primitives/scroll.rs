@@ -2,14 +2,15 @@
 //! the keyboard-only exit criterion). A scroll area (`follow_focus`) puts its scroll handle on a stack while its contents
 //! prepaint, and the focus ring, which shows only for keyboard focus, scrolls the nearest area just enough to show its
 //! control with a little room, as a browser's `scrollIntoView({ block: "nearest" })` does. A mouse focus draws no ring,
-//! so it never scrolls anything.
+//! so it never scrolls anything. It scrolls once per focus change: a wheel or trackpad that then scrolls away from the
+//! control isn't undone (the ring stays, since a wheel doesn't change the input modality).
 
 use std::cell::RefCell;
 use std::panic::Location;
 
 use gpui::{
-    AnyElement, App, Bounds, Element, ElementId, GlobalElementId, InspectorElementId, IntoElement, LayoutId, Pixels,
-    ScrollHandle, SharedString, Styled as _, Window, canvas, point, px,
+    AnyElement, App, Bounds, Element, ElementId, Global, GlobalElementId, InspectorElementId, IntoElement, LayoutId,
+    Pixels, ScrollHandle, SharedString, Styled as _, WeakFocusHandle, Window, canvas, point, px,
 };
 
 thread_local! {
@@ -19,6 +20,12 @@ thread_local! {
 
 /// The room left between a revealed control and its area's edge, in px.
 const ROOM: f32 = 16.;
+
+/// The focus the last reveal was for (M5 review M1).
+#[derive(Default)]
+struct Revealed(Option<WeakFocusHandle>);
+
+impl Global for Revealed {}
 
 /// A scroll handle kept across renders under `id`, for a scroll area.
 pub fn scroll_handle(id: &str, window: &mut Window, cx: &mut App) -> ScrollHandle {
@@ -103,15 +110,24 @@ impl Element for Scroller {
 
 /// Laid over a focus ring: scrolls the nearest scroll area so the ring shows.
 pub(crate) fn reveal() -> impl IntoElement {
-    canvas(|bounds, window, _| keep_in_view(bounds, window), |_, _, _, _| {})
+    canvas(keep_in_view, |_, _, _, _| {})
         .absolute()
         .top_0()
         .left_0()
         .size_full()
 }
 
-/// Scrolls the nearest scroll area so `bounds` show with a little room. One taller than the view shows its top.
-fn keep_in_view(bounds: Bounds<Pixels>, window: &mut Window) {
+/// Scrolls the nearest scroll area so `bounds` show with a little room, once for each focus. One taller than the view
+/// shows its top.
+fn keep_in_view(bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App) {
+    let Some(focused) = window.focused(cx) else {
+        return;
+    };
+    let revealed = &mut cx.default_global::<Revealed>().0;
+    if revealed.as_ref().is_some_and(|last| *last == focused) {
+        return;
+    }
+    *revealed = Some(focused.downgrade());
     let Some(area) = AREAS.with(|areas| areas.borrow().last().cloned()) else {
         return;
     };
@@ -134,5 +150,7 @@ fn keep_in_view(bounds: Bounds<Pixels>, window: &mut Window) {
     }
     let offset = area.offset();
     area.set_offset(point(offset.x, offset.y + shift));
-    window.refresh();
+    // This frame has placed the area's contents already, and `refresh` does nothing while drawing: the scroll shows on
+    // the next frame, asked for here.
+    window.request_animation_frame();
 }

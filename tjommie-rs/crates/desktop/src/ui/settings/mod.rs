@@ -261,7 +261,7 @@ pub(crate) fn heading(text: &'static str, cx: &App) -> Div {
 mod tests {
     use crate::model::testing::FakeRpc;
     use crate::ui::shell::route::{self, Route, Section};
-    use crate::ui::testing::{app, click, draw, ids, node, state};
+    use crate::ui::testing::{app, click, draw, ids, next_frame, node, state};
 
     /// The chat's setup banner links to one account (`?section=accounts&account=…&action=signin`).
     #[gpui::test]
@@ -314,9 +314,10 @@ mod tests {
         assert!(!below.is_empty(), "Appearance reaches below the fold at this height");
         let mut reached = Vec::new();
         for _ in 0..80 {
+            // One draw for the key, then only the frame the app asks for (M5 review M1): no other event prompts it.
             cx.simulate_keystrokes("tab");
             draw(cx);
-            draw(cx);
+            next_frame(cx);
             let Some(now) = crate::test_driver::nodes().into_iter().find(|node| node.focused) else {
                 continue;
             };
@@ -327,5 +328,41 @@ mod tests {
             }
         }
         assert!(below.iter().any(|id| reached.contains(id)), "Tab reached one that started below: {below:?}, {reached:?}");
+    }
+
+    /// M5 review M1: a control is brought into view once per focus. A wheel that then scrolls away from it (a wheel
+    /// leaves the keyboard modality, so the ring stays) isn't undone on the frames after.
+    #[gpui::test]
+    fn a_wheel_after_tab_is_not_undone(cx: &mut gpui::TestAppContext) {
+        let (cx, _) = app(cx, Route::Settings(Section::Appearance), state(vec![], vec![], vec![]), FakeRpc::new());
+        let height = 240.;
+        cx.simulate_resize(gpui::size(gpui::px(960.), gpui::px(height)));
+        draw(cx);
+        let focused = || crate::test_driver::nodes().into_iter().find(|node| node.focused);
+        // Tab until the focus has scrolled the page: the focused control is then near the bottom of the view.
+        let mut revealed = None;
+        for _ in 0..80 {
+            cx.simulate_keystrokes("tab");
+            draw(cx);
+            if next_frame(cx) {
+                revealed = focused();
+                break;
+            }
+        }
+        let revealed = revealed.expect("a Tab scrolled the page");
+        // The wheel scrolls back up: the content, and the control with it, move down.
+        cx.simulate_event(gpui::ScrollEvent {
+            position: gpui::point(gpui::px(700.), gpui::px(120.)),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.), gpui::px(120.))),
+            ..Default::default()
+        });
+        draw(cx);
+        let wheeled = focused().expect("the focus stays");
+        assert_eq!(wheeled.id, revealed.id);
+        assert!(wheeled.bounds.y > revealed.bounds.y, "the wheel scrolled: {:?} then {:?}", revealed.bounds, wheeled.bounds);
+        // Nothing asks for a frame to undo it, and a later frame leaves it where the wheel put it.
+        assert!(!next_frame(cx), "no reveal after the wheel");
+        draw(cx);
+        assert_eq!(focused().map(|node| node.bounds), Some(wheeled.bounds));
     }
 }
