@@ -89,6 +89,18 @@ pub fn init(cx: &mut App) {
     });
 }
 
+/// Whether this run is on the panel fixture (`TJOMMIE_E2E_FIXTURE=panel`), which only a test-driver build reads: the app
+/// then runs on `e2e_fixture`'s store and starts no daemon.
+#[cfg(feature = "test-driver")]
+pub fn panel_fixture() -> bool {
+    std::env::var("TJOMMIE_E2E_FIXTURE").as_deref() == Ok("panel")
+}
+
+#[cfg(not(feature = "test-driver"))]
+pub fn panel_fixture() -> bool {
+    false
+}
+
 /// An e2e run's stand-in for the store (`TJOMMIE_E2E_FIXTURE=panel`): connected, with one bot in the Recents, so the
 /// panel has a chat to open beside. Test-driver builds only.
 #[cfg(feature = "test-driver")]
@@ -97,7 +109,7 @@ pub fn e2e_fixture(cx: &mut App) {
 
     use crate::ui::shell::data::{Connection, Recent, RecentKind, ShellData};
 
-    if std::env::var("TJOMMIE_E2E_FIXTURE").as_deref() != Ok("panel") {
+    if !panel_fixture() {
         return;
     }
     let forge = Bot {

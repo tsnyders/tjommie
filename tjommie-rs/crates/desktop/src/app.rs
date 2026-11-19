@@ -50,8 +50,12 @@ pub fn run(identity: Identity, root: PathBuf, after_crash: bool, instance: Optio
             shell::set_rem(Zoom::default(), cx);
             cx.bind_keys(crate::keymap::field_tab(cx));
             cx.bind_keys(crate::keymap::bindings());
-            // The daemon and the connection (M5): until it's ready the shell says "Starting Tjommie".
-            crate::live::start(identity, root.clone(), cx);
+            // The daemon and the connection (M5): until it's ready the shell says "Starting Tjommie". A test-driver run on
+            // the panel fixture keeps the fixture's store (`ui::browser::e2e_fixture`) until the host-wiring batch
+            // gives the panel its live path.
+            if !crate::ui::browser::panel_fixture() {
+                crate::live::start(identity, root.clone(), cx);
+            }
             if after_crash {
                 notices::raise(Notice::ClosedUnexpectedly);
             }

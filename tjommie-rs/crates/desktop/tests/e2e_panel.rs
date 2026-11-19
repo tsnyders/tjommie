@@ -2,7 +2,9 @@
 //! Ctrl+B, Escape and its Hide button. Run with the e2e identity:
 //! `TJOMMIE_IDENTITY=e2e cargo test -p desktop --features test-driver --test e2e_panel --locked`.
 //! The store isn't wired yet (T1.4), so the app runs on its e2e fixture: connected, with one bot, whose browser is off
-//! (no WebView2 in the run: this is the panel's state only).
+//! (no WebView2 in the run: this is the panel's state only). Under `TJOMMIE_E2E_FIXTURE=panel` the app starts no daemon
+//! and keeps that fixture's store (M5 started the live store at launch, which replaced the fixture's bot).
+//! TODO(host wiring): when `BrowserData.bots` and the panel's feed are wired, this test moves to the live path.
 #![cfg(feature = "test-driver")]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
