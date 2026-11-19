@@ -308,23 +308,16 @@ pub(super) fn section(window: &mut Window, cx: &mut App) -> AnyElement {
             "settings.diagnostics.refresh",
             if loading { "Checking…" } else { "Refresh checks" },
         );
-        let pill = if loading || action.is_some() {
-            pill
-        } else {
-            pill.on_press(move |_, cx| {
-                exports.update(cx, |exports, cx| {
-                    exports.notice = None;
-                    cx.notify();
-                });
-                info.update(cx, |info, cx| {
-                    info.revision += 1;
-                    cx.notify();
-                });
-            })
-        };
-        div()
-            .opacity(if loading || action.is_some() { 0.38 } else { 1.0 })
-            .child(pill)
+        pill.disabled(loading || action.is_some()).on_press(move |_, cx| {
+            exports.update(cx, |exports, cx| {
+                exports.notice = None;
+                cx.notify();
+            });
+            info.update(cx, |info, cx| {
+                info.revision += 1;
+                cx.notify();
+            });
+        })
     };
     let copy = {
         let (exports, report) = (exports.clone(), report.clone());
@@ -332,19 +325,14 @@ pub(super) fn section(window: &mut Window, cx: &mut App) -> AnyElement {
             "settings.diagnostics.copy",
             if action == Some(Export::Copy) { "Copying…" } else { "Copy report" },
         );
-        let pill = if action.is_some() {
-            pill
-        } else {
-            pill.on_press(move |_, cx| {
-                cx.write_to_clipboard(ClipboardItem::new_string(report.clone()));
-                exports.update(cx, |exports, cx| {
-                    exports.problem = None;
-                    exports.notice = Some("Report copied.".into());
-                    cx.notify();
-                });
-            })
-        };
-        div().opacity(if action.is_some() { 0.38 } else { 1.0 }).child(pill)
+        pill.disabled(action.is_some()).on_press(move |_, cx| {
+            cx.write_to_clipboard(ClipboardItem::new_string(report.clone()));
+            exports.update(cx, |exports, cx| {
+                exports.problem = None;
+                exports.notice = Some("Report copied.".into());
+                cx.notify();
+            });
+        })
     };
     let saving = {
         let (exports, report) = (exports.clone(), report.clone());
@@ -352,12 +340,8 @@ pub(super) fn section(window: &mut Window, cx: &mut App) -> AnyElement {
             "settings.diagnostics.save",
             if action == Some(Export::Save) { "Saving…" } else { "Save report" },
         );
-        let pill = if action.is_some() {
-            pill
-        } else {
-            pill.on_press(move |_, cx| save(&exports, report.clone(), cx))
-        };
-        div().opacity(if action.is_some() { 0.38 } else { 1.0 }).child(pill)
+        pill.disabled(action.is_some())
+            .on_press(move |_, cx| save(&exports, report.clone(), cx))
     };
     super::frame(
         "diagnostics",

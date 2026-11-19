@@ -14,7 +14,7 @@ use gpui::{
 use super::focus_handle;
 use crate::guard::guarded;
 use crate::keymap::{self, Press};
-use crate::semantic::{Semantic, SemanticExt as _};
+use crate::semantic::{Semantic, SemanticDisabled as _, SemanticExt as _};
 use crate::ui::style::{TypeExt as _, focus_ring, focus_visible, hsla, palette, r, shadows, theme};
 
 pub(crate) type Handler = Rc<dyn Fn(&mut Window, &mut App)>;
@@ -40,6 +40,7 @@ pub struct Pill {
     variant: PillVariant,
     small: bool,
     tight: bool,
+    disabled: bool,
     on_press: Option<Handler>,
 }
 
@@ -52,8 +53,17 @@ impl Pill {
             variant: PillVariant::Grey,
             small: false,
             tight: false,
+            disabled: false,
             on_press: None,
         }
+    }
+
+    /// Unavailable now (M5 review M2): dimmed, not pressable and not a Tab stop, and said so (", unavailable" in its
+    /// name until gpui's accessibility tree has a disabled state). A focused one keeps the focus, so Tab goes on from
+    /// where it was.
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
     }
 
     pub fn variant(mut self, variant: PillVariant) -> Self {
@@ -86,7 +96,7 @@ impl Pill {
 
 impl RenderOnce for Pill {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let focus = focus_handle(&self.id, window, cx);
+        let focus = focus_handle(&self.id, window, cx).tab_stop(!self.disabled);
         let ring = focus_visible(&focus, window);
         let theme = theme(cx);
         let colors = palette(cx);
@@ -115,9 +125,16 @@ impl RenderOnce for Pill {
         } else {
             (theme.size.control_desktop, theme.space.s20)
         };
+        let hover = if self.disabled { fill } else { hover };
+        let name: SharedString = if self.disabled {
+            format!("{}, unavailable", self.label).into()
+        } else {
+            self.label.clone()
+        };
         let pill = div()
             .semantic(self.id.clone(), Role::Button)
-            .aria_label(self.label.clone())
+            .aria_label(name)
+            .semantic_disabled(self.disabled)
             .track_focus(&focus)
             .h(r(height))
             .px(r(pad))
@@ -141,6 +158,9 @@ impl RenderOnce for Pill {
             })
             .child(self.label)
             .when(ring, |pill| pill.child(focus_ring(theme.radius.pill, cx)));
+        if self.disabled {
+            return base(pill, self.id).opacity(0.38).cursor_default();
+        }
         pressable(base(pill, self.id), self.on_press)
     }
 }
@@ -164,6 +184,7 @@ pub struct IconButton {
     icon: &'static str,
     label: SharedString,
     variant: IconVariant,
+    disabled: bool,
     on_press: Option<Handler>,
 }
 
@@ -178,12 +199,19 @@ impl IconButton {
             icon,
             label: label.into(),
             variant: IconVariant::Plain,
+            disabled: false,
             on_press: None,
         }
     }
 
     pub fn variant(mut self, variant: IconVariant) -> Self {
         self.variant = variant;
+        self
+    }
+
+    /// Unavailable now, as [`Pill::disabled`].
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
         self
     }
 
@@ -195,7 +223,7 @@ impl IconButton {
 
 impl RenderOnce for IconButton {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let focus = focus_handle(&self.id, window, cx);
+        let focus = focus_handle(&self.id, window, cx).tab_stop(!self.disabled);
         let ring = focus_visible(&focus, window);
         let theme = theme(cx);
         let colors = palette(cx);
@@ -211,9 +239,16 @@ impl RenderOnce for IconButton {
             IconVariant::OnDark => (clear, colors.ink.hover, colors.on.primary),
         };
         let size = theme.size.icon_button;
+        let hover = if self.disabled { fill } else { hover };
+        let name: SharedString = if self.disabled {
+            format!("{}, unavailable", self.label).into()
+        } else {
+            self.label
+        };
         let button = div()
             .semantic(self.id.clone(), Role::Button)
-            .aria_label(self.label)
+            .aria_label(name)
+            .semantic_disabled(self.disabled)
             .track_focus(&focus)
             .size(r(size))
             .flex_none()
@@ -227,6 +262,9 @@ impl RenderOnce for IconButton {
             .when(ring, |button| {
                 button.child(focus_ring(theme.radius.pill, cx))
             });
+        if self.disabled {
+            return base(button, self.id).opacity(0.38).cursor_default();
+        }
         pressable(base(button, self.id), self.on_press)
     }
 }
@@ -277,4 +315,42 @@ pub(crate) fn pressable(
         .on_action(move |_: &Press, window, cx| {
             guarded("press a button by key", || on_key(window, cx));
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use gpui::{IntoElement as _, ParentElement as _, div};
+
+    use super::Pill;
+    use crate::ui::testing::{click, draw, node};
+
+    /// M5 review M2: an unavailable pill is no Tab stop, says so, and does nothing when pressed.
+    #[gpui::test]
+    fn an_unavailable_pill_is_skipped_by_tab_and_says_so(cx: &mut gpui::TestAppContext) {
+        let pressed = Rc::new(Cell::new(0));
+        let counted = pressed.clone();
+        let cx = crate::ui::primitives::keyboard_window(cx, move |_, _| {
+            let (off, on) = (counted.clone(), counted.clone());
+            div()
+                .child(Pill::new("test.off", "Save").disabled(true).on_press(move |_, _| off.set(off.get() + 1)))
+                .child(Pill::new("test.on", "Cancel").on_press(move |_, _| on.set(on.get() + 10)))
+                .into_any_element()
+        });
+        draw(cx);
+        let off = node("test.off").unwrap();
+        assert!(!off.enabled, "the snapshot reads it unavailable");
+        assert_eq!(off.text, "Save, unavailable");
+        assert!(node("test.on").unwrap().enabled);
+        for _ in 0..2 {
+            cx.simulate_keystrokes("tab");
+            draw(cx);
+            assert!(node("test.on").unwrap().focused, "Tab goes to the available pill only");
+            assert!(!node("test.off").unwrap().focused);
+        }
+        click(cx, "test.off");
+        assert_eq!(pressed.get(), 0, "pressing it does nothing");
+    }
 }

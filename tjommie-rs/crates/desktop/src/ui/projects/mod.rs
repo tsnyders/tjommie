@@ -331,7 +331,7 @@ impl ProjectsScreen {
     }
 }
 
-/// A pill that does nothing, dimmed, while `enabled` is false.
+/// A pill that is unavailable while `enabled` is false.
 fn pill(
     id: impl Into<SharedString>,
     label: impl Into<SharedString>,
@@ -339,17 +339,13 @@ fn pill(
     enabled: bool,
     on_press: impl Fn(&mut Window, &mut App) + 'static,
 ) -> AnyElement {
-    let pill = Pill::new(id, label).small();
+    let pill = Pill::new(id, label).small().disabled(!enabled).on_press(on_press);
     let pill = if primary {
         pill.variant(PillVariant::Primary)
     } else {
         pill
     };
-    let pill = if enabled { pill.on_press(on_press) } else { pill };
-    div()
-        .opacity(if enabled { 1.0 } else { 0.38 })
-        .child(pill)
-        .into_any_element()
+    pill.into_any_element()
 }
 
 /// A short line of secondary text, read by tests as `id`.

@@ -39,6 +39,26 @@ impl<E> SemanticFocus for E {
     }
 }
 
+/// A control that can't be used now: the snapshot reports it disabled. gpui's accessibility tree has no disabled state
+/// yet, so the control also says ", unavailable" in its name for Windows. Without the test driver it does nothing.
+pub trait SemanticDisabled: Sized {
+    fn semantic_disabled(self, disabled: bool) -> Self;
+}
+
+#[cfg(any(test, feature = "test-driver"))]
+impl<E> SemanticDisabled for crate::test_driver::Observed<E> {
+    fn semantic_disabled(self, disabled: bool) -> Self {
+        self.with_disabled(disabled)
+    }
+}
+
+#[cfg(not(any(test, feature = "test-driver")))]
+impl<E> SemanticDisabled for E {
+    fn semantic_disabled(self, _disabled: bool) -> Self {
+        self
+    }
+}
+
 impl<E: InteractiveElement + Element> SemanticExt for E {
     fn semantic(self, id: impl Into<SharedString>, role: Role) -> Semantic<Stateful<E>> {
         let id: SharedString = id.into();

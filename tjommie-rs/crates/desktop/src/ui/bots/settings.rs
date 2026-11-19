@@ -254,9 +254,10 @@ impl Render for BotSettings {
         let save = {
             let (screen, id, patch, chat) =
                 (screen.clone(), bot.id.clone(), patch.clone(), chat.clone());
-            let pill = Pill::new("bot_settings.save", "Save changes").variant(PillVariant::Primary);
-            let pill = if can_save {
-                pill.on_press(move |_, cx| {
+            Pill::new("bot_settings.save", "Save changes")
+                .variant(PillVariant::Primary)
+                .disabled(!can_save)
+                .on_press(move |_, cx| {
                     let call = store::request::<method::BotsUpdate>(
                         cx,
                         BotsUpdate {
@@ -267,10 +268,6 @@ impl Render for BotSettings {
                     let chat = chat.clone();
                     run(&screen, call, move |cx| cx.navigate(chat), cx);
                 })
-            } else {
-                pill
-            };
-            div().opacity(if can_save { 1.0 } else { 0.38 }).child(pill)
         };
         let failed = self
             .problem

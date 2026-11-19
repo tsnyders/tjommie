@@ -161,7 +161,7 @@ fn picker(
     pick: fn(&mut VoiceChoice, String),
 ) -> AnyElement {
     if choices.is_empty() {
-        return div().opacity(0.38).child(Pill::new(id, label).small()).into_any_element();
+        return Pill::new(id, label).small().disabled(true).into_any_element();
     }
     choices
         .into_iter()
@@ -236,10 +236,12 @@ pub(super) fn section(window: &mut Window, cx: &mut App) -> AnyElement {
     }
 
     let action = |id: &'static str, label: &'static str, enabled: bool, what: Action| {
-        let pill = Pill::new(id, label).small();
         let state = state.clone();
-        let pill = if enabled { pill.on_press(move |_, cx| run(&state, what, cx)) } else { pill };
-        div().opacity(if enabled { 1.0 } else { 0.38 }).child(pill).into_any_element()
+        Pill::new(id, label)
+            .small()
+            .disabled(!enabled)
+            .on_press(move |_, cx| run(&state, what, cx))
+            .into_any_element()
     };
     let mut buttons = vec![action(
         "settings.voice.refresh",

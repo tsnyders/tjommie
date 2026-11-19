@@ -22,7 +22,7 @@ use protocol::vault::{
 use super::accounts::pill;
 use crate::guard::{guarded, guarded_async};
 use crate::model::logins::{LOGINS_PROBLEM, LoginsError, VaultReply};
-use crate::semantic::SemanticExt as _;
+use crate::semantic::{SemanticDisabled as _, SemanticExt as _};
 use crate::ui::fields::problem;
 use crate::ui::logins::{self, AppLogins};
 use crate::ui::primitives::avatar::BotAvatar;
@@ -223,7 +223,8 @@ fn agent_trigger(open: bool, chosen: Option<&Bot>, focus: Option<&FocusHandle>, 
     let ring = focus.is_some_and(|focus| focus_visible(focus, window));
     let trigger = div()
         .semantic("settings.logins.agent", Role::Button)
-        .aria_label("Agent for new login")
+        .aria_label(if focus.is_some() { "Agent for new login" } else { "Agent for new login, unavailable" })
+        .semantic_disabled(focus.is_none())
         .aria_expanded(open)
         .relative()
         .min_w_0()

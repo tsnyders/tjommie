@@ -412,15 +412,11 @@ struct CardData<'a> {
     more: Option<FocusHandle>,
 }
 
-/// A card's button: a pill, off (dimmed, no handler) while it can't be pressed.
+/// A card's button: a pill, unavailable while it can't be pressed.
 pub(super) fn pill(id: String, text: &'static str, primary: bool, enabled: bool, on_press: impl Fn(&mut Window, &mut App) + 'static) -> AnyElement {
-    let pill = Pill::new(id, text);
+    let pill = Pill::new(id, text).disabled(!enabled).on_press(on_press);
     let pill = if primary { pill.variant(PillVariant::Primary) } else { pill };
-    if enabled {
-        pill.on_press(on_press).into_any_element()
-    } else {
-        div().opacity(0.38).child(pill).into_any_element()
-    }
+    pill.into_any_element()
 }
 
 /// The button for what fixes the status line (`act`). Sign in and Try again share `signin`, as only one shows at a time.

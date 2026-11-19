@@ -158,12 +158,11 @@ fn cap_field(cap: &Entity<InputState>, below: Option<String>, cx: &App) -> AnyEl
 /// Cancel and the form's own button, off until the form can go (`Form`'s buttons).
 fn buttons(submit: &'static str, danger: bool, ready: bool, on_submit: impl Fn(&mut Window, &mut App) + 'static, cx: &App) -> AnyElement {
     let theme = theme(cx);
-    let pill = Pill::new("account_form.save", submit).variant(if danger { PillVariant::Danger } else { PillVariant::Primary });
-    let pill = if ready {
-        pill.on_press(on_submit).into_any_element()
-    } else {
-        div().opacity(0.38).child(pill).into_any_element()
-    };
+    let pill = Pill::new("account_form.save", submit)
+        .variant(if danger { PillVariant::Danger } else { PillVariant::Primary })
+        .disabled(!ready)
+        .on_press(on_submit)
+        .into_any_element();
     div()
         .mt(r(theme.space.s20))
         .flex()

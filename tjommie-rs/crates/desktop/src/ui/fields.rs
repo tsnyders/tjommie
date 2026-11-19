@@ -510,13 +510,12 @@ impl RenderOnce for Stepper {
                 icon,
                 format!("{label}: {}", self.label),
             )
-            .variant(crate::ui::primitives::button::IconVariant::Grey);
+            .variant(crate::ui::primitives::button::IconVariant::Grey)
+            .disabled(next.is_none());
             if let (Some(next), Some(on_change)) = (next, self.on_change.clone()) {
                 button = button.on_press(move |window, cx| on_change(next, window, cx));
             }
-            div()
-                .opacity(if next.is_some() { 1.0 } else { 0.38 })
-                .child(button)
+            button
         };
         let less = (self.value > self.min).then(|| self.value.saturating_sub(1));
         let more = (self.value < self.max).then(|| self.value.saturating_add(1));

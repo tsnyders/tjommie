@@ -70,11 +70,7 @@ pub(super) fn section(window: &mut Window, cx: &mut App) -> AnyElement {
                 SettingsRow::new("Temporary file data")
                     .description(TEMPORARY)
                     // Off: there is no file session to clear yet.
-                    .control(
-                        div()
-                            .opacity(0.38)
-                            .child(Pill::new("settings.files.clear", "Clear temporary data").small()),
-                    )
+                    .control(Pill::new("settings.files.clear", "Clear temporary data").small().disabled(true))
                     .ruled(),
             ),
     )

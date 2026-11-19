@@ -165,9 +165,16 @@ fn sweep_in(app: &mut Client, place: &str, prefixes: &[&str]) {
         })
         // The window's caption buttons are Windows' own (Alt+Space, Win+arrows).
         .filter(|node| !node.id.starts_with("caption."))
+        // A control that's unavailable now is no Tab stop (M5 review M2).
+        .filter(|node| node.enabled)
         .map(|node| node.id.clone())
         .collect();
     assert!(missed.is_empty(), "{place}: no Tab reaches {missed:?} (it reached {seen:?})");
+    let unavailable: Vec<&String> = seen
+        .iter()
+        .filter(|id| snapshot.node(id).is_some_and(|node| !node.enabled))
+        .collect();
+    assert!(unavailable.is_empty(), "{place}: Tab stops on unavailable {unavailable:?}");
 }
 
 #[test]

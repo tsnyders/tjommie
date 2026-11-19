@@ -380,6 +380,7 @@ pub struct Observed<E> {
     inner: E,
     id: SharedString,
     focus: Option<FocusHandle>,
+    disabled: bool,
 }
 
 impl<E> Observed<E> {
@@ -388,7 +389,14 @@ impl<E> Observed<E> {
             inner,
             id,
             focus: None,
+            disabled: false,
         }
+    }
+
+    /// The snapshot reports the element disabled (`SemanticDisabled`), as gpui's accessibility tree can't yet.
+    pub fn with_disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
     }
 
     /// The snapshot reads `focus` as this element's, without the element tracking it (`SemanticFocus`).
@@ -445,7 +453,7 @@ impl<E: Element> Element for Observed<E> {
             id: self.id.to_string(),
             role: role.map(|role| format!("{role:?}")).unwrap_or_default(),
             text: node.label().or(node.value()).unwrap_or_default().to_owned(),
-            enabled: !node.is_disabled(),
+            enabled: !node.is_disabled() && !self.disabled,
             selected: node.is_selected().unwrap_or(false),
             toggled: matches!(node.toggled(), Some(gpui::Toggled::True)),
             interactive: matches!(

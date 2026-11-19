@@ -384,26 +384,24 @@ fn relay_row(saved: Option<String>, state: Option<RelayStatus>, window: &mut Win
     let changed = typed.trim() != saved.as_deref().unwrap_or("");
     let theme = theme(cx);
     let save = {
-        let pill = Pill::new("settings.devices.relay.save", "Save").variant(PillVariant::Primary).small();
-        let enabled = !busy && changed;
-        let pill = if enabled {
-            let (relay, draft) = (relay.clone(), draft.clone());
-            pill.on_press(move |_, cx| {
+        let (relay, draft) = (relay.clone(), draft.clone());
+        Pill::new("settings.devices.relay.save", "Save")
+            .variant(PillVariant::Primary)
+            .small()
+            .disabled(busy || !changed)
+            .on_press(move |_, cx| {
                 let typed = draft.read(cx).value().to_string();
                 save_relay(&relay, typed, cx)
             })
-        } else {
-            pill
-        };
-        div().opacity(if enabled { 1.0 } else { 0.38 }).child(pill)
     };
     let public = DEFAULT_RELAY_URL
         .filter(|public| saved.as_deref() != Some(*public))
         .map(|public| {
             let relay = relay.clone();
-            let pill = Pill::new("settings.devices.relay.public", "Use the public relay").small();
-            let pill = if busy { pill } else { pill.on_press(move |_, cx| save_relay(&relay, public.to_owned(), cx)) };
-            div().opacity(if busy { 0.38 } else { 1.0 }).child(pill)
+            Pill::new("settings.devices.relay.public", "Use the public relay")
+                .small()
+                .disabled(busy)
+                .on_press(move |_, cx| save_relay(&relay, public.to_owned(), cx))
         });
     let line = state.map(|relay| value("settings.devices.relay.state", relay_line(&relay), cx));
     super::card(cx)
@@ -478,14 +476,11 @@ fn open_rename(device: Device, devices: Entity<Devices>, window: &mut Window, cx
         let failed = state.problem.clone();
         let theme = theme(cx);
         let save = {
-            let pill = Pill::new("device_form.save", "Save").variant(PillVariant::Primary);
-            let pill = if ready {
-                let (form, devices) = (form.clone(), devices.clone());
-                pill.on_press(move |_, cx| rename(&form, &devices, handle, cx))
-            } else {
-                pill
-            };
-            div().opacity(if ready { 1.0 } else { 0.38 }).child(pill)
+            let (form, devices) = (form.clone(), devices.clone());
+            Pill::new("device_form.save", "Save")
+                .variant(PillVariant::Primary)
+                .disabled(!ready)
+                .on_press(move |_, cx| rename(&form, &devices, handle, cx))
         };
         dialog
             .w(window.rem_size() * 20.0)
@@ -578,14 +573,11 @@ fn open_revoke(device: Device, devices: Entity<Devices>, window: &mut Window, cx
         let (busy, failed) = (state.busy, state.problem.clone());
         let theme = theme(cx);
         let revoke = {
-            let pill = Pill::new("dialog.confirm", if busy { "Revoking…" } else { "Revoke" }).variant(PillVariant::Danger);
-            let pill = if busy {
-                pill
-            } else {
-                let (form, devices, id) = (form.clone(), devices.clone(), device.id.clone());
-                pill.on_press(move |_, cx| revoke(&form, &devices, id.clone(), handle, cx))
-            };
-            div().opacity(if busy { 0.38 } else { 1.0 }).child(pill)
+            let (form, devices, id) = (form.clone(), devices.clone(), device.id.clone());
+            Pill::new("dialog.confirm", if busy { "Revoking…" } else { "Revoke" })
+                .variant(PillVariant::Danger)
+                .disabled(busy)
+                .on_press(move |_, cx| revoke(&form, &devices, id.clone(), handle, cx))
         };
         dialog
             .w(window.rem_size() * 20.0)
@@ -839,14 +831,10 @@ fn open_pair(window: &mut Window, cx: &mut App) {
                         if expired { "Make a new code" } else { "Show pairing code" },
                     )
                     .variant(PillVariant::Primary)
-                    .small();
-                    let pill = if busy {
-                        pill
-                    } else {
-                        let pairing = pairing.clone();
-                        pill.on_press(move |_, cx| show_code(&pairing, cx))
-                    };
-                    div().opacity(if busy { 0.38 } else { 1.0 }).child(pill)
+                    .small()
+                    .disabled(busy);
+                    let pairing = pairing.clone();
+                    pill.on_press(move |_, cx| show_code(&pairing, cx))
                 };
                 div()
                     .flex()

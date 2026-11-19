@@ -269,13 +269,10 @@ impl Render for NewBot {
                     Pill::new("new_bot.cancel", "Cancel")
                         .on_press(|_, cx| cx.navigate(Route::Agents))
                         .into_any_element(),
-                    div()
-                        .opacity(if self.busy { 0.38 } else { 1.0 })
-                        .child(
-                            Pill::new("new_bot.create", "Create agent")
-                                .variant(PillVariant::Primary)
-                                .on_press(move |_, cx| create(&creating, cx)),
-                        )
+                    Pill::new("new_bot.create", "Create agent")
+                        .variant(PillVariant::Primary)
+                        .disabled(self.busy)
+                        .on_press(move |_, cx| create(&creating, cx))
                         .into_any_element(),
                 ]
             }

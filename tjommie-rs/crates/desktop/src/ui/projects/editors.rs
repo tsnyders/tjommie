@@ -21,7 +21,7 @@ use super::ProjectsScreen;
 use crate::guard::{guarded, guarded_async};
 use crate::model::connection::RequestError;
 use crate::model::labels::error_text;
-use crate::semantic::SemanticExt as _;
+use crate::semantic::{SemanticDisabled as _, SemanticExt as _};
 use crate::ui::fields::{TextArea, TextField, label, problem};
 use crate::ui::primitives::avatar::BotAvatar;
 use crate::ui::primitives::button::{Pill, PillVariant};
@@ -66,12 +66,19 @@ fn trigger(
 ) -> AnyElement {
     let theme = theme(cx);
     let colors = palette(cx);
-    let ring = focus_visible(focus, window);
+    // Unavailable as a Pill is (M5 review M2): not a Tab stop, and said so.
+    let focus = focus.clone().tab_stop(enabled);
+    let ring = focus_visible(&focus, window);
     div()
         .semantic(SharedString::from(id.to_owned()), Role::Button)
-        .aria_label(heading)
+        .aria_label(if enabled {
+            SharedString::from(heading)
+        } else {
+            SharedString::from(format!("{heading}, unavailable"))
+        })
+        .semantic_disabled(!enabled)
         .aria_expanded(open)
-        .track_focus(focus)
+        .track_focus(&focus)
         .relative()
         .h(r(44.))
         .flex()
@@ -160,14 +167,13 @@ fn footer(
     cx: &App,
 ) -> AnyElement {
     let theme = theme(cx);
-    let mut save = Pill::new(
+    let save = Pill::new(
         format!("{prefix}.save"),
         if busy { "Saving…" } else { saving },
     )
-    .variant(PillVariant::Primary);
-    if ready {
-        save = save.on_press(on_save);
-    }
+    .variant(PillVariant::Primary)
+    .disabled(!ready)
+    .on_press(on_save);
     div()
         .flex()
         .flex_col()
@@ -182,7 +188,7 @@ fn footer(
                     Pill::new(format!("{prefix}.cancel"), "Cancel")
                         .on_press(|window, cx| window.close_dialog(cx)),
                 )
-                .child(div().opacity(if ready { 1.0 } else { 0.38 }).child(save)),
+                .child(save),
         )
         .into_any_element()
 }
@@ -399,13 +405,10 @@ fn project_body(
         )
     } else {
         let registering = form.clone();
-        let pill = Pill::new("project_form.register", "Choose a repository folder");
-        let pill = if busy {
-            pill
-        } else {
-            pill.on_press(move |_, cx| register_repository(&registering, cx))
-        };
-        div().opacity(if busy { 0.38 } else { 1.0 }).child(pill).into_any_element()
+        Pill::new("project_form.register", "Choose a repository folder")
+            .disabled(busy)
+            .on_press(move |_, cx| register_repository(&registering, cx))
+            .into_any_element()
     };
     let agents: Vec<AnyElement> = bots
         .iter()
