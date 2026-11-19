@@ -350,4 +350,14 @@ mod tests {
         // Windows never reports that chord as "=" with Shift held; it would match neither binding.
         assert!(!is_forwarded(&from_windows("=", true)));
     }
+
+    /// M5 review Minor 28: both of a text field's Tab bindings load. `field_tab` builds them from gpui-kit's action
+    /// names, so a rename there would drop one silently, and Tab would trap the keyboard in every multi-line field.
+    #[gpui::test]
+    fn field_tab_loads_both_bindings(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            assert_eq!(field_tab(cx).len(), 2, "Tab and Shift+Tab");
+        });
+    }
 }
