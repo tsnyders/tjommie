@@ -9,6 +9,8 @@
 - Settings, Accounts shows each Claude and Codex account with what to do next, its limits or spending, and what it used today and this month; a sign-in or limit link from a chat takes you to that account's button without starting anything.
 - Settings, Logins lists the selected PC's saved logins and unlocks, locks, adds, edits or deletes them through that PC's own Logins window, and says plainly when that PC's Logins can't be reached.
 - Every screen works from the keyboard alone: Tab reaches every control and scrolls it into view, the arrow keys move through lists and menus, and Enter or Space chooses.
+- Usage's day bars and nearly full limit meters are easier to see, in light and dark.
+- A long message in Settings, Voice wraps instead of squeezing its label.
 
 ## 0.5.1 — 2026-11-14
 

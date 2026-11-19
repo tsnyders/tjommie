@@ -3,7 +3,9 @@
 //! model's download, cancel and removal. The status never records audio. Android's on-device branch (native capture,
 //! SDK preparation) is the phone's.
 
-use gpui::{AnyElement, App, Entity, IntoElement, ParentElement as _, SharedString, Styled as _, Window, div};
+use gpui::{
+    AnyElement, App, Entity, IntoElement, ParentElement as _, SharedString, Styled as _, Window, div, relative,
+};
 use protocol::speech::{SpeechCapture, SpeechEngine, SpeechModelState, SpeechPermission, SpeechStatus};
 
 use super::diagnostics::value;
@@ -374,7 +376,13 @@ pub(super) fn section(window: &mut Window, cx: &mut App) -> AnyElement {
     if let Some(trouble) = status.as_ref().and_then(|status| status.problem.as_ref()) {
         card = card.child(
             SettingsRow::new("On-device status")
-                .control(value("settings.voice.status_problem", trouble.message.clone(), cx))
+                // At most 60% of the row, so a long message wraps there and the label keeps its room.
+                .control(
+                    div()
+                        .min_w_0()
+                        .max_w(relative(0.6))
+                        .child(value("settings.voice.status_problem", trouble.message.clone(), cx)),
+                )
                 .ruled(),
         );
     }

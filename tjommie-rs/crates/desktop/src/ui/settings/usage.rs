@@ -225,7 +225,8 @@ pub(super) fn meter(id: impl Into<SharedString>, label: &str, value_text: &str, 
                 .h_full()
                 .w(relative(percent.unwrap_or(0.0) as f32 / 100.0))
                 .rounded_full()
-                .bg(hsla(if near { colors.accent.base } else { colors.ink.mid })),
+                // The accent's marker, not its base: the base on the track is under 3:1 in light mode.
+                .bg(hsla(if near { colors.accent.marker } else { colors.ink.mid })),
         );
     let track = match percent {
         Some(percent) => track.aria_numeric_value(percent),
@@ -442,7 +443,8 @@ fn bars(report: &UsageReport, range: RangeKind, cx: &App) -> Option<AnyElement> 
             .flex()
             .items_end()
             .px(px(if months { 2. } else { 1. }))
-            .child(div().w_full().h(relative(height as f32 / 100.0)).rounded_t(px(3.)).bg(hsla(colors.line.soft)))
+            // The field edge's grey: quiet, and 3:1 against the card in both modes (line.soft isn't).
+            .child(div().w_full().h(relative(height as f32 / 100.0)).rounded_t(px(3.)).bg(hsla(colors.line.field)))
     });
     let last = chart.ticks.len().saturating_sub(1);
     // Each date centred under its bar, the first starting there and the last ending there, so neither leaves the card:
