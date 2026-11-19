@@ -107,7 +107,8 @@ focus ring is always visible, and that nothing feels stuck.
 - [ ] On a long screen (Settings, a project's task detail), Tab to a control below the fold: the page scrolls just
   enough to show it, with a little room, and Shift+Tab back up does the same. A mouse click never scrolls the page.
 - [ ] Dark and light (Settings, Appearance, Theme): walk the screens in each. Text, the limit meters and the usage bars
-  stay easy to read, and the focus ring shows on every surface. (The M5 report lists each colour pair's contrast.)
+  stay easy to read, and the focus ring shows on every surface. (The M5 report lists the pairs that measured short and
+  their fixes; `theme_keys` holds the danger red at 4.5:1 or more on every surface it sits on.)
 - [ ] The PC button: Enter opens the PC list on its first row; Up and Down move; Enter picks; Escape closes it and the
   focus is back on the button.
 
