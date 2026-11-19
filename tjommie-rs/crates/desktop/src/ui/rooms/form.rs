@@ -161,14 +161,13 @@ fn body(form: &Entity<RoomForm>, window: &mut Window, cx: &mut App) -> AnyElemen
     };
     let theme = theme(cx);
     let saving = form.clone();
-    let mut save_pill = Pill::new(
+    let save_pill = Pill::new(
         "room_form.save",
         if editing { "Save" } else { "Create room" },
     )
-    .variant(PillVariant::Primary);
-    if ready {
-        save_pill = save_pill.on_press(move |_, cx| save(&saving, cx));
-    }
+    .variant(PillVariant::Primary)
+    .disabled(!ready)
+    .on_press(move |_, cx| save(&saving, cx));
     div()
         .flex()
         .flex_col()
@@ -192,12 +191,8 @@ fn body(form: &Entity<RoomForm>, window: &mut Window, cx: &mut App) -> AnyElemen
                     Pill::new("room_form.cancel", "Cancel")
                         .on_press(|window, cx| window.close_dialog(cx)),
                 )
-                // Off until it can save (`.off`, 38%).
-                .child(
-                    div()
-                        .opacity(if ready { 1.0 } else { 0.38 })
-                        .child(save_pill),
-                ),
+                // Unavailable until it can save (`.off`).
+                .child(save_pill),
         )
         .into_any_element()
 }

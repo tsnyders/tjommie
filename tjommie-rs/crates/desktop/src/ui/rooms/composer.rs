@@ -429,15 +429,12 @@ impl Render for RoomComposer {
             )
             .child(div().flex_1())
             .child(
-                div()
-                    .opacity(if empty || self.busy { 0.38 } else { 1.0 })
-                    .child(
-                        IconButton::new("room.composer.send", "arrow-up", "Send")
-                            .variant(IconVariant::Dark)
-                            .on_press(move |window, cx| {
-                                sending.update(cx, |this, cx| this.send(window, cx))
-                            }),
-                    ),
+                IconButton::new("room.composer.send", "arrow-up", "Send")
+                    .variant(IconVariant::Dark)
+                    .disabled(empty || self.busy)
+                    .on_press(move |window, cx| {
+                        sending.update(cx, |this, cx| this.send(window, cx))
+                    }),
             );
         let failed = self
             .problem

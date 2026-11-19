@@ -195,12 +195,11 @@ fn refresh(usage: &Entity<Usage>, id: Option<String>, cx: &mut App) {
 
 /// A refresh (`IconButton`, `RefreshCw`), off while a check runs.
 fn refresh_button(id: SharedString, label: String, account: Option<String>, checking: bool, usage: &Entity<Usage>) -> AnyElement {
-    let button = IconButton::new(id, "rotate-cw", label);
-    if checking {
-        return div().opacity(0.38).child(button).into_any_element();
-    }
     let usage = usage.clone();
-    button.on_press(move |_, cx| refresh(&usage, account.clone(), cx)).into_any_element()
+    IconButton::new(id, "rotate-cw", label)
+        .disabled(checking)
+        .on_press(move |_, cx| refresh(&usage, account.clone(), cx))
+        .into_any_element()
 }
 
 /// A bar for something that fills up (`Meter`): a track, with the share used in the body colour and in the accent once
