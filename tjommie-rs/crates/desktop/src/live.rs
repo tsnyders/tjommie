@@ -142,11 +142,16 @@ impl LocalSettings {
 
     /// Changes the settings and writes the file; a write that fails is logged and the change kept for this run.
     pub fn update(&self, change: impl FnOnce(&mut DeviceSettings)) {
-        let mut settings = locked(&self.settings);
-        change(&mut settings);
-        if let Err(error) = device_settings::save(&self.root, &settings) {
+        if let Err(error) = self.try_update(change) {
             log::warn!("device settings: couldn't write them ({error})");
         }
+    }
+
+    /// `update`, saying whether the file was written: the change is kept for this run either way.
+    pub fn try_update(&self, change: impl FnOnce(&mut DeviceSettings)) -> std::io::Result<()> {
+        let mut settings = locked(&self.settings);
+        change(&mut settings);
+        device_settings::save(&self.root, &settings)
     }
 }
 

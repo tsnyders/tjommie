@@ -5,9 +5,10 @@
 use std::sync::Arc;
 
 use desktop_host::device_settings::{Density, TextSize, Theme as Mode};
-use gpui::{AnyElement, App, AppContext as _, IntoElement, ParentElement as _, Window};
+use gpui::{AnyElement, App, AppContext as _, Global, IntoElement, ParentElement as _, Window};
 
-use crate::ui::fields::{Look, RadioGroup};
+use crate::guard::guarded_async;
+use crate::ui::fields::{Look, RadioGroup, problem};
 use crate::ui::primitives::settings_row::SettingsRow;
 use crate::ui::style::{Appearance, appearance, show_appearance};
 
@@ -26,17 +27,33 @@ const SPACING: [(Density, &str, &str); 2] = [
     (Density::Compact, "compact", "Compact"),
 ];
 
-/// Shows a choice at once and saves it on this device, off the UI thread. A write that fails is logged and the choice
-/// kept for this run, so the TypeScript's "could not save" never shows.
+/// Whether the last choice couldn't be written to this device (M5 review Minor 19).
+#[derive(Default)]
+struct Unsaved(bool);
+
+impl Global for Unsaved {}
+
+/// Shows a choice at once and saves it on this device, off the UI thread. A write that fails keeps the choice for this
+/// run and says so, as the TypeScript did.
 fn choose(next: Appearance, cx: &mut App) {
     if let Some(file) = cx.try_global::<crate::live::DeviceFile>() {
         let file = Arc::clone(&file.0);
-        cx.background_spawn(async move {
-            file.update(|stored| {
+        let write = cx.background_spawn(async move {
+            file.try_update(|stored| {
                 stored.theme = next.mode;
                 stored.text_size = next.text;
                 stored.density = next.density;
-            });
+            })
+        });
+        cx.spawn(async move |cx| {
+            guarded_async("say whether the appearance was saved", async move {
+                let failed = write.await.is_err();
+                cx.update(|cx| {
+                    cx.set_global(Unsaved(failed));
+                    cx.refresh_windows();
+                });
+            })
+            .await;
         })
         .detach();
     }
@@ -64,6 +81,10 @@ fn group<V: Copy + PartialEq + 'static>(
 pub(super) fn section(window: &mut Window, cx: &mut App) -> AnyElement {
     let _ = window;
     let now = appearance(cx);
+    let unsaved = cx
+        .try_global::<Unsaved>()
+        .is_some_and(|unsaved| unsaved.0)
+        .then(|| problem("settings.appearance.problem", "This device could not save the appearance choice.", cx));
     super::frame(
         "appearance",
         "Appearance",
@@ -108,6 +129,7 @@ pub(super) fn section(window: &mut Window, cx: &mut App) -> AnyElement {
                     .ruled(),
             ),
     )
+    .children(unsaved)
     .into_any_element()
 }
 
@@ -119,7 +141,25 @@ mod tests {
     use crate::model::testing::FakeRpc;
     use crate::ui::shell::route::{Route, Section};
     use crate::ui::style::{appearance, palette};
-    use crate::ui::testing::{app, click, node, state};
+    use crate::ui::testing::{app, click, node, state, text};
+
+    /// M5 review Minor 19: a choice this device can't write is still shown, and the section says it wasn't saved.
+    #[gpui::test]
+    fn a_choice_that_cannot_be_saved_says_so(cx: &mut TestAppContext) {
+        // The settings' folder is a file, so the write fails.
+        let root = desktop_host::owner_safety::test_root().unwrap();
+        let blocked = root.path().join("not-a-folder");
+        std::fs::write(&blocked, b"").unwrap();
+        let (cx, _) = app(cx, Route::Settings(Section::Appearance), state(vec![], vec![], vec![]), FakeRpc::new());
+        cx.update(|_, cx| {
+            cx.set_global(crate::live::DeviceFile(std::sync::Arc::new(crate::live::LocalSettings::load(&blocked))))
+        });
+        assert!(node("settings.appearance.problem").is_none());
+        click(cx, "settings.appearance.theme.light");
+        crate::ui::testing::draw(cx);
+        assert!(node("settings.appearance.theme.light").unwrap().toggled, "shown all the same");
+        assert_eq!(text("settings.appearance.problem"), "This device could not save the appearance choice.");
+    }
 
     #[gpui::test]
     fn the_choices_show_at_once_light_dark_text_size_and_spacing(cx: &mut TestAppContext) {
