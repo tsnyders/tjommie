@@ -173,3 +173,68 @@ fn new_agent_opens_the_new_agent_screen(cx: &mut TestAppContext) {
     click(cx, "agents.new");
     assert_eq!(cx.update(|_, cx| route::current(cx)), Route::NewBot);
 }
+
+/// M5 review M3: a card whose history failed is asked for again. A change to the agents tries it once more (the
+/// TypeScript fetched again on `[bots, ready]`), with no loop while nothing changes; a reconnect (`connected` forgets a
+/// failed chat) asks for it again.
+#[gpui::test]
+fn a_card_asks_again_for_its_history_after_a_failure_and_a_reconnect(cx: &mut TestAppContext) {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let tries = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&tries);
+    let rpc = FakeRpc::new().on::<method::ChatHistory>(move |_| {
+        if counted.fetch_add(1, Ordering::SeqCst) < 2 {
+            Err(client::RpcError::BadResult("down".into()))
+        } else {
+            Ok(protocol::wire::MessagePage {
+                messages: Vec::new(),
+                has_more: false,
+            })
+        }
+    });
+    let (cx, _) = app(cx, Route::Agents, state(vec![bot("b1", "Atlas", BotState::Idle)], vec![], vec![]), rpc);
+    draw(cx);
+    let status = |cx: &mut gpui::VisualTestContext| {
+        cx.update(|_, cx| crate::ui::store::state(cx).conversations.get("b1").map(|chat| chat.status))
+    };
+    assert_eq!(status(cx), Some(ConversationStatus::Failed));
+    assert_eq!(tries.load(Ordering::SeqCst), 1);
+
+    // The agent changes: the failed load is tried once more, and fails again.
+    cx.update(|_, cx| {
+        crate::ui::store::update(cx, |state| {
+            state.bots[0].state = BotState::Working;
+            true
+        })
+    });
+    draw(cx);
+    draw(cx);
+    assert_eq!(tries.load(Ordering::SeqCst), 2, "tried again on the change");
+    assert_eq!(status(cx), Some(ConversationStatus::Failed));
+    draw(cx);
+    assert_eq!(tries.load(Ordering::SeqCst), 2, "no loop while nothing changes");
+
+    // A reconnect: the same lists again, and the failed chat forgotten. The card asks again.
+    cx.update(|_, cx| {
+        crate::ui::store::update(cx, |state| {
+            let snapshot = crate::model::state::Snapshot {
+                bots: state.bots.clone(),
+                settings: protocol::model::Settings {
+                    chain_limit: 5,
+                    relay_url: None,
+                },
+                routines: state.routines.clone(),
+                rooms: state.rooms.clone(),
+                accounts: state.accounts.clone(),
+                notifications: None,
+            };
+            crate::model::state::connected(state, snapshot)
+        })
+    });
+    draw(cx);
+    draw(cx);
+    assert_eq!(tries.load(Ordering::SeqCst), 3, "asked again after the reconnect");
+    assert_eq!(status(cx), Some(ConversationStatus::Ready));
+}

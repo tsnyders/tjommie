@@ -8,7 +8,7 @@
 
 pub(crate) mod cards;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
@@ -51,8 +51,12 @@ pub struct AgentsScreen {
     searching: bool,
     /// Why a card's last menu action failed, by agent.
     problems: HashMap<String, SharedString>,
-    /// The conversations this screen asked for, so each loads once.
-    asked: HashSet<String>,
+    /// The conversations this screen asked for, and whether each has been in the state since. One that was and is gone
+    /// (a reconnect forgets a chat still loading or failed) is asked for again (M5 review M3).
+    asked: HashMap<String, bool>,
+    /// The agents as last seen: when they change, a failed load is tried again, as the TypeScript fetched again on
+    /// `[bots, ready]`.
+    bots: Vec<Bot>,
     /// The Needs you count, rolling.
     needs: Rolling,
     _search: Subscription,
@@ -76,18 +80,24 @@ impl AgentsScreen {
             search,
             searching: false,
             problems: HashMap::new(),
-            asked: HashSet::new(),
+            asked: HashMap::new(),
+            bots: Vec::new(),
             needs,
             _search: subscription,
         }
     }
 
-    /// Asks once for each agent's and room's newest page, when connected.
+    /// Asks for each agent's and room's newest page, when connected: once, again when a reconnect has forgotten it, and
+    /// a failed one again when the agents change.
     fn load(&mut self, state: &AppState, cx: &mut Context<Self>) {
         if state.connection != Connection::Ready {
             return;
         }
-        let wanted: Vec<(String, History)> = state
+        let retry = self.bots != state.bots;
+        if retry {
+            self.bots.clone_from(&state.bots);
+        }
+        let wanted = state
             .bots
             .iter()
             .map(|bot| (bot.id.clone(), History::Bot(bot.id.clone())))
@@ -96,12 +106,25 @@ impl AgentsScreen {
                     .rooms
                     .iter()
                     .map(|room| (room.id.clone(), History::Room(room.id.clone()))),
-            )
-            .filter(|(id, _)| !self.asked.contains(id))
-            .collect();
+            );
         for (id, history) in wanted {
-            self.asked.insert(id.clone());
-            store::load_conversation(cx, &id, history).detach();
+            let status = state.conversations.get(&id).map(|chat| chat.status);
+            match (status, self.asked.get(&id).copied()) {
+                // Never asked, or it was there and is gone.
+                (None, None | Some(true)) => {
+                    store::load_conversation(cx, &id, history).detach();
+                    self.asked.insert(id, false);
+                }
+                (Some(ConversationStatus::Failed), _) if retry => {
+                    store::retry_conversation(cx, &id, history).detach();
+                    self.asked.insert(id, false);
+                }
+                (Some(_), None | Some(false)) => {
+                    self.asked.insert(id, true);
+                }
+                // Still on its way, or there as it was.
+                (None, Some(false)) | (Some(_), Some(true)) => {}
+            }
         }
     }
 
