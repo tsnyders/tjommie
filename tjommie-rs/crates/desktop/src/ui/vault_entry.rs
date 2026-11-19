@@ -568,7 +568,7 @@ impl Render for EntryView {
                     div()
                         .semantic("logins.capture", Role::Alert)
                         .aria_label(said)
-                        .text_color(hsla(theme.color.bot.red))
+                        .text_color(hsla(colors.danger.text))
                         .child(said),
                 )
             })
@@ -592,7 +592,7 @@ impl Render for EntryView {
                     div()
                         .semantic("logins.problem", Role::Alert)
                         .aria_label(problem)
-                        .text_color(hsla(theme.color.bot.red))
+                        .text_color(hsla(colors.danger.text))
                         .child(problem),
                 )
             })

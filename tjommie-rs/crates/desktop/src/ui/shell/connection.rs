@@ -184,7 +184,7 @@ pub(super) fn screen(
                     .aria_label(problem.clone())
                     .max_w(r(440.))
                     .type_style(&theme.typography.desktop.ui)
-                    .text_color(hsla(theme.color.bot.red))
+                    .text_color(hsla(colors.danger.text))
                     .text_center()
                     .child(problem),
             )

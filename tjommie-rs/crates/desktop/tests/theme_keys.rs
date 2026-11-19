@@ -91,7 +91,8 @@ fn contrast(a: gpui::Rgba, b: gpui::Rgba) -> f32 {
 }
 
 /// M5 review M7: the danger text clears 4.5:1 on every surface it sits on (the Danger pill at rest and on hover, an
-/// agent card's problem line), in both modes.
+/// agent card's problem line, the connection screen's and the browser panel's errors on the panel, and the Logins
+/// window's alerts on paper), in both modes.
 #[test]
 fn danger_text_clears_4_5_to_1_where_it_sits() {
     let theme = Theme::aegis().unwrap();
@@ -100,6 +101,8 @@ fn danger_text_clears_4_5_to_1_where_it_sits() {
             ("surface.sunk", palette.surface.sunk),
             ("state.sunkHover", palette.state.sunk_hover),
             ("surface.raised", palette.surface.raised),
+            ("surface.panel", palette.surface.panel),
+            ("surface.paper", palette.surface.paper),
         ] {
             let ratio = contrast(palette.danger.text, surface);
             assert!(ratio >= 4.5, "{mode} danger.text on {name} is {ratio:.2}:1");
