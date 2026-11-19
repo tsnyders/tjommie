@@ -10,7 +10,7 @@ Location kinds: `(unit)` is a `#[cfg(test)]` module, `(view)` is a GPUI `TestApp
 
 | TypeScript test | Rust test | Task | Notes |
 |---|---|---|---|
-| `packages/ui/components/accounts/accounts.test.tsx` | `crates/desktop/src/ui/settings/accounts.rs` (view) | T5.5 | Accounts: sign-in, check, limits (row 6). |
+| `packages/ui/components/accounts/accounts.test.tsx` | `crates/desktop/src/ui/settings/accounts.rs` (view) | T5.5 | Accounts (row 6): `shows_a_signed_in_subscription`, `offers_sign_in_then_cancel_and_the_page_again_while_waiting`, `says_how_an_api_key_is_doing`, `stops_an_api_key_at_its_cap_and_at_unpriced_turns`, `a_retry_link_focuses_retry_queued_work_and_starts_nothing`, `a_sign_in_link_focuses_sign_in_and_starts_nothing`, `a_cap_link_focuses_the_cap`, `adds_a_key_only_with_a_name_a_key_and_a_cap`, `the_cap_replace_and_rename_dialogs`, `remove_names_the_agents_to_move_first`; the meters' colours in `usage::meter`. n/a: the key field's HTML attributes (autocomplete, spellcheck: a native field has neither). |
 | `packages/ui/components/agents/cards.test.tsx` | `crates/desktop/src/ui/agents/tests.rs` (view) | T5.1 | Needs-you cards. |
 | `packages/ui/components/app-shell.test.tsx` | `crates/desktop/src/ui/shell/mod.rs` (view) | T2.1 | `shell::the_connection_screen_takes_the_main_columns_place`, `shell::navigates_to_chat_from_recents`, `e2e_navigation`; the status pill in `shell/connection.rs` (unit), `Connection::blocks` in `shell/data.rs` (unit). |
 | `packages/ui/components/back-link.test.tsx` | `n/a: phone only (the back link shows below 640 px; the desktop has the sidebar)` | - | Ruled in T2.1. |
@@ -63,13 +63,13 @@ Location kinds: `(unit)` is a `#[cfg(test)]` module, `(view)` is a GPUI `TestApp
 | `packages/ui/components/settings/device-settings.test.tsx` | `crates/desktop/src/ui/settings/appearance.rs` (view) | T5.5 | Appearance controls; saving is T1.5. |
 | `packages/ui/components/settings/diagnostics-section.test.tsx` | `crates/desktop/src/ui/settings/diagnostics.rs` (view) | T5.5 | Save report (row 18). |
 | `packages/ui/components/settings/diagnostics.test.ts` | `crates/desktop-host/src/diagnostics.rs` (unit) | T6.6 | Report privacy: versions and health categories only. |
-| `packages/ui/components/settings/logins-section.test.tsx` | `crates/desktop/src/ui/settings/logins.rs` (view) | T5.5 | Logins list (row 11); the vault is T3.6. |
+| `packages/ui/components/settings/logins-section.test.tsx` | `crates/desktop/src/ui/settings/logins.rs` (view) | T5.5 | Logins (row 11): `shows_metadata_and_asks_the_host_for_its_entry_window`, `says_logins_are_unavailable_when_the_host_cannot_be_asked`; the browser panel's wiring `ui::logins::tests::the_panels_answers_are_kept_for_its_bot`. The file's browser-logins cases (fill, finish, cancel on a new generation) are T3.6's; the app's vault host is the host-wiring batch after M5. |
 | `packages/ui/components/settings/save-report.test.ts` | `crates/desktop-host/src/diagnostics.rs` (unit) | T6.6 | Save through the system picker; cancel; size limit. |
 | `packages/ui/components/settings/settings-page.test.tsx` | `crates/desktop/src/ui/settings/mod.rs` (view) | T5.5 | Also `e2e_settings_sections`. |
 | `packages/ui/components/settings/voice-section.test.tsx` | `crates/desktop/src/ui/settings/voice.rs` (view) | T5.5 | Voice (row 14). |
 | `packages/ui/components/tab-bar.test.tsx` | `n/a: phone only (the floating tab bar; the desktop has the sidebar)` | - | Ruled in T2.1. |
-| `packages/ui/components/usage/provider-usage.test.tsx` | `crates/desktop/src/ui/settings/usage.rs` (view) | T5.5 | Usage and limit meter (row 7); also `e2e_usage_caps`. |
-| `packages/ui/components/usage/usage-section.test.tsx` | `crates/desktop/src/ui/settings/usage.rs` (view) | T5.5 | - |
+| `packages/ui/components/usage/provider-usage.test.tsx` | `crates/desktop/src/ui/settings/usage.rs` (view) | T5.5 | Usage and limit meter (row 7): `shows_each_subscriptions_limits_and_its_refreshes_only_ask_for_a_check`, `says_what_each_card_knows_and_a_failed_check_above_them`, `api_keys_alone_have_no_limit_cards`; the windows, Credits and Extra usage in `model::accounts` (`provider_view`); also `e2e_usage_caps`. n/a: the meter's CSS classes (the colours are tokens). |
+| `packages/ui/components/usage/usage-section.test.tsx` | `crates/desktop/src/ui/settings/usage.rs` (view) | T5.5 | `keeps_each_cost_in_a_tile_of_its_own_beside_the_labelled_estimate`, `draws_the_days_as_bars_but_not_for_today`, `draws_a_year_as_months`, `lists_the_breakdown_and_names_a_deleted_agent`, `says_there_is_no_usage_yet`; `use-usage`: `a_burst_of_usage_changes_reads_once`, `a_failed_read_says_why`; the cost wording in `model::usage`. n/a: `RangeChips` (phone only). |
 | `packages/ui/lib/accounts.test.ts` | `crates/desktop/src/model/accounts.rs` (unit) | T1.4 | - |
 | `packages/ui/lib/activity.test.ts` | `crates/desktop/src/model/activity.rs` (unit) | T1.4 | - |
 | `packages/ui/lib/appearance-settings.test.ts` | `crates/desktop-host/src/device_settings.rs` (unit) | T1.5 | Device appearance: defaults, local save, blocked storage (`device_settings::*`). |
