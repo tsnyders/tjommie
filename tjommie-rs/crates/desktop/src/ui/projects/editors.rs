@@ -570,12 +570,15 @@ fn project_body(
 
 /// Choose a repository folder: this PC's folder picker, then the host registers it, and it is chosen.
 fn register_repository(form: &Entity<ProjectForm>, cx: &mut App) {
-    let picked = cx.prompt_for_paths(PathPromptOptions {
-        files: false,
-        directories: true,
-        multiple: false,
-        prompt: None,
-    });
+    let picked = crate::ui::prompt_for_paths(
+        PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: None,
+        },
+        cx,
+    );
     form.update(cx, |form, cx| {
         form.busy = true;
         form.problem = None;

@@ -9,7 +9,7 @@ use std::cell::RefCell;
 use std::fs::File;
 use std::io::{self, BufRead as _, BufReader, Write as _};
 use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -81,6 +81,10 @@ pub enum Request {
         predicate: Predicate,
         timeout_ms: u64,
     },
+    /// Answers the app's next file or folder prompt with `path`, in place of the system's picker, which keys can't
+    /// drive (M5 review M8). Its tag is the needle `tests/pins.rs` and CI look for: a release build has no such hook.
+    #[serde(rename = "tjommie-test-path-answer")]
+    AnswerPathPrompt { path: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -262,6 +266,14 @@ impl Client {
     pub fn key(&mut self, chord: &str) -> io::Result<()> {
         self.expect_ok(&Request::Key {
             chord: chord.to_owned(),
+        })
+        .map(drop)
+    }
+
+    /// The app's next file or folder prompt answers `path` (`AnswerPathPrompt`).
+    pub fn answer_path_prompt(&mut self, path: &Path) -> io::Result<()> {
+        self.expect_ok(&Request::AnswerPathPrompt {
+            path: path.to_string_lossy().into_owned(),
         })
         .map(drop)
     }
@@ -676,8 +688,22 @@ fn ask(request: Request, asks: &UnboundedSender<Ask>) -> Response {
         .unwrap_or_else(|_| Response::failed("the app did not answer"))
 }
 
+thread_local! {
+    /// The test's answer for the app's next path prompt (`AnswerPathPrompt`).
+    static PATH_ANSWER: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+}
+
+/// The test's answer for this path prompt, if it gave one; it answers one prompt only.
+pub fn take_path_answer() -> Option<PathBuf> {
+    PATH_ANSWER.with(|answer| answer.borrow_mut().take())
+}
+
 fn handle(request: Request, window: &mut Window, cx: &mut App) -> Response {
     match request {
+        Request::AnswerPathPrompt { path } => {
+            PATH_ANSWER.with(|answer| *answer.borrow_mut() = Some(PathBuf::from(path)));
+            Response::done()
+        }
         Request::Snapshot => {
             let size = window.viewport_size();
             Response {

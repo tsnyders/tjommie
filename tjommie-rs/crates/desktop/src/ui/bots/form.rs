@@ -808,12 +808,15 @@ fn folder_row(state: &Entity<FormState>, window: &mut Window, cx: &mut App) -> A
 /// This PC's folder picker; a folder chosen becomes the project folder.
 fn choose_folder(state: &Entity<FormState>, window: &mut Window, cx: &mut App) {
     let _ = window;
-    let picked = cx.prompt_for_paths(PathPromptOptions {
-        files: false,
-        directories: true,
-        multiple: false,
-        prompt: None,
-    });
+    let picked = crate::ui::prompt_for_paths(
+        PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: None,
+        },
+        cx,
+    );
     let state = state.clone();
     cx.spawn(async move |cx| {
         guarded_async("choose a project folder", async move {

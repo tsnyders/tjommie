@@ -1032,6 +1032,81 @@ mod tests {
 
     /// relay-row.test.tsx: "keeps Save off until the address is changed", "saves a typed https address, trimmed", and
     /// "saves the public relay's address with Use the public relay".
+    /// M5 review M8: the keyboard e2e can't pair a phone, so Rename device and Revoke are covered here, opened by keys
+    /// with a device in the list. Tab stays in each dialog and reaches only what's available, Escape closes it with
+    /// nothing sent, and Enter presses the focused button.
+    #[gpui::test]
+    fn the_device_dialogs_work_from_the_keyboard(cx: &mut TestAppContext) {
+        let rpc = rpc(vec![device("d1", "Sample Phone", None)], status(&[], true))
+            .on::<method::DevicesRevoke>(|_| Ok(device("d1", "Sample Phone", None)));
+        let (cx, calls_made) = app(cx, Route::Settings(Section::Devices), state(vec![], vec![], vec![]), rpc);
+        let focused = || crate::test_driver::nodes().into_iter().find(|node| node.focused).map(|node| node.id);
+        let press = |cx: &mut gpui::VisualTestContext, keys: &str| {
+            cx.simulate_keystrokes(keys);
+            draw(cx);
+        };
+        let tab_to = |cx: &mut gpui::VisualTestContext, id: &str| {
+            for _ in 0..60 {
+                if focused().as_deref() == Some(id) {
+                    return;
+                }
+                press(cx, "tab");
+            }
+            panic!("no Tab reaches {id}");
+        };
+        // Tabs twice around the open dialog: what the focus visits, which must all be the dialog's.
+        let round = |cx: &mut gpui::VisualTestContext, inside: &[&str]| {
+            let mut seen = Vec::new();
+            for _ in 0..12 {
+                press(cx, "tab");
+                // A stop with no semantic node of its own (the e2e's sweep allows them too).
+                let Some(now) = focused() else {
+                    continue;
+                };
+                assert!(inside.iter().any(|prefix| now.starts_with(prefix)), "Tab left the dialog for {now:?}");
+                if !seen.contains(&now) {
+                    seen.push(now);
+                }
+            }
+            seen
+        };
+
+        // Rename: Save is no stop until the name changes; Escape closes with no call.
+        tab_to(cx, "settings.devices.d1.rename");
+        press(cx, "enter");
+        assert_eq!(text("dialog.title"), "Rename device");
+        let seen = round(cx, &["device_form.", "dialog."]);
+        assert!(seen.iter().any(|id| id == "device_form.name") && seen.iter().any(|id| id == "device_form.cancel"));
+        assert!(!seen.iter().any(|id| id == "device_form.save"), "Save is unavailable until the name changes");
+        press(cx, "escape");
+        assert!(node("device_form.name").is_none(), "Escape closed it");
+        assert!(calls(&calls_made.calls(), "devices.rename").is_empty());
+        // Enter on Save, once the name has changed, renames.
+        tab_to(cx, "settings.devices.d1.rename");
+        press(cx, "enter");
+        tab_to(cx, "device_form.name");
+        press(cx, "end");
+        cx.simulate_input(" 2");
+        draw(cx);
+        tab_to(cx, "device_form.save");
+        press(cx, "enter");
+        assert_eq!(calls(&calls_made.calls(), "devices.rename"), [json!({ "id": "d1", "name": "Sample Phone 2" })]);
+
+        // Revoke: Escape closes with no call; Enter on Revoke revokes.
+        tab_to(cx, "settings.devices.d1.revoke");
+        press(cx, "enter");
+        let seen = round(cx, &["dialog."]);
+        assert!(seen.iter().any(|id| id == "dialog.confirm") && seen.iter().any(|id| id == "dialog.cancel"));
+        press(cx, "escape");
+        assert!(node("dialog.confirm").is_none(), "Escape closed it");
+        assert!(calls(&calls_made.calls(), "devices.revoke").is_empty());
+        tab_to(cx, "settings.devices.d1.revoke");
+        press(cx, "enter");
+        tab_to(cx, "dialog.confirm");
+        press(cx, "enter");
+        assert_eq!(calls(&calls_made.calls(), "devices.revoke"), [json!({ "id": "d1" })]);
+    }
+
     #[gpui::test]
     fn the_relay_saves_a_changed_https_address(cx: &mut TestAppContext) {
         let rpc = rpc(vec![], status(&[], true)).on::<method::SettingsSet>(|_| Ok(serde_json::from_value(json!({ "chainLimit": 5, "relayUrl": null })).unwrap()));

@@ -51,6 +51,8 @@ pub enum Route {
     /// the chat's setup banner and limit notices follow. The Accounts section focuses the control `action` names on that
     /// account's card (Sign in, Raise or Edit cap, Retry queued work) once it's there, once; a link never starts a
     /// sign-in or a retry by itself. The sidebar's Settings and the Accounts link show as selected.
+    /// Nothing produces this route yet: its keyboard path (and `e2e_keyboard_navigation`'s step through it) arrives with
+    /// the Chat lane's link producers, the setup banner and the limit notices (M5 review M8).
     Account {
         account: String,
         action: Option<AccountAction>,

@@ -1,14 +1,20 @@
 //! Full keyboard navigation (Phase 3 plan T5.6; owner decision 4): from launch, keys only (`key` and typing, never
 //! `click`). It goes to every screen and every settings section, creates an agent, mentions it in a room and sees its
 //! answer (a recorded provider fixture, invented here), works a menu and dialogs from the keyboard, and on each screen
-//! and dialog fails on any control that no Tab sequence reaches. Approving a card (T4.2) and moving into and out of a
-//! bot's page (T3.5) are the Chat and Browser lanes' steps. Needs the daemon built with the switch, beside the app:
+//! and dialog fails on any control that no Tab sequence reaches. Every dialog is opened by keys from its screen (M5
+//! review M8), with two exceptions: Devices' Rename and Revoke need a paired phone, which this run can't make, so
+//! `settings::devices::tests::the_device_dialogs_work_from_the_keyboard` covers them with a device in the view model;
+//! and `Route::Account`'s keyboard path arrives with the Chat lane's link producers. The system's folder picker can't be
+//! driven by keys either, so the test driver answers it (`answer_path_prompt`) for the team's repository. Approving a
+//! card (T4.2) and moving into and out of a bot's page (T3.5) are the Chat and Browser lanes' steps. The API-key account
+//! it adds has an invented key, and every Credential Manager target in this temp root's namespace is deleted when the
+//! test ends, failed or not (`Credentials`). Needs the daemon built with the switch, beside the app:
 //! `cargo build -p daemon --bin tjommie-daemon --features provider-fixtures --locked`, then
 //! `TJOMMIE_IDENTITY=e2e cargo test -p desktop --features test-driver --test e2e_keyboard_navigation --locked`.
 #![cfg(feature = "test-driver")]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
@@ -107,6 +113,108 @@ fn activate(app: &mut Client, id: &str) {
     app.key("enter").unwrap();
 }
 
+/// Opens the menu on `trigger` by keys and chooses `item`: Enter opens it on its first row, the arrows move, Enter
+/// chooses.
+fn menu_to(app: &mut Client, trigger: &str, item: &str) {
+    activate(app, trigger);
+    let started = Instant::now();
+    while focused(app).as_deref() == Some(trigger) {
+        assert!(started.elapsed() < Duration::from_secs(10), "{trigger}'s menu didn't open");
+        sleep(Duration::from_millis(30));
+    }
+    for _ in 0..12 {
+        if focused(app).as_deref() == Some(item) {
+            app.key("enter").unwrap();
+            return;
+        }
+        press(app, "down");
+    }
+    panic!("no arrow reaches {item} in {trigger}'s menu");
+}
+
+/// Opens a dialog by keys from its screen (`open` does it), Tabs once around it (`sweep_in`), then closes it with
+/// Escape.
+fn dialog(app: &mut Client, place: &str, prefixes: &[&str], open: impl FnOnce(&mut Client)) {
+    open(app);
+    app.wait("dialog.title", Predicate::Exists, 10_000).unwrap();
+    sweep_in(app, place, prefixes);
+    app.key("escape").unwrap();
+    wait_gone(app, "dialog.title");
+}
+
+/// Opens a settings section from its nav link.
+fn open_section(app: &mut Client, key: &str) {
+    activate(app, &format!("settings.nav.{key}"));
+    app.wait(&format!("settings.{key}.title"), Predicate::Exists, 10_000)
+        .unwrap();
+}
+
+/// The ids under `prefix` with `suffix`, as the window has them now.
+fn ids_like(app: &mut Client, prefix: &str, suffix: &str) -> Vec<String> {
+    app.snapshot()
+        .unwrap()
+        .nodes
+        .into_iter()
+        .map(|node| node.id)
+        .filter(|id| id.starts_with(prefix) && id.ends_with(suffix))
+        .collect()
+}
+
+/// Runs git in `folder`, with an invented identity, and fails if it does.
+fn git(folder: &Path, args: &[&str]) {
+    let out = desktop_host::spawn::command("git")
+        .args(["-c", "user.name=Keyboard Test", "-c", "user.email=keyboard-test@invalid"])
+        .args(args)
+        .current_dir(folder)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+}
+
+/// This run's Credential Manager targets: `Tjommie/<namespace>/…`, where the namespace is the sha256 of this temp root
+/// (the daemon's `Namespace`). Dropped at the end of the test, failed or not, it deletes every one of them: the
+/// API-key account writes its invented key there. Nothing outside this root's namespace is touched.
+struct Credentials {
+    namespaces: Vec<String>,
+}
+
+impl Credentials {
+    fn of(root: &Path) -> Self {
+        let namespaces = [root.to_path_buf(), root.join("data")]
+            .iter()
+            .filter_map(|path| desktop_host::vault::credential::namespace(path).ok())
+            .collect();
+        Credentials { namespaces }
+    }
+
+    /// This run's targets, as `cmdkey /list` has them now.
+    fn targets(&self) -> Vec<String> {
+        let listed = desktop_host::spawn::command("cmdkey")
+            .arg("/list")
+            .output()
+            .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
+            .unwrap_or_default();
+        listed
+            .split_whitespace()
+            .filter_map(|word| word.find("Tjommie/").and_then(|at| word.get(at..)))
+            .filter(|target| {
+                self.namespaces
+                    .iter()
+                    .any(|namespace| target.starts_with(&format!("Tjommie/{namespace}")))
+            })
+            .map(str::to_owned)
+            .collect()
+    }
+}
+
+impl Drop for Credentials {
+    fn drop(&mut self) {
+        for target in self.targets() {
+            let _ = desktop_host::vault::credential::delete_blob(&target);
+        }
+    }
+}
+
 fn wait_gone(app: &mut Client, id: &str) {
     let started = Instant::now();
     while app.snapshot().unwrap().node(id).is_some() {
@@ -185,6 +293,8 @@ fn e2e_keyboard_navigation() {
         "build the daemon first: cargo build -p daemon --bin tjommie-daemon --features provider-fixtures --locked"
     );
     let root = owner_safety::test_root().unwrap();
+    // Declared before the app, so it's dropped after the app and its daemon have gone.
+    let credentials = Credentials::of(root.path());
     let fixtures = root.path().join("provider-fixtures");
     std::fs::create_dir_all(&fixtures).unwrap();
     std::fs::write(fixtures.join("Harbour.json"), HARBOUR).unwrap();
@@ -246,6 +356,15 @@ fn e2e_keyboard_navigation() {
     sweep_in(&mut app, "Delete agent dialog", &["dialog."]);
     app.key("escape").unwrap();
     wait_gone(&mut app, "dialog.confirm");
+    // The routine editor, from Add routine (its row opens first if it's closed).
+    if app.snapshot().unwrap().node("bot_settings.routines.add").is_none() {
+        activate(&mut app, "bot_form.routines");
+        app.wait("bot_settings.routines.add", Predicate::Exists, 10_000)
+            .unwrap();
+    }
+    dialog(&mut app, "Routine editor", &["dialog.", "routine."], |app| {
+        activate(app, "bot_settings.routines.add")
+    });
 
     // Rooms: the list, the New room dialog, and Everyone, where Harbour answers a mention.
     activate(&mut app, "sidebar.nav.rooms");
@@ -254,8 +373,22 @@ fn e2e_keyboard_navigation() {
     activate(&mut app, "rooms.new");
     app.wait("room_form.name", Predicate::Exists, 10_000).unwrap();
     sweep_in(&mut app, "New room dialog", &["dialog.", "room_form."]);
-    app.key("escape").unwrap();
-    wait_gone(&mut app, "room_form.name");
+    // A room of its own, made from the keyboard, for Edit room and Delete room: a new room opens once it's made.
+    tab_to(&mut app, "room_form.name");
+    app.text("Lighthouse").unwrap();
+    activate(&mut app, &format!("room_form.members.{bot}"));
+    activate(&mut app, "room_form.save");
+    app.wait("screen.room", Predicate::Text("Lighthouse".into()), 10_000)
+        .unwrap();
+    sweep(&mut app, "Lighthouse");
+    dialog(&mut app, "Edit room dialog", &["dialog.", "room_form."], |app| {
+        menu_to(app, "room.more", "room.menu.edit")
+    });
+    dialog(&mut app, "Delete room dialog", &["dialog."], |app| {
+        menu_to(app, "room.more", "room.menu.delete")
+    });
+    activate(&mut app, "sidebar.nav.rooms");
+    app.wait("screen.rooms", Predicate::Exists, 10_000).unwrap();
     activate(&mut app, "rooms.room.team.open");
     app.wait("screen.room", Predicate::Text("Everyone".into()), 10_000)
         .unwrap();
@@ -277,8 +410,40 @@ fn e2e_keyboard_navigation() {
     activate(&mut app, "projects.new");
     app.wait("project_form.name", Predicate::Exists, 10_000).unwrap();
     sweep_in(&mut app, "New project team dialog", &["dialog.", "project_form."]);
-    app.key("escape").unwrap();
+    // A team of its own, for New task and Archive team. Its repository is a git folder made here; the system's folder
+    // picker can't be driven by keys, so the test driver answers it. The rest is keys.
+    let repository = root.path().join("breakwater");
+    std::fs::create_dir_all(&repository).unwrap();
+    git(&repository, &["init", "--quiet", "--initial-branch=main"]);
+    git(&repository, &["commit", "--quiet", "--allow-empty", "-m", "Start"]);
+    app.answer_path_prompt(&repository).unwrap();
+    activate(&mut app, "project_form.register");
+    tab_to(&mut app, "project_form.name");
+    app.text("Breakwater").unwrap();
+    activate(&mut app, &format!("project_form.role.{bot}.developer"));
+    activate(&mut app, "project_form.save");
     wait_gone(&mut app, "project_form.name");
+    // The list reads again after the save: wait for the team to be in it.
+    let started = Instant::now();
+    let team = loop {
+        let listed = ids_like(&mut app, "projects.team.", "")
+            .into_iter()
+            .find(|id| id.matches('.').count() == 2);
+        if let Some(team) = listed {
+            break team;
+        }
+        assert!(started.elapsed() < Duration::from_secs(10), "the new team isn't in the list");
+        sleep(Duration::from_millis(100));
+    };
+    activate(&mut app, &team);
+    app.wait("projects.name", Predicate::Text("Breakwater".into()), 10_000)
+        .unwrap();
+    dialog(&mut app, "New task dialog", &["dialog.", "task_form."], |app| {
+        activate(app, "projects.new_task")
+    });
+    dialog(&mut app, "Archive team dialog", &["dialog."], |app| {
+        activate(app, "projects.archive")
+    });
     activate(&mut app, "sidebar.nav.routines");
     app.wait("screen.routines", Predicate::Exists, 10_000).unwrap();
     sweep(&mut app, "Routines");
@@ -291,4 +456,72 @@ fn e2e_keyboard_navigation() {
             .unwrap();
         sweep(&mut app, &format!("Settings, {key}"));
     }
+
+    // Settings' dialogs, each opened by keys from its section.
+    open_section(&mut app, "about");
+    dialog(&mut app, "Third-party notices dialog", &["dialog.", "settings.about.notices."], |app| {
+        activate(app, "settings.about.notices")
+    });
+    open_section(&mut app, "devices");
+    dialog(&mut app, "Pair a device dialog", &["dialog.", "settings.devices.pair."], |app| {
+        activate(app, "settings.devices.pair")
+    });
+
+    // The seven account dialogs. The fixtures daemon signs in a subscription account per provider (Harbour uses
+    // Claude's); an API-key account, added here with an invented key, has Replace key and Spending cap.
+    open_section(&mut app, "accounts");
+    let form = ["dialog.", "account_form."];
+    dialog(&mut app, "Add subscription dialog", &form, |app| {
+        menu_to(app, "settings.accounts.claude.add", "settings.accounts.claude.add.subscription")
+    });
+    let before = ids_like(&mut app, "settings.accounts.", ".more");
+    menu_to(&mut app, "settings.accounts.claude.add", "settings.accounts.claude.add.key");
+    app.wait("dialog.title", Predicate::Exists, 10_000).unwrap();
+    sweep_in(&mut app, "Add API key dialog", &form);
+    tab_to(&mut app, "account_form.name");
+    app.text("Invented key").unwrap();
+    tab_to(&mut app, "account_form.key");
+    app.text("invented-e2e-key-not-real").unwrap();
+    tab_to(&mut app, "account_form.cap");
+    app.text("25").unwrap();
+    activate(&mut app, "account_form.save");
+    wait_gone(&mut app, "dialog.title");
+    let started = Instant::now();
+    let key_account = loop {
+        let added = ids_like(&mut app, "settings.accounts.", ".more")
+            .into_iter()
+            .find(|id| !before.contains(id));
+        if let Some(more) = added {
+            break more.trim_end_matches(".more").to_owned();
+        }
+        assert!(started.elapsed() < Duration::from_secs(10), "the API-key account didn't appear");
+        sleep(Duration::from_millis(100));
+    };
+    assert!(
+        credentials.targets().iter().any(|target| target.contains("/account/")),
+        "the cleanup must see this run's key in Credential Manager: its namespace isn't the daemon's"
+    );
+    let more = format!("{key_account}.more");
+    for (place, item) in [
+        ("Replace key dialog", "replace_key"),
+        ("Spending cap dialog", "edit_cap"),
+        ("Rename account dialog", "rename"),
+    ] {
+        dialog(&mut app, place, &form, |app| menu_to(app, &more, &format!("{key_account}.{item}")));
+    }
+    let used = ids_like(&mut app, "settings.accounts.", ".users")
+        .into_iter()
+        .find(|id| app.snapshot().unwrap().node(id).is_some_and(|node| node.text == "1 agent"))
+        .expect("Harbour's account")
+        .trim_end_matches(".users")
+        .to_owned();
+    dialog(&mut app, "Can't remove dialog", &["dialog.", "account_form.", "account_remove."], |app| {
+        menu_to(app, &format!("{used}.more"), &format!("{used}.remove"))
+    });
+    // Remove the API-key account for real: the guard deletes its key from Credential Manager either way.
+    menu_to(&mut app, &more, &format!("{key_account}.remove"));
+    app.wait("dialog.title", Predicate::Exists, 10_000).unwrap();
+    sweep_in(&mut app, "Remove account dialog", &form);
+    activate(&mut app, "account_form.save");
+    wait_gone(&mut app, &more);
 }
