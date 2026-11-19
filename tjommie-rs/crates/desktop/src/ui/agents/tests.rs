@@ -24,9 +24,12 @@ fn conversation(status: ConversationStatus) -> Conversation {
 fn a_room_card_says_nothing_while_its_posts_are_read_and_that_it_has_none_once_they_are(
     cx: &mut TestAppContext,
 ) {
-    let mut reading = state(vec![], vec![room("r1", "Growth", &["b1"])], vec![]);
-    // Someone is signed in, so Agents shows its overview, not the first run (M5 review M6).
-    reading.setup = Some(vec![signed_in_claude()]);
+    // The room's agent exists, so Agents shows its overview, not the first run (M5 review M6).
+    let mut reading = state(
+        vec![bot("b1", "Atlas", BotState::Idle)],
+        vec![room("r1", "Growth", &["b1"])],
+        vec![],
+    );
     reading
         .conversations
         .insert("r1".into(), conversation(ConversationStatus::Loading));
@@ -271,10 +274,10 @@ fn signed_in_claude() -> protocol::model::ProviderSetup {
     })
 }
 
-/// M5 review M6: with no agents and nobody signed in, Agents shows the first-run setup under its header; once a
-/// provider is signed in, it's the overview.
+/// M5 review M6: Agents shows the first-run setup under its header until the first agent exists, signed in or not, as
+/// the TypeScript's home page did; then it's the overview.
 #[gpui::test]
-fn no_agents_and_nobody_signed_in_shows_the_first_run_setup(cx: &mut TestAppContext) {
+fn no_agents_shows_the_first_run_setup_until_the_first_agent(cx: &mut TestAppContext) {
     let (cx, _) = app(
         cx,
         Route::Agents,
@@ -285,6 +288,7 @@ fn no_agents_and_nobody_signed_in_shows_the_first_run_setup(cx: &mut TestAppCont
     assert!(node("setup.claude").is_some(), "Claude Code's card");
     assert!(node("screen.agents").is_some(), "under the Agents header");
     assert!(node("agents.new_bot").is_none(), "in place of the overview");
+    // Signing in doesn't end it.
     cx.update(|_, cx| {
         crate::ui::store::update(cx, |state| {
             state.setup = Some(vec![signed_in_claude()]);
@@ -292,7 +296,19 @@ fn no_agents_and_nobody_signed_in_shows_the_first_run_setup(cx: &mut TestAppCont
         })
     });
     draw(cx);
-    assert!(node("setup.claude").is_none(), "signed in: the overview");
+    assert!(
+        node("setup.claude").is_some(),
+        "still the first run once signed in"
+    );
+    // The first agent does.
+    cx.update(|_, cx| {
+        crate::ui::store::update(cx, |state| {
+            state.bots = vec![bot("b1", "Atlas", BotState::Idle)];
+            true
+        })
+    });
+    draw(cx);
+    assert!(node("setup.claude").is_none(), "an agent: the overview");
     assert!(node("agents.new_bot").is_some(), "with its New agent tile");
 }
 

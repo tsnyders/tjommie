@@ -1,7 +1,7 @@
 //! The first-run setup (Phase 3 plan T5.5, M5 review M6; `components/setup/provider-cards.tsx` and the first run of
 //! `app/page.tsx`): Claude Code's and Codex's cards side by side, each saying what's missing and offering the one thing
-//! that fixes it, then Create your first agent. The Agents screen shows it while there are no agents and nobody is
-//! signed in (`wanted`).
+//! that fixes it, then Create your first agent. The Agents screen shows it until the first agent exists (`wanted`), as
+//! the TypeScript's home page did: signing in doesn't end it.
 
 use std::borrow::Cow;
 
@@ -73,18 +73,9 @@ fn entry_for(setup: Option<&[ProviderSetup]>, provider: Provider) -> Option<&Pro
     })
 }
 
-/// Whether the Agents screen shows the first run: no agents yet, and nobody signed in to either provider.
+/// Whether the Agents screen shows the first run: until the first agent exists (`app/page.tsx`).
 pub fn wanted(state: &AppState) -> bool {
     state.bots.is_empty()
-        && !PROVIDERS.iter().any(|provider| {
-            matches!(
-                card_view(
-                    entry_for(state.setup.as_deref(), *provider),
-                    LocalState::default()
-                ),
-                CardView::SignedIn { .. }
-            )
-        })
 }
 
 /// The first run, in the Agents screen's scroll area: what Tjommie needs, the two cards, and Create your first agent.
