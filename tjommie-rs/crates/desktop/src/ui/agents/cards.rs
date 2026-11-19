@@ -159,7 +159,7 @@ pub(super) fn bot_card(
             .mt(r(theme.space.s6))
             .truncate()
             .type_style(&theme.typography.desktop.ui)
-            .text_color(hsla(theme.color.bot.red))
+            .text_color(hsla(colors.danger.text))
             .child(problem)
             .into_any_element(),
         None => div()

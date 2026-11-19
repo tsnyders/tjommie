@@ -27,7 +27,7 @@ pub enum PillVariant {
     Grey,
     /// White with the card shadow.
     Raised,
-    /// A destructive confirm, quiet but in the danger colour (Aegis has no danger token; the agents' red stands in).
+    /// A destructive confirm, quiet but in the danger colour (`danger.text`).
     Danger,
 }
 
@@ -105,7 +105,7 @@ impl RenderOnce for Pill {
             PillVariant::Danger => (
                 colors.surface.sunk,
                 colors.state.sunk_hover,
-                theme.color.bot.red,
+                colors.danger.text,
             ),
         };
         let (height, pad) = if self.small {

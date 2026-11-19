@@ -45,6 +45,9 @@
         "pressed": "#191A1C17",
         "focus": "#191A1C"
       },
+      "danger": {
+        "text": "#B02F29"
+      },
       "overlay": {
         "scrim": "#191A1C61",
         "highlight": "#FFFFFFCC"
@@ -110,6 +113,9 @@
         "panelHover": "#262523",
         "pressed": "#EEEEEB1A",
         "focus": "#EEEEEB"
+      },
+      "danger": {
+        "text": "#DC6F6B"
       },
       "overlay": {
         "scrim": "#0000008C",
