@@ -16,9 +16,9 @@ use super::data::{Command, Connection, Recent, RecentKind, SavedHost, ShellData}
 use super::route::{Navigate as _, Route, Section};
 use crate::assets::DISPLAY_FAMILY;
 use crate::semantic::{Semantic, SemanticExt as _};
+use crate::ui::fields::arrows;
 use crate::ui::primitives::avatar::{BotAvatar, Pose};
 use crate::ui::primitives::button::{Pill, PillVariant, pressable};
-use crate::ui::fields::arrows;
 use crate::ui::primitives::focus_handle;
 use crate::ui::primitives::menu::{Menu, MenuItem};
 use crate::ui::primitives::scroll::{follow_focus, scroll_handle};

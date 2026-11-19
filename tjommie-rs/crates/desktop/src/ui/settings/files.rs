@@ -4,8 +4,8 @@
 //! no file session.
 
 use gpui::{
-    AnyElement, App, IntoElement, ParentElement as _, Role, StatefulInteractiveElement as _, Styled as _,
-    Window, div,
+    AnyElement, App, IntoElement, ParentElement as _, Role, StatefulInteractiveElement as _,
+    Styled as _, Window, div,
 };
 use protocol::attachments::{ATTACHMENT_CHUNK_BYTES, MAX_ATTACHMENT_BYTES};
 
@@ -99,7 +99,10 @@ mod tests {
         assert!(node("settings.files.clear").is_some());
         cx.update(|_, cx| cx.navigate(Route::Settings(Section::General)));
         draw(cx);
-        assert_eq!(text("settings.general.updates"), "Unavailable in this app version.");
+        assert_eq!(
+            text("settings.general.updates"),
+            "Unavailable in this app version."
+        );
         cx.update(|_, cx| cx.navigate(Route::Settings(Section::Notifications)));
         draw(cx);
         assert!(node("settings.notifications.title").is_some());

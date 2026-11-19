@@ -10,13 +10,14 @@
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, App, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement, ParentElement as _, Role,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Window, div, px, svg,
+    AnyElement, App, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement,
+    ParentElement as _, Role, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
+    div, px, svg,
 };
 use protocol::model::Bot;
 use protocol::vault::{
-    DeleteStatus, EntryStatus, EntryVersion, FillStatus, FinishStatus, LoginEntry, VaultEntry, VaultHostAction,
-    VaultList, VaultState, VaultStatus,
+    DeleteStatus, EntryStatus, EntryVersion, FillStatus, FinishStatus, LoginEntry, VaultEntry,
+    VaultHostAction, VaultList, VaultState, VaultStatus,
 };
 
 use super::accounts::pill;
@@ -62,7 +63,10 @@ impl HostLogins {
             guarded("cancel the host's pending logins", || {
                 let client = Arc::clone(&logins.client);
                 cx.spawn(async move |_| {
-                    guarded_async("cancel the host's pending logins", async move { client.cancel().await }).await;
+                    guarded_async("cancel the host's pending logins", async move {
+                        client.cancel().await
+                    })
+                    .await;
                 })
                 .detach();
             });
@@ -99,7 +103,9 @@ impl HostLogins {
                         return;
                     }
                     match both {
-                        (Ok(VaultReply::Status(status)), Ok(VaultReply::List(entries))) if entries.len() <= MOST => {
+                        (Ok(VaultReply::Status(status)), Ok(VaultReply::List(entries)))
+                            if entries.len() <= MOST =>
+                        {
                             if current {
                                 logins.status = Some(status);
                                 logins.entries = entries;
@@ -130,7 +136,9 @@ impl HostLogins {
         self.note = Some(waiting.to_owned());
         let done = match action {
             VaultHostAction::Entry(_) => "Login saved on the host.",
-            VaultHostAction::Delete(_) => "Deletion confirmed. Any pending protected-storage cleanup is shown below.",
+            VaultHostAction::Delete(_) => {
+                "Deletion confirmed. Any pending protected-storage cleanup is shown below."
+            }
             _ => "Logins updated.",
         };
         cx.notify();
@@ -145,7 +153,14 @@ impl HostLogins {
                     logins.busy = false;
                     match reply {
                         Ok(reply) => {
-                            logins.note = Some(if cancelled(&reply) { "Cancelled." } else { done }.to_owned());
+                            logins.note = Some(
+                                if cancelled(&reply) {
+                                    "Cancelled."
+                                } else {
+                                    done
+                                }
+                                .to_owned(),
+                            );
                             logins.refresh(cx);
                         }
                         Err(LoginsError::Cancelled) => logins.note = Some("Cancelled.".to_owned()),
@@ -170,7 +185,11 @@ impl HostLogins {
         cx.notify();
         let client = Arc::clone(&self.client);
         cx.spawn(async move |_, _| {
-            guarded_async("cancel a logins action", async move { client.cancel().await }).await;
+            guarded_async(
+                "cancel a logins action",
+                async move { client.cancel().await },
+            )
+            .await;
         })
         .detach();
     }
@@ -196,7 +215,13 @@ fn state_word(state: VaultState) -> &'static str {
 }
 
 /// A settings row the tests and Windows read by `id`: its title and note, and its buttons.
-fn row(id: impl Into<SharedString>, title: String, note: String, control: Option<AnyElement>, ruled: bool) -> AnyElement {
+fn row(
+    id: impl Into<SharedString>,
+    title: String,
+    note: String,
+    control: Option<AnyElement>,
+    ruled: bool,
+) -> AnyElement {
     let spoken = format!("{title}. {note}");
     let row = SettingsRow::new(title).description(note);
     let row = match control {
@@ -204,11 +229,18 @@ fn row(id: impl Into<SharedString>, title: String, note: String, control: Option
         None => row,
     };
     let row = if ruled { row.ruled() } else { row };
-    div().semantic(id, Role::Group).aria_label(spoken).child(row).into_any_element()
+    div()
+        .semantic(id, Role::Group)
+        .aria_label(spoken)
+        .child(row)
+        .into_any_element()
 }
 
 /// A button that runs `action` on the host.
-fn act(logins: &Entity<HostLogins>, action: VaultHostAction) -> impl Fn(&mut Window, &mut App) + 'static {
+fn act(
+    logins: &Entity<HostLogins>,
+    action: VaultHostAction,
+) -> impl Fn(&mut Window, &mut App) + 'static {
     let logins = logins.clone();
     move |_, cx| {
         let action = action.clone();
@@ -217,13 +249,23 @@ fn act(logins: &Entity<HostLogins>, action: VaultHostAction) -> impl Fn(&mut Win
 }
 
 /// The agent for a new login (`Agent for new login`): the chosen agent's picture and name, or Choose agent.
-fn agent_trigger(open: bool, chosen: Option<&Bot>, focus: Option<&FocusHandle>, window: &Window, cx: &App) -> AnyElement {
+fn agent_trigger(
+    open: bool,
+    chosen: Option<&Bot>,
+    focus: Option<&FocusHandle>,
+    window: &Window,
+    cx: &App,
+) -> AnyElement {
     let theme = theme(cx);
     let colors = palette(cx);
     let ring = focus.is_some_and(|focus| focus_visible(focus, window));
     let trigger = div()
         .semantic("settings.logins.agent", Role::Button)
-        .aria_label(if focus.is_some() { "Agent for new login" } else { "Agent for new login, unavailable" })
+        .aria_label(if focus.is_some() {
+            "Agent for new login"
+        } else {
+            "Agent for new login, unavailable"
+        })
         .semantic_disabled(focus.is_none())
         .aria_expanded(open)
         .relative()
@@ -238,18 +280,36 @@ fn agent_trigger(open: bool, chosen: Option<&Bot>, focus: Option<&FocusHandle>, 
         .type_style(&theme.typography.desktop.button)
         .text_color(hsla(colors.text.primary))
         .children(chosen.map(|bot| BotAvatar::new(bot.color, bot.shape, 18.)))
-        .child(div().min_w_0().truncate().child(chosen.map_or_else(|| "Choose agent".to_owned(), |bot| bot.name.clone())))
-        .child(svg().path("icons/i/175/chevron-down.svg").size(r(14.)).flex_none().text_color(hsla(colors.icon.base)))
+        .child(
+            div()
+                .min_w_0()
+                .truncate()
+                .child(chosen.map_or_else(|| "Choose agent".to_owned(), |bot| bot.name.clone())),
+        )
+        .child(
+            svg()
+                .path("icons/i/175/chevron-down.svg")
+                .size(r(14.))
+                .flex_none()
+                .text_color(hsla(colors.icon.base)),
+        )
         .children(ring.then(|| focus_ring(theme.radius.pill, cx)));
     match focus {
-        Some(focus) => trigger.track_focus(focus).cursor_pointer().into_any_element(),
+        Some(focus) => trigger
+            .track_focus(focus)
+            .cursor_pointer()
+            .into_any_element(),
         None => trigger.opacity(0.38).into_any_element(),
     }
 }
 
 pub(super) fn section(window: &mut Window, cx: &mut App) -> AnyElement {
     let now = store::state(cx);
-    let key = format!("settings.logins.{}.{:?}", now.host.clone().unwrap_or_default(), now.connection);
+    let key = format!(
+        "settings.logins.{}.{:?}",
+        now.host.clone().unwrap_or_default(),
+        now.connection
+    );
     let logins = window.use_keyed_state(SharedString::from(key), cx, |_, cx| HostLogins::new(cx));
     let agent = focus_handle("settings.logins.agent", window, cx);
     let cx = &*cx;
@@ -257,7 +317,10 @@ pub(super) fn section(window: &mut Window, cx: &mut App) -> AnyElement {
     let bots = store::state(cx).bots.clone();
     let host = logins.read(cx);
     let state = host.status.as_ref().map(|status| status.state);
-    let (locked, unlocked) = (state == Some(VaultState::Locked), state == Some(VaultState::Unlocked));
+    let (locked, unlocked) = (
+        state == Some(VaultState::Locked),
+        state == Some(VaultState::Unlocked),
+    );
     let free = !host.busy;
 
     let title = match (&host.status, host.failed) {
@@ -269,7 +332,10 @@ pub(super) fn section(window: &mut Window, cx: &mut App) -> AnyElement {
         .status
         .as_ref()
         .and_then(|status| status.reason.clone())
-        .unwrap_or_else(|| "The host asks for confirmation before unlock, entry changes or filling a login.".to_owned());
+        .unwrap_or_else(|| {
+            "The host asks for confirmation before unlock, entry changes or filling a login."
+                .to_owned()
+        });
     let refresh = {
         let logins = logins.clone();
         move |_: &mut Window, cx: &mut App| logins.update(cx, |logins, cx| logins.refresh(cx))
@@ -278,10 +344,31 @@ pub(super) fn section(window: &mut Window, cx: &mut App) -> AnyElement {
         .flex()
         .flex_wrap()
         .gap(r(theme.space.s8))
-        .child(pill("settings.logins.refresh".to_owned(), "Refresh", false, free, refresh))
-        .child(pill("settings.logins.unlock".to_owned(), "Unlock on host", false, free && locked, act(&logins, VaultHostAction::Unlock)))
-        .child(pill("settings.logins.lock".to_owned(), "Lock Logins", false, host.client.current(), act(&logins, VaultHostAction::Lock)));
-    let pending = host.status.as_ref().map_or(0, |status| status.pending_deletes);
+        .child(pill(
+            "settings.logins.refresh".to_owned(),
+            "Refresh",
+            false,
+            free,
+            refresh,
+        ))
+        .child(pill(
+            "settings.logins.unlock".to_owned(),
+            "Unlock on host",
+            false,
+            free && locked,
+            act(&logins, VaultHostAction::Unlock),
+        ))
+        .child(pill(
+            "settings.logins.lock".to_owned(),
+            "Lock Logins",
+            false,
+            host.client.current(),
+            act(&logins, VaultHostAction::Lock),
+        ));
+    let pending = host
+        .status
+        .as_ref()
+        .map_or(0, |status| status.pending_deletes);
     let state_card = super::card(cx).child(row("settings.logins.state", title, note, Some(controls.into_any_element()), false)).children(
         (pending > 0).then(|| {
             let plural = if pending == 1 { "" } else { "s" };
@@ -296,7 +383,11 @@ pub(super) fn section(window: &mut Window, cx: &mut App) -> AnyElement {
         }),
     );
 
-    let chosen = host.bot.as_ref().and_then(|id| bots.iter().find(|bot| &bot.id == id)).cloned();
+    let chosen = host
+        .bot
+        .as_ref()
+        .and_then(|id| bots.iter().find(|bot| &bot.id == id))
+        .cloned();
     let agent_menu = if free && !bots.is_empty() {
         let shown = chosen.clone();
         let menu = Menu::new("settings.logins.agent_menu", move |open, window, cx| {
@@ -309,12 +400,16 @@ pub(super) fn section(window: &mut Window, cx: &mut App) -> AnyElement {
                 let (logins, id) = (logins.clone(), bot.id.clone());
                 let checked = host.bot.as_deref() == Some(bot.id.as_str());
                 menu.item(
-                    MenuItem::new(format!("settings.logins.agent.{}", bot.id), bot.name.clone(), move |_, cx| {
-                        logins.update(cx, |logins, cx| {
-                            logins.bot = Some(id.clone());
-                            cx.notify();
-                        });
-                    })
+                    MenuItem::new(
+                        format!("settings.logins.agent.{}", bot.id),
+                        bot.name.clone(),
+                        move |_, cx| {
+                            logins.update(cx, |logins, cx| {
+                                logins.bot = Some(id.clone());
+                                cx.notify();
+                            });
+                        },
+                    )
                     .checked(checked),
                 )
             })
@@ -324,10 +419,26 @@ pub(super) fn section(window: &mut Window, cx: &mut App) -> AnyElement {
     };
     let new_login = match host.bot.clone() {
         Some(bot_id) => {
-            let action = VaultHostAction::Entry(VaultEntry { bot_id, id: None, revision: None });
-            pill("settings.logins.new".to_owned(), "New login on host", true, free && unlocked, act(&logins, action))
+            let action = VaultHostAction::Entry(VaultEntry {
+                bot_id,
+                id: None,
+                revision: None,
+            });
+            pill(
+                "settings.logins.new".to_owned(),
+                "New login on host",
+                true,
+                free && unlocked,
+                act(&logins, action),
+            )
         }
-        None => pill("settings.logins.new".to_owned(), "New login on host", true, false, |_, _| {}),
+        None => pill(
+            "settings.logins.new".to_owned(),
+            "New login on host",
+            true,
+            false,
+            |_, _| {},
+        ),
     };
     let new_card = super::card(cx).child(row(
         "settings.logins.new_row",
@@ -339,27 +450,57 @@ pub(super) fn section(window: &mut Window, cx: &mut App) -> AnyElement {
 
     let rows: Vec<AnyElement> = if host.entries.is_empty() {
         let none = "Refresh after the host has saved an entry.".to_owned();
-        vec![row("settings.logins.none", "No saved login metadata".to_owned(), none, None, false)]
+        vec![row(
+            "settings.logins.none",
+            "No saved login metadata".to_owned(),
+            none,
+            None,
+            false,
+        )]
     } else {
         host.entries
             .iter()
             .enumerate()
             .map(|(index, entry)| {
-                let agent = bots.iter().find(|bot| bot.id == entry.bot_id).map_or("Missing agent", |bot| bot.name.as_str());
+                let agent = bots
+                    .iter()
+                    .find(|bot| bot.id == entry.bot_id)
+                    .map_or("Missing agent", |bot| bot.name.as_str());
                 let edit = VaultHostAction::Entry(VaultEntry {
                     bot_id: entry.bot_id.clone(),
                     id: Some(entry.id.clone()),
                     revision: Some(entry.revision),
                 });
-                let delete = VaultHostAction::Delete(EntryVersion { id: entry.id.clone(), revision: entry.revision });
+                let delete = VaultHostAction::Delete(EntryVersion {
+                    id: entry.id.clone(),
+                    revision: entry.revision,
+                });
                 let controls = div()
                     .flex()
                     .flex_wrap()
                     .gap(r(theme.space.s8))
-                    .child(pill(format!("settings.logins.{}.edit", entry.id), "Edit on host", false, free && unlocked, act(&logins, edit)))
-                    .child(pill(format!("settings.logins.{}.delete", entry.id), "Delete on host", false, free, act(&logins, delete)));
+                    .child(pill(
+                        format!("settings.logins.{}.edit", entry.id),
+                        "Edit on host",
+                        false,
+                        free && unlocked,
+                        act(&logins, edit),
+                    ))
+                    .child(pill(
+                        format!("settings.logins.{}.delete", entry.id),
+                        "Delete on host",
+                        false,
+                        free,
+                        act(&logins, delete),
+                    ));
                 let note = format!("{} · {agent}", entry.origin.as_str());
-                row(format!("settings.logins.{}", entry.id), entry.name.clone(), note, Some(controls.into_any_element()), index > 0)
+                row(
+                    format!("settings.logins.{}", entry.id),
+                    entry.name.clone(),
+                    note,
+                    Some(controls.into_any_element()),
+                    index > 0,
+                )
             })
             .collect()
     };
@@ -373,10 +514,23 @@ pub(super) fn section(window: &mut Window, cx: &mut App) -> AnyElement {
         .child(new_card)
         .child(super::card(cx).children(rows))
         .children(host.busy.then(|| {
-            div().mt(r(theme.space.s12)).child(pill("settings.logins.cancel".to_owned(), "Cancel host interaction", false, true, cancel))
+            div().mt(r(theme.space.s12)).child(pill(
+                "settings.logins.cancel".to_owned(),
+                "Cancel host interaction",
+                false,
+                true,
+                cancel,
+            ))
         }))
-        .children(host.note.clone().map(|note| div().mt(r(theme.space.s12)).child(line("settings.logins.note", Role::Status, note, cx))))
-        .children(host.failed.then(|| problem("settings.logins.problem", LOGINS_PROBLEM, cx)))
+        .children(host.note.clone().map(|note| {
+            div()
+                .mt(r(theme.space.s12))
+                .child(line("settings.logins.note", Role::Status, note, cx))
+        }))
+        .children(
+            host.failed
+                .then(|| problem("settings.logins.problem", LOGINS_PROBLEM, cx)),
+        )
         .into_any_element()
 }
 
@@ -405,18 +559,29 @@ mod tests {
     fn vault() -> FakeRpc {
         let unlocked = json!({ "state": "unlocked", "reason": null, "pendingDeletes": 0 });
         FakeRpc::new()
-            .on::<method::VaultStatus>(move |_| Ok(serde_json::from_value(unlocked.clone()).unwrap()))
+            .on::<method::VaultStatus>(move |_| {
+                Ok(serde_json::from_value(unlocked.clone()).unwrap())
+            })
             .on::<method::VaultList>(|_| Ok(vec![serde_json::from_value(entry()).unwrap()]))
-            .on::<method::VaultEntry>(|_| Ok(serde_json::from_value(json!({ "status": "saved", "entry": entry() })).unwrap()))
+            .on::<method::VaultEntry>(|_| {
+                Ok(serde_json::from_value(json!({ "status": "saved", "entry": entry() })).unwrap())
+            })
     }
 
     /// On a selected PC, with agent `one`, Writer.
     fn on_host() -> AppState {
-        AppState { host: Some("selected-host".into()), ..state(vec![bot("one", "Writer", BotState::Idle)], vec![], vec![]) }
+        AppState {
+            host: Some("selected-host".into()),
+            ..state(vec![bot("one", "Writer", BotState::Idle)], vec![], vec![])
+        }
     }
 
     fn calls(rpc: &FakeRpc, method: &str) -> Vec<Value> {
-        rpc.calls().into_iter().filter(|(name, _)| *name == method).map(|(_, params)| params).collect()
+        rpc.calls()
+            .into_iter()
+            .filter(|(name, _)| *name == method)
+            .map(|(_, params)| params)
+            .collect()
     }
 
     /// logins-section.test.tsx: "shows metadata and invokes native host entry without ordinary secret inputs".
@@ -425,24 +590,46 @@ mod tests {
         let (cx, calls_made) = app(cx, Route::Settings(Section::Logins), on_host(), vault());
         draw(cx);
         assert!(text("settings.logins.state").starts_with("Logins unlocked."));
-        assert_eq!(text("settings.logins.41f8bac7-358c-48cf-9f48-a3a358804da6"), "Synthetic login. https://example.com · Writer");
-        assert!(crate::test_driver::nodes().iter().all(|node| node.role != "TextInput"), "nothing secret is typed here");
+        assert_eq!(
+            text("settings.logins.41f8bac7-358c-48cf-9f48-a3a358804da6"),
+            "Synthetic login. https://example.com · Writer"
+        );
+        assert!(
+            crate::test_driver::nodes()
+                .iter()
+                .all(|node| node.role != "TextInput"),
+            "nothing secret is typed here"
+        );
         click(cx, "settings.logins.agent");
         click(cx, "settings.logins.agent.one");
         click(cx, "settings.logins.new");
         draw(cx);
-        assert_eq!(calls(&calls_made, "vault.entry"), [json!({ "botId": "one" })]);
+        assert_eq!(
+            calls(&calls_made, "vault.entry"),
+            [json!({ "botId": "one" })]
+        );
         assert_eq!(text("settings.logins.note"), "Login saved on the host.");
-        click(cx, "settings.logins.41f8bac7-358c-48cf-9f48-a3a358804da6.edit");
+        click(
+            cx,
+            "settings.logins.41f8bac7-358c-48cf-9f48-a3a358804da6.edit",
+        );
         draw(cx);
         let edits = calls(&calls_made, "vault.entry");
-        assert_eq!(edits.get(1), Some(&json!({ "botId": "one", "id": ENTRY_ID, "revision": 3 })));
+        assert_eq!(
+            edits.get(1),
+            Some(&json!({ "botId": "one", "id": ENTRY_ID, "revision": 3 }))
+        );
     }
 
     /// When the host's vault can't be asked (no vault host answers), it says so and why, and guesses no state.
     #[gpui::test]
     fn says_logins_are_unavailable_when_the_host_cannot_be_asked(cx: &mut TestAppContext) {
-        let (cx, _) = app(cx, Route::Settings(Section::Logins), on_host(), FakeRpc::new());
+        let (cx, _) = app(
+            cx,
+            Route::Settings(Section::Logins),
+            on_host(),
+            FakeRpc::new(),
+        );
         draw(cx);
         assert!(text("settings.logins.state").starts_with("Logins unavailable."));
         assert_eq!(text("settings.logins.problem"), LOGINS_PROBLEM);

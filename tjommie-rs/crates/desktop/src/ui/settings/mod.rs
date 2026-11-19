@@ -300,7 +300,12 @@ mod tests {
     #[gpui::test]
     fn tab_brings_a_control_below_the_fold_into_view(cx: &mut gpui::TestAppContext) {
         // Appearance: its choices are Tab stops all the way down.
-        let (cx, _) = app(cx, Route::Settings(Section::Appearance), state(vec![], vec![], vec![]), FakeRpc::new());
+        let (cx, _) = app(
+            cx,
+            Route::Settings(Section::Appearance),
+            state(vec![], vec![], vec![]),
+            FakeRpc::new(),
+        );
         let height = 240.;
         cx.simulate_resize(gpui::size(gpui::px(960.), gpui::px(height)));
         draw(cx);
@@ -308,37 +313,64 @@ mod tests {
         // The controls whose middle is below the fold before anything is focused: one shown later was scrolled to.
         let below: Vec<String> = crate::test_driver::nodes()
             .into_iter()
-            .filter(|node| node.interactive && content(&node.id) && node.bounds.y + node.bounds.height / 2. > height)
+            .filter(|node| {
+                node.interactive
+                    && content(&node.id)
+                    && node.bounds.y + node.bounds.height / 2. > height
+            })
             .map(|node| node.id)
             .collect();
-        assert!(!below.is_empty(), "Appearance reaches below the fold at this height");
+        assert!(
+            !below.is_empty(),
+            "Appearance reaches below the fold at this height"
+        );
         let mut reached = Vec::new();
         for _ in 0..80 {
             // One draw for the key, then only the frame the app asks for (M5 review M1): no other event prompts it.
             cx.simulate_keystrokes("tab");
             draw(cx);
             next_frame(cx);
-            let Some(now) = crate::test_driver::nodes().into_iter().find(|node| node.focused) else {
+            let Some(now) = crate::test_driver::nodes()
+                .into_iter()
+                .find(|node| node.focused)
+            else {
                 continue;
             };
             if content(&now.id) {
                 let middle = now.bounds.y + now.bounds.height / 2.;
-                assert!((0. ..=height).contains(&middle), "{} has the focus out of view at {:?}", now.id, now.bounds);
+                assert!(
+                    (0. ..=height).contains(&middle),
+                    "{} has the focus out of view at {:?}",
+                    now.id,
+                    now.bounds
+                );
                 reached.push(now.id);
             }
         }
-        assert!(below.iter().any(|id| reached.contains(id)), "Tab reached one that started below: {below:?}, {reached:?}");
+        assert!(
+            below.iter().any(|id| reached.contains(id)),
+            "Tab reached one that started below: {below:?}, {reached:?}"
+        );
     }
 
     /// M5 review M1: a control is brought into view once per focus. A wheel that then scrolls away from it (a wheel
     /// leaves the keyboard modality, so the ring stays) isn't undone on the frames after.
     #[gpui::test]
     fn a_wheel_after_tab_is_not_undone(cx: &mut gpui::TestAppContext) {
-        let (cx, _) = app(cx, Route::Settings(Section::Appearance), state(vec![], vec![], vec![]), FakeRpc::new());
+        let (cx, _) = app(
+            cx,
+            Route::Settings(Section::Appearance),
+            state(vec![], vec![], vec![]),
+            FakeRpc::new(),
+        );
         let height = 240.;
         cx.simulate_resize(gpui::size(gpui::px(960.), gpui::px(height)));
         draw(cx);
-        let focused = || crate::test_driver::nodes().into_iter().find(|node| node.focused);
+        let focused = || {
+            crate::test_driver::nodes()
+                .into_iter()
+                .find(|node| node.focused)
+        };
         // Tab until the focus has scrolled the page: the focused control is then near the bottom of the view.
         let mut revealed = None;
         for _ in 0..80 {
@@ -359,7 +391,12 @@ mod tests {
         draw(cx);
         let wheeled = focused().expect("the focus stays");
         assert_eq!(wheeled.id, revealed.id);
-        assert!(wheeled.bounds.y > revealed.bounds.y, "the wheel scrolled: {:?} then {:?}", revealed.bounds, wheeled.bounds);
+        assert!(
+            wheeled.bounds.y > revealed.bounds.y,
+            "the wheel scrolled: {:?} then {:?}",
+            revealed.bounds,
+            wheeled.bounds
+        );
         // Nothing asks for a frame to undo it, and a later frame leaves it where the wheel put it.
         assert!(!next_frame(cx), "no reveal after the wheel");
         draw(cx);

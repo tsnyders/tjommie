@@ -3,7 +3,8 @@
 //! yet, so they say they're unavailable, as the TypeScript does for a desktop without them.
 
 use gpui::{
-    AnyElement, App, IntoElement, ParentElement as _, Role, StatefulInteractiveElement as _, Window, div,
+    AnyElement, App, IntoElement, ParentElement as _, Role, StatefulInteractiveElement as _,
+    Window, div,
 };
 
 use crate::semantic::SemanticExt as _;

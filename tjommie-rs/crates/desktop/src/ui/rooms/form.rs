@@ -273,7 +273,10 @@ fn finish(
                 if let Some(room) = made {
                     let id = room.id.clone();
                     store::update(cx, |state| {
-                        crate::model::state::apply_event(state, &protocol::wire::Event::RoomUpdated(room))
+                        crate::model::state::apply_event(
+                            state,
+                            &protocol::wire::Event::RoomUpdated(room),
+                        )
                     });
                     cx.navigate(Route::Room(id));
                 }

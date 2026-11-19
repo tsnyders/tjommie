@@ -161,7 +161,8 @@ mod tests {
 
     /// diagnostics.test.ts: "exports only structured versions and health categories, with distinct device/host scope".
     #[test]
-    fn exports_only_structured_versions_and_health_categories_with_distinct_device_and_host_scope() {
+    fn exports_only_structured_versions_and_health_categories_with_distinct_device_and_host_scope()
+    {
         let report = parsed(&input());
         assert_eq!(report["device"]["appVersion"], "0.3.2");
         assert_eq!(report["device"]["platform"], "windows");

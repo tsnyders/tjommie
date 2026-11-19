@@ -53,7 +53,10 @@ impl AppStore {
 
     /// Told each event as it is applied, whether or not it changed the state: for what the state doesn't keep (projects,
     /// devices, usage), which a screen reads again when its event arrives. The id is what `unsubscribe` takes.
-    pub fn subscribe_events(&mut self, listener: impl FnMut(&Event) + Send + 'static) -> SubscriptionId {
+    pub fn subscribe_events(
+        &mut self,
+        listener: impl FnMut(&Event) + Send + 'static,
+    ) -> SubscriptionId {
         let id = SubscriptionId(self.next_id);
         self.next_id += 1;
         let listener: EventListener = Box::new(listener);
@@ -90,7 +93,8 @@ impl AppStore {
     pub fn unsubscribe(&mut self, id: SubscriptionId) -> bool {
         let before = self.listeners.len() + self.event_listeners.len();
         self.listeners.retain(|(listener_id, _)| *listener_id != id);
-        self.event_listeners.retain(|(listener_id, _)| *listener_id != id);
+        self.event_listeners
+            .retain(|(listener_id, _)| *listener_id != id);
         self.listeners.len() + self.event_listeners.len() != before
     }
 }

@@ -4,9 +4,12 @@
 //! SDK preparation) is the phone's.
 
 use gpui::{
-    AnyElement, App, Entity, IntoElement, ParentElement as _, SharedString, Styled as _, Window, div, relative,
+    AnyElement, App, Entity, IntoElement, ParentElement as _, SharedString, Styled as _, Window,
+    div, relative,
 };
-use protocol::speech::{SpeechCapture, SpeechEngine, SpeechModelState, SpeechPermission, SpeechStatus};
+use protocol::speech::{
+    SpeechCapture, SpeechEngine, SpeechModelState, SpeechPermission, SpeechStatus,
+};
 
 use super::diagnostics::value;
 use crate::guard::guarded_async;
@@ -17,8 +20,7 @@ use crate::ui::primitives::menu::{Menu, MenuItem};
 use crate::ui::primitives::settings_row::SettingsRow;
 use crate::ui::style::{TypeExt as _, hsla, palette, r, theme};
 
-const NOT_FINISHED: &str =
-    "The local speech action could not finish. Check this device's storage and network, then try again.";
+const NOT_FINISHED: &str = "The local speech action could not finish. Check this device's storage and network, then try again.";
 
 #[derive(Clone, Copy, PartialEq)]
 enum Action {
@@ -48,7 +50,10 @@ fn named(value: &impl serde::Serialize) -> String {
 }
 
 fn run(state: &Entity<Voice>, action: Action, cx: &mut App) {
-    let Some(actions) = cx.try_global::<Speech>().map(|speech| speech.actions.clone()) else {
+    let Some(actions) = cx
+        .try_global::<Speech>()
+        .map(|speech| speech.actions.clone())
+    else {
         return;
     };
     if state.read(cx).working.is_some() && action != Action::Cancel {
@@ -88,16 +93,20 @@ fn run(state: &Entity<Voice>, action: Action, cx: &mut App) {
                                 match action {
                                     Action::Cancel => "Model download cancelled.",
                                     Action::Remove => "Downloaded model removed from this device.",
-                                    Action::Refresh | Action::Download => "Local speech status refreshed.",
+                                    Action::Refresh | Action::Download => {
+                                        "Local speech status refreshed."
+                                    }
                                 }
                                 .into(),
                             );
                         }
                         (_, next) => {
                             voice.problem = Some(
-                                next.and_then(|status| status.problem.map(|problem| problem.message))
-                                    .unwrap_or_else(|| NOT_FINISHED.to_owned())
-                                    .into(),
+                                next.and_then(|status| {
+                                    status.problem.map(|problem| problem.message)
+                                })
+                                .unwrap_or_else(|| NOT_FINISHED.to_owned())
+                                .into(),
                             );
                         }
                     }
@@ -112,7 +121,10 @@ fn run(state: &Entity<Voice>, action: Action, cx: &mut App) {
 
 /// Reads the status once when the section first shows; a status that can't be read says so.
 fn ask(state: &Entity<Voice>, cx: &mut App) {
-    let Some(actions) = cx.try_global::<Speech>().map(|speech| speech.actions.clone()) else {
+    let Some(actions) = cx
+        .try_global::<Speech>()
+        .map(|speech| speech.actions.clone())
+    else {
         return;
     };
     state.update(cx, |voice, _| voice.asked = true);
@@ -124,7 +136,8 @@ fn ask(state: &Entity<Voice>, cx: &mut App) {
                 Some(status) => speech::show(status, cx),
                 None => {
                     let _ = state.update(cx, |voice, cx| {
-                        voice.problem = Some("Local speech status is unavailable in this app.".into());
+                        voice.problem =
+                            Some("Local speech status is unavailable in this app.".into());
                         cx.notify();
                     });
                 }
@@ -142,7 +155,10 @@ fn model_line(status: Option<&SpeechStatus>) -> String {
         Some(status) => {
             let model = &status.model;
             let state = named(&model.state);
-            if matches!(model.state, SpeechModelState::Downloading | SpeechModelState::Verifying) {
+            if matches!(
+                model.state,
+                SpeechModelState::Downloading | SpeechModelState::Verifying
+            ) {
                 let percent = (model.received.saturating_mul(100) / model.bytes.max(1)).min(100);
                 format!("{state} · {percent}%")
             } else {
@@ -164,25 +180,44 @@ fn picker(
 ) -> AnyElement {
     let name = format!("{what}: {label}");
     if choices.is_empty() {
-        return Pill::new(id, label).name(name).small().disabled(true).into_any_element();
+        return Pill::new(id, label)
+            .name(name)
+            .small()
+            .disabled(true)
+            .into_any_element();
     }
     choices
         .into_iter()
         .fold(
             Menu::new(SharedString::from(format!("{id}.menu")), move |_, _, _| {
-                Pill::new(id, label.clone()).name(name.clone()).small().icon("chevron-down").into_any_element()
+                Pill::new(id, label.clone())
+                    .name(name.clone())
+                    .small()
+                    .icon("chevron-down")
+                    .into_any_element()
             })
             .anchor(gpui::Anchor::TopRight)
             .offset(gpui::px(6.)),
             |menu, (key, text)| {
                 let picked = key.clone();
                 menu.item(
-                    MenuItem::new(format!("{id}.{}", if key.is_empty() { "default" } else { key.as_str() }), text, move |_, cx| {
-                        let mut choice = speech::choice(cx);
-                        pick(&mut choice, picked.clone());
-                        cx.set_global(choice);
-                        cx.refresh_windows();
-                    })
+                    MenuItem::new(
+                        format!(
+                            "{id}.{}",
+                            if key.is_empty() {
+                                "default"
+                            } else {
+                                key.as_str()
+                            }
+                        ),
+                        text,
+                        move |_, cx| {
+                            let mut choice = speech::choice(cx);
+                            pick(&mut choice, picked.clone());
+                            cx.set_global(choice);
+                            cx.refresh_windows();
+                        },
+                    )
                     .checked(key == chosen),
                 )
             },
@@ -196,7 +231,9 @@ pub(super) fn section(window: &mut Window, cx: &mut App) -> AnyElement {
     if api && !state.read(cx).asked {
         ask(&state, cx);
     }
-    let status = cx.try_global::<Speech>().and_then(|speech| speech.status.clone());
+    let status = cx
+        .try_global::<Speech>()
+        .and_then(|speech| speech.status.clone());
     let choice = speech::choice(cx);
     let (working, notice, failed) = {
         let voice = state.read(cx);
@@ -215,15 +252,26 @@ pub(super) fn section(window: &mut Window, cx: &mut App) -> AnyElement {
     let selected = if languages.iter().any(|(tag, _)| *tag == choice.language) {
         choice.language.clone()
     } else {
-        languages.first().map(|(tag, _)| tag.clone()).unwrap_or_default()
+        languages
+            .first()
+            .map(|(tag, _)| tag.clone())
+            .unwrap_or_default()
     };
     let language_label = languages
         .iter()
         .find(|(tag, _)| *tag == selected)
-        .map_or_else(|| "No supported language available".to_owned(), |(_, label)| label.clone());
-    let pcm = status.as_ref().is_some_and(|status| status.capture == SpeechCapture::Pcm);
+        .map_or_else(
+            || "No supported language available".to_owned(),
+            |(_, label)| label.clone(),
+        );
+    let pcm = status
+        .as_ref()
+        .is_some_and(|status| status.capture == SpeechCapture::Pcm);
     let state_now = status.as_ref().map(|status| status.model.state);
-    let downloading = matches!(state_now, Some(SpeechModelState::Downloading | SpeechModelState::Verifying));
+    let downloading = matches!(
+        state_now,
+        Some(SpeechModelState::Downloading | SpeechModelState::Verifying)
+    );
     let runtime_missing = status
         .as_ref()
         .and_then(|status| status.problem.as_ref())
@@ -235,7 +283,10 @@ pub(super) fn section(window: &mut Window, cx: &mut App) -> AnyElement {
     };
     let mut devices = vec![(String::new(), "System default".to_owned())];
     if !choice.input_device.is_empty() {
-        devices.push((choice.input_device.clone(), "Previously selected microphone".to_owned()));
+        devices.push((
+            choice.input_device.clone(),
+            "Previously selected microphone".to_owned(),
+        ));
     }
 
     let action = |id: &'static str, label: &'static str, enabled: bool, what: Action| {
@@ -261,15 +312,27 @@ pub(super) fn section(window: &mut Window, cx: &mut App) -> AnyElement {
         ));
     }
     if pcm && !downloading && !runtime_missing && state_now != Some(SpeechModelState::Ready) {
-        buttons.push(action("settings.voice.download", "Download English model", working.is_none(), Action::Download));
+        buttons.push(action(
+            "settings.voice.download",
+            "Download English model",
+            working.is_none(),
+            Action::Download,
+        ));
     }
     if pcm && state_now == Some(SpeechModelState::Ready) {
-        buttons.push(action("settings.voice.remove", "Remove downloaded model", working.is_none(), Action::Remove));
+        buttons.push(action(
+            "settings.voice.remove",
+            "Remove downloaded model",
+            working.is_none(),
+            Action::Remove,
+        ));
     }
     let microphones = {
         let (state, granted) = (
             state.clone(),
-            status.as_ref().is_some_and(|status| status.permission == SpeechPermission::Granted),
+            status
+                .as_ref()
+                .is_some_and(|status| status.permission == SpeechPermission::Granted),
         );
         Pill::new("settings.voice.microphones", "Refresh microphones").small().on_press(move |_, cx| {
             state.update(cx, |voice, cx| {
@@ -322,10 +385,14 @@ pub(super) fn section(window: &mut Window, cx: &mut App) -> AnyElement {
         )
         .child(
             SettingsRow::new("Microphone permission")
-                .description("Permission is requested only when you start dictation in a conversation.")
+                .description(
+                    "Permission is requested only when you start dictation in a conversation.",
+                )
                 .control(value(
                     "settings.voice.permission",
-                    status.as_ref().map_or_else(|| "Unknown".to_owned(), |status| named(&status.permission)),
+                    status
+                        .as_ref()
+                        .map_or_else(|| "Unknown".to_owned(), |status| named(&status.permission)),
                     cx,
                 ))
                 .ruled(),
@@ -377,19 +444,22 @@ pub(super) fn section(window: &mut Window, cx: &mut App) -> AnyElement {
     card = card.child(
         SettingsRow::new("Local model")
             .description(model_note)
-            .control(value("settings.voice.model", model_line(status.as_ref()), cx))
+            .control(value(
+                "settings.voice.model",
+                model_line(status.as_ref()),
+                cx,
+            ))
             .ruled(),
     );
     if let Some(trouble) = status.as_ref().and_then(|status| status.problem.as_ref()) {
         card = card.child(
             SettingsRow::new("On-device status")
                 // At most 60% of the row, so a long message wraps there and the label keeps its room.
-                .control(
-                    div()
-                        .min_w_0()
-                        .max_w(relative(0.6))
-                        .child(value("settings.voice.status_problem", trouble.message.clone(), cx)),
-                )
+                .control(div().min_w_0().max_w(relative(0.6)).child(value(
+                    "settings.voice.status_problem",
+                    trouble.message.clone(),
+                    cx,
+                )))
                 .ruled(),
         );
     }
@@ -519,7 +589,12 @@ mod tests {
     /// voice-section.test.tsx: "degrades honestly without the current-device bridge".
     #[gpui::test]
     fn degrades_honestly_without_local_speech(cx: &mut TestAppContext) {
-        let (_, _) = app(cx, Route::Settings(Section::Voice), state(vec![], vec![], vec![]), FakeRpc::new());
+        let (_, _) = app(
+            cx,
+            Route::Settings(Section::Voice),
+            state(vec![], vec![], vec![]),
+            FakeRpc::new(),
+        );
         assert_eq!(text("settings.voice.engine"), "Unavailable or not checked");
         assert_eq!(text("settings.voice.availability"), "Unknown");
         assert!(text("settings.voice.no_api").contains("there is no cloud fallback"));
@@ -529,14 +604,23 @@ mod tests {
     /// voice-section.test.tsx: "reads status without recording and persists supported language choices on this device".
     #[gpui::test]
     fn reads_the_status_and_keeps_the_language_chosen(cx: &mut TestAppContext) {
-        let (cx, _) = app(cx, Route::Settings(Section::Voice), state(vec![], vec![], vec![]), FakeRpc::new());
+        let (cx, _) = app(
+            cx,
+            Route::Settings(Section::Voice),
+            state(vec![], vec![], vec![]),
+            FakeRpc::new(),
+        );
         let speech = fake(status("ready", true, None), false);
         with_speech(cx, Arc::clone(&speech));
         assert_eq!(text("settings.voice.engine"), "whisper.cpp on this device");
         assert_eq!(text("settings.voice.availability"), "Ready");
         assert_eq!(text("settings.voice.permission"), "granted");
         assert_eq!(text("settings.voice.model"), "ready");
-        assert_eq!(*speech.asked.lock().unwrap(), ["status"], "only the status is read");
+        assert_eq!(
+            *speech.asked.lock().unwrap(),
+            ["status"],
+            "only the status is read"
+        );
         click(cx, "settings.voice.language");
         click(cx, "settings.voice.language.en");
         assert_eq!(cx.update(|_, cx| crate::speech::choice(cx).language), "en");
@@ -546,7 +630,12 @@ mod tests {
     /// granted".
     #[gpui::test]
     fn never_lists_microphones_or_asks_for_access(cx: &mut TestAppContext) {
-        let (cx, _) = app(cx, Route::Settings(Section::Voice), state(vec![], vec![], vec![]), FakeRpc::new());
+        let (cx, _) = app(
+            cx,
+            Route::Settings(Section::Voice),
+            state(vec![], vec![], vec![]),
+            FakeRpc::new(),
+        );
         let mut prompt = status("missing", false, None);
         prompt.permission = protocol::speech::SpeechPermission::Prompt;
         let speech = fake(prompt, false);
@@ -563,11 +652,19 @@ mod tests {
     /// device model" (the desktop half).
     #[gpui::test]
     fn downloads_cancels_and_removes_the_model(cx: &mut TestAppContext) {
-        let (cx, _) = app(cx, Route::Settings(Section::Voice), state(vec![], vec![], vec![]), FakeRpc::new());
+        let (cx, _) = app(
+            cx,
+            Route::Settings(Section::Voice),
+            state(vec![], vec![], vec![]),
+            FakeRpc::new(),
+        );
         let speech = fake(status("downloading", false, None), true);
         with_speech(cx, Arc::clone(&speech));
         assert_eq!(text("settings.voice.model"), "downloading · 50%");
-        assert!(node("settings.voice.download").is_none(), "not while downloading");
+        assert!(
+            node("settings.voice.download").is_none(),
+            "not while downloading"
+        );
         click(cx, "settings.voice.cancel");
         draw(cx);
         assert_eq!(text("settings.voice.notice"), "Model download cancelled.");
@@ -579,24 +676,42 @@ mod tests {
         speech.set(SpeechModelState::Ready);
         click(cx, "settings.voice.refresh");
         draw(cx);
-        assert_eq!(text("settings.voice.notice"), "Local speech status refreshed.");
+        assert_eq!(
+            text("settings.voice.notice"),
+            "Local speech status refreshed."
+        );
         click(cx, "settings.voice.remove");
         draw(cx);
-        assert_eq!(text("settings.voice.notice"), "Downloaded model removed from this device.");
+        assert_eq!(
+            text("settings.voice.notice"),
+            "Downloaded model removed from this device."
+        );
         assert!(speech.asked.lock().unwrap().contains(&"remove"));
     }
 
     /// A missing runtime: no download to offer, and the reason shown.
     #[gpui::test]
     fn a_missing_runtime_offers_no_download(cx: &mut TestAppContext) {
-        let (cx, _) = app(cx, Route::Settings(Section::Voice), state(vec![], vec![], vec![]), FakeRpc::new());
+        let (cx, _) = app(
+            cx,
+            Route::Settings(Section::Voice),
+            state(vec![], vec![], vec![]),
+            FakeRpc::new(),
+        );
         let speech = fake(
-            status("missing", false, Some(("runtime_unavailable", "Local dictation is not installed."))),
+            status(
+                "missing",
+                false,
+                Some(("runtime_unavailable", "Local dictation is not installed.")),
+            ),
             false,
         );
         with_speech(cx, speech);
         assert!(node("settings.voice.download").is_none());
-        assert_eq!(text("settings.voice.status_problem"), "Local dictation is not installed.");
+        assert_eq!(
+            text("settings.voice.status_problem"),
+            "Local dictation is not installed."
+        );
         assert!(text("settings.voice.needs").contains("No online recognizer is substituted."));
     }
 }

@@ -124,10 +124,16 @@ fn mentions_offer_only_the_rooms_agents_and_everyone_means_all_of_them() {
         .map(|option| option.name)
         .collect();
     assert_eq!(names, ["Sales", "Marketing", "everyone"]);
-    assert!(mention_options("Ch", &members).is_empty(), "Chief isn't in Growth");
+    assert!(
+        mention_options("Ch", &members).is_empty(),
+        "Chief isn't in Growth"
+    );
     assert_eq!(everyone_label(2), "All 2 agents in this room");
     assert_eq!(everyone_label(1), "All 1 agent in this room");
-    assert_eq!(placeholder("Growth"), "Message Growth. Type @ to mention an agent.");
+    assert_eq!(
+        placeholder("Growth"),
+        "Message Growth. Type @ to mention an agent."
+    );
 }
 
 /// `room-composer.test.tsx`: "says nobody will reply to a bot outside the room, even one whose name starts with a
@@ -144,7 +150,10 @@ fn nobody_replies_to_an_agent_outside_the_room() {
 /// name".
 #[test]
 fn your_post_marks_the_mentions_the_rooms_agents_answer() {
-    let bots = vec![bot("b", "Bot", BotState::Idle), bot("b2", "Bot 2", BotState::Idle)];
+    let bots = vec![
+        bot("b", "Bot", BotState::Idle),
+        bot("b2", "Bot 2", BotState::Idle),
+    ];
     let members = vec![&bots[0]];
     let spans = |text: &str| -> Vec<(usize, usize)> {
         marked(text, &bots, &members)
@@ -167,7 +176,10 @@ fn a_refusal_lasts_until_the_room_moves_on() {
     let reply = |status, body: &str| post("m2", "b1", body, status, 1);
     let refused = progress_of(&[yours.clone(), reply(MessageStatus::Streaming, "")]);
     assert_eq!(
-        progress_of(&[yours.clone(), reply(MessageStatus::Streaming, "Half an ans")]),
+        progress_of(&[
+            yours.clone(),
+            reply(MessageStatus::Streaming, "Half an ans")
+        ]),
         refused
     );
     assert_ne!(
@@ -176,13 +188,25 @@ fn a_refusal_lasts_until_the_room_moves_on() {
     );
     let added = post("m3", "you", "@Sales hi", MessageStatus::Done, 2);
     assert_ne!(
-        progress_of(&[yours.clone(), reply(MessageStatus::Streaming, ""), added.clone()]),
+        progress_of(&[
+            yours.clone(),
+            reply(MessageStatus::Streaming, ""),
+            added.clone()
+        ]),
         refused
     );
     // "stops saying why when an earlier reply finishes behind a newer post".
-    let later = progress_of(&[yours.clone(), reply(MessageStatus::Streaming, ""), added.clone()]);
+    let later = progress_of(&[
+        yours.clone(),
+        reply(MessageStatus::Streaming, ""),
+        added.clone(),
+    ]);
     assert_eq!(
-        progress_of(&[yours.clone(), reply(MessageStatus::Streaming, "Half"), added.clone()]),
+        progress_of(&[
+            yours.clone(),
+            reply(MessageStatus::Streaming, "Half"),
+            added.clone()
+        ]),
         later
     );
     assert_ne!(
@@ -193,8 +217,14 @@ fn a_refusal_lasts_until_the_room_moves_on() {
 
 #[test]
 fn the_chain_line_and_the_summary_count_in_words() {
-    assert_eq!(chain_line(3), "Agents can ask each other up to 3 times per chain.");
-    assert_eq!(chain_line(1), "Agents can ask each other up to 1 time per chain.");
+    assert_eq!(
+        chain_line(3),
+        "Agents can ask each other up to 3 times per chain."
+    );
+    assert_eq!(
+        chain_line(1),
+        "Agents can ask each other up to 1 time per chain."
+    );
     assert_eq!(rooms_summary(1), "1 room");
     assert_eq!(rooms_summary(2), "2 rooms");
 }
@@ -212,7 +242,10 @@ fn the_rooms_list_reads_each_room_once_and_follows_new_posts(cx: &mut TestAppCon
     let line = |cx: &mut gpui::VisualTestContext| {
         cx.update(|_, cx| {
             let state = crate::ui::store::state(cx);
-            let messages = state.conversations.get("r1").map(|chat| chat.messages.clone());
+            let messages = state
+                .conversations
+                .get("r1")
+                .map(|chat| chat.messages.clone());
             room_line(messages.as_deref(), &state.bots, &jiff::Zoned::now())
         })
     };
@@ -222,7 +255,13 @@ fn the_rooms_list_reads_each_room_once_and_follows_new_posts(cx: &mut TestAppCon
         crate::ui::store::update(cx, |state| {
             apply_event(
                 state,
-                &Event::MessageAdded(post("m2", "b2", "Campaign drafted.", MessageStatus::Done, 5)),
+                &Event::MessageAdded(post(
+                    "m2",
+                    "b2",
+                    "Campaign drafted.",
+                    MessageStatus::Done,
+                    5,
+                )),
             )
         })
     });
@@ -231,7 +270,10 @@ fn the_rooms_list_reads_each_room_once_and_follows_new_posts(cx: &mut TestAppCon
     // An agent changing is not a reason to read the rooms again; a new room is read once.
     cx.update(|_, cx| {
         crate::ui::store::update(cx, |state| {
-            apply_event(state, &Event::BotUpdated(bot("b3", "Chief", BotState::Working)))
+            apply_event(
+                state,
+                &Event::BotUpdated(bot("b3", "Chief", BotState::Working)),
+            )
         })
     });
     draw(cx);
@@ -260,7 +302,10 @@ fn the_members_panel_lists_the_rooms_agents_and_everyone_has_no_more(cx: &mut Te
     let (cx, _) = app(cx, Route::Room("r1".into()), rooms_state(), rpc(vec![]));
     assert_eq!(text("screen.room"), "Growth");
     assert_eq!(text("room.members"), "Growth members");
-    assert_eq!(ids("room.members.b"), ["room.members.b1", "room.members.b2"]);
+    assert_eq!(
+        ids("room.members.b"),
+        ["room.members.b1", "room.members.b2"]
+    );
     assert_eq!(text("room.members.b1"), "Sales");
     assert!(node("room.members.edit").is_some());
     assert!(node("room.more").is_some());
@@ -272,8 +317,14 @@ fn the_members_panel_lists_the_rooms_agents_and_everyone_has_no_more(cx: &mut Te
     draw(cx);
     assert_eq!(text("screen.room"), "Everyone");
     assert_eq!(ids("room.members.b").len(), 3, "Everyone holds every agent");
-    assert!(node("room.members.edit").is_none(), "Everyone always holds every agent");
-    assert!(node("room.more").is_none(), "Everyone can't be edited or deleted");
+    assert!(
+        node("room.members.edit").is_none(),
+        "Everyone always holds every agent"
+    );
+    assert!(
+        node("room.more").is_none(),
+        "Everyone can't be edited or deleted"
+    );
 }
 
 #[gpui::test]
@@ -357,11 +408,17 @@ fn the_arrows_move_enter_picks_and_then_sends(cx: &mut TestAppContext) {
     assert!(node("room.mentions.1").unwrap().selected);
     cx.simulate_keystrokes("up up");
     draw(cx);
-    assert!(node("room.mentions.2").unwrap().selected, "up from the top wraps");
+    assert!(
+        node("room.mentions.2").unwrap().selected,
+        "up from the top wraps"
+    );
     cx.simulate_keystrokes("down down enter");
     draw(cx);
     assert!(node("room.mentions").is_none(), "picked: the list closes");
-    assert!(calls_of(&calls.calls(), "room.post").is_empty(), "Enter picked, it didn't send");
+    assert!(
+        calls_of(&calls.calls(), "room.post").is_empty(),
+        "Enter picked, it didn't send"
+    );
     cx.simulate_input("hi");
     cx.simulate_keystrokes("enter");
     draw(cx);
@@ -369,7 +426,10 @@ fn the_arrows_move_enter_picks_and_then_sends(cx: &mut TestAppContext) {
         calls_of(&calls.calls(), "room.post"),
         [serde_json::json!({ "roomId": "r1", "text": "@Marketing hi" })]
     );
-    assert!(node("room.composer.hint").is_none(), "Marketing is in the room");
+    assert!(
+        node("room.composer.hint").is_none(),
+        "Marketing is in the room"
+    );
     // The box was cleared: Enter again sends nothing.
     cx.simulate_keystrokes("enter");
     draw(cx);
@@ -387,10 +447,17 @@ fn escape_closes_the_list_for_that_mention(cx: &mut TestAppContext) {
     assert!(node("room.mentions").is_none());
     cx.simulate_input("a");
     draw(cx);
-    assert!(node("room.mentions").is_none(), "the same mention stays closed");
+    assert!(
+        node("room.mentions").is_none(),
+        "the same mention stays closed"
+    );
     cx.simulate_input(" @");
     draw(cx);
-    assert_eq!(mention_rows(), ["Sales", "Marketing", "@everyone"], "a new @ opens it");
+    assert_eq!(
+        mention_rows(),
+        ["Sales", "Marketing", "@everyone"],
+        "a new @ opens it"
+    );
     // Escape closed the list, not the composer's text: Tab picks now.
     cx.simulate_keystrokes("tab enter");
     draw(cx);
@@ -411,7 +478,10 @@ fn a_post_that_mentions_nobody_says_nobody_will_reply(cx: &mut TestAppContext) {
     assert_eq!(text("room.composer.hint"), NOBODY);
     cx.simulate_input("x");
     draw(cx);
-    assert!(node("room.composer.hint").is_none(), "gone once something is typed");
+    assert!(
+        node("room.composer.hint").is_none(),
+        "gone once something is typed"
+    );
 }
 
 #[gpui::test]
@@ -454,18 +524,22 @@ fn delete_room_asks_then_goes_to_the_rooms_list(cx: &mut TestAppContext) {
 /// `room-screen.test.tsx`: a refused Delete room says why under the header, until the room moves on.
 #[gpui::test]
 fn a_refused_delete_says_why_until_the_room_moves_on(cx: &mut TestAppContext) {
-    let rpc = rpc(vec![post("m1", "you", "@Sales hi", MessageStatus::Done, 0)]).on::<method::RoomsDelete>(|_| {
-        Err(client::RpcError::Daemon {
-            code: protocol::ErrorCode::Internal,
-            message: "Sales is still answering here.".into(),
-        })
-    });
+    let rpc = rpc(vec![post("m1", "you", "@Sales hi", MessageStatus::Done, 0)])
+        .on::<method::RoomsDelete>(|_| {
+            Err(client::RpcError::Daemon {
+                code: protocol::ErrorCode::Internal,
+                message: "Sales is still answering here.".into(),
+            })
+        });
     let (cx, _) = app(cx, Route::Room("r1".into()), rooms_state(), rpc);
     click(cx, "room.more");
     click(cx, "room.menu.delete");
     click(cx, "dialog.confirm");
     assert!(text("room.problem").contains("Sales is still answering here."));
-    assert_eq!(cx.update(|_, cx| route::current(cx)), Route::Room("r1".into()));
+    assert_eq!(
+        cx.update(|_, cx| route::current(cx)),
+        Route::Room("r1".into())
+    );
     cx.update(|_, cx| {
         crate::ui::store::update(cx, |state| {
             apply_event(

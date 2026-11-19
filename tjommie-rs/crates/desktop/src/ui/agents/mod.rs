@@ -169,7 +169,8 @@ impl Render for AgentsScreen {
         // What needs the app mutably (focus handles) comes first; then the theme is read.
         let header = self.header(&state, window, cx);
         // No agents yet and nobody signed in: the first-run setup in place of the overview (M5 review M6).
-        let first_run = crate::ui::setup::wanted(&state).then(|| crate::ui::setup::first_run(window, cx));
+        let first_run =
+            crate::ui::setup::wanted(&state).then(|| crate::ui::setup::first_run(window, cx));
         let overview = first_run.is_none();
         let mut grid: Vec<AnyElement> = shown
             .iter()
@@ -189,22 +190,17 @@ impl Render for AgentsScreen {
             })
             .collect();
         if everything {
-            grid.extend(
-                state
-                    .rooms
-                    .iter()
-                    .map(|room| {
-                        cards::room_card(
-                            "agents.room",
-                            room,
-                            messages(&room.id),
-                            &state.bots,
-                            None,
-                            &now,
-                            cx,
-                        )
-                    }),
-            );
+            grid.extend(state.rooms.iter().map(|room| {
+                cards::room_card(
+                    "agents.room",
+                    room,
+                    messages(&room.id),
+                    &state.bots,
+                    None,
+                    &now,
+                    cx,
+                )
+            }));
             grid.push(cards::new_bot_tile(window, cx));
             grid.push(cards::new_room_tile(
                 "agents.new_room",

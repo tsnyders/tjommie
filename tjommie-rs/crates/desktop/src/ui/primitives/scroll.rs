@@ -9,8 +9,9 @@ use std::cell::RefCell;
 use std::panic::Location;
 
 use gpui::{
-    AnyElement, App, Bounds, Element, ElementId, Global, GlobalElementId, InspectorElementId, IntoElement, LayoutId,
-    Pixels, ScrollHandle, SharedString, Styled as _, WeakFocusHandle, Window, canvas, point, px,
+    AnyElement, App, Bounds, Element, ElementId, Global, GlobalElementId, InspectorElementId,
+    IntoElement, LayoutId, Pixels, ScrollHandle, SharedString, Styled as _, WeakFocusHandle,
+    Window, canvas, point, px,
 };
 
 thread_local! {
@@ -30,7 +31,9 @@ impl Global for Revealed {}
 /// A scroll handle kept across renders under `id`, for a scroll area.
 pub fn scroll_handle(id: &str, window: &mut Window, cx: &mut App) -> ScrollHandle {
     window
-        .use_keyed_state(SharedString::from(format!("{id}.scroll")), cx, |_, _| ScrollHandle::new())
+        .use_keyed_state(SharedString::from(format!("{id}.scroll")), cx, |_, _| {
+            ScrollHandle::new()
+        })
         .read(cx)
         .clone()
 }

@@ -718,7 +718,10 @@ impl<E: Environment> AppConnection<E> {
     /// `subscribe_events(listener)`: told each daemon event as it is applied (`AppStore::subscribe_events`), for a screen
     /// that reads what the state doesn't keep. Like a subscriber, it must not call back into the connection; `unsubscribe`
     /// ends it.
-    pub fn subscribe_events(&self, listener: impl FnMut(&Event) + Send + 'static) -> SubscriptionId {
+    pub fn subscribe_events(
+        &self,
+        listener: impl FnMut(&Event) + Send + 'static,
+    ) -> SubscriptionId {
         self.lock().store.subscribe_events(listener)
     }
 

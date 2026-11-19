@@ -3,8 +3,8 @@
 //! Everyone, More with Edit room and Delete room; then the posts, the composer, and the members panel beside them.
 
 use gpui::{
-    AnyElement, App, AppContext as _, Context, Entity, Global, InteractiveElement as _, IntoElement,
-    ParentElement as _, Pixels, Render, Role, ScrollHandle, SharedString,
+    AnyElement, App, AppContext as _, Context, Entity, Global, InteractiveElement as _,
+    IntoElement, ParentElement as _, Pixels, Render, Role, ScrollHandle, SharedString,
     StatefulInteractiveElement as _, Styled as _, Window, div, px, svg,
 };
 use protocol::model::{Message, MessageStatus, Room};
@@ -135,7 +135,9 @@ impl Render for RoomScreen {
             self.seen = progress;
             self.problem = None;
         }
-        let shown = !cx.try_global::<MembersHidden>().is_some_and(|hidden| hidden.0);
+        let shown = !cx
+            .try_global::<MembersHidden>()
+            .is_some_and(|hidden| hidden.0);
         let screen = cx.entity();
         let header = self.header(room, members.len(), shown, &screen, window, cx);
         let body = self.body(room, chat, &state.bots, &members, cx);
@@ -151,10 +153,12 @@ impl Render for RoomScreen {
                 cx,
             )
         });
-        let failed = self
-            .problem
-            .clone()
-            .map(|text| div().flex().justify_center().child(problem("room.problem", text, cx)));
+        let failed = self.problem.clone().map(|text| {
+            div()
+                .flex()
+                .justify_center()
+                .child(problem("room.problem", text, cx))
+        });
         div()
             .flex_1()
             .min_h_0()
@@ -193,7 +197,14 @@ impl RoomScreen {
             let (editing, deleting) = (room.clone(), screen.clone());
             let name = room.name.clone();
             Menu::new("room.menu", move |open, window, cx| {
-                more_trigger("room.more".to_owned(), "More".into(), open, &focus, window, cx)
+                more_trigger(
+                    "room.more".to_owned(),
+                    "More".into(),
+                    open,
+                    &focus,
+                    window,
+                    cx,
+                )
             })
             .anchor(gpui::Anchor::TopRight)
             .offset(px(6.))
@@ -290,9 +301,7 @@ impl RoomScreen {
             Some(chat) if chat.status == ConversationStatus::Failed => failed_load(
                 "room.failed",
                 "Couldn't load this room.",
-                move |_, cx| {
-                    store::retry_conversation(cx, &id, History::Room(id.clone())).detach()
-                },
+                move |_, cx| store::retry_conversation(cx, &id, History::Room(id.clone())).detach(),
                 cx,
             ),
             Some(chat) if chat.status == ConversationStatus::Ready && chat.messages.is_empty() => {
@@ -317,7 +326,8 @@ impl RoomScreen {
             Some(chat) if chat.status == ConversationStatus::Ready => {
                 // ponytail: keeps to the newest post while the reader is at the bottom; the Chat lane's message
                 // list (T4.1) adds a long room's virtual list and holds the place when older posts load.
-                let (offset, max): (Pixels, Pixels) = (self.posts.offset().y, self.posts.max_offset().y);
+                let (offset, max): (Pixels, Pixels) =
+                    (self.posts.offset().y, self.posts.max_offset().y);
                 if -offset >= max - px(4.) {
                     self.posts.scroll_to_bottom();
                 }

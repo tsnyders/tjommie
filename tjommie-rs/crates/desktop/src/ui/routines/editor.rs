@@ -240,7 +240,9 @@ fn act(editor: &Entity<Editor>, delete: bool, cx: &mut App) {
                 let (window, dialog) = (editor.read(cx).window, editor.read(cx).dialog);
                 let _ = window.update(cx, |_, window, cx| {
                     // Closed meanwhile, or another dialog opened since: nothing is this editor's to close.
-                    if !window.has_active_dialog(cx) || crate::ui::primitives::dialog::opened(cx) != dialog {
+                    if !window.has_active_dialog(cx)
+                        || crate::ui::primitives::dialog::opened(cx) != dialog
+                    {
                         return;
                     }
                     match done {

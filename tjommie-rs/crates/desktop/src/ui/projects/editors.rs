@@ -116,7 +116,9 @@ fn trigger(
                 .flex_none()
                 .text_color(hsla(colors.icon.base)),
         )
-        .when(ring, |button| button.child(focus_ring(theme.radius.field, cx)))
+        .when(ring, |button| {
+            button.child(focus_ring(theme.radius.field, cx))
+        })
         .into_any_element()
 }
 
@@ -138,22 +140,31 @@ fn picker(
         return trigger(id, heading, value, false, false, &focus, window, cx);
     }
     let shown = value.clone();
-    choices.into_iter().fold(
-        Menu::new(SharedString::from(format!("{id}.menu")), move |open, window, cx| {
-            trigger(id, heading, shown, open, true, &focus, window, cx)
-        })
-        .anchor(gpui::Anchor::TopLeft)
-        .offset(px(6.)),
-        |menu, (choice, text)| {
-            let (on_choose, picked) = (on_choose.clone(), choice.clone());
-            let key = if choice.is_empty() { "none".to_owned() } else { choice.clone() };
-            menu.item(
-                MenuItem::new(format!("{id}.{key}"), text, move |_, cx| on_choose(picked.clone(), cx))
-                    .checked(choice == current),
+    choices
+        .into_iter()
+        .fold(
+            Menu::new(
+                SharedString::from(format!("{id}.menu")),
+                move |open, window, cx| trigger(id, heading, shown, open, true, &focus, window, cx),
             )
-        },
-    )
-    .into_any_element()
+            .anchor(gpui::Anchor::TopLeft)
+            .offset(px(6.)),
+            |menu, (choice, text)| {
+                let (on_choose, picked) = (on_choose.clone(), choice.clone());
+                let key = if choice.is_empty() {
+                    "none".to_owned()
+                } else {
+                    choice.clone()
+                };
+                menu.item(
+                    MenuItem::new(format!("{id}.{key}"), text, move |_, cx| {
+                        on_choose(picked.clone(), cx)
+                    })
+                    .checked(choice == current),
+                )
+            },
+        )
+        .into_any_element()
 }
 
 /// The dialog's footer: a problem, then Cancel and the save button (off until it can save).
@@ -225,7 +236,14 @@ struct ProjectForm {
 
 impl ProjectForm {
     /// A role switch: a member gains or loses `role`; one with no roles left is no member (`role`).
-    fn role(&mut self, bot_id: &str, role: ProjectRole, on: bool, window: &mut Window, cx: &mut Context<Self>) {
+    fn role(
+        &mut self,
+        bot_id: &str,
+        role: ProjectRole,
+        on: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let mut member = self
             .members
             .iter()
@@ -275,19 +293,32 @@ pub(super) fn open_project_editor(
     let field = |value: String, window: &mut Window, cx: &mut App| {
         cx.new(|cx| InputState::new(window, cx).default_value(value))
     };
-    let name = field(text(input.as_ref().map(|input| input.name.as_str()), ""), window, cx);
+    let name = field(
+        text(input.as_ref().map(|input| input.name.as_str()), ""),
+        window,
+        cx,
+    );
     let base = field(
-        text(input.as_ref().map(|input| input.base_ref.as_str()), "refs/heads/main"),
+        text(
+            input.as_ref().map(|input| input.base_ref.as_str()),
+            "refs/heads/main",
+        ),
         window,
         cx,
     );
     let target = field(
-        text(input.as_ref().map(|input| input.target_ref.as_str()), "refs/heads/main"),
+        text(
+            input.as_ref().map(|input| input.target_ref.as_str()),
+            "refs/heads/main",
+        ),
         window,
         cx,
     );
     let checks_text = serde_json::to_string_pretty(
-        &input.as_ref().map(|input| input.checks.clone()).unwrap_or_default(),
+        &input
+            .as_ref()
+            .map(|input| input.checks.clone())
+            .unwrap_or_default(),
     )
     .unwrap_or_else(|_| "[]".to_owned());
     let checks = cx.new(|cx| TextareaState::new(window, cx).default_value(checks_text));
@@ -439,7 +470,8 @@ fn project_body(
                                 on,
                             )
                             .on_toggle(move |on, window, cx| {
-                                switching.update(cx, |form, cx| form.role(&bot_id, role, on, window, cx))
+                                switching
+                                    .update(cx, |form, cx| form.role(&bot_id, role, on, window, cx))
                             }),
                         )
                         .into_any_element()
@@ -479,7 +511,13 @@ fn project_body(
                                 .child(bot.name.clone()),
                         ),
                 )
-                .child(div().grid().grid_cols(2).gap_x(r(theme.space.s16)).children(switches))
+                .child(
+                    div()
+                        .grid()
+                        .grid_cols(2)
+                        .gap_x(r(theme.space.s16))
+                        .children(switches),
+                )
                 .children(instructions)
                 .into_any_element()
         })
@@ -591,7 +629,9 @@ fn register_repository(form: &Entity<ProjectForm>, cx: &mut App) {
     cx.spawn(async move |cx| {
         guarded_async("register a repository", async move {
             let path = match picked.await {
-                Ok(Ok(Some(paths))) => paths.first().map(|path| path.to_string_lossy().into_owned()),
+                Ok(Ok(Some(paths))) => paths
+                    .first()
+                    .map(|path| path.to_string_lossy().into_owned()),
                 _ => None,
             };
             let Some(path) = path else {
@@ -612,7 +652,8 @@ fn register_repository(form: &Entity<ProjectForm>, cx: &mut App) {
                     form.busy = false;
                     match saved {
                         Ok(saved) => {
-                            form.repositories.retain(|repository| repository.id != saved.id);
+                            form.repositories
+                                .retain(|repository| repository.id != saved.id);
                             form.repository_id = saved.id.clone();
                             form.repositories.push(saved);
                         }
@@ -649,7 +690,9 @@ fn save_project(form: &Entity<ProjectForm>, screen: &Entity<ProjectsScreen>, cx:
     let checks = match serde_json::from_str::<Vec<ProjectCheck>>(&state.checks.read(cx).value()) {
         Ok(checks) if checks.len() <= 20 => Ok(checks),
         Ok(_) => Err("Accepted checks can hold at most 20 checks.".to_owned()),
-        Err(error) => Err(format!("Accepted checks must be a JSON array of checks: {error}")),
+        Err(error) => Err(format!(
+            "Accepted checks must be a JSON array of checks: {error}"
+        )),
     };
     let (opened, repository_id) = (state.opened.clone(), state.repository_id.clone());
     let checks = match checks {
@@ -703,15 +746,21 @@ fn save_project(form: &Entity<ProjectForm>, screen: &Entity<ProjectsScreen>, cx:
             let saved = call.await;
             cx.update(|cx| {
                 let opened = (form.read(cx).window, form.read(cx).dialog);
-                finish(opened, saved, cx, move |saved: Project, _, cx| {
-                    screen.update(cx, |this, cx| this.select_project(saved.id, cx))
-                }, move |said, cx| {
-                    form.update(cx, |form, cx| {
-                        form.busy = false;
-                        form.problem = Some(said);
-                        cx.notify();
-                    })
-                })
+                finish(
+                    opened,
+                    saved,
+                    cx,
+                    move |saved: Project, _, cx| {
+                        screen.update(cx, |this, cx| this.select_project(saved.id, cx))
+                    },
+                    move |said, cx| {
+                        form.update(cx, |form, cx| {
+                            form.busy = false;
+                            form.problem = Some(said);
+                            cx.notify();
+                        })
+                    },
+                )
             });
         })
         .await;
@@ -805,7 +854,10 @@ pub(super) fn open_task_editor(
     cx: &mut App,
 ) {
     let input = task.as_ref().map(|task| task.input.clone());
-    let title_text = input.as_ref().map(|input| input.title.clone()).unwrap_or_default();
+    let title_text = input
+        .as_ref()
+        .map(|input| input.title.clone())
+        .unwrap_or_default();
     let instructions_text = input
         .as_ref()
         .map(|input| input.instructions.clone())
@@ -882,19 +934,42 @@ fn task_body(
     let busy = state.busy;
     let failed = state.problem.clone();
     let members = state.project.input.members.clone();
-    let chosen: Vec<String> = [ProjectRole::Developer, ProjectRole::Reviewer, ProjectRole::Tester]
-        .into_iter()
-        .map(|role| state.chosen(role).to_owned())
-        .collect();
+    let chosen: Vec<String> = [
+        ProjectRole::Developer,
+        ProjectRole::Reviewer,
+        ProjectRole::Tester,
+    ]
+    .into_iter()
+    .map(|role| state.chosen(role).to_owned())
+    .collect();
     let pickers: Vec<AnyElement> = [
-        (ProjectRole::Developer, "task_form.developer", "Developer", "Choose a developer"),
-        (ProjectRole::Reviewer, "task_form.reviewer", "Reviewer", "Unassigned"),
-        (ProjectRole::Tester, "task_form.tester", "Tester", "Unassigned"),
+        (
+            ProjectRole::Developer,
+            "task_form.developer",
+            "Developer",
+            "Choose a developer",
+        ),
+        (
+            ProjectRole::Reviewer,
+            "task_form.reviewer",
+            "Reviewer",
+            "Unassigned",
+        ),
+        (
+            ProjectRole::Tester,
+            "task_form.tester",
+            "Tester",
+            "Unassigned",
+        ),
     ]
     .into_iter()
     .zip(chosen)
     .map(|((role, id, heading, nobody), current)| {
-        let name_of = |id: &str| bots.iter().find(|bot| bot.id == id).map(|bot| bot.name.clone());
+        let name_of = |id: &str| {
+            bots.iter()
+                .find(|bot| bot.id == id)
+                .map(|bot| bot.name.clone())
+        };
         let value = name_of(&current).unwrap_or_else(|| nobody.to_owned());
         let mut choices = vec![(String::new(), nobody.to_owned())];
         choices.extend(
@@ -1033,15 +1108,21 @@ fn save_task(form: &Entity<TaskForm>, screen: &Entity<ProjectsScreen>, cx: &mut 
             let saved = call.await;
             cx.update(|cx| {
                 let opened = (form.read(cx).window, form.read(cx).dialog);
-                finish(opened, saved, cx, move |saved: ProjectTask, window, cx| {
-                    screen.update(cx, |this, cx| this.select_task(saved.id, window, cx))
-                }, move |said, cx| {
-                    form.update(cx, |form, cx| {
-                        form.busy = false;
-                        form.problem = Some(said);
-                        cx.notify();
-                    })
-                })
+                finish(
+                    opened,
+                    saved,
+                    cx,
+                    move |saved: ProjectTask, window, cx| {
+                        screen.update(cx, |this, cx| this.select_task(saved.id, window, cx))
+                    },
+                    move |said, cx| {
+                        form.update(cx, |form, cx| {
+                            form.busy = false;
+                            form.problem = Some(said);
+                            cx.notify();
+                        })
+                    },
+                )
             });
         })
         .await;

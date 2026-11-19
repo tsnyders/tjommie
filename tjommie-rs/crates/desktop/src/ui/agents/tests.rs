@@ -196,10 +196,20 @@ fn a_card_asks_again_for_its_history_after_a_failure_and_a_reconnect(cx: &mut Te
             })
         }
     });
-    let (cx, _) = app(cx, Route::Agents, state(vec![bot("b1", "Atlas", BotState::Idle)], vec![], vec![]), rpc);
+    let (cx, _) = app(
+        cx,
+        Route::Agents,
+        state(vec![bot("b1", "Atlas", BotState::Idle)], vec![], vec![]),
+        rpc,
+    );
     draw(cx);
     let status = |cx: &mut gpui::VisualTestContext| {
-        cx.update(|_, cx| crate::ui::store::state(cx).conversations.get("b1").map(|chat| chat.status))
+        cx.update(|_, cx| {
+            crate::ui::store::state(cx)
+                .conversations
+                .get("b1")
+                .map(|chat| chat.status)
+        })
     };
     assert_eq!(status(cx), Some(ConversationStatus::Failed));
     assert_eq!(tries.load(Ordering::SeqCst), 1);
@@ -216,7 +226,11 @@ fn a_card_asks_again_for_its_history_after_a_failure_and_a_reconnect(cx: &mut Te
     assert_eq!(tries.load(Ordering::SeqCst), 2, "tried again on the change");
     assert_eq!(status(cx), Some(ConversationStatus::Failed));
     draw(cx);
-    assert_eq!(tries.load(Ordering::SeqCst), 2, "no loop while nothing changes");
+    assert_eq!(
+        tries.load(Ordering::SeqCst),
+        2,
+        "no loop while nothing changes"
+    );
 
     // A reconnect: the same lists again, and the failed chat forgotten. The card asks again.
     cx.update(|_, cx| {
@@ -237,7 +251,11 @@ fn a_card_asks_again_for_its_history_after_a_failure_and_a_reconnect(cx: &mut Te
     });
     draw(cx);
     draw(cx);
-    assert_eq!(tries.load(Ordering::SeqCst), 3, "asked again after the reconnect");
+    assert_eq!(
+        tries.load(Ordering::SeqCst),
+        3,
+        "asked again after the reconnect"
+    );
     assert_eq!(status(cx), Some(ConversationStatus::Ready));
 }
 
@@ -257,7 +275,12 @@ fn signed_in_claude() -> protocol::model::ProviderSetup {
 /// provider is signed in, it's the overview.
 #[gpui::test]
 fn no_agents_and_nobody_signed_in_shows_the_first_run_setup(cx: &mut TestAppContext) {
-    let (cx, _) = app(cx, Route::Agents, state(vec![], vec![], vec![]), FakeRpc::new());
+    let (cx, _) = app(
+        cx,
+        Route::Agents,
+        state(vec![], vec![], vec![]),
+        FakeRpc::new(),
+    );
     assert_eq!(text("setup.title"), "Set up Tjommie");
     assert!(node("setup.claude").is_some(), "Claude Code's card");
     assert!(node("screen.agents").is_some(), "under the Agents header");
@@ -276,7 +299,12 @@ fn no_agents_and_nobody_signed_in_shows_the_first_run_setup(cx: &mut TestAppCont
 /// Create your first agent opens New agent.
 #[gpui::test]
 fn create_your_first_agent_opens_new_agent(cx: &mut TestAppContext) {
-    let (cx, _) = app(cx, Route::Agents, state(vec![], vec![], vec![]), FakeRpc::new());
+    let (cx, _) = app(
+        cx,
+        Route::Agents,
+        state(vec![], vec![], vec![]),
+        FakeRpc::new(),
+    );
     click(cx, "setup.create");
     assert_eq!(cx.update(|_, cx| route::current(cx)), Route::NewBot);
 }

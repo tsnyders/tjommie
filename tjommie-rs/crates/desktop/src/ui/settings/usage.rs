@@ -26,9 +26,9 @@ use crate::model::labels::error_text;
 use crate::model::setup::{provider_name, report_of};
 use crate::model::state::Connection;
 use crate::model::usage::{
-    By, Generation, Held, REFETCH_MS, RangeKind, Row, TICK_CAP_MS, Unit, UsageFilters, breakdown_rows,
-    chart_data, clock_tick_ms, combined_cost, cost_lines, cost_text, empty_usage, labelled, matching,
-    tokens_text, usage_day_key, usage_query,
+    By, Generation, Held, REFETCH_MS, RangeKind, Row, TICK_CAP_MS, Unit, UsageFilters,
+    breakdown_rows, chart_data, clock_tick_ms, combined_cost, cost_lines, cost_text, empty_usage,
+    labelled, matching, tokens_text, usage_day_key, usage_query,
 };
 use crate::semantic::SemanticExt as _;
 use crate::ui::fields::{Look, RadioGroup, problem};
@@ -70,12 +70,16 @@ struct Usage {
 
 impl Usage {
     fn new(cx: &mut Context<Self>) -> Self {
-        let mut feed = store::events(cx, |event| matches!(event, protocol::Event::UsageChanged(_)));
+        let mut feed = store::events(cx, |event| {
+            matches!(event, protocol::Event::UsageChanged(_))
+        });
         let events = cx.spawn(async move |this, cx| {
             guarded_async("follow the usage changes", async move {
                 // `Throttle`'s rule: one read REFETCH_MS after the first change, however many come meanwhile.
                 while feed.arrivals.next().await.is_some() {
-                    cx.background_executor().timer(Duration::from_millis(REFETCH_MS)).await;
+                    cx.background_executor()
+                        .timer(Duration::from_millis(REFETCH_MS))
+                        .await;
                     while let Ok(()) = feed.arrivals.try_recv() {}
                     let counted = this.update(cx, |usage, cx| {
                         usage.changes += 1;
@@ -156,7 +160,12 @@ fn read(usage: &Entity<Usage>, key: &str, now: &Zoned, zone: &str, cx: &mut App)
                             usage.held = Some(Held { key, value: report });
                             usage.failed = None;
                         }
-                        Err(error) => usage.failed = Some(Held { key, value: error_text(&error) }),
+                        Err(error) => {
+                            usage.failed = Some(Held {
+                                key,
+                                value: error_text(&error),
+                            })
+                        }
                     }
                     cx.notify();
                 });
@@ -194,7 +203,13 @@ fn refresh(usage: &Entity<Usage>, id: Option<String>, cx: &mut App) {
 }
 
 /// A refresh (`IconButton`, `RefreshCw`), off while a check runs.
-fn refresh_button(id: SharedString, label: String, account: Option<String>, checking: bool, usage: &Entity<Usage>) -> AnyElement {
+fn refresh_button(
+    id: SharedString,
+    label: String,
+    account: Option<String>,
+    checking: bool,
+    usage: &Entity<Usage>,
+) -> AnyElement {
     let usage = usage.clone();
     IconButton::new(id, "rotate-cw", label)
         .disabled(checking)
@@ -205,7 +220,14 @@ fn refresh_button(id: SharedString, label: String, account: Option<String>, chec
 /// A bar for something that fills up (`Meter`): a track, with the share used in the body colour and in the accent once
 /// it's near full (never red: a limit is a pause, not an error). No reading is an empty track with no value. Usage's
 /// healthy fill is `bg-working` in the TypeScript; Aegis gives working no colour of its own, so it's the body's here too.
-pub(super) fn meter(id: impl Into<SharedString>, label: &str, value_text: &str, share: Option<f64>, near: bool, cx: &App) -> AnyElement {
+pub(super) fn meter(
+    id: impl Into<SharedString>,
+    label: &str,
+    value_text: &str,
+    share: Option<f64>,
+    near: bool,
+    cx: &App,
+) -> AnyElement {
     let theme = theme(cx);
     let colors = palette(cx);
     let percent = share.map(|share| (share * 100.0).round().clamp(0.0, 100.0));
@@ -225,7 +247,11 @@ pub(super) fn meter(id: impl Into<SharedString>, label: &str, value_text: &str, 
                 .w(relative(percent.unwrap_or(0.0) as f32 / 100.0))
                 .rounded_full()
                 // The accent's marker, not its base: the base on the track is under 3:1 in light mode.
-                .bg(hsla(if near { colors.accent.marker } else { colors.ink.mid })),
+                .bg(hsla(if near {
+                    colors.accent.marker
+                } else {
+                    colors.ink.mid
+                })),
         );
     let track = match percent {
         Some(percent) => track.aria_numeric_value(percent),
@@ -241,8 +267,19 @@ pub(super) fn meter(id: impl Into<SharedString>, label: &str, value_text: &str, 
                 .justify_between()
                 .gap(r(theme.space.s12))
                 .type_style(&theme.typography.desktop.small)
-                .child(div().flex_none().text_color(hsla(colors.text.secondary)).child(label.to_owned()))
-                .child(div().min_w_0().text_right().text_color(hsla(colors.text.primary)).child(value_text.to_owned())),
+                .child(
+                    div()
+                        .flex_none()
+                        .text_color(hsla(colors.text.secondary))
+                        .child(label.to_owned()),
+                )
+                .child(
+                    div()
+                        .min_w_0()
+                        .text_right()
+                        .text_color(hsla(colors.text.primary))
+                        .child(value_text.to_owned()),
+                ),
         )
         .child(track)
         .into_any_element()
@@ -250,54 +287,128 @@ pub(super) fn meter(id: impl Into<SharedString>, label: &str, value_text: &str, 
 
 /// A subscription's limits card (`ProviderCard`): the provider, the plan if known, each limit window with its use and
 /// reset, Extra usage and Credits only as the provider said them, and who is signed in.
-fn provider_card(account: &AccountInfo, now: &Zoned, checking: bool, usage: &Entity<Usage>, cx: &App) -> AnyElement {
+fn provider_card(
+    account: &AccountInfo,
+    now: &Zoned,
+    checking: bool,
+    usage: &Entity<Usage>,
+    cx: &App,
+) -> AnyElement {
     let theme = theme(cx);
     let colors = palette(cx);
     let id = account.id.as_str();
-    let ProviderView { plan, rows, stale, problem: failure, extras } = provider_view(account, now);
+    let ProviderView {
+        plan,
+        rows,
+        stale,
+        problem: failure,
+        extras,
+    } = provider_view(account, now);
     let mut body: Vec<AnyElement> = Vec::new();
     match quota_card(account) {
         QuotaCard::Limits => {
             if rows.is_empty() {
                 let none = "Limits aren't available for this account yet.";
-                body.push(line(format!("settings.usage.{id}.none"), Role::Paragraph, none, cx));
+                body.push(line(
+                    format!("settings.usage.{id}.none"),
+                    Role::Paragraph,
+                    none,
+                    cx,
+                ));
             } else {
                 let meters = rows.iter().map(|row| {
-                    meter(format!("settings.usage.{id}.limit.{}", row.key), &row.label, &row.value, row.share, row.near, cx)
+                    meter(
+                        format!("settings.usage.{id}.limit.{}", row.key),
+                        &row.label,
+                        &row.value,
+                        row.share,
+                        row.near,
+                        cx,
+                    )
                 });
-                body.push(div().flex().flex_col().gap(r(theme.space.s10)).children(meters).into_any_element());
+                body.push(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(r(theme.space.s10))
+                        .children(meters)
+                        .into_any_element(),
+                );
             }
             body.extend(extras.into_iter().enumerate().map(|(index, extra)| {
                 div()
-                    .semantic(format!("settings.usage.{id}.extra.{index}"), Role::Paragraph)
+                    .semantic(
+                        format!("settings.usage.{id}.extra.{index}"),
+                        Role::Paragraph,
+                    )
                     .aria_label(format!("{}: {}", extra.label, extra.value))
                     .flex()
                     .justify_between()
                     .gap(r(theme.space.s12))
                     .type_style(&theme.typography.desktop.small)
-                    .child(div().text_color(hsla(colors.text.secondary)).child(extra.label))
-                    .child(div().text_color(hsla(colors.text.primary)).child(extra.value))
+                    .child(
+                        div()
+                            .text_color(hsla(colors.text.secondary))
+                            .child(extra.label),
+                    )
+                    .child(
+                        div()
+                            .text_color(hsla(colors.text.primary))
+                            .child(extra.value),
+                    )
                     .into_any_element()
             }));
-            body.extend(stale.map(|stale| line(format!("settings.usage.{id}.stale"), Role::Paragraph, stale, cx)));
-            body.extend(failure.map(|said| problem(format!("settings.usage.{id}.problem"), said, cx)));
+            body.extend(stale.map(|stale| {
+                line(
+                    format!("settings.usage.{id}.stale"),
+                    Role::Paragraph,
+                    stale,
+                    cx,
+                )
+            }));
+            body.extend(
+                failure.map(|said| problem(format!("settings.usage.{id}.problem"), said, cx)),
+            );
         }
         QuotaCard::Unavailable => {
             let none = "Limits aren't available for this account yet. They show after its first message, or when you refresh.";
-            body.push(line(format!("settings.usage.{id}.none"), Role::Paragraph, none, cx));
+            body.push(line(
+                format!("settings.usage.{id}.none"),
+                Role::Paragraph,
+                none,
+                cx,
+            ));
         }
-        QuotaCard::Checking => body.push(line(format!("settings.usage.{id}.checking"), Role::Paragraph, "Checking", cx)),
+        QuotaCard::Checking => body.push(line(
+            format!("settings.usage.{id}.checking"),
+            Role::Paragraph,
+            "Checking",
+            cx,
+        )),
         QuotaCard::SignedOut => {
             let out = "Not signed in, so there are no limits to show.";
-            body.push(line(format!("settings.usage.{id}.signed_out"), Role::Paragraph, out, cx));
+            body.push(line(
+                format!("settings.usage.{id}.signed_out"),
+                Role::Paragraph,
+                out,
+                cx,
+            ));
         }
-        QuotaCard::Problem { text } => body.push(problem(format!("settings.usage.{id}.problem"), text, cx)),
+        QuotaCard::Problem { text } => {
+            body.push(problem(format!("settings.usage.{id}.problem"), text, cx))
+        }
     }
-    let who = [Some(account.label.as_str()), account.setup.as_ref().and_then(|setup| report_of(setup).account.as_deref())]
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>()
-        .join(" · ");
+    let who = [
+        Some(account.label.as_str()),
+        account
+            .setup
+            .as_ref()
+            .and_then(|setup| report_of(setup).account.as_deref()),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(" · ");
     let refresh = refresh_button(
         format!("settings.usage.{id}.refresh").into(),
         format!("Refresh {}", account.label),
@@ -310,7 +421,11 @@ fn provider_card(account: &AccountInfo, now: &Zoned, checking: bool, usage: &Ent
         .py(r(theme.space.s16))
         .gap(r(theme.space.s12))
         .semantic(format!("settings.usage.{id}"), Role::Region)
-        .aria_label(format!("{}, {}", provider_name(account.provider), account.label))
+        .aria_label(format!(
+            "{}, {}",
+            provider_name(account.provider),
+            account.label
+        ))
         .child(
             div()
                 .flex()
@@ -345,12 +460,22 @@ fn provider_card(account: &AccountInfo, now: &Zoned, checking: bool, usage: &Ent
                 .child(refresh),
         )
         .children(body)
-        .child(div().min_w_0().truncate().child(line(format!("settings.usage.{id}.who"), Role::Paragraph, who, cx)))
+        .child(div().min_w_0().truncate().child(line(
+            format!("settings.usage.{id}.who"),
+            Role::Paragraph,
+            who,
+            cx,
+        )))
         .into_any_element()
 }
 
 /// The subscriptions' limit cards at the top of Usage (`ProviderUsage`); API keys have no subscription quota.
-fn providers(accounts: &[AccountInfo], now: &Zoned, usage: &Entity<Usage>, cx: &App) -> Option<AnyElement> {
+fn providers(
+    accounts: &[AccountInfo],
+    now: &Zoned,
+    usage: &Entity<Usage>,
+    cx: &App,
+) -> Option<AnyElement> {
     let subscriptions: Vec<&AccountInfo> = accounts
         .iter()
         .filter(|account| matches!(account.kind, AccountKind::Subscription))
@@ -359,8 +484,17 @@ fn providers(accounts: &[AccountInfo], now: &Zoned, usage: &Entity<Usage>, cx: &
         return None;
     }
     let theme = theme(cx);
-    let (checking, said) = (usage.read(cx).checking, usage.read(cx).check_problem.clone());
-    let all = refresh_button("settings.usage.refresh_all".into(), "Refresh all limits".to_owned(), None, checking, usage);
+    let (checking, said) = (
+        usage.read(cx).checking,
+        usage.read(cx).check_problem.clone(),
+    );
+    let all = refresh_button(
+        "settings.usage.refresh_all".into(),
+        "Refresh all limits".to_owned(),
+        None,
+        checking,
+        usage,
+    );
     Some(
         div()
             .semantic("settings.usage.providers", Role::Region)
@@ -379,13 +513,23 @@ fn providers(accounts: &[AccountInfo], now: &Zoned, usage: &Entity<Usage>, cx: &
                     .child(all),
             )
             .children(said.map(|said| problem("settings.usage.check_problem", said, cx)))
-            .children(subscriptions.into_iter().map(|account| provider_card(account, now, checking, usage, cx)))
+            .children(
+                subscriptions
+                    .into_iter()
+                    .map(|account| provider_card(account, now, checking, usage, cx)),
+            )
             .into_any_element(),
     )
 }
 
 /// A tile (`Tile`): a label, a figure and maybe a note.
-fn tile(id: &'static str, label: &'static str, figure: String, note: Option<String>, cx: &App) -> AnyElement {
+fn tile(
+    id: &'static str,
+    label: &'static str,
+    figure: String,
+    note: Option<String>,
+    cx: &App,
+) -> AnyElement {
     let theme = theme(cx);
     let colors = palette(cx);
     let spoken = match &note {
@@ -399,7 +543,12 @@ fn tile(id: &'static str, label: &'static str, figure: String, note: Option<Stri
         .flex_1()
         .semantic(id, Role::Group)
         .aria_label(spoken)
-        .child(div().type_style(&theme.typography.desktop.small).text_color(hsla(colors.text.secondary)).child(label))
+        .child(
+            div()
+                .type_style(&theme.typography.desktop.small)
+                .text_color(hsla(colors.text.secondary))
+                .child(label),
+        )
         .child(
             div()
                 .mt(r(theme.space.s2))
@@ -434,7 +583,11 @@ fn bars(report: &UsageReport, range: RangeKind, cx: &App) -> Option<AnyElement> 
     let months = matches!(chart.unit, Unit::Month);
     let count = chart.bars.len() as f32;
     let columns = chart.bars.iter().map(|bar| {
-        let height = if bar.share > 0.0 { (bar.share * 100.0).max(4.0) } else { 1.0 };
+        let height = if bar.share > 0.0 {
+            (bar.share * 100.0).max(4.0)
+        } else {
+            1.0
+        };
         div()
             .h_full()
             .min_w_0()
@@ -443,21 +596,41 @@ fn bars(report: &UsageReport, range: RangeKind, cx: &App) -> Option<AnyElement> 
             .items_end()
             .px(px(if months { 2. } else { 1. }))
             // The field edge's grey: quiet, and 3:1 against the card in both modes (line.soft isn't).
-            .child(div().w_full().h(relative(height as f32 / 100.0)).rounded_t(px(3.)).bg(hsla(colors.line.field)))
+            .child(
+                div()
+                    .w_full()
+                    .h(relative(height as f32 / 100.0))
+                    .rounded_t(px(3.))
+                    .bg(hsla(colors.line.field)),
+            )
     });
     let last = chart.ticks.len().saturating_sub(1);
     // Each date centred under its bar, the first starting there and the last ending there, so neither leaves the card:
     // a zero-wide anchor at the bar's middle, its date overflowing it to one side or both.
     let ticks = chart.ticks.iter().enumerate().map(|(index, tick)| {
-        let anchor = div().absolute().top_0().left(relative((tick.index as f32 + 0.5) / count)).w(px(0.)).flex();
+        let anchor = div()
+            .absolute()
+            .top_0()
+            .left(relative((tick.index as f32 + 0.5) / count))
+            .w(px(0.))
+            .flex();
         let anchor = match index {
             0 => anchor.justify_start(),
             index if index == last => anchor.justify_end(),
             _ => anchor.justify_center(),
         };
-        anchor.child(div().flex_none().whitespace_nowrap().child(tick.label.clone()))
+        anchor.child(
+            div()
+                .flex_none()
+                .whitespace_nowrap()
+                .child(tick.label.clone()),
+        )
     });
-    let zone = format!("{} in {}", if months { "Months" } else { "Days" }, report.time_zone.as_str());
+    let zone = format!(
+        "{} in {}",
+        if months { "Months" } else { "Days" },
+        report.time_zone.as_str()
+    );
     Some(
         super::card(cx)
             .mt(r(theme.space.s20))
@@ -508,7 +681,11 @@ fn breakdown_row(row: &Row<'_>, cx: &App) -> AnyElement {
             }
         })
         .collect();
-    let spoken = [format!("{}: {tokens}", row.name)].into_iter().chain(lines.iter().cloned()).collect::<Vec<_>>().join(". ");
+    let spoken = [format!("{}: {tokens}", row.name)]
+        .into_iter()
+        .chain(lines.iter().cloned())
+        .collect::<Vec<_>>()
+        .join(". ");
     super::card(cx)
         .mt_0()
         .py(r(theme.space.s12))
@@ -548,38 +725,83 @@ fn breakdown_row(row: &Row<'_>, cx: &App) -> AnyElement {
 }
 
 /// The report (`UsageReportView`): the tiles, the bars past a single day, and the breakdown.
-fn report_view(report: &UsageReport, range: RangeKind, by: By, usage: &Entity<Usage>, cx: &App) -> AnyElement {
+fn report_view(
+    report: &UsageReport,
+    range: RangeKind,
+    by: By,
+    usage: &Entity<Usage>,
+    cx: &App,
+) -> AnyElement {
     let theme = theme(cx);
     if empty_usage(report) {
         let none = "No usage yet. It shows here after your agents' first messages.";
-        return div().mt(r(theme.space.s32)).child(line("settings.usage.empty", Role::Paragraph, none, cx)).into_any_element();
+        return div()
+            .mt(r(theme.space.s32))
+            .child(line("settings.usage.empty", Role::Paragraph, none, cx))
+            .into_any_element();
     }
     let costs = &report.summary.costs;
     let combined = cost_text(&combined_cost(costs));
-    let combined_note = [combined.note.as_deref(), Some("API-equivalent value, not your subscription bill")]
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>()
-        .join(" · ");
+    let combined_note = [
+        combined.note.as_deref(),
+        Some("API-equivalent value, not your subscription bill"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(" · ");
     let mut tiles = vec![
-        tile("settings.usage.tokens", "Tokens", tokens_text(report.summary.tokens.total), None, cx),
-        tile("settings.usage.combined", "Combined cost estimate", combined.text, Some(combined_note), cx),
-        cost_tile("settings.usage.spent", "Spent (API keys)", &costs.api_spend, cx),
-        cost_tile("settings.usage.value", "API value (subscriptions)", &costs.api_value, cx),
+        tile(
+            "settings.usage.tokens",
+            "Tokens",
+            tokens_text(report.summary.tokens.total),
+            None,
+            cx,
+        ),
+        tile(
+            "settings.usage.combined",
+            "Combined cost estimate",
+            combined.text,
+            Some(combined_note),
+            cx,
+        ),
+        cost_tile(
+            "settings.usage.spent",
+            "Spent (API keys)",
+            &costs.api_spend,
+            cx,
+        ),
+        cost_tile(
+            "settings.usage.value",
+            "API value (subscriptions)",
+            &costs.api_value,
+            cx,
+        ),
     ];
     if costs.unclassified.known_records + costs.unclassified.unknown_records > 0 {
-        tiles.push(cost_tile("settings.usage.other", "Other", &costs.unclassified, cx));
+        tiles.push(cost_tile(
+            "settings.usage.other",
+            "Other",
+            &costs.unclassified,
+            cx,
+        ));
     }
     let state = store::state(cx);
-    let rows: Vec<AnyElement> = breakdown_rows(report, by, &state.bots, state.accounts.as_deref().unwrap_or_default())
-        .iter()
-        .map(|row| breakdown_row(row, cx))
-        .collect();
+    let rows: Vec<AnyElement> = breakdown_rows(
+        report,
+        by,
+        &state.bots,
+        state.accounts.as_deref().unwrap_or_default(),
+    )
+    .iter()
+    .map(|row| breakdown_row(row, cx))
+    .collect();
     let breakdown = BREAKDOWNS
         .iter()
-        .fold(RadioGroup::new("settings.usage.by", "Breakdown", by).look(Look::Segmented), |group, (value, key, label)| {
-            group.choice(*value, *key, *label)
-        })
+        .fold(
+            RadioGroup::new("settings.usage.by", "Breakdown", by).look(Look::Segmented),
+            |group, (value, key, label)| group.choice(*value, *key, *label),
+        )
         .on_choose({
             let usage = usage.clone();
             move |next, _, cx| {
@@ -592,8 +814,19 @@ fn report_view(report: &UsageReport, range: RangeKind, by: By, usage: &Entity<Us
     div()
         .flex()
         .flex_col()
-        .child(div().mt(r(theme.space.s20)).flex().flex_wrap().gap(r(theme.space.s12)).children(tiles))
-        .children((range != RangeKind::Today).then(|| bars(report, range, cx)).flatten())
+        .child(
+            div()
+                .mt(r(theme.space.s20))
+                .flex()
+                .flex_wrap()
+                .gap(r(theme.space.s12))
+                .children(tiles),
+        )
+        .children(
+            (range != RangeKind::Today)
+                .then(|| bars(report, range, cx))
+                .flatten(),
+        )
         .child(
             div()
                 .mt(r(theme.space.s32))
@@ -621,16 +854,21 @@ pub(super) fn section(window: &mut Window, cx: &mut App) -> AnyElement {
     let usage = window.use_keyed_state("settings.usage.state", cx, |_, cx| Usage::new(cx));
     let (now, zone) = (Zoned::now(), local_zone());
     // The spec's key, as the hook's: the range and the day, so a new day reads again.
-    let key = format!("{:?}|{}", usage.read(cx).range, usage_day_key(&now, &zone).unwrap_or_default());
+    let key = format!(
+        "{:?}|{}",
+        usage.read(cx).range,
+        usage_day_key(&now, &zone).unwrap_or_default()
+    );
     read(&usage, &key, &now, &zone, cx);
     let cx = &*cx;
     let theme = theme(cx);
     let state = usage.read(cx);
     let ranges = RANGES
         .iter()
-        .fold(RadioGroup::new("settings.usage.range", "Range", state.range).look(Look::Segmented), |group, (value, key, label)| {
-            group.choice(*value, *key, *label)
-        })
+        .fold(
+            RadioGroup::new("settings.usage.range", "Range", state.range).look(Look::Segmented),
+            |group, (value, key, label)| group.choice(*value, *key, *label),
+        )
         .on_choose({
             let usage = usage.clone();
             move |next, _, cx| {
@@ -648,14 +886,28 @@ pub(super) fn section(window: &mut Window, cx: &mut App) -> AnyElement {
         (None, None) => Some(
             div()
                 .mt(r(theme.space.s32))
-                .child(line("settings.usage.loading", Role::Paragraph, "Loading usage", cx))
+                .child(line(
+                    "settings.usage.loading",
+                    Role::Paragraph,
+                    "Loading usage",
+                    cx,
+                ))
                 .into_any_element(),
         ),
     };
     super::frame("usage", "Usage", "", cx)
         .child(div().mt(r(theme.space.s20)).child(ranges))
-        .children(store::state(cx).accounts.as_deref().and_then(|accounts| providers(accounts, &now, &usage, cx)))
-        .children(failed.map(|said| div().mt(r(theme.space.s12)).child(problem("settings.usage.problem", said.clone(), cx))))
+        .children(
+            store::state(cx)
+                .accounts
+                .as_deref()
+                .and_then(|accounts| providers(accounts, &now, &usage, cx)),
+        )
+        .children(failed.map(|said| {
+            div()
+                .mt(r(theme.space.s12))
+                .child(problem("settings.usage.problem", said.clone(), cx))
+        }))
         .children(body)
         .into_any_element()
 }
@@ -716,7 +968,10 @@ mod tests {
     }
 
     fn reads(rpc: &FakeRpc) -> usize {
-        rpc.calls().iter().filter(|(name, _)| *name == "usage.query").count()
+        rpc.calls()
+            .iter()
+            .filter(|(name, _)| *name == "usage.query")
+            .count()
     }
 
     /// Connected, with agent b1, Scout.
@@ -725,7 +980,10 @@ mod tests {
     }
 
     fn with_accounts(accounts: Vec<AccountInfo>) -> AppState {
-        AppState { accounts: Some(accounts), ..scout() }
+        AppState {
+            accounts: Some(accounts),
+            ..scout()
+        }
     }
 
     fn setup(patch: Value) -> Value {
@@ -762,10 +1020,18 @@ mod tests {
                 "unclassified": cost(json!({ "usd": 1, "knownUsd": 1, "knownRecords": 1 }))
             }),
         );
-        let (_, calls) = app(cx, Route::Settings(Section::Usage), scout(), rpc(report(summary, json!({}))));
+        let (_, calls) = app(
+            cx,
+            Route::Settings(Section::Usage),
+            scout(),
+            rpc(report(summary, json!({}))),
+        );
         assert_eq!(text("settings.usage.tokens"), "Tokens: 2.5K");
         assert_eq!(text("settings.usage.spent"), "Spent (API keys): $3.00");
-        assert_eq!(text("settings.usage.value"), "API value (subscriptions): $8.00");
+        assert_eq!(
+            text("settings.usage.value"),
+            "API value (subscriptions): $8.00"
+        );
         assert_eq!(text("settings.usage.other"), "Other: $1.00");
         assert_eq!(
             text("settings.usage.combined"),
@@ -778,8 +1044,16 @@ mod tests {
     /// only when there's something in it. Another range is another read.
     #[gpui::test]
     fn draws_the_days_as_bars_but_not_for_today(cx: &mut TestAppContext) {
-        let (cx, calls) = app(cx, Route::Settings(Section::Usage), scout(), rpc(report(aggregate(2500, json!({})), json!({}))));
-        assert_eq!(text("settings.usage.chart"), "Tokens per day, highest 2K on 2026-10-21");
+        let (cx, calls) = app(
+            cx,
+            Route::Settings(Section::Usage),
+            scout(),
+            rpc(report(aggregate(2500, json!({})), json!({}))),
+        );
+        assert_eq!(
+            text("settings.usage.chart"),
+            "Tokens per day, highest 2K on 2026-10-21"
+        );
         assert_eq!(text("settings.usage.zone"), "Days in UTC");
         assert!(node("settings.usage.other").is_none());
         click(cx, "settings.usage.range.today");
@@ -802,14 +1076,18 @@ mod tests {
         let (cx, _) = app(cx, Route::Settings(Section::Usage), scout(), rpc(year));
         click(cx, "settings.usage.range.year");
         draw(cx);
-        assert_eq!(text("settings.usage.chart"), "Tokens per month, highest 2K in Oct");
+        assert_eq!(
+            text("settings.usage.chart"),
+            "Tokens per month, highest 2K in Oct"
+        );
         assert_eq!(text("settings.usage.zone"), "Months in UTC");
     }
 
     /// usage-section.test.tsx: "lists the breakdown by bot with its name and cost lines, and names a deleted bot".
     #[gpui::test]
     fn lists_the_breakdown_and_names_a_deleted_agent(cx: &mut TestAppContext) {
-        let spent = json!({ "apiSpend": cost(json!({ "usd": 3, "knownUsd": 3, "knownRecords": 1 })) });
+        let spent =
+            json!({ "apiSpend": cost(json!({ "usd": 3, "knownUsd": 3, "knownRecords": 1 })) });
         let usage = report(
             aggregate(2500, spent.clone()),
             json!({ "byBot": [
@@ -822,31 +1100,49 @@ mod tests {
         assert!(text("settings.usage.row.gone").starts_with("Deleted agent: 500 tokens"));
         assert!(text("settings.usage.row.gone").contains("Spent $3.00"));
         click(cx, "settings.usage.by.account");
-        assert!(ids("settings.usage.row.").is_empty(), "this report has no accounts");
+        assert!(
+            ids("settings.usage.row.").is_empty(),
+            "this report has no accounts"
+        );
     }
 
     /// usage-section.test.tsx: "says there is no usage yet when there are no records".
     #[gpui::test]
     fn says_there_is_no_usage_yet(cx: &mut TestAppContext) {
-        app(cx, Route::Settings(Section::Usage), scout(), rpc(report(aggregate(0, json!({})), json!({}))));
-        assert_eq!(text("settings.usage.empty"), "No usage yet. It shows here after your agents' first messages.");
+        app(
+            cx,
+            Route::Settings(Section::Usage),
+            scout(),
+            rpc(report(aggregate(0, json!({})), json!({}))),
+        );
+        assert_eq!(
+            text("settings.usage.empty"),
+            "No usage yet. It shows here after your agents' first messages."
+        );
         assert!(node("settings.usage.tokens").is_none());
     }
 
     /// use-usage.ts: a burst of `usage.changed` reads the report again, once, a second after it starts.
     #[gpui::test]
     fn a_burst_of_usage_changes_reads_once(cx: &mut TestAppContext) {
-        let (cx, calls) = app(cx, Route::Settings(Section::Usage), scout(), rpc(report(aggregate(2500, json!({})), json!({}))));
+        let (cx, calls) = app(
+            cx,
+            Route::Settings(Section::Usage),
+            scout(),
+            rpc(report(aggregate(2500, json!({})), json!({}))),
+        );
         assert_eq!(reads(&calls), 1);
         cx.update(|_, cx| {
             for _ in 0..3 {
-                let changed = serde_json::from_value(json!({ "accountId": "a1", "botId": "b1" })).unwrap();
+                let changed =
+                    serde_json::from_value(json!({ "accountId": "a1", "botId": "b1" })).unwrap();
                 crate::ui::store::fake_event(cx, &protocol::Event::UsageChanged(changed));
             }
         });
         draw(cx);
         assert_eq!(reads(&calls), 1, "not before the second is up");
-        cx.executor().advance_clock(std::time::Duration::from_millis(REFETCH_MS));
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(REFETCH_MS));
         draw(cx);
         draw(cx);
         assert_eq!(reads(&calls), 2);
@@ -855,7 +1151,8 @@ mod tests {
     /// use-usage.ts: a read that fails says why, with no report and no Loading line.
     #[gpui::test]
     fn a_failed_read_says_why(cx: &mut TestAppContext) {
-        let rpc = FakeRpc::new().on::<method::UsageQuery>(|_| Err(RpcError::BadResult("No answer".to_owned())));
+        let rpc = FakeRpc::new()
+            .on::<method::UsageQuery>(|_| Err(RpcError::BadResult("No answer".to_owned())));
         app(cx, Route::Settings(Section::Usage), scout(), rpc);
         assert!(text("settings.usage.problem").contains("No answer"));
         assert!(node("settings.usage.loading").is_none());
@@ -864,17 +1161,28 @@ mod tests {
     /// provider-usage.test.tsx: "shows a subscription's provider, plan, each limit window with its use, and who is signed
     /// in", and "has a refresh for each account and for all of them, which only ask for a check".
     #[gpui::test]
-    fn shows_each_subscriptions_limits_and_its_refreshes_only_ask_for_a_check(cx: &mut TestAppContext) {
+    fn shows_each_subscriptions_limits_and_its_refreshes_only_ask_for_a_check(
+        cx: &mut TestAppContext,
+    ) {
         let work = subscription(json!({
             "id": "a2", "label": "Work", "provider": "codex", "limits": [],
             "setup": setup(json!({ "provider": "codex", "sandbox": "ready", "plan": "pro" }))
         }));
-        let rpc = rpc(report(aggregate(0, json!({})), json!({}))).on::<method::AccountsCheck>(|_| Ok(Vec::new()));
-        let (cx, calls) = app(cx, Route::Settings(Section::Usage), with_accounts(vec![subscription(json!({})), work]), rpc);
+        let rpc = rpc(report(aggregate(0, json!({})), json!({})))
+            .on::<method::AccountsCheck>(|_| Ok(Vec::new()));
+        let (cx, calls) = app(
+            cx,
+            Route::Settings(Section::Usage),
+            with_accounts(vec![subscription(json!({})), work]),
+            rpc,
+        );
         assert_eq!(text("settings.usage.a1"), "Claude Code, Claude (Personal)");
         assert_eq!(text("settings.usage.a1.plan"), "Max 20x");
         assert_eq!(ids("settings.usage.a1.limit.").len(), 2);
-        assert_eq!(text("settings.usage.a1.who"), "Claude (Personal) · Sample Account");
+        assert_eq!(
+            text("settings.usage.a1.who"),
+            "Claude (Personal) · Sample Account"
+        );
         assert_eq!(text("settings.usage.a2.plan"), "pro");
         assert_eq!(text("settings.usage.refresh_all"), "Refresh all limits");
         assert_eq!(text("settings.usage.a2.refresh"), "Refresh Work");
@@ -882,8 +1190,12 @@ mod tests {
         draw(cx);
         click(cx, "settings.usage.a1.refresh");
         draw(cx);
-        let checks: Vec<Value> =
-            calls.calls().into_iter().filter(|(name, _)| *name == "accounts.check").map(|(_, params)| params).collect();
+        let checks: Vec<Value> = calls
+            .calls()
+            .into_iter()
+            .filter(|(name, _)| *name == "accounts.check")
+            .map(|(_, params)| params)
+            .collect();
         assert_eq!(checks, [json!({}), json!({ "id": "a1" })]);
     }
 
@@ -897,16 +1209,31 @@ mod tests {
         let accounts = vec![
             subscription(json!({ "limits": [] })),
             subscription(json!({ "id": "a2", "setup": null, "limits": [] })),
-            subscription(json!({ "id": "a3", "setup": setup(json!({ "signedIn": false })), "limits": [] })),
-            subscription(json!({ "id": "a4", "setup": setup(json!({ "error": "CLI failed" })), "limits": [] })),
+            subscription(
+                json!({ "id": "a3", "setup": setup(json!({ "signedIn": false })), "limits": [] }),
+            ),
+            subscription(
+                json!({ "id": "a4", "setup": setup(json!({ "error": "CLI failed" })), "limits": [] }),
+            ),
             key,
         ];
         let rpc = rpc(report(aggregate(0, json!({})), json!({})))
             .on::<method::AccountsCheck>(|_| Err(RpcError::BadResult("Offline".to_owned())));
-        let (cx, _) = app(cx, Route::Settings(Section::Usage), with_accounts(accounts), rpc);
-        assert!(text("settings.usage.a1.none").starts_with("Limits aren't available for this account yet."));
+        let (cx, _) = app(
+            cx,
+            Route::Settings(Section::Usage),
+            with_accounts(accounts),
+            rpc,
+        );
+        assert!(
+            text("settings.usage.a1.none")
+                .starts_with("Limits aren't available for this account yet.")
+        );
         assert_eq!(text("settings.usage.a2.checking"), "Checking");
-        assert_eq!(text("settings.usage.a3.signed_out"), "Not signed in, so there are no limits to show.");
+        assert_eq!(
+            text("settings.usage.a3.signed_out"),
+            "Not signed in, so there are no limits to show."
+        );
         assert!(text("settings.usage.a4.problem").contains("CLI failed"));
         assert!(node("settings.usage.k1").is_none());
         click(cx, "settings.usage.refresh_all");
@@ -917,8 +1244,15 @@ mod tests {
     /// provider-usage.test.tsx: an API key alone has no limit cards at all.
     #[gpui::test]
     fn api_keys_alone_have_no_limit_cards(cx: &mut TestAppContext) {
-        let key = subscription(json!({ "id": "k1", "label": "Key", "kind": "api_key", "setup": null, "limits": [] }));
-        app(cx, Route::Settings(Section::Usage), with_accounts(vec![key]), rpc(report(aggregate(0, json!({})), json!({}))));
+        let key = subscription(
+            json!({ "id": "k1", "label": "Key", "kind": "api_key", "setup": null, "limits": [] }),
+        );
+        app(
+            cx,
+            Route::Settings(Section::Usage),
+            with_accounts(vec![key]),
+            rpc(report(aggregate(0, json!({})), json!({}))),
+        );
         assert!(node("settings.usage.providers").is_none());
     }
 }

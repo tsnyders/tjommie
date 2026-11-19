@@ -7,9 +7,9 @@ use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    Anchor, AnyElement, App, ElementId, Entity, FocusHandle,
-    InteractiveElement as _, IntoElement, ParentElement as _, Pixels, RenderOnce, Role,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Toggled, Window, div, px, svg,
+    Anchor, AnyElement, App, ElementId, Entity, FocusHandle, InteractiveElement as _, IntoElement,
+    ParentElement as _, Pixels, RenderOnce, Role, SharedString, StatefulInteractiveElement as _,
+    Styled as _, Toggled, Window, div, px, svg,
 };
 use gpui_kit::base::{Popover, PopoverState};
 
@@ -362,8 +362,12 @@ mod tests {
                     .size(px(20.))
                     .into_any_element()
             })
-            .item(MenuItem::new("test.one", "One", move |_, _| first.set("one")))
-            .item(MenuItem::new("test.two", "Two", move |_, _| second.set("two")))
+            .item(MenuItem::new("test.one", "One", move |_, _| {
+                first.set("one")
+            }))
+            .item(MenuItem::new("test.two", "Two", move |_, _| {
+                second.set("two")
+            }))
             .into_any_element()
         });
         cx.update(|window, cx| trigger.focus(window, cx));
@@ -385,7 +389,10 @@ mod tests {
         cx.simulate_keystrokes("enter");
         crate::ui::testing::draw(cx);
         assert_eq!(chosen.get(), "two");
-        assert!(crate::ui::testing::node("test.two").is_none(), "and the menu closed");
+        assert!(
+            crate::ui::testing::node("test.two").is_none(),
+            "and the menu closed"
+        );
     }
 
     #[gpui::test]

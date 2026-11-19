@@ -88,7 +88,10 @@ fn e2e_live_without_a_daemon_still_opens_and_says_why() {
     let after = app.snapshot().unwrap();
     assert!(after.node("connection.retry").is_some(), "Try again, again");
     assert!(
-        after.nodes.iter().all(|node| !node.text.contains("Something went wrong")),
+        after
+            .nodes
+            .iter()
+            .all(|node| !node.text.contains("Something went wrong")),
         "no crash notice"
     );
 }

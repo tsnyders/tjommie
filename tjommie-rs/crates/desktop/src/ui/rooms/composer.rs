@@ -423,9 +423,7 @@ impl Render for RoomComposer {
             .child(
                 IconButton::new("room.composer.mention", "at-sign", "Mention an agent")
                     .variant(IconVariant::Grey)
-                    .on_press(move |window, cx| {
-                        mention.update(cx, |this, cx| this.at(window, cx))
-                    }),
+                    .on_press(move |window, cx| mention.update(cx, |this, cx| this.at(window, cx))),
             )
             .child(div().flex_1())
             .child(
@@ -508,7 +506,11 @@ mod tests {
             gpui_kit::init(cx);
             cx.set_global(Theme::aegis().unwrap());
             let rooms = vec![room("r1", "Growth", &["b1"])];
-            store::fake(cx, state(vec![bot("b1", "Sales", BotState::Idle)], rooms, vec![]), FakeRpc::new());
+            store::fake(
+                cx,
+                state(vec![bot("b1", "Sales", BotState::Idle)], rooms, vec![]),
+                FakeRpc::new(),
+            );
         });
         let slot = Rc::new(RefCell::new(None));
         let keep = slot.clone();

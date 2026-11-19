@@ -4,8 +4,8 @@
 //! here and never goes in it.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use desktop_host::diagnostics::{REPORT_FILE_NAME, ReportSaver, SaveOutcome};
 use gpui::{
@@ -143,7 +143,11 @@ pub(super) fn report(info: &SystemInfo, cx: &App) -> String {
 }
 
 /// A value at a row's right, in secondary text.
-pub(super) fn value(id: impl Into<SharedString>, text: impl Into<SharedString>, cx: &App) -> AnyElement {
+pub(super) fn value(
+    id: impl Into<SharedString>,
+    text: impl Into<SharedString>,
+    cx: &App,
+) -> AnyElement {
     let text = text.into();
     div()
         .semantic(id, Role::Paragraph)
@@ -217,7 +221,9 @@ fn save(exports: &Entity<Exports>, report: String, cx: &mut App) {
         .join("Documents");
     // The save writes on Tokio's blocking pool while its picker is GPUI's: it's polled here with the live runtime
     // entered (M5 review C1).
-    let tokio = cx.try_global::<crate::live::Tokio>().map(|tokio| tokio.0.clone());
+    let tokio = cx
+        .try_global::<crate::live::Tokio>()
+        .map(|tokio| tokio.0.clone());
     let saver = Arc::clone(&cx.default_global::<Saver>().0);
     cx.spawn(async move |cx| {
         guarded_async("save the diagnostic report", async move {
@@ -229,9 +235,8 @@ fn save(exports: &Entity<Exports>, report: String, cx: &mut App) {
             let saving = saver.save_report(
                 &report,
                 move || async move {
-                    let picked = picker.update(|cx| {
-                        cx.prompt_for_new_path(&directory, Some(REPORT_FILE_NAME))
-                    });
+                    let picked = picker
+                        .update(|cx| cx.prompt_for_new_path(&directory, Some(REPORT_FILE_NAME)));
                     picked.await.ok().and_then(Result::ok).flatten()
                 },
                 move || gone.load(Ordering::SeqCst),
@@ -244,10 +249,13 @@ fn save(exports: &Entity<Exports>, report: String, cx: &mut App) {
                         Ok(SaveOutcome::Saved) => {
                             exports.notice = Some("Report saved on this device.".into())
                         }
-                        Ok(SaveOutcome::Cancelled) => exports.notice = Some("Save cancelled.".into()),
+                        Ok(SaveOutcome::Cancelled) => {
+                            exports.notice = Some("Save cancelled.".into())
+                        }
                         Err(_) => {
                             exports.problem = Some(
-                                "The report could not be saved. Try again or copy the preview.".into(),
+                                "The report could not be saved. Try again or copy the preview."
+                                    .into(),
                             )
                         }
                     }
@@ -298,7 +306,11 @@ pub(super) fn section(window: &mut Window, cx: &mut App) -> AnyElement {
     };
     let (action, notice, failed) = {
         let exports = exports.read(cx);
-        (exports.action, exports.notice.clone(), exports.problem.clone())
+        (
+            exports.action,
+            exports.notice.clone(),
+            exports.problem.clone(),
+        )
     };
     let theme = theme(cx);
     let colors = palette(cx);
@@ -306,24 +318,33 @@ pub(super) fn section(window: &mut Window, cx: &mut App) -> AnyElement {
         let (info, exports) = (info.clone(), exports.clone());
         let pill = Pill::new(
             "settings.diagnostics.refresh",
-            if loading { "Checking…" } else { "Refresh checks" },
+            if loading {
+                "Checking…"
+            } else {
+                "Refresh checks"
+            },
         );
-        pill.disabled(loading || action.is_some()).on_press(move |_, cx| {
-            exports.update(cx, |exports, cx| {
-                exports.notice = None;
-                cx.notify();
-            });
-            info.update(cx, |info, cx| {
-                info.revision += 1;
-                cx.notify();
-            });
-        })
+        pill.disabled(loading || action.is_some())
+            .on_press(move |_, cx| {
+                exports.update(cx, |exports, cx| {
+                    exports.notice = None;
+                    cx.notify();
+                });
+                info.update(cx, |info, cx| {
+                    info.revision += 1;
+                    cx.notify();
+                });
+            })
     };
     let copy = {
         let (exports, report) = (exports.clone(), report.clone());
         let pill = Pill::new(
             "settings.diagnostics.copy",
-            if action == Some(Export::Copy) { "Copying…" } else { "Copy report" },
+            if action == Some(Export::Copy) {
+                "Copying…"
+            } else {
+                "Copy report"
+            },
         );
         pill.disabled(action.is_some()).on_press(move |_, cx| {
             cx.write_to_clipboard(ClipboardItem::new_string(report.clone()));
@@ -338,7 +359,11 @@ pub(super) fn section(window: &mut Window, cx: &mut App) -> AnyElement {
         let (exports, report) = (exports.clone(), report.clone());
         let pill = Pill::new(
             "settings.diagnostics.save",
-            if action == Some(Export::Save) { "Saving…" } else { "Save report" },
+            if action == Some(Export::Save) {
+                "Saving…"
+            } else {
+                "Save report"
+            },
         );
         pill.disabled(action.is_some())
             .on_press(move |_, cx| save(&exports, report.clone(), cx))
@@ -504,9 +529,16 @@ mod tests {
     /// diagnostics-section.test.tsx: "distinguishes the current device version from the selected host, and excludes its
     /// display name".
     #[gpui::test]
-    fn shows_the_hosts_name_keeps_it_out_of_the_report_and_tells_the_versions_apart(cx: &mut TestAppContext) {
+    fn shows_the_hosts_name_keeps_it_out_of_the_report_and_tells_the_versions_apart(
+        cx: &mut TestAppContext,
+    ) {
         let rpc = FakeRpc::new().on::<method::DiagnosticsGet>(|_| Ok(host("0.3.2")));
-        let (cx, _) = app(cx, Route::Settings(Section::Diagnostics), on_a_paired_pc(), rpc);
+        let (cx, _) = app(
+            cx,
+            Route::Settings(Section::Diagnostics),
+            on_a_paired_pc(),
+            rpc,
+        );
         name_the_pc(cx);
         assert_eq!(text("settings.diagnostics.host"), "Private host name");
         assert!(!text("settings.diagnostics.preview.body").contains("Private host name"));
@@ -524,9 +556,18 @@ mod tests {
         let reads = Arc::new(AtomicUsize::new(0));
         let counted = reads.clone();
         let rpc = FakeRpc::new().on::<method::DiagnosticsGet>(move |_| {
-            Ok(host(if counted.fetch_add(1, Ordering::SeqCst) == 0 { "9.9.9" } else { "0.3.2" }))
+            Ok(host(if counted.fetch_add(1, Ordering::SeqCst) == 0 {
+                "9.9.9"
+            } else {
+                "0.3.2"
+            }))
         });
-        let (cx, _) = app(cx, Route::Settings(Section::Diagnostics), on_a_paired_pc(), rpc);
+        let (cx, _) = app(
+            cx,
+            Route::Settings(Section::Diagnostics),
+            on_a_paired_pc(),
+            rpc,
+        );
         assert_eq!(report()["host"]["appVersion"], "9.9.9");
         cx.update(|_, cx| {
             crate::ui::store::update(cx, |state| {
@@ -535,7 +576,11 @@ mod tests {
             })
         });
         draw(cx);
-        assert_eq!(reads.load(Ordering::SeqCst), 2, "read again for the other PC");
+        assert_eq!(
+            reads.load(Ordering::SeqCst),
+            2,
+            "read again for the other PC"
+        );
         assert_eq!(report()["host"]["appVersion"], "0.3.2");
         assert!(!text("settings.diagnostics.preview.body").contains("9.9.9"));
     }
@@ -545,7 +590,12 @@ mod tests {
     #[gpui::test]
     fn copies_exactly_the_preview_and_says_a_cancelled_save(cx: &mut TestAppContext) {
         let rpc = FakeRpc::new().on::<method::DiagnosticsGet>(|_| Ok(host("0.3.2")));
-        let (cx, _) = app(cx, Route::Settings(Section::Diagnostics), state(vec![], vec![], vec![]), rpc);
+        let (cx, _) = app(
+            cx,
+            Route::Settings(Section::Diagnostics),
+            state(vec![], vec![], vec![]),
+            rpc,
+        );
         let preview = text("settings.diagnostics.preview.body");
         click(cx, "settings.diagnostics.copy");
         let copied = cx.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text()));
@@ -555,7 +605,10 @@ mod tests {
         cx.simulate_new_path_selection(|_| None);
         draw(cx);
         assert_eq!(text("settings.diagnostics.notice"), "Save cancelled.");
-        assert!(node("settings.diagnostics.problem").is_none(), "no claim of success or failure");
+        assert!(
+            node("settings.diagnostics.problem").is_none(),
+            "no claim of success or failure"
+        );
     }
 
     /// M5 review C1: Save report writes the report where the picker says. Its write runs on Tokio's blocking pool, so the
@@ -564,11 +617,20 @@ mod tests {
     fn saves_the_report_where_the_picker_says(cx: &mut TestAppContext) {
         // The write is a real Tokio thread, so its wake-ups aren't the test scheduler's own.
         cx.executor().allow_parking();
-        let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
         let root = desktop_host::owner_safety::test_root().unwrap();
         let path = root.path().join("tjommie-diagnostics.json");
         let rpc = FakeRpc::new().on::<method::DiagnosticsGet>(|_| Ok(host("0.3.2")));
-        let (cx, _) = app(cx, Route::Settings(Section::Diagnostics), state(vec![], vec![], vec![]), rpc);
+        let (cx, _) = app(
+            cx,
+            Route::Settings(Section::Diagnostics),
+            state(vec![], vec![], vec![]),
+            rpc,
+        );
         cx.update(|_, cx| cx.set_global(crate::live::Tokio(runtime.handle().clone())));
         let preview = text("settings.diagnostics.preview.body");
         click(cx, "settings.diagnostics.save");
@@ -577,27 +639,42 @@ mod tests {
         // The write finishes on the runtime's own thread: draw until its answer has come back.
         for _ in 0..300 {
             draw(cx);
-            if node("settings.diagnostics.notice").is_some_and(|node| node.text == "Report saved on this device.") {
+            if node("settings.diagnostics.notice")
+                .is_some_and(|node| node.text == "Report saved on this device.")
+            {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        assert_eq!(text("settings.diagnostics.notice"), "Report saved on this device.");
+        assert_eq!(
+            text("settings.diagnostics.notice"),
+            "Report saved on this device."
+        );
         let saved: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(saved, serde_json::from_str::<Value>(&preview).unwrap());
-        assert!(node("settings.diagnostics.save").is_some(), "Save is back, not stranded");
+        assert!(
+            node("settings.diagnostics.save").is_some(),
+            "Save is back, not stranded"
+        );
     }
 
     /// diagnostics-section.test.tsx: "shows unknown versions and safe errors when a bridge/check is unavailable".
     #[gpui::test]
-    fn says_when_the_host_check_is_unavailable_and_keeps_unknowns_in_the_report(cx: &mut TestAppContext) {
+    fn says_when_the_host_check_is_unavailable_and_keeps_unknowns_in_the_report(
+        cx: &mut TestAppContext,
+    ) {
         let rpc = FakeRpc::new().on::<method::DiagnosticsGet>(|_| {
             Err(client::RpcError::Daemon {
                 code: protocol::ErrorCode::Internal,
                 message: "SYNTHETIC_SECRET at C:/private".into(),
             })
         });
-        let (cx, _) = app(cx, Route::Settings(Section::Diagnostics), state(vec![], vec![], vec![]), rpc);
+        let (cx, _) = app(
+            cx,
+            Route::Settings(Section::Diagnostics),
+            state(vec![], vec![], vec![]),
+            rpc,
+        );
         draw(cx);
         assert!(text("settings.diagnostics.unavailable").contains("unavailable"));
         let report = report();

@@ -84,7 +84,9 @@ pub enum Request {
     /// Answers the app's next file or folder prompt with `path`, in place of the system's picker, which keys can't
     /// drive (M5 review M8). Its tag is the needle `tests/pins.rs` and CI look for: a release build has no such hook.
     #[serde(rename = "tjommie-test-path-answer")]
-    AnswerPathPrompt { path: String },
+    AnswerPathPrompt {
+        path: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

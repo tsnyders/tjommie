@@ -108,7 +108,10 @@ async fn read(
                 project_id: id.clone(),
             })
             .await?,
-            Some(rpc.call::<method::ProjectsHeads>(Id { id: id.clone() }).await?),
+            Some(
+                rpc.call::<method::ProjectsHeads>(Id { id: id.clone() })
+                    .await?,
+            ),
         ),
         None => (Vec::new(), None),
     };
@@ -339,7 +342,10 @@ fn pill(
     enabled: bool,
     on_press: impl Fn(&mut Window, &mut App) + 'static,
 ) -> AnyElement {
-    let pill = Pill::new(id, label).small().disabled(!enabled).on_press(on_press);
+    let pill = Pill::new(id, label)
+        .small()
+        .disabled(!enabled)
+        .on_press(on_press);
     let pill = if primary {
         pill.variant(PillVariant::Primary)
     } else {
@@ -349,7 +355,12 @@ fn pill(
 }
 
 /// A short line of secondary text, read by tests as `id`.
-pub(crate) fn line(id: impl Into<SharedString>, role: Role, text: impl Into<SharedString>, cx: &App) -> AnyElement {
+pub(crate) fn line(
+    id: impl Into<SharedString>,
+    role: Role,
+    text: impl Into<SharedString>,
+    cx: &App,
+) -> AnyElement {
     let theme = theme(cx);
     let text = text.into();
     div()
@@ -368,11 +379,11 @@ impl Render for ProjectsScreen {
             self.reload(cx);
         }
         self.was_ready = ready;
-        if self
-            .bring
-            .as_ref()
-            .is_some_and(|id| self.detail.as_ref().is_some_and(|detail| &detail.task.id == id))
-        {
+        if self.bring.as_ref().is_some_and(|id| {
+            self.detail
+                .as_ref()
+                .is_some_and(|detail| &detail.task.id == id)
+        }) {
             cx.defer_in(window, |this, window, cx| {
                 guarded("bring the task into view", || this.bring_detail(window, cx));
             });
@@ -414,7 +425,9 @@ impl Render for ProjectsScreen {
                     } else {
                         colors.surface.sunk
                     }))
-                    .when(chosen, |row| row.shadow(crate::ui::style::shadows(&theme.shadow.light.card)))
+                    .when(chosen, |row| {
+                        row.shadow(crate::ui::style::shadows(&theme.shadow.light.card))
+                    })
                     .cursor_pointer()
                     .child(
                         svg()
@@ -453,15 +466,21 @@ impl Render for ProjectsScreen {
             })
             .collect();
 
-        let right = project.as_ref().map(|project| self.team(project, &bots, window, cx));
+        let right = project
+            .as_ref()
+            .map(|project| self.team(project, &bots, window, cx));
         let teams_scroll = scroll_handle("projects.teams", window, cx);
         let theme = theme(cx);
         let colors = palette(cx);
         let new_project = {
             let screen = screen.clone();
-            pill("projects.new", "New project", true, ready && !busy, move |window, cx| {
-                editors::open_project_editor(screen.clone(), None, window, cx)
-            })
+            pill(
+                "projects.new",
+                "New project",
+                true,
+                ready && !busy,
+                move |window, cx| editors::open_project_editor(screen.clone(), None, window, cx),
+            )
         };
         let refresh = screen.clone();
         div()
@@ -609,7 +628,9 @@ impl ProjectsScreen {
                     } else {
                         colors.surface.sunk
                     }))
-                    .when(chosen, |card| card.shadow(crate::ui::style::shadows(&theme.shadow.light.card)))
+                    .when(chosen, |card| {
+                        card.shadow(crate::ui::style::shadows(&theme.shadow.light.card))
+                    })
                     .cursor_pointer()
                     .child(
                         div()
@@ -623,7 +644,9 @@ impl ProjectsScreen {
                             .flex()
                             .items_center()
                             .gap(r(theme.space.s8))
-                            .children(developer.map(|bot| BotAvatar::new(bot.color, bot.shape, 18.)))
+                            .children(
+                                developer.map(|bot| BotAvatar::new(bot.color, bot.shape, 18.)),
+                            )
                             .child(
                                 div()
                                     .type_style(&theme.typography.desktop.meta)
@@ -635,9 +658,11 @@ impl ProjectsScreen {
                 let (screen, id) = (screen.clone(), task.id.clone());
                 pressable(
                     card,
-                    Some(std::rc::Rc::new(move |window: &mut Window, cx: &mut App| {
-                        screen.update(cx, |this, cx| this.select_task(id.clone(), window, cx))
-                    })),
+                    Some(std::rc::Rc::new(
+                        move |window: &mut Window, cx: &mut App| {
+                            screen.update(cx, |this, cx| this.select_task(id.clone(), window, cx))
+                        },
+                    )),
                 )
                 .into_any_element()
             })
@@ -646,39 +671,58 @@ impl ProjectsScreen {
         let colors = palette(cx);
         let edit = {
             let (screen, project) = (screen.clone(), project.clone());
-            pill("projects.edit", "Edit team", false, can, move |window, cx| {
-                editors::open_project_editor(screen.clone(), Some(project.clone()), window, cx)
-            })
+            pill(
+                "projects.edit",
+                "Edit team",
+                false,
+                can,
+                move |window, cx| {
+                    editors::open_project_editor(screen.clone(), Some(project.clone()), window, cx)
+                },
+            )
         };
         let archive = {
             let (screen, project) = (screen.clone(), project.clone());
-            pill("projects.archive", "Archive team", false, can, move |window, cx| {
-                let (screen, id, revision) = (screen.clone(), project.id.clone(), project.revision);
-                open_confirm(
-                    window,
-                    cx,
-                    format!("Archive {}?", project.input.name),
-                    "You will no longer be able to edit this team or start new tasks. Existing branches and files \
+            pill(
+                "projects.archive",
+                "Archive team",
+                false,
+                can,
+                move |window, cx| {
+                    let (screen, id, revision) =
+                        (screen.clone(), project.id.clone(), project.revision);
+                    open_confirm(
+                        window,
+                        cx,
+                        format!("Archive {}?", project.input.name),
+                        "You will no longer be able to edit this team or start new tasks. Existing branches and files \
                      are kept. This cannot be undone in Tjommie.",
-                    "Archive team",
-                    false,
-                    move |_, cx| {
-                        let params = ExpectedRevision {
-                            id: id.clone(),
-                            expected_revision: revision,
-                        };
-                        screen.update(cx, |this, cx| {
-                            this.act::<method::ProjectsArchive>(params, false, |_, _| {}, cx)
-                        })
-                    },
-                );
-            })
+                        "Archive team",
+                        false,
+                        move |_, cx| {
+                            let params = ExpectedRevision {
+                                id: id.clone(),
+                                expected_revision: revision,
+                            };
+                            screen.update(cx, |this, cx| {
+                                this.act::<method::ProjectsArchive>(params, false, |_, _| {}, cx)
+                            })
+                        },
+                    );
+                },
+            )
         };
         let new_task = {
             let (screen, project) = (screen.clone(), project.clone());
-            pill("projects.new_task", "New task", true, can, move |window, cx| {
-                editors::open_task_editor(screen.clone(), project.clone(), None, window, cx)
-            })
+            pill(
+                "projects.new_task",
+                "New task",
+                true,
+                can,
+                move |window, cx| {
+                    editors::open_task_editor(screen.clone(), project.clone(), None, window, cx)
+                },
+            )
         };
         let room = project.input.room_id.clone().map(|room| {
             div().mt(r(theme.space.s8)).child(

@@ -71,7 +71,8 @@ fn e2e_room_mention() {
     )
     .unwrap();
     // A daemon without the switch refuses the variable and never starts: this wait is where that shows.
-    app.wait("screen.agents", Predicate::Exists, 60_000).unwrap();
+    app.wait("screen.agents", Predicate::Exists, 60_000)
+        .unwrap();
 
     // The agent.
     app.click("agents.new").unwrap();

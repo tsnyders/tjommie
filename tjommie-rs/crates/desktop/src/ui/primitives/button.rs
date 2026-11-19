@@ -345,7 +345,11 @@ mod tests {
         let cx = crate::ui::primitives::keyboard_window(cx, move |_, _| {
             let (off, on) = (counted.clone(), counted.clone());
             div()
-                .child(Pill::new("test.off", "Save").disabled(true).on_press(move |_, _| off.set(off.get() + 1)))
+                .child(
+                    Pill::new("test.off", "Save")
+                        .disabled(true)
+                        .on_press(move |_, _| off.set(off.get() + 1)),
+                )
                 .child(Pill::new("test.on", "Cancel").on_press(move |_, _| on.set(on.get() + 10)))
                 .into_any_element()
         });
@@ -357,7 +361,10 @@ mod tests {
         for _ in 0..2 {
             cx.simulate_keystrokes("tab");
             draw(cx);
-            assert!(node("test.on").unwrap().focused, "Tab goes to the available pill only");
+            assert!(
+                node("test.on").unwrap().focused,
+                "Tab goes to the available pill only"
+            );
             assert!(!node("test.off").unwrap().focused);
         }
         click(cx, "test.off");

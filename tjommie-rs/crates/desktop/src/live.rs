@@ -479,8 +479,8 @@ pub fn start(identity: Identity, root: PathBuf, cx: &mut App) {
     // This device's local dictation runs on the same runtime.
     crate::speech::start(&identity, &root, runtime.handle(), cx);
     // The browser panel's logins menu reaches the selected PC's vault through the app's logins client.
-    cx.default_global::<crate::ui::browser::BrowserData>().on_logins =
-        Some(std::rc::Rc::new(crate::ui::logins::browser_logins));
+    cx.default_global::<crate::ui::browser::BrowserData>()
+        .on_logins = Some(std::rc::Rc::new(crate::ui::logins::browser_logins));
     let base: Env = std::env::vars().collect();
     let env = launch_env(&identity, &root, &base);
     let daemon = if identity.kind == Kind::Dev && root.join("daemon-token").exists() {
@@ -545,7 +545,10 @@ impl gpui::Global for Tokio {}
 
 /// Polls `future` with the live runtime entered, so what it spawns on Tokio finds a runtime, while it stays on the
 /// thread that polls it (the UI's, for a future that awaits the UI). With no runtime it polls the future as it is.
-pub async fn in_runtime<T>(handle: Option<tokio::runtime::Handle>, future: impl Future<Output = T>) -> T {
+pub async fn in_runtime<T>(
+    handle: Option<tokio::runtime::Handle>,
+    future: impl Future<Output = T>,
+) -> T {
     let mut future = std::pin::pin!(future);
     std::future::poll_fn(|cx| {
         let _context = handle.as_ref().map(tokio::runtime::Handle::enter);

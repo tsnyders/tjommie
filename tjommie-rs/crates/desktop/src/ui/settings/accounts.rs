@@ -13,12 +13,14 @@ use std::time::{Duration, Instant};
 use client::ClientMethod;
 use futures::StreamExt as _;
 use gpui::{
-    AnyElement, App, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement, ParentElement as _, Role,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Task, Window, div, px, svg,
+    AnyElement, App, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement,
+    ParentElement as _, Role, SharedString, StatefulInteractiveElement as _, Styled as _, Task,
+    Window, div, px, svg,
 };
 use jiff::Zoned;
 use protocol::accounts::{
-    AccountAttempt, AccountInfo, AccountKind, AccountPatch, AccountsCheck, AccountsUpdate, UsageAggregate,
+    AccountAttempt, AccountInfo, AccountKind, AccountPatch, AccountsCheck, AccountsUpdate,
+    UsageAggregate,
 };
 use protocol::model::{Bot, CodexSandboxReadiness, Provider, ProviderSetup};
 use protocol::wire::{Id, method};
@@ -27,23 +29,25 @@ use super::account_dialogs;
 use super::usage::meter;
 use crate::guard::{guarded, guarded_async};
 use crate::model::accounts::{
-    Focus, RETRY_CAPTION, StatusAction, StatusFlags, Tone, accounts_of, bots_on, focus_ready, limit_label, limit_near,
-    limit_value, remember_url, spending_meter, status_line, subscription_label,
+    Focus, RETRY_CAPTION, StatusAction, StatusFlags, Tone, accounts_of, bots_on, focus_ready,
+    limit_label, limit_near, limit_value, remember_url, spending_meter, status_line,
+    subscription_label,
 };
 use crate::model::labels::error_text;
 use crate::model::setup::{provider_name, report_of};
 use crate::model::state::Connection;
 use crate::model::usage::{
-    Held, REFETCH_MS, RangeKind, UsageFilters, account_usage_text, concerns, matching, usage_day_key, usage_query,
+    Held, REFETCH_MS, RangeKind, UsageFilters, account_usage_text, concerns, matching,
+    usage_day_key, usage_query,
 };
 use crate::semantic::SemanticExt as _;
 use crate::ui::agents::cards::more_trigger;
 use crate::ui::fields::{Link, problem};
 use crate::ui::primitives::avatar::BotAvatar;
 use crate::ui::primitives::button::{Pill, PillVariant};
-use crate::ui::primitives::{focus_by_id, focus_handle};
 use crate::ui::primitives::menu::{Menu, MenuItem};
 use crate::ui::primitives::toggle::Toggle;
+use crate::ui::primitives::{focus_by_id, focus_handle};
 use crate::ui::projects::line;
 use crate::ui::routines::editor::local_zone;
 use crate::ui::shell::route::{self, AccountAction, Route};
@@ -181,7 +185,16 @@ fn sign_in(accounts: &Entity<Accounts>, id: &str, cx: &mut App) {
 }
 
 fn update(accounts: &Entity<Accounts>, id: &str, patch: AccountPatch, cx: &mut App) {
-    run::<method::AccountsUpdate>(accounts, id, AccountsUpdate { id: id.to_owned(), patch }, |_, _| {}, cx);
+    run::<method::AccountsUpdate>(
+        accounts,
+        id,
+        AccountsUpdate {
+            id: id.to_owned(),
+            patch,
+        },
+        |_, _| {},
+        cx,
+    );
 }
 
 /// Codex's sandbox (`accounts.prepareCodexSandbox`): Windows asks for admin permission once.
@@ -212,7 +225,9 @@ fn prepare_sandbox(accounts: &Entity<Accounts>, id: String, cx: &mut App) {
 /// A subscription whose first check hasn't come back is checked once when the section opens; its card offers Check
 /// again if it still hasn't answered, so nothing waits for ever.
 fn first_check(accounts: &Entity<Accounts>, list: &[AccountInfo], cx: &mut App) {
-    let unchecked = list.iter().any(|each| each.kind == AccountKind::Subscription && each.setup.is_none());
+    let unchecked = list
+        .iter()
+        .any(|each| each.kind == AccountKind::Subscription && each.setup.is_none());
     if accounts.read(cx).checked || !unchecked {
         return;
     }
@@ -230,14 +245,19 @@ fn first_check(accounts: &Entity<Accounts>, list: &[AccountInfo], cx: &mut App) 
 
 /// `useStuck` for each card: whether a subscription has waited past STUCK for its first check. A card starts its clock
 /// when it starts waiting, and the section draws again when that wait is up.
-fn stuck_cards(accounts: &Entity<Accounts>, list: &[AccountInfo], cx: &mut App) -> HashMap<String, bool> {
+fn stuck_cards(
+    accounts: &Entity<Accounts>,
+    list: &[AccountInfo],
+    cx: &mut App,
+) -> HashMap<String, bool> {
     let now = cx.background_executor().now();
     let mut started = false;
     let stuck = accounts.update(cx, |accounts, _| {
         list.iter()
             .map(|account| {
-                let waiting =
-                    account.kind == AccountKind::Subscription && account.setup.is_none() && account.sign_in.is_none();
+                let waiting = account.kind == AccountKind::Subscription
+                    && account.setup.is_none()
+                    && account.sign_in.is_none();
                 let card = accounts.card(&account.id);
                 if !waiting {
                     card.waiting_since = None;
@@ -245,7 +265,9 @@ fn stuck_cards(accounts: &Entity<Accounts>, list: &[AccountInfo], cx: &mut App) 
                     card.waiting_since = Some(now);
                     started = true;
                 }
-                let stuck = card.waiting_since.is_some_and(|since| now.saturating_duration_since(since) >= STUCK);
+                let stuck = card
+                    .waiting_since
+                    .is_some_and(|since| now.saturating_duration_since(since) >= STUCK);
                 (account.id.clone(), stuck)
             })
             .collect()
@@ -269,7 +291,10 @@ fn stuck_cards(accounts: &Entity<Accounts>, list: &[AccountInfo], cx: &mut App) 
 /// The link's wish (`Route::Account` with an action). It's forgotten once the route moves on, so the same link works again.
 fn wish(accounts: &Entity<Accounts>, cx: &mut App) -> Option<(String, AccountAction)> {
     let wish = match route::current(cx) {
-        Route::Account { account, action: Some(action) } => Some((account, action)),
+        Route::Account {
+            account,
+            action: Some(action),
+        } => Some((account, action)),
         _ => None,
     };
     if wish.is_none() && accounts.read(cx).focused.is_some() {
@@ -310,15 +335,21 @@ struct CardUsage {
 
 impl CardUsage {
     fn new(account: String, cx: &mut Context<Self>) -> Self {
-        let filters = UsageFilters { account: Some(account.clone()), ..UsageFilters::default() };
-        let mut feed = store::events(cx, move |event| {
-            matches!(event, protocol::Event::UsageChanged(changed) if concerns(&filters, changed))
-        });
+        let filters = UsageFilters {
+            account: Some(account.clone()),
+            ..UsageFilters::default()
+        };
+        let mut feed = store::events(
+            cx,
+            move |event| matches!(event, protocol::Event::UsageChanged(changed) if concerns(&filters, changed)),
+        );
         let events = cx.spawn(async move |this, cx| {
             guarded_async("follow an account's usage", async move {
                 // `Throttle`'s rule: one read REFETCH_MS after the first change, however many come meanwhile.
                 while feed.arrivals.next().await.is_some() {
-                    cx.background_executor().timer(Duration::from_millis(REFETCH_MS)).await;
+                    cx.background_executor()
+                        .timer(Duration::from_millis(REFETCH_MS))
+                        .await;
                     while let Ok(()) = feed.arrivals.try_recv() {}
                     let counted = this.update(cx, |usage, cx| {
                         usage.changes += 1;
@@ -355,14 +386,21 @@ fn read_usage(usage: &Entity<CardUsage>, day: &str, now: &Zoned, zone: &str, cx:
     if usage.read(cx).asked.as_ref() == Some(&wanted) {
         return;
     }
-    let filters = UsageFilters { account: Some(usage.read(cx).account.clone()), ..UsageFilters::default() };
-    let (Some(today), Some(month)) =
-        (usage_query(RangeKind::Today, &filters, now, zone), usage_query(RangeKind::Month, &filters, now, zone))
-    else {
+    let filters = UsageFilters {
+        account: Some(usage.read(cx).account.clone()),
+        ..UsageFilters::default()
+    };
+    let (Some(today), Some(month)) = (
+        usage_query(RangeKind::Today, &filters, now, zone),
+        usage_query(RangeKind::Month, &filters, now, zone),
+    ) else {
         return;
     };
     usage.update(cx, |usage, _| usage.asked = Some(wanted.clone()));
-    let calls = (store::request::<method::UsageQuery>(cx, today), store::request::<method::UsageQuery>(cx, month));
+    let calls = (
+        store::request::<method::UsageQuery>(cx, today),
+        store::request::<method::UsageQuery>(cx, month),
+    );
     let usage = usage.downgrade();
     cx.spawn(async move |cx| {
         guarded_async("read an account's usage", async move {
@@ -375,10 +413,16 @@ fn read_usage(usage: &Entity<CardUsage>, day: &str, now: &Zoned, zone: &str, cx:
                     }
                     let (day, _) = wanted;
                     if let Ok(report) = today {
-                        usage.today = Some(Held { key: day.clone(), value: report.summary });
+                        usage.today = Some(Held {
+                            key: day.clone(),
+                            value: report.summary,
+                        });
                     }
                     if let Ok(report) = month {
-                        usage.month = Some(Held { key: day, value: report.summary });
+                        usage.month = Some(Held {
+                            key: day,
+                            value: report.summary,
+                        });
                     }
                     cx.notify();
                 });
@@ -393,9 +437,16 @@ fn read_usage(usage: &Entity<CardUsage>, day: &str, now: &Zoned, zone: &str, cx:
 fn usage_line(usage: &Entity<CardUsage>, day: &str, kind: AccountKind, cx: &App) -> String {
     let usage = usage.read(cx);
     let text = |held: Option<&Held<UsageAggregate>>| {
-        matching(held, Some(day)).map_or_else(|| "…".to_owned(), |summary| account_usage_text(summary, kind))
+        matching(held, Some(day)).map_or_else(
+            || "…".to_owned(),
+            |summary| account_usage_text(summary, kind),
+        )
     };
-    format!("Today {} · This month {}", text(usage.today.as_ref()), text(usage.month.as_ref()))
+    format!(
+        "Today {} · This month {}",
+        text(usage.today.as_ref()),
+        text(usage.month.as_ref())
+    )
 }
 
 /// What a card is drawn from, gathered while `cx` could still change.
@@ -413,14 +464,28 @@ struct CardData<'a> {
 }
 
 /// A card's button: a pill, unavailable while it can't be pressed.
-pub(super) fn pill(id: String, text: &'static str, primary: bool, enabled: bool, on_press: impl Fn(&mut Window, &mut App) + 'static) -> AnyElement {
+pub(super) fn pill(
+    id: String,
+    text: &'static str,
+    primary: bool,
+    enabled: bool,
+    on_press: impl Fn(&mut Window, &mut App) + 'static,
+) -> AnyElement {
     let pill = Pill::new(id, text).disabled(!enabled).on_press(on_press);
-    let pill = if primary { pill.variant(PillVariant::Primary) } else { pill };
+    let pill = if primary {
+        pill.variant(PillVariant::Primary)
+    } else {
+        pill
+    };
     pill.into_any_element()
 }
 
 /// The button for what fixes the status line (`act`). Sign in and Try again share `signin`, as only one shows at a time.
-fn status_action(action: StatusAction, data: &CardData<'_>, accounts: &Entity<Accounts>) -> AnyElement {
+fn status_action(
+    action: StatusAction,
+    data: &CardData<'_>,
+    accounts: &Entity<Accounts>,
+) -> AnyElement {
     let account = data.account;
     let id = account.id.clone();
     let control = format!("settings.accounts.{id}");
@@ -434,35 +499,94 @@ fn status_action(action: StatusAction, data: &CardData<'_>, accounts: &Entity<Ac
                 .into_any_element()
         }
         StatusAction::Cancel => {
-            let attempt = account.sign_in.as_ref().map(|sign_in| sign_in.attempt.clone()).unwrap_or_default();
-            pill(format!("{control}.cancel"), "Cancel", false, free, move |_, cx| {
-                let params = AccountAttempt { id: id.clone(), attempt: attempt.clone() };
-                run::<method::AccountsCancelSignIn>(&accounts, &id, params, |_, _| {}, cx);
-            })
+            let attempt = account
+                .sign_in
+                .as_ref()
+                .map(|sign_in| sign_in.attempt.clone())
+                .unwrap_or_default();
+            pill(
+                format!("{control}.cancel"),
+                "Cancel",
+                false,
+                free,
+                move |_, cx| {
+                    let params = AccountAttempt {
+                        id: id.clone(),
+                        attempt: attempt.clone(),
+                    };
+                    run::<method::AccountsCancelSignIn>(&accounts, &id, params, |_, _| {}, cx);
+                },
+            )
         }
-        StatusAction::TryAgain => {
-            pill(format!("{control}.signin"), "Try again", true, free, move |_, cx| sign_in(&accounts, &id, cx))
-        }
-        StatusAction::Check => pill(format!("{control}.check"), "Check again", false, free, move |_, cx| {
-            run::<method::AccountsCheck>(&accounts, &id, AccountsCheck { id: Some(id.clone()) }, |_, _| {}, cx);
-        }),
-        StatusAction::RetryLimit => pill(format!("{control}.retry"), "Retry queued work", true, free, move |_, cx| {
-            run::<method::AccountsRetryLimit>(&accounts, &id, Id { id: id.clone() }, |_, _| {}, cx);
-        }),
-        StatusAction::SignIn => {
-            pill(format!("{control}.signin"), "Sign in", true, free, move |_, cx| sign_in(&accounts, &id, cx))
-        }
+        StatusAction::TryAgain => pill(
+            format!("{control}.signin"),
+            "Try again",
+            true,
+            free,
+            move |_, cx| sign_in(&accounts, &id, cx),
+        ),
+        StatusAction::Check => pill(
+            format!("{control}.check"),
+            "Check again",
+            false,
+            free,
+            move |_, cx| {
+                run::<method::AccountsCheck>(
+                    &accounts,
+                    &id,
+                    AccountsCheck {
+                        id: Some(id.clone()),
+                    },
+                    |_, _| {},
+                    cx,
+                );
+            },
+        ),
+        StatusAction::RetryLimit => pill(
+            format!("{control}.retry"),
+            "Retry queued work",
+            true,
+            free,
+            move |_, cx| {
+                run::<method::AccountsRetryLimit>(
+                    &accounts,
+                    &id,
+                    Id { id: id.clone() },
+                    |_, _| {},
+                    cx,
+                );
+            },
+        ),
+        StatusAction::SignIn => pill(
+            format!("{control}.signin"),
+            "Sign in",
+            true,
+            free,
+            move |_, cx| sign_in(&accounts, &id, cx),
+        ),
         StatusAction::AddKey => {
             let account = account.clone();
-            pill(format!("{control}.add_key"), "Add key", true, true, move |window, cx| {
-                account_dialogs::open_replace_key(&account, accounts.clone(), window, cx);
-            })
+            pill(
+                format!("{control}.add_key"),
+                "Add key",
+                true,
+                true,
+                move |window, cx| {
+                    account_dialogs::open_replace_key(&account, accounts.clone(), window, cx);
+                },
+            )
         }
         StatusAction::RaiseCap => {
             let account = account.clone();
-            pill(format!("{control}.raise_cap"), "Raise cap", true, true, move |window, cx| {
-                account_dialogs::open_cap(&account, accounts.clone(), window, cx);
-            })
+            pill(
+                format!("{control}.raise_cap"),
+                "Raise cap",
+                true,
+                true,
+                move |window, cx| {
+                    account_dialogs::open_cap(&account, accounts.clone(), window, cx);
+                },
+            )
         }
     }
 }
@@ -475,41 +599,86 @@ fn card_menu(data: &CardData<'_>, accounts: &Entity<Accounts>) -> Option<AnyElem
     let label: SharedString = format!("More for {}", account.label).into();
     let trigger = {
         let id = id.clone();
-        move |open, window: &Window, cx: &App| more_trigger(format!("settings.accounts.{id}.more"), label, open, &more, window, cx)
+        move |open, window: &Window, cx: &App| {
+            more_trigger(
+                format!("settings.accounts.{id}.more"),
+                label,
+                open,
+                &more,
+                window,
+                cx,
+            )
+        }
     };
     let item = |name: &str| format!("settings.accounts.{id}.{name}");
-    let mut menu = Menu::new(SharedString::from(item("menu")), trigger).anchor(gpui::Anchor::TopRight).offset(px(6.));
+    let mut menu = Menu::new(SharedString::from(item("menu")), trigger)
+        .anchor(gpui::Anchor::TopRight)
+        .offset(px(6.));
     menu = menu.item(MenuItem::new(item("rename"), "Rename", {
         let (account, accounts) = (account.clone(), accounts.clone());
         move |window, cx| account_dialogs::open_rename(&account, accounts.clone(), window, cx)
     }));
     if !account.is_default && !data.busy {
         let (accounts, id) = (accounts.clone(), id.clone());
-        menu = menu.item(MenuItem::new(item("make_default"), "Make default", move |_, cx| {
-            update(&accounts, &id, AccountPatch { is_default: Some(true), ..AccountPatch::default() }, cx);
-        }));
+        menu = menu.item(MenuItem::new(
+            item("make_default"),
+            "Make default",
+            move |_, cx| {
+                update(
+                    &accounts,
+                    &id,
+                    AccountPatch {
+                        is_default: Some(true),
+                        ..AccountPatch::default()
+                    },
+                    cx,
+                );
+            },
+        ));
     }
-    let signed_in = account.setup.as_ref().is_some_and(|setup| report_of(setup).signed_in);
+    let signed_in = account
+        .setup
+        .as_ref()
+        .is_some_and(|setup| report_of(setup).signed_in);
     if account.kind == AccountKind::Subscription && signed_in && !data.busy {
         let (accounts, id) = (accounts.clone(), id.clone());
-        menu = menu.item(MenuItem::new(item("different"), "Use a different account", move |_, cx| {
-            sign_in(&accounts, &id, cx);
-        }));
+        menu = menu.item(MenuItem::new(
+            item("different"),
+            "Use a different account",
+            move |_, cx| {
+                sign_in(&accounts, &id, cx);
+            },
+        ));
     }
     if account.kind == AccountKind::ApiKey {
-        let (replace, cap) = ((account.clone(), accounts.clone()), (account.clone(), accounts.clone()));
+        let (replace, cap) = (
+            (account.clone(), accounts.clone()),
+            (account.clone(), accounts.clone()),
+        );
         menu = menu
-            .item(MenuItem::new(item("replace_key"), "Replace key", move |window, cx| {
-                account_dialogs::open_replace_key(&replace.0, replace.1.clone(), window, cx);
-            }))
-            .item(MenuItem::new(item("edit_cap"), "Edit cap", move |window, cx| {
-                account_dialogs::open_cap(&cap.0, cap.1.clone(), window, cx);
-            }));
+            .item(MenuItem::new(
+                item("replace_key"),
+                "Replace key",
+                move |window, cx| {
+                    account_dialogs::open_replace_key(&replace.0, replace.1.clone(), window, cx);
+                },
+            ))
+            .item(MenuItem::new(
+                item("edit_cap"),
+                "Edit cap",
+                move |window, cx| {
+                    account_dialogs::open_cap(&cap.0, cap.1.clone(), window, cx);
+                },
+            ));
     }
     let (bots, accounts) = (data.bots.to_vec(), accounts.clone());
-    menu = menu.item(MenuItem::new(item("remove"), "Remove", move |window, cx| {
-        account_dialogs::open_remove(&account, &bots, accounts.clone(), window, cx);
-    }));
+    menu = menu.item(MenuItem::new(
+        item("remove"),
+        "Remove",
+        move |window, cx| {
+            account_dialogs::open_remove(&account, &bots, accounts.clone(), window, cx);
+        },
+    ));
     Some(menu.into_any_element())
 }
 
@@ -519,7 +688,14 @@ fn card(data: CardData<'_>, accounts: &Entity<Accounts>, cx: &App) -> AnyElement
     let colors = palette(cx);
     let account = data.account;
     let id = account.id.as_str();
-    let status = status_line(account, data.now, StatusFlags { stuck: data.stuck, can_reopen: data.reopen.is_some() });
+    let status = status_line(
+        account,
+        data.now,
+        StatusFlags {
+            stuck: data.stuck,
+            can_reopen: data.reopen.is_some(),
+        },
+    );
     let api_key = account.kind == AccountKind::ApiKey;
 
     let header = div()
@@ -552,7 +728,11 @@ fn card(data: CardData<'_>, accounts: &Entity<Accounts>, cx: &App) -> AnyElement
         .child(div().flex_1())
         .children(card_menu(&data, accounts));
 
-    let kind = if api_key { "API key".to_owned() } else { subscription_label(account) };
+    let kind = if api_key {
+        "API key".to_owned()
+    } else {
+        subscription_label(account)
+    };
     let (role, tone) = match status.tone {
         Tone::Problem => (Role::Alert, colors.text.primary),
         Tone::Muted => (Role::Paragraph, colors.text.secondary),
@@ -564,7 +744,11 @@ fn card(data: CardData<'_>, accounts: &Entity<Accounts>, cx: &App) -> AnyElement
         Tone::Limited => Some("hourglass"),
         Tone::Muted | Tone::Problem => None,
     };
-    let actions: Vec<AnyElement> = status.actions.iter().map(|action| status_action(*action, &data, accounts)).collect();
+    let actions: Vec<AnyElement> = status
+        .actions
+        .iter()
+        .map(|action| status_action(*action, &data, accounts))
+        .collect();
     let status_row = div()
         .flex()
         .flex_wrap()
@@ -590,7 +774,14 @@ fn card(data: CardData<'_>, accounts: &Entity<Accounts>, cx: &App) -> AnyElement
                 }))
                 .child(status.text.clone()),
         )
-        .children((!actions.is_empty()).then(|| div().flex().flex_wrap().items_center().gap(r(theme.space.s8)).children(actions)));
+        .children((!actions.is_empty()).then(|| {
+            div()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap(r(theme.space.s8))
+                .children(actions)
+        }));
 
     let limits: Option<AnyElement> = match account.kind {
         AccountKind::Subscription if !account.limits.is_empty() => Some(
@@ -599,15 +790,35 @@ fn card(data: CardData<'_>, accounts: &Entity<Accounts>, cx: &App) -> AnyElement
                 .flex_col()
                 .gap(r(theme.space.s10))
                 .children(account.limits.iter().map(|window| {
-                    let meter_id = format!("settings.accounts.{id}.limit.{}.{}", window.limit_id, window.window_key);
+                    let meter_id = format!(
+                        "settings.accounts.{id}.limit.{}.{}",
+                        window.limit_id, window.window_key
+                    );
                     let share = window.used_percent.map(|used| used / 100.0);
-                    meter(meter_id, &limit_label(window), &limit_value(window, data.now), share, limit_near(window), cx)
+                    meter(
+                        meter_id,
+                        &limit_label(window),
+                        &limit_value(window, data.now),
+                        share,
+                        limit_near(window),
+                        cx,
+                    )
                 }))
                 .into_any_element(),
         ),
-        AccountKind::Subscription if account.setup.as_ref().is_some_and(|setup| report_of(setup).signed_in) => {
+        AccountKind::Subscription
+            if account
+                .setup
+                .as_ref()
+                .is_some_and(|setup| report_of(setup).signed_in) =>
+        {
             let later = "Limits show after this account's first message.";
-            Some(line(format!("settings.accounts.{id}.limits_later"), Role::Paragraph, later, cx))
+            Some(line(
+                format!("settings.accounts.{id}.limits_later"),
+                Role::Paragraph,
+                later,
+                cx,
+            ))
         }
         _ => None,
     };
@@ -616,7 +827,9 @@ fn card(data: CardData<'_>, accounts: &Entity<Accounts>, cx: &App) -> AnyElement
         let spending = spending_meter(&account.spending);
         let open = {
             let (account, accounts) = (account.clone(), accounts.clone());
-            move |window: &mut Window, cx: &mut App| account_dialogs::open_cap(&account, accounts.clone(), window, cx)
+            move |window: &mut Window, cx: &mut App| {
+                account_dialogs::open_cap(&account, accounts.clone(), window, cx)
+            }
         };
         div()
             .flex()
@@ -677,9 +890,15 @@ fn card(data: CardData<'_>, accounts: &Entity<Accounts>, cx: &App) -> AnyElement
 
     let users = bots_on(&account.id, data.bots);
     let users = (!users.is_empty()).then(|| {
-        let words = if users.len() == 1 { "1 agent".to_owned() } else { format!("{} agents", users.len()) };
+        let words = if users.len() == 1 {
+            "1 agent".to_owned()
+        } else {
+            format!("{} agents", users.len())
+        };
         let faces = users.iter().take(5).enumerate().map(|(index, bot)| {
-            div().ml(px(if index == 0 { 0. } else { -4. })).child(BotAvatar::new(bot.color, bot.shape, 18.))
+            div()
+                .ml(px(if index == 0 { 0. } else { -4. }))
+                .child(BotAvatar::new(bot.color, bot.shape, 18.))
         });
         div()
             .semantic(format!("settings.accounts.{id}.users"), Role::Paragraph)
@@ -706,16 +925,35 @@ fn card(data: CardData<'_>, accounts: &Entity<Accounts>, cx: &App) -> AnyElement
                 .flex_col()
                 .gap(r(theme.space.s4))
                 .child(header)
-                .child(line(format!("settings.accounts.{id}.kind"), Role::Paragraph, kind, cx)),
+                .child(line(
+                    format!("settings.accounts.{id}.kind"),
+                    Role::Paragraph,
+                    kind,
+                    cx,
+                )),
         )
         .child(status_row)
         .children(status.actions.contains(&StatusAction::RetryLimit).then(|| {
-            line(format!("settings.accounts.{id}.retry_caption"), Role::Paragraph, RETRY_CAPTION, cx)
+            line(
+                format!("settings.accounts.{id}.retry_caption"),
+                Role::Paragraph,
+                RETRY_CAPTION,
+                cx,
+            )
         }))
-        .children(data.problem.clone().map(|said| problem(format!("settings.accounts.{id}.problem"), said, cx)))
+        .children(
+            data.problem
+                .clone()
+                .map(|said| problem(format!("settings.accounts.{id}.problem"), said, cx)),
+        )
         .children(limits)
         .children(spending)
-        .child(line(format!("settings.accounts.{id}.usage"), Role::Paragraph, data.usage.clone(), cx))
+        .child(line(
+            format!("settings.accounts.{id}.usage"),
+            Role::Paragraph,
+            data.usage.clone(),
+            cx,
+        ))
         .children(fallback)
         .children(users)
         .into_any_element()
@@ -736,12 +974,24 @@ fn add_look<E: gpui::Styled + gpui::ParentElement>(element: E, fill: gpui::Rgba,
         .bg(hsla(fill))
         .type_style(&theme.typography.desktop.button)
         .text_color(hsla(ink))
-        .child(svg().path("icons/i/175/plus.svg").size(r(16.)).text_color(hsla(ink)))
+        .child(
+            svg()
+                .path("icons/i/175/plus.svg")
+                .size(r(16.))
+                .text_color(hsla(ink)),
+        )
         .child("Add")
 }
 
 /// Add's trigger (`Menu.Trigger`, "+ Add").
-fn add_trigger(id: String, label: SharedString, open: bool, focus: &FocusHandle, window: &Window, cx: &App) -> AnyElement {
+fn add_trigger(
+    id: String,
+    label: SharedString,
+    open: bool,
+    focus: &FocusHandle,
+    window: &Window,
+    cx: &App,
+) -> AnyElement {
     let colors = palette(cx);
     let hover = colors.state.sunk_hover;
     let ring = focus_visible(focus, window);
@@ -759,7 +1009,10 @@ fn add_trigger(id: String, label: SharedString, open: bool, focus: &FocusHandle,
 
 /// Add while the provider isn't installed (`disabled`): dimmed, with nothing to open.
 fn disabled_add(id: String, label: String, cx: &App) -> AnyElement {
-    let trigger = div().semantic(id, Role::Button).aria_label(label).opacity(0.5);
+    let trigger = div()
+        .semantic(id, Role::Button)
+        .aria_label(label)
+        .opacity(0.5);
     add_look(trigger, palette(cx).surface.sunk, cx).into_any_element()
 }
 
@@ -778,30 +1031,55 @@ struct GroupData<'a> {
 fn group(data: GroupData<'_>, accounts: &Entity<Accounts>, cx: &App) -> AnyElement {
     let theme = theme(cx);
     let colors = palette(cx);
-    let (provider, key, short) = (data.provider, key_of(data.provider), short_name(data.provider));
-    let setup = data.mine.iter().find_map(|each| each.setup.as_ref()).or(data.fallback);
+    let (provider, key, short) = (
+        data.provider,
+        key_of(data.provider),
+        short_name(data.provider),
+    );
+    let setup = data
+        .mine
+        .iter()
+        .find_map(|each| each.setup.as_ref())
+        .or(data.fallback);
     let installed = setup.is_none_or(|setup| report_of(setup).installed);
     let version = setup.and_then(|setup| report_of(setup).version.clone());
     let sandbox = match setup {
         Some(ProviderSetup::Codex(codex)) => Some(codex.sandbox),
         _ => None,
     };
-    let (add_id, label) = (format!("settings.accounts.{key}.add"), format!("Add {short} account"));
+    let (add_id, label) = (
+        format!("settings.accounts.{key}.add"),
+        format!("Add {short} account"),
+    );
     let add = match data.add.filter(|_| installed) {
         Some(focus) => {
             let (subscription, api_key) = (accounts.clone(), accounts.clone());
             let label = SharedString::from(label);
-            Menu::new(SharedString::from(format!("settings.accounts.{key}.add_menu")), move |open, window, cx| {
-                add_trigger(add_id, label, open, &focus, window, cx)
-            })
+            Menu::new(
+                SharedString::from(format!("settings.accounts.{key}.add_menu")),
+                move |open, window, cx| add_trigger(add_id, label, open, &focus, window, cx),
+            )
             .anchor(gpui::Anchor::TopRight)
             .offset(px(6.))
-            .item(MenuItem::new(format!("settings.accounts.{key}.add.subscription"), "Subscription", move |window, cx| {
-                account_dialogs::open_add_subscription(provider, subscription.clone(), window, cx);
-            }))
-            .item(MenuItem::new(format!("settings.accounts.{key}.add.key"), "API key", move |window, cx| {
-                account_dialogs::open_add_key(provider, api_key.clone(), window, cx);
-            }))
+            .item(MenuItem::new(
+                format!("settings.accounts.{key}.add.subscription"),
+                "Subscription",
+                move |window, cx| {
+                    account_dialogs::open_add_subscription(
+                        provider,
+                        subscription.clone(),
+                        window,
+                        cx,
+                    );
+                },
+            ))
+            .item(MenuItem::new(
+                format!("settings.accounts.{key}.add.key"),
+                "API key",
+                move |window, cx| {
+                    account_dialogs::open_add_key(provider, api_key.clone(), window, cx);
+                },
+            ))
             .into_any_element()
         }
         None => disabled_add(add_id, label, cx),
@@ -814,9 +1092,12 @@ fn group(data: GroupData<'_>, accounts: &Entity<Accounts>, cx: &App) -> AnyEleme
                 div()
                     .child("Install Claude Code from ")
                     .child(
-                        Link::new(format!("settings.accounts.{key}.install_link"), "claude.com/claude-code")
-                            .quiet()
-                            .on_press(|_, _| super::about::open("https://claude.com/claude-code")),
+                        Link::new(
+                            format!("settings.accounts.{key}.install_link"),
+                            "claude.com/claude-code",
+                        )
+                        .quiet()
+                        .on_press(|_, _| super::about::open("https://claude.com/claude-code")),
                     )
                     .child(", then check again."),
             ),
@@ -863,13 +1144,25 @@ fn group(data: GroupData<'_>, accounts: &Entity<Accounts>, cx: &App) -> AnyEleme
             .child(div().min_w_0().flex_1().child(line(format!("settings.accounts.{key}.sandbox"), Role::Paragraph, said, cx)))
             .children(set_up)
     });
-    let sandbox_problem = (provider == Provider::Codex).then_some(data.sandbox_problem).flatten();
+    let sandbox_problem = (provider == Provider::Codex)
+        .then_some(data.sandbox_problem)
+        .flatten();
 
     let body = if data.mine.is_empty() {
         let none = format!("No {short} accounts yet.");
-        div().mt(r(theme.space.s12)).child(line(format!("settings.accounts.{key}.none"), Role::Paragraph, none, cx))
+        div().mt(r(theme.space.s12)).child(line(
+            format!("settings.accounts.{key}.none"),
+            Role::Paragraph,
+            none,
+            cx,
+        ))
     } else {
-        div().mt(r(theme.space.s12)).flex().flex_col().gap(r(theme.space.s16)).children(data.cards)
+        div()
+            .mt(r(theme.space.s12))
+            .flex()
+            .flex_col()
+            .gap(r(theme.space.s16))
+            .children(data.cards)
     };
 
     div()
@@ -890,14 +1183,22 @@ fn group(data: GroupData<'_>, accounts: &Entity<Accounts>, cx: &App) -> AnyEleme
                         .child(provider_name(provider)),
                 )
                 .children(version.map(|version| {
-                    line(format!("settings.accounts.{key}.version"), Role::Paragraph, format!("Version {version}"), cx)
+                    line(
+                        format!("settings.accounts.{key}.version"),
+                        Role::Paragraph,
+                        format!("Version {version}"),
+                        cx,
+                    )
                 }))
                 .child(div().flex_1())
                 .child(add),
         )
         .children(install)
         .children(sandbox_row)
-        .children(sandbox_problem.map(|said| problem(format!("settings.accounts.{key}.problem"), said, cx)))
+        .children(
+            sandbox_problem
+                .map(|said| problem(format!("settings.accounts.{key}.problem"), said, cx)),
+        )
         .child(body)
         .into_any_element()
 }
@@ -905,16 +1206,26 @@ fn group(data: GroupData<'_>, accounts: &Entity<Accounts>, cx: &App) -> AnyEleme
 pub(super) fn section(window: &mut Window, cx: &mut App) -> AnyElement {
     let accounts = window.use_keyed_state("settings.accounts.state", cx, |_, cx| Accounts::new(cx));
     let Some(list) = store::state(cx).accounts.clone() else {
-        let loading = line("settings.accounts.loading", Role::Paragraph, "Loading accounts", cx);
+        let loading = line(
+            "settings.accounts.loading",
+            Role::Paragraph,
+            "Loading accounts",
+            cx,
+        );
         let space = theme(cx).space.s32;
-        return super::frame("accounts", "Accounts", NOTE, cx).child(div().mt(r(space)).child(loading)).into_any_element();
+        return super::frame("accounts", "Accounts", NOTE, cx)
+            .child(div().mt(r(space)).child(loading))
+            .into_any_element();
     };
     first_check(&accounts, &list, cx);
     let stuck = stuck_cards(&accounts, &list, cx);
     let wish = wish(&accounts, cx);
     let (now, zone) = (Zoned::now(), local_zone());
     let day = usage_day_key(&now, &zone).unwrap_or_default();
-    let (bots, setup) = (store::state(cx).bots.clone(), store::state(cx).setup.clone());
+    let (bots, setup) = (
+        store::state(cx).bots.clone(),
+        store::state(cx).setup.clone(),
+    );
 
     // Each card's usage, its menu's focus handle, and Add's: gathered while `cx` can still change.
     let mut usage_lines: HashMap<String, String> = HashMap::new();
@@ -928,12 +1239,18 @@ pub(super) fn section(window: &mut Window, cx: &mut App) -> AnyElement {
         });
         read_usage(&usage, &day, &now, &zone, cx);
         usage_lines.insert(id.clone(), usage_line(&usage, &day, account.kind, cx));
-        mores.insert(id.clone(), focus_handle(&format!("settings.accounts.{id}.more"), window, cx));
+        mores.insert(
+            id.clone(),
+            focus_handle(&format!("settings.accounts.{id}.more"), window, cx),
+        );
     }
     let mut adds: HashMap<&str, FocusHandle> = HashMap::new();
     for provider in PROVIDERS {
         let key = key_of(provider);
-        adds.insert(key, focus_handle(&format!("settings.accounts.{key}.add"), window, cx));
+        adds.insert(
+            key,
+            focus_handle(&format!("settings.accounts.{key}.add"), window, cx),
+        );
     }
 
     // The link's wish, met once its control is on the card.
@@ -948,7 +1265,9 @@ pub(super) fn section(window: &mut Window, cx: &mut App) -> AnyElement {
         let focus = focus_of(*action);
         let met = accounts.read(cx).focused.as_ref() == Some(&(wanted.clone(), *action));
         if focus_ready(focus, account, &actions) && !met {
-            accounts.update(cx, |accounts, _| accounts.focused = Some((wanted.clone(), *action)));
+            accounts.update(cx, |accounts, _| {
+                accounts.focused = Some((wanted.clone(), *action))
+            });
             let control = target(&account.id, focus, &actions);
             // After this draw, once the control has drawn its focus handle.
             window.defer(cx, move |window, cx| {
@@ -985,7 +1304,9 @@ pub(super) fn section(window: &mut Window, cx: &mut App) -> AnyElement {
                     card(data, &accounts, cx)
                 })
                 .collect();
-            let fallback = setup.as_ref().and_then(|all| all.iter().find(|entry| provider_of(entry) == *provider));
+            let fallback = setup
+                .as_ref()
+                .and_then(|all| all.iter().find(|entry| provider_of(entry) == *provider));
             let data = GroupData {
                 provider: *provider,
                 mine: &mine,
@@ -999,7 +1320,11 @@ pub(super) fn section(window: &mut Window, cx: &mut App) -> AnyElement {
         })
         .collect();
     super::frame("accounts", "Accounts", NOTE, cx)
-        .children(state.problem.clone().map(|said| div().mt(r(theme.space.s12)).child(problem("settings.accounts.problem", said, cx))))
+        .children(state.problem.clone().map(|said| {
+            div()
+                .mt(r(theme.space.s12))
+                .child(problem("settings.accounts.problem", said, cx))
+        }))
         .children(groups)
         .into_any_element()
 }
@@ -1056,7 +1381,9 @@ mod tests {
     }
 
     fn signed_out() -> AccountInfo {
-        sub(json!({ "setup": setup(json!({ "signedIn": false, "account": null, "plan": null, "version": null })) }))
+        sub(
+            json!({ "setup": setup(json!({ "signedIn": false, "account": null, "plan": null, "version": null })) }),
+        )
     }
 
     /// A usage report with nothing in it, for every card's Today and This month.
@@ -1077,11 +1404,27 @@ mod tests {
 
     /// Scout, pinned to a1.
     fn scout() -> Bot {
-        Bot { account_id: Some(Some("a1".into())), ..bot("b1", "Scout", BotState::Idle) }
+        Bot {
+            account_id: Some(Some("a1".into())),
+            ..bot("b1", "Scout", BotState::Idle)
+        }
     }
 
-    fn open(cx: &mut TestAppContext, route: Route, accounts: Vec<AccountInfo>, rpc: FakeRpc) -> (&mut VisualTestContext, Arc<FakeRpc>) {
-        app(cx, route, AppState { accounts: Some(accounts), ..state(vec![scout()], vec![], vec![]) }, rpc)
+    fn open(
+        cx: &mut TestAppContext,
+        route: Route,
+        accounts: Vec<AccountInfo>,
+        rpc: FakeRpc,
+    ) -> (&mut VisualTestContext, Arc<FakeRpc>) {
+        app(
+            cx,
+            route,
+            AppState {
+                accounts: Some(accounts),
+                ..state(vec![scout()], vec![], vec![])
+            },
+            rpc,
+        )
     }
 
     fn settings() -> Route {
@@ -1089,11 +1432,18 @@ mod tests {
     }
 
     fn link(account: &str, action: AccountAction) -> Route {
-        Route::Account { account: account.into(), action: Some(action) }
+        Route::Account {
+            account: account.into(),
+            action: Some(action),
+        }
     }
 
     fn calls(rpc: &FakeRpc, method: &str) -> Vec<Value> {
-        rpc.calls().into_iter().filter(|(name, _)| *name == method).map(|(_, params)| params).collect()
+        rpc.calls()
+            .into_iter()
+            .filter(|(name, _)| *name == method)
+            .map(|(_, params)| params)
+            .collect()
     }
 
     /// accounts.test.tsx: "shows a signed-in subscription: its plan, one meter per limit, and who uses it".
@@ -1102,14 +1452,26 @@ mod tests {
         open(cx, settings(), vec![sub(json!({}))], rpc());
         assert_eq!(text("settings.accounts.a1"), "Claude (Personal)");
         assert_eq!(text("settings.accounts.a1.default"), "Default");
-        assert_eq!(text("settings.accounts.a1.kind"), "Subscription · Max plan · Sample Account");
+        assert_eq!(
+            text("settings.accounts.a1.kind"),
+            "Subscription · Max plan · Sample Account"
+        );
         assert_eq!(text("settings.accounts.a1.status"), "Signed in");
-        assert_eq!(ids("settings.accounts.a1.limit."), ["settings.accounts.a1.limit.l.primary"]);
+        assert_eq!(
+            ids("settings.accounts.a1.limit."),
+            ["settings.accounts.a1.limit.l.primary"]
+        );
         assert_eq!(text("settings.accounts.a1.limit.l.primary"), "5-hour limit");
         assert_eq!(text("settings.accounts.a1.users"), "1 agent");
-        assert_eq!(text("settings.accounts.a1.more"), "More for Claude (Personal)");
+        assert_eq!(
+            text("settings.accounts.a1.more"),
+            "More for Claude (Personal)"
+        );
         assert!(text("settings.accounts.a1.usage").starts_with("Today "));
-        assert_eq!(text("settings.accounts.codex.none"), "No Codex accounts yet.");
+        assert_eq!(
+            text("settings.accounts.codex.none"),
+            "No Codex accounts yet."
+        );
     }
 
     /// accounts.test.tsx: "offers Sign in on a signed-out subscription, and Cancel and the page again while one is
@@ -1117,19 +1479,34 @@ mod tests {
     #[gpui::test]
     fn offers_sign_in_then_cancel_and_the_page_again_while_waiting(cx: &mut TestAppContext) {
         let started = json!({ "url": "https://example.test/signin", "attempt": "t1" });
-        let rpc = rpc().on::<method::AccountsSignIn>(move |_| Ok(serde_json::from_value(started.clone()).unwrap()));
+        let rpc = rpc().on::<method::AccountsSignIn>(move |_| {
+            Ok(serde_json::from_value(started.clone()).unwrap())
+        });
         let (cx, calls_made) = open(cx, settings(), vec![signed_out()], rpc);
-        assert_eq!(text("settings.accounts.a1.status"), "Not signed in. Agents on it wait.");
+        assert_eq!(
+            text("settings.accounts.a1.status"),
+            "Not signed in. Agents on it wait."
+        );
         click(cx, "settings.accounts.a1.signin");
         draw(cx);
-        assert_eq!(calls(&calls_made, "accounts.signIn"), [json!({ "id": "a1" })]);
+        assert_eq!(
+            calls(&calls_made, "accounts.signIn"),
+            [json!({ "id": "a1" })]
+        );
         cx.update(|_, cx| {
-            let attempt = serde_json::from_value(json!({ "attempt": "t1", "state": "waiting" })).unwrap();
-            let waiting = AccountInfo { sign_in: Some(attempt), ..signed_out() };
+            let attempt =
+                serde_json::from_value(json!({ "attempt": "t1", "state": "waiting" })).unwrap();
+            let waiting = AccountInfo {
+                sign_in: Some(attempt),
+                ..signed_out()
+            };
             crate::ui::store::fake_event(cx, &protocol::Event::AccountsChanged(vec![waiting]));
         });
         draw(cx);
-        assert_eq!(text("settings.accounts.a1.status"), "Finish signing in in your browser");
+        assert_eq!(
+            text("settings.accounts.a1.status"),
+            "Finish signing in in your browser"
+        );
         assert!(node("settings.accounts.a1.cancel").is_some());
         assert!(node("settings.accounts.a1.open_again").is_some());
     }
@@ -1137,13 +1514,19 @@ mod tests {
     /// accounts.test.tsx: "says how an API key is doing: spending against its cap, the fallback switch, and what replaces".
     #[gpui::test]
     fn says_how_an_api_key_is_doing(cx: &mut TestAppContext) {
-        let keys = vec![key(json!({ "isFallback": false })), key(json!({ "id": "k2", "label": "Other key", "isFallback": true }))];
+        let keys = vec![
+            key(json!({ "isFallback": false })),
+            key(json!({ "id": "k2", "label": "Other key", "isFallback": true })),
+        ];
         open(cx, settings(), keys, rpc());
         assert_eq!(text("settings.accounts.k1.kind"), "API key");
         assert_eq!(text("settings.accounts.k1.status"), "Key saved");
         assert_eq!(text("settings.accounts.k1.spending"), "Spending");
         assert_eq!(text("settings.accounts.k1.fallback"), "Fallback for Claude");
-        assert!(text("settings.accounts.k1.fallback_note").ends_with("until it resets. Replaces Other key."));
+        assert!(
+            text("settings.accounts.k1.fallback_note")
+                .ends_with("until it resets. Replaces Other key.")
+        );
         assert!(!text("settings.accounts.k2.fallback_note").contains("Replaces"));
         assert_eq!(text("settings.accounts.k1.cap"), "Edit cap");
     }
@@ -1151,12 +1534,22 @@ mod tests {
     /// accounts.test.tsx: "stops an API key at its cap, and at unpriced turns, with the right way forward".
     #[gpui::test]
     fn stops_an_api_key_at_its_cap_and_at_unpriced_turns(cx: &mut TestAppContext) {
-        let capped = key(json!({ "spending": { "knownUsd": 20, "unknownRows": 0, "capUsd": 20, "blocked": true } }));
-        let unpriced = key(json!({ "id": "k2", "label": "Other key", "spending": { "knownUsd": 3, "unknownRows": 2, "capUsd": 20, "blocked": true } }));
+        let capped = key(
+            json!({ "spending": { "knownUsd": 20, "unknownRows": 0, "capUsd": 20, "blocked": true } }),
+        );
+        let unpriced = key(
+            json!({ "id": "k2", "label": "Other key", "spending": { "knownUsd": 3, "unknownRows": 2, "capUsd": 20, "blocked": true } }),
+        );
         open(cx, settings(), vec![capped, unpriced], rpc());
-        assert_eq!(text("settings.accounts.k1.status"), "Reached its $20.00 cap. Agents stopped using it.");
+        assert_eq!(
+            text("settings.accounts.k1.status"),
+            "Reached its $20.00 cap. Agents stopped using it."
+        );
         assert!(node("settings.accounts.k1.raise_cap").is_some());
-        assert_eq!(text("settings.accounts.k2.status"), "Stopped: 2 turns have no price, so the cap can't be checked.");
+        assert_eq!(
+            text("settings.accounts.k2.status"),
+            "Stopped: 2 turns have no price, so the cap can't be checked."
+        );
         assert!(node("settings.accounts.k2.raise_cap").is_none());
     }
 
@@ -1164,21 +1557,34 @@ mod tests {
     /// link pointed at it": the link focuses it, and asks nothing of the daemon.
     #[gpui::test]
     fn a_retry_link_focuses_retry_queued_work_and_starts_nothing(cx: &mut TestAppContext) {
-        let limited = sub(json!({ "limits": [{ "accountId": "a1", "limitId": "l", "windowKey": "primary", "durationMinutes": 300,
-            "usedPercent": 42, "resetsAt": null, "state": "reached", "observedAt": "2026-10-22T10:00:00.000Z" }] }));
+        let limited = sub(
+            json!({ "limits": [{ "accountId": "a1", "limitId": "l", "windowKey": "primary", "durationMinutes": 300,
+            "usedPercent": 42, "resetsAt": null, "state": "reached", "observedAt": "2026-10-22T10:00:00.000Z" }] }),
+        );
         let (cx, calls_made) = open(cx, link("a1", AccountAction::Retry), vec![limited], rpc());
         draw(cx);
-        assert_eq!(text("settings.accounts.a1.status"), "Limited. Reset time unknown.");
+        assert_eq!(
+            text("settings.accounts.a1.status"),
+            "Limited. Reset time unknown."
+        );
         let caption = "Retries one queued turn; it may use subscription allowance or API credit.";
         assert_eq!(text("settings.accounts.a1.retry_caption"), caption);
-        assert!(node("settings.accounts.a1.retry").unwrap().focused, "the link's control has the focus");
+        assert!(
+            node("settings.accounts.a1.retry").unwrap().focused,
+            "the link's control has the focus"
+        );
         assert!(calls(&calls_made, "accounts.retryLimit").is_empty());
     }
 
     /// accounts.test.tsx: "never starts a sign-in because a link pointed at the card"; it focuses Sign in.
     #[gpui::test]
     fn a_sign_in_link_focuses_sign_in_and_starts_nothing(cx: &mut TestAppContext) {
-        let (cx, calls_made) = open(cx, link("a1", AccountAction::SignIn), vec![signed_out()], rpc());
+        let (cx, calls_made) = open(
+            cx,
+            link("a1", AccountAction::SignIn),
+            vec![signed_out()],
+            rpc(),
+        );
         draw(cx);
         assert!(node("settings.accounts.a1.signin").unwrap().focused);
         assert!(calls(&calls_made, "accounts.signIn").is_empty());
@@ -1188,7 +1594,12 @@ mod tests {
     /// A Raise cap link focuses the key's Edit cap while the cap hasn't stopped it.
     #[gpui::test]
     fn a_cap_link_focuses_the_cap(cx: &mut TestAppContext) {
-        let (cx, _) = open(cx, link("k1", AccountAction::Cap), vec![key(json!({}))], rpc());
+        let (cx, _) = open(
+            cx,
+            link("k1", AccountAction::Cap),
+            vec![key(json!({}))],
+            rpc(),
+        );
         draw(cx);
         assert!(node("settings.accounts.k1.cap").unwrap().focused);
     }
@@ -1203,10 +1614,16 @@ mod tests {
         click(cx, "settings.accounts.codex.add.key");
         assert_eq!(text("dialog.title"), "Add Codex API key");
         assert_eq!(text("account_form.show_key"), "Show key");
-        assert_eq!(text("account_form.key_help"), "Stored in Windows Credential Manager and given only to the Codex process.");
+        assert_eq!(
+            text("account_form.key_help"),
+            "Stored in Windows Credential Manager and given only to the Codex process."
+        );
         assert_eq!(text("account_form.fallback"), "Fallback for Codex");
         click(cx, "account_form.save");
-        assert!(calls(&calls_made, "accounts.create").is_empty(), "off until a name, a key and a cap");
+        assert!(
+            calls(&calls_made, "accounts.create").is_empty(),
+            "off until a name, a key and a cap"
+        );
         click(cx, "account_form.name");
         cx.simulate_input("Work key");
         click(cx, "account_form.key");
@@ -1223,19 +1640,25 @@ mod tests {
         assert_eq!(created[0]["apiKey"], "sample-key-not-real");
         assert_eq!(created[0]["spendingCapUsd"], 25.0);
         assert_eq!(created[0]["isFallback"], false);
-        assert!(node("account_form.save").is_none(), "added: the dialog closed");
+        assert!(
+            node("account_form.save").is_none(),
+            "added: the dialog closed"
+        );
     }
 
     /// accounts.test.tsx: "warns when a cap is below what is already spent" and "replaces a key with the key alone";
     /// rename starts with the name, and Save sends the change.
     #[gpui::test]
     fn the_cap_replace_and_rename_dialogs(cx: &mut TestAppContext) {
-        let spent = key(json!({ "spendingCapUsd": 10, "spending": { "knownUsd": 25, "unknownRows": 0, "capUsd": 10, "blocked": true } }));
+        let spent = key(
+            json!({ "spendingCapUsd": 10, "spending": { "knownUsd": 25, "unknownRows": 0, "capUsd": 10, "blocked": true } }),
+        );
         let rpc = rpc().on::<method::AccountsUpdate>(|_| Ok(key(json!({}))));
         let (cx, calls_made) = open(cx, settings(), vec![spent], rpc);
         click(cx, "settings.accounts.k1.cap");
         assert_eq!(text("dialog.title"), "Spending cap");
-        let below = "This is below the $25.00 already spent, so agents stop using the key right away.";
+        let below =
+            "This is below the $25.00 already spent, so agents stop using the key right away.";
         assert_eq!(text("account_form.cap_help"), below);
         click(cx, "account_form.cancel");
         click(cx, "settings.accounts.k1.more");
@@ -1248,13 +1671,19 @@ mod tests {
         click(cx, "settings.accounts.k1.rename");
         assert_eq!(text("dialog.title"), "Rename account");
         click(cx, "account_form.save");
-        assert!(calls(&calls_made, "accounts.update").is_empty(), "off until the name changes");
+        assert!(
+            calls(&calls_made, "accounts.update").is_empty(),
+            "off until the name changes"
+        );
         click(cx, "account_form.name");
         cx.simulate_input(" 2");
         draw(cx);
         click(cx, "account_form.save");
         draw(cx);
-        assert_eq!(calls(&calls_made, "accounts.update"), [json!({ "id": "k1", "patch": { "label": "Claude key 2" } })]);
+        assert_eq!(
+            calls(&calls_made, "accounts.update"),
+            [json!({ "id": "k1", "patch": { "label": "Claude key 2" } })]
+        );
     }
 
     /// account-dialogs.tsx: an account with agents on it can't be removed, and says which to move; one without asks first.
@@ -1270,9 +1699,15 @@ mod tests {
         click(cx, "settings.accounts.k1.more");
         click(cx, "settings.accounts.k1.remove");
         assert_eq!(text("dialog.title"), "Remove Claude key?");
-        assert_eq!(text("account_form.note"), "The key is removed from Windows Credential Manager. Usage history stays.");
+        assert_eq!(
+            text("account_form.note"),
+            "The key is removed from Windows Credential Manager. Usage history stays."
+        );
         click(cx, "account_form.save");
         draw(cx);
-        assert_eq!(calls(&calls_made, "accounts.remove"), [json!({ "id": "k1" })]);
+        assert_eq!(
+            calls(&calls_made, "accounts.remove"),
+            [json!({ "id": "k1" })]
+        );
     }
 }

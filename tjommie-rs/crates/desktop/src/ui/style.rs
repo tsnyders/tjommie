@@ -3,8 +3,8 @@
 
 use desktop_host::device_settings::{Density, TextSize, Theme as Mode};
 use gpui::{
-    App, BoxShadow, Div, FocusHandle, FontWeight, Global, Hsla, ParentElement as _, Rems, Rgba, Styled,
-    Window, WindowAppearance, div, point, px, rems,
+    App, BoxShadow, Div, FocusHandle, FontWeight, Global, Hsla, ParentElement as _, Rems, Rgba,
+    Styled, Window, WindowAppearance, div, point, px, rems,
 };
 
 use crate::assets::{DISPLAY_FAMILY, MONO_FAMILY, TEXT_FAMILY};

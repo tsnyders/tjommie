@@ -47,7 +47,9 @@ fn daemon_exe() -> PathBuf {
 /// fails (M5 review Minor 29): a 40 by 40 grid of its pixels must hold at least four colours, as any drawn screen does
 /// (the sidebar, the page, a card and text).
 fn picture(out: &Path) {
-    let exe = env!("CARGO_BIN_EXE_tjommie-desktop").replace('/', "\\").replace('\'', "''");
+    let exe = env!("CARGO_BIN_EXE_tjommie-desktop")
+        .replace('/', "\\")
+        .replace('\'', "''");
     let out = out.display().to_string().replace('\'', "''");
     let script = format!(
         r#"
@@ -88,7 +90,10 @@ $bitmap.Save('{out}', [System.Drawing.Imaging.ImageFormat]::Png)
         .args(["-NoProfile", "-NonInteractive", "-Command", &script])
         .status()
         .unwrap();
-    assert!(status.success(), "no picture of the window, or a blank one, for {out}");
+    assert!(
+        status.success(),
+        "no picture of the window, or a blank one, for {out}"
+    );
 }
 
 /// Clicks `nav` until `title` shows: a click that lands while the app is busy can go unheard.
@@ -115,14 +120,22 @@ fn tour(app: &mut Client, mode: &str, dir: &Path) {
     }
     open(app, "sidebar.nav.settings", "settings.nav.general");
     for section in SECTIONS {
-        open(app, &format!("settings.nav.{section}"), &format!("settings.{section}.title"));
+        open(
+            app,
+            &format!("settings.nav.{section}"),
+            &format!("settings.{section}.title"),
+        );
         keep(section);
     }
 }
 
 #[test]
 fn e2e_screens_dark_light() {
-    assert_eq!(identity::CURRENT.name, "e2e", "build the e2e app: TJOMMIE_IDENTITY=e2e");
+    assert_eq!(
+        identity::CURRENT.name,
+        "e2e",
+        "build the e2e app: TJOMMIE_IDENTITY=e2e"
+    );
     assert!(
         daemon_exe().exists(),
         "build the daemon first: cargo build -p daemon --bin tjommie-daemon --features provider-fixtures --locked"
@@ -136,22 +149,36 @@ fn e2e_screens_dark_light() {
         &[("TJOMMIE_DAEMON_EXE", daemon_exe().to_str().unwrap())],
     )
     .unwrap();
-    app.wait("screen.agents", Predicate::Exists, 60_000).unwrap();
+    app.wait("screen.agents", Predicate::Exists, 60_000)
+        .unwrap();
     tour(&mut app, "dark", &dir);
     app.click("settings.nav.appearance").unwrap();
-    app.wait("settings.appearance.theme.light", Predicate::Exists, 10_000).unwrap();
+    app.wait("settings.appearance.theme.light", Predicate::Exists, 10_000)
+        .unwrap();
     app.click("settings.appearance.theme.light").unwrap();
     // A radio choice reads as toggled when it's the one chosen.
     let started = std::time::Instant::now();
-    while !app.snapshot().unwrap().node("settings.appearance.theme.light").is_some_and(|node| node.toggled) {
-        assert!(started.elapsed() < Duration::from_secs(10), "Light wasn't chosen");
+    while !app
+        .snapshot()
+        .unwrap()
+        .node("settings.appearance.theme.light")
+        .is_some_and(|node| node.toggled)
+    {
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "Light wasn't chosen"
+        );
         sleep(Duration::from_millis(100));
     }
     tour(&mut app, "light", &dir);
     for mode in ["dark", "light"] {
         for name in SCREENS.map(|(_, _, name)| name).into_iter().chain(SECTIONS) {
             let file = dir.join(format!("{mode}-{name}.png"));
-            assert!(std::fs::metadata(&file).is_ok_and(|meta| meta.len() > 0), "{} is empty", file.display());
+            assert!(
+                std::fs::metadata(&file).is_ok_and(|meta| meta.len() > 0),
+                "{} is empty",
+                file.display()
+            );
         }
     }
 }

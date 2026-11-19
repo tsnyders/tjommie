@@ -42,8 +42,7 @@ impl Render for RoomsList {
         if state.connection == Connection::Ready {
             for room in &state.rooms {
                 if self.asked.insert(room.id.clone()) {
-                    store::load_conversation(cx, &room.id, History::Room(room.id.clone()))
-                        .detach();
+                    store::load_conversation(cx, &room.id, History::Room(room.id.clone())).detach();
                 }
             }
         }

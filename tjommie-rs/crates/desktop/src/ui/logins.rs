@@ -16,8 +16,8 @@ use protocol::vault::{VaultHostAction, VaultStatus};
 
 use crate::guard::guarded_async;
 use crate::model::logins::{
-    CommandFailure, Desktop, LiveState as _, LoginsClient, LoginsError, NativeVault, RawAnswer, VaultReply,
-    create_logins_client,
+    CommandFailure, Desktop, LiveState as _, LoginsClient, LoginsError, NativeVault, RawAnswer,
+    VaultReply, create_logins_client,
 };
 use crate::ui::browser::BrowserData;
 use crate::ui::store::{self, StoreLive, StoreRpc};
@@ -48,7 +48,9 @@ pub type AppLogins = LoginsClient<StoreLive, NoBridge, StoreRpc>;
 /// `createLoginsClient()`: for the selected PC and the connection now.
 pub fn create(cx: &App) -> Arc<AppLogins> {
     let live = store::live_state(cx);
-    let daemon = live.daemon_generation().map(|generation| (generation, store::rpc(cx)));
+    let daemon = live
+        .daemon_generation()
+        .map(|generation| (generation, store::rpc(cx)));
     Arc::new(create_logins_client(live, NoBridge, daemon))
 }
 
@@ -63,7 +65,10 @@ struct Panel {
 impl Global for Panel {}
 
 fn panel_client(cx: &mut App) -> Arc<AppLogins> {
-    let kept = cx.try_global::<Panel>().and_then(|panel| panel.client.clone()).filter(|client| client.current());
+    let kept = cx
+        .try_global::<Panel>()
+        .and_then(|panel| panel.client.clone())
+        .filter(|client| client.current());
     if let Some(client) = kept {
         return client;
     }
@@ -120,8 +125,12 @@ fn keep(reply: Result<VaultReply, LoginsError>, bot: Option<&str>, cx: &mut App)
             view.status = view.status.clone().or(status);
             view.failed = false;
         }
-        (Err(LoginsError::Problem), Some(bot)) => data.logins.entry(bot.to_owned()).or_default().failed = true,
-        (Err(LoginsError::Problem), None) => data.logins.values_mut().for_each(|view| view.failed = true),
+        (Err(LoginsError::Problem), Some(bot)) => {
+            data.logins.entry(bot.to_owned()).or_default().failed = true
+        }
+        (Err(LoginsError::Problem), None) => {
+            data.logins.values_mut().for_each(|view| view.failed = true)
+        }
         _ => {}
     }
     cx.refresh_windows();
@@ -145,20 +154,47 @@ mod tests {
         let saved = json!({ "id": "5f0c2f8e-9a43-4f7e-9b0a-3c1d2e4f5a6b", "name": "Sample login", "botId": "one", "origin": "https://example.com", "revision": 1,
                             "createdAt": "2026-11-03T00:00:00Z", "updatedAt": "2026-11-03T00:00:00Z" });
         let rpc = FakeRpc::new()
-            .on::<method::VaultStatus>(|_| Ok(serde_json::from_value(json!({ "state": "locked", "reason": null, "pendingDeletes": 0 })).unwrap()))
-            .on::<method::VaultList>(move |_| Ok(vec![serde_json::from_value(saved.clone()).unwrap()]));
+            .on::<method::VaultStatus>(|_| {
+                Ok(serde_json::from_value(
+                    json!({ "state": "locked", "reason": null, "pendingDeletes": 0 }),
+                )
+                .unwrap())
+            })
+            .on::<method::VaultList>(move |_| {
+                Ok(vec![serde_json::from_value(saved.clone()).unwrap()])
+            });
         let (cx, calls_made) = app(cx, Route::Agents, state(vec![], vec![], vec![]), rpc);
         cx.update(|window, cx| {
             super::browser_logins(VaultHostAction::Status, window, cx);
-            super::browser_logins(VaultHostAction::List(VaultList { bot_id: Some("one".into()) }), window, cx);
+            super::browser_logins(
+                VaultHostAction::List(VaultList {
+                    bot_id: Some("one".into()),
+                }),
+                window,
+                cx,
+            );
         });
         draw(cx);
-        let view = cx.update(|_, cx| cx.try_global::<BrowserData>().and_then(|data| data.logins.get("one").cloned()));
+        let view = cx.update(|_, cx| {
+            cx.try_global::<BrowserData>()
+                .and_then(|data| data.logins.get("one").cloned())
+        });
         let view = view.unwrap();
         let asked = calls_made.calls();
-        assert_eq!(view.status.clone().map(|status| status.state), Some(VaultState::Locked), "{view:?} after {asked:?}");
+        assert_eq!(
+            view.status.clone().map(|status| status.state),
+            Some(VaultState::Locked),
+            "{view:?} after {asked:?}"
+        );
         assert_eq!(view.entries.len(), 1);
         assert!(!view.failed);
-        assert_eq!(calls_made.calls().iter().filter(|(name, _)| name.starts_with("vault.")).count(), 2);
+        assert_eq!(
+            calls_made
+                .calls()
+                .iter()
+                .filter(|(name, _)| name.starts_with("vault."))
+                .count(),
+            2
+        );
     }
 }

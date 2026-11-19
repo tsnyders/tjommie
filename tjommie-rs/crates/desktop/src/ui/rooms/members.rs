@@ -93,8 +93,8 @@ pub fn panel(
                 .on_press(|_, cx| cx.navigate(Route::Settings(Section::Bots))),
         )
         .child(IconButton::new("room.members.hide", "x", "Hide the members").on_press(on_hide));
-    let edit = (!room.everyone)
-        .then(|| Link::new("room.members.edit", "Edit members").on_press(on_edit));
+    let edit =
+        (!room.everyone).then(|| Link::new("room.members.edit", "Edit members").on_press(on_edit));
     let chain = settings.map(|settings| {
         let theme = theme(cx);
         div()

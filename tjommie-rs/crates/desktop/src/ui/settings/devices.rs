@@ -7,16 +7,17 @@ use std::sync::Arc;
 
 use futures::StreamExt as _;
 use gpui::{
-    AnyElement, App, AppContext as _, Bounds, ClipboardItem, Context, Entity, InteractiveElement as _,
-    IntoElement, ParentElement as _, Role, SharedString, StatefulInteractiveElement as _, Styled as _,
-    Task, Window, canvas, div, point, px, size, svg,
+    AnyElement, App, AppContext as _, Bounds, ClipboardItem, Context, Entity,
+    InteractiveElement as _, IntoElement, ParentElement as _, Role, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Task, Window, canvas, div, point, px, size, svg,
 };
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::input::InputState;
 use protocol::model::SettingsPatch;
 use protocol::relay::DEFAULT_RELAY_URL;
 use protocol::remote::{
-    Device, DevicesRename, PairingStart, RelayState, RelayStatus, RelayUrl, RemoteName, RemoteStatus,
+    Device, DevicesRename, PairingStart, RelayState, RelayStatus, RelayUrl, RemoteName,
+    RemoteStatus,
 };
 use protocol::wire::{Empty, Id, method};
 use qrcodegen::{QrCode, QrCodeEcc};
@@ -182,13 +183,19 @@ pub(super) fn section(window: &mut Window, cx: &mut App) -> AnyElement {
     let devices = window.use_keyed_state("settings.devices.state", cx, |_, cx| Devices::new(cx));
     read(&devices, cx);
     let own_window = store::state(cx).host.is_none();
-    let saved_relay = store::state(cx)
-        .settings
-        .as_ref()
-        .and_then(|settings| settings.relay_url.as_ref().map(|url| url.as_str().to_owned()));
+    let saved_relay = store::state(cx).settings.as_ref().and_then(|settings| {
+        settings
+            .relay_url
+            .as_ref()
+            .map(|url| url.as_str().to_owned())
+    });
     let (list, status, error) = {
         let devices = devices.read(cx);
-        (devices.list.clone(), devices.status.clone(), devices.error.clone())
+        (
+            devices.list.clone(),
+            devices.status.clone(),
+            devices.error.clone(),
+        )
     };
     let relay_status = status.as_ref().map(|status| status.relay.clone());
     let relay = own_window.then(|| relay_row(saved_relay, relay_status, window, cx));
@@ -208,7 +215,10 @@ pub(super) fn section(window: &mut Window, cx: &mut App) -> AnyElement {
                 .as_ref()
                 .is_some_and(|status| status.connected_device_ids.contains(&device.id));
             let id = &device.id;
-            let (renaming, revoking) = ((device.clone(), devices.clone()), (device.clone(), devices.clone()));
+            let (renaming, revoking) = (
+                (device.clone(), devices.clone()),
+                (device.clone(), devices.clone()),
+            );
             div()
                 .semantic(format!("settings.devices.{id}"), Role::ListItem)
                 .aria_label(device.name.as_str().to_owned())
@@ -271,7 +281,9 @@ pub(super) fn section(window: &mut Window, cx: &mut App) -> AnyElement {
     let body: AnyElement = match &list {
         None if error.is_none() => value("settings.devices.loading", "Loading devices", cx),
         None => div().into_any_element(),
-        Some(_) if active.is_empty() => value("settings.devices.none", "No devices paired yet.", cx),
+        Some(_) if active.is_empty() => {
+            value("settings.devices.none", "No devices paired yet.", cx)
+        }
         Some(_) => div()
             .semantic("settings.devices.list", Role::List)
             .aria_label("Paired devices")
@@ -363,7 +375,12 @@ fn save_relay(relay: &Entity<Relay>, typed: String, cx: &mut App) {
     .detach();
 }
 
-fn relay_row(saved: Option<String>, state: Option<RelayStatus>, window: &mut Window, cx: &mut App) -> AnyElement {
+fn relay_row(
+    saved: Option<String>,
+    state: Option<RelayStatus>,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
     let start = saved.clone().unwrap_or_default();
     let relay = window.use_keyed_state(
         SharedString::from(format!("settings.devices.relay.{start}")),
@@ -425,21 +442,17 @@ fn relay_row(saved: Option<String>, state: Option<RelayStatus>, window: &mut Win
                 .children(line),
         )
         .child(
-            div()
-                .flex()
-                .flex_col()
-                .child(label("Address", cx))
-                .child(
-                    div()
-                        .flex()
-                        .gap(r(theme.space.s8))
-                        .child(div().flex_1().min_w_0().child(TextField::new(
-                            "settings.devices.relay.address",
-                            "Address",
-                            &draft,
-                        )))
-                        .child(save),
-                ),
+            div().flex().flex_col().child(label("Address", cx)).child(
+                div()
+                    .flex()
+                    .gap(r(theme.space.s8))
+                    .child(div().flex_1().min_w_0().child(TextField::new(
+                        "settings.devices.relay.address",
+                        "Address",
+                        &draft,
+                    )))
+                    .child(save),
+            ),
         )
         .children(failed.map(|said| problem("settings.devices.relay.problem", said, cx)))
         .children(public)
@@ -503,20 +516,33 @@ fn open_rename(device: Device, devices: Entity<Devices>, window: &mut Window, cx
                             .flex()
                             .justify_end()
                             .gap(r(theme.space.s8))
-                            .child(Pill::new("device_form.cancel", "Cancel").on_press(|window, cx| window.close_dialog(cx)))
+                            .child(
+                                Pill::new("device_form.cancel", "Cancel")
+                                    .on_press(|window, cx| window.close_dialog(cx)),
+                            )
                             .child(save),
                     ),
             )
     });
     window.defer(cx, move |window, cx| {
-        guarded("focus the device's name", || name.update(cx, |name, cx| name.focus(window, cx)));
+        guarded("focus the device's name", || {
+            name.update(cx, |name, cx| name.focus(window, cx))
+        });
     });
 }
 
-fn rename(form: &Entity<Rename>, devices: &Entity<Devices>, window: gpui::AnyWindowHandle, cx: &mut App) {
+fn rename(
+    form: &Entity<Rename>,
+    devices: &Entity<Devices>,
+    window: gpui::AnyWindowHandle,
+    cx: &mut App,
+) {
     let (id, typed) = {
         let state = form.read(cx);
-        (state.device.id.clone(), state.name.read(cx).value().trim().to_owned())
+        (
+            state.device.id.clone(),
+            state.name.read(cx).value().trim().to_owned(),
+        )
     };
     let name = match RemoteName::new(&typed) {
         Ok(name) => name,
@@ -610,7 +636,13 @@ fn open_revoke(device: Device, devices: Entity<Devices>, window: &mut Window, cx
     });
 }
 
-fn revoke(form: &Entity<Revoke>, devices: &Entity<Devices>, id: String, window: gpui::AnyWindowHandle, cx: &mut App) {
+fn revoke(
+    form: &Entity<Revoke>,
+    devices: &Entity<Devices>,
+    id: String,
+    window: gpui::AnyWindowHandle,
+    cx: &mut App,
+) {
     form.update(cx, |form, cx| {
         form.busy = true;
         form.problem = None;
@@ -699,7 +731,9 @@ fn show_code(pairing: &Entity<Pairing>, cx: &mut App) {
                             pairing._ticks = Some(cx.spawn(async move |this, cx| {
                                 guarded_async("count the pairing code down", async move {
                                     loop {
-                                        cx.background_executor().timer(std::time::Duration::from_secs(1)).await;
+                                        cx.background_executor()
+                                            .timer(std::time::Duration::from_secs(1))
+                                            .await;
                                         if this.update(cx, |_, cx| cx.notify()).is_err() {
                                             break;
                                         }
@@ -748,8 +782,14 @@ fn qr(uri: &str) -> AnyElement {
                     for y in 0..modules {
                         for x in 0..modules {
                             if code.get_module(x, y) {
-                                let at = point(bounds.origin.x + module * x as f32, bounds.origin.y + module * y as f32);
-                                window.paint_quad(gpui::fill(Bounds::new(at, size(module, module)), gpui::black()));
+                                let at = point(
+                                    bounds.origin.x + module * x as f32,
+                                    bounds.origin.y + module * y as f32,
+                                );
+                                window.paint_quad(gpui::fill(
+                                    Bounds::new(at, size(module, module)),
+                                    gpui::black(),
+                                ));
                             }
                         }
                     }
@@ -773,37 +813,47 @@ fn open_pair(window: &mut Window, cx: &mut App) {
     open_dialog(window, cx, move |dialog, window, cx| {
         let state = pairing.read(cx);
         let now = jiff::Timestamp::now().as_millisecond();
-        let left = state.made.as_ref().map(|made| countdown(&made.expires, now));
+        let left = state
+            .made
+            .as_ref()
+            .map(|made| countdown(&made.expires, now));
         let theme = theme(cx);
         let colors = palette(cx);
-        let showing = state.made.as_ref().filter(|_| left.as_ref().is_some_and(|(_, expired)| !expired));
+        let showing = state
+            .made
+            .as_ref()
+            .filter(|_| left.as_ref().is_some_and(|(_, expired)| !expired));
         let shown: AnyElement = match showing {
             Some(made) => {
                 let copy = {
                     let (pairing, code) = (pairing.clone(), made.code.clone());
-                    Pill::new("settings.devices.pair.copy", if state.copied { "Copied" } else { "Copy code" })
-                        .small()
-                        .icon("copy")
-                        .on_press(move |_, cx| {
-                            cx.write_to_clipboard(ClipboardItem::new_string(code.clone()));
-                            pairing.update(cx, |pairing, cx| {
-                                pairing.copied = true;
-                                cx.notify();
-                            });
-                        })
+                    Pill::new(
+                        "settings.devices.pair.copy",
+                        if state.copied { "Copied" } else { "Copy code" },
+                    )
+                    .small()
+                    .icon("copy")
+                    .on_press(move |_, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(code.clone()));
+                        pairing.update(cx, |pairing, cx| {
+                            pairing.copied = true;
+                            cx.notify();
+                        });
+                    })
                 };
                 div()
                     .flex()
                     .flex_col()
                     .gap(r(theme.space.s12))
                     .child(qr(&made.uri))
-                    .child(
-                        div().flex().justify_center().child(value(
-                            "settings.devices.pair.left",
-                            format!("Expires in {}", left.as_ref().map_or("", |(text, _)| text.as_str())),
-                            cx,
-                        )),
-                    )
+                    .child(div().flex().justify_center().child(value(
+                        "settings.devices.pair.left",
+                        format!(
+                            "Expires in {}",
+                            left.as_ref().map_or("", |(text, _)| text.as_str())
+                        ),
+                        cx,
+                    )))
                     .child(value("settings.devices.pair.or", "Or paste this code", cx))
                     .child(
                         div()
@@ -830,7 +880,11 @@ fn open_pair(window: &mut Window, cx: &mut App) {
                 let make = {
                     let pill = Pill::new(
                         "settings.devices.pair.show",
-                        if expired { "Make a new code" } else { "Show pairing code" },
+                        if expired {
+                            "Make a new code"
+                        } else {
+                            "Show pairing code"
+                        },
                     )
                     .variant(PillVariant::Primary)
                     .small()
@@ -843,7 +897,11 @@ fn open_pair(window: &mut Window, cx: &mut App) {
                     .flex_col()
                     .gap(r(theme.space.s12))
                     .children(expired.then(|| {
-                        value("settings.devices.pair.expired", "That code expired. Make a new one.", cx)
+                        value(
+                            "settings.devices.pair.expired",
+                            "That code expired. Make a new one.",
+                            cx,
+                        )
                     }))
                     .child(div().flex().justify_end().child(make))
                     .into_any_element()
@@ -853,7 +911,11 @@ fn open_pair(window: &mut Window, cx: &mut App) {
             let pairing = pairing.clone();
             Pill::new(
                 "settings.devices.pair.close",
-                if state.made.is_some() { "Cancel pairing" } else { "Close" },
+                if state.made.is_some() {
+                    "Cancel pairing"
+                } else {
+                    "Close"
+                },
             )
             .on_press(move |window, cx| {
                 cancel_pairing(&pairing, cx);
@@ -944,7 +1006,11 @@ mod tests {
     }
 
     fn calls(calls: &[(&'static str, Value)], method: &str) -> Vec<Value> {
-        calls.iter().filter(|(name, _)| *name == method).map(|(_, params)| params.clone()).collect()
+        calls
+            .iter()
+            .filter(|(name, _)| *name == method)
+            .map(|(_, params)| params.clone())
+            .collect()
     }
 
     /// pairing.test.ts: "counts down in minutes and seconds, and says Expired at zero".
@@ -952,23 +1018,54 @@ mod tests {
     fn counts_down_in_minutes_and_seconds_and_says_expired_at_zero() {
         let expires = "2026-11-02T10:10:00.000Z";
         let at = |text: &str| text.parse::<jiff::Timestamp>().unwrap().as_millisecond();
-        assert_eq!(countdown(expires, at("2026-11-02T10:00:00.000Z")), ("10:00".to_owned(), false));
-        assert_eq!(countdown(expires, at("2026-11-02T10:08:19.200Z")), ("1:41".to_owned(), false));
-        assert_eq!(countdown(expires, at("2026-11-02T10:10:00.000Z")), ("Expired".to_owned(), true));
+        assert_eq!(
+            countdown(expires, at("2026-11-02T10:00:00.000Z")),
+            ("10:00".to_owned(), false)
+        );
+        assert_eq!(
+            countdown(expires, at("2026-11-02T10:08:19.200Z")),
+            ("1:41".to_owned(), false)
+        );
+        assert_eq!(
+            countdown(expires, at("2026-11-02T10:10:00.000Z")),
+            ("Expired".to_owned(), true)
+        );
     }
 
     /// relay-row.test.tsx: "says how the relay is doing", "says whether push works through it once it's connected",
     /// "refuses anything but an https address", "turns the relay off when the address is cleared".
     #[test]
     fn the_relay_line_and_the_address_check() {
-        let relay = |state, push| RelayStatus { url: None, state, push };
-        assert_eq!(relay_line(&relay(RelayState::Online, true)), "Connected · Push: available");
-        assert_eq!(relay_line(&relay(RelayState::Online, false)), "Connected · Push: not set up on this relay");
-        assert_eq!(relay_line(&relay(RelayState::Connecting, true)), "Connecting");
-        assert_eq!(relay_line(&relay(RelayState::Error, false)), "Can't reach the relay");
+        let relay = |state, push| RelayStatus {
+            url: None,
+            state,
+            push,
+        };
+        assert_eq!(
+            relay_line(&relay(RelayState::Online, true)),
+            "Connected · Push: available"
+        );
+        assert_eq!(
+            relay_line(&relay(RelayState::Online, false)),
+            "Connected · Push: not set up on this relay"
+        );
+        assert_eq!(
+            relay_line(&relay(RelayState::Connecting, true)),
+            "Connecting"
+        );
+        assert_eq!(
+            relay_line(&relay(RelayState::Error, false)),
+            "Can't reach the relay"
+        );
         assert_eq!(relay_line(&relay(RelayState::Off, false)), "Off");
         assert_eq!(relay_address("  ").unwrap(), None);
-        assert_eq!(relay_address(" https://relay.example.com ").unwrap().unwrap().as_str(), "https://relay.example.com");
+        assert_eq!(
+            relay_address(" https://relay.example.com ")
+                .unwrap()
+                .unwrap()
+                .as_str(),
+            "https://relay.example.com"
+        );
         assert!(relay_address("http://relay.example.com").is_err());
         assert!(relay_address("not a url").is_err());
     }
@@ -977,7 +1074,12 @@ mod tests {
     /// "has Pair a device as an explicit button, and makes no code on its own".
     #[gpui::test]
     fn says_what_pairing_means_and_makes_no_code_on_its_own(cx: &mut TestAppContext) {
-        let (_, calls_made) = app(cx, Route::Settings(Section::Devices), state(vec![], vec![], vec![]), rpc(vec![], status(&[], true)));
+        let (_, calls_made) = app(
+            cx,
+            Route::Settings(Section::Devices),
+            state(vec![], vec![], vec![]),
+            rpc(vec![], status(&[], true)),
+        );
         assert!(node("settings.devices.pair").is_some());
         assert!(text("settings.devices.firewall").contains("Windows Firewall asks once"));
         assert!(node("settings.devices.relay.address").is_some());
@@ -989,19 +1091,38 @@ mod tests {
     /// Connected now for a device on the line, and Not seen yet for one that never connected".
     #[gpui::test]
     fn shows_each_device_with_when_it_was_seen(cx: &mut TestAppContext) {
-        let devices = vec![device("d1", "Sample Phone", None), device("d2", "Spare Laptop", Some("2026-11-01T10:00:00.000Z"))];
-        let (_, _) = app(cx, Route::Settings(Section::Devices), state(vec![], vec![], vec![]), rpc(devices, status(&["d1"], false)));
-        assert!(node("settings.devices.d1.rename").is_some() && node("settings.devices.d2.revoke").is_some());
+        let devices = vec![
+            device("d1", "Sample Phone", None),
+            device("d2", "Spare Laptop", Some("2026-11-01T10:00:00.000Z")),
+        ];
+        let (_, _) = app(
+            cx,
+            Route::Settings(Section::Devices),
+            state(vec![], vec![], vec![]),
+            rpc(devices, status(&["d1"], false)),
+        );
+        assert!(
+            node("settings.devices.d1.rename").is_some()
+                && node("settings.devices.d2.revoke").is_some()
+        );
         assert!(text("settings.devices.d1.line").ends_with("Connected now"));
         assert!(text("settings.devices.d2.line").contains("Last seen"));
         assert_eq!(text("settings.devices.d1"), "Sample Phone");
-        assert_eq!(text("settings.devices.not_listening"), "This PC isn't accepting devices right now.");
+        assert_eq!(
+            text("settings.devices.not_listening"),
+            "This PC isn't accepting devices right now."
+        );
     }
 
     /// devices.test.tsx: "makes nothing until Show pairing code is pressed: no QR, no code"; closing cancels the code.
     #[gpui::test]
     fn makes_a_code_only_on_show_and_cancels_it_on_close(cx: &mut TestAppContext) {
-        let (cx, calls_made) = app(cx, Route::Settings(Section::Devices), state(vec![], vec![], vec![]), rpc(vec![], status(&[], true)));
+        let (cx, calls_made) = app(
+            cx,
+            Route::Settings(Section::Devices),
+            state(vec![], vec![], vec![]),
+            rpc(vec![], status(&[], true)),
+        );
         click(cx, "settings.devices.pair");
         assert!(node("settings.devices.pair.qr").is_none());
         assert!(node("settings.devices.pair.code").is_none());
@@ -1012,24 +1133,41 @@ mod tests {
         assert_eq!(text("settings.devices.pair.code"), "SAMPLE-PAIRING-CODE");
         assert!(text("settings.devices.pair.left").starts_with("Expires in"));
         click(cx, "settings.devices.pair.close");
-        assert_eq!(calls(&calls_made.calls(), "pairing.cancel"), [json!({ "id": "pair-1" })]);
+        assert_eq!(
+            calls(&calls_made.calls(), "pairing.cancel"),
+            [json!({ "id": "pair-1" })]
+        );
     }
 
     /// devices.test.tsx: "starts with the device's name and keeps Save off until it changes".
     #[gpui::test]
     fn rename_starts_with_the_name_and_saves_a_change(cx: &mut TestAppContext) {
-        let (cx, calls_made) = app(cx, Route::Settings(Section::Devices), state(vec![], vec![], vec![]), rpc(vec![device("d1", "Sample Phone", None)], status(&[], true)));
+        let (cx, calls_made) = app(
+            cx,
+            Route::Settings(Section::Devices),
+            state(vec![], vec![], vec![]),
+            rpc(vec![device("d1", "Sample Phone", None)], status(&[], true)),
+        );
         click(cx, "settings.devices.d1.rename");
         assert_eq!(text("dialog.title"), "Rename device");
         click(cx, "device_form.save");
-        assert!(calls(&calls_made.calls(), "devices.rename").is_empty(), "off until it changes");
+        assert!(
+            calls(&calls_made.calls(), "devices.rename").is_empty(),
+            "off until it changes"
+        );
         click(cx, "device_form.name");
         cx.simulate_input(" 2");
         draw(cx);
         click(cx, "device_form.save");
         draw(cx);
-        assert_eq!(calls(&calls_made.calls(), "devices.rename"), [json!({ "id": "d1", "name": "Sample Phone 2" })]);
-        assert!(node("device_form.save").is_none(), "saved: the dialog closed");
+        assert_eq!(
+            calls(&calls_made.calls(), "devices.rename"),
+            [json!({ "id": "d1", "name": "Sample Phone 2" })]
+        );
+        assert!(
+            node("device_form.save").is_none(),
+            "saved: the dialog closed"
+        );
     }
 
     /// M5 review M8: the keyboard e2e can't pair a phone, so Rename device and Revoke are covered here, opened by keys
@@ -1039,8 +1177,18 @@ mod tests {
     fn the_device_dialogs_work_from_the_keyboard(cx: &mut TestAppContext) {
         let rpc = rpc(vec![device("d1", "Sample Phone", None)], status(&[], true))
             .on::<method::DevicesRevoke>(|_| Ok(device("d1", "Sample Phone", None)));
-        let (cx, calls_made) = app(cx, Route::Settings(Section::Devices), state(vec![], vec![], vec![]), rpc);
-        let focused = || crate::test_driver::nodes().into_iter().find(|node| node.focused).map(|node| node.id);
+        let (cx, calls_made) = app(
+            cx,
+            Route::Settings(Section::Devices),
+            state(vec![], vec![], vec![]),
+            rpc,
+        );
+        let focused = || {
+            crate::test_driver::nodes()
+                .into_iter()
+                .find(|node| node.focused)
+                .map(|node| node.id)
+        };
         let press = |cx: &mut gpui::VisualTestContext, keys: &str| {
             cx.simulate_keystrokes(keys);
             draw(cx);
@@ -1063,7 +1211,10 @@ mod tests {
                 let Some(now) = focused() else {
                     continue;
                 };
-                assert!(inside.iter().any(|prefix| now.starts_with(prefix)), "Tab left the dialog for {now:?}");
+                assert!(
+                    inside.iter().any(|prefix| now.starts_with(prefix)),
+                    "Tab left the dialog for {now:?}"
+                );
                 if !seen.contains(&now) {
                     seen.push(now);
                 }
@@ -1076,8 +1227,14 @@ mod tests {
         press(cx, "enter");
         assert_eq!(text("dialog.title"), "Rename device");
         let seen = round(cx, &["device_form.", "dialog."]);
-        assert!(seen.iter().any(|id| id == "device_form.name") && seen.iter().any(|id| id == "device_form.cancel"));
-        assert!(!seen.iter().any(|id| id == "device_form.save"), "Save is unavailable until the name changes");
+        assert!(
+            seen.iter().any(|id| id == "device_form.name")
+                && seen.iter().any(|id| id == "device_form.cancel")
+        );
+        assert!(
+            !seen.iter().any(|id| id == "device_form.save"),
+            "Save is unavailable until the name changes"
+        );
         press(cx, "escape");
         assert!(node("device_form.name").is_none(), "Escape closed it");
         assert!(calls(&calls_made.calls(), "devices.rename").is_empty());
@@ -1090,13 +1247,19 @@ mod tests {
         draw(cx);
         tab_to(cx, "device_form.save");
         press(cx, "enter");
-        assert_eq!(calls(&calls_made.calls(), "devices.rename"), [json!({ "id": "d1", "name": "Sample Phone 2" })]);
+        assert_eq!(
+            calls(&calls_made.calls(), "devices.rename"),
+            [json!({ "id": "d1", "name": "Sample Phone 2" })]
+        );
 
         // Revoke: Escape closes with no call; Enter on Revoke revokes.
         tab_to(cx, "settings.devices.d1.revoke");
         press(cx, "enter");
         let seen = round(cx, &["dialog."]);
-        assert!(seen.iter().any(|id| id == "dialog.confirm") && seen.iter().any(|id| id == "dialog.cancel"));
+        assert!(
+            seen.iter().any(|id| id == "dialog.confirm")
+                && seen.iter().any(|id| id == "dialog.cancel")
+        );
         press(cx, "escape");
         assert!(node("dialog.confirm").is_none(), "Escape closed it");
         assert!(calls(&calls_made.calls(), "devices.revoke").is_empty());
@@ -1104,23 +1267,39 @@ mod tests {
         press(cx, "enter");
         tab_to(cx, "dialog.confirm");
         press(cx, "enter");
-        assert_eq!(calls(&calls_made.calls(), "devices.revoke"), [json!({ "id": "d1" })]);
+        assert_eq!(
+            calls(&calls_made.calls(), "devices.revoke"),
+            [json!({ "id": "d1" })]
+        );
     }
 
     /// relay-row.test.tsx: "keeps Save off until the address is changed", "saves a typed https address, trimmed", and
     /// "saves the public relay's address with Use the public relay".
     #[gpui::test]
     fn the_relay_saves_a_changed_https_address(cx: &mut TestAppContext) {
-        let rpc = rpc(vec![], status(&[], true)).on::<method::SettingsSet>(|_| Ok(serde_json::from_value(json!({ "chainLimit": 5, "relayUrl": null })).unwrap()));
-        let (cx, calls_made) = app(cx, Route::Settings(Section::Devices), state(vec![], vec![], vec![]), rpc);
+        let rpc = rpc(vec![], status(&[], true)).on::<method::SettingsSet>(|_| {
+            Ok(serde_json::from_value(json!({ "chainLimit": 5, "relayUrl": null })).unwrap())
+        });
+        let (cx, calls_made) = app(
+            cx,
+            Route::Settings(Section::Devices),
+            state(vec![], vec![], vec![]),
+            rpc,
+        );
         click(cx, "settings.devices.relay.save");
-        assert!(calls(&calls_made.calls(), "settings.set").is_empty(), "off until changed");
+        assert!(
+            calls(&calls_made.calls(), "settings.set").is_empty(),
+            "off until changed"
+        );
         click(cx, "settings.devices.relay.address");
         cx.simulate_input("https://relay.example.com ");
         draw(cx);
         click(cx, "settings.devices.relay.save");
         draw(cx);
-        assert_eq!(calls(&calls_made.calls(), "settings.set"), [json!({ "relayUrl": "https://relay.example.com" })]);
+        assert_eq!(
+            calls(&calls_made.calls(), "settings.set"),
+            [json!({ "relayUrl": "https://relay.example.com" })]
+        );
         if node("settings.devices.relay.public").is_some() {
             click(cx, "settings.devices.relay.public");
             draw(cx);
@@ -1131,9 +1310,19 @@ mod tests {
     /// The list reads again when the host says its devices changed.
     #[gpui::test]
     fn reads_again_when_the_devices_change(cx: &mut TestAppContext) {
-        let (cx, calls_made) = app(cx, Route::Settings(Section::Devices), state(vec![], vec![], vec![]), rpc(vec![], status(&[], true)));
+        let (cx, calls_made) = app(
+            cx,
+            Route::Settings(Section::Devices),
+            state(vec![], vec![], vec![]),
+            rpc(vec![], status(&[], true)),
+        );
         assert_eq!(calls(&calls_made.calls(), "devices.list").len(), 1);
-        cx.update(|_, cx| crate::ui::store::fake_event(cx, &protocol::Event::DevicesChanged(protocol::wire::Empty {})));
+        cx.update(|_, cx| {
+            crate::ui::store::fake_event(
+                cx,
+                &protocol::Event::DevicesChanged(protocol::wire::Empty {}),
+            )
+        });
         draw(cx);
         draw(cx);
         assert_eq!(calls(&calls_made.calls(), "devices.list").len(), 2);
@@ -1143,7 +1332,12 @@ mod tests {
     #[gpui::test]
     fn rename_and_revoke_say_whose_they_are(cx: &mut TestAppContext) {
         let rpc = rpc(vec![device("d1", "Sample Phone", None)], status(&[], true));
-        let (_, _) = app(cx, Route::Settings(Section::Devices), state(vec![], vec![], vec![]), rpc);
+        let (_, _) = app(
+            cx,
+            Route::Settings(Section::Devices),
+            state(vec![], vec![], vec![]),
+            rpc,
+        );
         assert_eq!(text("settings.devices.d1.rename"), "Rename Sample Phone");
         assert_eq!(text("settings.devices.d1.revoke"), "Revoke Sample Phone");
     }

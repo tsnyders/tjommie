@@ -84,7 +84,13 @@ pub(super) fn section(window: &mut Window, cx: &mut App) -> AnyElement {
     let unsaved = cx
         .try_global::<Unsaved>()
         .is_some_and(|unsaved| unsaved.0)
-        .then(|| problem("settings.appearance.problem", "This device could not save the appearance choice.", cx));
+        .then(|| {
+            problem(
+                "settings.appearance.problem",
+                "This device could not save the appearance choice.",
+                cx,
+            )
+        });
     super::frame(
         "appearance",
         "Appearance",
@@ -150,15 +156,28 @@ mod tests {
         let root = desktop_host::owner_safety::test_root().unwrap();
         let blocked = root.path().join("not-a-folder");
         std::fs::write(&blocked, b"").unwrap();
-        let (cx, _) = app(cx, Route::Settings(Section::Appearance), state(vec![], vec![], vec![]), FakeRpc::new());
+        let (cx, _) = app(
+            cx,
+            Route::Settings(Section::Appearance),
+            state(vec![], vec![], vec![]),
+            FakeRpc::new(),
+        );
         cx.update(|_, cx| {
-            cx.set_global(crate::live::DeviceFile(std::sync::Arc::new(crate::live::LocalSettings::load(&blocked))))
+            cx.set_global(crate::live::DeviceFile(std::sync::Arc::new(
+                crate::live::LocalSettings::load(&blocked),
+            )))
         });
         assert!(node("settings.appearance.problem").is_none());
         click(cx, "settings.appearance.theme.light");
         crate::ui::testing::draw(cx);
-        assert!(node("settings.appearance.theme.light").unwrap().toggled, "shown all the same");
-        assert_eq!(text("settings.appearance.problem"), "This device could not save the appearance choice.");
+        assert!(
+            node("settings.appearance.theme.light").unwrap().toggled,
+            "shown all the same"
+        );
+        assert_eq!(
+            text("settings.appearance.problem"),
+            "This device could not save the appearance choice."
+        );
     }
 
     #[gpui::test]

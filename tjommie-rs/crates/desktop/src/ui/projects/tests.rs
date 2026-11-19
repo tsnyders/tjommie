@@ -47,12 +47,19 @@ fn rpc(members: Value, evaluations: Value) -> FakeRpc {
     let team = project(members);
     let tasks = vec![task(0, "First task"), task(1, "Second task")];
     let (listed, archived, updated) = (team.clone(), team.clone(), team.clone());
-    let (all, read, saved) = (tasks.clone(), tasks.clone(), tasks.first().cloned().unwrap());
+    let (all, read, saved) = (
+        tasks.clone(),
+        tasks.clone(),
+        tasks.first().cloned().unwrap(),
+    );
     FakeRpc::new()
         .on::<method::ProjectsList>(move |_| Ok(vec![listed.clone()]))
         .on::<method::ProjectsRepositories>(|_| Ok(vec![]))
         .on::<method::ProjectsHeads>(|_| {
-            Ok(serde_json::from_value(json!({ "baseSha": "b".repeat(40), "targetSha": "c".repeat(40) })).unwrap())
+            Ok(serde_json::from_value(
+                json!({ "baseSha": "b".repeat(40), "targetSha": "c".repeat(40) }),
+            )
+            .unwrap())
         })
         .on::<method::TasksList>(move |_| Ok(all.clone()))
         .on::<method::TasksGet>(move |params| {
@@ -89,7 +96,12 @@ fn people() -> Vec<protocol::model::Bot> {
 #[gpui::test]
 fn archiving_a_team_asks_first_and_sends_its_revision(cx: &mut TestAppContext) {
     let members = json!([{ "botId": "dev", "roles": ["developer"] }]);
-    let (cx, calls) = app(cx, Route::Projects, state(people(), vec![], vec![]), rpc(members, json!([])));
+    let (cx, calls) = app(
+        cx,
+        Route::Projects,
+        state(people(), vec![], vec![]),
+        rpc(members, json!([])),
+    );
     assert_eq!(text("screen.projects"), "Developer teams");
     click(cx, "projects.team.project");
     assert_eq!(text("projects.name"), "UI team");
@@ -112,13 +124,24 @@ fn archiving_a_team_asks_first_and_sends_its_revision(cx: &mut TestAppContext) {
 #[gpui::test]
 fn a_chosen_task_takes_the_focus_once_and_a_refresh_leaves_it(cx: &mut TestAppContext) {
     let members = json!([{ "botId": "dev", "roles": ["developer"] }]);
-    let (cx, calls) = app(cx, Route::Projects, state(people(), vec![], vec![]), rpc(members, json!([])));
+    let (cx, calls) = app(
+        cx,
+        Route::Projects,
+        state(people(), vec![], vec![]),
+        rpc(members, json!([])),
+    );
     click(cx, "projects.team.project");
-    assert_eq!(ids("projects.task."), ["projects.task.task-0", "projects.task.task-1"]);
+    assert_eq!(
+        ids("projects.task."),
+        ["projects.task.task-0", "projects.task.task-1"]
+    );
     click(cx, "projects.task.task-1");
     draw(cx);
     assert_eq!(text("projects.detail"), "Task: Second task");
-    assert!(node("projects.detail").unwrap().focused, "the detail has the focus");
+    assert!(
+        node("projects.detail").unwrap().focused,
+        "the detail has the focus"
+    );
     // The focus moves on; a background refresh doesn't take it back.
     cx.simulate_keystrokes("shift-tab");
     draw(cx);
@@ -129,8 +152,14 @@ fn a_chosen_task_takes_the_focus_once_and_a_refresh_leaves_it(cx: &mut TestAppCo
     });
     draw(cx);
     draw(cx);
-    assert!(calls_of(&calls.calls(), "tasks.get").len() > reads, "a project event read it again");
-    assert!(!node("projects.detail").unwrap().focused, "and left the focus where it was");
+    assert!(
+        calls_of(&calls.calls(), "tasks.get").len() > reads,
+        "a project event read it again"
+    );
+    assert!(
+        !node("projects.detail").unwrap().focused,
+        "and left the focus where it was"
+    );
     // Choosing it again brings it again.
     click(cx, "projects.task.task-1");
     draw(cx);
@@ -143,7 +172,12 @@ fn a_chosen_task_takes_the_focus_once_and_a_refresh_leaves_it(cx: &mut TestAppCo
 fn editing_a_team_keeps_its_repository_and_saves_only_on_save(cx: &mut TestAppContext) {
     let members = json!([{ "botId": "dev", "roles": ["developer"] }]);
     let bots = vec![bot("dev", "Developer", BotState::Idle)];
-    let (cx, calls) = app(cx, Route::Projects, state(bots, vec![], vec![]), rpc(members, json!([])));
+    let (cx, calls) = app(
+        cx,
+        Route::Projects,
+        state(bots, vec![], vec![]),
+        rpc(members, json!([])),
+    );
     click(cx, "projects.team.project");
     click(cx, "projects.edit");
     assert_eq!(text("dialog.title"), "Edit project team");
@@ -170,8 +204,14 @@ fn editing_a_team_keeps_its_repository_and_saves_only_on_save(cx: &mut TestAppCo
             }
         })]
     );
-    assert!(node("project_form.save").is_none(), "saved: the editor closed");
-    assert!(calls_of(&calls.calls(), "tasks.start").is_empty(), "saving starts no work");
+    assert!(
+        node("project_form.save").is_none(),
+        "saved: the editor closed"
+    );
+    assert!(
+        calls_of(&calls.calls(), "tasks.start").is_empty(),
+        "saving starts no work"
+    );
 }
 
 /// `project-workspace.test.tsx`: "keeps task pickers limited to assigned roles and submits the selected developer
@@ -182,7 +222,12 @@ fn task_pickers_offer_the_role_holders_and_save_with_the_revision(cx: &mut TestA
         { "botId": "dev", "roles": ["developer"] }, { "botId": "dev2", "roles": ["developer"] },
         { "botId": "review", "roles": ["reviewer"] }, { "botId": "test", "roles": ["tester"] }
     ]);
-    let (cx, calls) = app(cx, Route::Projects, state(people(), vec![], vec![]), rpc(members, json!([])));
+    let (cx, calls) = app(
+        cx,
+        Route::Projects,
+        state(people(), vec![], vec![]),
+        rpc(members, json!([])),
+    );
     click(cx, "projects.team.project");
     click(cx, "projects.task.task-0");
     click(cx, "projects.detail.edit");
@@ -195,7 +240,11 @@ fn task_pickers_offer_the_role_holders_and_save_with_the_revision(cx: &mut TestA
         .collect();
     assert_eq!(
         offered,
-        ["task_form.developer.none", "task_form.developer.dev", "task_form.developer.dev2"],
+        [
+            "task_form.developer.none",
+            "task_form.developer.dev",
+            "task_form.developer.dev2"
+        ],
         "only developers"
     );
     click(cx, "task_form.developer.dev2");
@@ -229,10 +278,18 @@ fn a_review_shows_its_coverage_manifest_or_says_it_has_none(cx: &mut TestAppCont
         "files": [{ "path": "source.ts", "bytes": 10, "sha256": "d".repeat(64) }]
     });
     let members = json!([{ "botId": "dev", "roles": ["developer"] }]);
-    let (cx, _) = app(cx, Route::Projects, state(people(), vec![], vec![]), rpc(members, evaluation(coverage)));
+    let (cx, _) = app(
+        cx,
+        Route::Projects,
+        state(people(), vec![], vec![]),
+        rpc(members, evaluation(coverage)),
+    );
     click(cx, "projects.team.project");
     click(cx, "projects.task.task-0");
-    assert_eq!(text("projects.open.coverage.e"), "Complete snapshot supplied · 1 files");
+    assert_eq!(
+        text("projects.open.coverage.e"),
+        "Complete snapshot supplied · 1 files"
+    );
     click(cx, "projects.open.coverage.e");
     assert!(text("projects.coverage.file.0").contains("source.ts"));
     assert!(text("projects.coverage.snapshot").contains(&"b".repeat(64)));
@@ -248,7 +305,12 @@ fn a_review_without_coverage_says_so(cx: &mut TestAppContext) {
         "findings": [], "checks": [], "createdAt": STAMP, "updatedAt": STAMP, "reviewCoverage": null
     }]);
     let members = json!([{ "botId": "dev", "roles": ["developer"] }]);
-    let (cx, _) = app(cx, Route::Projects, state(people(), vec![], vec![]), rpc(members, evaluation));
+    let (cx, _) = app(
+        cx,
+        Route::Projects,
+        state(people(), vec![], vec![]),
+        rpc(members, evaluation),
+    );
     click(cx, "projects.team.project");
     click(cx, "projects.task.task-0");
     assert_eq!(
@@ -266,7 +328,9 @@ fn the_diff_shows_as_text_with_its_limits(cx: &mut TestAppContext) {
         "text": "<script>bad()</script>", "truncated": true, "dirty": true
     }))
     .unwrap();
-    let cx = crate::ui::primitives::test_window(cx, move |_, cx| diff_view(Some(&diff), cx).into_any_element());
+    let cx = crate::ui::primitives::test_window(cx, move |_, cx| {
+        diff_view(Some(&diff), cx).into_any_element()
+    });
     draw(cx);
     assert_eq!(text("projects.diff.text"), "Committed diff");
     assert_eq!(text("projects.diff.text.body"), "<script>bad()</script>");
@@ -285,7 +349,10 @@ fn offline_projects_say_how_to_see_them(cx: &mut TestAppContext) {
         text("projects.offline"),
         "Connect to the host PC to view and run project work."
     );
-    assert!(calls_of(&calls.calls(), "projects.list").is_empty(), "nothing is asked meanwhile");
+    assert!(
+        calls_of(&calls.calls(), "projects.list").is_empty(),
+        "nothing is asked meanwhile"
+    );
 }
 
 /// M5 review M4: another PC starts Projects afresh (the TypeScript's `key={host}`): the last PC's team and task aren't
@@ -293,7 +360,12 @@ fn offline_projects_say_how_to_see_them(cx: &mut TestAppContext) {
 #[gpui::test]
 fn another_pc_starts_projects_with_nothing_chosen(cx: &mut TestAppContext) {
     let members = json!([{ "botId": "dev", "roles": ["developer"] }]);
-    let (cx, calls) = app(cx, Route::Projects, state(people(), vec![], vec![]), rpc(members, json!([])));
+    let (cx, calls) = app(
+        cx,
+        Route::Projects,
+        state(people(), vec![], vec![]),
+        rpc(members, json!([])),
+    );
     click(cx, "projects.team.project");
     click(cx, "projects.task.task-1");
     draw(cx);
@@ -306,11 +378,23 @@ fn another_pc_starts_projects_with_nothing_chosen(cx: &mut TestAppContext) {
         })
     });
     draw(cx);
-    assert!(node("projects.detail").is_none(), "no task chosen on the other PC");
-    assert!(node("projects.name").is_none(), "no team chosen on the other PC");
+    assert!(
+        node("projects.detail").is_none(),
+        "no task chosen on the other PC"
+    );
+    assert!(
+        node("projects.name").is_none(),
+        "no team chosen on the other PC"
+    );
     let after = calls.calls().split_off(before);
-    assert!(!calls_of(&after, "projects.list").is_empty(), "the other PC's teams are read");
+    assert!(
+        !calls_of(&after, "projects.list").is_empty(),
+        "the other PC's teams are read"
+    );
     for method in ["tasks.list", "tasks.get", "projects.heads"] {
-        assert!(calls_of(&after, method).is_empty(), "the last PC's {method} asked of the other: {after:?}");
+        assert!(
+            calls_of(&after, method).is_empty(),
+            "the last PC's {method} asked of the other: {after:?}"
+        );
     }
 }

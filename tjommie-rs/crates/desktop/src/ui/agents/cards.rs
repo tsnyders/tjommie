@@ -517,11 +517,16 @@ pub(crate) fn room_card(
             .flex()
             .items_center()
             .gap(r(theme.space.s6))
-            .child(div().flex().pl(px(4.)).children(members.iter().take(5).map(|bot| {
+            .child(
                 div()
-                    .ml(px(-4.))
-                    .child(BotAvatar::new(bot.color, bot.shape, 18.))
-            })))
+                    .flex()
+                    .pl(px(4.))
+                    .children(members.iter().take(5).map(|bot| {
+                        div()
+                            .ml(px(-4.))
+                            .child(BotAvatar::new(bot.color, bot.shape, 18.))
+                    })),
+            )
             .when(members.len() > 5, |stack| {
                 stack.child(
                     div()

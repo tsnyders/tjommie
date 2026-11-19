@@ -162,7 +162,10 @@ pub fn live_state(cx: &App) -> StoreLive {
         _ => {
             let state = state(cx);
             let ready = state.connection == crate::model::state::Connection::Ready;
-            StoreLive(LiveSource::Fixed { host: state.host.clone(), ready })
+            StoreLive(LiveSource::Fixed {
+                host: state.host.clone(),
+                ready,
+            })
         }
     }
 }
@@ -178,7 +181,9 @@ impl crate::model::logins::LiveState for StoreLive {
     fn is_ready(&self) -> bool {
         match &self.0 {
             LiveSource::Fixed { ready, .. } => *ready,
-            LiveSource::Live(live) => live.read(|state| state.connection == crate::model::state::Connection::Ready),
+            LiveSource::Live(live) => {
+                live.read(|state| state.connection == crate::model::state::Connection::Ready)
+            }
         }
     }
 
@@ -230,7 +235,10 @@ impl Drop for StopFeed {
 }
 
 /// `daemon().subscribe` for a screen: a feed of the events `wanted` accepts (an account's card wants its own).
-pub fn events(cx: &mut App, wanted: impl Fn(&protocol::Event) -> bool + Send + 'static) -> EventFeed {
+pub fn events(
+    cx: &mut App,
+    wanted: impl Fn(&protocol::Event) -> bool + Send + 'static,
+) -> EventFeed {
     let (sender, arrivals) = futures::channel::mpsc::unbounded();
     match handle(cx) {
         Handle::Live(live) => {
@@ -250,7 +258,9 @@ pub fn events(cx: &mut App, wanted: impl Fn(&protocol::Event) -> bool + Send + '
         }
         #[cfg(test)]
         Handle::Fake(_) => {
-            cx.default_global::<FakeEvents>().0.push((Box::new(wanted), sender));
+            cx.default_global::<FakeEvents>()
+                .0
+                .push((Box::new(wanted), sender));
             EventFeed {
                 arrivals,
                 _stop: None,
@@ -270,7 +280,10 @@ struct FakeEvents(Vec<FakeFeed>);
 
 /// One fake feed: what it wants, and where it sends.
 #[cfg(test)]
-type FakeFeed = (Box<dyn Fn(&protocol::Event) -> bool>, futures::channel::mpsc::UnboundedSender<()>);
+type FakeFeed = (
+    Box<dyn Fn(&protocol::Event) -> bool>,
+    futures::channel::mpsc::UnboundedSender<()>,
+);
 
 #[cfg(test)]
 impl Global for FakeEvents {}

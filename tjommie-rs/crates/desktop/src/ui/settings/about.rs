@@ -190,7 +190,12 @@ mod tests {
         }))
         .unwrap();
         let rpc = FakeRpc::new().on::<method::DiagnosticsGet>(move |_| Ok(host.clone()));
-        let (_, _) = app(cx, Route::Settings(Section::About), state(vec![], vec![], vec![]), rpc);
+        let (_, _) = app(
+            cx,
+            Route::Settings(Section::About),
+            state(vec![], vec![], vec![]),
+            rpc,
+        );
         assert_eq!(text("settings.about.device_version"), APP_VERSION);
         assert_eq!(text("settings.about.host_version"), "0.3.2");
         assert_eq!(text("settings.about.daemon_version"), "0.3.3");
@@ -208,7 +213,12 @@ mod tests {
                 message: "not now".into(),
             })
         });
-        let (cx, _) = app(cx, Route::Settings(Section::About), state(vec![], vec![], vec![]), rpc);
+        let (cx, _) = app(
+            cx,
+            Route::Settings(Section::About),
+            state(vec![], vec![], vec![]),
+            rpc,
+        );
         assert_eq!(text("settings.about.host_version"), "Unknown");
         click(cx, "settings.about.notices");
         draw(cx);

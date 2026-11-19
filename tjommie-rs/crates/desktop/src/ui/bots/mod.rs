@@ -82,7 +82,12 @@ fn header(back: &'static str, chip: AnyElement, window: &mut Window, cx: &mut Ap
 }
 
 /// The agent's chip: its avatar, its name (the page's heading) and, for an agent that exists, its state.
-pub(crate) fn chip(avatar: AnyElement, name: AnyElement, status: Option<String>, cx: &App) -> AnyElement {
+pub(crate) fn chip(
+    avatar: AnyElement,
+    name: AnyElement,
+    status: Option<String>,
+    cx: &App,
+) -> AnyElement {
     let theme = theme(cx);
     let colors = palette(cx);
     div()

@@ -67,7 +67,8 @@ fn entry_for(setup: Option<&[ProviderSetup]>, provider: Provider) -> Option<&Pro
     setup?.iter().find(|entry| {
         matches!(
             (entry, provider),
-            (ProviderSetup::Claude(_), Provider::Claude) | (ProviderSetup::Codex(_), Provider::Codex)
+            (ProviderSetup::Claude(_), Provider::Claude)
+                | (ProviderSetup::Codex(_), Provider::Codex)
         )
     })
 }
@@ -77,7 +78,10 @@ pub fn wanted(state: &AppState) -> bool {
     state.bots.is_empty()
         && !PROVIDERS.iter().any(|provider| {
             matches!(
-                card_view(entry_for(state.setup.as_deref(), *provider), LocalState::default()),
+                card_view(
+                    entry_for(state.setup.as_deref(), *provider),
+                    LocalState::default()
+                ),
                 CardView::SignedIn { .. }
             )
         })
@@ -168,7 +172,12 @@ pub fn provider_cards(window: &mut Window, cx: &mut App) -> AnyElement {
 }
 
 /// One provider's card: its name and version, what it says, what it offers, and a failed request's reason.
-fn card(cards: &Entity<Cards>, provider: Provider, setup: Option<&[ProviderSetup]>, cx: &App) -> AnyElement {
+fn card(
+    cards: &Entity<Cards>,
+    provider: Provider,
+    setup: Option<&[ProviderSetup]>,
+    cx: &App,
+) -> AnyElement {
     let theme = theme(cx);
     let colors = palette(cx);
     let key = key_of(provider);
@@ -181,7 +190,14 @@ fn card(cards: &Entity<Cards>, provider: Provider, setup: Option<&[ProviderSetup
             preparing: provider == Provider::Codex && local.preparing,
         },
     );
-    let (body, actions) = content(cards, provider, &view, local.checking, local.pending.contains(&provider), cx);
+    let (body, actions) = content(
+        cards,
+        provider,
+        &view,
+        local.checking,
+        local.pending.contains(&provider),
+        cx,
+    );
     let problem = local
         .problem
         .as_ref()
@@ -301,7 +317,9 @@ fn content(
 ) -> (Vec<AnyElement>, Vec<AnyElement>) {
     let key = key_of(provider);
     let claude = provider == Provider::Claude;
-    let body = |text: String, icon: Option<&'static str>, helper: bool| line(format!("setup.{key}.body"), icon, text, helper, cx);
+    let body = |text: String, icon: Option<&'static str>, helper: bool| {
+        line(format!("setup.{key}.body"), icon, text, helper, cx)
+    };
     let note = |text: String| {
         div()
             .pl(r(theme(cx).space.s24))
@@ -317,15 +335,21 @@ fn content(
     };
     let sign_in = |label: &'static str, primary: bool| {
         let cards = cards.clone();
-        let pill = Pill::new(format!("setup.{key}.sign_in"), label).on_press(move |_, cx| start_sign_in(&cards, provider, cx));
+        let pill = Pill::new(format!("setup.{key}.sign_in"), label)
+            .on_press(move |_, cx| start_sign_in(&cards, provider, cx));
         if primary {
-            pill.variant(PillVariant::Primary).disabled(requesting).into_any_element()
+            pill.variant(PillVariant::Primary)
+                .disabled(requesting)
+                .into_any_element()
         } else {
             pill.into_any_element()
         }
     };
     match view {
-        CardView::Checking => (vec![body("Checking".into(), Some("loader-circle"), false)], Vec::new()),
+        CardView::Checking => (
+            vec![body("Checking".into(), Some("loader-circle"), false)],
+            Vec::new(),
+        ),
         CardView::NotInstalled if claude => (
             vec![body(
                 "Install Claude Code from claude.com/claude-code, then check again.".into(),
@@ -341,7 +365,9 @@ fn content(
             ],
         ),
         CardView::NotInstalled => (vec![install_codex(cx)], vec![check_again()]),
-        CardView::Problem { reason } => (vec![body(reason.clone(), None, true)], vec![check_again()]),
+        CardView::Problem { reason } => {
+            (vec![body(reason.clone(), None, true)], vec![check_again()])
+        }
         CardView::SignedOut => (
             vec![body(
                 if claude {
@@ -353,13 +379,24 @@ fn content(
                 None,
                 true,
             )],
-            vec![sign_in(if claude { "Sign in to Claude" } else { "Sign in to Codex" }, true)],
+            vec![sign_in(
+                if claude {
+                    "Sign in to Claude"
+                } else {
+                    "Sign in to Codex"
+                },
+                true,
+            )],
         ),
         CardView::SigningIn => {
             let cards = cards.clone();
             (
                 vec![
-                    body("Finish signing in in your browser".into(), Some("loader-circle"), false),
+                    body(
+                        "Finish signing in in your browser".into(),
+                        Some("loader-circle"),
+                        false,
+                    ),
                     note("Tjommie notices as soon as you're done.".into()),
                 ],
                 vec![
@@ -383,9 +420,16 @@ fn content(
                 ],
             )
         }
-        CardView::SignedIn { account, plan, sandbox } => {
+        CardView::SignedIn {
+            account,
+            plan,
+            sandbox,
+        } => {
             let mut said = vec![body(
-                account.as_ref().map_or_else(|| "Signed in".to_owned(), |account| format!("Signed in as {account}")),
+                account.as_ref().map_or_else(
+                    || "Signed in".to_owned(),
+                    |account| format!("Signed in as {account}"),
+                ),
                 Some("check"),
                 false,
             )];
@@ -393,7 +437,13 @@ fn content(
             let sandbox_line = |text: &str, icon: Option<&'static str>, helper: bool| {
                 div()
                     .mt(r(theme(cx).space.s8))
-                    .child(line(format!("setup.{key}.sandbox"), icon, text.to_owned(), helper, cx))
+                    .child(line(
+                        format!("setup.{key}.sandbox"),
+                        icon,
+                        text.to_owned(),
+                        helper,
+                        cx,
+                    ))
                     .into_any_element()
             };
             let mut offered = Vec::new();
@@ -433,9 +483,12 @@ fn content(
             if !requesting {
                 let cards = cards.clone();
                 offered.push(
-                    Link::new(format!("setup.{key}.other_account"), "Use a different account")
-                        .on_press(move |_, cx| start_sign_in(&cards, provider, cx))
-                        .into_any_element(),
+                    Link::new(
+                        format!("setup.{key}.other_account"),
+                        "Use a different account",
+                    )
+                    .on_press(move |_, cx| start_sign_in(&cards, provider, cx))
+                    .into_any_element(),
                 );
             }
             (said, offered)
@@ -444,7 +497,13 @@ fn content(
 }
 
 /// One line of a card, read as `id`, after `icon` when it has one (`Line`); a helper line is smaller and quieter.
-fn line(id: String, icon: Option<&'static str>, text: String, helper: bool, cx: &App) -> AnyElement {
+fn line(
+    id: String,
+    icon: Option<&'static str>,
+    text: String,
+    helper: bool,
+    cx: &App,
+) -> AnyElement {
     let theme = theme(cx);
     let colors = palette(cx);
     let (style, color) = if helper {
@@ -525,7 +584,13 @@ fn start_sign_in(cards: &Entity<Cards>, provider: Provider, cx: &mut App) {
             cards.pending.retain(|each| *each != provider);
             match done {
                 Ok(started) => {
-                    cards.signing.insert(provider, SignIn { since, attempt: started.attempt });
+                    cards.signing.insert(
+                        provider,
+                        SignIn {
+                            since,
+                            attempt: started.attempt,
+                        },
+                    );
                 }
                 Err(why) => cards.problem = Some((provider, why)),
             }
@@ -608,8 +673,8 @@ mod tests {
     use std::sync::Arc;
 
     use gpui::{
-        App, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, PlatformInput, Point,
-        TestAppContext, VisualTestContext, Window,
+        App, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
+        PlatformInput, Point, TestAppContext, VisualTestContext, Window,
     };
     use protocol::accounts::SignInStart;
     use protocol::model::{CodexSandboxReadiness, CodexSetup, ProviderSetup, SetupFields};
@@ -650,7 +715,11 @@ mod tests {
     }
 
     /// The two cards alone, over the store's fake with `setup`. Returns the window and the calls made.
-    fn cards(cx: &mut TestAppContext, setup: Vec<ProviderSetup>, rpc: FakeRpc) -> (&mut VisualTestContext, Arc<FakeRpc>) {
+    fn cards(
+        cx: &mut TestAppContext,
+        setup: Vec<ProviderSetup>,
+        rpc: FakeRpc,
+    ) -> (&mut VisualTestContext, Arc<FakeRpc>) {
         let mut connected = state(vec![], vec![], vec![]);
         connected.setup = Some(setup);
         let calls = cx.update(|cx| crate::ui::store::fake(cx, connected, rpc));
@@ -713,35 +782,73 @@ mod tests {
     /// `provider-cards`: a signed-out provider says where Sign in goes, a missing one how to install it; Sign in asks
     /// the daemon for that provider's sign-in.
     #[gpui::test]
-    fn a_signed_out_and_a_missing_provider_say_so_and_sign_in_asks_for_that_one(cx: &mut TestAppContext) {
-        let (cx, calls) = cards(cx, vec![claude(|_| {}), codex(CodexSandboxReadiness::NotConfigured, missing)], started());
+    fn a_signed_out_and_a_missing_provider_say_so_and_sign_in_asks_for_that_one(
+        cx: &mut TestAppContext,
+    ) {
+        let (cx, calls) = cards(
+            cx,
+            vec![
+                claude(|_| {}),
+                codex(CodexSandboxReadiness::NotConfigured, missing),
+            ],
+            started(),
+        );
         assert_eq!(text("setup.claude.version"), "Version 2.1.280");
-        assert_eq!(text("setup.claude.body"), "Opens Claude's sign-in page in your browser.");
+        assert_eq!(
+            text("setup.claude.body"),
+            "Opens Claude's sign-in page in your browser."
+        );
         assert_eq!(text("setup.claude.sign_in"), "Sign in to Claude");
         assert_eq!(text("setup.codex.version"), "Not installed");
-        assert!(text("setup.codex.body").contains("npm install -g"), "{}", text("setup.codex.body"));
+        assert!(
+            text("setup.codex.body").contains("npm install -g"),
+            "{}",
+            text("setup.codex.body")
+        );
         assert!(node("setup.codex.check").is_some(), "Check again");
-        assert!(node("setup.codex.sign_in").is_none(), "nothing to sign in to yet");
+        assert!(
+            node("setup.codex.sign_in").is_none(),
+            "nothing to sign in to yet"
+        );
         click(cx, "setup.claude.sign_in");
-        assert_eq!(asked(&calls, "setup.signIn"), [json!({ "provider": "claude" })]);
+        assert_eq!(
+            asked(&calls, "setup.signIn"),
+            [json!({ "provider": "claude" })]
+        );
     }
 
     /// While signing in, the card says to finish in the browser and offers the page again; Cancel puts it back.
     #[gpui::test]
     fn signing_in_says_to_finish_in_the_browser_and_cancel_puts_it_back(cx: &mut TestAppContext) {
-        let (cx, _) = cards(cx, vec![claude(|_| {}), codex(CodexSandboxReadiness::Ready, |_| {})], started());
+        let (cx, _) = cards(
+            cx,
+            vec![claude(|_| {}), codex(CodexSandboxReadiness::Ready, |_| {})],
+            started(),
+        );
         click(cx, "setup.claude.sign_in");
         draw(cx);
-        assert_eq!(text("setup.claude.body"), "Finish signing in in your browser");
-        assert_eq!(text("setup.claude.note"), "Tjommie notices as soon as you're done.");
-        assert_eq!(text("setup.claude.sign_in"), "Open the sign-in window again");
+        assert_eq!(
+            text("setup.claude.body"),
+            "Finish signing in in your browser"
+        );
+        assert_eq!(
+            text("setup.claude.note"),
+            "Tjommie notices as soon as you're done."
+        );
+        assert_eq!(
+            text("setup.claude.sign_in"),
+            "Open the sign-in window again"
+        );
         assert_eq!(
             text("setup.codex.body"),
             "Opens OpenAI's sign-in page in your browser.",
             "the other card is untouched"
         );
         click(cx, "setup.claude.cancel");
-        assert_eq!(text("setup.claude.body"), "Opens Claude's sign-in page in your browser.");
+        assert_eq!(
+            text("setup.claude.body"),
+            "Opens Claude's sign-in page in your browser."
+        );
         assert_eq!(text("setup.claude.sign_in"), "Sign in to Claude");
     }
 
@@ -754,12 +861,26 @@ mod tests {
                 message: "The sign-in could not start".into(),
             })
         });
-        let (cx, _) = cards(cx, vec![claude(|_| {}), codex(CodexSandboxReadiness::Ready, |_| {})], rpc);
+        let (cx, _) = cards(
+            cx,
+            vec![claude(|_| {}), codex(CodexSandboxReadiness::Ready, |_| {})],
+            rpc,
+        );
         click(cx, "setup.claude.sign_in");
         assert_eq!(text("setup.claude.problem"), "The sign-in could not start");
-        assert!(node("setup.codex.problem").is_none(), "only on the card that asked");
-        assert_eq!(text("setup.claude.body"), "Opens Claude's sign-in page in your browser.", "still signed out");
-        assert!(node("setup.claude.sign_in").is_some_and(|node| node.enabled), "Sign in can be tried again");
+        assert!(
+            node("setup.codex.problem").is_none(),
+            "only on the card that asked"
+        );
+        assert_eq!(
+            text("setup.claude.body"),
+            "Opens Claude's sign-in page in your browser.",
+            "still signed out"
+        );
+        assert!(
+            node("setup.claude.sign_in").is_some_and(|node| node.enabled),
+            "Sign in can be tried again"
+        );
     }
 
     /// Signed in says as whom and on which plan. Codex's sandbox that isn't set up offers Set up, which asks the daemon.
@@ -776,11 +897,24 @@ mod tests {
             fields.account = Some("fixture-account".into());
             fields.plan = Some("max".into());
         });
-        let (cx, calls) = cards(cx, vec![claude_in, codex(CodexSandboxReadiness::NotConfigured, signed_in)], rpc);
+        let (cx, calls) = cards(
+            cx,
+            vec![
+                claude_in,
+                codex(CodexSandboxReadiness::NotConfigured, signed_in),
+            ],
+            rpc,
+        );
         assert_eq!(text("setup.claude.body"), "Signed in as fixture-account");
         assert_eq!(text("setup.claude.note"), "Max plan");
-        assert!(node("setup.claude.other_account").is_some(), "Use a different account");
-        assert!(node("setup.claude.sandbox").is_none(), "Claude has no sandbox");
+        assert!(
+            node("setup.claude.other_account").is_some(),
+            "Use a different account"
+        );
+        assert!(
+            node("setup.claude.sandbox").is_none(),
+            "Claude has no sandbox"
+        );
         assert!(text("setup.codex.sandbox").contains("sandbox isn't set up yet"));
         click(cx, "setup.codex.prepare");
         assert_eq!(asked(&calls, "setup.prepareCodexSandbox").len(), 1);
@@ -792,18 +926,34 @@ mod tests {
     fn check_again_asks_for_a_check_and_waits_for_it(cx: &mut TestAppContext) {
         let rpc = FakeRpc::new().on::<method::SetupStatus>(|_| Ok(Vec::new()));
         let failed = claude(|fields| fields.error = Some("The check failed".into()));
-        let (cx, calls) = cards(cx, vec![failed, codex(CodexSandboxReadiness::NotConfigured, missing)], rpc);
+        let (cx, calls) = cards(
+            cx,
+            vec![failed, codex(CodexSandboxReadiness::NotConfigured, missing)],
+            rpc,
+        );
         assert_eq!(text("setup.claude.body"), "The check failed");
         // The click and the frame after it, before the daemon's answer is read.
-        let at = cx.debug_bounds("setup.claude.check").expect("Check again").center();
+        let at = cx
+            .debug_bounds("setup.claude.check")
+            .expect("Check again")
+            .center();
         cx.update(|window, cx| {
             press_at(at, window, cx);
             window.draw(cx).clear(cx);
         });
-        assert!(!node("setup.claude.check").unwrap().enabled, "unavailable while it runs");
-        assert!(!node("setup.codex.check").unwrap().enabled, "on both cards: one check runs both");
+        assert!(
+            !node("setup.claude.check").unwrap().enabled,
+            "unavailable while it runs"
+        );
+        assert!(
+            !node("setup.codex.check").unwrap().enabled,
+            "on both cards: one check runs both"
+        );
         draw(cx);
         assert_eq!(asked(&calls, "setup.status").len(), 1);
-        assert!(node("setup.claude.check").unwrap().enabled, "available again once it answered");
+        assert!(
+            node("setup.claude.check").unwrap().enabled,
+            "available again once it answered"
+        );
     }
 }

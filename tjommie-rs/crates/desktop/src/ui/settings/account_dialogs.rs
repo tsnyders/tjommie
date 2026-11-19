@@ -5,12 +5,14 @@
 
 use client::ClientMethod;
 use gpui::{
-    AnyElement, AnyWindowHandle, App, AppContext as _, Entity, IntoElement, ParentElement as _, Role,
-    StatefulInteractiveElement as _, Styled as _, WeakEntity, Window, div, px,
+    AnyElement, AnyWindowHandle, App, AppContext as _, Entity, IntoElement, ParentElement as _,
+    Role, StatefulInteractiveElement as _, Styled as _, WeakEntity, Window, div, px,
 };
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::input::InputState;
-use protocol::accounts::{AccountInfo, AccountInput, AccountKind, AccountPatch, AccountsUpdate, ApiKey};
+use protocol::accounts::{
+    AccountInfo, AccountInput, AccountKind, AccountPatch, AccountsUpdate, ApiKey,
+};
 use protocol::model::{Bot, Provider};
 use protocol::wire::{Id, method};
 
@@ -49,7 +51,10 @@ fn open_epoch(accounts: &Entity<Accounts>, cx: &mut App) -> u64 {
 
 /// Closes the dialog whose save finished, if it's still the latest one opened (`closeEpoch`).
 fn close(accounts: &WeakEntity<Accounts>, epoch: u64, window: AnyWindowHandle, cx: &mut App) {
-    if accounts.read_with(cx, |accounts, _| accounts.epoch == epoch).unwrap_or(false) {
+    if accounts
+        .read_with(cx, |accounts, _| accounts.epoch == epoch)
+        .unwrap_or(false)
+    {
         let _ = window.update(cx, |_, window, cx| window.close_dialog(cx));
     }
 }
@@ -65,7 +70,12 @@ fn busy<T: 'static>(dialog: &Entity<T>, form: fn(&mut T) -> &mut Form, cx: &mut 
 }
 
 /// The form's request failed (or was refused before it went): it says why and keeps what was typed.
-fn failed<T: 'static>(dialog: &WeakEntity<T>, form: fn(&mut T) -> &mut Form, said: String, cx: &mut App) {
+fn failed<T: 'static>(
+    dialog: &WeakEntity<T>,
+    form: fn(&mut T) -> &mut Form,
+    said: String,
+    cx: &mut App,
+) {
     let _ = dialog.update(cx, |dialog, cx| {
         let form = form(dialog);
         form.busy = false;
@@ -104,12 +114,19 @@ fn send<T: 'static, M: ClientMethod>(
 fn focus_soon(input: &Entity<InputState>, window: &mut Window, cx: &mut App) {
     let input = input.clone();
     window.defer(cx, move |window, cx| {
-        guarded("focus the account form's first field", || input.update(cx, |input, cx| input.focus(window, cx)));
+        guarded("focus the account form's first field", || {
+            input.update(cx, |input, cx| input.focus(window, cx))
+        });
     });
 }
 
 /// A labelled field, with a line of help under it (`Field`).
-fn field(text: &'static str, input: impl IntoElement, help: Option<AnyElement>, cx: &App) -> AnyElement {
+fn field(
+    text: &'static str,
+    input: impl IntoElement,
+    help: Option<AnyElement>,
+    cx: &App,
+) -> AnyElement {
     let theme = theme(cx);
     div()
         .mt(r(theme.space.s16))
@@ -122,24 +139,46 @@ fn field(text: &'static str, input: impl IntoElement, help: Option<AnyElement>, 
 }
 
 fn name_field(name: &Entity<InputState>, cx: &App) -> AnyElement {
-    field("Name", TextField::new("account_form.name", "Name", name), None, cx)
+    field(
+        "Name",
+        TextField::new("account_form.name", "Name", name),
+        None,
+        cx,
+    )
 }
 
 /// The key (`KeyField`): masked, with Show key, and the line saying where it's kept.
-fn key_field(provider: Provider, key: &Entity<InputState>, shown: bool, on_show: impl Fn(&mut Window, &mut App) + 'static, cx: &App) -> AnyElement {
-    let (icon, toggle) = if shown { ("eye-off", "Hide key") } else { ("eye", "Show key") };
-    let help = format!("Stored in Windows Credential Manager and given only to the {} process.", provider_name(provider));
-    let input = div()
-        .relative()
-        .child(TextField::new("account_form.key", "API key", key))
-        .child(
-            div()
-                .absolute()
-                .top(px(2.))
-                .right(px(2.))
-                .child(IconButton::new("account_form.show_key", icon, toggle).on_press(on_show)),
-        );
-    field("API key", input, Some(line("account_form.key_help", Role::Paragraph, help, cx)), cx)
+fn key_field(
+    provider: Provider,
+    key: &Entity<InputState>,
+    shown: bool,
+    on_show: impl Fn(&mut Window, &mut App) + 'static,
+    cx: &App,
+) -> AnyElement {
+    let (icon, toggle) = if shown {
+        ("eye-off", "Hide key")
+    } else {
+        ("eye", "Show key")
+    };
+    let help = format!(
+        "Stored in Windows Credential Manager and given only to the {} process.",
+        provider_name(provider)
+    );
+    let input =
+        div()
+            .relative()
+            .child(TextField::new("account_form.key", "API key", key))
+            .child(
+                div().absolute().top(px(2.)).right(px(2.)).child(
+                    IconButton::new("account_form.show_key", icon, toggle).on_press(on_show),
+                ),
+            );
+    field(
+        "API key",
+        input,
+        Some(line("account_form.key_help", Role::Paragraph, help, cx)),
+        cx,
+    )
 }
 
 /// The cap in dollars (`CapField`), with what it means, or a warning when it's below what's already spent.
@@ -149,17 +188,41 @@ fn cap_field(cap: &Entity<InputState>, below: Option<String>, cx: &App) -> AnyEl
         .flex()
         .items_center()
         .gap(r(theme.space.s8))
-        .child(div().type_style(&theme.typography.desktop.ui).text_color(hsla(palette(cx).text.secondary)).child("$"))
-        .child(div().flex_1().child(TextField::new("account_form.cap", "Spending cap in dollars", cap)));
+        .child(
+            div()
+                .type_style(&theme.typography.desktop.ui)
+                .text_color(hsla(palette(cx).text.secondary))
+                .child("$"),
+        )
+        .child(div().flex_1().child(TextField::new(
+            "account_form.cap",
+            "Spending cap in dollars",
+            cap,
+        )));
     let help = below.unwrap_or_else(|| CAP_HELP.to_owned());
-    field("Spending cap", input, Some(line("account_form.cap_help", Role::Paragraph, help, cx)), cx)
+    field(
+        "Spending cap",
+        input,
+        Some(line("account_form.cap_help", Role::Paragraph, help, cx)),
+        cx,
+    )
 }
 
 /// Cancel and the form's own button, off until the form can go (`Form`'s buttons).
-fn buttons(submit: &'static str, danger: bool, ready: bool, on_submit: impl Fn(&mut Window, &mut App) + 'static, cx: &App) -> AnyElement {
+fn buttons(
+    submit: &'static str,
+    danger: bool,
+    ready: bool,
+    on_submit: impl Fn(&mut Window, &mut App) + 'static,
+    cx: &App,
+) -> AnyElement {
     let theme = theme(cx);
     let pill = Pill::new("account_form.save", submit)
-        .variant(if danger { PillVariant::Danger } else { PillVariant::Primary })
+        .variant(if danger {
+            PillVariant::Danger
+        } else {
+            PillVariant::Primary
+        })
         .disabled(!ready)
         .on_press(on_submit)
         .into_any_element();
@@ -168,13 +231,21 @@ fn buttons(submit: &'static str, danger: bool, ready: bool, on_submit: impl Fn(&
         .flex()
         .justify_end()
         .gap(r(theme.space.s8))
-        .child(Pill::new("account_form.cancel", "Cancel").on_press(|window, cx| window.close_dialog(cx)))
+        .child(
+            Pill::new("account_form.cancel", "Cancel")
+                .on_press(|window, cx| window.close_dialog(cx)),
+        )
         .child(pill)
         .into_any_element()
 }
 
 /// Show key and Hide key: the field unmasks, or masks again.
-fn toggle_shown<T: 'static>(dialog: &Entity<T>, parts: fn(&mut T) -> (&mut bool, Entity<InputState>), window: &mut Window, cx: &mut App) {
+fn toggle_shown<T: 'static>(
+    dialog: &Entity<T>,
+    parts: fn(&mut T) -> (&mut bool, Entity<InputState>),
+    window: &mut Window,
+    cx: &mut App,
+) {
     dialog.update(cx, |dialog, cx| {
         let (shown, key) = parts(dialog);
         *shown = !*shown;
@@ -190,10 +261,18 @@ struct NewSubscription {
     form: Form,
 }
 
-pub(super) fn open_add_subscription(provider: Provider, accounts: Entity<Accounts>, window: &mut Window, cx: &mut App) {
+pub(super) fn open_add_subscription(
+    provider: Provider,
+    accounts: Entity<Accounts>,
+    window: &mut Window,
+    cx: &mut App,
+) {
     let placeholder = format!("{} (Personal)", short_name(provider));
     let name = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
-    let dialog = cx.new(|_| NewSubscription { name: name.clone(), form: Form::default() });
+    let dialog = cx.new(|_| NewSubscription {
+        name: name.clone(),
+        form: Form::default(),
+    });
     let epoch = open_epoch(&accounts, cx);
     let handle = window.window_handle();
     open_dialog(window, cx, move |surface, window, cx| {
@@ -202,11 +281,16 @@ pub(super) fn open_add_subscription(provider: Provider, accounts: Entity<Account
         let note = "Signing in opens the provider's own page in your browser. Tjommie never sees your password.";
         let save = {
             let (dialog, accounts) = (dialog.clone(), accounts.clone());
-            move |_: &mut Window, cx: &mut App| add_subscription(&dialog, &accounts, provider, epoch, handle, cx)
+            move |_: &mut Window, cx: &mut App| {
+                add_subscription(&dialog, &accounts, provider, epoch, handle, cx)
+            }
         };
         surface
             .w(window.rem_size() * 26.25)
-            .title(title(format!("Add {} subscription", provider_name(provider)), cx))
+            .title(title(
+                format!("Add {} subscription", provider_name(provider)),
+                cx,
+            ))
             // unguarded: returns a constant, nothing in it can panic
             .on_ok(|_, _, _| false)
             .child(
@@ -214,8 +298,19 @@ pub(super) fn open_add_subscription(provider: Provider, accounts: Entity<Account
                     .flex()
                     .flex_col()
                     .child(name_field(&state.name, cx))
-                    .child(div().mt(r(theme(cx).space.s12)).child(line("account_form.note", Role::Paragraph, note, cx)))
-                    .children(state.form.problem.clone().map(|said| problem("account_form.problem", said, cx)))
+                    .child(div().mt(r(theme(cx).space.s12)).child(line(
+                        "account_form.note",
+                        Role::Paragraph,
+                        note,
+                        cx,
+                    )))
+                    .children(
+                        state
+                            .form
+                            .problem
+                            .clone()
+                            .map(|said| problem("account_form.problem", said, cx)),
+                    )
                     .child(buttons("Add and sign in", false, ready, save, cx)),
             )
     });
@@ -236,7 +331,10 @@ fn add_subscription(
     let label = dialog.read(cx).name.read(cx).value().trim().to_owned();
     let form: fn(&mut NewSubscription) -> &mut Form = |dialog| &mut dialog.form;
     busy(dialog, form, cx);
-    let create = store::request::<method::AccountsCreate>(cx, AccountInput::Subscription { provider, label });
+    let create = store::request::<method::AccountsCreate>(
+        cx,
+        AccountInput::Subscription { provider, label },
+    );
     let (dialog, accounts) = (dialog.downgrade(), accounts.downgrade());
     cx.spawn(async move |cx| {
         guarded_async("add a subscription", async move {
@@ -247,12 +345,22 @@ fn add_subscription(
                     return;
                 }
             };
-            let start = cx.update(|cx| store::request::<method::AccountsSignIn>(cx, Id { id: created.id.clone() }));
+            let start = cx.update(|cx| {
+                store::request::<method::AccountsSignIn>(
+                    cx,
+                    Id {
+                        id: created.id.clone(),
+                    },
+                )
+            });
             let started = start.await;
             cx.update(|cx| {
                 let _ = accounts.update(cx, |accounts, cx| {
                     match started {
-                        Ok(started) => accounts.urls = remember_url(&accounts.urls, &created.id, started.url.as_deref()),
+                        Ok(started) => {
+                            accounts.urls =
+                                remember_url(&accounts.urls, &created.id, started.url.as_deref())
+                        }
                         Err(error) => accounts.problem = Some(error_text(&error)),
                     }
                     cx.notify();
@@ -275,12 +383,24 @@ struct NewKey {
     form: Form,
 }
 
-pub(super) fn open_add_key(provider: Provider, accounts: Entity<Accounts>, window: &mut Window, cx: &mut App) {
+pub(super) fn open_add_key(
+    provider: Provider,
+    accounts: Entity<Accounts>,
+    window: &mut Window,
+    cx: &mut App,
+) {
     let placeholder = format!("{} (API key)", short_name(provider));
     let name = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
     let key = cx.new(|cx| InputState::new(window, cx).masked(true));
     let cap = cx.new(|cx| InputState::new(window, cx));
-    let dialog = cx.new(|_| NewKey { name: name.clone(), key, shown: false, cap, fallback: false, form: Form::default() });
+    let dialog = cx.new(|_| NewKey {
+        name: name.clone(),
+        key,
+        shown: false,
+        cap,
+        fallback: false,
+        form: Form::default(),
+    });
     let epoch = open_epoch(&accounts, cx);
     let handle = window.window_handle();
     open_dialog(window, cx, move |surface, window, cx| {
@@ -293,7 +413,12 @@ pub(super) fn open_add_key(provider: Provider, accounts: Entity<Accounts>, windo
         let show = {
             let dialog = dialog.clone();
             move |window: &mut Window, cx: &mut App| {
-                toggle_shown(&dialog, |dialog: &mut NewKey| (&mut dialog.shown, dialog.key.clone()), window, cx);
+                toggle_shown(
+                    &dialog,
+                    |dialog: &mut NewKey| (&mut dialog.shown, dialog.key.clone()),
+                    window,
+                    cx,
+                );
             }
         };
         let flip = {
@@ -307,7 +432,9 @@ pub(super) fn open_add_key(provider: Provider, accounts: Entity<Accounts>, windo
         };
         let save = {
             let (dialog, accounts) = (dialog.clone(), accounts.clone());
-            move |window: &mut Window, cx: &mut App| add_key(&dialog, &accounts, provider, epoch, handle, window, cx)
+            move |window: &mut Window, cx: &mut App| {
+                add_key(&dialog, &accounts, provider, epoch, handle, window, cx)
+            }
         };
         let theme = theme(cx);
         let fallback = div()
@@ -337,7 +464,10 @@ pub(super) fn open_add_key(provider: Provider, accounts: Entity<Accounts>, windo
             .child(Toggle::new("account_form.fallback", format!("Fallback for {short}"), state.fallback).on_toggle(flip));
         surface
             .w(window.rem_size() * 26.25)
-            .title(title(format!("Add {} API key", provider_name(provider)), cx))
+            .title(title(
+                format!("Add {} API key", provider_name(provider)),
+                cx,
+            ))
             // unguarded: returns a constant, nothing in it can panic
             .on_ok(|_, _, _| false)
             .child(
@@ -348,7 +478,13 @@ pub(super) fn open_add_key(provider: Provider, accounts: Entity<Accounts>, windo
                     .child(key_field(provider, &state.key, state.shown, show, cx))
                     .child(cap_field(&state.cap, None, cx))
                     .child(fallback)
-                    .children(state.form.problem.clone().map(|said| problem("account_form.problem", said, cx)))
+                    .children(
+                        state
+                            .form
+                            .problem
+                            .clone()
+                            .map(|said| problem("account_form.problem", said, cx)),
+                    )
                     .child(buttons("Add key", false, ready, save, cx)),
             )
     });
@@ -356,9 +492,17 @@ pub(super) fn open_add_key(provider: Provider, accounts: Entity<Accounts>, windo
 }
 
 /// Takes the key out of its field (emptied before anything is sent) as the wire's `ApiKey`, or says why it can't go.
-fn take<T: 'static>(dialog: &Entity<T>, form: fn(&mut T) -> &mut Form, key: &Entity<InputState>, window: &mut Window, cx: &mut App) -> Option<ApiKey> {
+fn take<T: 'static>(
+    dialog: &Entity<T>,
+    form: fn(&mut T) -> &mut Form,
+    key: &Entity<InputState>,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<ApiKey> {
     let typed = key.read(cx).value().to_string();
-    let secret = take_key(&typed, || key.update(cx, |key, cx| key.set_value("", window, cx)));
+    let secret = take_key(&typed, || {
+        key.update(cx, |key, cx| key.set_value("", window, cx))
+    });
     match ApiKey::new(&secret) {
         Ok(key) => Some(key),
         Err(invalid) => {
@@ -380,7 +524,12 @@ fn add_key(
     let (label, cap, fallback, key) = {
         let state = dialog.read(cx);
         let label = state.name.read(cx).value().trim().to_owned();
-        (label, parse_cap(&state.cap.read(cx).value()), state.fallback, state.key.clone())
+        (
+            label,
+            parse_cap(&state.cap.read(cx).value()),
+            state.fallback,
+            state.key.clone(),
+        )
     };
     let Some(cap) = cap else {
         return;
@@ -389,7 +538,13 @@ fn add_key(
     let Some(api_key) = take(dialog, form, &key, window, cx) else {
         return;
     };
-    let input = AccountInput::ApiKey { provider, label, api_key, spending_cap_usd: cap, is_fallback: Some(fallback) };
+    let input = AccountInput::ApiKey {
+        provider,
+        label,
+        api_key,
+        spending_cap_usd: cap,
+        is_fallback: Some(fallback),
+    };
     send::<NewKey, method::AccountsCreate>(dialog, form, input, accounts, epoch, handle, cx);
 }
 
@@ -400,9 +555,18 @@ struct ReplaceKey {
     form: Form,
 }
 
-pub(super) fn open_replace_key(account: &AccountInfo, accounts: Entity<Accounts>, window: &mut Window, cx: &mut App) {
+pub(super) fn open_replace_key(
+    account: &AccountInfo,
+    accounts: Entity<Accounts>,
+    window: &mut Window,
+    cx: &mut App,
+) {
     let key = cx.new(|cx| InputState::new(window, cx).masked(true));
-    let dialog = cx.new(|_| ReplaceKey { key: key.clone(), shown: false, form: Form::default() });
+    let dialog = cx.new(|_| ReplaceKey {
+        key: key.clone(),
+        shown: false,
+        form: Form::default(),
+    });
     let epoch = open_epoch(&accounts, cx);
     let handle = window.window_handle();
     let (id, provider) = (account.id.clone(), account.provider);
@@ -412,7 +576,12 @@ pub(super) fn open_replace_key(account: &AccountInfo, accounts: Entity<Accounts>
         let show = {
             let dialog = dialog.clone();
             move |window: &mut Window, cx: &mut App| {
-                toggle_shown(&dialog, |dialog: &mut ReplaceKey| (&mut dialog.shown, dialog.key.clone()), window, cx);
+                toggle_shown(
+                    &dialog,
+                    |dialog: &mut ReplaceKey| (&mut dialog.shown, dialog.key.clone()),
+                    window,
+                    cx,
+                );
             }
         };
         let save = {
@@ -421,9 +590,17 @@ pub(super) fn open_replace_key(account: &AccountInfo, accounts: Entity<Accounts>
                 let form: fn(&mut ReplaceKey) -> &mut Form = |dialog| &mut dialog.form;
                 let key = dialog.read(cx).key.clone();
                 if let Some(api_key) = take(&dialog, form, &key, window, cx) {
-                    let patch = AccountPatch { api_key: Some(api_key), ..AccountPatch::default() };
-                    let params = AccountsUpdate { id: id.clone(), patch };
-                    send::<ReplaceKey, method::AccountsUpdate>(&dialog, form, params, &accounts, epoch, handle, cx);
+                    let patch = AccountPatch {
+                        api_key: Some(api_key),
+                        ..AccountPatch::default()
+                    };
+                    let params = AccountsUpdate {
+                        id: id.clone(),
+                        patch,
+                    };
+                    send::<ReplaceKey, method::AccountsUpdate>(
+                        &dialog, form, params, &accounts, epoch, handle, cx,
+                    );
                 }
             }
         };
@@ -437,7 +614,13 @@ pub(super) fn open_replace_key(account: &AccountInfo, accounts: Entity<Accounts>
                     .flex()
                     .flex_col()
                     .child(key_field(provider, &state.key, state.shown, show, cx))
-                    .children(state.form.problem.clone().map(|said| problem("account_form.problem", said, cx)))
+                    .children(
+                        state
+                            .form
+                            .problem
+                            .clone()
+                            .map(|said| problem("account_form.problem", said, cx)),
+                    )
                     .child(buttons("Save key", false, ready, save, cx)),
             )
     });
@@ -450,19 +633,33 @@ struct Cap {
     form: Form,
 }
 
-pub(super) fn open_cap(account: &AccountInfo, accounts: Entity<Accounts>, window: &mut Window, cx: &mut App) {
-    let start = account.spending_cap_usd.map(|cap| cap.to_string()).unwrap_or_default();
+pub(super) fn open_cap(
+    account: &AccountInfo,
+    accounts: Entity<Accounts>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let start = account
+        .spending_cap_usd
+        .map(|cap| cap.to_string())
+        .unwrap_or_default();
     let cap = cx.new(|cx| InputState::new(window, cx).default_value(start));
-    let dialog = cx.new(|_| Cap { cap: cap.clone(), form: Form::default() });
+    let dialog = cx.new(|_| Cap {
+        cap: cap.clone(),
+        form: Form::default(),
+    });
     let epoch = open_epoch(&accounts, cx);
     let handle = window.window_handle();
     let (id, spent) = (account.id.clone(), account.spending.known_usd);
     open_dialog(window, cx, move |surface, window, cx| {
         let state = dialog.read(cx);
         let amount = parse_cap(&state.cap.read(cx).value());
-        let below = amount
-            .filter(|amount| *amount < spent)
-            .map(|_| format!("This is below the {} already spent, so agents stop using the key right away.", money(spent)));
+        let below = amount.filter(|amount| *amount < spent).map(|_| {
+            format!(
+                "This is below the {} already spent, so agents stop using the key right away.",
+                money(spent)
+            )
+        });
         let ready = amount.is_some() && !state.form.busy;
         let save = {
             let (dialog, accounts, id) = (dialog.clone(), accounts.clone(), id.clone());
@@ -470,9 +667,23 @@ pub(super) fn open_cap(account: &AccountInfo, accounts: Entity<Accounts>, window
                 let Some(amount) = parse_cap(&dialog.read(cx).cap.read(cx).value()) else {
                     return;
                 };
-                let patch = AccountPatch { spending_cap_usd: Some(amount), ..AccountPatch::default() };
-                let params = AccountsUpdate { id: id.clone(), patch };
-                send::<Cap, method::AccountsUpdate>(&dialog, |dialog| &mut dialog.form, params, &accounts, epoch, handle, cx);
+                let patch = AccountPatch {
+                    spending_cap_usd: Some(amount),
+                    ..AccountPatch::default()
+                };
+                let params = AccountsUpdate {
+                    id: id.clone(),
+                    patch,
+                };
+                send::<Cap, method::AccountsUpdate>(
+                    &dialog,
+                    |dialog| &mut dialog.form,
+                    params,
+                    &accounts,
+                    epoch,
+                    handle,
+                    cx,
+                );
             }
         };
         surface
@@ -485,7 +696,13 @@ pub(super) fn open_cap(account: &AccountInfo, accounts: Entity<Accounts>, window
                     .flex()
                     .flex_col()
                     .child(cap_field(&state.cap, below, cx))
-                    .children(state.form.problem.clone().map(|said| problem("account_form.problem", said, cx)))
+                    .children(
+                        state
+                            .form
+                            .problem
+                            .clone()
+                            .map(|said| problem("account_form.problem", said, cx)),
+                    )
                     .child(buttons("Save", false, ready, save, cx)),
             )
     });
@@ -498,10 +715,22 @@ struct Rename {
     form: Form,
 }
 
-pub(super) fn open_rename(account: &AccountInfo, accounts: Entity<Accounts>, window: &mut Window, cx: &mut App) {
+pub(super) fn open_rename(
+    account: &AccountInfo,
+    accounts: Entity<Accounts>,
+    window: &mut Window,
+    cx: &mut App,
+) {
     let start = account.label.clone();
-    let name = cx.new(|cx| InputState::new(window, cx).placeholder("Account name").default_value(start));
-    let dialog = cx.new(|_| Rename { name: name.clone(), form: Form::default() });
+    let name = cx.new(|cx| {
+        InputState::new(window, cx)
+            .placeholder("Account name")
+            .default_value(start)
+    });
+    let dialog = cx.new(|_| Rename {
+        name: name.clone(),
+        form: Form::default(),
+    });
     let epoch = open_epoch(&accounts, cx);
     let handle = window.window_handle();
     let (id, was) = (account.id.clone(), account.label.clone());
@@ -513,8 +742,22 @@ pub(super) fn open_rename(account: &AccountInfo, accounts: Entity<Accounts>, win
             let (dialog, accounts, id) = (dialog.clone(), accounts.clone(), id.clone());
             move |_: &mut Window, cx: &mut App| {
                 let label = dialog.read(cx).name.read(cx).value().trim().to_owned();
-                let params = AccountsUpdate { id: id.clone(), patch: AccountPatch { label: Some(label), ..AccountPatch::default() } };
-                send::<Rename, method::AccountsUpdate>(&dialog, |dialog| &mut dialog.form, params, &accounts, epoch, handle, cx);
+                let params = AccountsUpdate {
+                    id: id.clone(),
+                    patch: AccountPatch {
+                        label: Some(label),
+                        ..AccountPatch::default()
+                    },
+                };
+                send::<Rename, method::AccountsUpdate>(
+                    &dialog,
+                    |dialog| &mut dialog.form,
+                    params,
+                    &accounts,
+                    epoch,
+                    handle,
+                    cx,
+                );
             }
         };
         surface
@@ -527,7 +770,13 @@ pub(super) fn open_rename(account: &AccountInfo, accounts: Entity<Accounts>, win
                     .flex()
                     .flex_col()
                     .child(name_field(&state.name, cx))
-                    .children(state.form.problem.clone().map(|said| problem("account_form.problem", said, cx)))
+                    .children(
+                        state
+                            .form
+                            .problem
+                            .clone()
+                            .map(|said| problem("account_form.problem", said, cx)),
+                    )
                     .child(buttons("Save", false, ready, save, cx)),
             )
     });
@@ -541,9 +790,17 @@ struct Remove {
     form: Form,
 }
 
-pub(super) fn open_remove(account: &AccountInfo, bots: &[Bot], accounts: Entity<Accounts>, window: &mut Window, cx: &mut App) {
-    let using: Vec<(String, String)> =
-        bots_on(&account.id, bots).into_iter().map(|bot| (bot.id.clone(), bot.name.clone())).collect();
+pub(super) fn open_remove(
+    account: &AccountInfo,
+    bots: &[Bot],
+    accounts: Entity<Accounts>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let using: Vec<(String, String)> = bots_on(&account.id, bots)
+        .into_iter()
+        .map(|bot| (bot.id.clone(), bot.name.clone()))
+        .collect();
     let name = account.label.clone();
     if !using.is_empty() {
         // Its own epoch: a save still on its way from an earlier dialog mustn't close this one (M5 review Minor 3).
@@ -552,10 +809,12 @@ pub(super) fn open_remove(account: &AccountInfo, bots: &[Bot], accounts: Entity<
             let theme = theme(cx);
             let links = using.iter().map(|(id, name)| {
                 let route = Route::BotSettings(id.clone());
-                Link::new(format!("account_remove.bot.{id}"), name.clone()).on_press(move |window, cx| {
-                    window.close_dialog(cx);
-                    cx.navigate(route.clone());
-                })
+                Link::new(format!("account_remove.bot.{id}"), name.clone()).on_press(
+                    move |window, cx| {
+                        window.close_dialog(cx);
+                        cx.navigate(route.clone());
+                    },
+                )
             });
             surface
                 .w(window.rem_size() * 20.0)
@@ -567,7 +826,12 @@ pub(super) fn open_remove(account: &AccountInfo, bots: &[Bot], accounts: Entity<
                         .flex()
                         .flex_col()
                         .gap(r(theme.space.s8))
-                        .child(line("account_remove.note", Role::Paragraph, "Move these agents to another account first:", cx))
+                        .child(line(
+                            "account_remove.note",
+                            Role::Paragraph,
+                            "Move these agents to another account first:",
+                            cx,
+                        ))
                         .child(
                             div()
                                 .semantic("account_remove.bots", Role::List)
@@ -589,7 +853,9 @@ pub(super) fn open_remove(account: &AccountInfo, bots: &[Bot], accounts: Entity<
         });
         return;
     }
-    let dialog = cx.new(|_| Remove { form: Form::default() });
+    let dialog = cx.new(|_| Remove {
+        form: Form::default(),
+    });
     let epoch = open_epoch(&accounts, cx);
     let handle = window.window_handle();
     let what = match account.kind {
@@ -602,7 +868,15 @@ pub(super) fn open_remove(account: &AccountInfo, bots: &[Bot], accounts: Entity<
         let save = {
             let (dialog, accounts, id) = (dialog.clone(), accounts.clone(), id.clone());
             move |_: &mut Window, cx: &mut App| {
-                send::<Remove, method::AccountsRemove>(&dialog, |dialog| &mut dialog.form, Id { id: id.clone() }, &accounts, epoch, handle, cx);
+                send::<Remove, method::AccountsRemove>(
+                    &dialog,
+                    |dialog| &mut dialog.form,
+                    Id { id: id.clone() },
+                    &accounts,
+                    epoch,
+                    handle,
+                    cx,
+                );
             }
         };
         surface
@@ -614,8 +888,19 @@ pub(super) fn open_remove(account: &AccountInfo, bots: &[Bot], accounts: Entity<
                 div()
                     .flex()
                     .flex_col()
-                    .child(line("account_form.note", Role::Paragraph, format!("{what} Usage history stays."), cx))
-                    .children(state.form.problem.clone().map(|said| problem("account_form.problem", said, cx)))
+                    .child(line(
+                        "account_form.note",
+                        Role::Paragraph,
+                        format!("{what} Usage history stays."),
+                        cx,
+                    ))
+                    .children(
+                        state
+                            .form
+                            .problem
+                            .clone()
+                            .map(|said| problem("account_form.problem", said, cx)),
+                    )
                     .child(buttons("Remove", true, !state.form.busy, save, cx)),
             )
     });

@@ -11,7 +11,7 @@ use gpui::{
 use protocol::projects::{
     AttemptId, AttemptState, CleanupConfirm, EvaluationKind, EvaluationState, ExpectedRevision,
     IntegrationState, Project, ProjectState, TaskDetail, TaskDiff, TaskEvaluation, TaskRequest,
-    TasksCleanup, TasksEvaluate, TasksIntegrate, TasksPromote, TaskState,
+    TaskState, TasksCleanup, TasksEvaluate, TasksIntegrate, TasksPromote,
 };
 use protocol::wire::method;
 
@@ -58,7 +58,12 @@ fn boxed(cx: &App) -> Div {
 }
 
 /// Monospaced text: a diff or a check's output, named `label`; the text itself reads as `<id>.body`.
-fn mono(id: impl Into<SharedString>, label: impl Into<SharedString>, text: String, cx: &App) -> AnyElement {
+fn mono(
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    text: String,
+    cx: &App,
+) -> AnyElement {
     let theme = theme(cx);
     let id: SharedString = id.into();
     let shown = div()
@@ -144,7 +149,11 @@ impl ProjectsScreen {
         let id = format!("projects.open.{key}");
         let toggle = Link::new(id, summary)
             .quiet()
-            .icon(if open { "chevron-down" } else { "chevron-right" })
+            .icon(if open {
+                "chevron-down"
+            } else {
+                "chevron-right"
+            })
             .on_press(move |_, cx| {
                 let key = key.clone();
                 screen.update(cx, |this, cx| this.toggle_open(key, cx))
@@ -161,18 +170,25 @@ impl ProjectsScreen {
 
     fn evaluation(&self, evaluation: &TaskEvaluation, cx: &mut Context<Self>) -> AnyElement {
         let id = &evaluation.id;
-        let mut parts = vec![body(
-            format!(
-                "{} · {} · {}",
-                word(&evaluation.kind),
-                word(&evaluation.state),
-                short_sha(Some(&evaluation.source_sha))
-            ),
-            cx,
-        )
-        .into_any_element()];
+        let mut parts = vec![
+            body(
+                format!(
+                    "{} · {} · {}",
+                    word(&evaluation.kind),
+                    word(&evaluation.state),
+                    short_sha(Some(&evaluation.source_sha))
+                ),
+                cx,
+            )
+            .into_any_element(),
+        ];
         if let Some(reason) = &evaluation.reason {
-            parts.push(line(format!("projects.evaluation.{id}.reason"), Role::Paragraph, reason.clone(), cx));
+            parts.push(line(
+                format!("projects.evaluation.{id}.reason"),
+                Role::Paragraph,
+                reason.clone(),
+                cx,
+            ));
         }
         if evaluation.kind == EvaluationKind::Review {
             match evaluation.review_coverage.as_ref().and_then(Option::as_ref) {
@@ -180,7 +196,10 @@ impl ProjectsScreen {
                     let coverage = coverage.clone();
                     parts.push(self.collapsible(
                         format!("coverage.{id}"),
-                        format!("Complete snapshot supplied · {} files", coverage.files.len()),
+                        format!(
+                            "Complete snapshot supplied · {} files",
+                            coverage.files.len()
+                        ),
                         move |cx| {
                             let mut held = vec![line(
                                 "projects.coverage.snapshot",
@@ -192,7 +211,10 @@ impl ProjectsScreen {
                                 line(
                                     format!("projects.coverage.file.{at}"),
                                     Role::ListItem,
-                                    format!("{} · {} bytes · {}", file.path, file.bytes, file.sha256),
+                                    format!(
+                                        "{} · {} bytes · {}",
+                                        file.path, file.bytes, file.sha256
+                                    ),
                                     cx,
                                 )
                             }));
@@ -235,7 +257,12 @@ impl ProjectsScreen {
                 move |cx| {
                     let mut held = vec![mono(output_id, "Check output", output, cx)];
                     if truncated {
-                        held.push(line("projects.check.truncated", Role::Paragraph, "Output was truncated.", cx));
+                        held.push(line(
+                            "projects.check.truncated",
+                            Role::Paragraph,
+                            "Output was truncated.",
+                            cx,
+                        ));
                     }
                     held
                 },
@@ -321,7 +348,11 @@ impl ProjectsScreen {
             };
             pill(
                 "projects.detail.start",
-                if returning { "Return to developer" } else { "Start task" },
+                if returning {
+                    "Return to developer"
+                } else {
+                    "Start task"
+                },
                 true,
                 !(disabled || running || evaluating),
                 move |_, cx| {
@@ -402,7 +433,11 @@ impl ProjectsScreen {
                 },
             )
         };
-        let review = evaluate(EvaluationKind::Review, "projects.detail.review", "Run review");
+        let review = evaluate(
+            EvaluationKind::Review,
+            "projects.detail.review",
+            "Run review",
+        );
         let checks = evaluate(EvaluationKind::Test, "projects.detail.checks", "Run checks");
 
         let workspace = attempt.as_ref().map(|attempt| {
@@ -413,7 +448,12 @@ impl ProjectsScreen {
                 .flex()
                 .flex_col()
                 .gap(r(theme.space.s4))
-                .child(line("projects.detail.branch", Role::Paragraph, format!("Branch: {}", attempt.branch), cx))
+                .child(line(
+                    "projects.detail.branch",
+                    Role::Paragraph,
+                    format!("Branch: {}", attempt.branch),
+                    cx,
+                ))
                 .child(line(
                     "projects.detail.worktree",
                     Role::Paragraph,
@@ -423,12 +463,18 @@ impl ProjectsScreen {
                 .child(line(
                     "projects.detail.commit",
                     Role::Paragraph,
-                    format!("Commit: {}", attempt.head_sha.as_deref().unwrap_or("Not recorded")),
+                    format!(
+                        "Commit: {}",
+                        attempt.head_sha.as_deref().unwrap_or("Not recorded")
+                    ),
                     cx,
                 ))
-                .children(attempt.reason.clone().map(|reason| {
-                    line("projects.detail.reason", Role::Status, reason, cx)
-                }))
+                .children(
+                    attempt
+                        .reason
+                        .clone()
+                        .map(|reason| line("projects.detail.reason", Role::Status, reason, cx)),
+                )
         });
         let cleanup = attempt
             .as_ref()
@@ -444,7 +490,11 @@ impl ProjectsScreen {
             let screen = screen.clone();
             let ready = !disabled
                 && self.target_sha.is_some()
-                && can_integrate(project, detail, self.diff.as_ref().is_none_or(|diff| diff.dirty));
+                && can_integrate(
+                    project,
+                    detail,
+                    self.diff.as_ref().is_none_or(|diff| diff.dirty),
+                );
             let (attempt, target) = (attempt.clone(), self.target_sha.clone());
             pill(
                 "projects.detail.integrate",
@@ -693,34 +743,47 @@ impl ProjectsScreen {
             .as_ref()
             .filter(|preview| preview.attempt_id == attempt.id)
             .map(|preview| {
-                let remove = (preview.can_remove).then_some(preview.head_sha.clone()).flatten().map(|head| {
-                    let (screen, attempt_id) = (screen.clone(), preview.attempt_id.clone());
-                    pill(
-                        "projects.cleanup.remove",
-                        "Remove this clean worktree",
-                        false,
-                        !busy && connected,
-                        move |_, cx| {
-                            let params = TasksCleanup {
-                                attempt_id: attempt_id.clone(),
-                                expected_head_sha: head.clone(),
-                                confirm: CleanupConfirm::RemoveCleanWorktree,
-                            };
-                            screen.update(cx, |this, cx| {
-                                this.act::<method::TasksCleanup>(
-                                    params,
-                                    false,
-                                    |this, _| this.cleanup = None,
-                                    cx,
-                                )
-                            })
-                        },
-                    )
-                });
+                let remove = (preview.can_remove)
+                    .then_some(preview.head_sha.clone())
+                    .flatten()
+                    .map(|head| {
+                        let (screen, attempt_id) = (screen.clone(), preview.attempt_id.clone());
+                        pill(
+                            "projects.cleanup.remove",
+                            "Remove this clean worktree",
+                            false,
+                            !busy && connected,
+                            move |_, cx| {
+                                let params = TasksCleanup {
+                                    attempt_id: attempt_id.clone(),
+                                    expected_head_sha: head.clone(),
+                                    confirm: CleanupConfirm::RemoveCleanWorktree,
+                                };
+                                screen.update(cx, |this, cx| {
+                                    this.act::<method::TasksCleanup>(
+                                        params,
+                                        false,
+                                        |this, _| this.cleanup = None,
+                                        cx,
+                                    )
+                                })
+                            },
+                        )
+                    });
                 boxed(cx)
-                    .child(line("projects.cleanup.reason", Role::Paragraph, preview.reason.clone(), cx))
+                    .child(line(
+                        "projects.cleanup.reason",
+                        Role::Paragraph,
+                        preview.reason.clone(),
+                        cx,
+                    ))
                     .children(preview.files.iter().enumerate().map(|(at, file)| {
-                        line(format!("projects.cleanup.file.{at}"), Role::ListItem, file.clone(), cx)
+                        line(
+                            format!("projects.cleanup.file.{at}"),
+                            Role::ListItem,
+                            file.clone(),
+                            cx,
+                        )
                     }))
                     .when(preview.truncated, |part| {
                         part.child(line(
