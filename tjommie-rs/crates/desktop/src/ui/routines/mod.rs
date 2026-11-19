@@ -21,6 +21,7 @@ use crate::model::routines::{remove_routine, save_routine};
 use crate::semantic::SemanticExt as _;
 use crate::ui::fields::Link;
 use crate::ui::primitives::avatar::BotAvatar;
+use crate::ui::primitives::scroll::{follow_focus, scroll_handle};
 use crate::ui::store;
 use crate::ui::style::{TypeExt as _, hsla, palette, r, shadows, theme};
 
@@ -97,6 +98,7 @@ pub fn screen(window: &mut Window, cx: &mut App) -> AnyElement {
         .map(|bot| group(bot, &state.routines, window, cx))
         .collect();
     let count = state.routines.len();
+    let scroll = scroll_handle("routines.scroll", window, cx);
     let theme = theme(cx);
     let colors = palette(cx);
     let summary = match count {
@@ -139,9 +141,11 @@ pub fn screen(window: &mut Window, cx: &mut App) -> AnyElement {
                         .child(summary),
                 ),
         )
-        .child(
+        .child(follow_focus(
+            &scroll,
             div()
                 .id("routines.scroll")
+                .track_scroll(&scroll)
                 .flex_1()
                 .min_h_0()
                 .overflow_y_scroll()
@@ -151,7 +155,7 @@ pub fn screen(window: &mut Window, cx: &mut App) -> AnyElement {
                 .gap(r(theme.space.s16))
                 .children(groups)
                 .children(empty),
-        )
+        ))
         .into_any_element()
 }
 

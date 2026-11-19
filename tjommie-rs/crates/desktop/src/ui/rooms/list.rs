@@ -14,6 +14,7 @@ use crate::model::state::{Connection, ConversationStatus, room_bots};
 use crate::semantic::SemanticExt as _;
 use crate::ui::agents::{cards, columns};
 use crate::ui::primitives::button::{Pill, PillVariant};
+use crate::ui::primitives::scroll::{follow_focus, scroll_handle};
 use crate::ui::store::{self, History};
 use crate::ui::style::{TypeExt as _, hsla, palette, r, theme};
 
@@ -69,6 +70,7 @@ impl Render for RoomsList {
             })
             .collect();
         let columns = columns(window, cx);
+        let scroll = scroll_handle("rooms.scroll", window, cx);
         let theme = theme(cx);
         let colors = palette(cx);
         let summary = rooms_summary(state.rooms.len());
@@ -115,9 +117,11 @@ impl Render for RoomsList {
                             .on_press(|window, cx| super::open_room_form(None, window, cx)),
                     ),
             )
-            .child(
+            .child(follow_focus(
+                &scroll,
                 div()
                     .id("rooms.scroll")
+                    .track_scroll(&scroll)
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
@@ -129,6 +133,6 @@ impl Render for RoomsList {
                             .gap(crate::ui::style::card_gap(cx))
                             .children(cards),
                     ),
-            )
+            ))
     }
 }

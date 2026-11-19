@@ -25,6 +25,7 @@ use crate::motion::digits::Rolling;
 use crate::semantic::SemanticExt as _;
 use crate::ui::fields::{Look, RadioGroup, TextField};
 use crate::ui::primitives::button::{IconButton, IconVariant, Pill, PillVariant};
+use crate::ui::primitives::scroll::{follow_focus, scroll_handle};
 use crate::ui::shell::route::{Navigate as _, Route};
 use crate::ui::store::{self, History};
 use crate::ui::style::{TypeExt as _, hsla, palette, r, theme};
@@ -186,6 +187,7 @@ impl Render for AgentsScreen {
                 cx,
             ));
         }
+        let scroll = scroll_handle("agents.scroll", window, cx);
         let theme = theme(cx);
         let colors = palette(cx);
         let columns = columns(window, cx);
@@ -245,9 +247,11 @@ impl Render for AgentsScreen {
             .pt(r(theme.space.s32))
             .px(r(theme.space.s32))
             .child(header)
-            .child(
+            .child(follow_focus(
+                &scroll,
                 div()
                     .id("agents.scroll")
+                    .track_scroll(&scroll)
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
@@ -271,7 +275,7 @@ impl Render for AgentsScreen {
                             ),
                     )
                     .children(empty),
-            )
+            ))
     }
 }
 

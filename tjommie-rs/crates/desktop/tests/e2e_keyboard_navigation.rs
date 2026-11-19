@@ -62,11 +62,37 @@ fn press(app: &mut Client, chord: &str) -> Option<String> {
     }
 }
 
+/// The control Tab moved to shows (T5.6): its middle is inside the window, never below the fold. The scroll that
+/// brings it into view comes a frame after the focus does, so this waits a moment for it.
+fn wait_in_view(app: &mut Client, place: &str, id: &str) {
+    let started = Instant::now();
+    loop {
+        let snapshot = app.snapshot().unwrap();
+        let shown = match (snapshot.node(id), snapshot.viewport.as_ref()) {
+            (Some(node), Some(view)) => {
+                let middle = node.bounds.y + node.bounds.height / 2.0;
+                middle >= view.y && middle <= view.y + view.height
+            }
+            // Gone already, or nothing to measure against.
+            _ => true,
+        };
+        if shown {
+            return;
+        }
+        let bounds = snapshot.node(id).map(|node| node.bounds);
+        assert!(started.elapsed() < Duration::from_millis(600), "{place}: Tab left {id} out of view at {bounds:?}");
+        sleep(Duration::from_millis(15));
+    }
+}
+
 /// Tab until `id` has the focus.
 fn tab_to(app: &mut Client, id: &str) {
     let mut passed = Vec::new();
     for _ in 0..250 {
         let now = press(app, "tab");
+        if let Some(now) = now.as_deref() {
+            wait_in_view(app, "tab_to", now);
+        }
         if now.as_deref() == Some(id) {
             return;
         }
@@ -118,6 +144,7 @@ fn sweep_in(app: &mut Client, place: &str, prefixes: &[&str]) {
         let Some(now) = press(app, "tab") else {
             continue;
         };
+        wait_in_view(app, place, &now);
         if seen.first() == Some(&now) {
             break;
         }

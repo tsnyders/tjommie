@@ -22,6 +22,7 @@ use crate::ui::fields::{Link, problem};
 use crate::ui::primitives::avatar::BotAvatar;
 use crate::ui::primitives::button::{IconButton, Pill, PillVariant};
 use crate::ui::primitives::dialog::open_confirm;
+use crate::ui::primitives::scroll::scroll_handle;
 use crate::ui::routines::rows::routine_rows;
 use crate::ui::shell::route::{Navigate as _, Route};
 use crate::ui::store;
@@ -286,7 +287,9 @@ impl Render for BotSettings {
         ];
         let zone = jiff::tz::TimeZone::system();
         let status = state_label(bot.state, bot.limited_until.as_deref(), &zone);
+        let scroll = scroll_handle("bot_form.scroll", window, cx);
         page(
+            &scroll,
             header(
                 "bot_settings.back",
                 chip(

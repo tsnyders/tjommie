@@ -132,6 +132,9 @@ impl Response {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UiSnapshot {
     pub nodes: Vec<UiNode>,
+    /// The window's content area, so a test can tell what shows (T5.6: keyboard focus never sits below the fold).
+    #[serde(default)]
+    pub viewport: Option<UiBounds>,
 }
 
 impl UiSnapshot {
@@ -667,13 +670,22 @@ fn ask(request: Request, asks: &UnboundedSender<Ask>) -> Response {
 
 fn handle(request: Request, window: &mut Window, cx: &mut App) -> Response {
     match request {
-        Request::Snapshot => Response {
-            ok: true,
-            snapshot: Some(UiSnapshot {
-                nodes: NODES.with(|nodes| nodes.borrow().clone()),
-            }),
-            error: None,
-        },
+        Request::Snapshot => {
+            let size = window.viewport_size();
+            Response {
+                ok: true,
+                snapshot: Some(UiSnapshot {
+                    nodes: NODES.with(|nodes| nodes.borrow().clone()),
+                    viewport: Some(UiBounds {
+                        x: 0.,
+                        y: 0.,
+                        width: f32::from(size.width),
+                        height: f32::from(size.height),
+                    }),
+                }),
+                error: None,
+            }
+        }
         Request::Click { id } => match center(&id) {
             Some(position) => {
                 click(position, window, cx);

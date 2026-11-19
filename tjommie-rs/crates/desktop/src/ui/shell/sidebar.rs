@@ -21,6 +21,7 @@ use crate::ui::primitives::button::{Pill, PillVariant, pressable};
 use crate::ui::fields::arrows;
 use crate::ui::primitives::focus_handle;
 use crate::ui::primitives::menu::{Menu, MenuItem};
+use crate::ui::primitives::scroll::{follow_focus, scroll_handle};
 use crate::ui::style::{TypeExt as _, focus_ring, focus_visible, hsla, palette, r, shadows, theme};
 
 /// This PC's value in the host list; a saved PC's is its id (`THIS_PC`).
@@ -67,6 +68,7 @@ pub(super) fn sidebar(
         .use_keyed_state("sidebar.recents.list", cx, |_, cx| cx.focus_handle())
         .read(cx)
         .clone();
+    let recents_scroll = scroll_handle("sidebar.recents", window, cx);
     let theme = theme(cx);
     let colors = palette(cx);
     let wordmark = &theme.typography.desktop.wordmark;
@@ -116,16 +118,18 @@ pub(super) fn sidebar(
                 .text_color(hsla(colors.text.tertiary))
                 .child("Recents"),
         )
-        .child(
+        .child(follow_focus(
+            &recents_scroll,
             arrows(div(), &recents_list)
                 .id("sidebar.recents")
+                .track_scroll(&recents_scroll)
                 .flex()
                 .flex_col()
                 .gap(px(1.))
                 .min_h_0()
                 .overflow_y_scroll()
                 .children(recents),
-        )
+        ))
         .child(view_all)
         .child(
             div()

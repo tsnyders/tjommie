@@ -3,10 +3,11 @@
 //! own; the browser panel's logins menu shares one here (`BrowserData::on_logins`), and what it answers is kept where the
 //! panel reads it (`BrowserData::logins`).
 //!
-//! This PC's own vault isn't reached directly (the TypeScript's `desktop().vault`): the desktop's vault host doesn't run
-//! in the app yet. It needs the daemon launched with a desktop host token, a browser engine that can fill a login, and
-//! the vault's isolation (all outside the desktop crate; the M5 report names them). Until then even this PC's Logins go
-//! through its daemon, as the TypeScript's do without a bridge, and read as unavailable while no vault host answers.
+//! This PC's own vault isn't reached directly (the TypeScript's `desktop().vault`): the app doesn't run the desktop's
+//! vault host yet. The daemon is launched with its desktop host token, but `live` drops it and starts neither
+//! `/browser-host` nor `/vault-host`, and the browser engine has no `LoginBrowser` (`RemoteWorkerIsolation` is the
+//! isolation). That host wiring is its own batch after M5. Until then even this PC's Logins go through its daemon, as
+//! the TypeScript's do without a bridge, and read as unavailable while no vault host answers.
 
 use std::sync::Arc;
 

@@ -16,6 +16,7 @@ use crate::ui::fields::Link;
 use crate::ui::primitives::avatar::BotAvatar;
 use crate::ui::primitives::button::{IconButton, pressable};
 use crate::ui::primitives::focus_handle;
+use crate::ui::primitives::scroll::{follow_focus, scroll_handle};
 use crate::ui::shell::route::{Navigate as _, Route, Section};
 use crate::ui::style::{TypeExt as _, focus_ring, focus_visible, hsla, palette, r, theme};
 
@@ -122,6 +123,7 @@ pub fn panel(
                     .on_press(|_, cx| cx.navigate(Route::Settings(Section::Bots))),
             )
     });
+    let scroll = scroll_handle("room.members.scroll", window, cx);
     let theme = theme(cx);
     let colors = palette(cx);
     div()
@@ -134,9 +136,11 @@ pub fn panel(
         .border_l_1()
         .border_color(hsla(colors.line.base))
         .child(bar)
-        .child(
+        .child(follow_focus(
+            &scroll,
             div()
                 .id("room.members.scroll")
+                .track_scroll(&scroll)
                 .flex_1()
                 .min_h_0()
                 .overflow_y_scroll()
@@ -159,6 +163,6 @@ pub fn panel(
                 )
                 .child(div().flex().flex_col().children(rows))
                 .children(chain),
-        )
+        ))
         .into_any_element()
 }

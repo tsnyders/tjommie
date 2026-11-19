@@ -26,6 +26,7 @@ use crate::semantic::SemanticExt as _;
 use crate::ui::fields::arrows;
 use crate::ui::primitives::button::pressable;
 use crate::ui::primitives::focus_handle;
+use crate::ui::primitives::scroll::{follow_focus, scroll_handle};
 use crate::ui::shell::route::{Navigate as _, Route, Section};
 use crate::ui::style::{TypeExt as _, focus_ring, focus_visible, hsla, palette, r, shadows, theme};
 
@@ -72,15 +73,18 @@ pub fn screen(section: Section, window: &mut Window, cx: &mut App) -> AnyElement
         Section::Diagnostics => diagnostics::section(window, cx),
         Section::About => about::section(window, cx),
     };
+    let scroll = scroll_handle("settings.scroll", window, cx);
     let theme = theme(cx);
     div()
         .flex_1()
         .min_h_0()
         .flex()
         .child(nav)
-        .child(
+        .child(follow_focus(
+            &scroll,
             div()
                 .id("settings.scroll")
+                .track_scroll(&scroll)
                 .flex_1()
                 .min_w_0()
                 .overflow_y_scroll()
@@ -88,7 +92,7 @@ pub fn screen(section: Section, window: &mut Window, cx: &mut App) -> AnyElement
                 .px(r(theme.space.s32))
                 .pb(r(theme.space.s40))
                 .child(content),
-        )
+        ))
         .into_any_element()
 }
 
@@ -257,7 +261,7 @@ pub(crate) fn heading(text: &'static str, cx: &App) -> Div {
 mod tests {
     use crate::model::testing::FakeRpc;
     use crate::ui::shell::route::{self, Route, Section};
-    use crate::ui::testing::{app, click, ids, node, state};
+    use crate::ui::testing::{app, click, draw, ids, node, state};
 
     /// The chat's setup banner links to one account (`?section=accounts&account=…&action=signin`).
     #[gpui::test]
@@ -290,5 +294,38 @@ mod tests {
         );
         assert!(node("settings.nav.devices").unwrap().selected);
         assert!(node("settings.devices.title").is_some());
+    }
+
+    /// T5.6: Tab moving to a control below the fold scrolls the section so that control shows.
+    #[gpui::test]
+    fn tab_brings_a_control_below_the_fold_into_view(cx: &mut gpui::TestAppContext) {
+        // Appearance: its choices are Tab stops all the way down.
+        let (cx, _) = app(cx, Route::Settings(Section::Appearance), state(vec![], vec![], vec![]), FakeRpc::new());
+        let height = 240.;
+        cx.simulate_resize(gpui::size(gpui::px(960.), gpui::px(height)));
+        draw(cx);
+        let content = |id: &str| id.starts_with("settings.") && !id.starts_with("settings.nav.");
+        // The controls whose middle is below the fold before anything is focused: one shown later was scrolled to.
+        let below: Vec<String> = crate::test_driver::nodes()
+            .into_iter()
+            .filter(|node| node.interactive && content(&node.id) && node.bounds.y + node.bounds.height / 2. > height)
+            .map(|node| node.id)
+            .collect();
+        assert!(!below.is_empty(), "Appearance reaches below the fold at this height");
+        let mut reached = Vec::new();
+        for _ in 0..80 {
+            cx.simulate_keystrokes("tab");
+            draw(cx);
+            draw(cx);
+            let Some(now) = crate::test_driver::nodes().into_iter().find(|node| node.focused) else {
+                continue;
+            };
+            if content(&now.id) {
+                let middle = now.bounds.y + now.bounds.height / 2.;
+                assert!((0. ..=height).contains(&middle), "{} has the focus out of view at {:?}", now.id, now.bounds);
+                reached.push(now.id);
+            }
+        }
+        assert!(below.iter().any(|id| reached.contains(id)), "Tab reached one that started below: {below:?}, {reached:?}");
     }
 }

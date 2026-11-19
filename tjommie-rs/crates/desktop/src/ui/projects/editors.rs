@@ -28,6 +28,7 @@ use crate::ui::primitives::button::{Pill, PillVariant};
 use crate::ui::primitives::dialog::{open_dialog, title};
 use crate::ui::primitives::focus_handle;
 use crate::ui::primitives::menu::{Menu, MenuItem};
+use crate::ui::primitives::scroll::{follow_focus, scroll_handle};
 use crate::ui::primitives::toggle::Toggle;
 use crate::ui::store;
 use crate::ui::style::{TypeExt as _, focus_ring, focus_visible, hsla, palette, r, theme};
@@ -487,10 +488,12 @@ fn project_body(
         move |_, cx| save_project(&saving, &screen, cx),
         cx,
     );
+    let scroll = scroll_handle("project_form.scroll", window, cx);
     let theme = theme(cx);
     // The fields scroll; Cancel and Save stay in view under them.
     let fields = div()
         .id("project_form.scroll")
+        .track_scroll(&scroll)
         .max_h(window.viewport_size().height * 0.6)
         .overflow_y_scroll()
         .flex()
@@ -557,7 +560,7 @@ fn project_body(
         .flex()
         .flex_col()
         .gap(r(theme.space.s16))
-        .child(fields)
+        .child(follow_focus(&scroll, fields))
         .child(footer)
         .into_any_element()
 }

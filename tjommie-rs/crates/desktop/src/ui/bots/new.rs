@@ -25,6 +25,7 @@ use crate::ui::fields::{Link, problem};
 use crate::ui::primitives::avatar::BotAvatar;
 use crate::ui::primitives::button::{Pill, PillVariant, pressable};
 use crate::ui::primitives::focus_handle;
+use crate::ui::primitives::scroll::scroll_handle;
 use crate::ui::routines::editor::{RoutineEditor, local_zone, open_routine_editor};
 use crate::ui::routines::rows::{RoutineRow, routine_rows};
 use crate::ui::shell::route::{Navigate as _, Route};
@@ -283,7 +284,9 @@ impl Render for NewBot {
             .problem
             .clone()
             .map(|text| problem("new_bot.problem", text, cx));
+        let scroll = scroll_handle("bot_form.scroll", window, cx);
         page(
+            &scroll,
             header(
                 "new_bot.back",
                 chip(

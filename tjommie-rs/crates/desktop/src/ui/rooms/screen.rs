@@ -23,6 +23,7 @@ use crate::ui::primitives::button::{IconButton, IconVariant};
 use crate::ui::primitives::dialog::open_confirm;
 use crate::ui::primitives::focus_handle;
 use crate::ui::primitives::menu::{Menu, MenuItem};
+use crate::ui::primitives::scroll::follow_focus;
 use crate::ui::shell::connection::failed_load;
 use crate::ui::shell::route::{Navigate as _, Route};
 use crate::ui::store::{self, History};
@@ -345,26 +346,29 @@ impl RoomScreen {
                         }
                     })
                     .collect();
-                div()
-                    .id("room.posts")
-                    .track_scroll(&self.posts)
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .child(
-                        div()
-                            .mx_auto()
-                            .w_full()
-                            .max_w(r(760.))
-                            .flex()
-                            .flex_col()
-                            .gap(r(theme.space.s16))
-                            .px(r(theme.space.s24))
-                            .py(r(theme.space.s16))
-                            .children(older)
-                            .children(rows),
-                    )
-                    .into_any_element()
+                follow_focus(
+                    &self.posts,
+                    div()
+                        .id("room.posts")
+                        .track_scroll(&self.posts)
+                        .flex_1()
+                        .min_h_0()
+                        .overflow_y_scroll()
+                        .child(
+                            div()
+                                .mx_auto()
+                                .w_full()
+                                .max_w(r(760.))
+                                .flex()
+                                .flex_col()
+                                .gap(r(theme.space.s16))
+                                .px(r(theme.space.s24))
+                                .py(r(theme.space.s16))
+                                .children(older)
+                                .children(rows),
+                        ),
+                )
+                .into_any_element()
             }
             _ => div().flex_1().into_any_element(),
         }

@@ -5,6 +5,7 @@ pub mod avatar;
 pub mod button;
 pub mod dialog;
 pub mod menu;
+pub mod scroll;
 pub mod settings_row;
 pub mod sheet;
 pub mod shield;

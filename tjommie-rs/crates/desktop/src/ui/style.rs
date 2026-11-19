@@ -3,8 +3,8 @@
 
 use desktop_host::device_settings::{Density, TextSize, Theme as Mode};
 use gpui::{
-    App, BoxShadow, Div, FocusHandle, FontWeight, Global, Hsla, Rems, Rgba, Styled, Window,
-    WindowAppearance, div, point, px, rems,
+    App, BoxShadow, Div, FocusHandle, FontWeight, Global, Hsla, ParentElement as _, Rems, Rgba, Styled,
+    Window, WindowAppearance, div, point, px, rems,
 };
 
 use crate::assets::{DISPLAY_FAMILY, MONO_FAMILY, TEXT_FAMILY};
@@ -148,7 +148,8 @@ pub fn focus_visible(focus: &FocusHandle, window: &Window) -> bool {
 }
 
 /// The Aegis focus ring (2 px ink, 2 px gap): a child laid over the element's edge, for an element with this corner
-/// radius in design px. Add it to a `relative()` element while `focus_visible`.
+/// radius in design px. Add it to a `relative()` element while `focus_visible`. It also scrolls its element into view
+/// in the nearest scroll area (`primitives::scroll`, T5.6): keyboard focus never sits below the fold.
 pub fn focus_ring(radius: f32, cx: &App) -> Div {
     let size = &theme(cx).size;
     let outset = size.focus_ring + size.focus_offset;
@@ -161,4 +162,5 @@ pub fn focus_ring(radius: f32, cx: &App) -> Div {
         .rounded(r(radius + outset))
         .border(px(size.focus_ring))
         .border_color(hsla(palette(cx).state.focus))
+        .child(crate::ui::primitives::scroll::reveal())
 }

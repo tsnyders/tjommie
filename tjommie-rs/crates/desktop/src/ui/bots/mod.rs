@@ -8,17 +8,19 @@ pub mod rows;
 pub mod settings;
 
 use gpui::{
-    AnyElement, App, InteractiveElement as _, IntoElement, ParentElement as _,
+    AnyElement, App, InteractiveElement as _, IntoElement, ParentElement as _, ScrollHandle,
     StatefulInteractiveElement as _, Styled as _, Window, div,
 };
 
 use crate::ui::fields::Link;
+use crate::ui::primitives::scroll::follow_focus;
 use crate::ui::shell::route::{Navigate as _, Route};
 use crate::ui::style::{TypeExt as _, hsla, palette, r, theme};
 
 /// The page: the header, the form and its aside (the aside moves under the form when they don't fit side by side),
-/// and the action bar.
+/// and the action bar. The form scrolls on `scroll`, keeping keyboard focus in view.
 fn page(
+    scroll: &ScrollHandle,
     header: AnyElement,
     form: AnyElement,
     aside: AnyElement,
@@ -32,9 +34,11 @@ fn page(
         .flex()
         .flex_col()
         .child(header)
-        .child(
+        .child(follow_focus(
+            scroll,
             div()
                 .id("bot_form.scroll")
+                .track_scroll(scroll)
                 .flex_1()
                 .min_h_0()
                 .overflow_y_scroll()
@@ -50,7 +54,7 @@ fn page(
                         .child(div().w(r(640.)).min_w(r(532.)).child(form))
                         .child(div().w(r(340.)).flex_none().child(aside)),
                 ),
-        )
+        ))
         .child(footer)
         .into_any_element()
 }

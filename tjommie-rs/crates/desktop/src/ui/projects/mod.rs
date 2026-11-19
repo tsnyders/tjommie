@@ -32,6 +32,7 @@ use crate::ui::primitives::avatar::BotAvatar;
 use crate::ui::primitives::button::{Pill, PillVariant, pressable};
 use crate::ui::primitives::dialog::open_confirm;
 use crate::ui::primitives::focus_handle;
+use crate::ui::primitives::scroll::{follow_focus, scroll_handle};
 use crate::ui::shell::route::{Navigate as _, Route};
 use crate::ui::store;
 use crate::ui::style::{TypeExt as _, focus_ring, focus_visible, hsla, palette, r, theme};
@@ -452,6 +453,7 @@ impl Render for ProjectsScreen {
             .collect();
 
         let right = project.as_ref().map(|project| self.team(project, &bots, window, cx));
+        let teams_scroll = scroll_handle("projects.teams", window, cx);
         let theme = theme(cx);
         let colors = palette(cx);
         let new_project = {
@@ -529,9 +531,11 @@ impl Render for ProjectsScreen {
                     .min_h_0()
                     .flex()
                     .gap(r(theme.space.s16))
-                    .child(
+                    .child(follow_focus(
+                        &teams_scroll,
                         div()
                             .id("projects.teams")
+                            .track_scroll(&teams_scroll)
                             .w(r(240.))
                             .flex_none()
                             .overflow_y_scroll()
@@ -548,8 +552,9 @@ impl Render for ProjectsScreen {
                                     cx,
                                 ))
                             }),
-                    )
-                    .child(
+                    ))
+                    .child(follow_focus(
+                        &self.scroll,
                         div()
                             .id("projects.scroll")
                             .track_scroll(&self.scroll)
@@ -561,7 +566,7 @@ impl Render for ProjectsScreen {
                             .flex_col()
                             .gap(r(theme.space.s16))
                             .children(right.into_iter().flatten()),
-                    ),
+                    )),
             )
     }
 }
