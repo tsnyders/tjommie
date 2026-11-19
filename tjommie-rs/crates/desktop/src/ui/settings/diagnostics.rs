@@ -9,8 +9,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use desktop_host::diagnostics::{REPORT_FILE_NAME, ReportSaver, SaveOutcome};
 use gpui::{
-    AnyElement, App, AsyncApp, ClipboardItem, Entity, IntoElement, ParentElement as _, Role,
-    SharedString, StatefulInteractiveElement as _, Styled as _, WeakEntity, Window, div,
+    AnyElement, App, ClipboardItem, Entity, IntoElement, ParentElement as _, Role, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Window, div,
 };
 use protocol::diagnostics::HostDiagnostics;
 use protocol::wire::{Empty, method};
@@ -186,26 +186,6 @@ impl Drop for Exports {
     }
 }
 
-/// Clears the export under way when its task ends, however it ends (a panic the guard caught included), so a failed
-/// save never leaves Refresh, Copy and Save dimmed.
-struct ClearAction {
-    exports: WeakEntity<Exports>,
-    cx: AsyncApp,
-}
-
-impl Drop for ClearAction {
-    fn drop(&mut self) {
-        let exports = self.exports.clone();
-        self.cx.update(|cx| {
-            let _ = exports.update(cx, |exports, cx| {
-                if exports.action.take().is_some() {
-                    cx.notify();
-                }
-            });
-        });
-    }
-}
-
 fn save(exports: &Entity<Exports>, report: String, cx: &mut App) {
     let gone = Arc::clone(&exports.read(cx).gone);
     exports.update(cx, |exports, cx| {
@@ -225,42 +205,53 @@ fn save(exports: &Entity<Exports>, report: String, cx: &mut App) {
         .try_global::<crate::live::Tokio>()
         .map(|tokio| tokio.0.clone());
     let saver = Arc::clone(&cx.default_global::<Saver>().0);
+    let (clearing, after) = (exports.clone(), cx.to_async());
     cx.spawn(async move |cx| {
         guarded_async("save the diagnostic report", async move {
-            let _clear = ClearAction {
-                exports: exports.clone(),
-                cx: cx.clone(),
-            };
-            let picker = cx.clone();
-            let saving = saver.save_report(
-                &report,
-                move || async move {
-                    let picked = picker
-                        .update(|cx| cx.prompt_for_new_path(&directory, Some(REPORT_FILE_NAME)));
-                    picked.await.ok().and_then(Result::ok).flatten()
-                },
-                move || gone.load(Ordering::SeqCst),
-            );
-            let outcome = crate::live::in_runtime(tokio, saving).await;
-            let _ = cx.update(|cx| {
-                exports.update(cx, |exports, cx| {
-                    exports.action = None;
-                    match outcome {
-                        Ok(SaveOutcome::Saved) => {
-                            exports.notice = Some("Report saved on this device.".into())
-                        }
-                        Ok(SaveOutcome::Cancelled) => {
-                            exports.notice = Some("Save cancelled.".into())
-                        }
-                        Err(_) => {
-                            exports.problem = Some(
-                                "The report could not be saved. Try again or copy the preview."
-                                    .into(),
-                            )
-                        }
+            // The save in a guard of its own, so a panic it catches still reaches the reset after it.
+            guarded_async("write the diagnostic report", async move {
+                let picker = cx.clone();
+                let saving = saver.save_report(
+                    &report,
+                    move || async move {
+                        let picked = picker.update(|cx| {
+                            cx.prompt_for_new_path(&directory, Some(REPORT_FILE_NAME))
+                        });
+                        picked.await.ok().and_then(Result::ok).flatten()
+                    },
+                    move || gone.load(Ordering::SeqCst),
+                );
+                let outcome = crate::live::in_runtime(tokio, saving).await;
+                let _ =
+                    cx.update(|cx| {
+                        exports.update(cx, |exports, cx| {
+                            exports.action = None;
+                            match outcome {
+                                Ok(SaveOutcome::Saved) => {
+                                    exports.notice = Some("Report saved on this device.".into())
+                                }
+                                Ok(SaveOutcome::Cancelled) => {
+                                    exports.notice = Some("Save cancelled.".into())
+                                }
+                                Err(_) => exports.problem = Some(
+                                    "The report could not be saved. Try again or copy the preview."
+                                        .into(),
+                                ),
+                            }
+                            cx.notify();
+                        })
+                    });
+            })
+            .await;
+            // However the save ended (a panic the guard caught included), Refresh, Copy and Save are available again. This
+            // runs only while the app does: a task of an app that has quit is dropped before it gets here (M5 re-review
+            // finding 6; a drop guard here ran at quit, after the app had gone, and panicked).
+            after.update(|cx| {
+                let _ = clearing.update(cx, |exports, cx| {
+                    if exports.action.take().is_some() {
+                        cx.notify();
                     }
-                    cx.notify();
-                })
+                });
             });
         })
         .await;
