@@ -197,7 +197,8 @@ fn nav_link(
     .into_any_element()
 }
 
-/// A section's frame (`SettingsSection`): its title and the line saying what's in it, then its parts.
+/// A section's frame (`SettingsSection`): its title and the line saying what's in it (none for `""`, as Usage's
+/// bare heading has), then its parts.
 pub(crate) fn frame(key: &str, title: &'static str, note: &'static str, cx: &App) -> Div {
     let theme = theme(cx);
     let colors = palette(cx);
@@ -213,13 +214,15 @@ pub(crate) fn frame(key: &str, title: &'static str, note: &'static str, cx: &App
                 .text_color(hsla(colors.text.primary))
                 .child(title),
         )
-        .child(
-            div()
-                .mt(r(theme.space.s8))
-                .type_style(&theme.typography.desktop.ui)
-                .text_color(hsla(colors.text.secondary))
-                .child(note),
-        )
+        .when(!note.is_empty(), |frame| {
+            frame.child(
+                div()
+                    .mt(r(theme.space.s8))
+                    .type_style(&theme.typography.desktop.ui)
+                    .text_color(hsla(colors.text.secondary))
+                    .child(note),
+            )
+        })
 }
 
 /// A settings card (`SettingsCard`): raised, its rows ruled between (`SettingsRow::ruled`).

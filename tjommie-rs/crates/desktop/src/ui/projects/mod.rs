@@ -347,7 +347,7 @@ fn pill(
 }
 
 /// A short line of secondary text, read by tests as `id`.
-fn line(id: impl Into<SharedString>, role: Role, text: impl Into<SharedString>, cx: &App) -> AnyElement {
+pub(crate) fn line(id: impl Into<SharedString>, role: Role, text: impl Into<SharedString>, cx: &App) -> AnyElement {
     let theme = theme(cx);
     let text = text.into();
     div()
