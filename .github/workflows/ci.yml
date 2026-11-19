@@ -79,7 +79,8 @@ jobs:
         run: |
           function Assert-NoFeed {
             $text = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes('target\debug\tjommie-desktop.exe'))
-            if ($text.Contains('github.com/tsnyders/tjommie')) { throw "The $env:TJOMMIE_IDENTITY desktop build contains the update feed." }
+            # The feed's path, not the project's address: About links to the project in every build.
+            if ($text.Contains('tsnyders/tjommie/releases/latest/download')) { throw "The $env:TJOMMIE_IDENTITY desktop build contains the update feed." }
           }
           $env:TJOMMIE_IDENTITY = 'dev'
           cargo test --workspace --locked --no-run
