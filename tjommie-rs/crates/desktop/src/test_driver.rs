@@ -293,13 +293,31 @@ impl Client {
             .map(drop)
     }
 
+    /// Waits for `predicate` on `id`. A wait that fails says what the app's connection screen says, so a timeout in CI
+    /// reads as its reason (the daemon refused to start, say) rather than a bare timeout.
     pub fn wait(&mut self, id: &str, predicate: Predicate, timeout_ms: u64) -> io::Result<()> {
-        self.expect_ok(&Request::Wait {
-            id: id.to_owned(),
-            predicate,
-            timeout_ms,
+        let waited = self
+            .expect_ok(&Request::Wait {
+                id: id.to_owned(),
+                predicate,
+                timeout_ms,
+            })
+            .map(drop);
+        waited.map_err(|error| {
+            let said: Vec<String> = self
+                .snapshot()
+                .map(|snapshot| snapshot.nodes)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|node| node.id.starts_with("connection.") && !node.text.is_empty())
+                .map(|node| format!("{}: {}", node.id, node.text))
+                .collect();
+            if said.is_empty() {
+                error
+            } else {
+                io::Error::other(format!("{error}; the app says {}", said.join(" | ")))
+            }
         })
-        .map(drop)
     }
 
     /// The pipe's access list as Windows reports it, in SDDL.
