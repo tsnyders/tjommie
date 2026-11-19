@@ -3,6 +3,7 @@
 //! and a line saying what's in it), the card and its rows (`SettingsRow`), and the problem line.
 
 mod about;
+mod account_dialogs;
 mod accounts;
 mod appearance;
 mod bots;

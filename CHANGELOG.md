@@ -6,6 +6,7 @@
 - Paired devices and the panel use the same live view of an agent's browser.
 - If Windows can't keep the Logins window out of screenshots and screen sharing, the window won't take a login.
 - Settings, Usage shows each subscription's limits with a refresh, keeps what API keys spent apart from what subscription use would cost on the API, and charts tokens by day or month.
+- Settings, Accounts shows each Claude and Codex account with what to do next, its limits or spending, and what it used today and this month; a sign-in or limit link from a chat takes you to that account's button without starting anything.
 
 ## 0.5.1 — 2026-11-14
 

@@ -48,8 +48,9 @@ pub enum Route {
     Routines,
     Settings(Section),
     /// Settings, Accounts, on one account: the deep link (`/settings/?section=accounts&account=<id>&action=<…>`) that
-    /// the chat's setup banner and limit notices follow. The Accounts section shows that account and runs `action`,
-    /// when there is one, once. The sidebar's Settings and the Accounts link show as selected.
+    /// the chat's setup banner and limit notices follow. The Accounts section focuses the control `action` names on that
+    /// account's card (Sign in, Raise or Edit cap, Retry queued work) once it's there, once; a link never starts a
+    /// sign-in or a retry by itself. The sidebar's Settings and the Accounts link show as selected.
     Account {
         account: String,
         action: Option<AccountAction>,

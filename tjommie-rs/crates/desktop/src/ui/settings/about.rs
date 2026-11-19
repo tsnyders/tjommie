@@ -28,9 +28,9 @@ const LICENSE: &str = "https://github.com/tsnyders/tjommie/blob/main/LICENSE";
 const NOTICES_LIMIT: u64 = 262_144;
 
 /// Opens a link in the default browser; one that can't open is only logged, as the TypeScript's did nothing.
-fn open(url: &str) {
+pub(super) fn open(url: &str) {
     if let Err(why) = desktop_host::links::open_external(url) {
-        log::warn!("About: a link did not open ({why})");
+        log::warn!("Settings: a link did not open ({why})");
     }
 }
 

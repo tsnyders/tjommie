@@ -11,15 +11,44 @@ pub mod shield;
 pub mod toast;
 pub mod toggle;
 
-use gpui::{App, FocusHandle, SharedString, Window};
+use std::collections::HashMap;
+
+use gpui::{App, FocusHandle, Global, SharedString, WeakFocusHandle, Window};
+
+/// The controls' focus handles by id, as last drawn, so a control can be focused from outside it (`focus_by_id`): a
+/// component's own keyed state lives in a namespace of its type, out of reach of the screen that draws it.
+/// ponytail: an id drawn once stays in the map (a weak handle, so it holds nothing); bounded by the ids ever drawn.
+#[derive(Default)]
+struct Drawn(HashMap<SharedString, WeakFocusHandle>);
+
+impl Global for Drawn {}
 
 /// A control's focus handle, kept across renders under its id, and a tab stop.
 pub(crate) fn focus_handle(id: &str, window: &mut Window, cx: &mut App) -> FocusHandle {
     let key = SharedString::from(format!("{id}.focus"));
-    window
+    let handle = window
         .use_keyed_state(key, cx, |_, cx| cx.focus_handle().tab_stop(true))
         .read(cx)
-        .clone()
+        .clone();
+    cx.default_global::<Drawn>()
+        .0
+        .insert(SharedString::from(id.to_owned()), handle.downgrade());
+    handle
+}
+
+/// Focuses the control last drawn under `id` (a link's wish, such as Accounts' Sign in); false if it isn't there.
+pub(crate) fn focus_by_id(id: &str, window: &mut Window, cx: &mut App) -> bool {
+    let handle = cx
+        .try_global::<Drawn>()
+        .and_then(|drawn| drawn.0.get(id))
+        .and_then(WeakFocusHandle::upgrade);
+    match handle {
+        Some(handle) => {
+            window.focus(&handle, cx);
+            true
+        }
+        None => false,
+    }
 }
 
 /// A window with gpui-kit's root and the Aegis theme, showing what `content` draws. Nothing has the focus.

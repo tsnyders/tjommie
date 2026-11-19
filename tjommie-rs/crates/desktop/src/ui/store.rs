@@ -183,8 +183,8 @@ impl Drop for StopFeed {
     }
 }
 
-/// `daemon().subscribe` for a screen: a feed of the events `wanted` accepts.
-pub fn events(cx: &mut App, wanted: fn(&protocol::Event) -> bool) -> EventFeed {
+/// `daemon().subscribe` for a screen: a feed of the events `wanted` accepts (an account's card wants its own).
+pub fn events(cx: &mut App, wanted: impl Fn(&protocol::Event) -> bool + Send + 'static) -> EventFeed {
     let (sender, arrivals) = futures::channel::mpsc::unbounded();
     match handle(cx) {
         Handle::Live(live) => {
@@ -204,7 +204,7 @@ pub fn events(cx: &mut App, wanted: fn(&protocol::Event) -> bool) -> EventFeed {
         }
         #[cfg(test)]
         Handle::Fake(_) => {
-            cx.default_global::<FakeEvents>().0.push((wanted, sender));
+            cx.default_global::<FakeEvents>().0.push((Box::new(wanted), sender));
             EventFeed {
                 arrivals,
                 _stop: None,
@@ -224,7 +224,7 @@ struct FakeEvents(Vec<FakeFeed>);
 
 /// One fake feed: what it wants, and where it sends.
 #[cfg(test)]
-type FakeFeed = (fn(&protocol::Event) -> bool, futures::channel::mpsc::UnboundedSender<()>);
+type FakeFeed = (Box<dyn Fn(&protocol::Event) -> bool>, futures::channel::mpsc::UnboundedSender<()>);
 
 #[cfg(test)]
 impl Global for FakeEvents {}
