@@ -546,6 +546,8 @@ pub(super) fn open_remove(account: &AccountInfo, bots: &[Bot], accounts: Entity<
         bots_on(&account.id, bots).into_iter().map(|bot| (bot.id.clone(), bot.name.clone())).collect();
     let name = account.label.clone();
     if !using.is_empty() {
+        // Its own epoch: a save still on its way from an earlier dialog mustn't close this one (M5 review Minor 3).
+        let _ = open_epoch(&accounts, cx);
         open_dialog(window, cx, move |surface, window, cx| {
             let theme = theme(cx);
             let links = using.iter().map(|(id, name)| {

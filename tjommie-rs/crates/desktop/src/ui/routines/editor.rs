@@ -78,6 +78,8 @@ struct Editor {
     busy: bool,
     problem: Option<SharedString>,
     window: AnyWindowHandle,
+    /// The dialog in front when Save was pressed (`dialog::opened`): a late answer closes only that one.
+    dialog: u64,
     on_save: Save,
     on_delete: Option<Delete>,
     _times: Option<Subscription>,
@@ -106,6 +108,7 @@ pub fn open_routine_editor(spec: RoutineEditor, window: &mut Window, cx: &mut Ap
         busy: false,
         problem: None,
         window: window.window_handle(),
+        dialog: 0,
         on_save: spec.on_save,
         on_delete: spec.on_delete,
         _times: None,
@@ -226,6 +229,7 @@ fn act(editor: &Entity<Editor>, delete: bool, cx: &mut App) {
     editor.update(cx, |editor, cx| {
         editor.busy = true;
         editor.problem = None;
+        editor.dialog = crate::ui::primitives::dialog::opened(cx);
         cx.notify();
     });
     let editor = editor.clone();
@@ -233,10 +237,10 @@ fn act(editor: &Entity<Editor>, delete: bool, cx: &mut App) {
         guarded_async("save or delete a routine", async move {
             let done = work.await;
             cx.update(|cx| {
-                let window = editor.read(cx).window;
+                let (window, dialog) = (editor.read(cx).window, editor.read(cx).dialog);
                 let _ = window.update(cx, |_, window, cx| {
-                    // Closed meanwhile: nothing is this editor's to close.
-                    if !window.has_active_dialog(cx) {
+                    // Closed meanwhile, or another dialog opened since: nothing is this editor's to close.
+                    if !window.has_active_dialog(cx) || crate::ui::primitives::dialog::opened(cx) != dialog {
                         return;
                     }
                     match done {

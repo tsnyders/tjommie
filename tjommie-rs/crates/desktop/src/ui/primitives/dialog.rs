@@ -17,6 +17,19 @@ use super::shield::BrowserShield;
 use crate::semantic::{Semantic, SemanticExt as _};
 use crate::ui::style::{TypeExt as _, hsla, palette, r, shadows, theme};
 
+/// How many dialogs this app has opened (`open_dialog` counts them). A form reads it when Save is pressed, while its
+/// dialog is the one in front; a save that answers late closes the dialog only if none has opened since (M5 review
+/// Minor 4; the account dialogs' epoch, for every form).
+#[derive(Default)]
+struct Opened(u64);
+
+impl gpui::Global for Opened {}
+
+/// The number of the dialog opened last.
+pub fn opened(cx: &App) -> u64 {
+    cx.try_global::<Opened>().map_or(0, |opened| opened.0)
+}
+
 /// Opens a dialog. `build` fills the styled surface; gpui-kit may run it again while the dialog is open, so it creates
 /// no entities.
 pub fn open_dialog(
@@ -24,6 +37,7 @@ pub fn open_dialog(
     cx: &mut App,
     build: impl Fn(Dialog, &mut Window, &mut App) -> Dialog + 'static,
 ) {
+    cx.default_global::<Opened>().0 += 1;
     let shield = Rc::new(BrowserShield::raise(cx));
     window.open_dialog(cx, move |dialog, window, cx| {
         let _held_while_open = &shield;

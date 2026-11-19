@@ -51,6 +51,8 @@ struct RoomForm {
     problem: Option<SharedString>,
     /// The window the dialog is in, for what a save does once it ends.
     window: AnyWindowHandle,
+    /// The dialog in front when Save was pressed (`dialog::opened`): a late answer closes only that one.
+    dialog: u64,
     _enter: Option<Subscription>,
 }
 
@@ -74,6 +76,7 @@ pub fn open_room_form(room: Option<Room>, window: &mut Window, cx: &mut App) {
         busy: false,
         problem: None,
         window: window.window_handle(),
+        dialog: 0,
         _enter: None,
     });
     // Enter in the name saves, as the form's submit did.
@@ -213,6 +216,7 @@ fn save(form: &Entity<RoomForm>, cx: &mut App) {
     form.update(cx, |form, cx| {
         form.busy = true;
         form.problem = None;
+        form.dialog = crate::ui::primitives::dialog::opened(cx);
         cx.notify();
     });
     let form = form.clone();
@@ -257,9 +261,10 @@ fn finish(
     saved: Result<Option<Room>, crate::model::connection::RequestError>,
     cx: &mut App,
 ) {
-    let window = form.read(cx).window;
+    let (window, dialog) = (form.read(cx).window, form.read(cx).dialog);
     let _ = window.update(cx, |_, window, cx| {
-        if !window.has_active_dialog(cx) {
+        // Closed meanwhile, or another dialog opened since: nothing is this form's to close.
+        if !window.has_active_dialog(cx) || crate::ui::primitives::dialog::opened(cx) != dialog {
             return;
         }
         match saved {

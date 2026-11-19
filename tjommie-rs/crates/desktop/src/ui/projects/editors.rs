@@ -219,6 +219,8 @@ struct ProjectForm {
     busy: bool,
     problem: Option<SharedString>,
     window: AnyWindowHandle,
+    /// The dialog in front when Save was pressed (`dialog::opened`): a late answer closes only that one.
+    dialog: u64,
 }
 
 impl ProjectForm {
@@ -321,6 +323,7 @@ pub(super) fn open_project_editor(
         busy: false,
         problem: None,
         window: window.window_handle(),
+        dialog: 0,
     });
     open_dialog(window, cx, move |dialog, window, cx| {
         let heading = if form.read(cx).opened.is_some() {
@@ -662,6 +665,7 @@ fn save_project(form: &Entity<ProjectForm>, screen: &Entity<ProjectsScreen>, cx:
     form.update(cx, |form, cx| {
         form.busy = true;
         form.problem = None;
+        form.dialog = crate::ui::primitives::dialog::opened(cx);
         cx.notify();
     });
     let call = match &opened {
@@ -698,8 +702,8 @@ fn save_project(form: &Entity<ProjectForm>, screen: &Entity<ProjectsScreen>, cx:
         guarded_async("save a project team", async move {
             let saved = call.await;
             cx.update(|cx| {
-                let window = form.read(cx).window;
-                finish(&window, saved, cx, move |saved: Project, _, cx| {
+                let opened = (form.read(cx).window, form.read(cx).dialog);
+                finish(opened, saved, cx, move |saved: Project, _, cx| {
                     screen.update(cx, |this, cx| this.select_project(saved.id, cx))
                 }, move |said, cx| {
                     form.update(cx, |form, cx| {
@@ -718,14 +722,15 @@ fn save_project(form: &Entity<ProjectForm>, screen: &Entity<ProjectsScreen>, cx:
 /// After a save: close the dialog and show what was saved, or say why it failed. A save that ends after the dialog
 /// was closed does neither.
 fn finish<T>(
-    window: &AnyWindowHandle,
+    (window, dialog): (AnyWindowHandle, u64),
     saved: Result<T, RequestError>,
     cx: &mut App,
     on_saved: impl FnOnce(T, &mut Window, &mut App),
     on_failed: impl FnOnce(SharedString, &mut App),
 ) {
     let _ = window.update(cx, |_, window, cx| {
-        if !window.has_active_dialog(cx) {
+        // Closed meanwhile, or another dialog opened since (M5 review Minor 4).
+        if !window.has_active_dialog(cx) || crate::ui::primitives::dialog::opened(cx) != dialog {
             return;
         }
         match saved {
@@ -752,6 +757,8 @@ struct TaskForm {
     busy: bool,
     problem: Option<SharedString>,
     window: AnyWindowHandle,
+    /// The dialog in front when Save was pressed (`dialog::opened`): a late answer closes only that one.
+    dialog: u64,
 }
 
 impl TaskForm {
@@ -834,6 +841,7 @@ pub(super) fn open_task_editor(
         busy: false,
         problem: None,
         window: window.window_handle(),
+        dialog: 0,
     });
     open_dialog(window, cx, move |dialog, window, cx| {
         let heading = if form.read(cx).opened.is_some() {
@@ -987,6 +995,7 @@ fn save_task(form: &Entity<TaskForm>, screen: &Entity<ProjectsScreen>, cx: &mut 
     form.update(cx, |form, cx| {
         form.busy = true;
         form.problem = None;
+        form.dialog = crate::ui::primitives::dialog::opened(cx);
         cx.notify();
     });
     let call = match &opened {
@@ -1023,8 +1032,8 @@ fn save_task(form: &Entity<TaskForm>, screen: &Entity<ProjectsScreen>, cx: &mut 
         guarded_async("save a task", async move {
             let saved = call.await;
             cx.update(|cx| {
-                let window = form.read(cx).window;
-                finish(&window, saved, cx, move |saved: ProjectTask, window, cx| {
+                let opened = (form.read(cx).window, form.read(cx).dialog);
+                finish(opened, saved, cx, move |saved: ProjectTask, window, cx| {
                     screen.update(cx, |this, cx| this.select_task(saved.id, window, cx))
                 }, move |said, cx| {
                     form.update(cx, |form, cx| {
