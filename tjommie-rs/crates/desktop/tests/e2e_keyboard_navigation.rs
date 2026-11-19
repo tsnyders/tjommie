@@ -86,9 +86,17 @@ fn wait_in_view(app: &mut Client, place: &str, id: &str) {
             return;
         }
         let bounds = snapshot.node(id).map(|node| node.bounds);
+        // Where each screen is drawn, and the window, to tell a scroll that didn't happen from a screen drawn elsewhere.
+        let screens: Vec<(String, f32)> = snapshot
+            .nodes
+            .iter()
+            .filter(|node| node.id.starts_with("screen.") || node.id.starts_with("dialog."))
+            .map(|node| (node.id.clone(), node.bounds.y))
+            .collect();
         assert!(
             started.elapsed() < Duration::from_millis(600),
-            "{place}: Tab left {id} out of view at {bounds:?}"
+            "{place}: Tab left {id} out of view at {bounds:?} (window {:?}; screens and dialogs at {screens:?})",
+            snapshot.viewport
         );
         sleep(Duration::from_millis(15));
     }
@@ -146,6 +154,28 @@ fn dialog(app: &mut Client, place: &str, prefixes: &[&str], open: impl FnOnce(&m
     sweep_in(app, place, prefixes);
     app.key("escape").unwrap();
     wait_gone(app, "dialog.title");
+}
+
+/// The size the test runs at, the same on every machine: it fits a hosted runner's 1024 by 768 display.
+const WINDOW: (f32, f32) = (1000., 700.);
+
+/// Sets the window's size and waits until the app has drawn at it.
+fn resize(app: &mut Client, (width, height): (f32, f32)) {
+    app.resize(width, height).unwrap();
+    let started = Instant::now();
+    loop {
+        let viewport = app.snapshot().unwrap().viewport;
+        if viewport.as_ref().is_some_and(|view| {
+            (view.width - width).abs() < 1. && (view.height - height).abs() < 1.
+        }) {
+            return;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the window isn't {width} by {height}: {viewport:?}"
+        );
+        sleep(Duration::from_millis(30));
+    }
 }
 
 /// Opens a settings section from its nav link.
@@ -340,6 +370,7 @@ fn e2e_keyboard_navigation() {
     .unwrap();
     app.wait("screen.agents", Predicate::Exists, 60_000)
         .unwrap();
+    resize(&mut app, WINDOW);
 
     // The sidebar's sections, in visual order; the arrows move between them too.
     tab_to(&mut app, "sidebar.nav.agents");
@@ -356,6 +387,16 @@ fn e2e_keyboard_navigation() {
         press(&mut app, "down").as_deref(),
         Some("sidebar.nav.settings")
     );
+    // No agent yet, so Agents shows the first-run setup. Its cards settle once the fixtures daemon reports both
+    // providers signed in; the sweep waits for that, or it races the report.
+    for provider in ["claude", "codex"] {
+        app.wait(
+            &format!("setup.{provider}.other_account"),
+            Predicate::Exists,
+            30_000,
+        )
+        .unwrap();
+    }
     sweep(&mut app, "Agents");
 
     // A new agent, made from the keyboard: its chat opens.
@@ -522,6 +563,20 @@ fn e2e_keyboard_navigation() {
         &["dialog.", "task_form."],
         |app| activate(app, "projects.new_task"),
     );
+    // At the app's smallest window (360 by 600) the New task dialog is taller than the window: its body scrolls, and
+    // Tab brings each of its controls into view. It opens at the test's size and the window shrinks under it (the
+    // screens' own layout at 360 wide is another matter).
+    activate(&mut app, "projects.new_task");
+    app.wait("dialog.title", Predicate::Exists, 10_000).unwrap();
+    resize(&mut app, (360., 600.));
+    sweep_in(
+        &mut app,
+        "New task dialog, smallest window",
+        &["dialog.", "task_form."],
+    );
+    app.key("escape").unwrap();
+    wait_gone(&mut app, "dialog.title");
+    resize(&mut app, WINDOW);
     dialog(&mut app, "Archive team dialog", &["dialog."], |app| {
         activate(app, "projects.archive")
     });

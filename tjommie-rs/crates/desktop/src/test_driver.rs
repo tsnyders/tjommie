@@ -87,6 +87,11 @@ pub enum Request {
     AnswerPathPrompt {
         path: String,
     },
+    /// Sets the window's size, in logical pixels, so a test runs at the same size on every machine.
+    Resize {
+        width: f32,
+        height: f32,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -270,6 +275,11 @@ impl Client {
             chord: chord.to_owned(),
         })
         .map(drop)
+    }
+
+    /// Sets the window's size in logical pixels (`Resize`).
+    pub fn resize(&mut self, width: f32, height: f32) -> io::Result<()> {
+        self.expect_ok(&Request::Resize { width, height }).map(drop)
     }
 
     /// The app's next file or folder prompt answers `path` (`AnswerPathPrompt`).
@@ -720,6 +730,10 @@ pub fn take_path_answer() -> Option<PathBuf> {
 
 fn handle(request: Request, window: &mut Window, cx: &mut App) -> Response {
     match request {
+        Request::Resize { width, height } => {
+            window.resize(gpui::size(gpui::px(width), gpui::px(height)));
+            Response::done()
+        }
         Request::AnswerPathPrompt { path } => {
             PATH_ANSWER.with(|answer| *answer.borrow_mut() = Some(PathBuf::from(path)));
             Response::done()
