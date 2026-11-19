@@ -36,6 +36,7 @@ pub enum PillVariant {
 pub struct Pill {
     id: SharedString,
     label: SharedString,
+    name: Option<SharedString>,
     icon: Option<&'static str>,
     variant: PillVariant,
     small: bool,
@@ -49,6 +50,7 @@ impl Pill {
         Pill {
             id: id.into(),
             label: label.into(),
+            name: None,
             icon: None,
             variant: PillVariant::Grey,
             small: false,
@@ -68,6 +70,13 @@ impl Pill {
 
     pub fn variant(mut self, variant: PillVariant) -> Self {
         self.variant = variant;
+        self
+    }
+
+    /// Its accessible name, when that says more than the label (M5 review Minor 25): a card's Rename reads as
+    /// "Rename Sample Phone".
+    pub fn name(mut self, name: impl Into<SharedString>) -> Self {
+        self.name = Some(name.into());
         self
     }
 
@@ -126,10 +135,11 @@ impl RenderOnce for Pill {
             (theme.size.control_desktop, theme.space.s20)
         };
         let hover = if self.disabled { fill } else { hover };
+        let named = self.name.clone().unwrap_or_else(|| self.label.clone());
         let name: SharedString = if self.disabled {
-            format!("{}, unavailable", self.label).into()
+            format!("{named}, unavailable").into()
         } else {
-            self.label.clone()
+            named
         };
         let pill = div()
             .semantic(self.id.clone(), Role::Button)

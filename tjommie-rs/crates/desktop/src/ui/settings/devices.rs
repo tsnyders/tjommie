@@ -249,6 +249,7 @@ pub(super) fn section(window: &mut Window, cx: &mut App) -> AnyElement {
                         .gap(r(theme.space.s8))
                         .child(
                             Pill::new(format!("settings.devices.{id}.rename"), "Rename")
+                                .name(format!("Rename {}", device.name.as_str()))
                                 .small()
                                 .on_press(move |window, cx| {
                                     open_rename(renaming.0.clone(), renaming.1.clone(), window, cx)
@@ -256,6 +257,7 @@ pub(super) fn section(window: &mut Window, cx: &mut App) -> AnyElement {
                         )
                         .child(
                             Pill::new(format!("settings.devices.{id}.revoke"), "Revoke")
+                                .name(format!("Revoke {}", device.name.as_str()))
                                 .small()
                                 .variant(PillVariant::Danger)
                                 .on_press(move |window, cx| {
@@ -1030,8 +1032,6 @@ mod tests {
         assert!(node("device_form.save").is_none(), "saved: the dialog closed");
     }
 
-    /// relay-row.test.tsx: "keeps Save off until the address is changed", "saves a typed https address, trimmed", and
-    /// "saves the public relay's address with Use the public relay".
     /// M5 review M8: the keyboard e2e can't pair a phone, so Rename device and Revoke are covered here, opened by keys
     /// with a device in the list. Tab stays in each dialog and reaches only what's available, Escape closes it with
     /// nothing sent, and Enter presses the focused button.
@@ -1107,6 +1107,8 @@ mod tests {
         assert_eq!(calls(&calls_made.calls(), "devices.revoke"), [json!({ "id": "d1" })]);
     }
 
+    /// relay-row.test.tsx: "keeps Save off until the address is changed", "saves a typed https address, trimmed", and
+    /// "saves the public relay's address with Use the public relay".
     #[gpui::test]
     fn the_relay_saves_a_changed_https_address(cx: &mut TestAppContext) {
         let rpc = rpc(vec![], status(&[], true)).on::<method::SettingsSet>(|_| Ok(serde_json::from_value(json!({ "chainLimit": 5, "relayUrl": null })).unwrap()));
@@ -1135,5 +1137,14 @@ mod tests {
         draw(cx);
         draw(cx);
         assert_eq!(calls(&calls_made.calls(), "devices.list").len(), 2);
+    }
+
+    /// M5 review Minor 25: a device's Rename and Revoke say whose they are, as the TypeScript's did.
+    #[gpui::test]
+    fn rename_and_revoke_say_whose_they_are(cx: &mut TestAppContext) {
+        let rpc = rpc(vec![device("d1", "Sample Phone", None)], status(&[], true));
+        let (_, _) = app(cx, Route::Settings(Section::Devices), state(vec![], vec![], vec![]), rpc);
+        assert_eq!(text("settings.devices.d1.rename"), "Rename Sample Phone");
+        assert_eq!(text("settings.devices.d1.revoke"), "Revoke Sample Phone");
     }
 }

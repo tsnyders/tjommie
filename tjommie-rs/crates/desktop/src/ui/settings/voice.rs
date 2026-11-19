@@ -152,22 +152,25 @@ fn model_line(status: Option<&SpeechStatus>) -> String {
     }
 }
 
-/// A picker for the language or the microphone: a pill with the choice that opens a menu of them.
+/// A picker for the language or the microphone: a pill with the choice that opens a menu of them, named for what it
+/// picks (`what`, M5 review Minor 25).
 fn picker(
     id: &'static str,
+    what: &'static str,
     label: String,
     choices: Vec<(String, String)>,
     chosen: String,
     pick: fn(&mut VoiceChoice, String),
 ) -> AnyElement {
+    let name = format!("{what}: {label}");
     if choices.is_empty() {
-        return Pill::new(id, label).small().disabled(true).into_any_element();
+        return Pill::new(id, label).name(name).small().disabled(true).into_any_element();
     }
     choices
         .into_iter()
         .fold(
             Menu::new(SharedString::from(format!("{id}.menu")), move |_, _, _| {
-                Pill::new(id, label).small().icon("chevron-down").into_any_element()
+                Pill::new(id, label.clone()).name(name.clone()).small().icon("chevron-down").into_any_element()
             })
             .anchor(gpui::Anchor::TopRight)
             .offset(gpui::px(6.)),
@@ -332,6 +335,7 @@ pub(super) fn section(window: &mut Window, cx: &mut App) -> AnyElement {
                 .description("Only languages reported by the local engine are listed.")
                 .control(picker(
                     "settings.voice.language",
+                    "Dictation language",
                     language_label,
                     languages,
                     selected,
@@ -352,6 +356,7 @@ pub(super) fn section(window: &mut Window, cx: &mut App) -> AnyElement {
                         .gap(r(theme.space.s8))
                         .child(picker(
                             "settings.voice.device",
+                            "Dictation microphone",
                             device_label,
                             devices,
                             choice.input_device.clone(),
