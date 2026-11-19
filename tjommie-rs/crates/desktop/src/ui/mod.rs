@@ -4,6 +4,7 @@ pub mod agents;
 pub mod bots;
 pub mod browser;
 pub mod fields;
+pub mod logins;
 pub mod primitives;
 pub mod projects;
 pub mod rooms;

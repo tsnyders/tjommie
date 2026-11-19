@@ -454,6 +454,9 @@ pub fn start(identity: Identity, root: PathBuf, cx: &mut App) {
     };
     // This device's local dictation runs on the same runtime.
     crate::speech::start(&identity, &root, runtime.handle(), cx);
+    // The browser panel's logins menu reaches the selected PC's vault through the app's logins client.
+    cx.default_global::<crate::ui::browser::BrowserData>().on_logins =
+        Some(std::rc::Rc::new(crate::ui::logins::browser_logins));
     let base: Env = std::env::vars().collect();
     let env = launch_env(&identity, &root, &base);
     let daemon = if identity.kind == Kind::Dev && root.join("daemon-token").exists() {

@@ -144,6 +144,52 @@ impl client::Rpc for StoreRpc {
     }
 }
 
+/// The selected PC and the connection as `model::logins` reads them (`LiveState`): as they are at each moment, from
+/// any thread. Without a live connection (a view test, or nothing yet) they're what the state said when it was taken.
+#[derive(Clone)]
+pub struct StoreLive(LiveSource);
+
+#[derive(Clone)]
+enum LiveSource {
+    Fixed { host: Option<String>, ready: bool },
+    Live(Arc<Live>),
+}
+
+/// `StoreLive` for the store as it is now.
+pub fn live_state(cx: &App) -> StoreLive {
+    match handle(cx) {
+        Handle::Live(live) => StoreLive(LiveSource::Live(live)),
+        _ => {
+            let state = state(cx);
+            let ready = state.connection == crate::model::state::Connection::Ready;
+            StoreLive(LiveSource::Fixed { host: state.host.clone(), ready })
+        }
+    }
+}
+
+impl crate::model::logins::LiveState for StoreLive {
+    fn selected_host(&self) -> Option<String> {
+        match &self.0 {
+            LiveSource::Fixed { host, .. } => host.clone(),
+            LiveSource::Live(live) => live.read(|state| state.host.clone()),
+        }
+    }
+
+    fn is_ready(&self) -> bool {
+        match &self.0 {
+            LiveSource::Fixed { ready, .. } => *ready,
+            LiveSource::Live(live) => live.read(|state| state.connection == crate::model::state::Connection::Ready),
+        }
+    }
+
+    fn daemon_generation(&self) -> Option<u64> {
+        match &self.0 {
+            LiveSource::Fixed { ready, .. } => ready.then_some(0),
+            LiveSource::Live(live) => live.link_id(),
+        }
+    }
+}
+
 /// What a helper works through: the live connection, a test's fake, or nothing yet.
 #[derive(Clone)]
 enum Handle {

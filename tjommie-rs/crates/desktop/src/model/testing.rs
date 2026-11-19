@@ -70,3 +70,13 @@ impl Rpc for FakeRpc {
         async move { outcome }
     }
 }
+
+/// A view model that keeps its daemon (`LoginsClient`) can hold a test's fake by reference.
+impl Rpc for &FakeRpc {
+    fn call<M: ClientMethod>(
+        &self,
+        params: M::Params,
+    ) -> impl Future<Output = Result<M::Result, RpcError>> + Send {
+        (**self).call::<M>(params)
+    }
+}

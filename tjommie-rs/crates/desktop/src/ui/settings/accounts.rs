@@ -413,7 +413,7 @@ struct CardData<'a> {
 }
 
 /// A card's button: a pill, off (dimmed, no handler) while it can't be pressed.
-fn pill(id: String, text: &'static str, primary: bool, enabled: bool, on_press: impl Fn(&mut Window, &mut App) + 'static) -> AnyElement {
+pub(super) fn pill(id: String, text: &'static str, primary: bool, enabled: bool, on_press: impl Fn(&mut Window, &mut App) + 'static) -> AnyElement {
     let pill = Pill::new(id, text);
     let pill = if primary { pill.variant(PillVariant::Primary) } else { pill };
     if enabled {

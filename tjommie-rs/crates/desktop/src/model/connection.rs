@@ -724,6 +724,12 @@ impl<E: Environment> AppConnection<E> {
 
     // Calls.
 
+    /// Which connection is live, as a number a new connection changes (`daemon() === client` in the TypeScript, as
+    /// `model::logins` compares it); `None` while there is none.
+    pub fn link_id(&self) -> Option<u64> {
+        self.lock().ready_id()
+    }
+
     /// The live daemon client. Screens call it only while the connection is ready.
     pub fn daemon(&self) -> Result<Daemon<E::Link>, RequestError> {
         self.lock()
