@@ -528,7 +528,10 @@ pub fn start(identity: Identity, root: PathBuf, cx: &mut App) {
     feed(&live, &shared, cx);
     {
         let _context = runtime.enter();
-        shared.supervise();
+        // The first start is synchronous, inside the runtime: its state receiver is in place before the connection's
+        // first read, which otherwise could read the placeholder (its sender long gone) and say the service keeps
+        // stopping (M5 re-review finding 5). `supervise` is for Try again.
+        shared.start_supervisor();
         timers(&live, runtime.handle());
         live.start_connection();
     }

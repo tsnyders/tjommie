@@ -29,9 +29,28 @@ fn e2e_live_connects_to_its_own_daemon() {
     let root = owner_safety::test_root().unwrap();
     let mut app = Client::launch(env!("CARGO_BIN_EXE_tjommie-desktop"), root.path()).unwrap();
 
-    // Connected: the route's screen shows, and the connection screen is gone.
-    app.wait("screen.agents", Predicate::Exists, 60_000)
-        .unwrap();
+    // Connected: the route's screen shows, and the connection screen is gone. Watched from launch, the first start never
+    // says the service keeps stopping on its way up (M5 re-review finding 5: the connection's first read could beat
+    // the supervisor's start and find its placeholder state, whose sender was long gone).
+    let started = std::time::Instant::now();
+    loop {
+        let snapshot = app.snapshot().unwrap();
+        assert!(
+            snapshot
+                .nodes
+                .iter()
+                .all(|node| !node.text.contains("keeps stopping")),
+            "the first start said the service keeps stopping"
+        );
+        if snapshot.node("screen.agents").is_some() {
+            break;
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(60),
+            "screen.agents never showed"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(15));
+    }
     let snapshot = app.snapshot().unwrap();
     assert!(
         snapshot.node("connection.title").is_none(),
