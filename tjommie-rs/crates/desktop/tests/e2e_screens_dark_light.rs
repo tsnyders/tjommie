@@ -43,7 +43,9 @@ fn daemon_exe() -> PathBuf {
 }
 
 /// Keeps a picture of the app's window as a PNG: the window of the process started from this test's app, drawn by
-/// itself (PrintWindow with PW_RENDERFULLCONTENT, 2), so a window over it never shows in the picture.
+/// itself (PrintWindow with PW_RENDERFULLCONTENT, 2), so a window over it never shows in the picture. A blank picture
+/// fails (M5 review Minor 29): a 40 by 40 grid of its pixels must hold at least four colours, as any drawn screen does
+/// (the sidebar, the page, a card and text).
 fn picture(out: &Path) {
     let exe = env!("CARGO_BIN_EXE_tjommie-desktop").replace('/', "\\").replace('\'', "''");
     let out = out.display().to_string().replace('\'', "''");
@@ -72,6 +74,13 @@ $dc = $graphics.GetHdc()
 $drawn = [Win]::PrintWindow($window, $dc, 2)
 $graphics.ReleaseHdc($dc)
 if (-not $drawn) {{ throw 'PrintWindow drew nothing' }}
+$seen = @{{}}
+$stepY = [Math]::Max(1, [int]($bitmap.Height / 40))
+$stepX = [Math]::Max(1, [int]($bitmap.Width / 40))
+for ($y = 0; $y -lt $bitmap.Height; $y += $stepY) {{
+  for ($x = 0; $x -lt $bitmap.Width; $x += $stepX) {{ $seen[$bitmap.GetPixel($x, $y).ToArgb()] = $true }}
+}}
+if ($seen.Count -lt 4) {{ throw "The picture is blank: $($seen.Count) colours" }}
 $bitmap.Save('{out}', [System.Drawing.Imaging.ImageFormat]::Png)
 "#
     );
@@ -79,7 +88,7 @@ $bitmap.Save('{out}', [System.Drawing.Imaging.ImageFormat]::Png)
         .args(["-NoProfile", "-NonInteractive", "-Command", &script])
         .status()
         .unwrap();
-    assert!(status.success(), "no picture of the window for {out}");
+    assert!(status.success(), "no picture of the window, or a blank one, for {out}");
 }
 
 /// Clicks `nav` until `title` shows: a click that lands while the app is busy can go unheard.
