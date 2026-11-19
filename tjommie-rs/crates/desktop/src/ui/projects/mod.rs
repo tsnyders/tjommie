@@ -71,10 +71,15 @@ fn word(value: &impl Serialize) -> String {
     }
 }
 
-/// The Projects screen, kept while the route shows it.
+/// The Projects screen, kept while the route shows it, and started afresh on another PC (the TypeScript's
+/// `key={host}`): the last PC's team and task mean nothing there (M5 review M4).
 pub fn screen(window: &mut Window, cx: &mut App) -> AnyElement {
+    let key = match &store::state(cx).host {
+        Some(host) => SharedString::from(format!("screen.projects.view.{host}")),
+        None => SharedString::from("screen.projects.view"),
+    };
     window
-        .use_keyed_state("screen.projects.view", cx, ProjectsScreen::new)
+        .use_keyed_state(key, cx, ProjectsScreen::new)
         .into_any_element()
 }
 

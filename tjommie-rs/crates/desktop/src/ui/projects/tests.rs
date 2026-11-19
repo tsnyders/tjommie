@@ -287,3 +287,30 @@ fn offline_projects_say_how_to_see_them(cx: &mut TestAppContext) {
     );
     assert!(calls_of(&calls.calls(), "projects.list").is_empty(), "nothing is asked meanwhile");
 }
+
+/// M5 review M4: another PC starts Projects afresh (the TypeScript's `key={host}`): the last PC's team and task aren't
+/// chosen there, and nothing of theirs is asked for.
+#[gpui::test]
+fn another_pc_starts_projects_with_nothing_chosen(cx: &mut TestAppContext) {
+    let members = json!([{ "botId": "dev", "roles": ["developer"] }]);
+    let (cx, calls) = app(cx, Route::Projects, state(people(), vec![], vec![]), rpc(members, json!([])));
+    click(cx, "projects.team.project");
+    click(cx, "projects.task.task-1");
+    draw(cx);
+    assert_eq!(text("projects.detail"), "Task: Second task");
+    let before = calls.calls().len();
+    cx.update(|_, cx| {
+        crate::ui::store::update(cx, |state| {
+            state.host = Some("pc-2".into());
+            true
+        })
+    });
+    draw(cx);
+    assert!(node("projects.detail").is_none(), "no task chosen on the other PC");
+    assert!(node("projects.name").is_none(), "no team chosen on the other PC");
+    let after = calls.calls().split_off(before);
+    assert!(!calls_of(&after, "projects.list").is_empty(), "the other PC's teams are read");
+    for method in ["tasks.list", "tasks.get", "projects.heads"] {
+        assert!(calls_of(&after, method).is_empty(), "the last PC's {method} asked of the other: {after:?}");
+    }
+}
