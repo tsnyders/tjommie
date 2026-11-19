@@ -239,6 +239,8 @@ impl Render for BotSettings {
             )
             .icon(if paused { "play" } else { "pause" })
             .small()
+            // Unavailable while a change is on its way, so a double press sends one pause (M5 review Minor 11).
+            .disabled(self.busy)
             .on_press(move |_, cx| {
                 let call = store::request::<method::BotsPause>(
                     cx,
