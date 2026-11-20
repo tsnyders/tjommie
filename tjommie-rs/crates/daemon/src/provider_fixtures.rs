@@ -173,7 +173,7 @@ use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, LazyLock, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 use std::time::Duration;
 
 use protocol::model::Provider;
@@ -228,17 +228,6 @@ const NO_BROWSER: &str =
     "Provider fixtures: this agent's browser is off, so the browser event has no tool to call.";
 /// How long a `browser` event waits for the browser proxy's answer.
 const BROWSER_CALL_TIMEOUT: Duration = Duration::from_secs(60);
-
-/// The names of the 26 native browser tools, from the manifest the browser proxy reads too (`/mcp/browser`).
-static BROWSER_TOOLS: LazyLock<Vec<String>> = LazyLock::new(|| {
-    let listed: Vec<Value> =
-        serde_json::from_str(include_str!("../../../protocol/browser-tools.json"))
-            .unwrap_or_default();
-    listed
-        .iter()
-        .filter_map(|entry| entry["name"].as_str().map(str::to_owned))
-        .collect()
-});
 
 /// What setup and the account checks see in place of a provider CLI.
 const FIXTURE_EMAIL: &str = "fixtures@example.com";
@@ -482,7 +471,8 @@ fn validate_events(events: &[Event]) -> Result<(), String> {
                     validate_events(branch)?;
                 }
             }
-            Event::Browser { tool, .. } if !BROWSER_TOOLS.contains(tool) => {
+            // The proxy's own manifest, so a broken one fails loudly there instead of rejecting every tool here.
+            Event::Browser { tool, .. } if !crate::native_browser_mcp::is_tool(tool) => {
                 return Err(
                     "browser names a tool that is not one of the native browser tools.".into(),
                 );
