@@ -6,12 +6,18 @@ the extraction happen in a new, empty temporary folder that is removed afterward
 
     .\tools\fetch-pdfium.ps1                                         # to tjommie-rs\resources\pdfium\pdfium.dll
     .\tools\fetch-pdfium.ps1 -Destination "$env:RUNNER_TEMP\pdfium\pdfium.dll"
+    # The release payload: the DLL, and pdfium's licence texts (LICENSE and the 18 in licenses/) from the same archive.
+    .\tools\fetch-pdfium.ps1 -Destination "$payload\resources\pdfium.dll" -Licenses "$payload\resources\pdfium-licenses"
 
 $release and $dllSha256 are PDFIUM_RELEASE and PDFIUM_SHA256 in crates\desktop-host\src\pdf.rs: change them together.
 To pin a new release, run with the new $release: the error names the archive's hash; pin it, and the next run names
 the DLL's.
 #>
-param([string]$Destination = (Join-Path (Split-Path $PSScriptRoot -Parent) 'resources\pdfium\pdfium.dll'))
+param(
+    [string]$Destination = (Join-Path (Split-Path $PSScriptRoot -Parent) 'resources\pdfium\pdfium.dll'),
+    # A folder for the licence texts that ship with the DLL; none are copied when it is empty.
+    [string]$Licenses = ''
+)
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
@@ -36,6 +42,13 @@ try {
     if (-not (Test-Path -LiteralPath $dll -PathType Leaf)) { throw 'The pdfium archive has no bin/pdfium.dll.' }
     $actual = (Get-FileHash -LiteralPath $dll -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($actual -ne $dllSha256) { throw "bin/pdfium.dll ($release) has SHA-256 $actual, not the pinned $dllSha256." }
+    if ($Licenses) {
+        & $tar -xzf $archive -C $scratch LICENSE licenses
+        if ($LASTEXITCODE -ne 0) { throw 'Could not extract the licence texts from the pdfium archive.' }
+        New-Item -ItemType Directory -Path $Licenses -Force | Out-Null
+        Copy-Item -LiteralPath (Join-Path $scratch 'LICENSE') -Destination $Licenses -Force
+        Copy-Item -Path (Join-Path $scratch 'licenses\*') -Destination $Licenses -Force
+    }
     $folder = Split-Path $Destination -Parent
     if ($folder) { New-Item -ItemType Directory -Path $folder -Force | Out-Null }
     Copy-Item -LiteralPath $dll -Destination $Destination -Force
