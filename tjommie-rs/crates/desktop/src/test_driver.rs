@@ -647,15 +647,25 @@ pub fn start(window: AnyWindowHandle, cx: &mut App) {
     cx.spawn(async move |cx| {
         guarded_async("serve the test driver", async move {
             while let Some((request, reply)) = inbox.next().await {
-                let answered = cx.update(|cx| {
-                    guarded("answer the test driver", || {
-                        window.update(cx, |_, window, cx| handle(request, window, cx))
-                    })
-                });
-                let response = match answered {
-                    Some(Ok(response)) => response,
-                    Some(Err(error)) => Response::failed(format!("{error:#}")),
-                    None => Response::failed("answering panicked"),
+                let response = match request {
+                    // A poke is the app's own side (a tray click, a notice) and runs at App level, as it does in
+                    // production: inside the window's update, a nested update of that same window fails silently, and the
+                    // facts the services refresh from it would never be refreshed.
+                    Request::Poke { poke } => cx
+                        .update(|cx| guarded("poke the app", || poked(poke, cx)))
+                        .unwrap_or_else(|| Response::failed("poking panicked")),
+                    request => {
+                        let answered = cx.update(|cx| {
+                            guarded("answer the test driver", || {
+                                window.update(cx, |_, window, cx| handle(request, window, cx))
+                            })
+                        });
+                        match answered {
+                            Some(Ok(response)) => response,
+                            Some(Err(error)) => Response::failed(format!("{error:#}")),
+                            None => Response::failed("answering panicked"),
+                        }
+                    }
                 };
                 let _ = reply.send(response);
             }
@@ -772,6 +782,14 @@ pub fn take_path_answer() -> Option<PathBuf> {
     PATH_ANSWER.with(|answer| answer.borrow_mut().take())
 }
 
+/// Applies a poke to the services and says how it went.
+fn poked(poke: crate::services::Poke, cx: &mut App) -> Response {
+    match crate::services::poke(poke, cx) {
+        Ok(()) => Response::done(),
+        Err(error) => Response::failed(error),
+    }
+}
+
 fn handle(request: Request, window: &mut Window, cx: &mut App) -> Response {
     match request {
         Request::Resize { width, height } => {
@@ -783,10 +801,8 @@ fn handle(request: Request, window: &mut Window, cx: &mut App) -> Response {
             services: Some(crate::services::snapshot(window, cx)),
             ..Response::default()
         },
-        Request::Poke { poke } => match crate::services::poke(poke, cx) {
-            Ok(()) => Response::done(),
-            Err(error) => Response::failed(error),
-        },
+        // Served at App level before it gets here (`start`); this is the same answer.
+        Request::Poke { poke } => poked(poke, cx),
         Request::AnswerPathPrompt { path } => {
             PATH_ANSWER.with(|answer| *answer.borrow_mut() = Some(PathBuf::from(path)));
             Response::done()
