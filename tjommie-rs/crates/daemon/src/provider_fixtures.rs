@@ -25,7 +25,8 @@
 //! the environment (only `TJOMMIE_SKIP_*` is stripped).
 //!
 //! While it is on, nothing starts a provider process, structurally: the daemon's [`FixtureHost`] (a `CliHost`) refuses
-//! every `launch` and counts the attempt, and no Windows worker is installed. Every provider turn is a
+//! every `launch` and counts the attempt, and no Windows worker is installed (the desktop's `/worker-host` is served
+//! over the lease-only [`FixtureBoundary`] instead, see below). Every provider turn is a
 //! [`FixtureSession`] that plays the next scripted turn. A turn with no script **fails with a message**; it never falls
 //! through to a real CLI.
 //!
@@ -35,6 +36,11 @@
 //! refused (a client sees the handlers' own sentence, "Sign-in could not start...", and a refused launch is logged to
 //! stderr). The accounts are checked before the daemon answers, so a fresh data root accepts `chat.send` at once. The
 //! Codex data ACL pass is skipped (it would touch the real `~/.codex`).
+//!
+//! The desktop's `/worker-host` (mounted when the desktop's host token is set) is served with [`FixtureBoundary`]: its
+//! `status` says isolation is available and its leases are bookkeeping in memory, so a desktop's Logins vault reads
+//! `locked`, not `unavailable`. It still starts no process and touches nothing outside memory; reviews and provider
+//! launches never go through it.
 //!
 //! **Project reviews are refused.** A real review launches the Claude CLI for a version probe and a stream-json turn,
 //! with an API-key account's key, so it would be the one way back to a real provider. In fixtures mode a review
@@ -94,6 +100,15 @@
 //!   `{ "type": "tool", "id": "t1", "name": "Reading a file", "summary": "src/lib.rs" }` (`name` is the short label,
 //!   `summary` the detail).
 //! * `tool_done`: that tool finished. `{ "type": "tool_done", "id": "t1", "ok": true }` (`ok: false` marks it failed).
+//! * `browser`: the agent calls one of its browser tools over its own `browser` MCP server, as the Claude CLI would:
+//!   `{ "type": "browser", "id": "b1", "tool": "browser_navigate", "arguments": { "url": "http://127.0.0.1:8080/" } }`.
+//!   It plays a `tool` line (`Using the browser`, with the tool name as its summary), then makes the call: a JSON-RPC
+//!   `tools/call` to the session's `browser` server with the session's bearer token, waiting up to 60 s for the answer.
+//!   Then it plays `tool_done`, with `ok` true when the call came back without `isError` and without a transport error.
+//!   `tool` must be one of the 26 native browser tools (`protocol/browser-tools.json`). `arguments` is an optional object
+//!   whose keys are the tool's own; the browser proxy checks them, not this file. The desktop answers the call, so a run
+//!   that uses this event needs the desktop with its host token. An agent whose browser is off has no `browser` server,
+//!   and the event fails the turn with a message saying so.
 //! * `approval`: the agent asks permission, which puts an approval card in the chat, and **waits** for the person's
 //!   answer (the turn stays open, even forever, until it is answered, the turn is stopped or the agent is closed).
 //!   The matching branch of `then` is then played, and the turn goes on after the approval.
@@ -153,17 +168,17 @@
 //! * A failed turn ends like any provider failure: the chat shows the message as an error. It never starts a provider.
 //! * Stopping a turn that is playing ends it as interrupted.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 use std::time::Duration;
 
 use protocol::model::Provider;
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 
@@ -180,10 +195,11 @@ use crate::project_review_runtime::{
 };
 use crate::providers::codex_rpc::{CodexServer, JsonRpcLines};
 use crate::providers::{
-    Approval, ApprovalAnswer, Limit, LimitState, LimitWindow, ProviderError, ProviderEvent,
-    ProviderSession, StartOptions, Subscribers, TokenUsage, TurnResult, Usage,
+    Approval, ApprovalAnswer, Limit, LimitState, LimitWindow, McpServer, ProviderError,
+    ProviderEvent, ProviderSession, StartOptions, Subscribers, TokenUsage, TurnResult, Usage,
 };
 use crate::runner::SessionFactory;
+use crate::worker_boundary_host::{WorkerBoundary, WorkerLease};
 
 /// The environment variable that turns fixtures on (when the feature is compiled in).
 pub const ENV_VAR: &str = "TJOMMIE_PROVIDER_FIXTURES";
@@ -208,6 +224,21 @@ const ECHO_CHARS: usize = 200;
 const INTERRUPTED: &str = "Provider fixtures: the turn was stopped.";
 const REFUSED: &str = "this daemon is running provider fixtures and starts no provider";
 const NO_NETWORK: &str = "Provider fixtures: the network is not used.";
+const NO_BROWSER: &str =
+    "Provider fixtures: this agent's browser is off, so the browser event has no tool to call.";
+/// How long a `browser` event waits for the browser proxy's answer.
+const BROWSER_CALL_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// The names of the 26 native browser tools, from the manifest the browser proxy reads too (`/mcp/browser`).
+static BROWSER_TOOLS: LazyLock<Vec<String>> = LazyLock::new(|| {
+    let listed: Vec<Value> =
+        serde_json::from_str(include_str!("../../../protocol/browser-tools.json"))
+            .unwrap_or_default();
+    listed
+        .iter()
+        .filter_map(|entry| entry["name"].as_str().map(str::to_owned))
+        .collect()
+});
 
 /// What setup and the account checks see in place of a provider CLI.
 const FIXTURE_EMAIL: &str = "fixtures@example.com";
@@ -314,6 +345,12 @@ enum Event {
         id: String,
         ok: bool,
     },
+    Browser {
+        id: String,
+        tool: String,
+        #[serde(default)]
+        arguments: Map<String, Value>,
+    },
     Approval {
         id: String,
         tool: String,
@@ -404,7 +441,7 @@ impl Event {
                         .collect()
                 }),
             }),
-            Event::Approval { .. } | Event::Error { .. } => return None,
+            Event::Approval { .. } | Event::Error { .. } | Event::Browser { .. } => return None,
         })
     }
 }
@@ -444,6 +481,11 @@ fn validate_events(events: &[Event]) -> Result<(), String> {
                 for branch in [&then.once, &then.always, &then.deny] {
                     validate_events(branch)?;
                 }
+            }
+            Event::Browser { tool, .. } if !BROWSER_TOOLS.contains(tool) => {
+                return Err(
+                    "browser names a tool that is not one of the native browser tools.".into(),
+                );
             }
             _ => {}
         }
@@ -699,6 +741,7 @@ pub fn fixture_session_factory(fixtures: Fixtures) -> SessionFactory {
             fixtures.clone(),
             bot.name.clone(),
             options.resume_id,
+            options.mcp_servers,
         )) as Arc<dyn ProviderSession>)
     })
 }
@@ -726,10 +769,18 @@ struct State {
     pending: HashMap<String, oneshot::Sender<ApprovalAnswer>>,
 }
 
+/// The agent's `browser` MCP server, when its browser is on: where a `browser` event sends its call. Its headers hold the
+/// session's bearer token, so nothing here is ever logged or printed.
+struct BrowserServer {
+    url: String,
+    headers: BTreeMap<String, String>,
+}
+
 struct Inner {
     fixtures: Fixtures,
     agent: String,
     resume_id: Option<String>,
+    browser: Option<BrowserServer>,
     subscribers: Subscribers,
     state: Mutex<State>,
     closed: AtomicBool,
@@ -741,11 +792,24 @@ struct Inner {
 pub struct FixtureSession(Arc<Inner>);
 
 impl FixtureSession {
-    pub fn new(fixtures: Fixtures, agent: String, resume_id: Option<String>) -> Self {
+    /// `mcp_servers` are the session's own, as the runner built them. Only its `browser` server matters here.
+    pub fn new(
+        fixtures: Fixtures,
+        agent: String,
+        resume_id: Option<String>,
+        mcp_servers: Vec<McpServer>,
+    ) -> Self {
+        let browser = mcp_servers.into_iter().find_map(|server| match server {
+            McpServer::Http {
+                name, url, headers, ..
+            } if name == "browser" => Some(BrowserServer { url, headers }),
+            _ => None,
+        });
         FixtureSession(Arc::new(Inner {
             fixtures,
             agent,
             resume_id,
+            browser,
             subscribers: Subscribers::default(),
             state: Mutex::new(State {
                 started: false,
@@ -874,6 +938,47 @@ async fn play_turns(session: Weak<Inner>, mut turns: mpsc::UnboundedReceiver<Pla
     }
 }
 
+/// One `tools/call` to the agent's browser server, waiting for its answer. True when the call came back without `isError`
+/// and without a transport error. The URL and headers carry the session's token, so nothing here is logged.
+async fn call_browser_tool(server: &BrowserServer, tool: &str, arguments: Value) -> bool {
+    let call = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": { "name": tool, "arguments": arguments },
+    });
+    let Ok(client) = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+    else {
+        return false;
+    };
+    let mut request = client
+        .post(&server.url)
+        .timeout(BROWSER_CALL_TIMEOUT)
+        .header("content-type", "application/json")
+        .body(call.to_string());
+    for (name, value) in &server.headers {
+        request = request.header(name.as_str(), value.as_str());
+    }
+    let Ok(response) = request.send().await else {
+        return false;
+    };
+    if !response.status().is_success() {
+        return false;
+    }
+    let Ok(bytes) = response.bytes().await else {
+        return false;
+    };
+    let Ok(reply) = serde_json::from_slice::<Value>(&bytes) else {
+        return false;
+    };
+    reply
+        .get("result")
+        .is_some_and(|result| result.get("isError").and_then(Value::as_bool) != Some(true))
+}
+
 impl Inner {
     fn emit(&self, event: ProviderEvent) {
         if !self.closed.load(Ordering::SeqCst) {
@@ -974,6 +1079,25 @@ impl Inner {
                         .into_iter()
                         .rev()
                         .for_each(|event| events.push_front(event));
+                }
+                Event::Browser {
+                    id,
+                    tool,
+                    arguments,
+                } => {
+                    let Some(server) = &self.browser else {
+                        return TurnResult {
+                            ok: false,
+                            error: Some(NO_BROWSER.into()),
+                        };
+                    };
+                    self.emit(ProviderEvent::Tool {
+                        id: id.clone(),
+                        name: "Using the browser".into(),
+                        summary: tool.clone(),
+                    });
+                    let ok = call_browser_tool(server, &tool, Value::Object(arguments)).await;
+                    self.emit(ProviderEvent::ToolDone { id, ok });
                 }
                 other => {
                     if let Some(event) = other.emitted() {
@@ -1127,6 +1251,51 @@ impl UsageFetch for FixtureFetch {
         _timeout: Duration,
     ) -> BoxFuture<'a, Result<UsageResponse, String>> {
         Box::pin(async { Err(NO_NETWORK.to_owned()) })
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The worker boundary `/worker-host` serves
+
+/// The boundary a fixtures daemon's `/worker-host` serves, so the desktop's Logins vault reads `locked`, not `unavailable`.
+/// Isolation is always available here, and a lease is only bookkeeping in memory: nothing is launched and nothing is
+/// touched outside memory. It is not a real isolation boundary, and reviews and provider launches never use it.
+#[derive(Default)]
+pub struct FixtureBoundary {
+    invalidated: Arc<AtomicBool>,
+}
+
+impl WorkerBoundary for FixtureBoundary {
+    fn unavailable_reason(&self) -> BoxFuture<'static, Option<String>> {
+        Box::pin(async { None })
+    }
+
+    fn acquire(&self) -> BoxFuture<'static, Option<Box<dyn WorkerLease>>> {
+        let lease: Box<dyn WorkerLease> = Box::new(FixtureLease {
+            invalidated: self.invalidated.clone(),
+            released: AtomicBool::new(false),
+        });
+        Box::pin(async move { Some(lease) })
+    }
+
+    fn invalidate(&self) {
+        self.invalidated.store(true, Ordering::SeqCst);
+    }
+}
+
+/// A lease from a [`FixtureBoundary`]: valid until it is released or its boundary is invalidated.
+struct FixtureLease {
+    invalidated: Arc<AtomicBool>,
+    released: AtomicBool,
+}
+
+impl WorkerLease for FixtureLease {
+    fn valid(&self) -> bool {
+        !self.released.load(Ordering::SeqCst) && !self.invalidated.load(Ordering::SeqCst)
+    }
+
+    fn release(&self) {
+        self.released.store(true, Ordering::SeqCst);
     }
 }
 

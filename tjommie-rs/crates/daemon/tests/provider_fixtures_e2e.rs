@@ -390,3 +390,24 @@ async fn a_fresh_data_root_reports_both_providers_ready_and_signing_in_is_refuse
     run.client.close().await;
     run.daemon.close().await;
 }
+
+#[tokio::test]
+async fn a_setup_change_says_both_providers_are_signed_in_on_the_event_as_well_as_in_setup_status()
+{
+    let mut run = Run::start().await;
+    // `setup.status` checks both providers, and its own `setup.changed` carries the same reports.
+    let setup = run.ok("setup.status", json!({})).await;
+    assert_eq!(setup.as_array().map(Vec::len), Some(2), "{setup}");
+    let changed = run.events("setup.changed");
+    assert!(!changed.is_empty(), "the setup check sent setup.changed");
+    for reports in changed {
+        let entries = reports.as_array().unwrap();
+        assert_eq!(entries.len(), 2, "{reports}");
+        for entry in entries {
+            assert_eq!(entry["installed"], true, "{entry}");
+            assert_eq!(entry["signedIn"], true, "{entry}");
+            assert_eq!(entry["account"], "fixtures@example.com", "{entry}");
+        }
+    }
+    run.finish().await;
+}

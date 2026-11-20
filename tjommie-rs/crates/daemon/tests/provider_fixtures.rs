@@ -1082,3 +1082,41 @@ async fn signing_in_and_preparing_the_sandbox_are_refused_and_a_launch_is_counte
     assert_eq!(host.launch_attempts(), 1);
     assert_eq!(ended.load(Ordering::SeqCst), 2, "each failed attempt ended");
 }
+
+#[test]
+fn a_browser_event_names_a_native_browser_tool_and_takes_only_its_own_fields() {
+    let folder = Folder::new();
+    let cases = [
+        (
+            r#"{ "version": 1, "turns": [ { "events": [ { "type": "browser", "id": "b1", "tool": "browser_shout" } ] } ] }"#,
+            "browser names a tool that is not one of the native browser tools.",
+        ),
+        (
+            r#"{ "version": 1, "turns": [ { "events": [ { "type": "browser", "id": "b1", "tool": "browser_snapshot", "when": 1 } ] } ] }"#,
+            "unknown field `when`",
+        ),
+        (
+            r#"{ "version": 1, "turns": [ { "events": [ { "type": "browser", "id": "b1", "tool": "browser_snapshot", "arguments": "url" } ] } ] }"#,
+            "invalid type",
+        ),
+        (
+            r#"{ "version": 1, "turns": [ { "events": [ { "type": "browser", "tool": "browser_snapshot" } ] } ] }"#,
+            "missing field `id`",
+        ),
+    ];
+    for (contents, reason) in cases {
+        folder.write_text("default.json", contents);
+        let fixtures = Fixtures::open(&folder.dir).unwrap();
+        let error = fixtures
+            .next_turn("Ada", "hello")
+            .expect_err("a bad browser event is not a valid file");
+        assert!(error.contains(reason), "{contents}: {error}");
+    }
+    // A known tool with an object of arguments is a valid event, and the turn is handed out.
+    folder.write_text(
+        "default.json",
+        r#"{ "version": 1, "turns": [ { "events": [ { "type": "browser", "id": "b1", "tool": "browser_navigate", "arguments": { "url": "http://127.0.0.1:8080/" } } ] } ] }"#,
+    );
+    let fixtures = Fixtures::open(&folder.dir).unwrap();
+    assert!(fixtures.next_turn("Ada", "hello").is_ok());
+}
