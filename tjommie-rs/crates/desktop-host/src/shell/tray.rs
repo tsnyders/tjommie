@@ -198,6 +198,20 @@ impl Tray {
     pub fn window(&self) -> isize {
         self.hwnd
     }
+
+    /// Takes the icon away now, without waiting for the drop: an app that is quitting must not leave its icon in the
+    /// notification area until the pointer passes over it. The window goes with it (on its own thread, a moment later).
+    pub fn remove(&self) {
+        // SAFETY: a window handle of ours; if it is already gone, the post just fails.
+        unsafe {
+            let _ = PostMessageW(
+                Some(HWND(self.hwnd as *mut c_void)),
+                WM_STOP,
+                WPARAM(0),
+                LPARAM(0),
+            );
+        }
+    }
 }
 
 impl Drop for Tray {
@@ -607,6 +621,34 @@ mod tests {
             !unsafe { IsWindow(Some(window)).as_bool() },
             "dropping the tray left its window"
         );
+    }
+
+    /// Re-review Nit 7: the icon of an app that is quitting is removed when it asks, not whenever the process is torn down.
+    #[test]
+    fn removing_the_tray_takes_its_icon_and_window_away_at_once() {
+        use windows::Win32::UI::WindowsAndMessaging::IsWindow;
+        let (events, _received) = channel();
+        let tray = Tray::start(
+            TrayConfig {
+                tooltip: "Tjommie RS test".into(),
+                icon_png: None,
+            },
+            events,
+        )
+        .unwrap();
+        let window = HWND(tray.window() as *mut c_void);
+        tray.remove();
+        let started = std::time::Instant::now();
+        // SAFETY: a query about a window handle, which is safe to ask of one that is gone.
+        while unsafe { IsWindow(Some(window)).as_bool() } {
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "the tray window was still there after remove()"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!tray.icon_added(), "the tray still says it has an icon");
+        drop(tray);
     }
 
     // Posts the icon's own callback messages to the real window. A click on the actual icon is the owner's check

@@ -732,6 +732,11 @@ fn quit_now(cx: &mut App, quit: fn(&App)) {
     if cx.has_global::<Quit>() {
         cx.global_mut::<Quit>().done = true;
     }
+    // The tray's icon goes now: left to the drop it would linger in the notification area until the pointer passed over it
+    // (the updater's listener holds the tray too, so removing the services would not drop it).
+    if let Some(tray) = services(cx).and_then(|services| services.tray) {
+        tray.remove();
+    }
     quit(cx);
 }
 
