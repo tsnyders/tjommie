@@ -124,11 +124,10 @@ impl HostControl {
             mine = *generation;
         });
         let current = self.generation.subscribe();
-        let watching = local.clone();
         // unguarded: a tokio task, off the UI thread; guarded_async wraps its body
         self.runtime.spawn(guarded_async(
             "watch the daemon's bots",
-            watch_bots(watching, notices, current, mine),
+            watch_bots(local.port, local.token.clone(), notices, current, mine),
         ));
         let _ = self.orders.try_send(Order::Start {
             local,
@@ -176,14 +175,15 @@ impl HostControl {
 /// Follows the daemon's bots for the engine: lists them, then forwards each deletion and browser switch, and starts over
 /// when the connection drops, until a newer order ends it. The first list also lets the engine prune what no bot owns.
 async fn watch_bots(
-    local: Local,
+    port: u16,
+    token: String,
     notices: Sender<Notice>,
     mut current: watch::Receiver<u64>,
     mine: u64,
 ) {
     let ended = |current: &watch::Receiver<u64>| *current.borrow() != mine;
     while !ended(&current) {
-        let connected = Client::connect(Endpoint::Local { port: local.port }, &local.token).await;
+        let connected = Client::connect(Endpoint::Local { port }, &token).await;
         let Ok(client) = connected else {
             tokio::select! {
                 () = tokio::time::sleep(RETRY) => continue,
@@ -404,7 +404,7 @@ fn start(
 ) -> Option<Running> {
     let hosts = &app.hosts;
     let (queue, jobs) = JobQueue::new();
-    let directory = Arc::new(DaemonBots::new(local.clone()));
+    let directory = Arc::new(DaemonBots::new(&local));
     if let Some(engine) = engine {
         let (spawn, bots): (_, Arc<dyn BotDirectory>) = (
             spawner(cx),
@@ -571,6 +571,7 @@ mod tests {
     use std::time::Instant;
 
     use desktop_host::vault::entry::EntryInput;
+    use desktop_host::vault::host::HostToken;
     use desktop_host::vault::login::{Cancel, Confirmation, EntryWindow, LoginError};
     use protocol::vault::LoginEntry;
 
@@ -580,7 +581,7 @@ mod tests {
         Local {
             port: 1,
             token: "token".to_owned(),
-            host_token: "host".to_owned(),
+            host_token: HostToken::new("host"),
         }
     }
 
@@ -667,7 +668,7 @@ mod tests {
         control.start(Local {
             port,
             token: "t".repeat(43),
-            host_token: "h".repeat(43),
+            host_token: HostToken::new("h".repeat(43)),
         });
 
         let deadline = Instant::now() + Duration::from_secs(20);

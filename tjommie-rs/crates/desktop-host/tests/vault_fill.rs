@@ -869,7 +869,7 @@ fn a_saved_login_is_filled_and_cleared_privately_through_the_daemons_vault_route
             &Local {
                 port: server.port(),
                 token: renderer_token,
-                host_token,
+                host_token: desktop_host::vault::host::HostToken::new(host_token),
             },
             Arc::new(AlphaIsListed(f.rig.bot("alpha"))),
             Arc::new(NoJobs),

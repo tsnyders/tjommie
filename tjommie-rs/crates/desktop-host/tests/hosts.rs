@@ -26,10 +26,11 @@ use desktop_host::browser::engine::Reply;
 use desktop_host::browser::host_bridge::{Executor as BrowserExecutor, Job};
 use desktop_host::hosts::{BotDirectory, BotInfo, DirectoryError, Hosts, Local, Parts};
 use desktop_host::vault::gate::{GateError, VaultReply};
+use desktop_host::vault::host::HostToken;
 use desktop_host::vault::login::{Cancel, Confirmation, EntryWindow, LoginError, SecretStore};
 use desktop_host::vault::storage::{VaultError, VaultSecret};
 use futures::future::BoxFuture;
-use protocol::vault::{LoginEntry, VaultHostAction, VaultHostCommand, VaultState};
+use protocol::vault::{LoginEntry, VaultHostAction, VaultHostCommand, VaultList, VaultState};
 use serde_json::{Value, json};
 
 fn secret(letter: char) -> String {
@@ -106,7 +107,7 @@ impl Daemon {
         let local = Local {
             port: server.port(),
             token: renderer,
-            host_token,
+            host_token: HostToken::new(host_token),
         };
         Daemon {
             browser,
@@ -229,6 +230,15 @@ impl BotDirectory for Listed {
     }
 }
 
+/// A daemon whose bot list cannot be read.
+struct Unreadable;
+
+impl BotDirectory for Unreadable {
+    fn find(&self, _: &str) -> BoxFuture<'_, Result<Option<BotInfo>, DirectoryError>> {
+        Box::pin(async { Err(DirectoryError) })
+    }
+}
+
 struct App {
     hosts: Hosts,
     _root: tempfile::TempDir,
@@ -299,6 +309,42 @@ async fn the_app_starts_all_three_clients_of_the_daemon() {
 
     app.hosts.stop(running).await;
     daemon.server.close().await;
+}
+
+/// Review Nit 6: a bot list the app could not read is the daemon being unreachable, not the bot being gone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_bot_list_that_cannot_be_read_is_not_taken_for_a_bot_that_is_gone() {
+    let daemon = Daemon::start('c').await;
+    let app = app();
+    let list = |bot: &str| {
+        VaultHostAction::List(VaultList {
+            bot_id: Some(bot.to_owned()),
+        })
+    };
+    let running = app
+        .hosts
+        .start(
+            &daemon.local,
+            Arc::new(Unreadable),
+            Arc::new(Jobs::default()),
+        )
+        .expect("the clients start");
+    assert_eq!(
+        app.hosts.execute_local(list("bot-1")).await,
+        Err(GateError::Unavailable)
+    );
+    app.hosts.stop(running).await;
+
+    // A list that can be read, and does not have the bot, is the bot being gone.
+    let running = app
+        .hosts
+        .start(&daemon.local, Arc::new(Listed), Arc::new(Jobs::default()))
+        .expect("the clients start");
+    assert!(matches!(
+        app.hosts.execute_local(list("nobody")).await,
+        Err(GateError::Vault(_))
+    ));
+    app.hosts.stop(running).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -401,15 +447,8 @@ async fn a_local_request_is_trusted_only_while_the_window_is_shown_ready_and_the
         app.hosts.execute_local(VaultHostAction::Status).await,
         Err(GateError::Untrusted)
     );
-    // Shown again, but the app's document isn't ready.
+    // Shown again, and the app is quitting.
     app.hosts.window().set_visible(true);
-    app.hosts.window().set_ready(false);
-    assert_eq!(
-        app.hosts.execute_local(VaultHostAction::Status).await,
-        Err(GateError::Untrusted)
-    );
-    // Ready again, and the app is quitting.
-    app.hosts.window().set_ready(true);
     app.hosts.begin_quit();
     assert_eq!(
         app.hosts.execute_local(VaultHostAction::Status).await,

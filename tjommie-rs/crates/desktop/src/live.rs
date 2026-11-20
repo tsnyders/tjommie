@@ -22,6 +22,7 @@ use desktop_host::device_settings::{self, DeviceSettings, RemoteHost};
 use desktop_host::hosts::Local;
 use desktop_host::identity::{Identity, Kind};
 use desktop_host::remote_hosts::{DialError, HostError, HostStore, Hosts, NetworkDialer};
+use desktop_host::vault::host::HostToken;
 use futures::StreamExt as _;
 use futures::future::BoxFuture;
 use gpui::{App, SharedString};
@@ -282,7 +283,7 @@ impl Shared {
                             Some(Local {
                                 port: connection.port,
                                 token: connection.token.expose().to_owned(),
-                                host_token: desktop_host_token.expose().to_owned(),
+                                host_token: HostToken::new(desktop_host_token.expose()),
                             }),
                         ),
                         DaemonState::Failed(reason) => (Some(Err(reason.clone())), None),

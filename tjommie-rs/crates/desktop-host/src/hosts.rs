@@ -47,8 +47,8 @@ pub struct Local {
     pub port: u16,
     /// The ordinary token the app's own connection uses; the bot directory connects with it.
     pub token: String,
-    /// The private capability for the three host routes.
-    pub host_token: String,
+    /// The private capability for the three host routes: wiped from memory when dropped, never printed.
+    pub host_token: HostToken,
 }
 
 impl fmt::Debug for Local {
@@ -90,14 +90,17 @@ pub trait BotDirectory: Send + Sync {
 /// The bot directory over a connection to this PC's daemon (the TypeScript's `nativeClient`), made when it is first asked and
 /// again after a call finds it closed, so a daemon that is slow to come up costs one failed step and not the host.
 pub struct DaemonBots {
-    local: Local,
+    port: u16,
+    /// The ordinary token the app's own connection uses (not the host token, which this never needs).
+    token: String,
     client: tokio::sync::Mutex<Option<Arc<Client>>>,
 }
 
 impl DaemonBots {
-    pub fn new(local: Local) -> Self {
+    pub fn new(local: &Local) -> Self {
         Self {
-            local,
+            port: local.port,
+            token: local.token.clone(),
             client: tokio::sync::Mutex::new(None),
         }
     }
@@ -107,14 +110,9 @@ impl DaemonBots {
         if let Some(client) = slot.as_ref() {
             return Ok(client.clone());
         }
-        let client = Client::connect(
-            Endpoint::Local {
-                port: self.local.port,
-            },
-            &self.local.token,
-        )
-        .await
-        .map_err(|_| DirectoryError)?;
+        let client = Client::connect(Endpoint::Local { port: self.port }, &self.token)
+            .await
+            .map_err(|_| DirectoryError)?;
         let client = Arc::new(client);
         *slot = Some(client.clone());
         Ok(client)
@@ -155,17 +153,15 @@ impl BotDirectory for DaemonBots {
 pub struct WindowFacts {
     present: AtomicBool,
     visible: AtomicBool,
-    ready: AtomicBool,
     focused: AtomicBool,
     quitting: AtomicBool,
 }
 
 impl WindowFacts {
-    /// The window exists, is shown and its document is ready.
+    /// The window exists and is shown. It has no document that loads after that, so it is ready from here on.
     pub fn show(&self) {
         self.present.store(true, Ordering::SeqCst);
         self.visible.store(true, Ordering::SeqCst);
-        self.ready.store(true, Ordering::SeqCst);
     }
 
     /// Whether the window is being presented (shown and not minimized, as GPUI reports it): a hidden or minimized window is not
@@ -184,11 +180,6 @@ impl WindowFacts {
         self.visible.load(Ordering::SeqCst) && self.focused.load(Ordering::SeqCst)
     }
 
-    /// Whether the app's document has loaded and can take requests.
-    pub fn set_ready(&self, ready: bool) {
-        self.ready.store(ready, Ordering::SeqCst);
-    }
-
     fn quitting(&self) -> bool {
         self.quitting.load(Ordering::SeqCst)
     }
@@ -199,7 +190,7 @@ impl WindowFacts {
             visible: self.visible.load(Ordering::SeqCst),
             // GPUI reports a minimized window as not visible, which `visible` already covers.
             minimized: false,
-            document_ready: self.ready.load(Ordering::SeqCst),
+            document_ready: self.present.load(Ordering::SeqCst),
             quitting: self.quitting(),
         }
     }
@@ -314,7 +305,9 @@ impl GateInputs for Inputs {
             };
             match directory.find(&id).await {
                 Ok(Some(_)) => Ok(()),
-                _ => Err(GateError::Vault(BOT_GONE.to_owned())),
+                Ok(None) => Err(GateError::Vault(BOT_GONE.to_owned())),
+                // The daemon could not be asked: that is not the bot being gone.
+                Err(_) => Err(GateError::Unavailable),
             }
         })
     }
@@ -440,14 +433,40 @@ impl Hosts {
         directory: Arc<dyn BotDirectory>,
         jobs: Arc<dyn BrowserExecutor>,
     ) -> io::Result<Running> {
-        let isolation = RemoteWorkerIsolation::new(local.port, HostToken::new(&local.host_token))
+        let isolation = RemoteWorkerIsolation::new(local.port, local.host_token.clone())
             .map(Arc::new)
             .map_err(|_| io::Error::other("The protected provider host could not be reached."))?;
-        let vault = self.vault.clone();
-        let bridge = HostBridge::start(
-            BridgeConfig {
+        // What the gate reads is in place before any client can ask for it, so no early `/vault-host` request meets a vault
+        // with no directory or no isolation. Anything that fails after this takes it away again.
+        self.inputs.directory.set(Some(directory));
+        self.inputs.isolation.swap(Some(isolation.clone()));
+        let unpublish = |isolation: &RemoteWorkerIsolation| {
+            self.inputs.isolation.swap(None);
+            self.inputs.directory.set(None);
+            isolation.close();
+        };
+        // The Logins host first: closing it later is a signal, not a join. The bridge starts last, so the one step that
+        // joins a thread when it is dropped can no longer be dropped by a failure after it, inside the caller's update.
+        let (events, heard) = async_channel::bounded::<HostEvent>(8);
+        let vault_host = match VaultHost::start(
+            HostConfig {
                 port: local.port,
                 token: local.host_token.clone(),
+            },
+            self.gate.clone(),
+            events,
+        ) {
+            Ok(host) => host,
+            Err(error) => {
+                unpublish(&isolation);
+                return Err(error);
+            }
+        };
+        let vault = self.vault.clone();
+        let bridge = match HostBridge::start(
+            BridgeConfig {
+                port: local.port,
+                token: local.host_token.expose().to_owned(),
             },
             jobs,
             // A host that can't reach the daemon, or is refused, locks the vault (`onError`).
@@ -456,24 +475,20 @@ impl Hosts {
                     vault.lock();
                 }
             }),
-        )?;
-        let (events, heard) = async_channel::bounded::<HostEvent>(8);
-        let vault_host = VaultHost::start(
-            HostConfig {
-                port: local.port,
-                token: HostToken::new(&local.host_token),
-            },
-            self.gate.clone(),
-            events,
-        )?;
+        ) {
+            Ok(bridge) => bridge,
+            Err(error) => {
+                vault_host.close();
+                unpublish(&isolation);
+                return Err(error);
+            }
+        };
         // unguarded: a tokio task, not a UI handler; it only logs
         self.runtime.spawn(async move {
             while let Ok(HostEvent::Failed) = heard.recv().await {
                 log::warn!("The Logins host lost the daemon, so Logins locked.");
             }
         });
-        self.inputs.directory.set(Some(directory));
-        self.inputs.isolation.swap(Some(isolation.clone()));
         Ok(Running {
             bridge,
             vault_host,
