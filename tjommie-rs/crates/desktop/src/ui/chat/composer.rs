@@ -41,9 +41,10 @@ use crate::theme::TextStyle;
 use crate::ui::fields::Link;
 use crate::ui::primitives::avatar::{BotAvatar, Pose};
 use crate::ui::primitives::button::{IconButton, IconVariant};
+use crate::ui::primitives::focus_handle;
 use crate::ui::primitives::menu::{Menu, MenuItem};
 use crate::ui::store;
-use crate::ui::style::{TypeExt as _, hsla, palette, r, shadows, theme};
+use crate::ui::style::{TypeExt as _, hsla, palette, r, ring_or_reveal, shadows, theme};
 
 /// Whether the agent has a turn to stop: it's working, or waiting on a tool card in its chat, which holds its turn. An
 /// agent waiting only on a routine it proposed isn't running anything.
@@ -643,6 +644,8 @@ impl Render for Composer {
             }
         }
 
+        // The model pill is a Tab stop, as every menu's trigger is: Enter or Space opens its menu.
+        let model_focus = focus_handle(&format!("composer.{}.model.open", self.bot_id), window, cx);
         let theme = theme(cx);
         let colors = palette(cx);
         let id = self.bot_id.clone();
@@ -787,12 +790,15 @@ impl Render for Composer {
         let model_pill = {
             let trigger_id = format!("composer.{id}.model.open");
             let (provider, model) = (SharedString::from(provider), SharedString::from(model));
-            let pill = move |open: bool, _: &Window, cx: &App| {
+            let pill = move |open: bool, window: &Window, cx: &App| {
                 let theme = crate::ui::style::theme(cx);
                 let colors = palette(cx);
                 div()
                     .semantic(trigger_id.clone(), Role::Button)
                     .aria_label(SharedString::from(format!("Model: {provider} {model}")))
+                    .aria_expanded(open)
+                    .track_focus(&model_focus)
+                    .relative()
                     .h(r(36.))
                     .px(r(theme.space.s14))
                     .flex()
@@ -816,6 +822,7 @@ impl Render for Composer {
                             .text_color(hsla(colors.text.primary))
                             .child(model.clone()),
                     )
+                    .children(ring_or_reveal(&model_focus, theme.radius.pill, window, cx))
                     .into_any_element()
             };
             let mut menu = Menu::new(SharedString::from(format!("composer.{id}.model")), pill)

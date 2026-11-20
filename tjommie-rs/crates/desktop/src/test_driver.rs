@@ -869,17 +869,27 @@ fn type_text(text: &str, window: &mut Window, cx: &mut App) {
 /// Where a click on `id` lands: the middle of the part of it inside the window. A node wholly outside the window
 /// (scrolled away, or past a small window's edge) is refused, rather than clicked into nothing.
 fn target(id: &str, window: &Window) -> Result<Point<Pixels>, String> {
-    let size = window.viewport_size();
-    let bounds = NODES
-        .with(|nodes| {
+    let (bounds, root) = NODES.with(|nodes| {
+        let nodes = nodes.borrow();
+        let find = |id: &str| {
             nodes
-                .borrow()
                 .iter()
                 .find(|node| node.id == id)
                 .map(|node| node.bounds)
-        })
-        .ok_or_else(|| format!("{id} is not on screen"))?;
-    visible_center(bounds, f32::from(size.width), f32::from(size.height))
+        };
+        (find(id), find("root"))
+    });
+    let bounds = bounds.ok_or_else(|| format!("{id} is not on screen"))?;
+    // The window as that frame drew it (the shell's root fills it), as the click is matched against that frame: right
+    // after a resize the live size has changed and the bounds are still the last frame's.
+    let (width, height) = match root {
+        Some(root) => (root.x + root.width, root.y + root.height),
+        None => {
+            let size = window.viewport_size();
+            (f32::from(size.width), f32::from(size.height))
+        }
+    };
+    visible_center(bounds, width, height)
         .map(|(x, y)| point(px(x), px(y)))
         .ok_or_else(|| format!("{id} is outside the window"))
 }
