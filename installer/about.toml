@@ -14,8 +14,8 @@ accepted = [
     "Unicode-3.0",  # the icu_* family and its data, unicode-ident
     "CC0-1.0",      # notify
     "MIT-0",        # borrow-or-share
-    # The one weak copyleft: option-ext (file-level, so it only reaches that crate's own files; we ship it unmodified and the notices carry its
-    # text and source link). Listed so the build works today; it is the owner's call whether it stays (see the 0.6.0 release checklist).
+    # The one weak copyleft: option-ext (file-level, so it only reaches that crate's own files). It is kept on the list by the release
+    # orchestrator's ruling of 2026-11-20: the crate is unmodified, the notices carry its licence text, and its source is public on crates.io.
     "MPL-2.0",
 ]
 
