@@ -20,11 +20,10 @@ use crate::ui::primitives::toggle::Toggle;
 
 const LOGIN: &str = "Start Tjommie when you sign in to Windows";
 
-/// The start-at-sign-in switch: what the app last confirmed (`None` until General first shows, when it's read), and the
-/// line that says why the last change failed.
+/// The start-at-sign-in switch's line that says why the last change failed. The switch itself is read from the app each
+/// time General draws, so a change made outside the app (Task Manager's Startup tab) shows without a restart.
 #[derive(Default)]
 struct LoginState {
-    on: Option<bool>,
     problem: Option<SharedString>,
 }
 
@@ -69,19 +68,11 @@ fn unavailable() -> AnyElement {
         .into_any_element()
 }
 
-/// Start at sign-in. The switch shows what the app last confirmed. A change goes to the app, and then the switch shows
-/// what the app now says; a refusal says why, under the row.
+/// Start at sign-in. The switch shows what the app says now. A change goes to the app, and then the switch shows what the
+/// app now says; a refusal says why, under the row.
 fn login_item(window: &mut Window, app: Arc<dyn DesktopApp>, cx: &mut App) -> AnyElement {
     let login = window.use_keyed_state("settings.general.login", cx, |_, _| LoginState::default());
-    let known = login.read(cx).on;
-    let on = match known {
-        Some(on) => on,
-        None => {
-            let on = app.login_item();
-            login.update(cx, |login, _| login.on = Some(on));
-            on
-        }
-    };
+    let on = app.login_item();
     let said = login.read(cx).problem.clone();
     let change = login.clone();
     let switch =
@@ -98,13 +89,11 @@ fn login_item(window: &mut Window, app: Arc<dyn DesktopApp>, cx: &mut App) -> An
         .into_any_element()
 }
 
-/// Turns starting at sign-in on or off through the app, then keeps what the app now says. A refused change leaves the
-/// switch where the app has it, and says why.
+/// Turns starting at sign-in on or off through the app. A refused change leaves the switch where the app has it, and says
+/// why.
 fn set_login(login: &Entity<LoginState>, app: &dyn DesktopApp, on: bool, cx: &mut App) {
     let outcome = app.set_login_item(on);
-    let confirmed = app.login_item();
     login.update(cx, |login, cx| {
-        login.on = Some(confirmed);
         login.problem = outcome
             .err()
             .map(|text| SharedString::from(format!("Couldn't change this setting: {text}")));
@@ -304,6 +293,21 @@ mod tests {
             [Call::SetLoginItem(false), Call::SetLoginItem(true)]
         );
         assert!(node(SWITCH).unwrap().toggled);
+    }
+
+    /// Re-review Nit 4: a change made outside the app (Task Manager's Startup tab) shows the next time General draws.
+    #[gpui::test]
+    fn the_switch_follows_a_change_made_outside_the_app(cx: &mut TestAppContext) {
+        let desktop = FakeApp::new(true, UpdateState::Idle);
+        let cx = general(cx, Some(Arc::clone(&desktop)));
+        assert!(node(SWITCH).unwrap().toggled);
+        *desktop.login.lock().unwrap() = false;
+        cx.update(|_, cx| cx.refresh_windows());
+        draw(cx);
+        assert!(
+            !node(SWITCH).unwrap().toggled,
+            "the switch kept the value it read when General first drew"
+        );
     }
 
     /// A change the app refuses says why, under the row, and the switch keeps what the app confirmed. The line goes once
