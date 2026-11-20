@@ -195,6 +195,7 @@ pub struct IconButton {
     label: SharedString,
     variant: IconVariant,
     disabled: bool,
+    busy: bool,
     on_press: Option<Handler>,
 }
 
@@ -210,12 +211,20 @@ impl IconButton {
             label: label.into(),
             variant: IconVariant::Plain,
             disabled: false,
+            busy: false,
             on_press: None,
         }
     }
 
     pub fn variant(mut self, variant: IconVariant) -> Self {
         self.variant = variant;
+        self
+    }
+
+    /// At work (a refresh, a check): the icon is the turning loader (it stands still under reduced motion), the name
+    /// says so, and a press does nothing. It keeps the focus, so the key press that started the work keeps its place.
+    pub fn busy(mut self, busy: bool) -> Self {
+        self.busy = busy;
         self
     }
 
@@ -234,6 +243,10 @@ impl IconButton {
 impl RenderOnce for IconButton {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let focus = focus_handle(&self.id, window, cx).tab_stop(!self.disabled);
+        let icon_size = theme(cx).size.icon;
+        let spinner = self
+            .busy
+            .then(|| crate::ui::shell::connection::spinner(icon_size, window, cx));
         let theme = theme(cx);
         let colors = palette(cx);
         let clear = colors.surface.raised_clear;
@@ -248,12 +261,25 @@ impl RenderOnce for IconButton {
             IconVariant::OnDark => (clear, colors.ink.hover, colors.on.primary),
         };
         let size = theme.size.icon_button;
-        let hover = if self.disabled { fill } else { hover };
+        let hover = if self.disabled || self.busy {
+            fill
+        } else {
+            hover
+        };
         let name: SharedString = if self.disabled {
             format!("{}, unavailable", self.label).into()
+        } else if self.busy {
+            format!("{}, busy", self.label).into()
         } else {
             self.label
         };
+        let glyph = spinner.unwrap_or_else(|| {
+            svg()
+                .path(format!("icons/i/175/{}.svg", self.icon))
+                .size(r(icon_size))
+                .text_color(hsla(icon))
+                .into_any_element()
+        });
         let button = div()
             .semantic(self.id.clone(), Role::Button)
             .aria_label(name)
@@ -262,15 +288,13 @@ impl RenderOnce for IconButton {
             .size(r(size))
             .flex_none()
             .child(press_fill(self.id.clone(), fill, hover))
-            .child(
-                svg()
-                    .path(format!("icons/i/175/{}.svg", self.icon))
-                    .size(r(theme.size.icon))
-                    .text_color(hsla(icon)),
-            )
+            .child(glyph)
             .children(ring_or_reveal(&focus, theme.radius.pill, window, cx));
         if self.disabled {
             return base(button, self.id).opacity(0.38).cursor_default();
+        }
+        if self.busy {
+            return base(button, self.id).cursor_default();
         }
         pressable(base(button, self.id), self.on_press)
     }
@@ -366,5 +390,30 @@ mod tests {
         }
         click(cx, "test.off");
         assert_eq!(pressed.get(), 0, "pressing it does nothing");
+    }
+
+    /// Screens' request: a busy icon button says so, keeps its Tab stop and ignores presses.
+    #[gpui::test]
+    fn a_busy_icon_button_says_so_and_ignores_presses(cx: &mut gpui::TestAppContext) {
+        let pressed = Rc::new(Cell::new(0));
+        let counted = pressed.clone();
+        let cx = crate::ui::primitives::keyboard_window(cx, move |_, _| {
+            let counted = counted.clone();
+            div()
+                .child(
+                    super::IconButton::new("test.refresh", "rotate-cw", "Refresh")
+                        .busy(true)
+                        .on_press(move |_, _| counted.set(counted.get() + 1)),
+                )
+                .into_any_element()
+        });
+        draw(cx);
+        assert_eq!(node("test.refresh").unwrap().text, "Refresh, busy");
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        assert!(node("test.refresh").unwrap().focused, "still a Tab stop");
+        cx.simulate_keystrokes("enter");
+        click(cx, "test.refresh");
+        assert_eq!(pressed.get(), 0, "neither Enter nor a click presses it");
     }
 }

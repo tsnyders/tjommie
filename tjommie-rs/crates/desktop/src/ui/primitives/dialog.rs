@@ -17,6 +17,7 @@ use gpui_kit::component::dialog::{Dialog, DialogEntrance};
 use super::button::{Pill, PillVariant};
 use super::scroll::follow_focus;
 use super::shield::BrowserShield;
+use crate::guard::guarded;
 use crate::semantic::{Semantic, SemanticExt as _};
 use crate::ui::style::{TypeExt as _, hsla, palette, r, shadows, theme};
 
@@ -60,6 +61,18 @@ impl Surface {
         // unguarded: forwards the builder's own handler, which the rule checks where the builder writes it
         self.dialog = self.dialog.on_ok(on_ok);
         self
+    }
+
+    /// Enter submits the form, as a web form's submit: `submit` runs (what its Save does) and the dialog stays open
+    /// until the save closes it. Enter in a one-line field reaches here as well (gpui-kit's input passes it on after
+    /// `PressEnter`), so the form needs no Enter handler of its own and never closes unsaved; a button, a toggle and a
+    /// several-line field keep their own Enter.
+    pub fn on_submit(self, submit: impl Fn(&mut Window, &mut App) + 'static) -> Self {
+        // unguarded: the submit runs in guarded inside; the constant false keeps the dialog open for the save
+        self.on_ok(move |_, window, cx| {
+            guarded("submit a dialog's form", || submit(window, cx));
+            false
+        })
     }
 
     pub fn on_close(
@@ -272,6 +285,51 @@ mod tests {
         cx.simulate_keystrokes("tab enter");
         assert_eq!(removed.get(), 0, "Enter on Cancel cancels");
         assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
+    }
+
+    /// Screens' request: Enter in a form's field submits it once and leaves the dialog to the save; Enter on a button
+    /// presses that button only.
+    #[gpui::test]
+    fn enter_in_a_field_submits_once_and_keeps_the_dialog_open(cx: &mut gpui::TestAppContext) {
+        use gpui::AppContext as _;
+        use gpui_kit::component::input::InputState;
+        let cx = test_window(cx, |_, _| div().into_any_element());
+        let (submitted, cancelled) = (Rc::new(Cell::new(0)), Rc::new(Cell::new(0)));
+        let (counted, cancels) = (submitted.clone(), cancelled.clone());
+        let name = cx.update(|window, cx| cx.new(|cx| InputState::new(window, cx)));
+        let field = name.clone();
+        cx.update(move |window, cx| {
+            open_dialog(window, cx, move |dialog, _, _| {
+                let (counted, cancels) = (counted.clone(), cancels.clone());
+                dialog
+                    // unguarded: a test's counter, which on_submit runs in guarded
+                    .on_submit(move |_, _| counted.set(counted.get() + 1))
+                    .child(crate::ui::fields::TextField::new(
+                        "form.name",
+                        "Name",
+                        &field,
+                    ))
+                    .child(
+                        Pill::new("form.cancel", "Cancel")
+                            .on_press(move |_, _| cancels.set(cancels.get() + 1)),
+                    )
+            })
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.update(|window, cx| name.update(cx, |name, cx| name.focus(window, cx)));
+        cx.simulate_keystrokes("a enter");
+        assert_eq!(submitted.get(), 1, "Enter in the field submits, once");
+        assert!(
+            cx.update(|window, cx| window.has_active_dialog(cx)),
+            "the save closes it, not Enter"
+        );
+        cx.simulate_keystrokes("tab enter");
+        assert_eq!(
+            (submitted.get(), cancelled.get()),
+            (1, 1),
+            "Enter on Cancel presses Cancel only"
+        );
     }
 
     #[gpui::test]

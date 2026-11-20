@@ -34,6 +34,7 @@ pub struct MenuItem {
     id: SharedString,
     label: SharedString,
     icon: Option<&'static str>,
+    picture: Option<AnyElement>,
     end: Option<SharedString>,
     detail: Option<SharedString>,
     selected: bool,
@@ -51,6 +52,7 @@ impl MenuItem {
             id: id.into(),
             label: label.into(),
             icon: None,
+            picture: None,
             end: None,
             detail: None,
             selected: false,
@@ -62,6 +64,13 @@ impl MenuItem {
     /// A Lucide icon by name, drawn at 17 px.
     pub fn icon(mut self, name: &'static str) -> Self {
         self.icon = Some(name);
+        self
+    }
+
+    /// A picture where the icon goes, such as an agent's avatar; the caller sizes it (the icon's 17 px, or 18 px on a
+    /// two-line row).
+    pub fn picture(mut self, picture: impl IntoElement) -> Self {
+        self.picture = Some(picture.into_any_element());
         self
     }
 
@@ -287,6 +296,9 @@ fn row(
                     .text_color(hsla(colors.icon.base)),
             )
         })
+        .when_some(item.picture, |row, picture| {
+            row.child(div().flex_none().flex().items_center().child(picture))
+        })
         .map(|row| match item.detail {
             Some(detail) => row.child(
                 div()
@@ -393,6 +405,32 @@ mod tests {
             crate::ui::testing::node("test.two").is_none(),
             "and the menu closed"
         );
+    }
+
+    /// Screens' request: a row can show a picture (an agent's avatar) where the icon goes.
+    #[gpui::test]
+    fn a_row_shows_its_picture(cx: &mut gpui::TestAppContext) {
+        let cx = test_window(cx, |_, _| {
+            Menu::new("test.menu", |_, _, _| {
+                div().id("test.trigger").size(px(40.)).into_any_element()
+            })
+            .item(
+                MenuItem::new("test.forge", "Forge", |_, _| {}).picture(
+                    div()
+                        .semantic("test.avatar", Role::Image)
+                        .aria_label("Forge's avatar")
+                        .size(px(17.)),
+                ),
+            )
+            .into_any_element()
+        });
+        cx.simulate_click(point(px(20.), px(20.)), Modifiers::none());
+        crate::ui::testing::draw(cx);
+        let (row, picture) = (
+            crate::ui::testing::node("test.forge").unwrap(),
+            crate::ui::testing::node("test.avatar").unwrap(),
+        );
+        assert!(picture.bounds.x < row.bounds.x + 40., "at the row's start");
     }
 
     #[gpui::test]
