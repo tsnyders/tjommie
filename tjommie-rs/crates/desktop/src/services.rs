@@ -51,6 +51,7 @@ use url::Url;
 use crate::app_controls::{AppControls, DesktopApp};
 use crate::guard::{guarded, guarded_async};
 use crate::hosts::AppHosts;
+use crate::live::DaemonControl;
 use crate::notices::{self, Notice};
 use crate::ui::browser::local::window_hwnd;
 use crate::ui::shell::route::{Navigate as _, Route};
@@ -486,13 +487,15 @@ impl Services {
     }
 }
 
-/// How the daemon's stop reads to the quit (`stopDaemonBeforeQuit`'s "forced" or not). No daemon to stop is a plain stop.
+/// How the daemon's stop reads to the quit (`stopDaemonBeforeQuit`'s "forced" or not). `Ok(None)` is that there was no daemon
+/// to stop, which is a plain stop to `run_quit` but is not logged as one.
 pub fn daemon_stop(
     outcome: Option<Result<StopOutcome, DaemonError>>,
-) -> Result<DaemonStop, String> {
+) -> Result<Option<DaemonStop>, String> {
     match outcome {
-        None | Some(Ok(StopOutcome::Stopped)) => Ok(DaemonStop::Graceful),
-        Some(Ok(StopOutcome::Forced)) => Ok(DaemonStop::Forced),
+        None => Ok(None),
+        Some(Ok(StopOutcome::Stopped)) => Ok(Some(DaemonStop::Graceful)),
+        Some(Ok(StopOutcome::Forced)) => Ok(Some(DaemonStop::Forced)),
         Some(Err(error)) => Err(error.to_string()),
     }
 }
@@ -501,7 +504,7 @@ pub fn daemon_stop(
 struct AppQuit {
     cx: AsyncApp,
     hosts: AppHosts,
-    stopper: Option<crate::live::Stopper>,
+    stopper: Option<Arc<dyn DaemonControl>>,
     window: AnyWindowHandle,
     /// An e2e run can hold the quit once the daemon has stopped, to look at the app while it is still alive.
     #[cfg(any(test, feature = "test-driver"))]
@@ -527,13 +530,16 @@ impl QuitHost for AppQuit {
     async fn stop_daemon(&self) -> Result<DaemonStop, String> {
         let stopped = match &self.stopper {
             Some(stopper) => stopper.stop().await,
-            None => Ok(DaemonStop::Graceful),
+            None => Ok(None),
         };
         // A forced stop or one that could not be confirmed is warned about by `run_quit`.
-        if stopped == Ok(DaemonStop::Graceful) {
-            log::info!("The daemon stopped when asked.");
+        match &stopped {
+            Ok(Some(DaemonStop::Graceful)) => log::info!("The daemon stopped when asked."),
+            Ok(None) => log::info!("There was no daemon to stop."),
+            Ok(Some(DaemonStop::Forced)) | Err(_) => {}
         }
-        stopped
+        // Nothing to stop is a plain stop to the quit.
+        stopped.map(|stop| stop.unwrap_or(DaemonStop::Graceful))
     }
 
     async fn close_native_host(&self) {
@@ -1110,15 +1116,16 @@ mod tests {
     }
 
     #[test]
-    fn the_daemons_stop_reads_as_graceful_forced_or_unconfirmed() {
-        assert_eq!(daemon_stop(None), Ok(DaemonStop::Graceful));
+    fn the_daemons_stop_reads_as_nothing_graceful_forced_or_unconfirmed() {
+        // Nothing to stop is not a stop: the quit's log must not say a daemon stopped when none did.
+        assert_eq!(daemon_stop(None), Ok(None));
         assert_eq!(
             daemon_stop(Some(Ok(StopOutcome::Stopped))),
-            Ok(DaemonStop::Graceful)
+            Ok(Some(DaemonStop::Graceful))
         );
         assert_eq!(
             daemon_stop(Some(Ok(StopOutcome::Forced))),
-            Ok(DaemonStop::Forced)
+            Ok(Some(DaemonStop::Forced))
         );
         assert!(daemon_stop(Some(Err(DaemonError::StopTimedOut))).is_err());
     }

@@ -22,7 +22,9 @@ use desktop_host::device_settings::{self, DeviceSettings, RemoteHost};
 use desktop_host::hosts::Local;
 use desktop_host::identity::{Identity, Kind};
 use desktop_host::remote_hosts::{DialError, HostError, HostStore, Hosts, NetworkDialer};
+use desktop_host::updater::DaemonStop;
 use desktop_host::vault::host::HostToken;
+use futures::FutureExt as _;
 use futures::StreamExt as _;
 use futures::future::BoxFuture;
 use gpui::{App, SharedString};
@@ -205,6 +207,20 @@ struct Shared {
     /// The browser, Logins and worker clients of this PC's daemon: started for each daemon this run starts, never for a
     /// saved PC, and stopped before the daemon restarts or the app quits.
     hosts: HostControl,
+    /// The stop "Try again" has begun: it takes the supervisor out of its slot, so a quit that arrives meanwhile finds the
+    /// slot empty and has to wait for this instead of reading the empty slot as a daemon that is already stopped.
+    stopping: watch::Sender<Stopping>,
+}
+
+/// Where a daemon stop that began on "Try again" stands.
+#[derive(Debug, Clone, PartialEq)]
+enum Stopping {
+    /// None is running. What the slot holds (or does not) is the whole story.
+    Idle,
+    /// The clients and then the daemon are being stopped.
+    InFlight,
+    /// The stop is over, and how it went: `Ok(None)` is that there was nothing to stop.
+    Done(Result<Option<DaemonStop>, String>),
 }
 
 type SavedHosts<'a> =
@@ -232,6 +248,9 @@ impl Shared {
             return;
         }
         let old = locked(supervisor).take();
+        if old.is_some() {
+            self.stopping.send_replace(Stopping::InFlight);
+        }
         let shared = Arc::clone(self);
         // unguarded: a tokio task, off the UI thread, where a panic ends only that task
         self.runtime.spawn(async move {
@@ -239,11 +258,16 @@ impl Shared {
             let _ =
                 tokio::time::timeout(crate::hosts::STOP_TIMEOUT, shared.hosts.stop(false)).await;
             if let Some(old) = old {
-                let _ = old.stop_before_quit(daemon_process::QUIT_TIMEOUT).await;
+                let outcome = old.stop_before_quit(daemon_process::QUIT_TIMEOUT).await;
+                // A quit that arrived meanwhile is waiting for exactly this.
+                shared
+                    .stopping
+                    .send_replace(Stopping::Done(crate::services::daemon_stop(outcome)));
             }
             // A quit during the stop above: no new daemon starts while the app exits.
             if !shared.hosts.quitting() {
                 shared.start_supervisor();
+                shared.stopping.send_replace(Stopping::Idle);
             }
         });
     }
@@ -569,8 +593,9 @@ pub fn start(identity: Identity, root: PathBuf, cx: &mut App) {
         dialer: NetworkDialer::new(),
         connection: OnceLock::new(),
         hosts: app_hosts.control.clone(),
+        stopping: watch::channel(Stopping::Idle).0,
     });
-    cx.set_global(Stopper(Arc::clone(&shared)));
+    cx.set_global(DaemonOwner(Arc::new(Stopper(Arc::clone(&shared)))));
     crate::hosts::serve(app_hosts.clone(), orders, requests, cx);
     cx.set_global(app_hosts);
     let live = AppConnection::new(DesktopEnv(Arc::clone(&shared)));
@@ -590,37 +615,76 @@ pub fn start(identity: Identity, root: PathBuf, cx: &mut App) {
     cx.set_global(Runtime(Some(runtime)));
 }
 
+/// What a quit asks of whoever owns this PC's daemon: stop it, and start it again when the quit is given up. The app's
+/// owner is [`Stopper`]; a test answers for itself.
+pub trait DaemonControl: Send + Sync {
+    /// Stops the daemon and says how it went: `Ok(Some(..))` gracefully or only by force (`stopDaemonBeforeQuit`),
+    /// `Ok(None)` when there was nothing to stop, `Err` when its stop could not be confirmed.
+    fn stop(&self) -> BoxFuture<'static, Result<Option<DaemonStop>, String>>;
+    /// Starts the daemon again after a stop the app gave up on (an update that was not installed).
+    fn restart_daemon(&self);
+}
+
+/// The daemon's owner, for the quit.
+pub struct DaemonOwner(pub Arc<dyn DaemonControl>);
+
+impl gpui::Global for DaemonOwner {}
+
 /// Stops this PC's daemon when the app quits: the supervisor stops it within the quit timeout, then by force.
 #[derive(Clone)]
 pub struct Stopper(Arc<Shared>);
 
-impl gpui::Global for Stopper {}
+impl DaemonControl for Stopper {
+    fn stop(&self) -> BoxFuture<'static, Result<Option<DaemonStop>, String>> {
+        Stopper::stop(self).boxed()
+    }
+
+    fn restart_daemon(&self) {
+        Stopper::restart_daemon(self);
+    }
+}
+
+/// Waits for the stop "Try again" has in flight, and says how it went. With none in flight there is nothing to stop.
+async fn wait_for_stop(
+    mut stopping: watch::Receiver<Stopping>,
+) -> Result<Option<DaemonStop>, String> {
+    loop {
+        match &*stopping.borrow_and_update() {
+            Stopping::Idle => return Ok(None),
+            Stopping::Done(outcome) => return outcome.clone(),
+            Stopping::InFlight => {}
+        }
+        if stopping.changed().await.is_err() {
+            return Ok(None);
+        }
+    }
+}
 
 impl Stopper {
-    /// Stops the daemon and says how it went: gracefully, or only by force (`stopDaemonBeforeQuit`); `Err` when its stop
-    /// could not be confirmed. Nothing to stop for a development daemon or none.
-    pub fn stop(
-        &self,
-    ) -> impl Future<Output = Result<desktop_host::updater::DaemonStop, String>> + Send + use<>
-    {
+    /// Stops the daemon and says how it went (see [`DaemonControl::stop`]). Nothing to stop for a development daemon or
+    /// none. A daemon that "Try again" took out of its slot is being stopped already: this waits for that stop and reports
+    /// how it went, so a quit never goes on (and an installer never starts) beside a daemon that is still stopping.
+    pub fn stop(&self) -> impl Future<Output = Result<Option<DaemonStop>, String>> + Send + use<> {
         // From here no daemon restarts (a "Try again" in flight, a supervisor's own restart) and no client starts.
         self.0.hosts.begin_quit();
         let old = match &self.0.daemon {
             Daemon::Supervised { supervisor, .. } => locked(supervisor).take(),
             Daemon::Development { .. } | Daemon::Unavailable(_) => None,
         };
+        let in_flight = self.0.stopping.subscribe();
         // unguarded: a tokio task, off the UI thread, where a panic ends only that task
         let stopped = self.0.runtime.spawn(async move {
             match old {
-                Some(old) => old.stop_before_quit(daemon_process::QUIT_TIMEOUT).await,
-                None => None,
+                Some(old) => crate::services::daemon_stop(
+                    old.stop_before_quit(daemon_process::QUIT_TIMEOUT).await,
+                ),
+                None => wait_for_stop(in_flight).await,
             }
         });
         async move {
-            match stopped.await {
-                Ok(outcome) => crate::services::daemon_stop(outcome),
-                Err(_) => Err("The background service's stop did not finish.".to_owned()),
-            }
+            stopped
+                .await
+                .unwrap_or_else(|_| Err("The background service's stop did not finish.".to_owned()))
         }
     }
 
@@ -633,9 +697,9 @@ impl Stopper {
     }
 }
 
-/// The daemon's stopper, once the live connection is started.
-pub fn stopper(cx: &App) -> Option<Stopper> {
-    cx.try_global::<Stopper>().cloned()
+/// The daemon's owner, once the live connection is started.
+pub fn stopper(cx: &App) -> Option<Arc<dyn DaemonControl>> {
+    cx.try_global::<DaemonOwner>().map(|owner| owner.0.clone())
 }
 
 /// The live runtime's handle, for UI code that calls a desktop-host function which spawns on Tokio while it also
@@ -863,15 +927,34 @@ mod tests {
         );
     }
 
-    /// A supervised `Shared` whose daemon launch only counts: the exe is not there, so nothing really starts.
-    fn counting_shared(root: &Path, launches: Arc<AtomicUsize>) -> Arc<Shared> {
-        let (hosts, _orders) = HostControl::new(tokio::runtime::Handle::current());
-        Arc::new(Shared {
+    /// A supervised `Shared` whose daemon launch only counts: the exe is not there, so nothing really starts. The UI
+    /// thread's side of the clients' stop is a task that answers each `Stop` order (while `answering` is open, so a test can
+    /// hold a stop in flight), as the app's `serve` loop does.
+    struct Fixture {
+        shared: Arc<Shared>,
+        launches: Arc<AtomicUsize>,
+        answering: watch::Sender<bool>,
+    }
+
+    fn counting_shared(root: &Path) -> Fixture {
+        let launches = Arc::new(AtomicUsize::new(0));
+        let counted = launches.clone();
+        let (hosts, orders) = HostControl::new(tokio::runtime::Handle::current());
+        let (answering, mut open) = watch::channel(true);
+        tokio::spawn(async move {
+            while let Ok(order) = orders.recv().await {
+                if let crate::hosts::Order::Stop { done, .. } = order {
+                    let _ = open.wait_for(|open| *open).await;
+                    let _ = done.send(());
+                }
+            }
+        });
+        let shared = Arc::new(Shared {
             runtime: tokio::runtime::Handle::current(),
             root: root.to_owned(),
             daemon: Daemon::Supervised {
                 launch: Box::new(move || {
-                    launches.fetch_add(1, Ordering::SeqCst);
+                    counted.fetch_add(1, Ordering::SeqCst);
                     DaemonLaunch::new(root_exe(), Vec::new())
                 }),
                 supervisor: Mutex::new(None),
@@ -882,7 +965,13 @@ mod tests {
             dialer: NetworkDialer::new(),
             connection: OnceLock::new(),
             hosts,
-        })
+            stopping: watch::channel(Stopping::Idle).0,
+        });
+        Fixture {
+            shared,
+            launches,
+            answering,
+        }
     }
 
     fn root_exe() -> PathBuf {
@@ -893,8 +982,8 @@ mod tests {
     #[tokio::test]
     async fn no_daemon_starts_once_the_app_is_quitting() {
         let root = std::env::temp_dir().join(format!("tjommie-live-quit-{}", std::process::id()));
-        let launches = Arc::new(AtomicUsize::new(0));
-        let shared = counting_shared(&root, launches.clone());
+        let first = counting_shared(&root);
+        let (shared, launches) = (first.shared.clone(), first.launches.clone());
 
         // The quit began before "Try again" was pressed.
         drop(shared.hosts.stop(true));
@@ -908,12 +997,13 @@ mod tests {
         shared.hosts.resume();
 
         // The quit began after it: the stop of the old daemon is still running when the restart would start the new one.
-        let racing = counting_shared(&root, launches.clone());
+        let second = counting_shared(&root);
+        let (racing, raced) = (second.shared.clone(), second.launches.clone());
         racing.supervise();
         drop(racing.hosts.stop(true));
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert_eq!(
-            launches.load(Ordering::SeqCst),
+            raced.load(Ordering::SeqCst),
             0,
             "a daemon started while the quit stopped the old one"
         );
@@ -922,6 +1012,53 @@ mod tests {
         shared.supervise();
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert_eq!(launches.load(Ordering::SeqCst), 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Re-review M2: a quit that begins during "Try again" finds the supervisor's slot empty (the Try again took it), and must
+    /// not read that as a daemon that has stopped: it waits for the stop in flight and says how it went, so the installer
+    /// can never start beside a daemon that is still stopping.
+    #[tokio::test]
+    async fn a_quit_during_try_again_waits_for_the_stop_in_flight() {
+        let root =
+            std::env::temp_dir().join(format!("tjommie-live-tryagain-{}", std::process::id()));
+        let f = counting_shared(&root);
+        // A daemon in the slot (its exe is not there, so it fails to start, which is enough to be stopped).
+        f.shared.start_supervisor();
+        assert_eq!(f.launches.load(Ordering::SeqCst), 1);
+        // "Try again": the supervisor leaves its slot and its stop begins, held at the clients' stop (the UI thread is slow).
+        f.answering.send_replace(false);
+        f.shared.supervise();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let quitting = Stopper(f.shared.clone()).stop();
+        tokio::pin!(quitting);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(300), &mut quitting)
+                .await
+                .is_err(),
+            "the quit read the empty slot as a daemon that had stopped, with its stop still in flight"
+        );
+        // The stop finishes; the quit hears how it went, and nothing started a daemon in a quit.
+        f.answering.send_replace(true);
+        let outcome = tokio::time::timeout(Duration::from_secs(10), quitting)
+            .await
+            .expect("the quit never heard that the stop had finished");
+        assert!(outcome.is_ok(), "{outcome:?}");
+        assert_eq!(
+            f.launches.load(Ordering::SeqCst),
+            1,
+            "a daemon started in a quit"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Re-review Nit 6: with nothing running and nothing in flight there is nothing to stop, and the quit is told so.
+    #[tokio::test]
+    async fn a_quit_with_no_daemon_has_nothing_to_stop() {
+        let root =
+            std::env::temp_dir().join(format!("tjommie-live-nothing-{}", std::process::id()));
+        let f = counting_shared(&root);
+        assert_eq!(Stopper(f.shared.clone()).stop().await, Ok(None));
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -127,6 +127,11 @@ fn e2e_quit_from_the_tray_hides_the_window_at_once_and_stops_everything() {
         !log.contains("did not stop within"),
         "a stop timed out: {log}"
     );
+    // A daemon really stopped here, so the quit says that and not that there was none to stop.
+    assert!(
+        !log.contains("There was no daemon to stop."),
+        "the quit found no daemon to stop: {log}"
+    );
     assert!(
         common::daemons(app.pid()).is_empty() && !common::process_alive(daemon[0]),
         "the daemon outlived the app"
