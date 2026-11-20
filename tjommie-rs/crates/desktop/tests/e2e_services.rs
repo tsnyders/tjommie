@@ -1,6 +1,6 @@
 //! The desktop services through the test driver (Phase 3 M6 follow-up; plan T6.1 to T6.3): closing the window hides it and the
 //! app keeps running, the tray's Quit stops everything, a notice becomes a toast and a routine failure is acknowledged only
-//! after its toast, and a dev launch never writes the login item. An e2e build swaps the real tray, toasts and registry for
+//! after its toast, and a test launch never writes the login item. An e2e build swaps the real tray, toasts and registry for
 //! in-memory stand-ins the driver reads (`Request::Services`, `Request::Poke`), so nothing here puts an icon in the owner's
 //! tray, a toast on their desktop or a value in their registry. Run with the e2e identity, the daemon built with the switch
 //! beside the app: `cargo build -p daemon --bin tjommie-daemon --features provider-fixtures --locked`, then
@@ -235,7 +235,7 @@ fn e2e_a_notice_is_a_toast_and_a_routine_failure_is_acknowledged_only_after_its_
 }
 
 #[test]
-fn e2e_a_dev_launch_never_writes_the_login_item() {
+fn e2e_a_test_launch_never_writes_the_login_item() {
     assert_eq!(identity::CURRENT.name, "e2e");
     let root = owner_safety::test_root().unwrap();
     let mut app = common::launch(root.path(), &[("default.json", common::QUIET)]);
