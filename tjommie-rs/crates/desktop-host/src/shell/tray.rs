@@ -20,12 +20,12 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconFromResourceEx, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
-    DestroyMenu, DispatchMessageW, GWLP_USERDATA, GetCursorPos, GetMessageW, GetWindowLongPtrW,
-    HICON, IDI_APPLICATION, LR_DEFAULTCOLOR, LoadIconW, MF_GRAYED, MF_SEPARATOR, MF_STRING, MSG,
-    PostMessageW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SetForegroundWindow,
-    SetWindowLongPtrW, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage,
-    UnregisterClassW, WM_APP, WM_CLOSE, WM_DESTROY, WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP, WNDCLASSW,
-    WS_EX_TOOLWINDOW, WS_POPUP,
+    DestroyMenu, DestroyWindow, DispatchMessageW, GWLP_USERDATA, GetCursorPos, GetMessageW,
+    GetWindowLongPtrW, HICON, IDI_APPLICATION, LR_DEFAULTCOLOR, LoadIconW, MF_GRAYED, MF_SEPARATOR,
+    MF_STRING, MSG, PostMessageW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW,
+    SetForegroundWindow, SetWindowLongPtrW, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu,
+    TranslateMessage, UnregisterClassW, WM_APP, WM_CLOSE, WM_DESTROY, WM_LBUTTONUP, WM_NULL,
+    WM_RBUTTONUP, WNDCLASSW, WS_EX_TOOLWINDOW, WS_POPUP,
 };
 use windows::core::{PCWSTR, w};
 
@@ -96,6 +96,9 @@ const ID_INFO: usize = 4;
 const ICON_ID: u32 = 1;
 /// The callback message the icon posts to the window; `lParam` is the mouse message.
 const WM_TRAY: u32 = WM_APP + 1;
+/// Posted by `Drop` and by nothing else: it is the only thing that ends the tray's window. A `WM_CLOSE` from outside is
+/// ignored, since default handling would destroy the window and take the icon with it.
+const WM_STOP: u32 = WM_APP + 2;
 
 fn event_for_command(id: usize) -> Option<TrayEvent> {
     match id {
@@ -203,7 +206,7 @@ impl Drop for Tray {
         unsafe {
             let _ = PostMessageW(
                 Some(HWND(self.hwnd as *mut c_void)),
-                WM_CLOSE,
+                WM_STOP,
                 WPARAM(0),
                 LPARAM(0),
             );
@@ -366,8 +369,19 @@ fn handle(hwnd: HWND, message: u32, lparam: LPARAM) -> Option<LRESULT> {
         }
         return Some(LRESULT(0));
     }
+    if message == WM_STOP {
+        // SAFETY: destroys this thread's own window, from this thread.
+        let _ = unsafe { DestroyWindow(hwnd) };
+        return Some(LRESULT(0));
+    }
+    if message == WM_CLOSE {
+        // Nobody of ours asks this way: a stray close must not take the icon away.
+        return Some(LRESULT(0));
+    }
     if message == WM_DESTROY {
         remove_icon(hwnd);
+        // The icon is gone, so `icon_added` stops saying the window can be brought back from the tray.
+        shared.icon_added.store(false, Ordering::SeqCst);
         // SAFETY: ends this thread's message loop.
         unsafe { PostQuitMessage(0) };
         return Some(LRESULT(0));
@@ -560,6 +574,39 @@ mod tests {
                 "the tray window must be enumerable as top-level"
             );
         }
+    }
+
+    /// Re-review Nit 1: a WM_CLOSE from outside (nothing of ours posts one) must not destroy the tray's window, which would
+    /// take the icon with it while the app still hides on close for want of a way back.
+    #[test]
+    fn a_close_from_outside_does_not_take_the_tray_away() {
+        use windows::Win32::UI::WindowsAndMessaging::IsWindow;
+        let (events, _received) = channel();
+        let tray = Tray::start(
+            TrayConfig {
+                tooltip: "Tjommie RS test".into(),
+                icon_png: None,
+            },
+            events,
+        )
+        .unwrap();
+        let window = HWND(tray.window() as *mut c_void);
+        // SAFETY: posts to, and asks about, the window this test owns.
+        unsafe { PostMessageW(Some(window), WM_CLOSE, WPARAM(0), LPARAM(0)) }.unwrap();
+        // The message has been handled once a later one posted behind it has.
+        unsafe { PostMessageW(Some(window), WM_NULL, WPARAM(0), LPARAM(0)) }.unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(
+            // SAFETY: a query about the window this test owns.
+            unsafe { IsWindow(Some(window)).as_bool() },
+            "a foreign WM_CLOSE destroyed the tray window"
+        );
+        drop(tray);
+        assert!(
+            // SAFETY: a query about a window handle, which is safe to ask of one that is gone.
+            !unsafe { IsWindow(Some(window)).as_bool() },
+            "dropping the tray left its window"
+        );
     }
 
     // Posts the icon's own callback messages to the real window. A click on the actual icon is the owner's check
