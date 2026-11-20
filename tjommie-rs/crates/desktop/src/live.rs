@@ -940,12 +940,15 @@ mod tests {
     /// A supervised `Shared` whose daemon launch only counts: the exe is not there, so nothing really starts. The UI
     /// thread's side of the clients' stop is a task that answers each `Stop` order (while `answering` is open, so a test can
     /// hold a stop in flight), as the app's `serve` loop does.
+    /// A held launch: it says it has begun (the sender), then waits to be let go (the receiver).
+    type HeldLaunch = Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>;
+
     struct Fixture {
         shared: Arc<Shared>,
         launches: Arc<AtomicUsize>,
         answering: watch::Sender<bool>,
         /// The next launch, if a test holds it: it says it has begun, then waits to be let go.
-        held: Arc<Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>>,
+        held: Arc<Mutex<HeldLaunch>>,
     }
 
     impl Fixture {
@@ -963,8 +966,7 @@ mod tests {
     fn counting_shared(root: &Path) -> Fixture {
         let launches = Arc::new(AtomicUsize::new(0));
         let counted = launches.clone();
-        let held: Arc<Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>> =
-            Arc::default();
+        let held: Arc<Mutex<HeldLaunch>> = Arc::default();
         let holding = held.clone();
         let (hosts, orders) = HostControl::new(tokio::runtime::Handle::current());
         let (answering, mut open) = watch::channel(true);
