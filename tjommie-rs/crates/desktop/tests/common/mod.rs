@@ -25,6 +25,16 @@ pub const QUIET: &str = r#"{ "version": 1, "turns": [ { "events": [
 /// The app on `root` with the fixtures daemon, up to the Agents screen. `fixtures` are `(file name, contents)`: each file
 /// is an agent's recorded turns (`<agent name>.json`, or `default.json`).
 pub fn launch(root: &Path, fixtures: &[(&str, &str)]) -> Client {
+    let mut app = launch_args(root, fixtures, &[]);
+    // A daemon without the switch refuses the variable and never starts: this wait is where that shows.
+    app.wait("screen.agents", Predicate::Exists, 60_000)
+        .unwrap();
+    app
+}
+
+/// `launch`, with command-line arguments for the app (`--hidden`), and without waiting for a screen: a window that starts in
+/// the tray draws nothing to wait for.
+pub fn launch_args(root: &Path, fixtures: &[(&str, &str)], args: &[&str]) -> Client {
     assert!(
         daemon_exe().exists(),
         "build the daemon first: cargo build -p daemon --bin tjommie-daemon --features provider-fixtures --locked"
@@ -34,19 +44,58 @@ pub fn launch(root: &Path, fixtures: &[(&str, &str)]) -> Client {
     for (name, contents) in fixtures {
         std::fs::write(folder.join(name), contents).unwrap();
     }
-    let mut app = Client::launch_with(
+    Client::launch_args(
         env!("CARGO_BIN_EXE_tjommie-desktop"),
         root,
         &[
             ("TJOMMIE_DAEMON_EXE", daemon_exe().to_str().unwrap()),
             ("TJOMMIE_PROVIDER_FIXTURES", folder.to_str().unwrap()),
         ],
+        args,
     )
-    .unwrap();
-    // A daemon without the switch refuses the variable and never starts: this wait is where that shows.
-    app.wait("screen.agents", Predicate::Exists, 60_000)
+    .unwrap()
+}
+
+/// The process ids of the app's daemon: `tjommie-daemon.exe` children of the app.
+pub fn daemons(app: u32) -> Vec<u32> {
+    let filter = format!("ParentProcessId={app} and Name='tjommie-daemon.exe'");
+    let command = format!("(Get-CimInstance Win32_Process -Filter \"{filter}\").ProcessId");
+    let output = desktop_host::spawn::command("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &command])
+        .output()
         .unwrap();
-    app
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| line.trim().parse().ok())
+        .collect()
+}
+
+/// Whether process `pid` is running.
+pub fn process_alive(pid: u32) -> bool {
+    let command = format!("(Get-Process -Id {pid} -ErrorAction SilentlyContinue) -ne $null");
+    let output = desktop_host::spawn::command("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &command])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&output.stdout).trim() == "True"
+}
+
+/// Asks the app's window to close as the person does (WM_CLOSE, which `taskkill` without /F sends).
+pub fn close_window(app: u32) {
+    let closed = desktop_host::spawn::command("taskkill")
+        .args(["/PID", &app.to_string()])
+        .output()
+        .unwrap();
+    assert!(closed.status.success(), "the window was not asked to close");
+}
+
+/// Polls `condition` until it holds, or fails after `timeout` saying `what`.
+pub fn eventually(what: &str, timeout: Duration, mut condition: impl FnMut() -> bool) {
+    let started = Instant::now();
+    while !condition() {
+        assert!(started.elapsed() < timeout, "timed out waiting for: {what}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
 }
 
 /// Makes an agent through the New agent screen, with its browser on or off, and lands on its chat.
