@@ -682,38 +682,56 @@ pub fn begin_quit(cx: &mut App) {
         .and_then(|services| services.fakes.as_ref())
         .map(|fakes| fakes.hold_quit.clone());
     cx.spawn(async move |cx| {
-        guarded_async("quit", async move {
+        let for_host = cx.clone();
+        let outcome = guarded_async("quit", async move {
             let host = AppQuit {
-                cx: cx.clone(),
+                cx: for_host,
                 hosts,
                 stopper,
                 window,
                 #[cfg(any(test, feature = "test-driver"))]
                 held,
             };
-            match run_quit(&host, &updater).await {
-                QuitOutcome::Quit { installer_started } => {
-                    log::info!(
-                        "Closed: the app quits now{}.",
-                        if installer_started {
-                            ", and the update's installer started"
-                        } else {
-                            ""
-                        }
-                    );
-                    cx.update(|cx| {
-                        cx.global_mut::<Quit>().done = true;
-                        cx.quit();
-                    });
-                }
-                QuitOutcome::Aborted => cx.update(|cx| {
-                    cx.remove_global::<Quit>();
-                }),
-            }
+            run_quit(&host, &updater).await
         })
         .await;
+        cx.update(|cx| finish_quit(outcome, cx, App::quit));
     })
     .detach();
+}
+
+/// What the quit does once it is over: the app quits, or, when the quit was given up (an update that could not be installed),
+/// goes on. `None` is a quit task that panicked part way: the window is already hidden and nothing else would let the app
+/// quit, so it quits (the panic is in the crash log). `quit` is `App::quit`; a test passes its own.
+fn finish_quit(outcome: Option<QuitOutcome>, cx: &mut App, quit: fn(&App)) {
+    match outcome {
+        Some(QuitOutcome::Aborted) => {
+            cx.remove_global::<Quit>();
+        }
+        Some(QuitOutcome::Quit { installer_started }) => {
+            log::info!(
+                "Closed: the app quits now{}.",
+                if installer_started {
+                    ", and the update's installer started"
+                } else {
+                    ""
+                }
+            );
+            quit_now(cx, quit);
+        }
+        None => {
+            log::error!("The quit stopped part way; the app quits now.");
+            quit_now(cx, quit);
+        }
+    }
+}
+
+fn quit_now(cx: &mut App, quit: fn(&App)) {
+    // The close hook agrees to a window that closes as the app goes.
+    if cx.has_global::<Quit>() {
+        cx.global_mut::<Quit>().done = true;
+    }
+    quit(cx);
 }
 
 // ---- notifications -----------------------------------------------------------------------------------------------------
@@ -1124,17 +1142,21 @@ mod tests {
         }
     }
 
-    /// A daemon's owner that counts what the quit asks of it, and answers its stop as told.
+    /// A daemon's owner that counts what the quit asks of it, and answers its stop as told (or panics, as a bug would).
     #[derive(Default)]
     struct Owner {
         stops: AtomicUsize,
         restarts: AtomicUsize,
         answer: Mutex<Option<DaemonStop>>,
+        panics: std::sync::atomic::AtomicBool,
     }
 
     impl DaemonControl for Owner {
         fn stop(&self) -> BoxFuture<'static, Result<Option<DaemonStop>, String>> {
             self.stops.fetch_add(1, Ordering::SeqCst);
+            if self.panics.load(Ordering::SeqCst) {
+                panic!("a planted panic in the daemon's stop");
+            }
             let answer = *self.answer.lock().unwrap();
             async move { Ok(answer) }.boxed()
         }
@@ -1192,6 +1214,113 @@ mod tests {
         assert!(app.control.quitting(), "the clients were not stopped");
         cx.update(|cx| {
             assert!(cx.global::<Quit>().done, "the quit did not finish");
+        });
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// The app with its hosts, the runtime handle and a daemon owner, but no services: what the quit needs and no more.
+    fn quitting_app(
+        cx: &mut gpui::TestAppContext,
+        runtime: &tokio::runtime::Runtime,
+        name: &str,
+        owner: &Arc<Owner>,
+    ) -> (AppHosts, PathBuf) {
+        let (app, orders, requests, root) =
+            crate::hosts::testing::app_hosts(runtime.handle(), name);
+        // Nothing serves the clients' stop, so it answers at once.
+        drop((orders, requests));
+        cx.update(|cx| {
+            cx.set_global(app.clone());
+            cx.set_global(Tokio(runtime.handle().clone()));
+            cx.set_global(DaemonOwner(owner.clone()));
+        });
+        (app, root)
+    }
+
+    /// Re-review M3: a panic inside the quit task (the quit's own bug, or a dropped app) used to leave `Quit` set with the
+    /// window hidden and nothing able to quit the app. The panic is caught and the app quits.
+    #[gpui::test]
+    fn a_quit_that_panics_part_way_still_quits_the_app(cx: &mut gpui::TestAppContext) {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let owner = Arc::new(Owner::default());
+        owner.panics.store(true, Ordering::SeqCst);
+        let (_app, root) = quitting_app(cx, &runtime, "m3", &owner);
+        cx.update(|cx| begin_quit(cx));
+        cx.run_until_parked();
+        assert_eq!(
+            owner.stops.load(Ordering::SeqCst),
+            1,
+            "the stop was not reached"
+        );
+        cx.update(|cx| {
+            assert!(
+                cx.global::<Quit>().done,
+                "the quit task panicked and nothing finished the quit"
+            );
+        });
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Re-review M7: the app's half of the aborted quit. An update was ready and the daemon had to be forced, so it is not
+    /// installed: the clients and the daemon may start again, the quit is over (a second one works), and an unconfirmed stop
+    /// does not restart a daemon that may still be running.
+    #[gpui::test]
+    fn an_update_that_was_not_installed_brings_the_app_back_and_a_second_quit_works(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let owner = Arc::new(Owner::default());
+        *owner.answer.lock().unwrap() = Some(DaemonStop::Forced);
+        let (app, root) = quitting_app(cx, &runtime, "m7", &owner);
+        let host = AppQuit {
+            cx: cx.to_async(),
+            hosts: app.clone(),
+            stopper: Some(owner.clone()),
+            window: None,
+            held: None,
+        };
+        // The quit began and stopped the clients; the daemon needed a forced stop, and an update was waiting.
+        cx.update(|cx| cx.set_global(Quit { done: false }));
+        app.control.begin_quit();
+        app.hosts.begin_quit();
+
+        // The service did not stop in time and is gone: it starts again, and the app is back.
+        host.update_not_installed(true);
+        cx.update(|cx| finish_quit(Some(QuitOutcome::Aborted), cx, |_| panic!("the app quit")));
+        assert!(!app.control.quitting(), "the clients may not start again");
+        assert_eq!(
+            owner.restarts.load(Ordering::SeqCst),
+            1,
+            "the daemon was not restarted"
+        );
+        cx.update(|cx| assert!(!cx.has_global::<Quit>(), "the quit is still going"));
+
+        // Its stop could not be confirmed: Tjommie must be restarted, and nothing is started under a daemon that may run.
+        app.control.begin_quit();
+        host.update_not_installed(false);
+        assert!(!app.control.quitting());
+        assert_eq!(
+            owner.restarts.load(Ordering::SeqCst),
+            1,
+            "a daemon was started under one that may be running"
+        );
+
+        // A second quit proceeds.
+        *owner.answer.lock().unwrap() = Some(DaemonStop::Graceful);
+        cx.update(|cx| begin_quit(cx));
+        cx.run_until_parked();
+        assert_eq!(owner.stops.load(Ordering::SeqCst), 1);
+        cx.update(|cx| {
+            assert!(
+                cx.global::<Quit>().done,
+                "the second quit did not go through"
+            )
         });
         let _ = std::fs::remove_dir_all(root);
     }
