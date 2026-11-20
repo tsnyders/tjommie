@@ -1619,7 +1619,7 @@ impl<E: Environment> AppConnection<E> {
             tokio::select! {
                 biased;
                 received = events.recv(), if events_open => match received {
-                    Ok(event) => self.on_event(&event),
+                    Ok(event) => self.on_event(&event, id),
                     Err(broadcast::error::RecvError::Lagged(_)) => {
                         // Events were lost, so the state can't be trusted: let the link end, and reconnect.
                         self.close_in_background(raw.clone());
@@ -1661,9 +1661,14 @@ impl<E: Environment> AppConnection<E> {
         })
     }
 
-    /// One event from the daemon: into the state, and into the catch-up of its conversation if that is being fetched.
-    fn on_event(&self, event: &Event) {
+    /// One event from the daemon: into the state, and into the catch-up of its conversation if that is being fetched. It
+    /// came from link `link`, and is dropped unless that is still the live one: the window may have moved to another PC while
+    /// the old link's task still held events it had received (M5 review, Minor 6; the Everyone room has one id on every PC).
+    fn on_event(&self, event: &Event, link: u64) {
         let mut s = self.lock();
+        if s.ready_id() != Some(link) {
+            return;
+        }
         s.store.apply(event);
         if let Some((conversation, message)) = message_event(event)
             && let Some(arrival) = s.arriving.get_mut(&conversation)
@@ -4089,6 +4094,32 @@ mod tests {
         assert_eq!(w.env.local_connects(), connects);
         assert_eq!(w.status(), Connection::Ready);
         assert_eq!(w.conn.state().host.as_deref(), Some(HOST));
+    }
+
+    /// M5 review, Minor 6: an event the PC you just left had already sent must not land in the next PC's state. The
+    /// old link's task hears it after the window has moved on, so each event is checked against the link it came from.
+    #[tokio::test]
+    async fn an_event_from_a_link_the_window_left_is_dropped() {
+        let w = desktop();
+        w.start().await;
+        // The new PC's lists are slow, so its connection is still opening while the old link's task runs.
+        w.pc().hold("bots.list");
+        // Sent on the desktop's link, and still on its way when the window moves to a saved PC.
+        w.pc().emit(Event::BotUpdated(bot("stale")));
+        w.conn.connect_remote(Some(HOST));
+        // The old link's task runs first and hears the event.
+        tokio::task::yield_now().await;
+        assert!(
+            w.bot_ids().is_empty(),
+            "the left PC's bot landed in the next PC's state: {:?}",
+            w.bot_ids()
+        );
+        // The same event on the link that is current is applied.
+        w.pc().unhold("bots.list");
+        w.settle().await;
+        w.pc().emit(Event::BotUpdated(bot("fresh")));
+        w.settle().await;
+        assert_eq!(w.bot_ids(), ["fresh"]);
     }
 
     fn push(host: &str, bot: &str, room: Option<&str>) -> PushData {
