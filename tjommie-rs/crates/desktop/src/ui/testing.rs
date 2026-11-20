@@ -25,6 +25,7 @@ pub fn app(
 ) -> (&mut VisualTestContext, Arc<FakeRpc>) {
     let calls = cx.update(|cx| {
         gpui_kit::init(cx);
+        cx.bind_keys(crate::keymap::field_tab(cx));
         cx.bind_keys(crate::keymap::bindings());
         cx.set_global(Theme::aegis().unwrap());
         crate::notices::init(cx);
@@ -47,6 +48,16 @@ pub fn app(
 pub fn draw(cx: &mut VisualTestContext) {
     cx.run_until_parked();
     cx.update(|window, cx| window.draw(cx).clear(cx));
+}
+
+/// The platform's next frame, only if the last one asked for it (`request_animation_frame`): a test then sees what the
+/// app draws with no other event to prompt it. Whether a frame was asked for.
+pub fn next_frame(cx: &mut VisualTestContext) -> bool {
+    let asked = cx.update(|window, cx| window.simulate_next_frame(cx)) > 0;
+    if asked {
+        draw(cx);
+    }
+    asked
 }
 
 /// The element with `id` in the last frame, as the test driver's snapshot has it.

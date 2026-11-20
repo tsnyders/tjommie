@@ -4,6 +4,9 @@
 //! engine state: it hands its result to a one-shot channel (or pushes a typed message), and the awaiting task
 //! carries on from there (the T3.2 bridge rule).
 
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+
 use futures::channel::oneshot;
 use webview2_com::{
     AcceleratorKeyPressedEventHandler, CallDevToolsProtocolMethodCompletedHandler,
@@ -16,13 +19,14 @@ use webview2_com::{
         COREWEBVIEW2_KEY_EVENT_KIND_KEY_UP, COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_DOWN,
         COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW, COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL,
         COREWEBVIEW2_MOVE_FOCUS_REASON_NEXT, COREWEBVIEW2_MOVE_FOCUS_REASON_PREVIOUS,
-        COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC, CreateCoreWebView2EnvironmentWithOptions,
+        COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC, COREWEBVIEW2_WEB_ERROR_STATUS,
+        COREWEBVIEW2_WEB_ERROR_STATUS_CONNECTION_ABORTED, CreateCoreWebView2EnvironmentWithOptions,
         ICoreWebView2, ICoreWebView2_2, ICoreWebView2_3, ICoreWebView2_13, ICoreWebView2_19,
         ICoreWebView2Controller, ICoreWebView2Controller3, ICoreWebView2Environment,
         ICoreWebView2Environment10, ICoreWebView2EnvironmentOptions, ICoreWebView2Profile2,
     },
-    MoveFocusRequestedEventHandler, NavigationCompletedEventHandler, TrySuspendCompletedHandler,
-    take_pwstr,
+    MoveFocusRequestedEventHandler, NavigationCompletedEventHandler,
+    NavigationStartingEventHandler, TrySuspendCompletedHandler, take_pwstr,
 };
 use windows::{
     Win32::Foundation::{HGLOBAL, HWND},
@@ -115,33 +119,100 @@ pub async fn create_controller(
     rx.await.map_err(lost)?
 }
 
-/// Navigates and waits for the navigation to finish. `Ok(false)` is a navigation that failed (an error page).
+/// An address as a comparison key: parsed and written back, so `HTTPS://Example.com` and `https://example.com/` are one.
+fn address_key(address: &str) -> String {
+    url::Url::parse(address).map_or_else(|_| address.to_string(), String::from)
+}
+
+/// Navigates and waits for *this* navigation to finish. `Ok(false)` is a navigation that failed (an error page).
+///
+/// WebView2 raises `NavigationCompleted` for every navigation of a page, and a page opened a moment ago is usually still loading its
+/// first one. `Navigate` supersedes that one, and its completion (a failure: "connection aborted") is delivered before this
+/// navigation's own, even before this navigation's start. Taking the first completion of any kind reported a good navigation as
+/// failed, or returned before the page was there. So a navigation is followed by its id: the one whose start carries this address
+/// (compared parsed, as WebView2 spells it). A completion for any other id is some other navigation's, whether it succeeded or not.
+///
+/// Until that start has been seen, a completion is taken for this navigation's only if it ended on this address and was not an abort.
+/// That is the case of a page whose start page is the address being navigated to: the navigation joins the one already loading, so no
+/// start of its own is ever raised, and the one that was loading is the answer. A superseded start page is an abort, or ends on another
+/// address, so it is not.
+///
+/// This rests on an address matching how WebView2 spells it, which the addresses the browser allows (http, https and about:blank)
+/// do; where one did not, this would wait as long as the page takes to settle, so a caller that needs a limit gives it one.
 pub async fn navigate(webview: &ICoreWebView2, url: &str) -> Result<bool, ComError> {
     let (tx, rx) = oneshot::channel();
-    let tx = std::cell::RefCell::new(Some(tx));
-    let handler = NavigationCompletedEventHandler::create(Box::new(move |_, args| {
-        let mut ok = BOOL::default();
-        if let Some(args) = &args {
-            // SAFETY: `args` is the live event argument COM passed in.
-            let _ = unsafe { args.IsSuccess(&mut ok) };
+    let tx = RefCell::new(Some(tx));
+    let wanted = address_key(url);
+    let wanted_at_completion = wanted.clone();
+    let view = webview.clone();
+    // The id of this navigation, once its start has been seen.
+    let own: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
+
+    let starting_own = own.clone();
+    let starting = NavigationStartingEventHandler::create(Box::new(move |_, args| {
+        let Some(args) = &args else { return Ok(()) };
+        // A redirect starts again under the same id, and any later start is some other navigation's.
+        if starting_own.get().is_some() {
+            return Ok(());
         }
-        if let Some(tx) = tx.borrow_mut().take() {
+        let mut uri = PWSTR::null();
+        // SAFETY: WebView2 fills `uri` with a CoTaskMem string, which `take_pwstr` copies and frees.
+        let address = match unsafe { args.Uri(&mut uri) } {
+            Ok(()) => take_pwstr(uri),
+            Err(_) => String::new(),
+        };
+        if address_key(&address) == wanted {
+            let mut id = 0u64;
+            // SAFETY: `args` is the live event argument COM passed in.
+            if unsafe { args.NavigationId(&mut id) }.is_ok() {
+                starting_own.set(Some(id));
+            }
+        }
+        Ok(())
+    }));
+    let completed = NavigationCompletedEventHandler::create(Box::new(move |_, args| {
+        let Some(args) = &args else { return Ok(()) };
+        let (mut id, mut ok) = (0u64, BOOL::default());
+        let mut status = COREWEBVIEW2_WEB_ERROR_STATUS(0);
+        // SAFETY: `args` is the live event argument COM passed in.
+        unsafe {
+            let _ = args.NavigationId(&mut id);
+            let _ = args.IsSuccess(&mut ok);
+            let _ = args.WebErrorStatus(&mut status);
+        }
+        let ours = match own.get() {
+            Some(own_id) => own_id == id,
+            None => {
+                let aborted =
+                    !ok.as_bool() && status == COREWEBVIEW2_WEB_ERROR_STATUS_CONNECTION_ABORTED;
+                !aborted && source(&view).is_ok_and(|now| address_key(&now) == wanted_at_completion)
+            }
+        };
+        if ours && let Some(tx) = tx.borrow_mut().take() {
             let _ = tx.send(ok.as_bool());
         }
         Ok(())
     }));
-    let mut token = 0i64;
-    // SAFETY: plain COM calls; the handler is removed again below.
+    let (mut starting_token, mut completed_token) = (0i64, 0i64);
+    // SAFETY: plain COM calls; both handlers are removed again below.
     unsafe {
-        webview.add_NavigationCompleted(&handler, &mut token)?;
+        webview.add_NavigationStarting(&starting, &mut starting_token)?;
+        if let Err(error) = webview.add_NavigationCompleted(&completed, &mut completed_token) {
+            let _ = webview.remove_NavigationStarting(starting_token);
+            return Err(error.into());
+        }
         if let Err(error) = webview.Navigate(&HSTRING::from(url)) {
-            let _ = webview.remove_NavigationCompleted(token);
+            let _ = webview.remove_NavigationStarting(starting_token);
+            let _ = webview.remove_NavigationCompleted(completed_token);
             return Err(error.into());
         }
     }
     let result = rx.await.map_err(lost);
-    // SAFETY: the token came from `add_NavigationCompleted` on this webview.
-    let _ = unsafe { webview.remove_NavigationCompleted(token) };
+    // SAFETY: the tokens came from `add_NavigationStarting` and `add_NavigationCompleted` on this webview.
+    unsafe {
+        let _ = webview.remove_NavigationStarting(starting_token);
+        let _ = webview.remove_NavigationCompleted(completed_token);
+    }
     result
 }
 
@@ -460,6 +531,29 @@ pub fn subscribe_accelerators(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn addresses_compare_as_webview2_writes_them() {
+        // WebView2 reports the address it navigates to in its own spelling; the same address must compare equal.
+        assert_eq!(
+            address_key("HTTPS://Example.COM"),
+            address_key("https://example.com/")
+        );
+        assert_eq!(
+            address_key("http://127.0.0.1:80/a.html"),
+            address_key("http://127.0.0.1/a.html")
+        );
+        assert_ne!(
+            address_key("https://a.test/x"),
+            address_key("https://a.test/y")
+        );
+        assert_ne!(
+            address_key("https://a.test/"),
+            address_key("https://b.test/")
+        );
+        // Something that is not an address is compared as it is, never refused.
+        assert_eq!(address_key("not an address"), "not an address");
+    }
 
     #[test]
     fn the_wide_copy_of_a_command_is_one_exact_allocation_ending_in_nul() {

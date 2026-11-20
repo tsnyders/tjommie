@@ -9,6 +9,7 @@ pub mod daemon_process;
 pub mod device_keys;
 pub mod device_settings;
 pub mod diagnostics;
+pub mod hosts;
 pub mod identity;
 pub mod links;
 pub mod log;

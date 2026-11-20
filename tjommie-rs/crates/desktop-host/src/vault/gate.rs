@@ -139,14 +139,6 @@ impl VaultCommandGate {
         self.fence.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Navigation: fences all delayed work and locks the vault.
-    pub fn invalidate(&self) {
-        self.fence().epoch += 1;
-        if let Some(vault) = self.inputs.vault() {
-            vault.lock();
-        }
-    }
-
     /// A command from the app's window: the window is checked first (`main.ts:457`), then the gate.
     pub async fn execute_local(
         &self,
@@ -384,8 +376,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fences_delayed_native_work_after_lock_disconnect_navigation_and_reconnect() {
-        for fence in ["lock", "disconnect", "navigation", "reconnect"] {
+    async fn fences_delayed_native_work_after_lock_disconnect_and_reconnect() {
+        for fence in ["lock", "disconnect", "reconnect"] {
             let f = fixture();
             let gate = f.gate.clone();
             let pending = tokio::spawn(async move { gate.execute(entry("rpc:one")).await });
@@ -403,7 +395,6 @@ mod tests {
                         .await
                         .expect("disconnect");
                 }
-                "navigation" => f.gate.invalidate(),
                 _ => f.inputs.connection.store(2, Ordering::SeqCst),
             }
             f.release.send_replace(true);
@@ -413,9 +404,6 @@ mod tests {
                 "{fence}"
             );
             assert!(!f.vault.kinds().contains(&"entry"), "{fence}");
-            if fence == "navigation" {
-                assert_eq!(f.vault.locks.load(Ordering::SeqCst), 1);
-            }
         }
     }
 

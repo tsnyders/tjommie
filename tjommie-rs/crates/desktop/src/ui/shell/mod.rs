@@ -24,9 +24,11 @@ use crate::theme::Theme;
 use crate::ui::style::{TypeExt as _, hsla, r, shadows};
 use crate::zoom::Zoom;
 
-/// The rem follows the zoom: gpui-kit's root sets the window's rem from its theme's font size every frame.
+/// The rem follows the zoom and the text size (Settings, Appearance): gpui-kit's root sets the window's rem from its
+/// theme's font size every frame.
 pub fn set_rem(zoom: Zoom, cx: &mut App) {
-    gpui_kit::component::Theme::global_mut(cx).font_size = px(zoom.rem_px(1.0));
+    let scale = crate::ui::style::appearance(cx).text_scale();
+    gpui_kit::component::Theme::global_mut(cx).font_size = px(zoom.rem_px(1.0) * scale);
 }
 
 pub struct Shell {
@@ -143,23 +145,23 @@ impl Render for Shell {
 }
 
 /// The route's screen. The screens come with their own tasks (M4, M5); until then each shows its name.
-fn screen(route: &Route, data: &ShellData, window: &mut Window, cx: &mut App) -> AnyElement {
+fn screen(route: &Route, data: &ShellData, window: &mut gpui::Window, cx: &mut App) -> AnyElement {
     if let Route::Chat(id) = route {
         return crate::ui::chat::screen(id, window, cx);
     }
     let (key, title): (&str, SharedString) = match route {
-        Route::Agents => ("agents", "Agents".into()),
+        Route::Agents => return crate::ui::agents::screen(window, cx),
+        Route::Projects => return crate::ui::projects::screen(window, cx),
+        Route::Routines => return crate::ui::routines::screen(window, cx),
+        Route::NewBot => return crate::ui::bots::new::screen(window, cx),
+        Route::BotSettings(id) => return crate::ui::bots::settings::screen(id, window, cx),
+        Route::Settings(section) => return crate::ui::settings::screen(*section, window, cx),
+        Route::Account { .. } => {
+            return crate::ui::settings::screen(route::Section::Accounts, window, cx);
+        }
+        Route::Rooms => return crate::ui::rooms::list::screen(window, cx),
+        Route::Room(id) => return crate::ui::rooms::screen::screen(id, window, cx),
         Route::Chat(id) => ("chat", data.name_of(id)),
-        Route::Rooms => ("rooms", "Rooms".into()),
-        Route::Room(id) => ("room", data.name_of(id)),
-        Route::Projects => ("projects", "Projects".into()),
-        Route::Routines => ("routines", "Routines".into()),
-        Route::Settings(_) => ("settings", "Settings".into()),
-        Route::NewBot => ("new", "New agent".into()),
-        Route::BotSettings(id) => (
-            "bot_settings",
-            format!("{} settings", data.name_of(id)).into(),
-        ),
     };
     let theme = cx.global::<Theme>();
     div()

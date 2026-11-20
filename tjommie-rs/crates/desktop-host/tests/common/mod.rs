@@ -346,6 +346,33 @@ pub fn tls_identity() -> (
     )
 }
 
+/// A bot directory that lists every bot with its browser on, as `Rig::bot` names it: for tests that serve jobs and don't
+/// mean to test who the daemon's bots are.
+pub struct Everyone(PathBuf);
+
+impl desktop_host::hosts::BotDirectory for Everyone {
+    fn find(
+        &self,
+        id: &str,
+    ) -> futures::future::BoxFuture<
+        '_,
+        Result<Option<desktop_host::hosts::BotInfo>, desktop_host::hosts::DirectoryError>,
+    > {
+        let identity = BotIdentity {
+            id: id.into(),
+            name: id.into(),
+            home_folder: self.0.join("bots").join(id).to_string_lossy().into_owned(),
+            project_folder: None,
+        };
+        Box::pin(async move {
+            Ok(Some(desktop_host::hosts::BotInfo {
+                identity,
+                browser: true,
+            }))
+        })
+    }
+}
+
 pub struct Rig {
     pub ui: Ui,
     pub sink: Rc<RefCell<Sink>>,
@@ -419,6 +446,11 @@ impl Rig {
         }
     }
 
+    /// Every bot, with its browser on, for `serve`.
+    pub fn everyone(&self) -> std::sync::Arc<dyn desktop_host::hosts::BotDirectory> {
+        std::sync::Arc::new(Everyone(self.root.path().to_owned()))
+    }
+
     pub fn bot(&self, id: &str) -> BotIdentity {
         BotIdentity {
             id: id.into(),
@@ -445,6 +477,7 @@ impl Rig {
                 bottom: client.bottom - 20,
             },
             occluded: false,
+            clip: None,
         }
     }
 

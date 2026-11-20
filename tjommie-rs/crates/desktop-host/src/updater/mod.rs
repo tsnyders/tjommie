@@ -42,6 +42,12 @@ pub use http::{Http, Policy, Progress, ReqwestHttp, is_model_host};
 pub use quit::{DaemonStop, QuitHost, QuitOutcome, run_quit};
 pub use state::{SHUTDOWN_FAILURE, UpdateState};
 
+/// The version this build is (the workspace's), for `UpdaterConfig::current`.
+pub fn this_version() -> Version {
+    // The package version is a valid semver at compile time (Cargo checks it), so this can't fall back.
+    Version::parse(env!("CARGO_PKG_VERSION")).unwrap_or(Version::new(0, 0, 0))
+}
+
 /// How long Restart to update waits for `before_restart`. A page that never answers must not hold an update up.
 pub const BEFORE_RESTART: Duration = Duration::from_secs(2);
 /// The first check, after start-up has settled; then every six hours.

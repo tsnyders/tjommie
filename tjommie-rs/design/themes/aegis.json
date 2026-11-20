@@ -64,6 +64,9 @@
       },
       "action": {
         "primary": "#191A1C"
+      },
+      "danger": {
+        "text": "#B02F29"
       }
     },
     "dark": {
@@ -130,6 +133,9 @@
       },
       "action": {
         "primary": "#EEEEEB"
+      },
+      "danger": {
+        "text": "#DC6F6B"
       }
     },
     "bot": {

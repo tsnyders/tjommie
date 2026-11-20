@@ -21,7 +21,7 @@ const at = (node: unknown, path: string): unknown =>
 
 it("gives every Aegis token exactly one semantic key", () => {
   const { theme, keys } = aegisTheme(tokens);
-  expect(countTokens(tokens)).toBe(219);
+  expect(countTokens(tokens)).toBe(221);
   expect(keys).toHaveLength(countTokens(tokens));
   expect(new Set(keys).size).toBe(keys.length);
   for (const key of keys) expect(at(theme, key), key).toBeDefined();

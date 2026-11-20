@@ -489,6 +489,45 @@ fn a_deleted_or_switched_off_bot_closes_and_cannot_open_until_switched_on() {
     );
 }
 
+/// Host-wiring review Minor 5: a bot deleted or switched off while the watcher was away is only told in the next list, and
+/// that closes its page as the events would have.
+#[test]
+fn the_daemons_list_closes_the_browsers_of_bots_it_switched_off_or_no_longer_has() {
+    let mut rig = Rig::new();
+    for id in ["alpha", "beta", "gamma"] {
+        rig.open(id);
+    }
+    let engine = rig.engine.clone();
+    rig.ui.run(async move {
+        engine
+            .on_bot_list(&[("alpha".into(), true), ("beta".into(), false)])
+            .await
+    });
+    assert!(
+        rig.engine.snapshot("alpha").is_some(),
+        "a listed bot with its browser on lost its page"
+    );
+    assert!(
+        rig.engine.snapshot("beta").is_none(),
+        "a bot the list switched off kept its page"
+    );
+    assert!(
+        rig.engine.snapshot("gamma").is_none(),
+        "a bot the list no longer has kept its page"
+    );
+    for gone in ["beta", "gamma"] {
+        assert_eq!(
+            rig.exec_error(gone, json!({ "kind": "open" })),
+            "This agent's browser is off or the agent no longer exists."
+        );
+    }
+    // The list is also what switches a browser on, as `Updated { browser: true }` does.
+    let engine = rig.engine.clone();
+    rig.ui
+        .run(async move { engine.on_bot_list(&[("beta".into(), true)]).await });
+    rig.exec_state("beta", json!({ "kind": "open" }));
+}
+
 #[test]
 fn the_bot_can_fix_a_hidden_browsers_size_and_a_panel_gives_it_back() {
     let mut rig = Rig::new();

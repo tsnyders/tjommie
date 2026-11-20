@@ -434,12 +434,15 @@ impl Composer {
             cx.notify();
             return;
         }
-        let picked = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: true,
-            prompt: None,
-        });
+        let picked = crate::ui::prompt_for_paths(
+            PathPromptOptions {
+                files: true,
+                directories: false,
+                multiple: true,
+                prompt: None,
+            },
+            cx,
+        );
         cx.spawn(async move |this, cx| {
             guarded_async("attach files", async move {
                 if let Ok(Ok(Some(paths))) = picked.await {

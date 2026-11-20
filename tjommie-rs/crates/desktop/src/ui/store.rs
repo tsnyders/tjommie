@@ -22,7 +22,11 @@ use crate::model::state::AppState;
 
 #[derive(Default)]
 pub struct Store {
-    state: AppState,
+    /// A pointer to the connection's state as of `version`: copying it into the store costs nothing, and the screens' reads
+    /// are pointer reads (M5 review M5).
+    state: Arc<AppState>,
+    /// The connection's version of `state` (`AppStore::version`): the feed copies the state only when it moved.
+    version: u64,
     source: Source,
 }
 
@@ -39,12 +43,19 @@ enum Source {
 }
 
 /// The state before anything is wired: connecting, with nothing listed.
-static EMPTY: LazyLock<AppState> = LazyLock::new(AppState::default);
+static EMPTY: LazyLock<Arc<AppState>> = LazyLock::new(Arc::default);
 
 /// `useApp`: the state as it is now.
 pub fn state(cx: &App) -> &AppState {
     cx.try_global::<Store>()
-        .map_or(&EMPTY, |store| &store.state)
+        .map_or(&**EMPTY, |store| &*store.state)
+}
+
+/// The state as it is now, for a screen that must hold it while it changes the app (a pointer; the state it points at
+/// never changes).
+pub fn snapshot(cx: &App) -> Arc<AppState> {
+    cx.try_global::<Store>()
+        .map_or_else(|| Arc::clone(&EMPTY), |store| Arc::clone(&store.state))
 }
 
 /// `update(change)`: `change` edits the state and says whether it changed it; the windows redraw when it did. With
@@ -59,11 +70,11 @@ pub fn update(cx: &mut App, change: impl FnOnce(&mut AppState) -> bool) {
                 changed
             });
             if changed {
-                store.state = live.state();
+                (store.version, store.state) = live.state_and_version();
             }
             changed
         }
-        _ => change(&mut store.state),
+        _ => change(Arc::make_mut(&mut store.state)),
     };
     if changed {
         cx.refresh_windows();
@@ -107,7 +118,96 @@ pub enum History {
     Exchange(String),
 }
 
+/// The daemon as an `Rpc`, for the view models that take one (`model::routines::save_routine` and the like): its calls
+/// go where `request`'s go, and fail as not connected while there is no connection.
+#[derive(Clone)]
+pub struct StoreRpc(Handle);
+
+/// `StoreRpc` for the store as it is now.
+pub fn rpc(cx: &App) -> StoreRpc {
+    StoreRpc(handle(cx))
+}
+
+impl client::Rpc for StoreRpc {
+    fn call<M: ClientMethod>(
+        &self,
+        params: M::Params,
+    ) -> impl Future<Output = Result<M::Result, client::RpcError>> + Send {
+        let handle = self.0.clone();
+        let not_connected = || {
+            client::RpcError::Closed(client::CloseReason {
+                code: 1006,
+                reason: "Tjommie isn't connected right now.".to_owned(),
+                opened: false,
+            })
+        };
+        async move {
+            match handle {
+                Handle::None => Err(not_connected()),
+                Handle::Live(live) => match live.daemon() {
+                    Ok(daemon) => daemon.call::<M>(params).await,
+                    Err(_) => Err(not_connected()),
+                },
+                #[cfg(test)]
+                Handle::Fake(rpc) => rpc.call::<M>(params).await,
+            }
+        }
+    }
+}
+
+/// The selected PC and the connection as `model::logins` reads them (`LiveState`): as they are at each moment, from
+/// any thread. Without a live connection (a view test, or nothing yet) they're what the state said when it was taken.
+#[derive(Clone)]
+pub struct StoreLive(LiveSource);
+
+#[derive(Clone)]
+enum LiveSource {
+    Fixed { host: Option<String>, ready: bool },
+    Live(Arc<Live>),
+}
+
+/// `StoreLive` for the store as it is now.
+pub fn live_state(cx: &App) -> StoreLive {
+    match handle(cx) {
+        Handle::Live(live) => StoreLive(LiveSource::Live(live)),
+        _ => {
+            let state = state(cx);
+            let ready = state.connection == crate::model::state::Connection::Ready;
+            StoreLive(LiveSource::Fixed {
+                host: state.host.clone(),
+                ready,
+            })
+        }
+    }
+}
+
+impl crate::model::logins::LiveState for StoreLive {
+    fn selected_host(&self) -> Option<String> {
+        match &self.0 {
+            LiveSource::Fixed { host, .. } => host.clone(),
+            LiveSource::Live(live) => live.read(|state| state.host.clone()),
+        }
+    }
+
+    fn is_ready(&self) -> bool {
+        match &self.0 {
+            LiveSource::Fixed { ready, .. } => *ready,
+            LiveSource::Live(live) => {
+                live.read(|state| state.connection == crate::model::state::Connection::Ready)
+            }
+        }
+    }
+
+    fn daemon_generation(&self) -> Option<u64> {
+        match &self.0 {
+            LiveSource::Fixed { ready, .. } => ready.then_some(0),
+            LiveSource::Live(live) => live.link_id(),
+        }
+    }
+}
+
 /// What a helper works through: the live connection, a test's fake, or nothing yet.
+#[derive(Clone)]
 enum Handle {
     None,
     Live(Arc<Live>),
@@ -121,6 +221,94 @@ fn handle(cx: &App) -> Handle {
         Some(Source::Live(live)) => Handle::Live(Arc::clone(live)),
         #[cfg(test)]
         Some(Source::Fake(rpc)) => Handle::Fake(Arc::clone(rpc)),
+    }
+}
+
+/// A screen's feed of the daemon events it reads again on (`wanted`), for what the state doesn't keep (projects,
+/// devices, usage): each one arriving sends `()` to `arrivals`. Dropping the feed stops it. Without a live connection
+/// it never sends; a view test sends with `fake_event`.
+pub struct EventFeed {
+    pub arrivals: futures::channel::mpsc::UnboundedReceiver<()>,
+    _stop: Option<StopFeed>,
+}
+
+struct StopFeed {
+    live: std::sync::Weak<Live>,
+    id: crate::model::store::SubscriptionId,
+}
+
+impl Drop for StopFeed {
+    fn drop(&mut self) {
+        if let Some(live) = self.live.upgrade() {
+            live.unsubscribe(self.id);
+        }
+    }
+}
+
+/// `daemon().subscribe` for a screen: a feed of the events `wanted` accepts (an account's card wants its own).
+pub fn events(
+    cx: &mut App,
+    wanted: impl Fn(&protocol::Event) -> bool + Send + 'static,
+) -> EventFeed {
+    let (sender, arrivals) = futures::channel::mpsc::unbounded();
+    match handle(cx) {
+        Handle::Live(live) => {
+            // unguarded: the connection's own listener, not a GPUI handler; it only sends a signal (inside the connection's lock)
+            let id = live.subscribe_events(move |event| {
+                if wanted(event) {
+                    let _ = sender.unbounded_send(());
+                }
+            });
+            EventFeed {
+                arrivals,
+                _stop: Some(StopFeed {
+                    live: Arc::downgrade(&live),
+                    id,
+                }),
+            }
+        }
+        #[cfg(test)]
+        Handle::Fake(_) => {
+            cx.default_global::<FakeEvents>()
+                .0
+                .push((Box::new(wanted), sender));
+            EventFeed {
+                arrivals,
+                _stop: None,
+            }
+        }
+        Handle::None => EventFeed {
+            arrivals,
+            _stop: None,
+        },
+    }
+}
+
+/// The view tests' event feeds.
+#[cfg(test)]
+#[derive(Default)]
+struct FakeEvents(Vec<FakeFeed>);
+
+/// One fake feed: what it wants, and where it sends.
+#[cfg(test)]
+type FakeFeed = (
+    Box<dyn Fn(&protocol::Event) -> bool>,
+    futures::channel::mpsc::UnboundedSender<()>,
+);
+
+#[cfg(test)]
+impl Global for FakeEvents {}
+
+/// A view test's daemon event: applied to the fake state, and sent to the feeds that want it.
+#[cfg(test)]
+pub fn fake_event(cx: &mut App, event: &protocol::Event) {
+    update(cx, |state| crate::model::state::apply_event(state, event));
+    if let Some(feeds) = cx.try_global::<FakeEvents>() {
+        for (wanted, sender) in &feeds.0 {
+            if wanted(event) {
+                let _ = sender.unbounded_send(());
+            }
+        }
     }
 }
 
@@ -189,7 +377,8 @@ pub fn close_conversation(cx: &mut App, conversation_id: &str) {
         Handle::None => {}
         Handle::Live(live) => {
             live.close_conversation(conversation_id);
-            mirror(cx, live.state());
+            let (version, state) = live.state_and_version();
+            mirror(cx, version, state);
         }
         #[cfg(test)]
         Handle::Fake(_) => update(cx, |state| {
@@ -300,18 +489,22 @@ mod fake {
 
 /// The live connection becomes the store's source (`crate::live::start`).
 pub(crate) fn connect(cx: &mut App, live: Arc<Live>) {
+    let (version, state) = live.state_and_version();
     cx.set_global(Store {
-        state: live.state(),
+        state,
+        version,
         source: Source::Live(live),
     });
     cx.refresh_windows();
 }
 
-/// The live connection's state after a change.
-pub(crate) fn mirror(cx: &mut App, state: AppState) {
+/// The live connection's state after a change, with its version: nothing is copied or compared unless the version moved
+/// (the connection counts each change that changed the state).
+pub(crate) fn mirror(cx: &mut App, version: u64, state: Arc<AppState>) {
     let store = cx.default_global::<Store>();
-    if store.state != state {
+    if store.version != version {
         store.state = state;
+        store.version = version;
         cx.refresh_windows();
     }
 }
@@ -325,7 +518,8 @@ pub fn fake(
 ) -> Arc<crate::model::testing::FakeRpc> {
     let rpc = Arc::new(rpc);
     cx.set_global(Store {
-        state,
+        state: Arc::new(state),
+        version: 0,
         source: Source::Fake(Arc::clone(&rpc)),
     });
     rpc
@@ -442,6 +636,35 @@ mod tests {
         assert_eq!(calls[0].1["paused"], true);
     }
 
+    /// M5 review M5: the feed is one pointer copy per change it sees, and none when the connection's version hasn't moved.
+    #[gpui::test]
+    fn the_feed_copies_the_state_only_when_the_connections_version_moved(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            fake(cx, AppState::default(), FakeRpc::new());
+            let ready = Arc::new(AppState {
+                connection: Connection::Ready,
+                ..AppState::default()
+            });
+            mirror(cx, 1, Arc::clone(&ready));
+            assert!(Arc::ptr_eq(&snapshot(cx), &ready), "a new version is taken");
+            // The same version again, with a state that differs: it is the same state, so nothing is copied or compared.
+            let other = Arc::new(AppState {
+                connection: Connection::Reconnecting,
+                ..AppState::default()
+            });
+            mirror(cx, 1, other);
+            assert!(
+                Arc::ptr_eq(&snapshot(cx), &ready),
+                "the same version was copied again"
+            );
+            let next = Arc::new(AppState::default());
+            mirror(cx, 2, Arc::clone(&next));
+            assert!(Arc::ptr_eq(&snapshot(cx), &next));
+        });
+    }
+
     #[gpui::test]
     fn update_changes_what_state_reads(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
@@ -455,6 +678,34 @@ mod tests {
             update(cx, |_| false);
             assert_eq!(state(cx).bots.len(), 1);
         });
+    }
+
+    #[gpui::test]
+    fn the_rpc_handle_calls_where_request_does(cx: &mut gpui::TestAppContext) {
+        use client::Rpc as _;
+        let none = cx.update(|cx| rpc(cx));
+        let refused = futures::executor::block_on(none.call::<method::BotsPause>(BotsPause {
+            id: "bot-1".into(),
+            paused: true,
+        }));
+        assert!(
+            matches!(&refused, Err(client::RpcError::Closed(reason)) if reason.code == 1006),
+            "{refused:?}"
+        );
+        let calls = cx.update(|cx| {
+            fake(
+                cx,
+                AppState::default(),
+                FakeRpc::new().on::<method::BotsPause>(|_| Ok(forge(true))),
+            )
+        });
+        let handle = cx.update(|cx| rpc(cx));
+        let paused = futures::executor::block_on(handle.call::<method::BotsPause>(BotsPause {
+            id: "bot-1".into(),
+            paused: true,
+        }));
+        assert_eq!(paused.map(|bot| bot.paused), Ok(true));
+        assert_eq!(calls.calls()[0].0, "bots.pause");
     }
 
     #[gpui::test]

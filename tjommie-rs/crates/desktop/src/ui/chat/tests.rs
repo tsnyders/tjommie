@@ -12,7 +12,7 @@ use crate::model::state::{AppState, Conversation, ConversationStatus};
 use crate::model::testing::FakeRpc;
 use crate::ui::shell::route::{self, Route};
 use crate::ui::store;
-use crate::ui::testing::{app, bot, click, draw, node, state};
+use crate::ui::testing::{app, bot, click, draw, node, room, state};
 
 pub(super) fn message(id: &str, author: &str, body: &str, minute: usize) -> Message {
     Message {
@@ -279,12 +279,10 @@ fn a_room_answer_opens_its_room(cx: &mut TestAppContext) {
         json!({ "roomMessageId": "p1", "roomId": "r 1" }),
         message("m1", "b1", "Answered in Growth", 1),
     );
-    let (cx, _) = app(
-        cx,
-        Route::Chat("b1".into()),
-        chat(vec![answer], false),
-        FakeRpc::new(),
-    );
+    // The room exists: the room screen sends an unknown one back to Rooms.
+    let mut state = chat(vec![answer], false);
+    state.rooms.push(room("r 1", "Growth", &["b1"]));
+    let (cx, _) = app(cx, Route::Chat("b1".into()), state, FakeRpc::new());
     assert_eq!(node("handoff.m1").unwrap().text, "Answered in Growth");
     click(cx, "handoff.m1");
     assert_eq!(

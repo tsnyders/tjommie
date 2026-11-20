@@ -41,6 +41,16 @@ fn node_turn() -> MutexGuard<'static, ()> {
     NODE_TURN.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// Whether this is a GitHub-hosted runner. Its service logons cannot reliably reach Credential Manager, and the two
+/// cross-implementation tests need the TypeScript vault to read and write it, so they skip there, as the daemon's credential
+/// tests do for the same reason and by the same variable (`ci.yml` sets it for `cargo test`). Everywhere else they run.
+fn hosted_ci() -> bool {
+    std::env::var("TJOMMIE_CI_HOSTED").as_deref() == Ok("1")
+}
+
+/// What a cross-implementation test says when it skips.
+const HOSTED_SKIP: &str = "skipped: hosted Windows service logons cannot reliably reach Credential Manager, which the TypeScript vault side of this test uses";
+
 /// Counts one running fixture, and says so if it is not alone.
 struct FixtureRun;
 
@@ -590,6 +600,10 @@ fn a_malformed_reference_fails_closed_without_credential_manager() {
 
 #[test]
 fn the_typescript_vault_writes_a_login_that_rust_reads() {
+    if hosted_ci() {
+        eprintln!("{HOSTED_SKIP}");
+        return;
+    }
     if !node_available() {
         eprintln!("skipped: node is not on PATH, so the TypeScript side cannot run");
         return;
@@ -640,6 +654,10 @@ fn the_typescript_vault_writes_a_login_that_rust_reads() {
 
 #[test]
 fn rust_writes_a_login_that_the_typescript_vault_reads() {
+    if hosted_ci() {
+        eprintln!("{HOSTED_SKIP}");
+        return;
+    }
     if !node_available() {
         eprintln!("skipped: node is not on PATH, so the TypeScript side cannot run");
         return;

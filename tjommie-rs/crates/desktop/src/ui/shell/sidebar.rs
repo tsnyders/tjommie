@@ -6,9 +6,9 @@ use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, App, Div, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _,
-    Role, SharedString, Stateful, StatefulInteractiveElement as _, Styled as _, Window, div, px,
-    svg,
+    AnyElement, App, Div, FocusHandle, FontWeight, InteractiveElement as _, IntoElement,
+    ParentElement as _, Role, SharedString, Stateful, StatefulInteractiveElement as _, Styled as _,
+    Window, div, px, svg,
 };
 use protocol::model::BotState;
 
@@ -16,10 +16,12 @@ use super::data::{Command, Connection, Recent, RecentKind, SavedHost, ShellData}
 use super::route::{Navigate as _, Route, Section};
 use crate::assets::DISPLAY_FAMILY;
 use crate::semantic::{Semantic, SemanticExt as _};
+use crate::ui::fields::arrows;
 use crate::ui::primitives::avatar::{BotAvatar, Pose};
 use crate::ui::primitives::button::{Pill, PillVariant, pressable};
 use crate::ui::primitives::focus_handle;
 use crate::ui::primitives::menu::{Menu, MenuItem};
+use crate::ui::primitives::scroll::{follow_focus, scroll_handle};
 use crate::ui::style::{TypeExt as _, focus_ring, focus_visible, hsla, palette, r, shadows, theme};
 
 /// This PC's value in the host list; a saved PC's is its id (`THIS_PC`).
@@ -56,7 +58,17 @@ pub(super) fn sidebar(
         .map(|recent| recent_row(recent, route, window, cx))
         .collect();
     let view_all = view_all(window, cx);
-    let host = host_menu(data);
+    let host = host_menu(data, focus_handle("sidebar.host", window, cx));
+    // The arrows move between the sections, and between Recents (T5.6); Tab still stops at each.
+    let sections_list = window
+        .use_keyed_state("sidebar.sections.list", cx, |_, cx| cx.focus_handle())
+        .read(cx)
+        .clone();
+    let recents_list = window
+        .use_keyed_state("sidebar.recents.list", cx, |_, cx| cx.focus_handle())
+        .read(cx)
+        .clone();
+    let recents_scroll = scroll_handle("sidebar.recents", window, cx);
     let theme = theme(cx);
     let colors = palette(cx);
     let wordmark = &theme.typography.desktop.wordmark;
@@ -83,7 +95,7 @@ pub(super) fn sidebar(
             ),
         )
         .child(
-            div()
+            arrows(div(), &sections_list)
                 .mt(r(theme.space.s28))
                 .flex()
                 .flex_col()
@@ -106,16 +118,18 @@ pub(super) fn sidebar(
                 .text_color(hsla(colors.text.tertiary))
                 .child("Recents"),
         )
-        .child(
-            div()
+        .child(follow_focus(
+            &recents_scroll,
+            arrows(div(), &recents_list)
                 .id("sidebar.recents")
+                .track_scroll(&recents_scroll)
                 .flex()
                 .flex_col()
                 .gap(px(1.))
                 .min_h_0()
                 .overflow_y_scroll()
                 .children(recents),
-        )
+        ))
         .child(view_all)
         .child(
             div()
@@ -144,7 +158,8 @@ pub(super) fn sidebar(
 /// too, as `rail.tsx` kept it for `/room/?id=` (M2 review F7).
 fn section_selected(to: &Route, route: &Route) -> bool {
     match (to, route) {
-        (Route::Settings(_), Route::Settings(_)) | (Route::Rooms, Route::Room(_)) => true,
+        (Route::Settings(_), Route::Settings(_) | Route::Account { .. })
+        | (Route::Rooms, Route::Room(_)) => true,
         (to, route) => to == route,
     }
 }
@@ -431,13 +446,14 @@ pub(super) fn host_button(data: &ShellData) -> HostButton {
     }
 }
 
-fn host_menu(data: &ShellData) -> Menu {
+/// The host button's menu. The button is a tab stop: Enter or Space opens the menu (T5.6).
+fn host_menu(data: &ShellData, focus: FocusHandle) -> Menu {
     let button = host_button(data);
     let via = data.via.clone();
     let current: Option<SharedString> = data.host.clone();
     let on = current.clone().unwrap_or_else(|| THIS_PC.into());
-    let menu = Menu::new("sidebar.host.menu", move |open, _, cx| {
-        host_trigger(button, via, open, cx)
+    let menu = Menu::new("sidebar.host.menu", move |open, window, cx| {
+        host_trigger(button, via, open, &focus, window, cx)
     })
     .anchor(gpui::Anchor::BottomLeft)
     .offset(px(8.));
@@ -472,7 +488,15 @@ fn host_menu(data: &ShellData) -> Menu {
     )
 }
 
-fn host_trigger(button: HostButton, via: Option<SharedString>, open: bool, cx: &App) -> AnyElement {
+fn host_trigger(
+    button: HostButton,
+    via: Option<SharedString>,
+    open: bool,
+    focus: &FocusHandle,
+    window: &Window,
+    cx: &App,
+) -> AnyElement {
+    let ring = focus_visible(focus, window);
     let theme = theme(cx);
     let colors = palette(cx);
     let face = div()
@@ -499,6 +523,9 @@ fn host_trigger(button: HostButton, via: Option<SharedString>, open: bool, cx: &
         .semantic("sidebar.host", Role::Button)
         .aria_label(button.label)
         .aria_expanded(open)
+        .track_focus(focus)
+        .relative()
+        .when(ring, |host| host.child(focus_ring(theme.radius.pill, cx)))
         .flex()
         .items_center()
         .gap(r(theme.space.s10))

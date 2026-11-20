@@ -142,16 +142,40 @@ raw_method! {
     FinishCall = "vault.finish", VaultFinish, VaultFinish;
 }
 
-/// The client `createLoginsClient` returns. It calls through the transport it captured when it was created.
-pub struct LoginsClient<'a, S: LiveState, D: Desktop, R: Rpc> {
-    live: &'a S,
-    desktop: &'a D,
+/// A view of the state or the bridge works as the thing itself (a test's, or a reference the app keeps).
+impl<T: LiveState + ?Sized> LiveState for &T {
+    fn selected_host(&self) -> Option<String> {
+        (**self).selected_host()
+    }
+
+    fn is_ready(&self) -> bool {
+        (**self).is_ready()
+    }
+
+    fn daemon_generation(&self) -> Option<u64> {
+        (**self).daemon_generation()
+    }
+}
+
+impl<T: Desktop + ?Sized> Desktop for &T {
+    type Vault = T::Vault;
+
+    fn vault(&self) -> Option<T::Vault> {
+        (**self).vault()
+    }
+}
+
+/// The client `createLoginsClient` returns. It calls through the transport it captured when it was created. It owns
+/// what it reads (references work too), so the app can keep one across its calls.
+pub struct LoginsClient<S: LiveState, D: Desktop, R: Rpc> {
+    live: S,
+    desktop: D,
     /// `getState().host` when the client was created.
     host: Option<String>,
     /// This PC's own vault, when the client was created with no host selected and the bridge has a vault.
     native: Option<D::Vault>,
     /// The daemon client and its generation, when the client talks to a daemon.
-    daemon: Option<(u64, &'a R)>,
+    daemon: Option<(u64, R)>,
     /// Goes up on each lock, cancel and disconnect: an answer from before one of those reads as cancelled.
     epoch: AtomicU64,
     /// Interactive calls in flight. `cancel` only sends a cancel when one is.
@@ -160,11 +184,11 @@ pub struct LoginsClient<'a, S: LiveState, D: Desktop, R: Rpc> {
 
 /// `createLoginsClient()`: captures the selected PC now, and the transport it talks through. `daemon` is the connection's
 /// client with its generation, `None` while offline; it is ignored when this PC's own vault is used.
-pub fn create_logins_client<'a, S: LiveState, D: Desktop, R: Rpc>(
-    live: &'a S,
-    desktop: &'a D,
-    daemon: Option<(u64, &'a R)>,
-) -> LoginsClient<'a, S, D, R> {
+pub fn create_logins_client<S: LiveState, D: Desktop, R: Rpc>(
+    live: S,
+    desktop: D,
+    daemon: Option<(u64, R)>,
+) -> LoginsClient<S, D, R> {
     let host = live.selected_host();
     // `host === null ? desktop()?.vault : undefined`: only the desktop's own Tjommie talks to its vault directly.
     let native = if host.is_none() {
@@ -184,7 +208,7 @@ pub fn create_logins_client<'a, S: LiveState, D: Desktop, R: Rpc>(
     }
 }
 
-impl<S: LiveState, D: Desktop, R: Rpc> LoginsClient<'_, S, D, R> {
+impl<S: LiveState, D: Desktop, R: Rpc> LoginsClient<S, D, R> {
     /// Whether the PC and the transport captured at creation are still the ones in use.
     pub fn current(&self) -> bool {
         if self.live.selected_host() != self.host {
@@ -194,10 +218,10 @@ impl<S: LiveState, D: Desktop, R: Rpc> LoginsClient<'_, S, D, R> {
             // `desktop()?.vault === native`
             return self.desktop.vault().is_some_and(|vault| vault == *native);
         }
-        match self.daemon {
+        match &self.daemon {
             // `getState().connection.status === "ready" && daemon() === client`
             Some((generation, _)) => {
-                self.live.is_ready() && self.live.daemon_generation() == Some(generation)
+                self.live.is_ready() && self.live.daemon_generation() == Some(*generation)
             }
             None => false,
         }
@@ -265,7 +289,7 @@ impl<S: LiveState, D: Desktop, R: Rpc> LoginsClient<'_, S, D, R> {
         if let Some(native) = &self.native {
             return native.command(action).await;
         }
-        let Some((_, rpc)) = self.daemon else {
+        let Some((_, rpc)) = &self.daemon else {
             return Err(CommandFailure::Failed);
         };
         let answer = match action {
@@ -467,6 +491,15 @@ mod tests {
         /// Every call so far: the method's name and its params.
         fn calls(&self) -> Vec<(&'static str, Value)> {
             locked(&self.calls).clone()
+        }
+    }
+
+    impl Rpc for &HeldRpc {
+        fn call<M: ClientMethod>(
+            &self,
+            params: M::Params,
+        ) -> impl Future<Output = Result<M::Result, RpcError>> + Send {
+            (**self).call::<M>(params)
         }
     }
 

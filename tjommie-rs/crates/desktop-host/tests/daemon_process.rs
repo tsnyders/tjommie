@@ -210,6 +210,9 @@ async fn confirms_an_unresponsive_daemon_and_its_child_exited_before_recovery_ev
     let (output, seen) = collecting();
     let mut launch = fake("hang-with-child", &[]);
     launch.kill_probe = Some(kills.clone());
+    // The daemon ignores its stdin closing, so the graceful stop only ends after the grace. A grace far longer than the window
+    // below makes that stop time out however fast this machine is, so the test always takes the forced path it is about.
+    launch.stop_grace = Duration::from_secs(30);
     let daemon = start(&launch, output).await.unwrap();
     let (daemon_pid, child_pid) = {
         let heard = seen.lock().unwrap();

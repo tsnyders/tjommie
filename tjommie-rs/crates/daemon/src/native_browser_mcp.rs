@@ -50,6 +50,12 @@ static TOOLS: LazyLock<Vec<(String, Tool)>> = LazyLock::new(|| {
         .collect()
 });
 
+/// Whether `name` is one of the native browser tools the proxy lists (the provider fixtures check their `browser` events
+/// against the same manifest, parsed once, here).
+pub fn is_tool(name: &str) -> bool {
+    tool(name).is_some()
+}
+
 fn tool(name: &str) -> Option<&'static Tool> {
     TOOLS
         .iter()

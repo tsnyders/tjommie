@@ -309,16 +309,16 @@ pub trait ProviderSession: Send + Sync {
 
 /// The listeners of one session.
 #[derive(Default)]
-struct Subscribers(Mutex<Vec<mpsc::UnboundedSender<ProviderEvent>>>);
+pub(crate) struct Subscribers(Mutex<Vec<mpsc::UnboundedSender<ProviderEvent>>>);
 
 impl Subscribers {
-    fn subscribe(&self) -> mpsc::UnboundedReceiver<ProviderEvent> {
+    pub(crate) fn subscribe(&self) -> mpsc::UnboundedReceiver<ProviderEvent> {
         let (sender, receiver) = mpsc::unbounded_channel();
         self.0.lock().expect("subscribers lock").push(sender);
         receiver
     }
 
-    fn emit(&self, event: ProviderEvent) {
+    pub(crate) fn emit(&self, event: ProviderEvent) {
         self.0
             .lock()
             .expect("subscribers lock")

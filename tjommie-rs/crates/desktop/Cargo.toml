@@ -11,6 +11,8 @@ publish.workspace = true
 test-driver = []
 
 [dependencies]
+# The browser engine's message channels (desktop-host's own, T3.7 drains them on the UI thread).
+async-channel = "2.5.0"
 base64 = "0.23.1"
 client = { path = "../client" }
 desktop-host = { path = "../desktop-host" }
@@ -22,6 +24,10 @@ log = "0.4.35"
 # Chat Markdown is rewritten before gpui-kit's TextView draws it (ui::files::markdown): the same parser it uses.
 markdown = "1.0.0"
 protocol = { path = "../protocol" }
+# The pairing QR code (Settings, Devices; qrcode.react in the TypeScript): Nayuki's reference encoder, no dependencies.
+qrcodegen = "1.8.0"
+# The window's Win32 handle: the parent of the bots' pages (T3.7). The version GPUI uses.
+raw-window-handle = "0.6"
 regex = "1.13.1"
 rust-embed = "8.14.0"
 serde = { version = "1.0.229", features = ["derive"] }
@@ -36,6 +42,7 @@ windows = { version = "0.62.2", features = [
   "Win32_Storage_FileSystem",
   "Win32_System_Pipes",
   "Win32_System_Threading",
+  "Win32_UI_WindowsAndMessaging",
 ] }
 
 [dev-dependencies]
