@@ -7,7 +7,7 @@ Rules for working in the repository are in [`AGENTS.md`](../AGENTS.md). Release 
 
 ## What you need
 
-- Windows, with the Visual Studio Build Tools (MSVC) and a Windows SDK, as any Rust build on Windows does. CI builds on `windows-latest`.
+- Windows 11, which is what the spec targets, with the Visual Studio Build Tools (MSVC) and a Windows SDK, as any Rust build on Windows does. CI builds on `windows-latest`.
 - Rust. The version is pinned in `tjommie-rs/rust-toolchain.toml`, and rustup installs it the first time you run cargo inside `tjommie-rs`. **Run every cargo command from inside `tjommie-rs`**, so the pin applies.
 - Node 24 or newer. The TypeScript packages and their tests need it, and so do some Rust tests: the interop tests drive the TypeScript client through `tjommie-rs/tools/remote-probe.ts`, and the worker and command-line tests run `node.exe`. Run `npm ci` in the repository root once.
 - The Microsoft Edge WebView2 runtime. The agents' browser runs on it. It is part of Windows 11, and hosted Windows runners have it.
