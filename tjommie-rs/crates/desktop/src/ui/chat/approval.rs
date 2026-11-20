@@ -53,6 +53,9 @@ pub struct Approving {
     snapped: bool,
     undone: bool,
     check: DrawOn,
+    /// The record's arrival where the card was, in percent on the calm spring (the spring rests within a quarter of a
+    /// unit, so a 0-1 range would stop short).
+    arrival: Spring,
 }
 
 impl Approving {
@@ -60,6 +63,7 @@ impl Approving {
     pub fn start(now: f32, snapped: bool, motion: &theme::Motion) -> Self {
         let mut stamp = Spring::new(0., &motion.spring.playful);
         let mut check = DrawOn::new(&motion.spring.calm);
+        let arrival = Spring::new(if snapped { 100. } else { 0. }, &motion.spring.calm);
         if snapped {
             check.draw(true);
         } else {
@@ -71,6 +75,7 @@ impl Approving {
             snapped,
             undone: false,
             check,
+            arrival,
         }
     }
 
@@ -79,9 +84,14 @@ impl Approving {
         let stamping = self.stamp.step(dt);
         if self.closed(now) {
             self.check.draw(false);
+            self.arrival.set_target(100.);
         }
         let drawing = self.check.step(dt);
-        stamping || drawing || (!self.undone && !self.snapped && now - self.started < BEAT)
+        let arriving = self.arrival.step(dt);
+        stamping
+            || drawing
+            || arriving
+            || (!self.undone && !self.snapped && now - self.started < BEAT)
     }
 
     /// How far down the card is, in px.
@@ -105,6 +115,11 @@ impl Approving {
     /// The check's drawn fraction.
     pub fn check_progress(&self) -> f32 {
         self.check.progress()
+    }
+
+    /// How far the record has arrived, 0 to 1: its opacity where the card was.
+    pub fn arrival(&self) -> f32 {
+        (self.arrival.value / 100.).clamp(0., 1.)
     }
 
     /// The daemon refused the answer: the card comes back from wherever it is (the stamp keeps its velocity).
@@ -169,10 +184,20 @@ pub fn autonomy_word(autonomy: Autonomy) -> &'static str {
 /// The answered card's record: what happened, then what it was about.
 pub fn record(summary: &str, data: &ApprovalData, decision: Option<ApprovalDecision>) -> String {
     let card = Card::of(data);
-    record_of(summary, card.routine, card.status == ApprovalStatus::Allowed, decision)
+    record_of(
+        summary,
+        card.routine,
+        card.status == ApprovalStatus::Allowed,
+        decision,
+    )
 }
 
-fn record_of(summary: &str, routine: bool, allowed: bool, decision: Option<ApprovalDecision>) -> String {
+fn record_of(
+    summary: &str,
+    routine: bool,
+    allowed: bool,
+    decision: Option<ApprovalDecision>,
+) -> String {
     let label = match (routine, allowed, decision) {
         (true, true, _) => "Routine added",
         (true, false, _) => "Dismissed",
@@ -204,20 +229,37 @@ pub fn card(
             .try_global::<Decided>()
             .and_then(|decided| decided.0.get(fields.approval_id).copied());
         let text = record(&message.body, data, decision);
-        return answered(&message.id, &text, fields.status == ApprovalStatus::Allowed, None, cx);
+        return answered(
+            &message.id,
+            &text,
+            fields.status == ApprovalStatus::Allowed,
+            None,
+            cx,
+        );
     }
     pending(message, &fields, bot, window, cx)
 }
 
 /// The one-line record. `check` is the drawn fraction of an approval's check while it draws on.
-fn answered(id: &str, text: &str, allowed: bool, check_progress: Option<f32>, cx: &App) -> AnyElement {
+fn answered(
+    id: &str,
+    text: &str,
+    allowed: bool,
+    check_progress: Option<f32>,
+    cx: &App,
+) -> AnyElement {
     let theme = theme(cx);
     let colors = palette(cx);
     let text = SharedString::from(text.to_owned());
     let mark = match (allowed, check_progress) {
-        (true, Some(progress)) => check(progress, 14., hsla(colors.text.primary)).into_any_element(),
+        (true, Some(progress)) => {
+            check(progress, 14., hsla(colors.text.primary)).into_any_element()
+        }
         _ => svg()
-            .path(format!("icons/i/200/{}.svg", if allowed { "check" } else { "x" }))
+            .path(format!(
+                "icons/i/200/{}.svg",
+                if allowed { "check" } else { "x" }
+            ))
             .size(r(14.))
             .flex_none()
             .text_color(hsla(colors.text.primary))
@@ -255,7 +297,13 @@ fn edge(strength: f32, cx: &App) -> Hsla {
     }
 }
 
-fn pending(message: &Message, card: &Card, bot: Option<&Bot>, window: &mut Window, cx: &mut App) -> AnyElement {
+fn pending(
+    message: &Message,
+    card: &Card,
+    bot: Option<&Bot>,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
     let id = message.id.clone();
     let answer: Entity<Answer> = window.use_keyed_state(
         SharedString::from(format!("approval.{id}.answer")),
@@ -281,7 +329,7 @@ fn pending(message: &Message, card: &Card, bot: Option<&Bot>, window: &mut Windo
     if moving {
         clock::keep_moving(window, cx);
     }
-    let (busy, problem, decision, offset, flash, closed, progress) = {
+    let (busy, problem, decision, offset, flash, closed, progress, arrival) = {
         let answer = answer.read(cx);
         let approving = answer.approving.as_ref();
         (
@@ -292,13 +340,17 @@ fn pending(message: &Message, card: &Card, bot: Option<&Bot>, window: &mut Windo
             approving.map_or(0., |approving| approving.flash(now)),
             approving.is_some_and(|approving| approving.closed(now)),
             approving.map(Approving::check_progress),
+            approving.map_or(1., Approving::arrival),
         )
     };
-    // Closed before the daemon has recorded the answer: the record says what was answered.
+    // Closed before the daemon has recorded the answer: the record says what was answered, arriving on the calm spring.
     if closed && let Some(decision) = decision {
         let allowed = decision != ApprovalDecision::Deny;
         let text = record_of(&message.body, card.routine, allowed, Some(decision));
-        return answered(&id, &text, allowed, progress, cx);
+        return div()
+            .opacity(arrival)
+            .child(answered(&id, &text, allowed, progress, cx))
+            .into_any_element();
     }
 
     let theme = theme(cx);
@@ -356,7 +408,9 @@ fn pending(message: &Message, card: &Card, bot: Option<&Bot>, window: &mut Windo
         .border_t_1()
         .border_color(hsla(colors.overlay.highlight))
         .shadow(shadows(&theme.shadow.light.raised))
-        .when(flash > 0., |card| card.border_1().border_color(edge(flash, cx)))
+        .when(flash > 0., |card| {
+            card.border_1().border_color(edge(flash, cx))
+        })
         .when(ring, |card| card.child(focus_ring(theme.radius.slot, cx)))
         .child(
             div()
@@ -474,7 +528,12 @@ fn needs_you(cx: &App) -> AnyElement {
         .bg(hsla(colors.accent.tint))
         .type_style(&theme.typography.desktop.label)
         .text_color(hsla(colors.accent.text))
-        .child(div().size(r(7.)).rounded_full().bg(hsla(colors.accent.marker)))
+        .child(
+            div()
+                .size(r(7.))
+                .rounded_full()
+                .bg(hsla(colors.accent.marker)),
+        )
         .child("Needs you")
         .into_any_element()
 }
@@ -565,11 +624,19 @@ mod tests {
     fn an_answered_card_says_what_happened() {
         let summary = "Forge wants to run a command";
         assert_eq!(
-            record(summary, &tool(ApprovalStatus::Allowed), Some(ApprovalDecision::Always)),
+            record(
+                summary,
+                &tool(ApprovalStatus::Allowed),
+                Some(ApprovalDecision::Always)
+            ),
             "Always allowed: Forge wants to run a command"
         );
         assert_eq!(
-            record(summary, &tool(ApprovalStatus::Allowed), Some(ApprovalDecision::Once)),
+            record(
+                summary,
+                &tool(ApprovalStatus::Allowed),
+                Some(ApprovalDecision::Once)
+            ),
             "Approved: Forge wants to run a command"
         );
         // Answered elsewhere: this window doesn't know how.
@@ -578,7 +645,11 @@ mod tests {
             "Approved: Forge wants to run a command"
         );
         assert_eq!(
-            record(summary, &tool(ApprovalStatus::Denied), Some(ApprovalDecision::Deny)),
+            record(
+                summary,
+                &tool(ApprovalStatus::Denied),
+                Some(ApprovalDecision::Deny)
+            ),
             "Denied: Forge wants to run a command"
         );
         let proposal = "Add a routine: Morning digest, every weekday";
@@ -601,12 +672,60 @@ mod tests {
             now += 1. / 60.;
             approving.step(now, 1. / 60.);
             deepest = deepest.max(approving.offset());
-            assert_eq!(approving.closed(now), now >= BEAT, "closed only after the beat, at {now}");
+            assert_eq!(
+                approving.closed(now),
+                now >= BEAT,
+                "closed only after the beat, at {now}"
+            );
         }
         assert!((2.5..=3.5).contains(&deepest), "dipped {deepest} px");
         assert!(approving.offset().abs() < 0.3, "and settled");
-        assert_eq!(approving.flash(BEAT), 0., "the edge is ink by the end of the beat");
-        assert!((approving.check_progress() - 1.).abs() < 0.01, "the check drew on");
+        assert_eq!(
+            approving.flash(BEAT),
+            0.,
+            "the edge is ink by the end of the beat"
+        );
+        assert!(
+            (approving.check_progress() - 1.).abs() < 0.01,
+            "the check drew on"
+        );
+        assert!(
+            (approving.arrival() - 1.).abs() < 0.01,
+            "and the record has arrived"
+        );
+    }
+
+    #[test]
+    fn the_record_arrives_on_the_calm_spring_after_the_beat() {
+        let motion = motion();
+        let mut approving = Approving::start(0., false, &motion);
+        let frame = 1. / 60.;
+        let mut now = 0.;
+        let mut seen = Vec::new();
+        while now < BEAT + 0.2 {
+            now += frame;
+            approving.step(now, frame);
+            seen.push((now, approving.arrival()));
+        }
+        assert!(
+            seen.iter()
+                .filter(|(at, _)| *at < BEAT)
+                .all(|(_, arrival)| *arrival == 0.),
+            "nothing arrives before the beat"
+        );
+        let after: Vec<f32> = seen
+            .iter()
+            .filter(|(at, _)| *at >= BEAT)
+            .map(|(_, a)| *a)
+            .collect();
+        assert!(
+            after.windows(2).all(|pair| pair[1] >= pair[0]),
+            "it only rises"
+        );
+        assert!(
+            after.last().is_some_and(|last| (0.2..1.).contains(last)),
+            "still arriving 200 ms on: {after:?}"
+        );
     }
 
     #[test]
@@ -631,7 +750,10 @@ mod tests {
             "the card turns from where it was: {before} -> {}",
             approving.offset()
         );
-        assert!(approving.flash(now) <= flash, "the edge keeps settling, with no jump back to ochre");
+        assert!(
+            approving.flash(now) <= flash,
+            "the edge keeps settling, with no jump back to ochre"
+        );
         while now < 2. {
             now += frame;
             approving.step(now, frame);
@@ -647,6 +769,7 @@ mod tests {
         assert_eq!(approving.offset(), 0.);
         assert_eq!(approving.flash(0.), 0.);
         assert_eq!(approving.check_progress(), 1., "the check is whole");
+        assert_eq!(approving.arrival(), 1., "and the record is there");
     }
 
     mod views {
@@ -671,7 +794,12 @@ mod tests {
         fn keyboard_snaps(cx: &mut TestAppContext) {
             // The fake has no answer for approvals.respond, so the daemon refuses the answer.
             let rpc = FakeRpc::new();
-            let (cx, calls) = app(cx, Route::Chat("b1".into()), chat(vec![pending_card()], false), rpc);
+            let (cx, calls) = app(
+                cx,
+                Route::Chat("b1".into()),
+                chat(vec![pending_card()], false),
+                rpc,
+            );
             assert!(node("approval.m1.approve").is_some());
             // Focus the card, then Ctrl+Enter: the answer goes, and the record shows on the very next frame.
             click(cx, "approval.m1.title");
