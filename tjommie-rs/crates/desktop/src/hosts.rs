@@ -25,11 +25,13 @@ use client::{Client, Endpoint};
 use desktop_host::browser::engine::{BotEvent, Engine};
 use desktop_host::browser::host::{JobQueue, serve as serve_jobs};
 use desktop_host::browser::login::{Request, serve as serve_logins};
-use desktop_host::hosts::{DaemonBots, Hosts, Local, Parts, Running};
+use desktop_host::hosts::{
+    BotDirectory, BotInfo, DaemonBots, DirectoryError, Hosts, Local, Parts, Running,
+};
 use desktop_host::vault::credential::LoginCredentials;
 use desktop_host::vault::login::SecretStore;
 use futures::channel::oneshot;
-use futures::future::LocalBoxFuture;
+use futures::future::{BoxFuture, LocalBoxFuture};
 use gpui::{App, Global, Window};
 use protocol::Event;
 use protocol::vault::VaultHostAction;
@@ -231,8 +233,12 @@ async fn watch_bots(
                         let _ = notices.send(Notice::Notify(Box::new(notice))).await;
                     }
                     Ok(_) => {}
-                    // Events were lost: ask for the list again.
-                    Err(broadcast::error::RecvError::Lagged(_)) => listed = false,
+                    // Events were lost: ask for the list again, on a fresh subscription, so that the events the old one
+                    // still holds (older than the list) are not applied after it.
+                    Err(broadcast::error::RecvError::Lagged(_)) => {
+                        events = client.events();
+                        listed = false;
+                    }
                     Err(broadcast::error::RecvError::Closed) => break,
                 },
             }
@@ -253,6 +259,8 @@ async fn watch_bots(
 pub struct AppHosts {
     pub hosts: Arc<Hosts>,
     pub control: HostControl,
+    /// The live runtime: the daemon's bot lookups are Tokio work that the UI thread's tasks only await.
+    runtime: tokio::runtime::Handle,
 }
 
 impl Global for AppHosts {}
@@ -282,6 +290,7 @@ pub fn create(
         AppHosts {
             hosts: Arc::new(hosts),
             control,
+            runtime: runtime.clone(),
         },
         orders,
         requests,
@@ -307,15 +316,22 @@ pub fn serve(app: AppHosts, orders: Receiver<Order>, requests: Receiver<Request>
                                 engine.daemon_restarted().await;
                             }
                         }
-                        let Some(engine) = engine else {
-                            log::error!("The bots' browsers are off: there is no browser engine.");
-                            continue;
-                        };
-                        if !logins_served {
-                            logins_served = true;
-                            cx.update(|cx| serve_login_steps(&engine, &requests, cx));
+                        match &engine {
+                            Some(engine) if !logins_served => {
+                                logins_served = true;
+                                cx.update(|cx| serve_login_steps(engine, &requests, cx));
+                            }
+                            Some(_) => {}
+                            None => {
+                                // The vault and the worker lease still run; only what needs a page is off, and a Logins
+                                // step that needs one fails at once instead of waiting for an engine that isn't there.
+                                log::error!(
+                                    "The bots' browsers are off: there is no browser engine."
+                                );
+                                requests.close();
+                            }
                         }
-                        running = cx.update(|cx| start(&app.hosts, local, &engine, notices, cx));
+                        running = cx.update(|cx| start(&app, local, engine.as_ref(), notices, cx));
                     }
                     Order::Stop { browsers, done } => {
                         if let Some(old) = running.take() {
@@ -359,50 +375,82 @@ fn serve_login_steps(engine: &Rc<Engine>, requests: &Receiver<Request>, cx: &mut
         .detach();
 }
 
+/// The bot directory for the browser's jobs, which the UI thread awaits: the lookup talks to the daemon with a Tokio client,
+/// so it runs on the live runtime and the UI task only awaits its answer (as [`LocalVault`]'s commands do).
+struct OnRuntime {
+    bots: Arc<DaemonBots>,
+    runtime: tokio::runtime::Handle,
+}
+
+impl BotDirectory for OnRuntime {
+    fn find(&self, id: &str) -> BoxFuture<'_, Result<Option<BotInfo>, DirectoryError>> {
+        let (bots, id) = (self.bots.clone(), id.to_owned());
+        // unguarded: a tokio task, off the UI thread, where a panic ends only that task (and the lookup fails)
+        let looked = self.runtime.spawn(async move { bots.find(&id).await });
+        Box::pin(async move { looked.await.unwrap_or(Err(DirectoryError)) })
+    }
+}
+
 /// The clients for one daemon: its browser jobs are served on the engine, the bot watcher's notices are applied to it, and
-/// the three connections start. `None`, with the reason in the log, when they can't.
+/// the three connections start. With no engine (`None`) the jobs answer "not ready" at once and the bots' list has nowhere
+/// to go, but the vault, the worker lease and the notices still start. `None` back, with the reason in the log, when the
+/// clients can't start.
 fn start(
-    hosts: &Arc<Hosts>,
+    app: &AppHosts,
     local: Local,
-    engine: &Rc<Engine>,
+    engine: Option<&Rc<Engine>>,
     notices: Receiver<Notice>,
     cx: &mut App,
 ) -> Option<Running> {
+    let hosts = &app.hosts;
     let (queue, jobs) = JobQueue::new();
-    let spawn = spawner(cx);
-    cx.foreground_executor()
-        // unguarded: a future, not a closure; guarded_async wraps it
-        .spawn(guarded_async(
-            "serve the browser's jobs",
-            serve_jobs(engine.clone(), jobs, spawn),
-        ))
-        .detach();
-    let (applying, locking) = (engine.clone(), hosts.clone());
+    let directory = Arc::new(DaemonBots::new(local.clone()));
+    if let Some(engine) = engine {
+        let (spawn, bots): (_, Arc<dyn BotDirectory>) = (
+            spawner(cx),
+            Arc::new(OnRuntime {
+                bots: directory.clone(),
+                runtime: app.runtime.clone(),
+            }),
+        );
+        cx.foreground_executor()
+            // unguarded: a future, not a closure; guarded_async wraps it
+            .spawn(guarded_async(
+                "serve the browser's jobs",
+                serve_jobs(engine.clone(), jobs, bots, spawn),
+            ))
+            .detach();
+    }
+    let (applying, locking) = (engine.cloned(), hosts.clone());
     cx.spawn(async move |cx| {
         guarded_async("hear the daemon's bots", async move {
             while let Ok(notice) = notices.recv().await {
                 match notice {
                     Notice::Listed(bots) => {
-                        for (id, browser) in &bots {
-                            if *browser {
-                                applying.allow_bot(id);
+                        if let Some(engine) = &applying {
+                            // Each bot's browser as listed, and what the list no longer has closed, as the events would have.
+                            // unguarded: the engine's own method inside guarded_async, not a handler registration
+                            engine.on_bot_list(&bots).await;
+                            let ids: Vec<String> = bots.into_iter().map(|(id, _)| id).collect();
+                            if let Err(error) = engine.prune_profiles(&ids).await {
+                                log::warn!(
+                                    "Some deleted browser profiles could not be cleaned up: {error}"
+                                );
                             }
-                        }
-                        let ids: Vec<String> = bots.into_iter().map(|(id, _)| id).collect();
-                        if let Err(error) = applying.prune_profiles(&ids).await {
-                            log::warn!(
-                                "Some deleted browser profiles could not be cleaned up: {error}"
-                            );
                         }
                     }
                     Notice::Deleted(id) => {
-                        // unguarded: the engine's own method inside guarded_async, not a handler registration
-                        applying.on_bot_event(BotEvent::Deleted { id }).await;
+                        if let Some(engine) = &applying {
+                            // unguarded: the engine's own method inside guarded_async, not a handler registration
+                            engine.on_bot_event(BotEvent::Deleted { id }).await;
+                        }
                     }
                     Notice::Updated { id, browser } => {
-                        let updated = BotEvent::Updated { id, browser };
-                        // unguarded: the engine's own method inside guarded_async, not a handler registration
-                        applying.on_bot_event(updated).await;
+                        if let Some(engine) = &applying {
+                            let updated = BotEvent::Updated { id, browser };
+                            // unguarded: the engine's own method inside guarded_async, not a handler registration
+                            engine.on_bot_event(updated).await;
+                        }
                     }
                     Notice::Lost => locking.lock(),
                     Notice::Connected(client) => {
@@ -418,7 +466,6 @@ fn start(
         .await;
     })
     .detach();
-    let directory = Arc::new(DaemonBots::new(local.clone()));
     match hosts.start(&local, directory, Arc::new(queue)) {
         Ok(running) => Some(running),
         Err(error) => {
@@ -519,6 +566,14 @@ impl Desktop for Bridge {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Read as _;
+    use std::net::{TcpListener, TcpStream};
+    use std::time::Instant;
+
+    use desktop_host::vault::entry::EntryInput;
+    use desktop_host::vault::login::{Cancel, Confirmation, EntryWindow, LoginError};
+    use protocol::vault::LoginEntry;
+
     use super::*;
 
     fn local() -> Local {
@@ -549,6 +604,97 @@ mod tests {
         control.resume();
         control.start(local());
         assert!(started(&inbox));
+    }
+
+    /// A stand-in for the Logins windows: nothing in these tests asks the person anything.
+    struct NoWindows;
+
+    impl EntryWindow for NoWindows {
+        fn entry(
+            &self,
+            _: String,
+            _: Option<LoginEntry>,
+            _: Cancel,
+        ) -> BoxFuture<'_, Result<Option<EntryInput>, LoginError>> {
+            Box::pin(async { Ok(None) })
+        }
+
+        fn confirm(&self, _: Confirmation, _: Cancel) -> BoxFuture<'_, Result<bool, LoginError>> {
+            Box::pin(async { Ok(false) })
+        }
+
+        fn close(&self) {}
+    }
+
+    /// What a connection to the stand-in daemon asked for first, if it has sent anything yet.
+    fn first_request(mut stream: TcpStream) -> String {
+        let _ = stream.set_nonblocking(false);
+        let _ = stream.set_read_timeout(Some(Duration::from_millis(100)));
+        let mut buffer = [0_u8; 512];
+        let read = stream.read(&mut buffer).unwrap_or(0);
+        String::from_utf8_lossy(buffer.get(..read).unwrap_or_default()).into_owned()
+    }
+
+    /// Review Minor 1: with no browser engine (no window handle, a refused data root) a daemon's start still starts what
+    /// does not need one: the Logins host connects to the daemon's `/vault-host` route. A listener stands in for the daemon
+    /// and says what the clients ask it for.
+    #[gpui::test]
+    fn a_start_with_no_engine_still_starts_the_vaults_side(cx: &mut gpui::TestAppContext) {
+        // The clients do real network work on their own threads, which wakes the app's tasks: not a deterministic test.
+        cx.executor().allow_parking();
+        let daemon = TcpListener::bind("127.0.0.1:0").unwrap();
+        daemon.set_nonblocking(true).unwrap();
+        let port = daemon.local_addr().unwrap().port();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let root =
+            std::env::temp_dir().join(format!("tjommie-hosts-minor1-{}", std::process::id()));
+        let (hosts, requests) = Hosts::new(Parts {
+            root: root.clone(),
+            secrets: None,
+            entry: Arc::new(NoWindows),
+            runtime: runtime.handle().clone(),
+        });
+        let (control, orders) = HostControl::new(runtime.handle().clone());
+        let app = AppHosts {
+            hosts: Arc::new(hosts),
+            control: control.clone(),
+            runtime: runtime.handle().clone(),
+        };
+        cx.update(|cx| serve(app, orders, requests, cx));
+        control.start(Local {
+            port,
+            token: "t".repeat(43),
+            host_token: "h".repeat(43),
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut asked = Vec::new();
+        while !asked
+            .iter()
+            .any(|request: &String| request.contains("/vault-host"))
+        {
+            cx.run_until_parked();
+            runtime.block_on(async { tokio::time::sleep(Duration::from_millis(20)).await });
+            while let Ok((stream, _)) = daemon.accept() {
+                asked.push(first_request(stream));
+            }
+            assert!(
+                Instant::now() < deadline,
+                "no Logins host connected to the daemon with no engine; the clients asked for: {asked:?}"
+            );
+        }
+
+        // Stopped as a quit stops them, and the stand-in is let go of.
+        let mut stopped = Box::pin(control.stop(true));
+        while futures::FutureExt::now_or_never(&mut stopped).is_none() {
+            cx.run_until_parked();
+            runtime.block_on(async { tokio::time::sleep(Duration::from_millis(10)).await });
+            assert!(Instant::now() < deadline, "the clients did not stop");
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// A stop before a daemon restart is not a quit: the new daemon's clients start.
