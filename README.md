@@ -1,108 +1,131 @@
 # Tjommie
 
-Tjommie is a free, open-source desktop app for AI agents that chat with you, work on your PC, talk to each other and run routines. The agents run on your own computer through the official Claude Code and Codex CLIs, signed in with your own accounts. An Android companion connects over Wi-Fi or mobile data through the relay and receives push notifications.
+Tjommie is a free, open-source Windows app for AI agents that chat with you, work on your PC, talk to each other and run routines.
+The agents run on your own computer through the official Claude Code and Codex command-line tools, signed in with your own accounts.
 
-**Status:** early development. The design is in [`docs/superpowers/specs/2026-09-25-tjommie-design.md`](docs/superpowers/specs/2026-09-25-tjommie-design.md).
+![Agents overview in dark mode](docs/screens/agents-dark.png)
 
-## Develop
+**[Download Tjommie](https://github.com/tsnyders/tjommie/releases/latest)**: a Windows installer and an Android app.
 
-You need Windows, Node 24 or newer, and Rust. The Rust toolchain version is pinned in `tjommie-rs/rust-toolchain.toml`; rustup installs it the first time you build.
+## How it works
 
-The daemon is Rust and lives in `tjommie-rs`. The TypeScript daemon and the pre-Rust structure live on the `legacy` branch, for reference.
+### 1. Install
 
-Install the Claude Code and Codex CLIs and put them on PATH. The installed app keeps its data in `%LOCALAPPDATA%\Tjommie`, its Electron profile in `%APPDATA%\Tjommie`, and uses ports 47100 and 47101. A run from source (`npm run desktop`, `npm run dev` or `TJOMMIE_DESKTOP=production`) keeps its data in `%LOCALAPPDATA%\Tjommie-rs`, its Electron profile and single-instance lock in `%LOCALAPPDATA%\Tjommie-rs\electron`, and uses ports 47200 and 47201, so it runs beside an installed Tjommie without touching its data, ports or profile. Set `TJOMMIE_HOME`, `TJOMMIE_PORT` or `TJOMMIE_USER_DATA` to use another data folder, port or Electron profile in either case. The installed browser uses Electron's bundled Chromium; standalone development browser fixtures use Chrome or Edge.
+Download `Tjommie-Setup-<version>.exe` and run it. It installs for your Windows user only, needs no administrator rights, and starts Tjommie when it finishes.
+Windows SmartScreen may warn about an unknown publisher, because the installer isn't signed yet: click **More info**, then **Run anyway**.
+Your agents, chats and settings are kept in `%LOCALAPPDATA%\Tjommie`. Uninstalling leaves them there.
 
-To run Tjommie from source, build the Rust daemon, then run the Electron UI. Production from source starts `tjommie-rs\target\debug\tjommie-daemon.exe`, or the exe named by `TJOMMIE_DAEMON_EXE`, with `--token-stdin`. If the exe isn't built, the app says to build it. Sign the Claude and Codex accounts in from Settings → Accounts; a run from source keeps them in `Tjommie-rs`.
-
-The daemon starts in one of two modes. `--dev` (or `$env:TJOMMIE_DEV = '1'`) is development mode. It saves a `daemon-token` file in its data folder so a development desktop app can connect, and it also allows the UI at `http://localhost:3000`. The desktop origin `app://tjommie` is always allowed. A debug build of the daemon defaults to the same `Tjommie-rs` folder and port 47200 as a run from source; a release build defaults to `Tjommie` and port 47100, like the installed app.
-
-The installed desktop app starts the daemon with `--token-stdin`. It must start the daemon with `TJOMMIE_DEV` unset. It passes a fresh token as the first line of a pipe to the daemon's standard input and keeps that pipe open. The daemon requires at least 43 base64url characters within 5 seconds, never saves this token to a file, deletes an old `daemon-token` file left by development mode, and stops when the pipe closes, so quitting or crashing the desktop app never leaves a daemon running. Starting the daemon with neither mode exits with an error. Tests can set `TJOMMIE_ACCOUNTS_DIR` to use signed-in account folders with a disposable data root.
-
-The desktop app has two modes from source. With `$env:TJOMMIE_DESKTOP = 'production'` it starts its own daemon with `--token-stdin` and serves the static export in `packages/ui/out` (run `npm run build` first), the way the installed app will. Otherwise it is in development mode: it connects to a daemon you start yourself with `--dev` and shows the UI from `http://localhost:3000`, so `npm run dev` and that daemon must both be running. No environment variables are needed while the app and the daemon use their defaults. If you set `TJOMMIE_HOME` or `TJOMMIE_PORT`, give the daemon the same values. Closing the window keeps Tjommie running in the tray; Quit Tjommie in the tray menu stops the daemon, and with it the agents and routines. `npm run test:real` also drives the desktop app in production mode, on a disposable data root and port. It reads the signed-in accounts from `%LOCALAPPDATA%\Tjommie\accounts` (or `TJOMMIE_HOME\accounts`), which is where the installed app keeps them.
-
-```sh
-npm install
-cd tjommie-rs                                # run every cargo command inside tjommie-rs
-cargo build -p daemon --bin tjommie-daemon   # the Rust daemon
-cargo test --workspace                       # daemon tests
-cd ..
-npm run build      # static export to packages/ui/out
-$env:TJOMMIE_DESKTOP = 'production'; npm run desktop   # the Electron UI, on the Rust daemon it starts
-
-# or in development mode, each in its own terminal (the first from tjommie-rs):
-cargo run -p daemon --bin tjommie-daemon -- --dev   # development daemon, on http://127.0.0.1:47200
-npm run dev        # UI at http://localhost:3000
-npm run desktop    # the Electron UI, on that UI and the development daemon (keep both running)
-
-npm test           # TypeScript tests (vitest)
-npm run test:real  # tests that drive the real Claude and Codex CLIs (needs the accounts signed in under Tjommie, as above)
-npm run check:no-any # rejects explicit any types in first-party TypeScript
-npm run typecheck
-npm run lint
-```
-
-| Package | What it is |
+| Windows asks once | Choose Run anyway |
 |---|---|
-| `packages/protocol` | Messages shared by the daemon and the UI |
-| `packages/client` | The typed WebSocket client for the daemon, shared by the UI and the desktop app |
-| `tjommie-rs` | The Rust workspace: the daemon that runs the agents (`tjommie-daemon.exe`), plus its protocol and transport crates |
-| `packages/ui` | The UI: Next.js static export, Base UI, Tailwind |
-| `packages/desktop` | Electron shell |
-| `packages/mobile` | Android Capacitor companion and native plugins |
-| `packages/transport` | Shared pinned Snow WASM Noise implementation |
+| ![SmartScreen warning](docs/screens/install-smartscreen-1.png) | ![SmartScreen, Run anyway](docs/screens/install-smartscreen-2.png) |
 
-## Install
+### 2. Sign in
 
-The [latest GitHub release](https://github.com/tsnyders/tjommie/releases/latest) includes the Windows installer, `Tjommie-Setup-<version>.exe`. It installs Tjommie for the current Windows user, without admin rights, and starts it. The installer isn't signed yet, so Windows SmartScreen asks once: choose "More info", then "Run anyway". Uninstalling keeps your agents and their data in `%LOCALAPPDATA%\Tjommie`.
+Tjommie runs your agents with Claude Code and Codex, so install at least one of them first: Claude Code from [claude.com/claude-code](https://claude.com/claude-code), or Codex with `npm install -g @openai/codex`.
+The first screen has a card for each. Click **Sign in to Claude** or **Sign in to Codex**. Your browser opens the provider's sign-in page, and Tjommie notices when you are done.
+Tjommie keeps its own sign-in, separate from how you use these tools yourself, and never sees your password.
+Codex agents that work in their own folder need Codex's sandbox. The Codex card offers **Set up Codex's sandbox**, and Windows asks for administrator permission once.
 
-GitHub Actions runs the release checks and builds after a version tag is pushed. It checks the installer against `latest.yml` before publishing. The build also stamps `dist-desktop/provenance.json`. `npm run test:packaged` remains a Windows smoke check for packaged startup, browser-tool files, shutdown, and source/artifact provenance; the hosted Windows release workflow runs it after packaging with disposable data and account folders. `npm run test:real` covers the source application and providers separately. Installation and the full installed-app demo remain separate acceptance checks.
+| Signed out | Signed in |
+|---|---|
+| ![Set up Tjommie, signed out](docs/screens/setup-signed-out-dark.png) | ![Set up Tjommie, signed in](docs/screens/setup-signed-in-dark.png) |
 
-After installing, set `TJOMMIE_TEST_EXECUTABLE` to the installed `Tjommie.exe` absolute path to run the existing desktop lifecycle and screen suites against that executable. They retain disposable data roots and Electron profiles and use the Tjommie-owned provider accounts. Unset it before returning to source-app tests. The mandatory packaged smoke always supplies its own unpacked executable path.
+### 3. Create your first agent
 
-TypeScript must never use explicit `any` types. `npm run typecheck` enforces this with the syntax-based `check:no-any` gate before checking types. Test commands fail when no test files are found.
+Click **Create your first agent**, or **New agent** in the sidebar. Give the agent a name, a colour and a shape, and say what it should do.
+Then choose its account and model, its folder, how much it may do without asking (see Autonomy levels below), and whether it gets a browser.
 
-## Accounts and usage
+| New agent | Your agents |
+|---|---|
+| ![New agent form](docs/screens/new-agent-dark.png) | ![Agents screen with three agents](docs/screens/agents-dark.png) |
 
-The GitHub release also includes a release-signed Android APK. On the PC, open Settings → Devices → Pair a device, then scan or paste its code in the Android app. Pairing expires after ten minutes and works once. The PC must be awake; on the same network the phone can connect directly over TCP port 47101, and elsewhere it connects through the relay. Windows may ask to allow the app on the private network. Every paired device has full owner authority. Revoke a lost phone from Devices. See [`packages/mobile/README.md`](packages/mobile/README.md) for signing, build requirements and current limits.
+### 4. Chat and approvals
 
-Settings → Accounts manages separate Claude Code and Codex accounts. Existing accounts keep their IDs and sign-in folders when upgraded. Each agent has an account pin; changing the provider's default affects new agents, while changing an agent's pin starts a fresh provider session and keeps its chat.
+Open an agent and type. **Enter** sends and **Shift+Enter** starts a new line. The row under the box attaches files, mentions another agent, shows the agent's model (a menu changes it), dictates and sends.
+If the agent is busy, your message steers it or waits in a queue. With the box empty, the round button stops the turn.
 
-Subscription sign-in is an explicit action that opens the provider's page in the system browser. Claude uses the browser's loopback callback without opening a terminal; manual-code entry is not offered by this integration. API keys are stored in Windows Credential Manager, with only an opaque reference in the database. They are not returned in account status. Windows protects these entries for the current user; this is not protection against unrestricted code running as that same user.
+When an agent wants to do something it isn't allowed to do on its own, an approval card appears in the chat. It shows what the agent wants and the exact command.
+**Approve** allows it once, **Deny** refuses, and **Always allow** saves a rule for that agent when the request names one.
 
-Claude API-key work requires Claude Code 2.1.251 or later for subprocess environment scrubbing. A synthetic loopback API test with the installed CLI verified that its Bash subprocess did not inherit the API key. This does not isolate secrets from arbitrary code running under the same Windows account.
+Files an agent shares show up as cards. Click one to preview an image, a Markdown file, a PDF, or audio or video. **Download** saves it where you choose.
 
-An API-key account needs a spending cap. The cap covers its total recorded API spending, with no automatic monthly reset. Prices and provider reports are local accounting inputs, not an invoice or a guaranteed billing ceiling. Unsupported Codex pricing prevents a paid turn; an unpriced completed turn blocks further API-key work rather than treating its cost as zero. A subscription can use the provider's explicitly selected API-key fallback when limited, then return to its pinned account when the limit resets. Tjommie does not silently rotate between subscription accounts.
+| A conversation | An approval |
+|---|---|
+| ![A chat with an agent](docs/screens/chat-dark.png) | ![An approval card](docs/screens/approval-dark.png) |
 
-Settings → Usage shows Today, This week, This month and This year (calendar year to date). A combined cost estimate gives the API-equivalent value of all recorded token usage, alongside separate API-key spending and subscription API value. It is not your subscription bill. Missing costs remain unknown; incomplete totals show a known minimum. Date ranges use the displayed time zone; the year chart groups tokens by month.
+### 5. Team rooms and exchanges
 
-The provider cards show reported allowance windows, reset times, plan/account details, provider credits and extra-usage status where available. Credits are provider units, not dollars. Refresh asks for metadata only, without starting a model turn. Codex uses its app-server metadata RPC. Claude's selected-account reader uses the same fixed OAuth usage endpoint as Paseo; it is an unofficial metadata endpoint and can become unavailable. The backend does not expose, log, modify or refresh the CLI token. A failed reading retains and labels the last successful data. Removing an account requires moving its assigned agents first, disconnects it locally, and retains historical usage.
+The **Everyone** room holds every agent. **New room** makes a room with the agents you pick. Mention an agent by name in a room to hand it work.
+An **exchange** is one agent asking another. Open it to see who asked whom and read the whole thing. Its box replies in Everyone with both agents mentioned.
+Settings, then Agents, sets how many requests agents may pass between each other in one chain.
 
-Below 640 px, the Quiet pill replaces the desktop rail with Agents, Team and Settings navigation. Details, exchanges and members become full-screen sheets, and forms and account dialogs fit the narrow layout. Narrowing the desktop window still provides its native browser. The Android companion connects through the encrypted pairing flow described above.
+| Everyone | An exchange |
+|---|---|
+| ![The Everyone room](docs/screens/room-dark.png) | ![An exchange between two agents](docs/screens/exchange-dark.png) |
 
-The isolated desktop account check can be run with `npx vitest run --mode real packages/desktop/src/accounts.real.test.ts` after `npm run build` and after building the debug Rust daemon (or setting `TJOMMIE_DAEMON_EXE`); it stops at once, with the build instruction, if the daemon exe is missing. It uses unsigned disposable profiles, synthetic usage, and a fake key stored under a disposable credential target; it does not sign in or make a paid provider call. The broader `test:real` command includes real-provider tests and must not be used as a substitute for this isolated check.
+### 6. Routines
 
-## Agent browser
+A routine is a prompt an agent runs on a schedule. **Routines** in the sidebar lists every agent's routines, and **Add routine** makes a new one.
+A routine has a name, what to do, the days and times, the time zone those times are read in, and a **Stop after** limit. The editor lists the routine's recent runs.
+If a routine fails, Tjommie shows a notification.
 
-Enable Browser for an agent, then choose Open browser in its chat to browse inside the right panel. The desktop app owns a live native browser view with a separate persistent profile for each agent. The person and the agent use the same tabs. Browser tools need the desktop app running, including when its window is hidden in the tray.
+| Routines | The routine editor |
+|---|---|
+| ![Routines screen](docs/screens/routines-dark.png) | ![Routine editor](docs/screens/routine-editor-dark.png) |
 
-Use the Details / Browser tabs to return to agent settings, routines and activity without losing the browser page or address draft. Drag the panel divider to change its width; the focused divider also accepts arrow keys. Expand browser fills the application content area, and Restore browser returns to the previous width.
+### 7. The agent's browser and Logins
 
-Take control before typing or clicking. Resume agent gives its browser tools control again. Returning to Details or hiding the panel releases manual control without closing the browser session. Website pages run in isolated native guest contents without the application's preload or Node access. Human browsing no longer uses JPEG polling, and manual input is not stored as chat messages.
+Turn on **Browser** in an agent's settings. Then open the panel beside its chat with the panel button, **Ctrl+B**, or **Open browser** in the chat's More menu.
+The browser is built into Tjommie and uses Microsoft Edge WebView2. You and the agent share the same tabs, and each agent keeps its own browser profile.
+Click **Take control** before you type or click, and **Return to agent** to hand the page back. Google may block sign-in in automated browsers, and Tjommie says so in the panel.
 
-Closing or disabling an agent's browser keeps its sign-ins. Deleting the agent clears its browser storage and cookies before deleting the agent. Windows may temporarily lock cleared profile files; startup retries removing those orphaned files. Camera, microphone, screen capture and device access are denied.
+The key button beside the address opens the logins menu: **Fill a saved login**, **Saved logins** and **Manage logins**.
+Settings, then Logins, lists the logins saved on the PC that runs your agents. A new login is typed into a separate Logins window, and its username and password never appear in the main window or in a chat.
+Before it fills anything, Tjommie confirms the exact HTTPS site.
 
-Old headless Chrome profiles are retained for rollback and are not imported into the native browser. Local synthetic-site checks establish cookie persistence, not compatibility with every third-party sign-in service. Google rejected sign-in in the previous automated panel during owner testing. Native rendering does not establish that Google accepts sign-in; owner-controlled real-site acceptance remains required. Media codecs, protected playback, passkeys and operating-system authentication also require site-specific validation.
+| The browser panel | The logins menu |
+|---|---|
+| ![Browser panel beside a chat](docs/screens/browser-dark.png) | ![Logins menu over a page](docs/screens/logins-menu-dark.png) |
 
-The separate Google API connection is on hold while native website browsing is validated. OAuth API consent does not sign the browser into Google websites. No Google API connection is offered in the agent panel in this version.
+### 8. Pair the Android companion
 
-Startup routine failures are retained until the desktop handles and acknowledges them. Reconnecting retries an unacknowledged notice. A desktop crash between showing a notification and acknowledging it can cause one replay after restart.
+Install the Android app from the same release page. On the PC, open Settings, then Devices, then **Pair a device**, and scan the code in the Android app or paste it there.
+A code works once and lasts ten minutes. Pairing works on the same Wi-Fi as the PC, or over mobile data when the relay is on. The PC has to be awake.
+Every paired device has full owner authority. Revoke a lost phone from the same Devices screen.
+See [`packages/mobile/README.md`](packages/mobile/README.md) for signing and build details.
 
-## Autonomy
+| Devices | Pair a device |
+|---|---|
+| ![Devices settings](docs/screens/devices-dark.png) | ![Pair a device dialog](docs/screens/pair-dialog-dark.png) |
 
-On Windows, Codex agents at Own folder need Codex's elevated sandbox. Setting it up may show one Windows admin prompt. Until it is ready, those agents show Needs setup and do not run. Tjommie denies sandboxed Codex commands access to its sign-in folders, Claude agents' folders, logs, database and shared-files folder. The installed daemon token is passed through a pipe; a development token file is protected if present.
+## Features
 
-Codex agents can still read the rest of your user profile. A Codex agent at Own folder can read the folders of your other Codex agents (their notes and attached files), whether or not they're running. Claude agents' folders are protected. Browser cookies stay unreadable. Local services, including Tjommie's health endpoint, may be reachable from a sandboxed command.
+| Accounts and spending caps | Usage | Light theme |
+|---|---|---|
+| ![Accounts settings](docs/screens/accounts-dark.png) | ![Usage settings](docs/screens/usage-dark.png) | ![Agents screen in light mode](docs/screens/agents-light.png) |
+
+- **Accounts and usage**: Settings, then Accounts, holds your Claude Code and Codex accounts, each a subscription or an API key. Settings, then Usage, shows tokens and cost for today, this week, this month and this year, by agent, account or model.
+- **Spending caps**: An API-key account has a spending cap in dollars. Agents stop using the key once its total spend reaches the cap. The figure is an estimate from the prices Tjommie knows, not an invoice, so your provider's bill may be higher.
+- **Autonomy levels**: Each agent is set to **Always ask**, **Own folder** or **Full auto**. Always ask checks with you before every change. Own folder lets the agent work freely in its own folder and asks before anything else. Full auto never asks, and Tjommie asks you to confirm before it turns it on.
+- **The tray**: Closing the window keeps Tjommie running in the Windows tray. Left-click the icon to show the window. Right-click for **Open Tjommie**, **Restart to update** (when an update is ready) and **Quit Tjommie**.
+- **Notifications**: Tjommie shows a Windows notification when an agent needs approval, finishes, fails or hits a usage limit, and when a routine fails. It stays quiet while its window is in front. Clicking a notification opens that chat or room.
+- **Start at sign-in**: Tjommie starts hidden in the tray when you sign in to Windows. Turn it off in Settings, then General.
+- **Automatic updates**: Tjommie checks GitHub Releases a minute after it starts and then every six hours. It downloads an update in the background and installs it when you quit. It checks each download against the checksum in the release before it runs it. **Check now** and **Restart** in Settings, then General, do it on demand.
+- **Keyboard-only use**: Tab and Shift+Tab move between controls, the arrow keys move inside lists and groups of choices, and Enter or Space presses a button.
+- **Light and dark**: Tjommie opens in dark. Settings, then Appearance, offers Dark, Light or System, larger text, and compact spacing.
+
+## Use
+
+- Closing the window keeps Tjommie in the tray, so agents and routines keep working. To stop Tjommie, choose **Quit Tjommie** in the tray menu.
+- **Ctrl+B** opens or closes the browser panel. **Escape** closes it, unless a dialog or menu is open: then Escape closes that first.
+- **Ctrl+=** and **Ctrl++** zoom in, **Ctrl+-** zooms out, and **Ctrl+0** goes back to 100%. These work while a page in the agent's browser has the keyboard.
+- **Enter** sends a message and **Shift+Enter** starts a new line. **Ctrl+Enter** approves in a focused approval card.
+- In the mention list, **Up** and **Down** move, **Tab** or **Enter** picks, and **Escape** closes the list.
+
+## Build
+
+See [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) for building, running from source and the tests.
 
 ## License
 
-Apache-2.0. Tjommie is an independent project, not affiliated with the makers of Grok Bot, Claude Code or Codex.
+[Apache-2.0](LICENSE). Tjommie is an independent project, not affiliated with the makers of Grok Bot, Claude Code or Codex.
