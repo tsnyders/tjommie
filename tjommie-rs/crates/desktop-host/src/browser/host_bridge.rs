@@ -18,6 +18,7 @@ use tokio::sync::{Notify, watch};
 
 use super::BotIdentity;
 use super::engine::Reply;
+use crate::vault::host::HostToken;
 
 /// How many normal-lane jobs run at once; the urgent lane is separate so cancellation never waits behind them.
 const NORMAL_JOBS: usize = 4;
@@ -68,7 +69,7 @@ pub trait Executor: Send + Sync + 'static {
 
 pub struct BridgeConfig {
     pub port: u16,
-    /// The private desktop host token, never the renderer's daemon token.
+    /// The private desktop host token, never the renderer's daemon token. The bridge keeps it zeroizing from here on.
     pub token: String,
 }
 
@@ -86,7 +87,7 @@ struct Answer<'a> {
 struct Shared {
     client: reqwest::Client,
     url: String,
-    token: String,
+    token: HostToken,
     executor: Arc<dyn Executor>,
     on_error: Arc<dyn Fn() + Send + Sync>,
     /// The daemon is out of reach now, and the executor has been told.
@@ -118,7 +119,12 @@ impl Shared {
         } else {
             self.url.clone()
         };
-        let response = self.client.get(url).bearer_auth(&self.token).send().await?;
+        let response = self
+            .client
+            .get(url)
+            .bearer_auth(self.token.expose())
+            .send()
+            .await?;
         if response.status() == reqwest::StatusCode::NO_CONTENT {
             return Ok(Polled::Nothing);
         }
@@ -134,7 +140,7 @@ impl Shared {
         let mut request = self
             .client
             .post(&self.url)
-            .bearer_auth(&self.token)
+            .bearer_auth(self.token.expose())
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .body(body);
         if let Some(timeout) = timeout {
@@ -283,7 +289,7 @@ impl HostBridge {
         let shared = Arc::new(Shared {
             client,
             url: format!("http://127.0.0.1:{}/browser-host", config.port),
-            token: config.token,
+            token: HostToken::new(config.token),
             executor,
             on_error,
             lost: AtomicBool::new(false),

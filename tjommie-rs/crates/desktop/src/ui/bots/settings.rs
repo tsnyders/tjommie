@@ -137,7 +137,7 @@ fn run<T: 'static>(
 
 impl Render for BotSettings {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let state = store::state(cx).clone();
+        let state = store::snapshot(cx);
         // The agent as it is now: its state, name and routines follow changes made elsewhere.
         let bot = state
             .bots

@@ -126,7 +126,7 @@ fn engine_config(parent: HWND, root: &Path, identity: Identity, cx: &App) -> Eng
     config
 }
 
-fn window_hwnd(window: &Window) -> Option<HWND> {
+pub(crate) fn window_hwnd(window: &Window) -> Option<HWND> {
     match raw_window_handle::HasWindowHandle::window_handle(window)
         .ok()?
         .as_raw()

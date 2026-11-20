@@ -335,7 +335,8 @@ struct Credentials<'a> {
     desktop_host_token: &'a str,
 }
 
-fn locked<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+/// Locks a mutex whose holder may have panicked: the data is still there, and a panic elsewhere must not stop this one.
+pub(crate) fn locked<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 

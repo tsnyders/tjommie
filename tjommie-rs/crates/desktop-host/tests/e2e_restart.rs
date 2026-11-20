@@ -104,10 +104,15 @@ fn e2e_daemon_restart_with_panel_open() {
     let first = runtime.block_on(Daemon::start('a'));
     let (queue, jobs) = JobQueue::new();
     let spawner = rig.ui.spawner();
-    rig.ui.spawn(serve(rig.engine.clone(), jobs, move |task| {
-        use futures::task::LocalSpawnExt as _;
-        let _ = spawner.spawn_local(task);
-    }));
+    rig.ui.spawn(serve(
+        rig.engine.clone(),
+        jobs,
+        rig.everyone(),
+        move |task| {
+            use futures::task::LocalSpawnExt as _;
+            let _ = spawner.spawn_local(task);
+        },
+    ));
     let locks = vault_locks.clone();
     let old_bridge = HostBridge::start(
         BridgeConfig {
@@ -272,10 +277,15 @@ fn e2e_daemon_restart_with_panel_open() {
     assert_ne!(second.token, old_token);
     let (queue, jobs) = JobQueue::new();
     let spawner = rig.ui.spawner();
-    rig.ui.spawn(serve(rig.engine.clone(), jobs, move |task| {
-        use futures::task::LocalSpawnExt as _;
-        let _ = spawner.spawn_local(task);
-    }));
+    rig.ui.spawn(serve(
+        rig.engine.clone(),
+        jobs,
+        rig.everyone(),
+        move |task| {
+            use futures::task::LocalSpawnExt as _;
+            let _ = spawner.spawn_local(task);
+        },
+    ));
     let new_bridge = HostBridge::start(
         BridgeConfig {
             port: second.port,
@@ -356,10 +366,15 @@ fn a_bots_tool_call_travels_through_the_broker_and_bridge_to_the_real_page() {
     let daemon = runtime.block_on(Daemon::start('t'));
     let (queue, jobs) = JobQueue::new();
     let spawner = rig.ui.spawner();
-    rig.ui.spawn(serve(rig.engine.clone(), jobs, move |task| {
-        use futures::task::LocalSpawnExt as _;
-        let _ = spawner.spawn_local(task);
-    }));
+    rig.ui.spawn(serve(
+        rig.engine.clone(),
+        jobs,
+        rig.everyone(),
+        move |task| {
+            use futures::task::LocalSpawnExt as _;
+            let _ = spawner.spawn_local(task);
+        },
+    ));
     let bridge = HostBridge::start(
         BridgeConfig {
             port: daemon.port,

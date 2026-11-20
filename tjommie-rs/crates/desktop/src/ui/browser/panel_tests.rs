@@ -794,6 +794,35 @@ fn an_older_daemon_without_the_stream_is_polled(cx: &mut gpui::TestAppContext) {
     );
 }
 
+// Leaving the PC, or its connection ending, ends the sessions the panel opened there: the stream stops and the browsers go
+// back to their bots, and the panel stops reading that PC's views and sending it commands (host wiring).
+#[gpui::test]
+fn leaving_a_remote_pc_ends_its_sessions(cx: &mut gpui::TestAppContext) {
+    let rpc = std::sync::Arc::new(remote_daemon(true));
+    let (panel, cx) = remote_window(cx, rpc.clone());
+    open_browser(&panel, cx);
+    settle(cx);
+    assert!(
+        asked(&rpc, "browser.stream")
+            .iter()
+            .any(|params| params["on"] == true),
+        "the stream was on"
+    );
+    cx.update(|_, cx| super::super::remote::unwire(cx));
+    settle(cx);
+    assert!(
+        asked(&rpc, "browser.stream")
+            .iter()
+            .any(|params| params["on"] == false),
+        "leaving the PC stopped the stream"
+    );
+    cx.update(|_, cx| {
+        let data = cx.global::<BrowserData>();
+        assert!(data.on_remote.is_none(), "commands still go to the old PC");
+        assert!(data.remote.is_empty(), "the old PC's views are still shown");
+    });
+}
+
 // browser-panel.test.tsx: "explains an offline remote host without denying the remote Computer pane"
 #[gpui::test]
 fn explains_an_offline_remote_host(cx: &mut gpui::TestAppContext) {

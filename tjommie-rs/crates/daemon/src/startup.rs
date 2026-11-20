@@ -324,7 +324,7 @@ pub async fn start(launch: &Launch, auth: &Auth) -> Result<Daemon, StartupError>
 /// The provider fixtures a daemon plays (src/provider_fixtures.rs), which a build without the `provider-fixtures`
 /// feature has none of: there `Option<Fixtures>` is always `None`, and `start_with` and `assemble` keep one signature.
 #[cfg(feature = "provider-fixtures")]
-use crate::provider_fixtures::Fixtures;
+use crate::provider_fixtures::{FixtureBoundary, Fixtures};
 #[cfg(not(feature = "provider-fixtures"))]
 enum Fixtures {}
 
@@ -451,14 +451,22 @@ async fn start_with(
     } = parts;
     // The folder protection pass, then `runner.start()` and `scheduler.start()`, run before the server answers, as in
     // `daemon.ts:646-648`.
-    let activated = protected
-        .and_then(|()| {
-            runner
-                .start()
-                .and_then(|()| m4.start_scheduler())
-                .map_err(rpc)
-        })
-        .and_then(|()| server.activate_with(token, handlers, routes).map_err(rpc));
+    let started = protected.and_then(|()| {
+        runner
+            .start()
+            .and_then(|()| m4.start_scheduler())
+            .map_err(rpc)
+    });
+    // Fixtures: the accounts are checked before the server answers, and after the runner is up, since each check tells the
+    // runner (`setup_changed`). Until a check stores its report, the setup cache is empty, so a client that connected earlier
+    // would hear a `setup.changed` without the provider, and a message sent then would find the account not ready. The
+    // fixtures host answers every probe from memory, so this is quick. (A real daemon checks in the background after it
+    // answers, below.)
+    if fixtures_on && started.is_ok() && accounts.runtime.check_all().await.is_err() {
+        eprintln!("The fixture accounts could not be checked.");
+    }
+    let activated =
+        started.and_then(|()| server.activate_with(token, handlers, routes).map_err(rpc));
     let daemon = Daemon {
         server,
         root,
@@ -475,13 +483,7 @@ async fn start_with(
         daemon.close().await;
         return Err(error);
     }
-    if fixtures_on {
-        // The fixtures host answers every probe from memory, with no CLI and no network, so the accounts are checked
-        // before the daemon answers: a fresh data root accepts its first message at once.
-        if daemon.accounts.runtime.check_all().await.is_err() {
-            eprintln!("The fixture accounts could not be checked.");
-        }
-    } else if !launch.skip_account_check {
+    if !fixtures_on && !launch.skip_account_check {
         let checking = daemon.accounts.runtime.check_all();
         tokio::spawn(async move {
             if checking.await.is_err() {
@@ -590,8 +592,9 @@ struct Providers {
     fetch: Arc<dyn UsageFetch>,
     /// Makes the session for a bot's turns.
     sessions: SessionFactory,
-    /// The provider boundary the desktop's worker host serves, when worker isolation is set up.
-    provider_worker: Option<WorkerBoundary>,
+    /// The boundary the desktop's `/worker-host` serves: the real provider boundary when worker isolation is set up, the
+    /// lease-only `FixtureBoundary` in fixtures mode, none otherwise.
+    host_boundary: Option<Arc<dyn crate::worker_boundary_host::WorkerBoundary>>,
     review_worker: Option<Arc<WorkerBoundary>>,
     workers: Option<InstalledWorkers>,
     /// How the review runtime's options are adjusted: only fixtures do, to refuse reviews.
@@ -606,11 +609,13 @@ fn real_providers(root: &Path, exe_dir: &Path) -> Result<Providers, StartupError
         install_workers(root, exe_dir, &install, &native)?;
     let cli: Arc<dyn CliHost> =
         Arc::new(SystemCli::with_worker(Arc::new(provider_worker.clone())).reporting_to(install));
+    let host_boundary: Arc<dyn crate::worker_boundary_host::WorkerBoundary> =
+        Arc::new(provider_worker);
     Ok(Providers {
         sessions: cli_session_factory(cli.clone()),
         cli,
         fetch: Arc::new(HttpsFetch::new().map_err(plain)?),
-        provider_worker: Some(provider_worker),
+        host_boundary: Some(host_boundary),
         review_worker: Some(review_worker),
         workers,
         review_options: None,
@@ -634,19 +639,22 @@ pub fn check_review_wiring(fixtures_on: bool, review_hook: bool) -> Result<(), S
     }
 }
 
-/// Recorded conversations and no process: the fixtures host launches nothing, no worker boundary is installed (a review
-/// worker would otherwise be a way to launch), and usage reads never reach the network.
+/// Recorded conversations and no process: the fixtures host launches nothing, no Windows worker boundary is installed (a
+/// review worker would otherwise be a way to launch), `/worker-host` gets the lease-only `FixtureBoundary`, and usage
+/// reads never reach the network.
 #[cfg(feature = "provider-fixtures")]
 fn fixture_providers(fixtures: &Fixtures) -> Providers {
     eprintln!(
         "Tjommie daemon: provider fixtures ON ({}): no real provider will be started.",
         fixtures.dir().display()
     );
+    let host_boundary: Arc<dyn crate::worker_boundary_host::WorkerBoundary> =
+        Arc::new(FixtureBoundary::default());
     Providers {
         cli: fixtures.host(),
         fetch: fixtures.usage_fetch(),
         sessions: fixtures.session_factory(),
-        provider_worker: None,
+        host_boundary: Some(host_boundary),
         review_worker: None,
         workers: None,
         review_options: Some(fixtures.review_options_hook()),
@@ -697,7 +705,7 @@ fn assemble(
         cli,
         fetch,
         sessions,
-        provider_worker,
+        host_boundary,
         review_worker,
         workers,
         review_options,
@@ -955,11 +963,7 @@ fn assemble(
                     let tokens = m4.tokens.clone();
                     Arc::new(move |token| tokens.bot_for(token))
                 },
-                worker: provider_worker.map(
-                    |worker| -> Arc<dyn crate::worker_boundary_host::WorkerBoundary> {
-                        Arc::new(worker)
-                    },
-                ),
+                worker: host_boundary,
             },
         )
         .map_err(rpc)?,

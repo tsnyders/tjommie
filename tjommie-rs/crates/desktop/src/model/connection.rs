@@ -76,6 +76,9 @@ const NOT_CONNECTED: &str = "Tjommie isn't connected right now.";
 const FILE_HOST_OFFLINE: &str = "The file host is offline. Reconnect to download it.";
 const FILE_HOST_GONE: &str = "The file host did not reconnect. Try downloading again.";
 const BACKGROUND_SERVICE: &str = "Tjommie couldn't reach its background service.";
+/// The most events applied as one burst: a producer that refills the channel as fast as it is drained must not keep the link's
+/// own end (and the reconnect it starts) waiting for ever.
+const MAX_BURST: usize = 1024;
 const FELL_BEHIND: &str = "The connection fell behind the daemon's events.";
 
 /// Where the desktop's own daemon listens (`DesktopConnection`). The token is a secret, so `Debug` leaves it out.
@@ -691,9 +694,16 @@ impl<E: Environment> AppConnection<E> {
 
     // The state (`store.ts`, which the TypeScript keeps in module state).
 
-    /// `getState()`: a copy of the state as it is now.
-    pub fn state(&self) -> AppState {
+    /// `getState()`: the state as it is now. A pointer, not a copy: later changes don't reach it.
+    pub fn state(&self) -> Arc<AppState> {
         self.lock().store.snapshot()
+    }
+
+    /// The state and its version, taken together: the version goes up by one for each change that changed the state, so a
+    /// reader that has seen a version needn't compare states to know it saw this one (`AppStore::version`).
+    pub fn state_and_version(&self) -> (u64, Arc<AppState>) {
+        let s = self.lock();
+        (s.store.version(), s.store.snapshot())
     }
 
     /// Reads the state without copying it. `read` must not call back into the connection.
@@ -1619,7 +1629,26 @@ impl<E: Environment> AppConnection<E> {
             tokio::select! {
                 biased;
                 received = events.recv(), if events_open => match received {
-                    Ok(event) => self.on_event(&event),
+                    Ok(first) => {
+                        // What is already waiting goes in with it: one change of the state, so one copy of it (the UI
+                        // always holds the last frame's snapshot) however many events a burst brings.
+                        let mut burst = vec![first];
+                        while burst.len() < MAX_BURST {
+                            match events.try_recv() {
+                                Ok(event) => burst.push(event),
+                                Err(broadcast::error::TryRecvError::Empty) => break,
+                                Err(broadcast::error::TryRecvError::Closed) => {
+                                    events_open = false;
+                                    break;
+                                }
+                                Err(broadcast::error::TryRecvError::Lagged(_)) => {
+                                    self.close_in_background(raw.clone());
+                                    break;
+                                }
+                            }
+                        }
+                        self.on_events(&burst, id);
+                    }
                     Err(broadcast::error::RecvError::Lagged(_)) => {
                         // Events were lost, so the state can't be trusted: let the link end, and reconnect.
                         self.close_in_background(raw.clone());
@@ -1661,14 +1690,21 @@ impl<E: Environment> AppConnection<E> {
         })
     }
 
-    /// One event from the daemon: into the state, and into the catch-up of its conversation if that is being fetched.
-    fn on_event(&self, event: &Event) {
+    /// The events the daemon sent in one burst, in order: into the state as one change, and each into the catch-up of its
+    /// conversation if that is being fetched. They came from link `link`, and are dropped unless that is still the live one: the window may have moved to another PC while
+    /// the old link's task still held events it had received (M5 review, Minor 6; the Everyone room has one id on every PC).
+    fn on_events(&self, events: &[Event], link: u64) {
         let mut s = self.lock();
-        s.store.apply(event);
-        if let Some((conversation, message)) = message_event(event)
-            && let Some(arrival) = s.arriving.get_mut(&conversation)
-        {
-            arrival.events.push(message);
+        if s.ready_id() != Some(link) {
+            return;
+        }
+        s.store.apply_all(events);
+        for event in events {
+            if let Some((conversation, message)) = message_event(event)
+                && let Some(arrival) = s.arriving.get_mut(&conversation)
+            {
+                arrival.events.push(message);
+            }
         }
     }
 
@@ -3928,8 +3964,8 @@ mod tests {
         assert_eq!(w.status(), Connection::Ready);
         let state = w.conn.state();
         assert_eq!(state.accounts, None);
-        let setup = state.setup.expect("the setup cards say why");
-        assert_eq!(setup, failed_setup("The database is locked."));
+        let setup = state.setup.as_ref().expect("the setup cards say why");
+        assert_eq!(setup, &failed_setup("The database is locked."));
     }
 
     #[tokio::test]
@@ -4089,6 +4125,105 @@ mod tests {
         assert_eq!(w.env.local_connects(), connects);
         assert_eq!(w.status(), Connection::Ready);
         assert_eq!(w.conn.state().host.as_deref(), Some(HOST));
+    }
+
+    /// M5 review, Minor 6: an event the PC you just left had already sent must not land in the next PC's state. The
+    /// old link's task hears it after the window has moved on, so each event is checked against the link it came from.
+    #[tokio::test]
+    async fn an_event_from_a_link_the_window_left_is_dropped() {
+        let w = desktop();
+        w.start().await;
+        // The new PC's lists are slow, so its connection is still opening while the old link's task runs.
+        w.pc().hold("bots.list");
+        // Sent on the desktop's link, and still on its way when the window moves to a saved PC.
+        w.pc().emit(Event::BotUpdated(bot("stale")));
+        w.conn.connect_remote(Some(HOST));
+        // The old link's task runs first and hears the event.
+        tokio::task::yield_now().await;
+        assert!(
+            w.bot_ids().is_empty(),
+            "the left PC's bot landed in the next PC's state: {:?}",
+            w.bot_ids()
+        );
+        // The same event on the link that is current is applied.
+        w.pc().unhold("bots.list");
+        w.settle().await;
+        w.pc().emit(Event::BotUpdated(bot("fresh")));
+        w.settle().await;
+        assert_eq!(w.bot_ids(), ["fresh"]);
+    }
+
+    /// Re-review Nit 9: a burst is applied in bounded batches, so a long one is a few changes and not one that starves the link.
+    #[tokio::test]
+    async fn a_very_long_burst_is_applied_in_bounded_batches() {
+        let w = desktop();
+        w.env.0.event_capacity.store(4096, Ordering::SeqCst);
+        w.start().await;
+        let (before, _held) = w.conn.state_and_version();
+        let total = MAX_BURST + 76;
+        for at in 0..total {
+            w.pc().emit(Event::BotUpdated(bot(&format!("long{at}"))));
+        }
+        w.settle().await;
+        let (after, state) = w.conn.state_and_version();
+        assert_eq!(state.bots.len(), total, "an event of the burst was lost");
+        assert_eq!(
+            after,
+            before + 2,
+            "the burst was not applied in a full batch and the rest"
+        );
+    }
+
+    /// Host-wiring review M1: the live app always holds a snapshot (the UI's store keeps the last frame's), so every change
+    /// copies the whole state. A burst of events is therefore one change, not one change each: the link task applies what is
+    /// already waiting in one go. The version goes up once per change.
+    #[tokio::test]
+    async fn a_burst_of_events_costs_one_copy_of_the_state() {
+        let w = desktop();
+        w.start().await;
+        let (before, held) = w.conn.state_and_version();
+        // Twenty events with no turn for the connection in between: all of them are waiting when it next runs.
+        for at in 0..20 {
+            w.pc().emit(Event::BotUpdated(bot(&format!("burst{at}"))));
+        }
+        w.settle().await;
+        let (after, state) = w.conn.state_and_version();
+        assert_eq!(state.bots.len(), 20, "every event of the burst was applied");
+        assert_eq!(
+            after,
+            before + 1,
+            "the burst was applied one event at a time, each one a copy of the state"
+        );
+        assert!(
+            held.bots.is_empty(),
+            "the snapshot a screen held was changed under it"
+        );
+    }
+
+    /// M5 review M5: the feed tells whether anything changed from a number, and takes the state as a pointer.
+    #[tokio::test]
+    async fn the_state_comes_with_a_version_that_goes_up_only_when_it_changes() {
+        let w = desktop();
+        w.start().await;
+        let (version, state) = w.conn.state_and_version();
+        w.conn.update(|_| false);
+        let (same, unchanged) = w.conn.state_and_version();
+        assert_eq!(same, version);
+        assert!(
+            Arc::ptr_eq(&state, &unchanged),
+            "a change that changed nothing copied the state"
+        );
+        w.conn.update(|state| {
+            state.host = Some("elsewhere".to_owned());
+            true
+        });
+        let (next, changed) = w.conn.state_and_version();
+        assert_eq!(next, version + 1);
+        assert_eq!(changed.host.as_deref(), Some("elsewhere"));
+        assert_eq!(
+            state.host, None,
+            "a state taken before a change is not changed by it"
+        );
     }
 
     fn push(host: &str, bot: &str, room: Option<&str>) -> PushData {

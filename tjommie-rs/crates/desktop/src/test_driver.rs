@@ -92,6 +92,13 @@ pub enum Request {
         width: f32,
         height: f32,
     },
+    /// What the desktop services have done (the toasts the fake notifier took, what start at sign-in wrote) and whether
+    /// the window is shown: an e2e build keeps them in memory, so a test never touches the owner's tray, desktop or registry.
+    Services,
+    /// Presses a tray item, brings in a notice, switches the fake notifier or clicks a toast (`services::Poke`).
+    Poke {
+        poke: crate::services::Poke,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -121,6 +128,8 @@ pub struct Response {
     pub snapshot: Option<UiSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub services: Option<crate::services::ServicesSnapshot>,
 }
 
 impl Response {
@@ -136,6 +145,7 @@ impl Response {
             ok: false,
             snapshot: None,
             error: Some(error.into()),
+            services: None,
         }
     }
 }
@@ -198,7 +208,18 @@ impl Client {
 
     /// `launch`, with more variables for the app, such as a test's TJOMMIE_DAEMON_EXE.
     pub fn launch_with(exe: &str, root: &Path, vars: &[(&str, &str)]) -> io::Result<Client> {
+        Self::launch_args(exe, root, vars, &[])
+    }
+
+    /// `launch_with`, and command-line arguments for the app (`--hidden`, which starts it in the tray).
+    pub fn launch_args(
+        exe: &str,
+        root: &Path,
+        vars: &[(&str, &str)],
+        args: &[&str],
+    ) -> io::Result<Client> {
         let mut app = desktop_host::spawn::command(exe)
+            .args(args)
             .env("TJOMMIE_HOME", root)
             .envs(vars.iter().copied())
             .spawn()?;
@@ -245,6 +266,16 @@ impl Client {
         }
     }
 
+    /// The app's process id: a test that stops the app's daemon finds it by its parent.
+    pub fn pid(&self) -> u32 {
+        self.app.id()
+    }
+
+    /// Whether the app has exited by now.
+    pub fn has_exited(&mut self) -> io::Result<bool> {
+        Ok(self.app.try_wait()?.is_some())
+    }
+
     pub fn request(&mut self, request: &Request) -> io::Result<Response> {
         let mut line = serde_json::to_string(request)?;
         line.push('\n');
@@ -275,6 +306,19 @@ impl Client {
             chord: chord.to_owned(),
         })
         .map(drop)
+    }
+
+    /// What the services have done and whether the window is shown (`Services`).
+    pub fn services(&mut self) -> io::Result<crate::services::ServicesSnapshot> {
+        Ok(self
+            .expect_ok(&Request::Services)?
+            .services
+            .unwrap_or_default())
+    }
+
+    /// Presses a tray item, brings in a notice, and so on (`Poke`).
+    pub fn poke(&mut self, poke: crate::services::Poke) -> io::Result<()> {
+        self.expect_ok(&Request::Poke { poke }).map(drop)
     }
 
     /// Sets the window's size in logical pixels (`Resize`).
@@ -603,15 +647,25 @@ pub fn start(window: AnyWindowHandle, cx: &mut App) {
     cx.spawn(async move |cx| {
         guarded_async("serve the test driver", async move {
             while let Some((request, reply)) = inbox.next().await {
-                let answered = cx.update(|cx| {
-                    guarded("answer the test driver", || {
-                        window.update(cx, |_, window, cx| handle(request, window, cx))
-                    })
-                });
-                let response = match answered {
-                    Some(Ok(response)) => response,
-                    Some(Err(error)) => Response::failed(format!("{error:#}")),
-                    None => Response::failed("answering panicked"),
+                let response = match request {
+                    // A poke is the app's own side (a tray click, a notice) and runs at App level, as it does in
+                    // production: inside the window's update, a nested update of that same window fails silently, and the
+                    // facts the services refresh from it would never be refreshed.
+                    Request::Poke { poke } => cx
+                        .update(|cx| guarded("poke the app", || poked(poke, cx)))
+                        .unwrap_or_else(|| Response::failed("poking panicked")),
+                    request => {
+                        let answered = cx.update(|cx| {
+                            guarded("answer the test driver", || {
+                                window.update(cx, |_, window, cx| handle(request, window, cx))
+                            })
+                        });
+                        match answered {
+                            Some(Ok(response)) => response,
+                            Some(Err(error)) => Response::failed(format!("{error:#}")),
+                            None => Response::failed("answering panicked"),
+                        }
+                    }
                 };
                 let _ = reply.send(response);
             }
@@ -728,12 +782,27 @@ pub fn take_path_answer() -> Option<PathBuf> {
     PATH_ANSWER.with(|answer| answer.borrow_mut().take())
 }
 
+/// Applies a poke to the services and says how it went.
+fn poked(poke: crate::services::Poke, cx: &mut App) -> Response {
+    match crate::services::poke(poke, cx) {
+        Ok(()) => Response::done(),
+        Err(error) => Response::failed(error),
+    }
+}
+
 fn handle(request: Request, window: &mut Window, cx: &mut App) -> Response {
     match request {
         Request::Resize { width, height } => {
             window.resize(gpui::size(gpui::px(width), gpui::px(height)));
             Response::done()
         }
+        Request::Services => Response {
+            ok: true,
+            services: Some(crate::services::snapshot(window, cx)),
+            ..Response::default()
+        },
+        // Served at App level before it gets here (`start`); this is the same answer.
+        Request::Poke { poke } => poked(poke, cx),
         Request::AnswerPathPrompt { path } => {
             PATH_ANSWER.with(|answer| *answer.borrow_mut() = Some(PathBuf::from(path)));
             Response::done()
@@ -752,6 +821,7 @@ fn handle(request: Request, window: &mut Window, cx: &mut App) -> Response {
                     }),
                 }),
                 error: None,
+                services: None,
             }
         }
         Request::Click { id } => match center(&id) {

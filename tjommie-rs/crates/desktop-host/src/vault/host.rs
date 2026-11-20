@@ -44,6 +44,7 @@ const TOO_LARGE: &str = "The Logins answer was too large to send.";
 
 /// The private desktop host token that opens `/vault-host` and `/worker-host`. It is wiped from memory when dropped, and
 /// it is never printed: `Debug` shows only that it exists.
+#[derive(Clone)]
 pub struct HostToken(Zeroizing<String>);
 
 impl HostToken {

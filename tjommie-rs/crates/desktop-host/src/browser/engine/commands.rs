@@ -378,6 +378,35 @@ impl Engine {
         self.disabled.borrow_mut().remove(id);
     }
 
+    /// The daemon's bots as it lists them now (when the watcher connects, and after it missed events): each one's browser is
+    /// switched on or off as listed, and an engine bot the list no longer has closes as a deleted bot's does. Both are what
+    /// the matching events do, so a bot deleted or switched off while nobody was listening loses its page, and repeating
+    /// this is harmless.
+    pub async fn on_bot_list(self: &Rc<Self>, listed: &[(String, bool)]) {
+        for (id, browser) in listed {
+            let updated = BotEvent::Updated {
+                id: id.clone(),
+                browser: *browser,
+            };
+            self.on_bot_event(updated).await;
+        }
+        let gone: Vec<String> = self
+            .bots
+            .borrow()
+            .keys()
+            .filter(|known| !listed.iter().any(|(id, _)| id == *known))
+            .cloned()
+            .collect();
+        for id in gone {
+            self.on_bot_event(BotEvent::Deleted { id }).await;
+        }
+    }
+
+    /// The bot was deleted or its browser switched off, as far as the daemon has told this engine.
+    pub fn bot_is_off(&self, id: &str) -> bool {
+        self.disabled.borrow().contains(id)
+    }
+
     // ---- act -------------------------------------------------------------------------------------------------
 
     /// A page action for the person's click or the bot's tool. `check` is run before every step and fails the

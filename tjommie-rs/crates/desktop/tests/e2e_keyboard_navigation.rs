@@ -15,11 +15,33 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 use desktop::test_driver::{Client, Predicate};
 use desktop_host::{identity, owner_safety};
+
+/// The app's own log, once the test has its data root: a failing run carries what the app was doing (review of the host
+/// wiring: an intermittent `tab_to` failure that no reading explained needs the run's own evidence).
+static APP_LOG: OnceLock<PathBuf> = OnceLock::new();
+
+/// The last lines of the app's log.
+fn log_tail() -> String {
+    let Some(path) = APP_LOG.get() else {
+        return "(the test has no log path yet)".to_owned();
+    };
+    match std::fs::read_to_string(path) {
+        Ok(text) => {
+            let count = text.lines().count();
+            text.lines()
+                .skip(count.saturating_sub(60))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+        Err(error) => format!("(no log at {}: {error})", path.display()),
+    }
+}
 
 fn daemon_exe() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_tjommie-desktop")).with_file_name("tjommie-daemon.exe")
@@ -115,7 +137,18 @@ fn tab_to(app: &mut Client, id: &str) {
         }
         passed.extend(now);
     }
-    panic!("no Tab reaches {id}; it passed {passed:?}");
+    // What the screen said while it did not move: a connection that is not Ready disables the nav buttons, which are then
+    // no tab stops.
+    // The app may have gone (the case its log is most wanted for): then there is no pill to read, and no panic here.
+    let status = app
+        .snapshot()
+        .ok()
+        .and_then(|snapshot| snapshot.node("shell.status").map(|node| node.text.clone()))
+        .unwrap_or_else(|| "(the app did not answer)".to_owned());
+    panic!(
+        "no Tab reaches {id}; it passed {passed:?}\nthe connection pill said {status:?}\n--- the app's log, last lines ---\n{}",
+        log_tail()
+    );
 }
 
 /// Tab to `id`, then Enter.
@@ -354,6 +387,7 @@ fn e2e_keyboard_navigation() {
         "build the daemon first: cargo build -p daemon --bin tjommie-daemon --features provider-fixtures --locked"
     );
     let root = owner_safety::test_root().unwrap();
+    let _ = APP_LOG.set(root.path().join("logs").join("desktop.log"));
     // Declared before the app, so it's dropped after the app and its daemon have gone.
     let credentials = Credentials::of(root.path());
     let fixtures = root.path().join("provider-fixtures");
