@@ -127,6 +127,8 @@ impl Render for Shell {
                             .child(shown)
                             .children(status),
                     )
+                    // An open exchange takes the right panel's place (T4.1); the panel stays drawn, closed, beside it.
+                    .children(crate::ui::chat::exchange::side(cx))
                     .when_some(self.panel.clone(), |column, panel| column.child(panel)),
             )
             .child(

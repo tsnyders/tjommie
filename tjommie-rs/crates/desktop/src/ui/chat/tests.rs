@@ -303,3 +303,121 @@ fn pause_asks_the_daemon(cx: &mut TestAppContext) {
     assert_eq!(pauses.len(), 1);
     assert_eq!(pauses[0], json!({ "id": "b1", "paused": true }));
 }
+
+mod exchange_view {
+    use super::*;
+    use protocol::wire::ExchangeView;
+
+    fn handoff() -> Message {
+        with(
+            MessageKind::Handoff,
+            json!({ "exchangeId": "x1", "fromBotId": "b1", "toBotId": "b2", "messages": 2, "status": "replied" }),
+            message("m1", "b1", "Does the bundled SQLite match?", 1),
+        )
+    }
+
+    fn team() -> AppState {
+        let mut state = chat(vec![handoff()], false);
+        state.bots.push(bot("b2", "Scout", BotState::Idle));
+        // Everyone, which Open room goes to.
+        let mut everyone = room("team", "Everyone", &["b1", "b2"]);
+        everyone.everyone = true;
+        state.rooms.push(everyone);
+        state
+    }
+
+    fn exchanges() -> FakeRpc {
+        FakeRpc::new()
+            .on::<method::ExchangesGet>(|_| {
+                let mut asked = message("e1", "b1", "Does the bundled SQLite match?", 1);
+                asked.conversation_id = "x1".into();
+                let mut answer = message("e2", "b2", "Yes, both are 3.50.", 2);
+                answer.conversation_id = "x1".into();
+                Ok(serde_json::from_value::<ExchangeView>(json!({
+                    "messages": [asked, answer],
+                    "hasMore": false,
+                    "exchange": {
+                        "id": "x1", "fromBotId": "b1", "toBotId": "b2", "request": "Does the bundled SQLite match?",
+                        "reply": "Yes, both are 3.50.", "status": "replied",
+                        "createdAt": "2026-11-15T08:01:00.000Z", "repliedAt": "2026-11-15T08:02:00.000Z"
+                    }
+                }))
+                .unwrap())
+            })
+            .on::<method::RoomPost>(|_| Ok(message("p1", "you", "posted", 3)))
+    }
+
+    #[gpui::test]
+    fn view_thread_opens_the_exchange_beside_the_chat(cx: &mut TestAppContext) {
+        let (cx, calls) = app(cx, Route::Chat("b1".into()), team(), exchanges());
+        click(cx, "exchange.x1.open");
+        draw(cx);
+        draw(cx);
+        assert_eq!(node("exchange.x1.title").unwrap().text, "Forge asked Scout");
+        assert!(
+            node("bubble.e1").is_none() && node("prose.e2").is_some(),
+            "the exchange's messages"
+        );
+        assert!(!calls_to(&calls, "exchanges.get").is_empty());
+        assert_eq!(
+            node("chat.b1.panel").unwrap().text,
+            "Hide the panel",
+            "the panel button closes it"
+        );
+    }
+
+    #[gpui::test]
+    fn replies_in_everyone_with_both_agents_mentioned(cx: &mut TestAppContext) {
+        let (cx, calls) = app(cx, Route::Chat("b1".into()), team(), exchanges());
+        click(cx, "exchange.x1.open");
+        draw(cx);
+        draw(cx);
+        assert_eq!(
+            node("exchange.x1.reply").unwrap().text,
+            "Ask both agents in Everyone"
+        );
+        assert_eq!(
+            node("exchange.x1.recipients").unwrap().text,
+            "Reply recipients"
+        );
+        click(cx, "exchange.x1.reply");
+        cx.simulate_input("Compare sqlite_master too.");
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        let posts = calls_to(&calls, "room.post");
+        assert_eq!(posts.len(), 1, "{posts:?}");
+        assert_eq!(posts[0]["roomId"], "team");
+        assert_eq!(posts[0]["text"], "@Forge @Scout Compare sqlite_master too.");
+        assert_eq!(
+            node("exchange.x1.posted").unwrap().text,
+            "Posted in Everyone."
+        );
+        click(cx, "exchange.x1.room");
+        assert_eq!(
+            cx.update(|_, cx| route::current(cx)),
+            Route::Room("team".into())
+        );
+    }
+
+    #[gpui::test]
+    fn closing_the_exchange_forgets_it(cx: &mut TestAppContext) {
+        let (cx, _) = app(cx, Route::Chat("b1".into()), team(), exchanges());
+        click(cx, "exchange.x1.open");
+        draw(cx);
+        draw(cx);
+        assert!(cx.update(|_, cx| store::state(cx).conversations.contains_key("x1")));
+        click(cx, "exchange.x1.close");
+        draw(cx);
+        assert!(node("exchange.x1.view").is_none());
+        assert!(
+            !cx.update(|_, cx| store::state(cx).conversations.contains_key("x1")),
+            "forgotten"
+        );
+        // The header's panel button closes an open exchange too.
+        click(cx, "exchange.x1.open");
+        draw(cx);
+        click(cx, "chat.b1.panel");
+        draw(cx);
+        assert!(node("exchange.x1.view").is_none());
+    }
+}

@@ -5,6 +5,7 @@
 pub mod approval;
 pub mod bubbles;
 pub mod composer;
+pub mod exchange;
 pub mod header;
 pub mod message_view;
 pub mod notices;
@@ -31,7 +32,9 @@ use self::thread::Thread;
 use crate::guard::{guarded, guarded_async};
 use crate::model::labels::autonomy_hint;
 use crate::model::state::{Connection, ConversationStatus};
+use crate::motion::keyboard::Trigger;
 use crate::semantic::SemanticExt as _;
+use crate::ui::browser::panel::BrowserPanel;
 use crate::ui::primitives::avatar::{BotAvatar, Pose};
 use crate::ui::shell::connection::failed_load;
 use crate::ui::shell::route::{Navigate as _, Route};
@@ -42,7 +45,12 @@ use crate::ui::style::{TypeExt as _, hsla, palette, r, theme};
 pub fn screen(bot_id: &str, window: &mut Window, cx: &mut App) -> AnyElement {
     let id = SharedString::from(bot_id.to_owned());
     window
-        .use_keyed_state(SharedString::from(format!("chat.{bot_id}")), cx, |_, _| {
+        .use_keyed_state(SharedString::from(format!("chat.{bot_id}")), cx, |_, cx| {
+            // Leaving the chat closes the exchange beside it, forgetting its conversation.
+            cx.on_release(|_, cx| {
+                guarded("close the exchange", || exchange::close(cx));
+            })
+            .detach();
             ChatScreen::new(id)
         })
         .into_any_element()
@@ -58,9 +66,6 @@ pub struct ChatScreen {
     /// The oldest message when an older page was last asked for: a page that didn't come isn't asked for again until
     /// the conversation changes.
     older_from: Option<String>,
-    /// The exchange open beside the chat.
-    exchange: Option<SharedString>,
-    panel_open: bool,
     /// Made once the agent is known: its placeholder and model come from it.
     composer: Option<Entity<Composer>>,
 }
@@ -73,8 +78,6 @@ impl ChatScreen {
             asked: false,
             older: None,
             older_from: None,
-            exchange: None,
-            panel_open: true,
             composer: None,
         }
     }
@@ -129,23 +132,14 @@ impl ChatScreen {
             .await;
         }));
     }
-
-    fn open_exchange(&mut self, id: SharedString, cx: &mut Context<Self>) {
-        self.exchange = Some(id);
-        cx.notify();
-    }
-
-    fn toggle_panel(&mut self, cx: &mut Context<Self>) {
-        if self.exchange.take().is_none() {
-            self.panel_open = !self.panel_open;
-        }
-        cx.notify();
-    }
 }
 
 impl Render for ChatScreen {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.load(cx);
+        exchange::reconcile(cx);
+        let open_exchange = exchange::open_id(cx);
+        let panel_open = open_exchange.is_some() || BrowserPanel::open_now(cx);
         let state = store::state(cx);
         let ready = state.connection == Connection::Ready;
         let bots = Rc::new(state.bots.clone());
@@ -168,31 +162,22 @@ impl Render for ChatScreen {
         }
         self.load_older(cx);
 
-        let this = cx.entity().downgrade();
+        let from = self.bot_id.clone();
         let context = MessageContext {
             bots: bots.clone(),
             conversation_id: self.bot_id.clone(),
-            open_exchange: self.exchange.clone(),
-            on_open_exchange: Rc::new(move |id, _, cx| {
-                let _ = this.update(cx, |chat, cx| chat.open_exchange(id, cx));
+            open_exchange,
+            on_open_exchange: Rc::new(move |id, window, cx| {
+                exchange::open(id, from.clone(), window, cx)
             }),
         };
-        let toggle = cx.entity().downgrade();
         let actions = HeaderActions {
-            panel_open: self.panel_open || self.exchange.is_some(),
-            on_toggle_panel: Rc::new(move |_, cx| {
-                let _ = toggle.update(cx, |chat, cx| chat.toggle_panel(cx));
+            panel_open,
+            on_toggle_panel: Rc::new(|window, cx| exchange::toggle_panel(window, cx)),
+            on_open_browser: Rc::new(|window, cx| {
+                exchange::close(cx);
+                BrowserPanel::open_browser(Trigger::of(window), cx);
             }),
-            on_open_browser: {
-                let chat = cx.entity().downgrade();
-                Rc::new(move |_, cx| {
-                    let _ = chat.update(cx, |chat, cx| {
-                        chat.exchange = None;
-                        chat.panel_open = true;
-                        cx.notify();
-                    });
-                })
-            },
         };
         let body = match status {
             Some(ConversationStatus::Failed) => {
