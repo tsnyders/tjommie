@@ -17,6 +17,7 @@
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use async_channel::{Receiver, Sender};
@@ -87,6 +88,9 @@ pub struct HostControl {
     runtime: tokio::runtime::Handle,
     /// Bumped by every order: the bot watcher of an older order ends.
     generation: Arc<watch::Sender<u64>>,
+    /// The app is quitting: nothing starts the clients again (a daemon that dies mid-quit is restarted by its supervisor,
+    /// and its new `Running` must not bring them back), and the daemon is not restarted either.
+    quitting: Arc<AtomicBool>,
 }
 
 impl HostControl {
@@ -97,17 +101,27 @@ impl HostControl {
                 orders,
                 runtime,
                 generation: Arc::new(watch::channel(0).0),
+                quitting: Arc::new(AtomicBool::new(false)),
             },
             inbox,
         )
     }
 
     /// The daemon this run started is running with new tokens: start the clients for it. The ones for the daemon before are
-    /// stopped by the UI thread before the new ones start.
+    /// stopped by the UI thread before the new ones start. Nothing starts once the app is quitting.
     pub fn start(&self, local: Local) {
+        if self.quitting() {
+            return;
+        }
         let (notices, inbox) = async_channel::unbounded();
-        self.generation.send_modify(|generation| *generation += 1);
-        let (current, mine) = (self.generation.subscribe(), *self.generation.borrow());
+        // Read inside the change: a `stop` between the bump and a later read would hand this watcher the stop's generation.
+        // One that lands between this and the subscription is seen by the watcher's first check.
+        let mut mine = 0;
+        self.generation.send_modify(|generation| {
+            *generation += 1;
+            mine = *generation;
+        });
+        let current = self.generation.subscribe();
         let watching = local.clone();
         // unguarded: a tokio task, off the UI thread; guarded_async wraps its body
         self.runtime.spawn(guarded_async(
@@ -124,6 +138,9 @@ impl HostControl {
     /// It holds no timer, so it runs on any executor (the UI's at quit, Tokio's at a restart): the caller bounds the wait,
     /// with [`STOP_TIMEOUT`] or the quit timeout.
     pub fn stop(&self, browsers: bool) -> impl Future<Output = ()> + Send + use<> {
+        if browsers {
+            self.begin_quit();
+        }
         self.generation.send_modify(|generation| *generation += 1);
         let (done, stopped) = oneshot::channel();
         let sent = self.orders.try_send(Order::Stop { browsers, done });
@@ -137,6 +154,20 @@ impl HostControl {
     /// [`stop`](Self::stop) without waiting: the daemon is already gone.
     pub fn stop_now(&self) {
         drop(self.stop(false));
+    }
+
+    /// The app is quitting: no client starts and no daemon restarts from here (until [`resume`](Self::resume)).
+    pub fn begin_quit(&self) {
+        self.quitting.store(true, Ordering::SeqCst);
+    }
+
+    /// The quit was given up on (an update that did not install): the app runs on, and the daemon and its clients may start.
+    pub fn resume(&self) {
+        self.quitting.store(false, Ordering::SeqCst);
+    }
+
+    pub fn quitting(&self) -> bool {
+        self.quitting.load(Ordering::SeqCst)
     }
 }
 
@@ -483,5 +514,51 @@ impl Desktop for Bridge {
 
     fn vault(&self) -> Option<LocalVault> {
         self.0.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn local() -> Local {
+        Local {
+            port: 1,
+            token: "token".to_owned(),
+            host_token: "host".to_owned(),
+        }
+    }
+
+    fn started(inbox: &Receiver<Order>) -> bool {
+        matches!(inbox.try_recv(), Ok(Order::Start { .. }))
+    }
+
+    /// Review Minor 3: a daemon that dies while the app quits is restarted by its supervisor, and its new `Running` must
+    /// not start clients the quit just stopped.
+    #[tokio::test]
+    async fn a_start_after_the_quit_stopped_the_clients_is_ignored() {
+        let (control, inbox) = HostControl::new(tokio::runtime::Handle::current());
+        drop(control.stop(true));
+        assert!(matches!(inbox.try_recv(), Ok(Order::Stop { .. })));
+        control.start(local());
+        assert!(
+            inbox.try_recv().is_err(),
+            "a client start followed the quit"
+        );
+        // The quit was given up on (an update that did not install): the clients start again.
+        control.resume();
+        control.start(local());
+        assert!(started(&inbox));
+    }
+
+    /// A stop before a daemon restart is not a quit: the new daemon's clients start.
+    #[tokio::test]
+    async fn a_start_after_a_restarts_stop_is_served() {
+        let (control, inbox) = HostControl::new(tokio::runtime::Handle::current());
+        drop(control.stop(false));
+        assert!(matches!(inbox.try_recv(), Ok(Order::Stop { .. })));
+        control.start(local());
+        assert!(started(&inbox));
+        control.stop_now();
     }
 }

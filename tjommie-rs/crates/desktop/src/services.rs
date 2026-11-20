@@ -43,7 +43,7 @@ use desktop_host::updater::{
 use futures::FutureExt as _;
 use futures::StreamExt as _;
 use futures::channel::mpsc::unbounded;
-use futures::future::BoxFuture;
+use futures::future::{BoxFuture, Either};
 use gpui::{AnyWindowHandle, App, AsyncApp, Global, Window};
 use protocol::wire::{NotificationsAck, Notify, PendingNotification, method};
 use url::Url;
@@ -503,6 +503,9 @@ struct AppQuit {
     hosts: AppHosts,
     stopper: Option<crate::live::Stopper>,
     window: AnyWindowHandle,
+    /// An e2e run can hold the quit once the daemon has stopped, to look at the app while it is still alive.
+    #[cfg(any(test, feature = "test-driver"))]
+    held: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl QuitHost for AppQuit {
@@ -511,18 +514,37 @@ impl QuitHost for AppQuit {
         let timer = self.cx.background_executor().clone();
         let stop = self.hosts.control.stop(true);
         futures::pin_mut!(stop);
-        let _ = futures::future::select(stop, timer.timer(QUIT_TIMEOUT)).await;
+        // Which arm won is said: a quit that went on after the timeout is not one that stopped them.
+        match futures::future::select(stop, timer.timer(QUIT_TIMEOUT)).await {
+            Either::Left(_) => log::info!("The browser, Logins and worker clients stopped."),
+            Either::Right(_) => log::warn!(
+                "The browser, Logins and worker clients did not stop within {} s; the quit goes on.",
+                QUIT_TIMEOUT.as_secs()
+            ),
+        }
     }
 
     async fn stop_daemon(&self) -> Result<DaemonStop, String> {
-        match &self.stopper {
+        let stopped = match &self.stopper {
             Some(stopper) => stopper.stop().await,
             None => Ok(DaemonStop::Graceful),
+        };
+        // A forced stop or one that could not be confirmed is warned about by `run_quit`.
+        if stopped == Ok(DaemonStop::Graceful) {
+            log::info!("The daemon stopped when asked.");
         }
+        stopped
     }
 
     async fn close_native_host(&self) {
         // `close_native` stopped the clients already: there is no connection left to close.
+        #[cfg(any(test, feature = "test-driver"))]
+        if let Some(held) = &self.held {
+            let timer = self.cx.background_executor().clone();
+            while held.load(std::sync::atomic::Ordering::SeqCst) {
+                timer.timer(std::time::Duration::from_millis(50)).await;
+            }
+        }
     }
 
     fn update_not_installed(&self, daemon_stopped: bool) {
@@ -530,6 +552,8 @@ impl QuitHost for AppQuit {
         let restarting = daemon_stopped.then(|| self.stopper.clone()).flatten();
         self.cx.update(|cx| {
             hosts.hosts.cancel_quit();
+            // The app runs on: the daemon may restart and its clients start again.
+            hosts.control.resume();
             show_window(window, cx);
             notices::raise(Notice::UpdateNotInstalled { daemon_stopped });
             // The service did not stop in time and is gone now: it starts again, and its clients with it.
@@ -561,6 +585,8 @@ pub fn begin_quit(cx: &mut App) {
         services.updater.clone(),
     );
     let stopper = crate::live::stopper(cx);
+    #[cfg(any(test, feature = "test-driver"))]
+    let held = services.fakes.as_ref().map(|fakes| fakes.hold_quit.clone());
     cx.spawn(async move |cx| {
         guarded_async("quit", async move {
             let host = AppQuit {
@@ -568,11 +594,13 @@ pub fn begin_quit(cx: &mut App) {
                 hosts,
                 stopper,
                 window,
+                #[cfg(any(test, feature = "test-driver"))]
+                held,
             };
             match run_quit(&host, &updater).await {
                 QuitOutcome::Quit { installer_started } => {
                     log::info!(
-                        "Closed: the clients and the daemon have stopped{}.",
+                        "Closed: the app quits now{}.",
                         if installer_started {
                             ", and the update's installer started"
                         } else {
@@ -829,6 +857,8 @@ mod fakes {
         pub acked: Mutex<Vec<String>>,
         /// Whether the window counts as having the keyboard (a toast is skipped while it is shown and focused).
         pub focused: AtomicBool,
+        /// A quit waits, once the daemon has stopped, for this to be cleared (the app is alive to be looked at).
+        pub hold_quit: Arc<AtomicBool>,
     }
 }
 
@@ -861,6 +891,8 @@ pub enum Poke {
     Focus(bool),
     /// Clicks the nth toast the fake notifier took.
     ClickToast(usize),
+    /// Holds a quit once the daemon has stopped, while on: the app is alive with its daemon gone.
+    HoldQuit(bool),
 }
 
 #[cfg(any(test, feature = "test-driver"))]
@@ -931,6 +963,7 @@ pub fn poke(poke: Poke, cx: &mut App) -> Result<(), String> {
             services.deliver(notice, acknowledge, cx);
         }
         Poke::Notifications(on) => fakes.toasts.enabled.store(on, Ordering::SeqCst),
+        Poke::HoldQuit(on) => fakes.hold_quit.store(on, Ordering::SeqCst),
         Poke::Focus(on) => {
             fakes.focused.store(on, Ordering::SeqCst);
             services.hosts.hosts.window().set_focused(on);

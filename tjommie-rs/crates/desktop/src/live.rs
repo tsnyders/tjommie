@@ -226,6 +226,10 @@ impl Shared {
         let Daemon::Supervised { supervisor, .. } = &self.daemon else {
             return;
         };
+        // A quit that began first stops the daemon itself (`Stopper::stop`): it must find it in its slot.
+        if self.hosts.quitting() {
+            return;
+        }
         let old = locked(supervisor).take();
         let shared = Arc::clone(self);
         // unguarded: a tokio task, off the UI thread, where a panic ends only that task
@@ -236,7 +240,10 @@ impl Shared {
             if let Some(old) = old {
                 let _ = old.stop_before_quit(daemon_process::QUIT_TIMEOUT).await;
             }
-            shared.start_supervisor();
+            // A quit during the stop above: no new daemon starts while the app exits.
+            if !shared.hosts.quitting() {
+                shared.start_supervisor();
+            }
         });
     }
 
@@ -595,6 +602,8 @@ impl Stopper {
         &self,
     ) -> impl Future<Output = Result<desktop_host::updater::DaemonStop, String>> + Send + use<>
     {
+        // From here no daemon restarts (a "Try again" in flight, a supervisor's own restart) and no client starts.
+        self.0.hosts.begin_quit();
         let old = match &self.0.daemon {
             Daemon::Supervised { supervisor, .. } => locked(supervisor).take(),
             Daemon::Development { .. } | Daemon::Unavailable(_) => None,
@@ -821,6 +830,8 @@ fn command_for(live: &Arc<Live>, command: Command, cx: &mut App) {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use super::*;
     use crate::ui::testing::{bot, room};
     use protocol::model::{BotColor, BotShape, BotState};
@@ -849,6 +860,68 @@ mod tests {
             Duration::ZERO,
             "a change after a quiet frame is copied at once"
         );
+    }
+
+    /// A supervised `Shared` whose daemon launch only counts: the exe is not there, so nothing really starts.
+    fn counting_shared(root: &Path, launches: Arc<AtomicUsize>) -> Arc<Shared> {
+        let (hosts, _orders) = HostControl::new(tokio::runtime::Handle::current());
+        Arc::new(Shared {
+            runtime: tokio::runtime::Handle::current(),
+            root: root.to_owned(),
+            daemon: Daemon::Supervised {
+                launch: Box::new(move || {
+                    launches.fetch_add(1, Ordering::SeqCst);
+                    DaemonLaunch::new(root_exe(), Vec::new())
+                }),
+                supervisor: Mutex::new(None),
+                state: Mutex::new(watch::channel(DaemonState::Starting).1),
+            },
+            settings: Arc::new(LocalSettings::load(root)),
+            keys: None,
+            dialer: NetworkDialer::new(),
+            connection: OnceLock::new(),
+            hosts,
+        })
+    }
+
+    fn root_exe() -> PathBuf {
+        std::env::temp_dir().join("tjommie-no-such-daemon.exe")
+    }
+
+    /// Review Minor 2: a quit during "Try again" must not leave a new daemon starting while the app exits.
+    #[tokio::test]
+    async fn no_daemon_starts_once_the_app_is_quitting() {
+        let root = std::env::temp_dir().join(format!("tjommie-live-quit-{}", std::process::id()));
+        let launches = Arc::new(AtomicUsize::new(0));
+        let shared = counting_shared(&root, launches.clone());
+
+        // The quit began before "Try again" was pressed.
+        drop(shared.hosts.stop(true));
+        shared.supervise();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(
+            launches.load(Ordering::SeqCst),
+            0,
+            "a daemon started in a quit"
+        );
+        shared.hosts.resume();
+
+        // The quit began after it: the stop of the old daemon is still running when the restart would start the new one.
+        let racing = counting_shared(&root, launches.clone());
+        racing.supervise();
+        drop(racing.hosts.stop(true));
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(
+            launches.load(Ordering::SeqCst),
+            0,
+            "a daemon started while the quit stopped the old one"
+        );
+
+        // With no quit it starts, as it always did.
+        shared.supervise();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(launches.load(Ordering::SeqCst), 1);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

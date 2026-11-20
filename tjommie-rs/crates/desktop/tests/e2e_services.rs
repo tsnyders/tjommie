@@ -89,22 +89,43 @@ fn e2e_quit_from_the_tray_hides_the_window_at_once_and_stops_everything() {
     let daemon = common::daemons(app.pid());
     assert_eq!(daemon.len(), 1, "the app's daemon: {daemon:?}");
 
+    // The quit is held once the daemon has stopped, so the app is alive to be looked at with its daemon gone.
+    app.poke(Poke::HoldQuit(true)).unwrap();
     app.poke(Poke::Tray("quit".into())).unwrap();
     // The window is gone at once, not for as long as the stop takes.
     common::eventually("the window to hide", Duration::from_secs(5), || {
         app.has_exited().unwrap() || !visible(&mut app)
     });
+    // The app stopped the daemon: it is gone while the app, whose pipe would end it, is still running.
+    common::eventually("the daemon to stop", Duration::from_secs(60), || {
+        !common::process_alive(daemon[0])
+    });
+    assert!(
+        !app.has_exited().unwrap(),
+        "the app exited before it stopped the daemon: the daemon only died with the app's pipe"
+    );
+    app.poke(Poke::HoldQuit(false)).unwrap();
     common::eventually("the app to exit", Duration::from_secs(60), || {
         app.has_exited().unwrap()
     });
-    // It held the close, stopped its clients and the daemon, and only then exited (its log says so, in order).
+    // It held the close, stopped its clients, then the daemon, and only then exited (its log says so, in order).
     let log = std::fs::read_to_string(root.path().join("logs").join("desktop.log")).unwrap();
-    let closing =
-        log.find("Closing: the browser, Logins and worker clients stop, then the daemon.");
-    let closed = log.find("Closed: the clients and the daemon have stopped");
+    let steps = [
+        "Closing: the browser, Logins and worker clients stop, then the daemon.",
+        "The browser, Logins and worker clients stopped.",
+        "The daemon stopped when asked.",
+        "Closed: the app quits now",
+    ];
+    let mut at = 0;
+    for step in steps {
+        match log[at..].find(step) {
+            Some(found) => at += found + step.len(),
+            None => panic!("the app's graceful quit lacks {step:?} (in order): {log}"),
+        }
+    }
     assert!(
-        closing.is_some() && closed > closing,
-        "the app did not run its graceful quit: {log}"
+        !log.contains("did not stop within"),
+        "a stop timed out: {log}"
     );
     assert!(
         common::daemons(app.pid()).is_empty() && !common::process_alive(daemon[0]),
