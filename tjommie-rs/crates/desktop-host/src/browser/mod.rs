@@ -17,6 +17,7 @@ pub mod host_bridge;
 pub mod keyboard;
 pub mod keys;
 pub mod lifecycle;
+pub mod login;
 pub mod permissions;
 pub mod policy;
 pub mod profiles;

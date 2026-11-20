@@ -401,3 +401,179 @@ fn a_page_that_is_not_https_has_no_login_destination() {
         "The login destination changed. Refresh the browser before filling."
     );
 }
+
+// ---- the vault's own thread, through EngineLogin (Phase 3 host wiring) -------------------------------------------------
+//
+// The vault runs on the `/vault-host` client's thread; the engine and WebView2 live on the UI thread. `EngineLogin` is the
+// `LoginBrowser` the vault calls: each call becomes a typed request that `serve` runs on the UI thread, and what comes back
+// is plain typed data. These tests are the vault's side: a thread of its own with its own runtime.
+
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use desktop_host::browser::BotIdentity;
+use desktop_host::browser::login::{BotLookup, EngineLogin, serve};
+use desktop_host::vault::login::{Check, LoginBrowser, LoginError};
+use futures::future::BoxFuture;
+use protocol::vault::FinishMode;
+
+/// The daemon's bot list, with one bot in it.
+struct Listed(BotIdentity);
+
+impl BotLookup for Listed {
+    fn bot(&self, id: &str) -> BoxFuture<'_, Result<BotIdentity, LoginError>> {
+        let found = (id == self.0.id).then(|| self.0.clone());
+        Box::pin(async move { found.ok_or(LoginError::Failed) })
+    }
+}
+
+fn allowed() -> Check {
+    Arc::new(|| Ok(()))
+}
+
+impl Fixture {
+    /// `EngineLogin` for the bot `alpha`, served on this (the UI) thread.
+    fn engine_login(&mut self) -> Arc<EngineLogin> {
+        let (login, requests) = EngineLogin::new(Arc::new(Listed(self.rig.bot("alpha"))));
+        let spawner = self.rig.ui.spawner();
+        self.rig
+            .ui
+            .spawn(serve(self.rig.engine.clone(), requests, move |task| {
+                use futures::task::LocalSpawnExt as _;
+                let _ = spawner.spawn_local(task);
+            }));
+        Arc::new(login)
+    }
+
+    /// Runs `work` on a thread of its own, as the vault does, while this thread pumps the browser's messages.
+    fn from_the_vault<T: Send + 'static>(
+        &mut self,
+        work: impl Future<Output = T> + Send + 'static,
+    ) -> T {
+        let (done, result) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("a runtime");
+            let _ = done.send(runtime.block_on(work));
+        });
+        let answer: Rc<RefCell<Option<T>>> = Rc::default();
+        let slot = answer.clone();
+        self.rig.ui.wait_until(
+            "the vault's call to finish",
+            Duration::from_secs(90),
+            move || {
+                if let Ok(value) = result.try_recv() {
+                    *slot.borrow_mut() = Some(value);
+                }
+                slot.borrow().is_some()
+            },
+        );
+        answer.borrow_mut().take().expect("the vault's answer")
+    }
+}
+
+#[test]
+fn the_vault_fills_and_clears_a_login_through_the_engine_from_its_own_thread() {
+    let mut f = Fixture::new();
+    f.on("/login.html");
+    let (origin, target) = (f.origin(), f.target());
+    let login = f.engine_login();
+
+    let (asking, aimed) = (login.clone(), target.clone());
+    let found = f
+        .from_the_vault(async move { asking.destination(aimed, "local".into()).await })
+        .expect("the page's origin");
+    assert_eq!(found.as_str(), origin);
+
+    let (beginning, aimed) = (login.clone(), target.clone());
+    let wanted = LoginOrigin::new(&origin).expect("an https origin");
+    let epoch = f
+        .from_the_vault(async move {
+            beginning
+                .begin(aimed, "local".into(), wanted, allowed())
+                .await
+        })
+        .expect("the form is found");
+    assert_eq!(f.rig.state("alpha").private_active, Some(true));
+
+    let filling = login.clone();
+    f.from_the_vault(async move {
+        filling
+            .fill(
+                "alpha".into(),
+                epoch,
+                VaultSecret::new("ada", "correct horse"),
+                allowed(),
+            )
+            .await
+    })
+    .expect("the fields are filled");
+    assert_eq!(f.values(), "ada|correct horse");
+
+    let (finishing, generation) = (login.clone(), target.generation.clone());
+    f.from_the_vault(async move {
+        finishing
+            .finish(
+                "alpha".into(),
+                generation,
+                epoch,
+                FinishMode::Clear,
+                allowed(),
+            )
+            .await
+    })
+    .expect("the fields are cleared and verified");
+    assert_eq!(f.values(), "|", "cleared");
+}
+
+#[test]
+fn the_vault_is_refused_for_an_unknown_bot_a_stopped_check_and_a_different_origin() {
+    let mut f = Fixture::new();
+    f.on("/login.html");
+    let (origin, target) = (f.origin(), f.target());
+    let login = f.engine_login();
+    let wanted = LoginOrigin::new(&origin).expect("an https origin");
+
+    // A bot the daemon doesn't list: nothing reaches the engine.
+    let (asking, aimed) = (login.clone(), target.clone());
+    let stranger = VaultFillTarget {
+        bot_id: "nobody".into(),
+        ..aimed
+    };
+    assert_eq!(
+        f.from_the_vault(async move { asking.destination(stranger, "local".into()).await }),
+        Err(LoginError::Failed)
+    );
+
+    // A check that has stopped the operation stops the begin before the page is touched.
+    let (beginning, aimed, origin_a) = (login.clone(), target.clone(), wanted.clone());
+    let stopped: Check = Arc::new(|| Err(LoginError::Changed));
+    assert!(
+        f.from_the_vault(async move {
+            beginning
+                .begin(aimed, "local".into(), origin_a, stopped)
+                .await
+        })
+        .is_err()
+    );
+    assert_ne!(
+        f.rig.state("alpha").private_active,
+        Some(true),
+        "no private interaction began"
+    );
+
+    // A login that belongs to a different origin is refused.
+    let (beginning, aimed) = (login.clone(), target.clone());
+    let elsewhere = LoginOrigin::new("https://example.com").expect("an https origin");
+    assert!(
+        f.from_the_vault(async move {
+            beginning
+                .begin(aimed, "local".into(), elsewhere, allowed())
+                .await
+        })
+        .is_err()
+    );
+    assert_ne!(f.rig.state("alpha").private_active, Some(true));
+}
