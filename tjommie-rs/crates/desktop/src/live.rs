@@ -248,44 +248,53 @@ impl Shared {
             return;
         }
         let old = locked(supervisor).take();
-        if old.is_some() {
-            self.stopping.send_replace(Stopping::InFlight);
-        }
+        // The stop in flight is this one, whether or not there is a daemon to stop: an outcome left by an earlier stop, which
+        // a quit may have read already, must not be read again by the next quit.
+        self.stopping.send_replace(Stopping::InFlight);
         let shared = Arc::clone(self);
         // unguarded: a tokio task, off the UI thread, where a panic ends only that task
         self.runtime.spawn(async move {
             // The clients of the daemon that is going stop first: the vault locks and nothing polls a dying daemon.
             let _ =
                 tokio::time::timeout(crate::hosts::STOP_TIMEOUT, shared.hosts.stop(false)).await;
-            if let Some(old) = old {
-                let outcome = old.stop_before_quit(daemon_process::QUIT_TIMEOUT).await;
-                // A quit that arrived meanwhile is waiting for exactly this.
-                shared
-                    .stopping
-                    .send_replace(Stopping::Done(crate::services::daemon_stop(outcome)));
-            }
-            // A quit during the stop above: no new daemon starts while the app exits.
-            if !shared.hosts.quitting() {
-                shared.start_supervisor();
+            let outcome = match old {
+                Some(old) => crate::services::daemon_stop(
+                    old.stop_before_quit(daemon_process::QUIT_TIMEOUT).await,
+                ),
+                None => Ok(None),
+            };
+            // A quit that arrived meanwhile is waiting for exactly this; it is the last word if no daemon starts below.
+            shared.stopping.send_replace(Stopping::Done(outcome));
+            // A quit during the stops above: no new daemon starts while the app exits.
+            if shared.start_supervisor() {
                 shared.stopping.send_replace(Stopping::Idle);
             }
         });
     }
 
-    /// The supervisor's start, and the task that follows what it reports. Runs on the live runtime.
-    fn start_supervisor(&self) {
+    /// The supervisor's start, and the task that follows what it reports. Runs on the live runtime. `false` when none was
+    /// started: the daemon is not supervised here, or the app is quitting.
+    fn start_supervisor(&self) -> bool {
         let Daemon::Supervised {
             launch,
             supervisor,
             state,
         } = &self.daemon
         else {
-            return;
+            return false;
         };
+        // The check and the store are one step under the slot's lock. A quit sets `quitting` and then takes the slot, so it
+        // either finds this supervisor in it, or the app was already quitting here and none starts: it can no longer take an
+        // empty slot while a daemon is being made that lands in it a moment later.
+        let mut slot = locked(supervisor);
+        if self.hosts.quitting() {
+            return false;
+        }
         let started = Supervisor::start(launch(), Arc::new(log_daemon_output));
         let mut watching = started.state();
         *locked(state) = started.state();
-        *locked(supervisor) = Some(started);
+        *slot = Some(started);
+        drop(slot);
         let connection = self.connection.get().cloned();
         let hosts = self.hosts.clone();
         // unguarded: a tokio task, off the UI thread, where a panic ends only that task
@@ -348,6 +357,7 @@ impl Shared {
             })
             .await;
         });
+        true
     }
 }
 
@@ -934,11 +944,28 @@ mod tests {
         shared: Arc<Shared>,
         launches: Arc<AtomicUsize>,
         answering: watch::Sender<bool>,
+        /// The next launch, if a test holds it: it says it has begun, then waits to be let go.
+        held: Arc<Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>>,
+    }
+
+    impl Fixture {
+        /// Holds the next daemon launch: the first end hears that it has begun, the second lets it go.
+        fn hold_the_next_launch(
+            &self,
+        ) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
+            let (begun, hears) = std::sync::mpsc::channel();
+            let (lets_go, waits) = std::sync::mpsc::channel();
+            *self.held.lock().unwrap() = Some((begun, waits));
+            (hears, lets_go)
+        }
     }
 
     fn counting_shared(root: &Path) -> Fixture {
         let launches = Arc::new(AtomicUsize::new(0));
         let counted = launches.clone();
+        let held: Arc<Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>> =
+            Arc::default();
+        let holding = held.clone();
         let (hosts, orders) = HostControl::new(tokio::runtime::Handle::current());
         let (answering, mut open) = watch::channel(true);
         tokio::spawn(async move {
@@ -955,6 +982,11 @@ mod tests {
             daemon: Daemon::Supervised {
                 launch: Box::new(move || {
                     counted.fetch_add(1, Ordering::SeqCst);
+                    let hold = holding.lock().unwrap().take();
+                    if let Some((begun, waits)) = hold {
+                        let _ = begun.send(());
+                        let _ = waits.recv();
+                    }
                     DaemonLaunch::new(root_exe(), Vec::new())
                 }),
                 supervisor: Mutex::new(None),
@@ -971,6 +1003,7 @@ mod tests {
             shared,
             launches,
             answering,
+            held,
         }
     }
 
@@ -1048,6 +1081,81 @@ mod tests {
             f.launches.load(Ordering::SeqCst),
             1,
             "a daemon started in a quit"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Check Nit 1: an outcome an earlier stop left, which a quit has already read, must not be read again by the next quit. A
+    /// restart that has nothing to stop (after an aborted update, the daemon already gone) publishes its own stop first.
+    #[tokio::test]
+    async fn a_restart_does_not_leave_the_last_stops_outcome_for_the_next_quit() {
+        let root = std::env::temp_dir().join(format!("tjommie-live-stale-{}", std::process::id()));
+        let f = counting_shared(&root);
+        // A quit read a forced stop and was given up; the daemon is restarted, and nothing is in the slot.
+        f.shared
+            .stopping
+            .send_replace(Stopping::Done(Ok(Some(DaemonStop::Forced))));
+        f.answering.send_replace(false);
+        f.shared.supervise();
+        let quitting = Stopper(f.shared.clone()).stop();
+        tokio::pin!(quitting);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(300), &mut quitting)
+                .await
+                .is_err(),
+            "the quit read the outcome of a stop that was over, with the restart's own still going"
+        );
+        f.answering.send_replace(true);
+        let outcome = tokio::time::timeout(Duration::from_secs(10), quitting)
+            .await
+            .expect("the quit never heard that the restart's stop had finished");
+        assert_eq!(outcome, Ok(None), "the restart stopped nothing");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Check Nit 2: a daemon being started is either in the slot when a quit looks for it, or not started at all. The quit sets
+    /// `quitting` and then takes the slot; the start checks `quitting` and stores the supervisor under the slot's lock, so the
+    /// quit can no longer take an empty slot while a daemon is being made that lands in it a moment later.
+    #[tokio::test]
+    async fn a_quit_that_arrives_while_a_daemon_is_being_started_finds_it_in_the_slot() {
+        let root = std::env::temp_dir().join(format!("tjommie-live-racing-{}", std::process::id()));
+        let f = counting_shared(&root);
+        let (begun, lets_go) = f.hold_the_next_launch();
+        let handle = tokio::runtime::Handle::current();
+        let shared = f.shared.clone();
+        // The start is under way (its launch is held), on a thread of its own as it is on the live runtime.
+        let starting = std::thread::spawn(move || {
+            let _runtime = handle.enter();
+            shared.start_supervisor();
+        });
+        begun
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the daemon's launch never began");
+        // The quit arrives meanwhile (on its own thread too, since looking for the daemon may have to wait for the start).
+        let (stopping, quitting) = std::sync::mpsc::channel();
+        let shared = f.shared.clone();
+        let quit = std::thread::spawn(move || {
+            let _ = stopping.send(Stopper(shared).stop());
+        });
+        while !f.shared.hosts.quitting() {
+            std::thread::yield_now();
+        }
+        lets_go.send(()).unwrap();
+        starting.join().unwrap();
+        quit.join().unwrap();
+        let quitting = quitting.recv().unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_secs(10), quitting)
+                .await
+                .expect("the quit never finished")
+                .is_ok()
+        );
+        let Daemon::Supervised { supervisor, .. } = &f.shared.daemon else {
+            panic!("the fixture daemon is supervised");
+        };
+        assert!(
+            locked(supervisor).is_none(),
+            "a daemon started under a quit was left running in the slot"
         );
         let _ = std::fs::remove_dir_all(&root);
     }
