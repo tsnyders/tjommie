@@ -4,8 +4,6 @@ Tjommie is a free, open-source desktop app for AI agents that chat with you, wor
 
 [![Download Tjommie](https://img.shields.io/github/v/release/tsnyders/tjommie?label=Download&style=for-the-badge&color=b57a1f)](https://github.com/tsnyders/tjommie/releases/latest)
 
-The download button opens the latest release, which has the Windows installer and the Android app. See [Install](#install) for what to expect the first time you run it.
-
 **Status:** early development. The design is in [`docs/superpowers/specs/2026-09-25-tjommie-design.md`](docs/superpowers/specs/2026-09-25-tjommie-design.md).
 
 ## Develop
