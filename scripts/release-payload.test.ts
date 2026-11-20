@@ -414,3 +414,72 @@ describe.skipIf(!windows)("the installer and latest.yml check", () => {
     expect(run.output).toMatch(/Tjommie-Setup-0\.7\.0\.exe/);
   });
 });
+
+// The debug symbols: installer/pack-symbols.ps1 puts the PDBs of the desktop app and the daemon in Tjommie-<version>-symbols.zip, a release
+// asset of its own that is never part of the installer. Here the "PDBs" are a few bytes.
+describe.skipIf(!windows)("the debug symbols pack", () => {
+  const tar = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "tar.exe");
+  const quote = (text: string): string => `'${text.replaceAll("'", "''")}'`;
+  // -Command, not -File: only the former binds a comma-separated list to the script's string array, as the workflow's step does.
+  const pack = (out: string, pdbs: string[], release = false): Run => {
+    const command = `& ${quote(join(installer, "pack-symbols.ps1"))} -OutFile ${quote(out)} -Pdb ${pdbs.map(quote).join(",")}${release ? " -Release" : ""}`;
+    const result = spawnSync(shell, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command], { encoding: "utf8", windowsHide: true });
+    return { status: result.status, output: `${result.stdout}${result.stderr}` };
+  };
+  const pdbs = (): { root: string; desktop: string; daemon: string; out: string } => {
+    const root = temp();
+    mkdirSync(join(root, "release"));
+    writeFileSync(join(root, "release", "tjommie_desktop.pdb"), "desktop symbols");
+    writeFileSync(join(root, "release", "tjommie_daemon.pdb"), "daemon symbols");
+    return { root, desktop: join(root, "release", "tjommie_desktop.pdb"), daemon: join(root, "release", "tjommie_daemon.pdb"), out: join(root, "dist", "Tjommie-0.6.0-symbols.zip") };
+  };
+  const entries = (zip: string): string[] => String(spawnSync(tar, ["-tf", zip], { encoding: "utf8", windowsHide: true }).stdout).split(/\r?\n/).filter(Boolean).sort();
+
+  it("packs both PDBs, flat and unchanged, and nothing else", () => {
+    const stub = pdbs();
+    const run = pack(stub.out, [stub.desktop, stub.daemon], true);
+    expect(run.status, run.output).toBe(0);
+    expect(run.output).toContain("Symbols: 2 PDB(s) in Tjommie-0.6.0-symbols.zip");
+    expect(entries(stub.out)).toEqual(["tjommie_daemon.pdb", "tjommie_desktop.pdb"]);
+    const unpacked = join(stub.root, "unpacked");
+    mkdirSync(unpacked);
+    expect(spawnSync(tar, ["-xf", stub.out, "-C", unpacked], { windowsHide: true }).status).toBe(0);
+    expect(readFileSync(join(unpacked, "tjommie_desktop.pdb"), "utf8")).toBe("desktop symbols");
+    expect(readFileSync(join(unpacked, "tjommie_daemon.pdb"), "utf8")).toBe("daemon symbols");
+  });
+
+  it("holds a release to having every PDB, and writes no zip when one is missing", () => {
+    const stub = pdbs();
+    rmSync(stub.daemon);
+    const run = pack(stub.out, [stub.desktop, stub.daemon], true);
+    expect(run.status).not.toBe(0);
+    expect(run.output).toContain("tjommie_daemon.pdb");
+    expect(run.output).toMatch(/every\s+binary/);
+    expect(existsSync(stub.out)).toBe(false);
+  });
+
+  it("packs what exists in a dry run and warns about the rest, but never an empty zip", () => {
+    const stub = pdbs();
+    rmSync(stub.daemon);
+    const dry = pack(stub.out, [stub.desktop, stub.daemon]);
+    expect(dry.status, dry.output).toBe(0);
+    expect(dry.output).toContain("::warning::");
+    expect(dry.output).toContain("tjommie_daemon.pdb");
+    expect(entries(stub.out)).toEqual(["tjommie_desktop.pdb"]);
+    rmSync(stub.desktop);
+    const none = pack(join(stub.root, "dist", "Tjommie-0.6.1-symbols.zip"), [stub.desktop, stub.daemon]);
+    expect(none.status).not.toBe(0);
+    expect(none.output).toMatch(/No\s+PDB/);
+    expect(existsSync(join(stub.root, "dist", "Tjommie-0.6.1-symbols.zip"))).toBe(false);
+  });
+
+  it("refuses a zip that is not named for the release, one that is already there, and a file that is not a PDB", () => {
+    const stub = pdbs();
+    expect(pack(join(stub.root, "dist", "symbols.zip"), [stub.desktop]).output).toMatch(/Tjommie-<version>-symbols\.zip/);
+    expect(pack(join(stub.root, "dist", "Tjommie-0.6.0-symbols.zip"), [join(stub.root, "release", "tjommie_desktop.exe")]).output).toMatch(/not\s+a\s+\.pdb/);
+    expect(pack(stub.out, [stub.desktop]).status).toBe(0);
+    const again = pack(stub.out, [stub.desktop]);
+    expect(again.status).not.toBe(0);
+    expect(again.output).toMatch(/already\s+there/);
+  });
+});

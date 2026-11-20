@@ -232,6 +232,14 @@ jobs:
           Pop-Location
           $root = $env:GITHUB_WORKSPACE
           ./installer/write-release-manifest.ps1 -Version $env:VERSION -Installer "$root\dist-desktop\installer\Tjommie-Setup-$env:VERSION.exe" -LatestYml "$root\dist-desktop\installer\latest.yml" -PayloadManifest "$env:RUNNER_TEMP\payload-manifest.json" -Desktop "$root\tjommie-rs\target\release\tjommie-desktop.exe" -Daemon "$root\tjommie-rs\target\release\tjommie-daemon.exe" -Out "$root\dist-desktop\release-manifest.json" -DryRun $env:DRY_RUN -Rustc $rustc -Nsis $nsis -VersionCheck $env:CRATE_VERSIONS -ToolHashes "$root\dist-desktop\tool-hashes-nsis.json"
+      # The debug symbols are a release asset of their own and are never in the installer: the PDBs of the desktop app and of the daemon, which
+      # turn a crash's addresses into function names and lines. A release needs both; a dry run packs what exists and warns about the rest.
+      - name: Pack the debug symbols
+        shell: pwsh
+        run: |
+          $more = @{}
+          if ($env:DRY_RUN -ne 'true') { $more['Release'] = $true }
+          ./installer/pack-symbols.ps1 -OutFile "dist-desktop\installer\Tjommie-$env:VERSION-symbols.zip" -Pdb tjommie-rs\target\release\tjommie_desktop.pdb, tjommie-rs\target\release\tjommie_daemon.pdb @more
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ needs.verify.outputs.dry_run == 'false' }}
         with:
@@ -239,6 +247,7 @@ jobs:
           path: |
             dist-desktop/installer/Tjommie-Setup-*.exe
             dist-desktop/installer/latest.yml
+            dist-desktop/installer/Tjommie-*-symbols.zip
           if-no-files-found: error
       # A dry run's artifact has its own name, so nothing downstream can mistake it for the release's.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -248,6 +257,7 @@ jobs:
           path: |
             dist-desktop/installer/Tjommie-Setup-*.exe
             dist-desktop/installer/latest.yml
+            dist-desktop/installer/Tjommie-*-symbols.zip
             dist-desktop/release-manifest.json
             dist-desktop/tool-hashes-nsis.json
           if-no-files-found: error
@@ -461,5 +471,6 @@ jobs:
             "release-assets/Tjommie-Setup-$version.exe" \
             release-assets/latest.yml \
             "release-assets/Tjommie-Android-$version.apk" \
+            "release-assets/Tjommie-$version-symbols.zip" \
             --title "Tjommie $version" --notes-file release-notes/notes.md \
             --generate-notes --verify-tag

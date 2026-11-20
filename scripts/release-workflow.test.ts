@@ -409,9 +409,13 @@ describe("release.yml", () => {
       });
     });
 
-    it("publishes the installer, latest.yml and the APK, with no block map", () => {
+    // Four assets: the installer, the update feed, the APK and the debug symbols (a separate asset, never in the installer).
+    it("publishes the installer, latest.yml, the APK and the debug symbols, with no block map", () => {
       const script = findStep("release", /Publish GitHub release/).run ?? "";
-      for (const asset of ['"release-assets/Tjommie-Setup-$version.exe"', "release-assets/latest.yml", '"release-assets/Tjommie-Android-$version.apk"']) expect(script).toContain(asset);
+      const assets = ['"release-assets/Tjommie-Setup-$version.exe"', "release-assets/latest.yml", '"release-assets/Tjommie-Android-$version.apk"', '"release-assets/Tjommie-$version-symbols.zip"'];
+      for (const asset of assets) expect(script).toContain(asset);
+      // Exactly those four are handed to `gh release create`: nothing else is published by accident.
+      expect([...script.matchAll(/^\s+"?(release-assets\/[^"\s\\]+)"?\s*\\$/gm)].map((match) => match[1])).toHaveLength(4);
       expect(script).not.toMatch(/blockmap/i);
     });
 
@@ -604,7 +608,7 @@ describe("release.yml", () => {
   it("has a mutation script that has not gone stale", () => {
     // LF, as the mutations are written: a Windows checkout may have CRLF.
     const text = readFileSync(join(workflowDir, "release.yml"), "utf8").replaceAll("\r\n", "\n");
-    expect(mutations.length).toBeGreaterThanOrEqual(47);
+    expect(mutations.length).toBeGreaterThanOrEqual(50);
     for (const { label, from } of mutations) expect(text.split(from).length - 1, `"${label}": its text is found once in release.yml`).toBe(1);
   });
 
@@ -777,6 +781,7 @@ describe("release.yml", () => {
         /make-latest-yml\.ts/,
         /check-release-installer\.ps1/,
         /write-release-manifest\.ps1/,
+        /pack-symbols\.ps1/,
         /upload-artifact[\s\S]*windows-assets/,
         /upload-artifact[\s\S]*release-dryrun-windows/,
       ];
@@ -879,6 +884,21 @@ describe("release.yml", () => {
       expect(assemble).toContain('$more[\'ThirdPartyNotices\'] = "$env:RUNNER_TEMP\\third-party-notices.txt"');
     });
 
+    // The symbols are the PDBs of the two binaries, packed by a script into Tjommie-<version>-symbols.zip beside the installer. A release needs
+    // both (anything but an exact 'true' is a release); the installer's payload never holds one (the payload test lists its files exactly).
+    it("packs the PDBs of the desktop app and the daemon into the symbols zip, and holds a release to having both", () => {
+      const pack = findStep("windows", /pack-symbols\.ps1/);
+      const run = pack.run ?? "";
+      expect(pack.name).toBe("Pack the debug symbols");
+      expect(run).toContain('-OutFile "dist-desktop\\installer\\Tjommie-$env:VERSION-symbols.zip"');
+      expect(run).toContain("tjommie-rs\\target\\release\\tjommie_desktop.pdb");
+      expect(run).toContain("tjommie-rs\\target\\release\\tjommie_daemon.pdb");
+      expect(run).toContain("if ($env:DRY_RUN -ne 'true') { $more['Release'] = $true }");
+      expect(run).toMatch(/pack-symbols\.ps1 [^\n]*@more/);
+      expect(findStep("windows", /assemble-payload\.ps1/).run ?? "").not.toMatch(/\.pdb|symbols/i);
+      expect(findStep("windows", /\.\/installer\/build-installer\.ps1/).run ?? "").not.toMatch(/\.pdb|symbols/i);
+    });
+
     it("uploads the release's files under windows-assets only for a release, and the dry run's under its own name", () => {
       const release = windows().filter((step) => step.with?.name === "windows-assets");
       const dry = windows().filter((step) => step.with?.name === "release-dryrun-windows");
@@ -887,7 +907,9 @@ describe("release.yml", () => {
       expect(release[0].if).toBe("${{ needs.verify.outputs.dry_run == 'false' }}");
       expect(dry[0].if).toBe("${{ needs.verify.outputs.dry_run == 'true' }}");
       expect(String(release[0].with?.path)).not.toContain("release-manifest.json");
-      for (const expected of ["Tjommie-Setup-*.exe", "latest.yml", "release-manifest.json", "tool-hashes-nsis.json"]) expect(String(dry[0].with?.path)).toContain(expected);
+      for (const expected of ["Tjommie-Setup-*.exe", "latest.yml", "Tjommie-*-symbols.zip", "release-manifest.json", "tool-hashes-nsis.json"]) expect(String(dry[0].with?.path)).toContain(expected);
+      // The release's files: the installer, its feed and the symbols (the APK comes from the android job).
+      for (const expected of ["Tjommie-Setup-*.exe", "latest.yml", "Tjommie-*-symbols.zip"]) expect(String(release[0].with?.path), expected).toContain(expected);
       expect(String(release[0].with?.path)).not.toContain("tool-hashes");
       // What the NSIS check saw is kept even when the check fails (the always()), for a dry run only, under a name of its own.
       const seen = windows().filter((step) => step.with?.name === "release-dryrun-tool-hashes");

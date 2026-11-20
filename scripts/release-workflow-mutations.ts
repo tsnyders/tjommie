@@ -61,6 +61,10 @@ export const mutations: Mutation[] = [
   { label: "cargo-about covers only the root crate", from: " generate --manifest-path Cargo.toml --workspace --locked", to: " generate --manifest-path Cargo.toml --locked" },
   { label: "a release writes the notices without --strict", from: "if ($env:DRY_RUN -ne 'true') { $more += '--strict' }", to: "if ($false) { $more += '--strict' }" },
   { label: "the assembler is not given the notices", from: "          $more['ThirdPartyNotices'] = \"$env:RUNNER_TEMP\\third-party-notices.txt\"" + nl, to: "" },
+  // The debug symbols: their own release asset, both PDBs required on the tag path.
+  { label: "the symbols step fails open on the tag path", from: "if ($env:DRY_RUN -ne 'true') { $more['Release'] = $true }" + nl + "          ./installer/pack-symbols.ps1", to: "if ($env:DRY_RUN -eq 'false') { $more['Release'] = $true }" + nl + "          ./installer/pack-symbols.ps1" },
+  { label: "the symbols zip is left out of the release", from: '            "release-assets/Tjommie-$version-symbols.zip" \\' + nl, to: "" },
+  { label: "the symbols zip is not uploaded for the release", from: "            dist-desktop/installer/latest.yml" + nl + "            dist-desktop/installer/Tjommie-*-symbols.zip" + nl + "          if-no-files-found: error", to: "            dist-desktop/installer/latest.yml" + nl + "          if-no-files-found: error" },
   // The review's F1: the NSIS compiler is checked against recorded hashes, strictly on the tag path.
   { label: "the NSIS hash check fails open on the tag path", from: "if ($env:DRY_RUN -ne 'true') { $more['Release'] = $true }" + nl + "          New-Item -ItemType Directory -Force -Path dist-desktop", to: "if ($env:DRY_RUN -eq 'false') { $more['Release'] = $true }" + nl + "          New-Item -ItemType Directory -Force -Path dist-desktop" },
   { label: "the NSIS hash check is removed", from: '          ./installer/check-tool-hashes.ps1 -Tool nsis -Path "${env:ProgramFiles(x86)}\\NSIS" -Observed dist-desktop\\tool-hashes-nsis.json @more', to: "          Write-Output 'skipped'" },

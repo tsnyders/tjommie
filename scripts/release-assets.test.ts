@@ -123,3 +123,27 @@ describe("latest.yml", () => {
     }
   });
 });
+
+// A release is four files: the installer, the update feed, the Android APK and the debug symbols. Only the installer is in latest.yml, which is
+// what both updaters read, so the symbols and the APK are never offered to an update. (The text of release.yml is read as it is; the workflow
+// test checks the same step with the workflow parsed.)
+describe("the release's assets", () => {
+  const workflow = readFileSync(join(repo, ".github", "workflows", "release.yml"), "utf8").replaceAll("\r\n", "\n");
+  const published = [...(/gh release create[\s\S]*?--title/.exec(workflow)?.[0] ?? "").matchAll(/"?(release-assets\/[^"\s\\]+)"?\s*\\\n/g)].map((match) => match[1]);
+
+  it("are the installer, latest.yml, the APK and the symbols zip, named for the version", () => {
+    expect(published).toEqual([
+      "release-assets/Tjommie-Setup-$version.exe",
+      "release-assets/latest.yml",
+      "release-assets/Tjommie-Android-$version.apk",
+      "release-assets/Tjommie-$version-symbols.zip",
+    ]);
+  });
+
+  it("leave the symbols out of latest.yml, whose one file is the installer", () => {
+    const text = renderLatestYml({ version: "0.6.0", installerName: "Tjommie-Setup-0.6.0.exe", sha512: "AAAA==", size: 1, releaseDate: "2026-12-01T10:00:00.000Z" });
+    const info = parseUpdateInfo(text, "latest.yml", new URL("https://example.com/latest.yml"));
+    expect(info.files.map((file) => file.url)).toEqual(["Tjommie-Setup-0.6.0.exe"]);
+    expect(text).not.toMatch(/symbols|\.pdb|\.apk/i);
+  });
+});
