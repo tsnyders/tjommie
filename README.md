@@ -2,6 +2,10 @@
 
 Tjommie is a free, open-source desktop app for AI agents that chat with you, work on your PC, talk to each other and run routines. The agents run on your own computer through the official Claude Code and Codex CLIs, signed in with your own accounts. An Android companion connects over Wi-Fi or mobile data through the relay and receives push notifications.
 
+[![Download Tjommie](https://img.shields.io/github/v/release/tsnyders/tjommie?label=Download&style=for-the-badge&color=b57a1f)](https://github.com/tsnyders/tjommie/releases/latest)
+
+The download button opens the latest release, which has the Windows installer and the Android app. See [Install](#install) for what to expect the first time you run it.
+
 **Status:** early development. The design is in [`docs/superpowers/specs/2026-09-25-tjommie-design.md`](docs/superpowers/specs/2026-09-25-tjommie-design.md).
 
 ## Develop
