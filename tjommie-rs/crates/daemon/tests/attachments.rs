@@ -4,7 +4,8 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
 use base64::Engine;
@@ -396,10 +397,54 @@ async fn answers_every_attachment_method_within_the_manifest() {
     server.close().await;
 }
 
+/// What holds a read in progress for a test to look at: `entered` says the read is held, and the read goes on when `release`
+/// is sent or dropped (so a failing test cannot leave it held for ever).
+struct Held {
+    entered: mpsc::Receiver<()>,
+    _release: mpsc::Sender<()>,
+}
+
+/// Holds the next read that gets as far as its second look at the shared file's record. A read looks once before it starts
+/// and once after its bytes are read, when it is still "in progress" and has not given up its place. The seam is the test's
+/// own: the service shares its SQLite connection with the test, which puts a view in front of the link table whose filter
+/// calls a function that waits on a channel. Nothing sleeps, and no production code changes.
+fn hold_a_read_in_progress(db: &Db) -> Held {
+    let (entered_tx, entered) = mpsc::channel();
+    let (release, released) = mpsc::channel::<()>();
+    let (looks, released) = (AtomicUsize::new(0), Mutex::new(released));
+    let connection = db.lock().unwrap();
+    connection
+        .create_scalar_function(
+            "hold_the_second_look",
+            0,
+            rusqlite::functions::FunctionFlags::SQLITE_UTF8,
+            move |_| {
+                if looks.fetch_add(1, Ordering::SeqCst) == 1 {
+                    let _ = entered_tx.send(());
+                    // Until released, or until the test is gone (the sender drops).
+                    let _ = released.lock().unwrap().recv();
+                }
+                Ok(1)
+            },
+        )
+        .unwrap();
+    connection
+        .execute_batch(
+            "ALTER TABLE message_attachments RENAME TO message_attachments_held;
+             CREATE VIEW message_attachments AS
+               SELECT * FROM message_attachments_held WHERE hold_the_second_look();",
+        )
+        .unwrap();
+    Held {
+        entered,
+        _release: release,
+    }
+}
+
 #[test]
 fn limits_parallel_opens_serializes_reads_and_isolates_connection_and_principal_handles() {
     let f = fixture();
-    let published = f.publish(&vec![1; 16 * 1024 * 1024], "large.bin");
+    let published = f.publish(&vec![1; 2 * 1024 * 1024], "large.bin");
     let first = f
         .service
         .open(&published.reference, Some(&f.context))
@@ -413,14 +458,26 @@ fn limits_parallel_opens_serializes_reads_and_isolates_connection_and_principal_
         ErrorCode::Busy
     );
     std::thread::scope(|scope| {
-        // The first read verifies 16 MiB before releasing bytes; a second read meanwhile is refused, not queued.
+        // The first read verifies the file and reads its bytes before it gives any up, and is held there, in progress. A
+        // second read meanwhile is refused, not queued. (No sleep: the second read is made only once the first is held.)
+        let held = hold_a_read_in_progress(&f.db);
         let reading =
             scope.spawn(|| f.read(&first.transfer_id, 0, ATTACHMENT_CHUNK_BYTES, &f.context));
-        std::thread::sleep(Duration::from_millis(30));
+        held.entered
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the first read never reached the point where it is held");
+        let (refused, answer) = mpsc::channel();
+        let (second, first) = (&f, &first);
+        scope.spawn(move || {
+            let _ = refused.send(code(second.read(&first.transfer_id, 0, 1, &second.context)));
+        });
         assert_eq!(
-            code(f.read(&first.transfer_id, 0, 1, &f.context)),
+            answer
+                .recv_timeout(Duration::from_secs(10))
+                .expect("the second read waited for the first instead of being refused"),
             ErrorCode::Busy
         );
+        drop(held);
         reading.join().unwrap().unwrap();
     });
     let other = local("new-connection");

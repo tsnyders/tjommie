@@ -1,5 +1,22 @@
 //! The Tjommie daemon: a port of `packages/daemon`.
 
+// The `provider-fixtures` feature swaps every provider CLI for recorded conversations (src/provider_fixtures.rs). It is
+// for tests only, so a shipped daemon must never have it. Two locks, because either mistake alone is easy to make: the
+// production identity (build.rs reads TJOMMIE_IDENTITY), and any build without debug assertions, which is what
+// `--release` is, in case the identity was simply forgotten.
+#[cfg(all(feature = "provider-fixtures", tjommie_identity = "production"))]
+compile_error!(
+    "The provider-fixtures feature replays recorded conversations instead of starting Claude or Codex, so it must never \
+     be built into the production daemon (TJOMMIE_IDENTITY=production). Build the production daemon without \
+     --features provider-fixtures."
+);
+#[cfg(all(feature = "provider-fixtures", not(debug_assertions)))]
+compile_error!(
+    "The provider-fixtures feature must not be built without debug assertions (a --release build): it replays recorded \
+     conversations instead of starting Claude or Codex, and the production identity may simply have been forgotten. \
+     Build the daemon without --features provider-fixtures, or in the dev profile."
+);
+
 pub mod account_handlers;
 pub mod account_pricing;
 pub mod account_quota;
@@ -39,6 +56,8 @@ pub mod project_review_policy;
 pub mod project_review_runtime;
 pub mod projects;
 pub mod protect;
+#[cfg(feature = "provider-fixtures")]
+pub mod provider_fixtures;
 pub mod providers;
 pub mod push;
 pub mod queue;

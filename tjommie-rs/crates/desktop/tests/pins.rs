@@ -47,3 +47,13 @@ fn test_driver_only_with_its_feature() {
     let has_pipe = exe.windows(needle.len()).any(|bytes| bytes == needle);
     assert_eq!(has_pipe, cfg!(feature = "test-driver"));
 }
+
+/// The test driver's answer to a path prompt (`AnswerPathPrompt`, M5 review M8) stands in for the system's picker only
+/// in a test-driver build: its tag is in the binary exactly when the feature is on. CI checks the release build too.
+#[test]
+fn path_prompt_answers_only_with_the_test_driver() {
+    let exe = std::fs::read(env!("CARGO_BIN_EXE_tjommie-desktop")).unwrap();
+    let needle = b"tjommie-test-path-answer";
+    let has_hook = exe.windows(needle.len()).any(|bytes| bytes == needle);
+    assert_eq!(has_hook, cfg!(feature = "test-driver"));
+}

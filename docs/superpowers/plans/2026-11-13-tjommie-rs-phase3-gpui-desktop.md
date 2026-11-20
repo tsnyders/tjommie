@@ -752,6 +752,7 @@ Implement each card in `design/claude-design/aegis/components/motion.html` with 
 - It accepts electron-updater's arguments (`--updated`, `--force-run`) and relaunches `Tjommie.exe --updated`.
 - **Over an existing install:** it closes running `Tjommie.exe` processes in the install folder only, runs the existing uninstaller silently in keep-data mode (as electron-builder's upgrade does; the facts from T8.1 say how), then copies the new files.
 - **Its uninstaller** deletes only the install folder's own files and its own registry keys and shortcuts. It **refuses** to run if `InstallLocation` is not under `%LOCALAPPDATA%\Programs\` or doesn't end with the product name. This guards against a repeat of the test uninstaller that once deleted the owner's install.
+- **Start at login on uninstall: the value is left, as R1 leaves it (owner decision pending, 2026-11-15).** Removing it would leave start-at-login off after an uninstall and a reinstall: the `login-item-set` marker, which says the default was already made, survives in `%APPDATA%\Tjommie` (a data root, never touched), so the reinstalled app would not write the value again. R1's dangling value keeps working. `REMOVE_RUN_VALUE_ON_UNINSTALL` in `installer/tjommie.nsi` is the one commented-out line the owner flips; the acceptance builds a variant with it on, so that code stays tested.
 - **Payload:**
   - `Tjommie.exe` (the `desktop` binary, production identity);
   - `resources\tjommie-daemon.exe`;
@@ -792,6 +793,10 @@ Implement each card in `design/claude-design/aegis/components/motion.html` with 
   - It runs beside the installed app, on `Tjommie-rs` and ports 47200/47201, with a script modelled on `smoke-claude.ps1`.
   - It uses the same red flags in `logs/desktop.log` and `desktop-crash.log`.
 - The owner runs the T3.5 checks by hand: steps A, B (including Shift+Tab and Tab past the end) and C. Plus step F: the live panel by eye.
+- **Before the Phase 3 installer runs over the owner's R1** (T8.2 review, F1 and F5):
+  - **Close the dev (`Tjommie RS`) and update-test apps first.** The installer runs R1's own uninstaller, and that stops programs on its own. With PowerShell usable it stops every process whose path *starts with* the install folder's path, with no trailing separator, so one running from `...\Programs\tjommie-rs` or `...\Programs\tjommie-updatetest` too. Otherwise it stops every `Tjommie.exe` of the user, by image name. The installer's own closing is by path with a trailing separator and leaves them alone, but it cannot change R1's code. The over-R1 acceptance records on a runner which of these happened (notes starting "O3:" in `installer-acceptance-over-r1.json`).
+  - **If `HKCU\Software\89b4e4b4-ac49-585f-800a-537f559f4641\InstallLocation` is anything but `%LOCALAPPDATA%\Programs\tjommie`,** the installer stops with exit 7 and changes nothing ("is recorded as installed in ..."). Do not edit the value to get past it without knowing why it differs: R1's uninstaller deletes the folder that value names. This is the mechanism of the 2026-10-25 incident.
+  - **The acceptance scripts never run on this PC.** `installer/accept-*.ps1` refuse unless they find the hosted runner's user, temp folder and run id, and a result file made on that run.
 
 ### T8.6 Release (AGENTS.md)
 1. Bump all `package.json` versions and the workspace version to **0.6.0** (owner decision 7; R1 is 0.5.0).
@@ -820,6 +825,7 @@ Implement each card in `design/claude-design/aegis/components/motion.html` with 
   - the Electron browser profiles in `data/native-browser/` are kept through 0.6.x;
   - the speech model stays at `%APPDATA%\Tjommie\speech`;
   - `desktop-ui.json` is new and ignored by R1.
+- **If the Phase 3 uninstaller refuses (exit 5), rollback stops with it.** It removes the app only when `HKCU\Software\<GUID>\InstallLocation` is exactly `%LOCALAPPDATA%\Programs\tjommie` and is the folder it runs for. That is stricter than the plan's first wording ("under `%LOCALAPPDATA%\Programs\` or ends with the product name"), and the built rule is the right one. If a cleaner, a hand edit or another uninstaller removed or changed the value, Apps & features and R1's rollback both stop there (R1's installer runs the Phase 3 uninstaller with `--updated`, tries five times and quits with code 2). **Recovery:** run the Phase 3 installer again, which rewrites the value, and then uninstall or roll back.
 - **One release after 0.6.0:** `native-browser/` may be pruned, after the owner says so.
 
 ## Fallback path (gate condition 7)

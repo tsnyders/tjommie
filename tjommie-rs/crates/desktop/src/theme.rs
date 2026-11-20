@@ -51,6 +51,7 @@ tokens! {
         action: Action,
         on: On,
         state: State,
+        danger: Danger,
         overlay: Overlay,
         avatar: AvatarColors,
         brand: Brand,
@@ -75,6 +76,9 @@ tokens! {
     /// Text and icons drawn on a fill.
     On { primary: Rgba, ink: Rgba, accent: Rgba }
     State { hover: Rgba, sunk_hover: Rgba, panel_hover: Rgba, pressed: Rgba, focus: Rgba }
+    /// Red for what destroys or failed: the agents' red, darker in light and lighter in dark, so its text clears 4.5:1
+    /// on the surfaces it sits on (`surface.sunk`, `state.sunkHover`, `surface.raised`; M5 review M7).
+    Danger { text: Rgba }
     Overlay { scrim: Rgba, highlight: Rgba }
     AvatarColors { eye: Rgba, sweep: Rgba }
     /// The Tjommie mark: a body gradient from start to end, with eyes.

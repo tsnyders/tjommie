@@ -1,0 +1,36 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Tjommie fixture</title>
+<!-- Alignment (a 2 px #ff00ff frame on the viewport edges), input targets, and named controls for the accessibility snapshot. -->
+<style>
+  html, body { margin: 0; height: 100%; font: 15px/1.45 system-ui; color: #191a1c; background: #ffffff; }
+  #edge { position: fixed; inset: 0; border: 2px solid #ff00ff; pointer-events: none; box-sizing: border-box; z-index: 9; }
+  main { padding: 18px 22px; display: grid; gap: 12px; }
+  h1 { font-size: 22px; margin: 0; }
+  label { display: flex; gap: 10px; align-items: center; }
+  input[type=text], input:not([type]) { font: inherit; padding: 6px 8px; width: 220px; }
+  #scroller { height: 110px; overflow: auto; border: 1px solid #c4c4bf; border-radius: 8px; }
+  #scroller div { height: 1400px; padding: 8px; background: linear-gradient(#ffffff, #e6e6e3); }
+  button { font: inherit; padding: 6px 14px; }
+  output { font-family: ui-monospace, monospace; }
+</style>
+<div id="edge"></div>
+<main>
+  <h1>Tjommie fixture</h1>
+  <div>Viewport <output id="vp"></output></div>
+  <div><button id="count" type="button">Count</button> clicks <output id="clicks">0</output></div>
+  <label>Volume <input id="slider" type="range" min="0" max="100" value="10" aria-label="Volume"> <output id="vol">10</output></label>
+  <label>Name <input id="person" placeholder="Type here" aria-label="Name"></label>
+  <div>Copy this: <span id="copy">copy-me-4417</span></div>
+  <label>Paste here <input id="paste" aria-label="Paste here"></label>
+  <div id="scroller" aria-label="Scroll area" tabindex="0"><div>Scroll inside this box with the wheel.</div></div>
+  <div>Ctrl+K inside the page: <output id="key">not pressed</output></div>
+</main>
+<script>
+  const vp = () => { document.getElementById("vp").textContent = `${innerWidth} x ${innerHeight} css px, dpr ${devicePixelRatio}`; };
+  vp(); addEventListener("resize", vp);
+  count.onclick = () => { clicks.value = +clicks.value + 1; };
+  slider.oninput = () => { vol.value = slider.value; };
+  addEventListener("keydown", (e) => { if (e.ctrlKey && e.key === "k") { key.value = "pressed"; e.preventDefault(); } });
+  window.fixtureState = () => JSON.stringify({ clicks: +clicks.value, volume: +slider.value, name: person.value, paste: paste.value, scroll: scroller.scrollTop, key: key.value, width: innerWidth, height: innerHeight, dpr: devicePixelRatio });
+</script>

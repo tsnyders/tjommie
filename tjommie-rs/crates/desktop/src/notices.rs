@@ -13,6 +13,9 @@ pub enum Notice {
     SomethingWentWrong,
     /// Windows restarted the app after a crash (`--after-crash`). Its Save report action comes with T6.6.
     ClosedUnexpectedly,
+    /// A ready update was not installed because the background service would not stop (`main.ts`'s "Update not
+    /// installed"): `daemon_stopped` says whether it is gone and starting again, or its stop could not be confirmed.
+    UpdateNotInstalled { daemon_stopped: bool },
 }
 
 impl Notice {
@@ -21,6 +24,16 @@ impl Notice {
             Notice::SomethingWentWrong => "Something went wrong.",
             Notice::ClosedUnexpectedly => {
                 "Tjommie closed unexpectedly and restarted. Your agents were restarted too."
+            }
+            Notice::UpdateNotInstalled {
+                daemon_stopped: true,
+            } => {
+                "Update not installed. The background service did not stop in time, so Tjommie is restarting it."
+            }
+            Notice::UpdateNotInstalled {
+                daemon_stopped: false,
+            } => {
+                "Update not installed. Tjommie couldn't confirm its background service stopped. Restart Tjommie to reconnect."
             }
         }
     }
@@ -45,6 +58,15 @@ impl Notices {
 
 thread_local! {
     static OUTBOX: RefCell<Option<UnboundedSender<Notice>>> = const { RefCell::new(None) };
+}
+
+/// Closes the notice at `index` (its toast's close button).
+pub fn dismiss(index: usize, cx: &mut App) {
+    let notices = &mut cx.default_global::<Notices>().0;
+    if index < notices.len() {
+        notices.remove(index);
+    }
+    cx.refresh_windows();
 }
 
 /// Raises a notice. Before anything listens on this thread, it is only logged.

@@ -31,7 +31,8 @@ jobs:
       - name: The release build has no test driver or update feed
         run: |
           $text = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes('target\release\tjommie-desktop.exe'))
-          foreach ($needle in 'tjommie-ui-', 'github.com/tsnyders/tjommie') {
+          # The update feed's path, not the project's address: About links to the project in every build.
+          foreach ($needle in 'tjommie-ui-', 'tjommie-test-path-answer', 'tsnyders/tjommie/releases/latest/download') {
             if ($text.Contains($needle)) { throw "The release build contains $needle." }
           }
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
