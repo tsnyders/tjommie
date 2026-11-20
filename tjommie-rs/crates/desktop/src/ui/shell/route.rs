@@ -70,7 +70,12 @@ impl Route {
         } else {
             (false, link.strip_prefix("/chat/?bot=")?)
         };
-        let id = percent_decode(id).filter(|id| !id.is_empty() && !id.contains('&'))?;
+        // A raw `&` starts another query parameter, so this is not a link of the two shapes; an encoded one (`%26`) is part
+        // of the id.
+        if id.contains('&') {
+            return None;
+        }
+        let id = percent_decode(id).filter(|id| !id.is_empty())?;
         Some(if room {
             Route::Room(id)
         } else {
@@ -147,6 +152,11 @@ mod tests {
             Route::from_notification_link("/chat/?bot=caf%C3%A9"),
             Some(Route::Chat("caf\u{e9}".into()))
         );
+        // An id with an `&` in it (sent as `%26`) is still an id.
+        assert_eq!(
+            Route::from_notification_link("/chat/?bot=a%26b"),
+            Some(Route::Chat("a&b".into()))
+        );
         // Anything else goes nowhere: an empty id, another path, a stray query, a bad escape.
         for link in [
             "",
@@ -155,6 +165,7 @@ mod tests {
             "/settings/?section=accounts",
             "/chat/?other=b1",
             "/chat/?bot=%zz",
+            "/chat/?bot=a&other=b",
             "https://example.com/chat/?bot=b1",
         ] {
             assert_eq!(Route::from_notification_link(link), None, "{link:?}");
