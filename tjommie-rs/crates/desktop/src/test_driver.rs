@@ -245,6 +245,11 @@ impl Client {
         }
     }
 
+    /// The app's process id: a test that stops the app's daemon finds it by its parent.
+    pub fn pid(&self) -> u32 {
+        self.app.id()
+    }
+
     pub fn request(&mut self, request: &Request) -> io::Result<Response> {
         let mut line = serde_json::to_string(request)?;
         line.push('\n');

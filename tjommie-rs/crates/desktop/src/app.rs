@@ -50,18 +50,19 @@ pub fn run(identity: Identity, root: PathBuf, after_crash: bool, instance: Optio
             shell::set_rem(Zoom::default(), cx);
             cx.bind_keys(crate::keymap::field_tab(cx));
             cx.bind_keys(crate::keymap::bindings());
-            // The daemon and the connection (M5): until it's ready the shell says "Starting Tjommie". A test-driver run on
-            // the panel fixture keeps the fixture's store (`ui::browser::e2e_fixture`) until the host-wiring batch
-            // gives the panel its live path.
-            if !crate::ui::browser::panel_fixture() {
-                crate::live::start(identity, root.clone(), cx);
-            }
+            // The daemon and the connection (M5): until it's ready the shell says "Starting Tjommie". The daemon's browser,
+            // Logins and worker clients start with it (`hosts`), on the engine the window makes below.
+            crate::live::start(identity, root.clone(), cx);
             if after_crash {
                 notices::raise(Notice::ClosedUnexpectedly);
             }
             match gpui_kit::open_window(window_options(&identity, cx), cx, |window, cx| {
                 // This PC's bots' browsers live under the window; nothing of WebView2 starts until a page is shown.
                 LocalBrowser::start(window, identity, cx);
+                // What the vault's gate trusts a local request by, and a close that stops the daemon's clients first.
+                if let Some(hosts) = cx.try_global::<crate::hosts::AppHosts>().cloned() {
+                    crate::hosts::watch_window(&hosts, window, cx);
+                }
                 let panel = BrowserPanel::create(window, cx);
                 cx.new(|cx| {
                     let mut shell = Shell::new(window, cx);
@@ -76,7 +77,6 @@ pub fn run(identity: Identity, root: PathBuf, after_crash: bool, instance: Optio
                     #[cfg(feature = "test-driver")]
                     {
                         crate::test_driver::start(window, cx);
-                        crate::ui::browser::e2e_fixture(cx);
                     }
                 }
                 Err(error) => {

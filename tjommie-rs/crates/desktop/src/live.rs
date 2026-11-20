@@ -13,12 +13,13 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use client::{Client, ConnectError, Endpoint};
 use desktop_host::daemon_process::{self, DaemonLaunch, DaemonState, Env, Supervisor};
 use desktop_host::device_keys::DeviceKeys;
 use desktop_host::device_settings::{self, DeviceSettings, RemoteHost};
+use desktop_host::hosts::Local;
 use desktop_host::identity::{Identity, Kind};
 use desktop_host::remote_hosts::{DialError, HostError, HostStore, Hosts, NetworkDialer};
 use futures::StreamExt as _;
@@ -27,6 +28,7 @@ use gpui::{App, SharedString};
 use tokio::sync::watch;
 
 use crate::guard::{guarded, guarded_async};
+use crate::hosts::HostControl;
 use crate::model::connection::{
     AppConnection, DesktopConnection, Environment, Failure, FilesScope, SavedPc,
 };
@@ -199,6 +201,9 @@ struct Shared {
     dialer: NetworkDialer,
     /// The connection this environment serves: told when the daemon restarts or fails.
     connection: OnceLock<Weak<Live>>,
+    /// The browser, Logins and worker clients of this PC's daemon: started for each daemon this run starts, never for a
+    /// saved PC, and stopped before the daemon restarts or the app quits.
+    hosts: HostControl,
 }
 
 type SavedHosts<'a> =
@@ -225,6 +230,8 @@ impl Shared {
         let shared = Arc::clone(self);
         // unguarded: a tokio task, off the UI thread, where a panic ends only that task
         self.runtime.spawn(async move {
+            // The clients of the daemon that is going stop first: the vault locks and nothing polls a dying daemon.
+            shared.hosts.stop(false).await;
             if let Some(old) = old {
                 let _ = old.stop_before_quit(daemon_process::QUIT_TIMEOUT).await;
             }
@@ -247,19 +254,46 @@ impl Shared {
         *locked(state) = started.state();
         *locked(supervisor) = Some(started);
         let connection = self.connection.get().cloned();
+        let hosts = self.hosts.clone();
         // unguarded: a tokio task, off the UI thread, where a panic ends only that task
         self.runtime.spawn(async move {
             guarded_async("follow the daemon", async move {
                 let mut told: Option<String> = None;
+                // The daemon the clients were started for, by its token.
+                let mut hosted: Option<String> = None;
                 loop {
-                    let report = match &*watching.borrow_and_update() {
-                        DaemonState::Running { connection, .. } => Some(Ok(DesktopConnection {
-                            port: connection.port,
-                            token: connection.token.expose().to_owned(),
-                        })),
-                        DaemonState::Failed(reason) => Some(Err(reason.clone())),
-                        DaemonState::Starting => None,
+                    let (report, local) = match &*watching.borrow_and_update() {
+                        DaemonState::Running {
+                            connection,
+                            desktop_host_token,
+                        } => (
+                            Some(Ok(DesktopConnection {
+                                port: connection.port,
+                                token: connection.token.expose().to_owned(),
+                            })),
+                            Some(Local {
+                                port: connection.port,
+                                token: connection.token.expose().to_owned(),
+                                host_token: desktop_host_token.expose().to_owned(),
+                            }),
+                        ),
+                        DaemonState::Failed(reason) => (Some(Err(reason.clone())), None),
+                        DaemonState::Starting => (None, None),
                     };
+                    match local {
+                        // A restart gives new tokens, so new clients; the UI thread stops the old ones first.
+                        Some(local) if hosted.as_deref() != Some(&local.token) => {
+                            hosted = Some(local.token.clone());
+                            hosts.start(local);
+                        }
+                        Some(_) => {}
+                        // The daemon stopped or failed: nothing is left to serve, and the vault locks.
+                        None => {
+                            if hosted.take().is_some() {
+                                hosts.stop_now();
+                            }
+                        }
+                    }
                     let live = connection.as_ref().and_then(Weak::upgrade);
                     match (report, live) {
                         // A restart gives a new token; the first start's was already asked for (`local_daemon`).
@@ -514,6 +548,9 @@ pub fn start(identity: Identity, root: PathBuf, cx: &mut App) {
         cx,
     );
     cx.set_global(DeviceFile(Arc::clone(&settings)));
+    // The login vault, its gate and the control of the browser, Logins and worker clients of this PC's daemon. They start
+    // when the daemon is running with its host token (`start_supervisor`), on the UI thread once the window has its engine.
+    let (app_hosts, orders, requests) = crate::hosts::create(&root, runtime.handle(), cx);
     let shared = Arc::new(Shared {
         runtime: runtime.handle().clone(),
         settings,
@@ -522,7 +559,11 @@ pub fn start(identity: Identity, root: PathBuf, cx: &mut App) {
         keys,
         dialer: NetworkDialer::new(),
         connection: OnceLock::new(),
+        hosts: app_hosts.control.clone(),
     });
+    cx.set_global(Stopper(Arc::clone(&shared)));
+    crate::hosts::serve(app_hosts.clone(), orders, requests, cx);
+    cx.set_global(app_hosts);
     let live = AppConnection::new(DesktopEnv(Arc::clone(&shared)));
     let _ = shared.connection.set(Arc::downgrade(&live));
     feed(&live, &shared, cx);
@@ -538,6 +579,36 @@ pub fn start(identity: Identity, root: PathBuf, cx: &mut App) {
     crate::ui::store::connect(cx, live);
     cx.set_global(Tokio(runtime.handle().clone()));
     cx.set_global(Runtime(Some(runtime)));
+}
+
+/// Stops this PC's daemon when the app quits: the supervisor stops it within the quit timeout, then by force.
+#[derive(Clone)]
+pub struct Stopper(Arc<Shared>);
+
+impl gpui::Global for Stopper {}
+
+impl Stopper {
+    /// Stops the daemon and resolves when it is gone. Nothing to stop for a development daemon or none.
+    pub fn stop(&self) -> impl Future<Output = ()> + Send + use<> {
+        let old = match &self.0.daemon {
+            Daemon::Supervised { supervisor, .. } => locked(supervisor).take(),
+            Daemon::Development { .. } | Daemon::Unavailable(_) => None,
+        };
+        // unguarded: a tokio task, off the UI thread, where a panic ends only that task
+        let stopped = self.0.runtime.spawn(async move {
+            if let Some(old) = old {
+                let _ = old.stop_before_quit(daemon_process::QUIT_TIMEOUT).await;
+            }
+        });
+        async move {
+            let _ = stopped.await;
+        }
+    }
+}
+
+/// The daemon's stopper, once the live connection is started.
+pub fn stopper(cx: &App) -> Option<Stopper> {
+    cx.try_global::<Stopper>().cloned()
 }
 
 /// The live runtime's handle, for UI code that calls a desktop-host function which spawns on Tokio while it also
@@ -601,13 +672,32 @@ fn timers(live: &Arc<Live>, runtime: &tokio::runtime::Handle) {
     });
 }
 
-/// Copies the connection's state into the store and the shell after each change (one copy per change seen, however
-/// many happened meanwhile), and gives the shell its commands.
+/// How long the feed waits before it copies the state again: one frame, so a burst of events is one copy (M5 review M5).
+const FRAME: Duration = Duration::from_millis(16);
+
+/// How long to wait before the next copy of the state, given when the last one was made: the rest of the frame.
+fn before_next_copy(last: Option<Instant>, now: Instant, frame: Duration) -> Duration {
+    last.map_or(Duration::ZERO, |last| {
+        frame.saturating_sub(now.saturating_duration_since(last))
+    })
+}
+
+/// Copies the connection's state into the store, the shell and the browser panel after each change, at most once a frame
+/// however many changes came (the copy is a pointer, and nothing is compared unless the connection's version moved), and
+/// gives the shell its commands. A browser stream frame from another PC is handed to the panel's session for it.
 fn feed(live: &Arc<Live>, shared: &Arc<Shared>, cx: &mut App) {
     let (changed, mut changes) = futures::channel::mpsc::unbounded::<()>();
+    let (frames, mut streamed) =
+        futures::channel::mpsc::unbounded::<protocol::browser::BrowserStreamFrame>();
     // unguarded: the connection's own listener, not a GPUI handler; it only sends a signal (inside the connection's lock)
     live.subscribe(move |_| {
         let _ = changed.unbounded_send(());
+    });
+    // unguarded: the connection's own listener, not a GPUI handler; it only sends the frame (inside the connection's lock)
+    live.subscribe_events(move |event| {
+        if let protocol::Event::BrowserStreamFrame(frame) = event {
+            let _ = frames.unbounded_send(frame.clone());
+        }
     });
     let commands = Arc::clone(live);
     let base = ShellData {
@@ -619,25 +709,64 @@ fn feed(live: &Arc<Live>, shared: &Arc<Shared>, cx: &mut App) {
         ..ShellData::default()
     };
     cx.set_global(base);
+    cx.spawn(async move |cx| {
+        guarded_async("hand on the streamed pictures", async move {
+            while let Some(frame) = streamed.next().await {
+                cx.update(|cx| {
+                    guarded("show a streamed picture", || {
+                        crate::ui::browser::remote::stream_frame(frame, cx)
+                    });
+                });
+            }
+        })
+        .await;
+    })
+    .detach();
     let live = Arc::clone(live);
     let shared = Arc::clone(shared);
     cx.spawn(async move |cx| {
         guarded_async("follow the connection", async move {
+            // What the last copy showed: the state's version and the saved PCs, which the state doesn't hold.
+            let mut shown: Option<(u64, Vec<(String, String)>)> = None;
             loop {
-                cx.update(|cx| {
-                    guarded("show the connection's state", || {
-                        let state = live.state();
-                        let saved = shared.saved_hosts();
-                        let base = cx.try_global::<ShellData>().cloned().unwrap_or_default();
-                        let shell = shell_data(&state, &saved, &base);
-                        cx.set_global(shell);
-                        crate::ui::store::mirror(cx, state);
+                let (version, state) = live.state_and_version();
+                let saved: Vec<(String, String)> = shared
+                    .saved_hosts()
+                    .into_iter()
+                    .map(|pc| (pc.id, pc.name))
+                    .collect();
+                if shown
+                    .as_ref()
+                    .is_none_or(|(seen, kept)| *seen != version || *kept != saved)
+                {
+                    cx.update(|cx| {
+                        guarded("show the connection's state", || {
+                            let base = cx.try_global::<ShellData>().cloned().unwrap_or_default();
+                            let pcs: Vec<SavedPc> = saved
+                                .iter()
+                                .map(|(id, name)| SavedPc {
+                                    id: id.clone(),
+                                    name: name.clone(),
+                                })
+                                .collect();
+                            let shell = shell_data(&state, &pcs, &base);
+                            cx.set_global(shell);
+                            crate::ui::store::mirror(cx, version, Arc::clone(&state));
+                            crate::ui::browser::feed(&state, cx);
+                            cx.refresh_windows();
+                        });
                     });
-                });
+                    shown = Some((version, saved));
+                }
+                let last = Instant::now();
                 if changes.next().await.is_none() {
                     break;
                 }
-                // Changes that came while this one waited are all in the next copy.
+                // Changes that came in this frame are all in the next copy.
+                let wait = before_next_copy(Some(last), Instant::now(), FRAME);
+                if !wait.is_zero() {
+                    cx.background_executor().timer(wait).await;
+                }
                 while changes.try_recv().is_ok() {}
             }
         })
@@ -681,6 +810,28 @@ mod tests {
 
     fn value<'a>(env: &'a [(String, String)], name: &str) -> Option<&'a str> {
         daemon_process::env_get(env, name)
+    }
+
+    /// M5 review M5: the feed copies the state at most once a frame, so a stream of events is one copy per frame.
+    #[test]
+    fn the_feed_waits_out_the_rest_of_the_frame_before_it_copies_again() {
+        let frame = Duration::from_millis(16);
+        let now = Instant::now();
+        assert_eq!(
+            before_next_copy(None, now, frame),
+            Duration::ZERO,
+            "the first copy is at once"
+        );
+        assert_eq!(
+            before_next_copy(Some(now), now + Duration::from_millis(4), frame),
+            Duration::from_millis(12),
+            "a change 4 ms after a copy waits for the frame's remaining 12 ms"
+        );
+        assert_eq!(
+            before_next_copy(Some(now), now + Duration::from_millis(40), frame),
+            Duration::ZERO,
+            "a change after a quiet frame is copied at once"
+        );
     }
 
     #[test]

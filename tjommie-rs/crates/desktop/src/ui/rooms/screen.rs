@@ -120,7 +120,7 @@ fn remove(screen: &Entity<RoomScreen>, cx: &mut App) {
 
 impl Render for RoomScreen {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let state = store::state(cx).clone();
+        let state = store::snapshot(cx);
         let Some(room) = state.rooms.iter().find(|room| room.id == self.room_id) else {
             return div().into_any_element();
         };

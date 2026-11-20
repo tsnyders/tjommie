@@ -2,6 +2,8 @@
 //! TypeScript's `getState` and `update` are `state` and `update` here; `useApp` is React's hook and is left out, since the
 //! screens read the store through GPUI. Subscribers are told only when a change changed the state's content.
 
+use std::sync::Arc;
+
 use protocol::Event;
 
 use super::state::{AppState, apply_event};
@@ -16,7 +18,10 @@ type EventListener = Box<dyn FnMut(&Event) + Send>;
 /// The state and its subscribers. A listener is `Send`, so the store can move between threads.
 #[derive(Default)]
 pub struct AppStore {
-    state: AppState,
+    /// Shared, so a snapshot is a pointer: a change copies the state only while a snapshot is still held.
+    // ponytail: that copy is of the whole state, once per frame at most while a screen holds the last snapshot; a persistent
+    // structure for the conversations if a long chat's copy ever shows in a profile.
+    state: Arc<AppState>,
     /// Goes up by one for each change the subscribers were told about.
     version: u64,
     next_id: u64,
@@ -34,9 +39,10 @@ impl AppStore {
         &self.state
     }
 
-    /// A copy of the state, for something that must outlive this borrow.
-    pub fn snapshot(&self) -> AppState {
-        self.state.clone()
+    /// The state as it is now, for something that must outlive this borrow: a pointer to it, not a copy. Later changes don't
+    /// reach it.
+    pub fn snapshot(&self) -> Arc<AppState> {
+        Arc::clone(&self.state)
     }
 
     pub fn version(&self) -> u64 {
@@ -67,7 +73,21 @@ impl AppStore {
     /// `update(change)`: `change` edits the state in place and returns whether its content changed. Subscribers are told,
     /// with the new state, only when it did.
     pub fn update(&mut self, change: impl FnOnce(&mut AppState) -> bool) {
-        if !change(&mut self.state) {
+        let changed = match Arc::get_mut(&mut self.state) {
+            // Nobody holds a snapshot: the change is made in place.
+            Some(state) => change(state),
+            // One is held (the screens' last frame): the change is made on a copy, which replaces the state only if it changed
+            // something, so a held snapshot is never changed and an unchanged state keeps its pointer.
+            None => {
+                let mut next = AppState::clone(&self.state);
+                let changed = change(&mut next);
+                if changed {
+                    self.state = Arc::new(next);
+                }
+                changed
+            }
+        };
+        if !changed {
             return;
         }
         self.version += 1;
@@ -228,10 +248,40 @@ mod tests {
         let mut store = AppStore::new();
         let before = store.snapshot();
         store.apply(&chain(5));
-        assert_eq!(before, AppState::default());
+        assert_eq!(*before, AppState::default());
         assert_eq!(
             store.state().settings.as_ref().map(|s| s.chain_limit),
             Some(5)
+        );
+    }
+
+    /// M5 review M5: a snapshot costs nothing (the screens and the feed take one per frame), and the state is copied only when
+    /// a change meets a snapshot that is still held.
+    #[test]
+    fn a_snapshot_shares_the_state_and_a_change_copies_it_only_while_one_is_held() {
+        let mut store = AppStore::new();
+        store.apply(&chain(5));
+        let (first, second) = (store.snapshot(), store.snapshot());
+        assert!(
+            Arc::ptr_eq(&first, &second),
+            "taking a snapshot copied the state"
+        );
+        store.apply(&chain(6));
+        let after = store.snapshot();
+        assert!(
+            !Arc::ptr_eq(&first, &after),
+            "a held snapshot was changed under its holder"
+        );
+        assert_eq!(first.settings.as_ref().map(|s| s.chain_limit), Some(5));
+        assert_eq!(after.settings.as_ref().map(|s| s.chain_limit), Some(6));
+        // With no snapshot held, the change is made in place: no copy, the same allocation.
+        drop((first, second, after));
+        let before = store.state() as *const AppState;
+        store.apply(&chain(7));
+        assert_eq!(
+            store.state() as *const AppState,
+            before,
+            "the change copied the state"
         );
     }
 

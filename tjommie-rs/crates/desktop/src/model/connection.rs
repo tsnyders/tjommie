@@ -691,9 +691,16 @@ impl<E: Environment> AppConnection<E> {
 
     // The state (`store.ts`, which the TypeScript keeps in module state).
 
-    /// `getState()`: a copy of the state as it is now.
-    pub fn state(&self) -> AppState {
+    /// `getState()`: the state as it is now. A pointer, not a copy: later changes don't reach it.
+    pub fn state(&self) -> Arc<AppState> {
         self.lock().store.snapshot()
+    }
+
+    /// The state and its version, taken together: the version goes up by one for each change that changed the state, so a
+    /// reader that has seen a version needn't compare states to know it saw this one (`AppStore::version`).
+    pub fn state_and_version(&self) -> (u64, Arc<AppState>) {
+        let s = self.lock();
+        (s.store.version(), s.store.snapshot())
     }
 
     /// Reads the state without copying it. `read` must not call back into the connection.
@@ -3933,8 +3940,8 @@ mod tests {
         assert_eq!(w.status(), Connection::Ready);
         let state = w.conn.state();
         assert_eq!(state.accounts, None);
-        let setup = state.setup.expect("the setup cards say why");
-        assert_eq!(setup, failed_setup("The database is locked."));
+        let setup = state.setup.as_ref().expect("the setup cards say why");
+        assert_eq!(setup, &failed_setup("The database is locked."));
     }
 
     #[tokio::test]
@@ -4120,6 +4127,32 @@ mod tests {
         w.pc().emit(Event::BotUpdated(bot("fresh")));
         w.settle().await;
         assert_eq!(w.bot_ids(), ["fresh"]);
+    }
+
+    /// M5 review M5: the feed tells whether anything changed from a number, and takes the state as a pointer.
+    #[tokio::test]
+    async fn the_state_comes_with_a_version_that_goes_up_only_when_it_changes() {
+        let w = desktop();
+        w.start().await;
+        let (version, state) = w.conn.state_and_version();
+        w.conn.update(|_| false);
+        let (same, unchanged) = w.conn.state_and_version();
+        assert_eq!(same, version);
+        assert!(
+            Arc::ptr_eq(&state, &unchanged),
+            "a change that changed nothing copied the state"
+        );
+        w.conn.update(|state| {
+            state.host = Some("elsewhere".to_owned());
+            true
+        });
+        let (next, changed) = w.conn.state_and_version();
+        assert_eq!(next, version + 1);
+        assert_eq!(changed.host.as_deref(), Some("elsewhere"));
+        assert_eq!(
+            state.host, None,
+            "a state taken before a change is not changed by it"
+        );
     }
 
     fn push(host: &str, bot: &str, room: Option<&str>) -> PushData {

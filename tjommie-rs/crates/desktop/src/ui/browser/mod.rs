@@ -23,6 +23,8 @@ use protocol::model::Bot;
 
 use crate::guard::guarded;
 use crate::keymap::{Dismiss, TogglePanel};
+use crate::model::logins::LiveState as _;
+use crate::model::state::{AppState, Connection};
 use crate::motion::keyboard::Trigger;
 
 /// What the panel shows of one bot's browser (T1.4): the state, a remote PC's page as a picture (this PC's page is
@@ -65,6 +67,8 @@ pub struct BrowserData {
     pub remote: HashMap<String, BrowserView>,
     /// Takes the remote panel's commands to the store's sessions; `None` until it is wired.
     pub on_remote: Option<OnRemote>,
+    /// How many times the remote sessions were wired afresh (a new PC or connection): the panel asks to show its bot again.
+    pub epoch: u64,
     /// What the host's vault answered for each bot, by bot id.
     pub logins: HashMap<String, logins::LoginsView>,
     /// Takes the logins menu's actions to the host's vault (T1.4's logins client); `None` until it is wired.
@@ -72,6 +76,37 @@ pub struct BrowserData {
 }
 
 impl Global for BrowserData {}
+
+/// What the panel keeps of the app's connection: the PC and connection its remote sessions are wired to, if any.
+#[derive(Default)]
+struct Wired(Option<(String, u64)>);
+
+impl Global for Wired {}
+
+/// Feeds the panel from the app's state, after each copy of it: the agents it can show a browser for and, in a window on
+/// another PC, the wiring of its sessions to that PC's connection (`remote::wire`), made again when the PC or its
+/// connection changes and ended (`remote::unwire`) when the window leaves it or the connection ends.
+pub fn feed(state: &AppState, cx: &mut App) {
+    let data = cx.default_global::<BrowserData>();
+    if data.bots != state.bots {
+        data.bots.clone_from(&state.bots);
+    }
+    let want = state
+        .host
+        .clone()
+        .filter(|_| state.connection == Connection::Ready)
+        .zip(crate::ui::store::live_state(cx).daemon_generation());
+    if cx.default_global::<Wired>().0 == want {
+        return;
+    }
+    if cx.default_global::<Wired>().0.is_some() {
+        remote::unwire(cx);
+    }
+    if want.is_some() {
+        remote::wire(std::sync::Arc::new(crate::ui::store::rpc(cx)), true, cx);
+    }
+    cx.default_global::<Wired>().0 = want;
+}
 
 /// Ctrl+B opens or closes the panel, and Escape (outside an overlay) closes it; both are keys, so both snap. They are
 /// app-level handlers, so they work wherever the focus is (keymap.rs, M2 review F4).
@@ -87,65 +122,4 @@ pub fn init(cx: &mut App) {
             panel::BrowserPanel::dismiss(cx)
         });
     });
-}
-
-/// Whether this run is on the panel fixture (`TJOMMIE_E2E_FIXTURE=panel`), which only a test-driver build reads: the app
-/// then runs on `e2e_fixture`'s store and starts no daemon.
-#[cfg(feature = "test-driver")]
-pub fn panel_fixture() -> bool {
-    std::env::var("TJOMMIE_E2E_FIXTURE").as_deref() == Ok("panel")
-}
-
-#[cfg(not(feature = "test-driver"))]
-pub fn panel_fixture() -> bool {
-    false
-}
-
-/// An e2e run's stand-in for the store (`TJOMMIE_E2E_FIXTURE=panel`): connected, with one bot in the Recents, so the
-/// panel has a chat to open beside. Test-driver builds only.
-#[cfg(feature = "test-driver")]
-pub fn e2e_fixture(cx: &mut App) {
-    use protocol::model::{Autonomy, BotColor, BotShape, BotState, Provider};
-
-    use crate::ui::shell::data::{Connection, Recent, RecentKind, ShellData};
-
-    if !panel_fixture() {
-        return;
-    }
-    let forge = Bot {
-        id: "bot-1".into(),
-        name: "Forge".into(),
-        color: BotColor::Blue,
-        shape: BotShape::Hexagon,
-        instructions: String::new(),
-        provider: Provider::Claude,
-        model: "claude-haiku".into(),
-        account_id: None,
-        effective_account_id: None,
-        using_fallback: None,
-        autonomy: Autonomy::Ask,
-        home_folder: String::new(),
-        project_folder: None,
-        // The panel's state only: no page, so no WebView2 in the run.
-        browser: false,
-        paused: false,
-        can_message: Vec::new(),
-        state: BotState::Idle,
-        setup_reason: None,
-        limited_until: None,
-        created_at: String::new(),
-    };
-    let shell = cx.default_global::<ShellData>();
-    shell.connection = Connection::Ready;
-    shell.recents = vec![Recent {
-        id: forge.id.clone().into(),
-        name: forge.name.clone().into(),
-        kind: RecentKind::Bot {
-            color: forge.color,
-            shape: forge.shape,
-            state: forge.state,
-        },
-    }];
-    cx.default_global::<BrowserData>().bots = vec![forge];
-    cx.refresh_windows();
 }

@@ -66,8 +66,9 @@ pub struct BrowserPanel {
     panel_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
     /// The bot whose page is in the panel.
     mounted: Option<String>,
-    /// The bot whose remote browser the panel shows (on another PC).
+    /// The bot whose remote browser the panel shows (on another PC), and the wiring it was shown through.
     remote_shown: Option<String>,
+    remote_epoch: u64,
     /// The snapshot variant's picture of the page, taken at rest.
     snapshot: Option<Arc<Image>>,
     snapshot_task: Option<Task<Option<()>>>,
@@ -109,6 +110,7 @@ impl BrowserPanel {
                 panel_bounds: Rc::default(),
                 mounted: None,
                 remote_shown: None,
+                remote_epoch: 0,
                 snapshot: None,
                 snapshot_task: None,
                 shield: ShieldState::Down,
@@ -274,6 +276,12 @@ impl BrowserPanel {
                 && is_remote(cx)
         });
         let remote_want = wants_remote.then(|| id.to_owned());
+        // The sessions were wired afresh (another PC, or its connection came back): the old ones are gone, so ask again.
+        let epoch = cx.try_global::<BrowserData>().map_or(0, |data| data.epoch);
+        if self.remote_epoch != epoch {
+            self.remote_epoch = epoch;
+            self.remote_shown = None;
+        }
         if let Some(on_remote) = on_remote
             && self.remote_shown != remote_want
         {

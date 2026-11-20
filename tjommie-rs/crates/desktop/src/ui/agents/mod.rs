@@ -138,7 +138,7 @@ impl AgentsScreen {
 
 impl Render for AgentsScreen {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let state = store::state(cx).clone();
+        let state = store::snapshot(cx);
         self.load(&state, cx);
         let query = self.search.read(cx).value().to_string();
         let everything = self.filter == OverviewFilter::All && query.trim().is_empty();

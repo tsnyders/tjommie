@@ -67,10 +67,35 @@ pub fn wire<R: Rpc + 'static>(rpc: Arc<R>, live: bool, cx: &mut App) {
         scheduled: RefCell::default(),
     });
     let commands = driver.clone();
-    cx.default_global::<BrowserData>().on_remote = Some(Rc::new(move |bot, command, _, cx| {
+    let data = cx.default_global::<BrowserData>();
+    data.epoch += 1;
+    data.on_remote = Some(Rc::new(move |bot, command, _, cx| {
         commands.command(bot, command, cx)
     }));
+    let ending = driver.clone();
+    cx.set_global(Unwire(Rc::new(move |cx| ending.close_all(cx))));
     cx.set_global(Frames(Rc::new(move |data, cx| driver.frame(data, cx))));
+}
+
+/// Ends the wired connection's sessions.
+struct Unwire(Rc<dyn Fn(&mut App)>);
+
+impl Global for Unwire {}
+
+/// The window left that PC, or its connection ended: every session the panel opened there ends (the stream stops and the
+/// browsers go back to their bots), and the panel stops reading its views and sending it commands. A no-op when nothing is
+/// wired.
+pub fn unwire(cx: &mut App) {
+    let Some(ending) = cx.try_global::<Unwire>().map(|unwire| unwire.0.clone()) else {
+        return;
+    };
+    ending(cx);
+    cx.remove_global::<Unwire>();
+    cx.remove_global::<Frames>();
+    let data = cx.default_global::<BrowserData>();
+    data.on_remote = None;
+    data.remote.clear();
+    cx.refresh_windows();
 }
 
 /// A `browser.streamFrame` event from that PC's connection: its bot's session takes it.
@@ -123,6 +148,14 @@ impl<R: Rpc + 'static> Driver<R> {
             .await
         })
         .detach();
+    }
+
+    /// Every session ends (the connection is going).
+    fn close_all(&self, cx: &mut App) {
+        let bots: Vec<String> = self.sessions.borrow().keys().cloned().collect();
+        for bot in bots {
+            self.close(&bot, cx);
+        }
     }
 
     /// The bot's session, new if it has none.

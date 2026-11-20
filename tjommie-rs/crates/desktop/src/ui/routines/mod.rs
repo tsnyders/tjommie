@@ -91,7 +91,7 @@ pub fn add(bot_id: String, window: &mut Window, cx: &mut App) {
 
 /// The Routines screen.
 pub fn screen(window: &mut Window, cx: &mut App) -> AnyElement {
-    let state = store::state(cx).clone();
+    let state = store::snapshot(cx);
     let groups: Vec<AnyElement> = state
         .bots
         .iter()

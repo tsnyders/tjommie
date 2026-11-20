@@ -3,6 +3,7 @@
 pub mod app;
 pub mod assets;
 pub mod guard;
+pub mod hosts;
 pub mod keymap;
 pub mod live;
 pub mod model;

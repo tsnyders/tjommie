@@ -38,7 +38,7 @@ pub struct RoomsList {
 
 impl Render for RoomsList {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let state = store::state(cx).clone();
+        let state = store::snapshot(cx);
         if state.connection == Connection::Ready {
             for room in &state.rooms {
                 if self.asked.insert(room.id.clone()) {

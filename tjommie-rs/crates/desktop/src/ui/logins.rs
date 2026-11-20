@@ -3,11 +3,8 @@
 //! own; the browser panel's logins menu shares one here (`BrowserData::on_logins`), and what it answers is kept where the
 //! panel reads it (`BrowserData::logins`).
 //!
-//! This PC's own vault isn't reached directly (the TypeScript's `desktop().vault`): the app doesn't run the desktop's
-//! vault host yet. The daemon is launched with its desktop host token, but `live` drops it and starts neither
-//! `/browser-host` nor `/vault-host`, and the browser engine has no `LoginBrowser` (`RemoteWorkerIsolation` is the
-//! isolation). That host wiring is its own batch after M5. Until then even this PC's Logins go through its daemon, as
-//! the TypeScript's do without a bridge, and read as unavailable while no vault host answers.
+//! This PC's own vault is reached directly, through the gate's local controller (`hosts::Bridge`, the TypeScript's
+//! `desktop().vault`); another PC's goes through that PC's daemon.
 
 use std::sync::Arc;
 
@@ -15,35 +12,14 @@ use gpui::{App, Global, Window};
 use protocol::vault::{VaultHostAction, VaultStatus};
 
 use crate::guard::guarded_async;
+use crate::hosts::Bridge;
 use crate::model::logins::{
-    CommandFailure, Desktop, LiveState as _, LoginsClient, LoginsError, NativeVault, RawAnswer,
-    VaultReply, create_logins_client,
+    LiveState as _, LoginsClient, LoginsError, VaultReply, create_logins_client,
 };
 use crate::ui::browser::BrowserData;
 use crate::ui::store::{self, StoreLive, StoreRpc};
 
-/// The desktop's bridge, which has no vault of its own here (see above).
-pub struct NoBridge;
-
-/// The vault a bridge would have; never made.
-#[derive(Clone, PartialEq)]
-pub struct NoVault;
-
-impl NativeVault for NoVault {
-    async fn command(&self, _: &VaultHostAction) -> Result<RawAnswer, CommandFailure> {
-        Err(CommandFailure::Failed)
-    }
-}
-
-impl Desktop for NoBridge {
-    type Vault = NoVault;
-
-    fn vault(&self) -> Option<NoVault> {
-        None
-    }
-}
-
-pub type AppLogins = LoginsClient<StoreLive, NoBridge, StoreRpc>;
+pub type AppLogins = LoginsClient<StoreLive, Bridge, StoreRpc>;
 
 /// `createLoginsClient()`: for the selected PC and the connection now.
 pub fn create(cx: &App) -> Arc<AppLogins> {
@@ -51,7 +27,7 @@ pub fn create(cx: &App) -> Arc<AppLogins> {
     let daemon = live
         .daemon_generation()
         .map(|generation| (generation, store::rpc(cx)));
-    Arc::new(create_logins_client(live, NoBridge, daemon))
+    Arc::new(create_logins_client(live, Bridge::of(cx), daemon))
 }
 
 /// The browser panel's client, kept while its PC and connection hold, and the vault's latest status: a bot's view made

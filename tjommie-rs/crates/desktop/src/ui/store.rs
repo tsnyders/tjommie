@@ -22,7 +22,11 @@ use crate::model::state::AppState;
 
 #[derive(Default)]
 pub struct Store {
-    state: AppState,
+    /// A pointer to the connection's state as of `version`: copying it into the store costs nothing, and the screens' reads
+    /// are pointer reads (M5 review M5).
+    state: Arc<AppState>,
+    /// The connection's version of `state` (`AppStore::version`): the feed copies the state only when it moved.
+    version: u64,
     source: Source,
 }
 
@@ -39,12 +43,19 @@ enum Source {
 }
 
 /// The state before anything is wired: connecting, with nothing listed.
-static EMPTY: LazyLock<AppState> = LazyLock::new(AppState::default);
+static EMPTY: LazyLock<Arc<AppState>> = LazyLock::new(Arc::default);
 
 /// `useApp`: the state as it is now.
 pub fn state(cx: &App) -> &AppState {
     cx.try_global::<Store>()
-        .map_or(&EMPTY, |store| &store.state)
+        .map_or(&**EMPTY, |store| &*store.state)
+}
+
+/// The state as it is now, for a screen that must hold it while it changes the app (a pointer; the state it points at
+/// never changes).
+pub fn snapshot(cx: &App) -> Arc<AppState> {
+    cx.try_global::<Store>()
+        .map_or_else(|| Arc::clone(&EMPTY), |store| Arc::clone(&store.state))
 }
 
 /// `update(change)`: `change` edits the state and says whether it changed it; the windows redraw when it did. With
@@ -59,11 +70,11 @@ pub fn update(cx: &mut App, change: impl FnOnce(&mut AppState) -> bool) {
                 changed
             });
             if changed {
-                store.state = live.state();
+                (store.version, store.state) = live.state_and_version();
             }
             changed
         }
-        _ => change(&mut store.state),
+        _ => change(Arc::make_mut(&mut store.state)),
     };
     if changed {
         cx.refresh_windows();
@@ -366,7 +377,8 @@ pub fn close_conversation(cx: &mut App, conversation_id: &str) {
         Handle::None => {}
         Handle::Live(live) => {
             live.close_conversation(conversation_id);
-            mirror(cx, live.state());
+            let (version, state) = live.state_and_version();
+            mirror(cx, version, state);
         }
         #[cfg(test)]
         Handle::Fake(_) => update(cx, |state| {
@@ -477,18 +489,22 @@ mod fake {
 
 /// The live connection becomes the store's source (`crate::live::start`).
 pub(crate) fn connect(cx: &mut App, live: Arc<Live>) {
+    let (version, state) = live.state_and_version();
     cx.set_global(Store {
-        state: live.state(),
+        state,
+        version,
         source: Source::Live(live),
     });
     cx.refresh_windows();
 }
 
-/// The live connection's state after a change.
-pub(crate) fn mirror(cx: &mut App, state: AppState) {
+/// The live connection's state after a change, with its version: nothing is copied or compared unless the version moved
+/// (the connection counts each change that changed the state).
+pub(crate) fn mirror(cx: &mut App, version: u64, state: Arc<AppState>) {
     let store = cx.default_global::<Store>();
-    if store.state != state {
+    if store.version != version {
         store.state = state;
+        store.version = version;
         cx.refresh_windows();
     }
 }
@@ -502,7 +518,8 @@ pub fn fake(
 ) -> Arc<crate::model::testing::FakeRpc> {
     let rpc = Arc::new(rpc);
     cx.set_global(Store {
-        state,
+        state: Arc::new(state),
+        version: 0,
         source: Source::Fake(Arc::clone(&rpc)),
     });
     rpc
@@ -617,6 +634,35 @@ mod tests {
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0, "bots.pause");
         assert_eq!(calls[0].1["paused"], true);
+    }
+
+    /// M5 review M5: the feed is one pointer copy per change it sees, and none when the connection's version hasn't moved.
+    #[gpui::test]
+    fn the_feed_copies_the_state_only_when_the_connections_version_moved(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            fake(cx, AppState::default(), FakeRpc::new());
+            let ready = Arc::new(AppState {
+                connection: Connection::Ready,
+                ..AppState::default()
+            });
+            mirror(cx, 1, Arc::clone(&ready));
+            assert!(Arc::ptr_eq(&snapshot(cx), &ready), "a new version is taken");
+            // The same version again, with a state that differs: it is the same state, so nothing is copied or compared.
+            let other = Arc::new(AppState {
+                connection: Connection::Reconnecting,
+                ..AppState::default()
+            });
+            mirror(cx, 1, other);
+            assert!(
+                Arc::ptr_eq(&snapshot(cx), &ready),
+                "the same version was copied again"
+            );
+            let next = Arc::new(AppState::default());
+            mirror(cx, 2, Arc::clone(&next));
+            assert!(Arc::ptr_eq(&snapshot(cx), &next));
+        });
     }
 
     #[gpui::test]
