@@ -604,7 +604,7 @@ describe("release.yml", () => {
   it("has a mutation script that has not gone stale", () => {
     // LF, as the mutations are written: a Windows checkout may have CRLF.
     const text = readFileSync(join(workflowDir, "release.yml"), "utf8").replaceAll("\r\n", "\n");
-    expect(mutations.length).toBeGreaterThanOrEqual(37);
+    expect(mutations.length).toBeGreaterThanOrEqual(42);
     for (const { label, from } of mutations) expect(text.split(from).length - 1, `"${label}": its text is found once in release.yml`).toBe(1);
   });
 
@@ -767,6 +767,7 @@ describe("release.yml", () => {
         /cargo build --release --locked/,
         /check-production-binaries\.ps1/,
         /check-release-version\.ts/,
+        /fetch-pdfium\.ps1/,
         /assemble-payload\.ps1/,
         /choco install nsis --version=3\.11/,
         /check-tool-hashes\.ps1 -Tool nsis/,
@@ -820,13 +821,35 @@ describe("release.yml", () => {
 
     // The review's F1: NSIS is fetched by version only, so what Chocolatey installed is compared with recorded SHA-256 values before it compiles.
     it("checks NSIS against the recorded hashes before it compiles, and holds a release to them", () => {
-      const run = findStep("windows", /check-tool-hashes\.ps1/).run ?? "";
+      const run = findStep("windows", /check-tool-hashes\.ps1 -Tool nsis/).run ?? "";
       expect(run).toContain('-Tool nsis -Path "${env:ProgramFiles(x86)}\\NSIS"');
       expect(run).toContain("-Observed dist-desktop\\tool-hashes-nsis.json");
       // Anything but an exact 'true' is a release, as for the payload: a lost mode output takes the strict path, where a tool nobody pinned fails.
       expect(run).toContain("if ($env:DRY_RUN -ne 'true') { $more['Release'] = $true }");
       expect(run).toMatch(/check-tool-hashes\.ps1 [^\n]*@more/);
       expect(findStep("windows", /write-release-manifest\.ps1/).run).toContain('-ToolHashes "$root\\dist-desktop\\tool-hashes-nsis.json"');
+    });
+
+    // pdfium and its licence texts: fetched by the Chat lane's script into a folder of its own (the assembler never writes into a folder that has
+    // anything in it), checked against the recorded hash, and handed to the assembler by name; a release without them is stopped twice.
+    it("fetches pdfium into a folder of its own, checks it against the recorded hash, and hands the DLL and its licences to the assembler", () => {
+      const fetch = findStep("windows", /fetch-pdfium\.ps1/);
+      const run = fetch.run ?? "";
+      expect(fetch.name).toBe("Fetch pdfium and check it against the recorded hash");
+      expect(run).toContain("$dir = Join-Path $env:RUNNER_TEMP 'pdfium'");
+      expect(run).not.toContain("payload");
+      expect(run).toContain('& $fetch -Destination "$dir\\pdfium.dll" -Licenses "$dir\\licenses"');
+      expect(run).toContain('./installer/check-tool-hashes.ps1 -Tool pdfium -Path "$dir\\pdfium.dll" @more');
+      // As for NSIS: anything but an exact 'true' is a release, where the check and a missing script are both fatal.
+      expect(run).toContain("if ($env:DRY_RUN -ne 'true') { $more['Release'] = $true }");
+      expect(run).toContain("} elseif ($env:DRY_RUN -ne 'true') {");
+      expect(run).toContain("throw ");
+      const assemble = findStep("windows", /assemble-payload\.ps1/).run ?? "";
+      expect(assemble).toContain("$pdfium = Join-Path $env:RUNNER_TEMP 'pdfium'");
+      expect(assemble).toContain('$more[\'Pdfium\'] = "$pdfium\\pdfium.dll"');
+      expect(assemble).toContain('$more[\'PdfiumLicenses\'] = "$pdfium\\licenses"');
+      expect(assemble).toMatch(/assemble-payload\.ps1 [^\n]*@more/);
+      expect(assemble).toContain("-OutDir \"$env:RUNNER_TEMP\\payload\"");
     });
 
     it("uploads the release's files under windows-assets only for a release, and the dry run's under its own name", () => {

@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -136,7 +136,7 @@ describe.skipIf(!windows)("the tool hash check: NSIS", () => {
   });
 });
 
-describe.skipIf(!windows)("the tool hash check: pdfium (the hook the Chat lane fills in T4.4)", () => {
+describe.skipIf(!windows)("the tool hash check: pdfium", () => {
   const dll = (root: string, content = "pdfium"): string => {
     const file = join(root, "pdfium.dll");
     writeFileSync(file, content);
@@ -167,7 +167,7 @@ describe("the recorded values", () => {
   const manifest = JSON.parse(readFileSync(join(repo, "installer", "tool-hashes.json"), "utf8")) as {
     schema: number;
     nsis: { version: string; include: string[]; files: Record<string, string>; recordedFrom: { sha256: string; bytes: number; source: string } };
-    pdfium: { version: string | null; source: string | null; sha256: string | null; note: string };
+    pdfium: { version: string | null; source: string | null; archiveSha256: string | null; sha256: string | null; note: string };
   };
 
   it("hold a hash for every file the build can use, each a SHA-256, each under a folder the check reads", () => {
@@ -189,10 +189,20 @@ describe("the recorded values", () => {
     expect(/choco install nsis --version=([\d.]+)/.exec(workflow)?.[1]).toBe(manifest.nsis.version);
   });
 
-  it("leave pdfium pending, with the way to fill it in written down where the Chat lane will look", () => {
-    expect(manifest.pdfium).toMatchObject({ version: null, source: null, sha256: null });
-    expect(manifest.pdfium.note).toContain("T4.4");
+  it("pin pdfium: a release, the archive it comes in, and the DLL inside it, so a release is built with one and only one pdfium", () => {
+    expect(manifest.pdfium.version).toBe("chromium/8125");
+    expect(manifest.pdfium.source).toMatch(/^https:\/\/github\.com\/bblanchon\/pdfium-binaries\/releases\/download\/chromium%2F8125\/pdfium-win-x64\.tgz$/);
+    expect(manifest.pdfium.archiveSha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(manifest.pdfium.sha256).toBe("4b0dec92555d69437bef0df37be630181ab3e83a6823ca264ede355a4f2ef994");
     expect(manifest.pdfium.note).toContain("check-tool-hashes.ps1 -Tool pdfium");
     expect(manifest.pdfium.note).toContain("assemble-payload.ps1 -Pdfium");
+  });
+
+  // The app refuses a DLL that is not PDFIUM_SHA256 (crates/desktop-host/src/pdf.rs), so the pin here and the pin in the app have to be one
+  // value. pdf.rs arrives with the Chat lane; until then there is nothing to compare, and this says so rather than passing silently.
+  const pdfRs = join(repo, "tjommie-rs", "crates", "desktop-host", "src", "pdf.rs");
+  const appPin = existsSync(pdfRs) ? /pub const PDFIUM_SHA256: &str = "([0-9a-f]{64})";/.exec(readFileSync(pdfRs, "utf8"))?.[1] : undefined;
+  it.skipIf(appPin === undefined)("are the same pdfium the app checks for", () => {
+    expect(manifest.pdfium.sha256).toBe(appPin);
   });
 });

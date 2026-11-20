@@ -5,8 +5,9 @@
 #
 #   -Tool nsis    -Path <the NSIS folder>   every file that can change what makensis writes (the compiler, its stubs, includes and
 #                                           plugins) is hashed and compared with the recorded list: a changed, missing or extra file fails.
-#   -Tool pdfium  -Path <pdfium.dll>        the one file is compared with the recorded hash. The Chat lane adds the file in T4.4 with a
-#                                           pinned source and hash; until then the entry is pending (see tool-hashes.json).
+#   -Tool pdfium  -Path <pdfium.dll>        the one file is compared with the recorded hash (tool-hashes.json pdfium.sha256, the same value
+#                                           as PDFIUM_SHA256 in the app). tjommie-rs/tools/fetch-pdfium.ps1 has already checked the archive
+#                                           and the DLL inside it; this is the release's own second look at the file it is about to ship.
 #
 # A value that has not been recorded yet ("pending") passes in a dry run, with a warning and the observed values in -Observed (a
 # dry run's artifact), so they can be recorded by a commit. With -Release a pending value fails: a release is never built with a tool

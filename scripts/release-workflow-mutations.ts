@@ -49,6 +49,12 @@ export const mutations: Mutation[] = [
   { label: "the dry-run artifact is named windows-assets", from: "name: release-dryrun-windows", to: "name: windows-assets" },
   { label: "the android job loses its gate", from: "    if: ${{ needs.verify.outputs.dry_run == 'false' }}" + nl + "    runs-on: windows-latest" + nl + "    timeout-minutes: 60", to: "    runs-on: windows-latest" + nl + "    timeout-minutes: 60" },
   { label: "the pdfium gate fails open (the -Release switch needs an exact true)", from: "if ($env:DRY_RUN -ne 'true') { $more['Release'] = $true }" + nl + "          ./installer/assemble-payload.ps1", to: "if ($env:DRY_RUN -eq 'false') { $more['Release'] = $true }" + nl + "          ./installer/assemble-payload.ps1" },
+  // pdfium and its licence texts: fetched into a folder of their own, checked, and handed to the assembler.
+  { label: "pdfium is fetched into the payload folder", from: "$dir = Join-Path $env:RUNNER_TEMP 'pdfium'", to: "$dir = Join-Path $env:RUNNER_TEMP 'payload'" },
+  { label: "the pdfium hash check is removed", from: '            ./installer/check-tool-hashes.ps1 -Tool pdfium -Path "$dir\\pdfium.dll" @more', to: "            Write-Output 'skipped'" },
+  { label: "the pdfium hash check fails open on the tag path", from: "if ($env:DRY_RUN -ne 'true') { $more['Release'] = $true }" + nl + "          $fetch = ", to: "if ($env:DRY_RUN -eq 'false') { $more['Release'] = $true }" + nl + "          $fetch = " },
+  { label: "a release goes on without the pdfium script", from: "} elseif ($env:DRY_RUN -ne 'true') {", to: "} elseif ($false) {" },
+  { label: "the assembler is not given pdfium's licences", from: '; $more[\'PdfiumLicenses\'] = "$pdfium\\licenses"', to: "" },
   // The review's F1: the NSIS compiler is checked against recorded hashes, strictly on the tag path.
   { label: "the NSIS hash check fails open on the tag path", from: "if ($env:DRY_RUN -ne 'true') { $more['Release'] = $true }" + nl + "          New-Item -ItemType Directory -Force -Path dist-desktop", to: "if ($env:DRY_RUN -eq 'false') { $more['Release'] = $true }" + nl + "          New-Item -ItemType Directory -Force -Path dist-desktop" },
   { label: "the NSIS hash check is removed", from: '          ./installer/check-tool-hashes.ps1 -Tool nsis -Path "${env:ProgramFiles(x86)}\\NSIS" -Observed dist-desktop\\tool-hashes-nsis.json @more', to: "          Write-Output 'skipped'" },

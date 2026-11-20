@@ -4,10 +4,14 @@
 #   Tjommie.exe                          the desktop binary (tjommie-desktop.exe, built with TJOMMIE_IDENTITY=production), renamed
 #   resources\daemon\tjommie-daemon.exe  where desktop-host's packaged_daemon_path looks, and where R1 kept its daemon
 #   resources\speech\<every file>        the verified speech bundle: whisper-cli.exe, three licences, MODEL-NOTICE.txt, manifest.json
-#   resources\pdfium.dll                 the pinned pdfium; no source for it exists in the repository yet, so a dry run records it as pending
-#                                        and -Release (the tag path) refuses to go without it
+#   resources\pdfium.dll                 the pinned pdfium (-Pdfium), for the PDF viewer
+#   resources\pdfium-licenses\<files>    pdfium's licence texts (-PdfiumLicenses: its LICENSE and the texts of its licenses folder, 19 files), which
+#                                        have to ship with the DLL. They are copied in here, before the manifest is written, so the manifest lists them
 #
-# It never writes into a folder that has anything in it, and it refuses any Electron file in the payload (the plan's "no Electron files").
+# A dry run without pdfium records what is missing as pending; -Release (the tag path) refuses to go without the DLL and its licence texts.
+#
+# It never writes into a folder that has anything in it, so pdfium is fetched into a folder of its own first (tjommie-rs/tools/fetch-pdfium.ps1
+# -Destination <a>\pdfium.dll -Licenses <a>\licenses), and it refuses any Electron file in the payload (the plan's "no Electron files").
 # -ManifestPath (default: payload-manifest.json beside the payload folder, never inside it, so it is not installed) lists every file with
 # its size and SHA-256, and what is still pending.
 param(
@@ -16,6 +20,7 @@ param(
     [Parameter(Mandatory)][string]$Daemon,
     [Parameter(Mandatory)][string]$SpeechDir,
     [string]$Pdfium = '',
+    [string]$PdfiumLicenses = '',
     [switch]$Release,
     [string]$ManifestPath = ''
 )
@@ -35,6 +40,17 @@ foreach ($name in $speechFiles) {
 }
 if ($Pdfium -and -not (Test-Path -LiteralPath $Pdfium -PathType Leaf)) { throw "pdfium.dll was given but is not there: $Pdfium" }
 if ($Release -and -not $Pdfium) { throw 'A release needs resources\pdfium.dll and none was given (-Pdfium). Build the payload without -Release for a dry run.' }
+# pdfium's licence texts travel with the DLL. They are read here, before anything is written, so a bad folder writes nothing.
+$licenseFiles = @()
+if ($PdfiumLicenses) {
+    if (-not $Pdfium) { throw "pdfium's licence texts were given (-PdfiumLicenses) without the DLL (-Pdfium): they ship together." }
+    if (-not (Test-Path -LiteralPath $PdfiumLicenses -PathType Container)) { throw "The pdfium licence folder was given but is not there: $PdfiumLicenses" }
+    $licenseRoot = (Get-Item -LiteralPath $PdfiumLicenses).FullName.TrimEnd('\')
+    $licenseFiles = @(Get-ChildItem -LiteralPath $licenseRoot -Recurse -File -Force)
+    if ($licenseFiles.Count -eq 0) { throw "The pdfium licence folder is empty: $PdfiumLicenses" }
+    if (-not (Test-Path -LiteralPath (Join-Path $licenseRoot 'LICENSE') -PathType Leaf)) { throw "The pdfium licence folder has no LICENSE (pdfium's own, at the top of its archive): $PdfiumLicenses" }
+}
+if ($Release -and -not $PdfiumLicenses) { throw 'A release needs pdfium''s licence texts in resources\pdfium-licenses and none were given (-PdfiumLicenses). Build the payload without -Release for a dry run.' }
 if ((Test-Path -LiteralPath $OutDir) -and @(Get-ChildItem -LiteralPath $OutDir -Force).Count -gt 0) { throw "The payload folder $OutDir is not empty; it is never merged into." }
 
 $full = [IO.Path]::GetFullPath($OutDir).TrimEnd('\')
@@ -52,6 +68,16 @@ Copy-Item -LiteralPath $Daemon -Destination (Join-Path $full 'resources\daemon\t
 foreach ($name in $speechFiles) { Copy-Item -LiteralPath (Join-Path $SpeechDir $name) -Destination (Join-Path $full "resources\speech\$name") }
 $pending = @()
 if ($Pdfium) { Copy-Item -LiteralPath $Pdfium -Destination (Join-Path $full 'resources\pdfium.dll') } else { $pending += 'resources\pdfium.dll' }
+if ($licenseFiles.Count -gt 0) {
+    foreach ($file in $licenseFiles) {
+        if (-not $file.FullName.StartsWith($licenseRoot + '\', [StringComparison]::OrdinalIgnoreCase)) { throw "$($file.FullName) is not under $licenseRoot." }
+        $target = Join-Path $full ('resources\pdfium-licenses\' + $file.FullName.Substring($licenseRoot.Length + 1))
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
+        Copy-Item -LiteralPath $file.FullName -Destination $target
+    }
+} else {
+    $pending += 'resources\pdfium-licenses'
+}
 
 $files = @(Get-ChildItem -LiteralPath $full -Recurse -File -Force | Sort-Object FullName | ForEach-Object {
     [ordered]@{ path = $_.FullName.Substring($full.Length + 1); bytes = $_.Length; sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() }

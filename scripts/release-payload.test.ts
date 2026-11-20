@@ -35,8 +35,10 @@ function powershell(script: string, args: string[]): Run {
 const sha256 = (path: string): string => createHash("sha256").update(readFileSync(path)).digest("hex");
 
 const speechNames = ["whisper-cli.exe", "WHISPER-LICENSE.txt", "GGML-LICENSE.txt", "OPENAI-WHISPER-LICENSE.txt", "MODEL-NOTICE.txt", "manifest.json"];
-// The stub inputs: a desktop exe, a daemon exe, the speech bundle and (optionally) pdfium.
-function inputs(): { root: string; desktop: string; daemon: string; speech: string; pdfium: string } {
+// pdfium's licence texts as fetch-pdfium.ps1 -Licenses leaves them: one flat folder, pdfium's own LICENSE and the 18 texts of its licenses folder.
+const pdfiumLicenseNames = ["LICENSE", ...Array.from({ length: 18 }, (_, index) => `third-party-${String(index + 1).padStart(2, "0")}.txt`)];
+// The stub inputs: a desktop exe, a daemon exe, the speech bundle, pdfium and pdfium's licence texts.
+function inputs(): { root: string; desktop: string; daemon: string; speech: string; pdfium: string; licenses: string } {
   const root = temp();
   const speech = join(root, "speech");
   mkdirSync(speech);
@@ -44,19 +46,29 @@ function inputs(): { root: string; desktop: string; daemon: string; speech: stri
   writeFileSync(join(root, "tjommie-desktop.exe"), "desktop stub");
   writeFileSync(join(root, "tjommie-daemon.exe"), "daemon stub");
   writeFileSync(join(root, "pdfium.dll"), "pdfium stub");
-  return { root, desktop: join(root, "tjommie-desktop.exe"), daemon: join(root, "tjommie-daemon.exe"), speech, pdfium: join(root, "pdfium.dll") };
+  const licenses = join(root, "pdfium-licenses");
+  mkdirSync(licenses);
+  for (const name of pdfiumLicenseNames) writeFileSync(join(licenses, name), `stub ${name}`);
+  return { root, desktop: join(root, "tjommie-desktop.exe"), daemon: join(root, "tjommie-daemon.exe"), speech, pdfium: join(root, "pdfium.dll"), licenses };
 }
 const walk = (folder: string, base = folder): string[] =>
   readdirSync(folder, { withFileTypes: true }).flatMap((entry) => (entry.isDirectory() ? walk(join(folder, entry.name), base) : [join(folder, entry.name).slice(base.length + 1)])).sort();
 
 describe.skipIf(!windows)("the payload assembly", () => {
-  it("lays the files out as R1's facts and the Rust app expect: Tjommie.exe, resources\\daemon\\, resources\\speech\\, and pdfium", () => {
+  it("lays the files out as R1's facts and the Rust app expect: Tjommie.exe, resources\\daemon\\, resources\\speech\\, pdfium and its licence texts", () => {
     const stub = inputs();
     const out = join(stub.root, "payload");
     const manifest = join(stub.root, "payload-manifest.json");
-    const run = powershell("assemble-payload.ps1", ["-OutDir", out, "-Desktop", stub.desktop, "-Daemon", stub.daemon, "-SpeechDir", stub.speech, "-Pdfium", stub.pdfium, "-Release", "-ManifestPath", manifest]);
+    const run = powershell("assemble-payload.ps1", ["-OutDir", out, "-Desktop", stub.desktop, "-Daemon", stub.daemon, "-SpeechDir", stub.speech, "-Pdfium", stub.pdfium, "-PdfiumLicenses", stub.licenses, "-Release", "-ManifestPath", manifest]);
     expect(run.status, run.output).toBe(0);
-    expect(walk(out)).toEqual(["Tjommie.exe", "resources\\daemon\\tjommie-daemon.exe", "resources\\pdfium.dll", ...speechNames.map((name) => `resources\\speech\\${name}`)].sort());
+    expect(walk(out)).toEqual(
+      ["Tjommie.exe", "resources\\daemon\\tjommie-daemon.exe", "resources\\pdfium.dll", ...speechNames.map((name) => `resources\\speech\\${name}`), ...pdfiumLicenseNames.map((name) => `resources\\pdfium-licenses\\${name}`)].sort(),
+    );
+    // 8 files before pdfium; the DLL and its 19 licence texts make 28 (the release's payload-manifest.json is checked against this count).
+    expect(walk(out)).toHaveLength(28);
+    expect(run.output).toContain("Payload: 28 files");
+    for (const name of pdfiumLicenseNames) expect(sha256(join(out, "resources", "pdfium-licenses", name)), name).toBe(sha256(join(stub.licenses, name)));
+    expect(sha256(join(out, "resources", "pdfium.dll"))).toBe(sha256(stub.pdfium));
     // The desktop binary is renamed to the product's exe, and nothing is altered on the way.
     expect(sha256(join(out, "Tjommie.exe"))).toBe(sha256(stub.desktop));
     expect(sha256(join(out, "resources", "daemon", "tjommie-daemon.exe"))).toBe(sha256(stub.daemon));
@@ -68,18 +80,47 @@ describe.skipIf(!windows)("the payload assembly", () => {
     expect(existsSync(join(out, "payload-manifest.json"))).toBe(false);
   });
 
-  // pdfium has no source in the repository yet (the plan pins a bblanchon release for it). A dry run says so; a release does not go without.
-  it("records pdfium as pending in a dry run, and refuses a release that lacks it", () => {
+  // A dry run can be built before pdfium is fetched and says what is missing; a release does not go without the DLL or its licence texts.
+  it("records pdfium and its licences as pending in a dry run, and refuses a release that lacks either", () => {
     const stub = inputs();
-    const dry = powershell("assemble-payload.ps1", ["-OutDir", join(stub.root, "dry"), "-Desktop", stub.desktop, "-Daemon", stub.daemon, "-SpeechDir", stub.speech, "-ManifestPath", join(stub.root, "dry.json")]);
+    const base = ["-Desktop", stub.desktop, "-Daemon", stub.daemon, "-SpeechDir", stub.speech];
+    const dry = powershell("assemble-payload.ps1", ["-OutDir", join(stub.root, "dry"), ...base, "-ManifestPath", join(stub.root, "dry.json")]);
     expect(dry.status, dry.output).toBe(0);
     const written = JSON.parse(readFileSync(join(stub.root, "dry.json"), "utf8")) as { pending: string[] };
-    expect(written.pending).toEqual(["resources\\pdfium.dll"]);
+    expect(written.pending).toEqual(["resources\\pdfium.dll", "resources\\pdfium-licenses"]);
     expect(existsSync(join(stub.root, "dry", "resources", "pdfium.dll"))).toBe(false);
-    const release = powershell("assemble-payload.ps1", ["-OutDir", join(stub.root, "rel"), "-Desktop", stub.desktop, "-Daemon", stub.daemon, "-SpeechDir", stub.speech, "-Release"]);
-    expect(release.status).not.toBe(0);
-    expect(release.output).toMatch(/pdfium/i);
+    expect(existsSync(join(stub.root, "dry", "resources", "pdfium-licenses"))).toBe(false);
+    const noDll = powershell("assemble-payload.ps1", ["-OutDir", join(stub.root, "rel"), ...base, "-PdfiumLicenses", stub.licenses, "-Release"]);
+    expect(noDll.status).not.toBe(0);
+    expect(noDll.output).toMatch(/pdfium/i);
+    const noLicenses = powershell("assemble-payload.ps1", ["-OutDir", join(stub.root, "rel"), ...base, "-Pdfium", stub.pdfium, "-Release"]);
+    expect(noLicenses.status).not.toBe(0);
+    expect(noLicenses.output).toContain("-PdfiumLicenses");
     expect(existsSync(join(stub.root, "rel"))).toBe(false);
+  });
+
+  it("refuses pdfium's licences without the DLL, an empty or missing licence folder, and one with no LICENSE, and writes nothing for them", () => {
+    const stub = inputs();
+    const base = ["-Desktop", stub.desktop, "-Daemon", stub.daemon, "-SpeechDir", stub.speech];
+    const empty = join(stub.root, "empty-licenses");
+    mkdirSync(empty);
+    const noMain = join(stub.root, "no-main-license");
+    mkdirSync(noMain);
+    writeFileSync(join(noMain, "third-party-01.txt"), "x");
+    const cases: Array<[string, string[], RegExp]> = [
+      // (PowerShell wraps a long error message at a space, so the patterns take any whitespace between words.)
+      ["licences without the DLL", ["-PdfiumLicenses", stub.licenses], /without\s+the\s+DLL/],
+      ["a missing licence folder", ["-Pdfium", stub.pdfium, "-PdfiumLicenses", join(stub.root, "absent")], /not\s+there/],
+      ["an empty licence folder", ["-Pdfium", stub.pdfium, "-PdfiumLicenses", empty], /is\s+empty/],
+      ["a licence folder with no LICENSE", ["-Pdfium", stub.pdfium, "-PdfiumLicenses", noMain], /no\s+LICENSE/],
+    ];
+    for (const [label, args, message] of cases) {
+      const out = join(stub.root, `out-${label.replaceAll(" ", "-")}`);
+      const run = powershell("assemble-payload.ps1", ["-OutDir", out, ...base, ...args]);
+      expect(run.status, label).not.toBe(0);
+      expect(run.output, label).toMatch(message);
+      expect(existsSync(out), label).toBe(false);
+    }
   });
 
   it("refuses a folder that is not empty, a missing binary, an incomplete speech bundle and any Electron file, and writes nothing for them", () => {
@@ -247,7 +288,7 @@ describe.skipIf(!windows)("the release manifest", () => {
     expect(written.binaries.desktop.sha256).toBe(sha256(stub.desktop));
     expect(written.binaries.daemon.sha256).toBe(sha256(stub.daemon));
     expect(written.payload.files.map((file) => file.path)).toContain("resources\\daemon\\tjommie-daemon.exe");
-    expect(written.payload.pending).toEqual(["resources\\pdfium.dll"]);
+    expect(written.payload.pending).toEqual(["resources\\pdfium.dll", "resources\\pdfium-licenses"]);
     expect(written.checks.crateVersions).toMatch(/^warning: /);
     expect(written.tools.nsis).toMatchObject({ status: "verified", version: "3.11", files: { "makensis.exe": "ab".repeat(32) } });
     // Nothing secret goes in it, and no token or release URL.

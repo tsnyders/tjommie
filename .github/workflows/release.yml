@@ -135,14 +135,36 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'The crates do not ship the version being released.' }
           $status = if ($text -match '::warning::(.+)') { "warning: $($Matches[1].Trim())" } else { 'passed' }
           "status=$status" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-      # resources\daemon\tjommie-daemon.exe is where the app looks for its daemon, and where R1 kept it. A release needs pdfium.dll too, and no
-      # source for it exists yet, so a release run stops here until one does; a dry run records it as pending.
+      # pdfium, for the PDF viewer, comes from the Chat lane's script: the pinned bblanchon release, its archive checked by SHA-256, then the DLL
+      # inside it, and the licence texts that have to ship with it. They are fetched into a folder of their own, because the payload assembler never
+      # writes into a folder that has anything in it. The DLL is then checked once more against installer/tool-hashes.json, the value a release
+      # pins. A dry run on a branch that does not have the script yet goes on without pdfium (the payload manifest lists it as pending); a
+      # release stops here, and the assembler refuses it again.
+      - name: Fetch pdfium and check it against the recorded hash
+        shell: pwsh
+        run: |
+          $more = @{}
+          if ($env:DRY_RUN -ne 'true') { $more['Release'] = $true }
+          $fetch = 'tjommie-rs\tools\fetch-pdfium.ps1'
+          $dir = Join-Path $env:RUNNER_TEMP 'pdfium'
+          if (Test-Path -LiteralPath $fetch -PathType Leaf) {
+            & $fetch -Destination "$dir\pdfium.dll" -Licenses "$dir\licenses"
+            ./installer/check-tool-hashes.ps1 -Tool pdfium -Path "$dir\pdfium.dll" @more
+          } elseif ($env:DRY_RUN -ne 'true') {
+            throw "$fetch is missing: the PDF viewer has to be merged before a release can be built."
+          } else {
+            Write-Output "::warning::$fetch is missing, so this dry run goes on without pdfium. A release will not."
+          }
+      # resources\daemon\tjommie-daemon.exe is where the app looks for its daemon, and where R1 kept it. A release needs pdfium.dll and its
+      # licence texts too, and the assembler refuses a release without them; a dry run records what is missing as pending.
       - name: Assemble the installer's payload
         shell: pwsh
         run: |
           # A hashtable, because only that binds a switch: a splatted array of '-Release' is passed as a positional value and the switch stays off.
           # Anything but an exact 'true' is a release, so a missing mode output is the strict case.
           $more = @{}
+          $pdfium = Join-Path $env:RUNNER_TEMP 'pdfium'
+          if (Test-Path -LiteralPath "$pdfium\pdfium.dll") { $more['Pdfium'] = "$pdfium\pdfium.dll"; $more['PdfiumLicenses'] = "$pdfium\licenses" }
           if ($env:DRY_RUN -ne 'true') { $more['Release'] = $true }
           ./installer/assemble-payload.ps1 -OutDir "$env:RUNNER_TEMP\payload" -ManifestPath "$env:RUNNER_TEMP\payload-manifest.json" -Desktop tjommie-rs\target\release\tjommie-desktop.exe -Daemon tjommie-rs\target\release\tjommie-daemon.exe -SpeechDir .cache\speech-runtime @more
       - name: Install NSIS
@@ -150,7 +172,7 @@ jobs:
       # NSIS is fetched by version only, and its compiler, stubs and plugins end up in the installer R1 installs, so what Chocolatey put there
       # is checked against the SHA-256 values recorded in installer/tool-hashes.json. A mismatch fails the build. A release is not built
       # until the values are recorded; a dry run records what it saw in its artifact. (pdfium.dll gets the same check, with
-      # `-Tool pdfium -Path <the file>`, when the Chat lane adds its source in T4.4.)
+      # `-Tool pdfium -Path <the file>`, in the step that fetches it.)
       - name: The NSIS compiler is the one that was recorded
         shell: pwsh
         run: |
