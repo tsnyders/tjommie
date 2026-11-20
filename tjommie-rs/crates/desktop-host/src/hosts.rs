@@ -156,6 +156,7 @@ pub struct WindowFacts {
     present: AtomicBool,
     visible: AtomicBool,
     ready: AtomicBool,
+    focused: AtomicBool,
     quitting: AtomicBool,
 }
 
@@ -171,6 +172,16 @@ impl WindowFacts {
     /// trusted.
     pub fn set_visible(&self, visible: bool) {
         self.visible.store(visible, Ordering::SeqCst);
+    }
+
+    /// Whether the window has the keyboard (`main.ts` `win.isFocused()`).
+    pub fn set_focused(&self, focused: bool) {
+        self.focused.store(focused, Ordering::SeqCst);
+    }
+
+    /// The window is up front: shown and focused, so a notice is already in the app's history and needs no toast.
+    pub fn visible_and_focused(&self) -> bool {
+        self.visible.load(Ordering::SeqCst) && self.focused.load(Ordering::SeqCst)
     }
 
     /// Whether the app's document has loaded and can take requests.
@@ -391,6 +402,11 @@ impl Hosts {
     /// The app is quitting: Logins takes no more requests but the cleanup ones (`will-quit`).
     pub fn begin_quit(&self) {
         self.inputs.window.quitting.store(true, Ordering::SeqCst);
+    }
+
+    /// The quit was given up (an update was not installed): the app stays, and its window is trusted again.
+    pub fn cancel_quit(&self) {
+        self.inputs.window.quitting.store(false, Ordering::SeqCst);
     }
 
     /// Locks the vault now: the entry window closes and the running operation is cancelled.

@@ -589,20 +589,36 @@ pub struct Stopper(Arc<Shared>);
 impl gpui::Global for Stopper {}
 
 impl Stopper {
-    /// Stops the daemon and resolves when it is gone. Nothing to stop for a development daemon or none.
-    pub fn stop(&self) -> impl Future<Output = ()> + Send + use<> {
+    /// Stops the daemon and says how it went: gracefully, or only by force (`stopDaemonBeforeQuit`); `Err` when its stop
+    /// could not be confirmed. Nothing to stop for a development daemon or none.
+    pub fn stop(
+        &self,
+    ) -> impl Future<Output = Result<desktop_host::updater::DaemonStop, String>> + Send + use<>
+    {
         let old = match &self.0.daemon {
             Daemon::Supervised { supervisor, .. } => locked(supervisor).take(),
             Daemon::Development { .. } | Daemon::Unavailable(_) => None,
         };
         // unguarded: a tokio task, off the UI thread, where a panic ends only that task
         let stopped = self.0.runtime.spawn(async move {
-            if let Some(old) = old {
-                let _ = old.stop_before_quit(daemon_process::QUIT_TIMEOUT).await;
+            match old {
+                Some(old) => old.stop_before_quit(daemon_process::QUIT_TIMEOUT).await,
+                None => None,
             }
         });
         async move {
-            let _ = stopped.await;
+            match stopped.await {
+                Ok(outcome) => crate::services::daemon_stop(outcome),
+                Err(_) => Err("The background service's stop did not finish.".to_owned()),
+            }
+        }
+    }
+
+    /// Starts the daemon again after a stop the app gave up on (an update that was not installed): the connection asks for
+    /// it as "Try again" does, and the clients start with the new daemon.
+    pub fn restart_daemon(&self) {
+        if let Some(live) = self.0.connection.get().and_then(Weak::upgrade) {
+            live.restart_daemon();
         }
     }
 }

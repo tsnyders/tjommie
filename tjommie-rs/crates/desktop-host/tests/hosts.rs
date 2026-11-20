@@ -416,3 +416,35 @@ async fn a_local_request_is_trusted_only_while_the_window_is_shown_ready_and_the
         Err(GateError::Untrusted)
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_quit_that_is_given_up_leaves_the_window_trusted_again() {
+    let app = app();
+    app.hosts.begin_quit();
+    assert_eq!(
+        app.hosts.execute_local(VaultHostAction::Status).await,
+        Err(GateError::Untrusted)
+    );
+    // The update was not installed, so the app stays: requests from its window are taken again.
+    app.hosts.cancel_quit();
+    assert!(
+        app.hosts
+            .execute_local(VaultHostAction::Status)
+            .await
+            .is_ok()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_window_is_up_front_only_while_it_is_shown_and_focused() {
+    let app = app();
+    let window = app.hosts.window();
+    assert!(
+        !window.visible_and_focused(),
+        "shown, but nothing focused it yet"
+    );
+    window.set_focused(true);
+    assert!(window.visible_and_focused());
+    window.set_visible(false);
+    assert!(!window.visible_and_focused(), "hidden to the tray");
+}

@@ -63,6 +63,8 @@ pub fn run(identity: Identity, root: PathBuf, after_crash: bool, instance: Optio
                 if let Some(hosts) = cx.try_global::<crate::hosts::AppHosts>().cloned() {
                     crate::hosts::watch_window(&hosts, window, cx);
                 }
+                // The tray, the toasts, start at sign-in and the updater (M6), for this window.
+                crate::services::start(&identity, window, cx);
                 let panel = BrowserPanel::create(window, cx);
                 cx.new(|cx| {
                     let mut shell = Shell::new(window, cx);
@@ -87,8 +89,17 @@ pub fn run(identity: Identity, root: PathBuf, after_crash: bool, instance: Optio
         });
 }
 
+/// Windows starts the app at sign-in with `--hidden`, and the installer relaunches it after an update with `--updated`: both
+/// start in the tray, with no window (`startsHidden`).
+fn starts_in_the_tray() -> bool {
+    let args: Vec<String> = std::env::args().collect();
+    desktop_host::shell::login_item::starts_hidden(&args)
+}
+
 fn window_options(identity: &Identity, cx: &App) -> WindowOptions {
     WindowOptions {
+        // A start in the tray shows no window (and takes no keyboard); the tray's Show brings it.
+        show: !starts_in_the_tray(),
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
             None,
             size(px(1440.), px(900.)),
@@ -102,7 +113,7 @@ fn window_options(identity: &Identity, cx: &App) -> WindowOptions {
             traffic_light_position: None,
         }),
         // An e2e run never takes the owner's keyboard; the root holds the app's own focus either way.
-        focus: identity.name != "e2e",
+        focus: identity.name != "e2e" && !starts_in_the_tray(),
         // Gate condition 5: no GPUI cap for an unfocused window. The motion clock (T2.3) throttles instead.
         inactive_frame_interval: None,
         app_id: Some(identity.app_id.to_owned()),
@@ -122,7 +133,7 @@ fn show_on_second_launch(instance: Instance, window: AnyWindowHandle, cx: &mut A
             while asks.next().await.is_some() {
                 cx.update(|cx| {
                     guarded("show the window", || {
-                        window.update(cx, |_, window, _| window.activate_window())
+                        crate::services::show_window(window, cx)
                     });
                 });
             }

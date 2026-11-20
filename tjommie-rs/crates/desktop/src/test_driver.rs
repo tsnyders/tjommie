@@ -92,6 +92,13 @@ pub enum Request {
         width: f32,
         height: f32,
     },
+    /// What the desktop services have done (the toasts the fake notifier took, what start at sign-in wrote) and whether
+    /// the window is shown: an e2e build keeps them in memory, so a test never touches the owner's tray, desktop or registry.
+    Services,
+    /// Presses a tray item, brings in a notice, switches the fake notifier or clicks a toast (`services::Poke`).
+    Poke {
+        poke: crate::services::Poke,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -121,6 +128,8 @@ pub struct Response {
     pub snapshot: Option<UiSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub services: Option<crate::services::ServicesSnapshot>,
 }
 
 impl Response {
@@ -136,6 +145,7 @@ impl Response {
             ok: false,
             snapshot: None,
             error: Some(error.into()),
+            services: None,
         }
     }
 }
@@ -198,7 +208,18 @@ impl Client {
 
     /// `launch`, with more variables for the app, such as a test's TJOMMIE_DAEMON_EXE.
     pub fn launch_with(exe: &str, root: &Path, vars: &[(&str, &str)]) -> io::Result<Client> {
+        Self::launch_args(exe, root, vars, &[])
+    }
+
+    /// `launch_with`, and command-line arguments for the app (`--hidden`, which starts it in the tray).
+    pub fn launch_args(
+        exe: &str,
+        root: &Path,
+        vars: &[(&str, &str)],
+        args: &[&str],
+    ) -> io::Result<Client> {
         let mut app = desktop_host::spawn::command(exe)
+            .args(args)
             .env("TJOMMIE_HOME", root)
             .envs(vars.iter().copied())
             .spawn()?;
@@ -285,6 +306,19 @@ impl Client {
             chord: chord.to_owned(),
         })
         .map(drop)
+    }
+
+    /// What the services have done and whether the window is shown (`Services`).
+    pub fn services(&mut self) -> io::Result<crate::services::ServicesSnapshot> {
+        Ok(self
+            .expect_ok(&Request::Services)?
+            .services
+            .unwrap_or_default())
+    }
+
+    /// Presses a tray item, brings in a notice, and so on (`Poke`).
+    pub fn poke(&mut self, poke: crate::services::Poke) -> io::Result<()> {
+        self.expect_ok(&Request::Poke { poke }).map(drop)
     }
 
     /// Sets the window's size in logical pixels (`Resize`).
@@ -744,6 +778,15 @@ fn handle(request: Request, window: &mut Window, cx: &mut App) -> Response {
             window.resize(gpui::size(gpui::px(width), gpui::px(height)));
             Response::done()
         }
+        Request::Services => Response {
+            ok: true,
+            services: Some(crate::services::snapshot(window, cx)),
+            ..Response::default()
+        },
+        Request::Poke { poke } => match crate::services::poke(poke, cx) {
+            Ok(()) => Response::done(),
+            Err(error) => Response::failed(error),
+        },
         Request::AnswerPathPrompt { path } => {
             PATH_ANSWER.with(|answer| *answer.borrow_mut() = Some(PathBuf::from(path)));
             Response::done()
@@ -762,6 +805,7 @@ fn handle(request: Request, window: &mut Window, cx: &mut App) -> Response {
                     }),
                 }),
                 error: None,
+                services: None,
             }
         }
         Request::Click { id } => match center(&id) {

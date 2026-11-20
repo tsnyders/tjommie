@@ -24,7 +24,6 @@ use client::{Client, Endpoint};
 use desktop_host::browser::engine::{BotEvent, Engine};
 use desktop_host::browser::host::{JobQueue, serve as serve_jobs};
 use desktop_host::browser::login::{Request, serve as serve_logins};
-use desktop_host::daemon_process::QUIT_TIMEOUT;
 use desktop_host::hosts::{DaemonBots, Hosts, Local, Parts, Running};
 use desktop_host::vault::credential::LoginCredentials;
 use desktop_host::vault::login::SecretStore;
@@ -33,7 +32,7 @@ use futures::future::LocalBoxFuture;
 use gpui::{App, Global, Window};
 use protocol::Event;
 use protocol::vault::VaultHostAction;
-use protocol::wire::{Empty, Id, method};
+use protocol::wire::{Empty, Id, Notify, PendingNotification, method};
 use tokio::sync::{broadcast, watch};
 
 use crate::guard::{guarded, guarded_async};
@@ -48,8 +47,8 @@ const RETRY: Duration = Duration::from_secs(1);
 
 // ---- orders ----------------------------------------------------------------------------------------------------------
 
-/// What the bot watcher tells the engine (the TypeScript's `nativeClient` subscription).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// What the watcher of this PC's daemon tells the app: the engine what happened to the bots (the TypeScript's
+/// `nativeClient` subscription), and the services the notices to show (its `notifier` client).
 pub enum Notice {
     /// The daemon's bots now: each id, and whether its browser is on.
     Listed(Vec<(String, bool)>),
@@ -60,6 +59,12 @@ pub enum Notice {
     },
     /// The watcher lost the daemon: the vault locks, as the TypeScript's `retry` does.
     Lost,
+    /// The connection the notices come in on, which acknowledges them.
+    Connected(Arc<Client>),
+    /// A `notify` event.
+    Notify(Box<Notify>),
+    /// `notifications.pending`: what the daemon still holds because nothing acknowledged it.
+    Pending(Vec<PendingNotification>),
 }
 
 /// An order to the UI thread's task.
@@ -152,10 +157,12 @@ async fn watch_bots(
                 _ = current.changed() => return,
             }
         };
+        let client = Arc::new(client);
         let closed = client.closed();
         tokio::pin!(closed);
-        // Subscribed before the list is asked for: what happens meanwhile is applied after it.
+        // Subscribed before the list and the pending notices are asked for: what happens meanwhile is applied after them.
         let mut events = client.events();
+        let _ = notices.send(Notice::Connected(client.clone())).await;
         let mut listed = false;
         loop {
             if !listed {
@@ -163,10 +170,16 @@ async fn watch_bots(
                     Ok(bots) => {
                         let bots = bots.into_iter().map(|bot| (bot.id, bot.browser)).collect();
                         let _ = notices.send(Notice::Listed(bots)).await;
-                        listed = true;
                     }
                     Err(_) => break,
                 }
+                match client.call::<method::NotificationsPending>(Empty {}).await {
+                    Ok(pending) => {
+                        let _ = notices.send(Notice::Pending(pending)).await;
+                    }
+                    Err(_) => break,
+                }
+                listed = true;
             }
             tokio::select! {
                 _ = current.changed() => {
@@ -182,6 +195,9 @@ async fn watch_bots(
                         let _ = notices
                             .send(Notice::Updated { id: bot.id, browser: bot.browser })
                             .await;
+                    }
+                    Ok(Event::Notify(notice)) => {
+                        let _ = notices.send(Notice::Notify(Box::new(notice))).await;
                     }
                     Ok(_) => {}
                     // Events were lost: ask for the list again.
@@ -331,9 +347,8 @@ fn start(
         ))
         .detach();
     let (applying, locking) = (engine.clone(), hosts.clone());
-    cx.foreground_executor()
-        // unguarded: a future, not a closure; guarded_async wraps it
-        .spawn(guarded_async("hear the daemon's bots", async move {
+    cx.spawn(async move |cx| {
+        guarded_async("hear the daemon's bots", async move {
             while let Ok(notice) = notices.recv().await {
                 match notice {
                     Notice::Listed(bots) => {
@@ -349,18 +364,29 @@ fn start(
                             );
                         }
                     }
-                    // unguarded: the engine's own method inside guarded_async, not a handler registration
-                    Notice::Deleted(id) => applying.on_bot_event(BotEvent::Deleted { id }).await,
+                    Notice::Deleted(id) => {
+                        // unguarded: the engine's own method inside guarded_async, not a handler registration
+                        applying.on_bot_event(BotEvent::Deleted { id }).await;
+                    }
                     Notice::Updated { id, browser } => {
                         let updated = BotEvent::Updated { id, browser };
                         // unguarded: the engine's own method inside guarded_async, not a handler registration
                         applying.on_bot_event(updated).await;
                     }
                     Notice::Lost => locking.lock(),
+                    Notice::Connected(client) => {
+                        cx.update(|cx| crate::services::connected(client, cx));
+                    }
+                    Notice::Notify(notice) => cx.update(|cx| crate::services::notify(*notice, cx)),
+                    Notice::Pending(pending) => {
+                        cx.update(|cx| crate::services::replay(pending, cx));
+                    }
                 }
             }
-        }))
-        .detach();
+        })
+        .await;
+    })
+    .detach();
     let directory = Arc::new(DaemonBots::new(local.clone()));
     match hosts.start(&local, directory, Arc::new(queue)) {
         Ok(running) => Some(running),
@@ -373,10 +399,13 @@ fn start(
 
 // ---- the window ------------------------------------------------------------------------------------------------------
 
-/// Keeps what the vault's gate reads of the window true (`main.ts:457`), and turns a close into a graceful quit.
+/// Keeps what the vault's gate reads of the window true (`main.ts:457`), and hands the close button to the services (it
+/// hides to the tray, or quits).
 pub fn watch_window(app: &AppHosts, window: &mut Window, cx: &mut App) {
     let hosts = app.hosts.clone();
     hosts.window().show();
+    // A window opened hidden (`--hidden`, `--updated`) starts in the tray: nothing is trusted that it hasn't shown.
+    hosts.window().set_visible(window.is_visible());
     let visible = hosts.clone();
     window
         .observe_window_visibility(move |visibility, _, _| {
@@ -385,53 +414,14 @@ pub fn watch_window(app: &AppHosts, window: &mut Window, cx: &mut App) {
             });
         })
         .detach();
-    let quitting = app.clone();
     // unguarded: guarded() wraps the whole body; a panic in it answers "close", which is the way out of a stuck quit
-    window.on_window_should_close(cx, move |_, cx| {
-        guarded("close the app", || quit(&quitting, cx)).unwrap_or(true)
+    window.on_window_should_close(cx, move |window, cx| {
+        guarded("close the app", || {
+            crate::services::on_close_requested(window, cx)
+        })
+        .unwrap_or(true)
     });
 }
-
-/// Whether the app may close now. The first request starts the graceful quit and says not yet; the app exits itself when it
-/// is done. A second request while that runs changes nothing.
-fn quit(app: &AppHosts, cx: &mut App) -> bool {
-    if cx.has_global::<Quit>() {
-        return cx.global::<Quit>().done;
-    }
-    cx.set_global(Quit { done: false });
-    app.hosts.begin_quit();
-    log::info!("Closing: the browser, Logins and worker clients stop, then the daemon.");
-    let (hosts, stopper) = (app.control.clone(), crate::live::stopper(cx));
-    cx.spawn(async move |cx| {
-        guarded_async("quit", async move {
-            // The clients first (the vault locks and the browsers close), then the daemon, each within the quit timeout.
-            let timeout = cx.background_executor().clone();
-            let stop = hosts.stop(true);
-            futures::pin_mut!(stop);
-            let _ = futures::future::select(stop, timeout.timer(QUIT_TIMEOUT)).await;
-            if let Some(stopper) = stopper {
-                let daemon = stopper.stop();
-                futures::pin_mut!(daemon);
-                let _ = futures::future::select(daemon, timeout.timer(QUIT_TIMEOUT)).await;
-            }
-            log::info!("Closed: the clients and the daemon have stopped.");
-            cx.update(|cx| {
-                cx.global_mut::<Quit>().done = true;
-                cx.quit();
-            });
-        })
-        .await;
-    })
-    .detach();
-    false
-}
-
-/// The app is closing: its clients and daemon are being stopped.
-struct Quit {
-    done: bool,
-}
-
-impl Global for Quit {}
 
 // ---- the Logins screen's own vault ----------------------------------------------------------------------------------
 
