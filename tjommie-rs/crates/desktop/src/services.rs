@@ -543,9 +543,14 @@ pub fn on_close_requested(window: &mut Window, cx: &mut App) -> bool {
     }
     // The window is being updated now (this is its close hook), so it is hidden through the handle we were given.
     hide_command(window);
-    if let Some(user_data) = &services.user_data {
-        tray::hint_once(user_data, |title, body| {
-            services.notifier.show_plain(title, body)
+    // The marker's write and the toast are WinRT calls, which the close hook (inside the window's WM_CLOSE and its update)
+    // must not make: they run once it has returned.
+    if let Some(user_data) = services.user_data.clone() {
+        let notifier = services.notifier.clone();
+        cx.defer(move |_| {
+            guarded("show the still-running hint", || {
+                tray::hint_once(&user_data, |title, body| notifier.show_plain(title, body));
+            });
         });
     }
     false
