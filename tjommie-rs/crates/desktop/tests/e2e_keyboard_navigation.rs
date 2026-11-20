@@ -139,11 +139,12 @@ fn tab_to(app: &mut Client, id: &str) {
     }
     // What the screen said while it did not move: a connection that is not Ready disables the nav buttons, which are then
     // no tab stops.
-    let snapshot = app.snapshot().unwrap();
-    let status = snapshot
-        .node("shell.status")
-        .map(|node| node.text.clone())
-        .unwrap_or_default();
+    // The app may have gone (the case its log is most wanted for): then there is no pill to read, and no panic here.
+    let status = app
+        .snapshot()
+        .ok()
+        .and_then(|snapshot| snapshot.node("shell.status").map(|node| node.text.clone()))
+        .unwrap_or_else(|| "(the app did not answer)".to_owned());
     panic!(
         "no Tab reaches {id}; it passed {passed:?}\nthe connection pill said {status:?}\n--- the app's log, last lines ---\n{}",
         log_tail()
