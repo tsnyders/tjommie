@@ -824,20 +824,20 @@ fn handle(request: Request, window: &mut Window, cx: &mut App) -> Response {
                 services: None,
             }
         }
-        Request::Click { id } => match center(&id) {
-            Some(position) => {
+        Request::Click { id } => match target(&id, window) {
+            Ok(position) => {
                 click(position, window, cx);
                 Response::done()
             }
-            None => Response::failed(format!("{id} is not on screen")),
+            Err(error) => Response::failed(error),
         },
-        Request::Type { id, text } => match center(&id) {
-            Some(position) => {
+        Request::Type { id, text } => match target(&id, window) {
+            Ok(position) => {
                 click(position, window, cx);
                 type_text(&text, window, cx);
                 Response::done()
             }
-            None => Response::failed(format!("{id} is not on screen")),
+            Err(error) => Response::failed(error),
         },
         Request::Text { text } => {
             type_text(&text, window, cx);
@@ -866,20 +866,30 @@ fn type_text(text: &str, window: &mut Window, cx: &mut App) {
     }
 }
 
-fn center(id: &str) -> Option<Point<Pixels>> {
-    NODES.with(|nodes| {
-        nodes
-            .borrow()
-            .iter()
-            .find(|node| node.id == id)
-            .map(|node| {
-                let bounds = node.bounds;
-                point(
-                    px(bounds.x + bounds.width / 2.0),
-                    px(bounds.y + bounds.height / 2.0),
-                )
-            })
-    })
+/// Where a click on `id` lands: the middle of the part of it inside the window. A node wholly outside the window
+/// (scrolled away, or past a small window's edge) is refused, rather than clicked into nothing.
+fn target(id: &str, window: &Window) -> Result<Point<Pixels>, String> {
+    let size = window.viewport_size();
+    let bounds = NODES
+        .with(|nodes| {
+            nodes
+                .borrow()
+                .iter()
+                .find(|node| node.id == id)
+                .map(|node| node.bounds)
+        })
+        .ok_or_else(|| format!("{id} is not on screen"))?;
+    visible_center(bounds, f32::from(size.width), f32::from(size.height))
+        .map(|(x, y)| point(px(x), px(y)))
+        .ok_or_else(|| format!("{id} is outside the window"))
+}
+
+/// The middle of the part of `bounds` inside a `width` × `height` window, if any of it is.
+fn visible_center(bounds: UiBounds, width: f32, height: f32) -> Option<(f32, f32)> {
+    let (left, top) = (bounds.x.max(0.), bounds.y.max(0.));
+    let right = (bounds.x + bounds.width).min(width);
+    let bottom = (bounds.y + bounds.height).min(height);
+    (right > left && bottom > top).then(|| ((left + right) / 2., (top + bottom) / 2.))
 }
 
 fn click(position: Point<Pixels>, window: &mut Window, cx: &mut App) {
@@ -912,4 +922,30 @@ fn click(position: Point<Pixels>, window: &mut Window, cx: &mut App) {
         }),
         cx,
     );
+}
+
+#[cfg(test)]
+mod click_tests {
+    use super::{UiBounds, visible_center};
+
+    #[test]
+    fn a_click_lands_on_the_part_inside_the_window() {
+        let at = |x: f32, y: f32, width: f32, height: f32| UiBounds {
+            x,
+            y,
+            width,
+            height,
+        };
+        assert_eq!(
+            visible_center(at(10., 10., 20., 20.), 100., 100.),
+            Some((20., 20.))
+        );
+        // Its middle is past the bottom edge; its top half isn't.
+        assert_eq!(
+            visible_center(at(10., 90., 20., 40.), 100., 100.),
+            Some((20., 95.))
+        );
+        assert_eq!(visible_center(at(10., 120., 20., 20.), 100., 100.), None);
+        assert_eq!(visible_center(at(-30., 10., 20., 20.), 100., 100.), None);
+    }
 }
