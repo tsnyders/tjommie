@@ -68,6 +68,13 @@ jobs:
       # whole closure inside guarded(.
       - run: ./tools/check-guarded.ps1 -SelfTest
       - run: ./tools/check-guarded.ps1
+      # The pinned pdfium.dll (Phase 3 plan T4.4): the archive and the DLL are each checked by SHA-256. The PDF tests
+      # (pdf::range_reads_only) and the e2e app's PDF viewer find it through TJOMMIE_PDFIUM_DLL; on CI the tests fail
+      # without it rather than skip.
+      - name: Fetch the pinned pdfium.dll
+        run: |
+          $dll = ./tools/fetch-pdfium.ps1 -Destination (Join-Path $env:RUNNER_TEMP 'pdfium\pdfium.dll')
+          "TJOMMIE_PDFIUM_DLL=$dll" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       # --no-fail-fast: one run shows every failing test binary, not only the first one cargo stops at.
       - run: cargo test --workspace --locked --no-fail-fast
         env:

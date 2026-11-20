@@ -17,6 +17,8 @@ futures-util = "0.3.34"
 getrandom = "0.4.3"
 jiff = "0.2.41"
 log = { version = "0.4.35", features = ["std"] }
+# PDF pages (T4.4, `pdf`): pdfium.dll loaded at run time, pinned by SHA-256 and checked before it is loaded.
+pdfium-render = { version = "0.9.5", default-features = false, features = ["pdfium_latest", "thread_safe"] }
 protocol = { version = "0.5.0", path = "../protocol" }
 # The tools' search patterns (`browser_find`, `browser_network_requests`).
 regex = "1.13.1"
