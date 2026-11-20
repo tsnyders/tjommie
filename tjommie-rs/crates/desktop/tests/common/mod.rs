@@ -98,10 +98,47 @@ pub fn eventually(what: &str, timeout: Duration, mut condition: impl FnMut() -> 
     }
 }
 
+/// The id of the control that has the keyboard focus.
+fn focused(app: &mut Client) -> Option<String> {
+    app.snapshot()
+        .unwrap()
+        .nodes
+        .into_iter()
+        .find(|node| node.focused)
+        .map(|node| node.id)
+}
+
+/// Tabs until `id` has the keyboard focus. The screen scrolls the focused control into view, so this reaches a control
+/// however short the window is, which a click does not: the driver's click is a mouse event at the control's middle, and
+/// one below the fold lands outside the window and does nothing, and says nothing.
+pub fn tab_to(app: &mut Client, id: &str) {
+    let mut passed = Vec::new();
+    for _ in 0..80 {
+        let before = focused(app);
+        app.key("tab").unwrap();
+        let started = Instant::now();
+        let now = loop {
+            let now = focused(app);
+            if now != before || started.elapsed() > Duration::from_millis(600) {
+                break now;
+            }
+            std::thread::sleep(Duration::from_millis(15));
+        };
+        if now.as_deref() == Some(id) {
+            // The scroll that brings it into view comes a frame after the focus does.
+            std::thread::sleep(Duration::from_millis(150));
+            return;
+        }
+        passed.extend(now);
+    }
+    panic!("no Tab reaches {id}; it passed {passed:?}");
+}
+
 /// Makes an agent through the New agent screen, with its browser on or off, and lands on its chat.
 pub fn make_agent(app: &mut Client, name: &str, browser: bool) {
-    // The whole form fits, so the browser switch is on screen to be clicked.
-    app.resize(1000., 1700.).unwrap();
+    // The size every e2e runs at, the same on every machine: it fits a hosted runner's 1024 by 768 display. A taller window
+    // does not exist there (Windows holds a window to the display), so nothing here may depend on one.
+    app.resize(1000., 700.).unwrap();
     app.click("sidebar.nav.agents").unwrap();
     app.wait("agents.new", Predicate::Exists, 10_000).unwrap();
     app.click("agents.new").unwrap();
@@ -109,7 +146,23 @@ pub fn make_agent(app: &mut Client, name: &str, browser: bool) {
     app.click("bot_form.name").unwrap();
     app.text(name).unwrap();
     if browser {
-        app.click("bot_form.browser").unwrap();
+        // By keyboard: the switch is below the fold in a window that fits the display, where a click on it misses silently
+        // and the agent is made with its browser off (the fixtures daemon then says "this agent's browser is off").
+        tab_to(app, "bot_form.browser");
+        app.key("enter").unwrap();
+        let started = Instant::now();
+        while !app
+            .snapshot()
+            .unwrap()
+            .node("bot_form.browser")
+            .is_some_and(|node| node.toggled)
+        {
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "the browser switch did not turn on"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
     }
     app.click("new_bot.create").unwrap();
     app.wait("screen.chat", Predicate::Exists, 30_000).unwrap();
