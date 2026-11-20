@@ -19,8 +19,9 @@ type EventListener = Box<dyn FnMut(&Event) + Send>;
 #[derive(Default)]
 pub struct AppStore {
     /// Shared, so a snapshot is a pointer: a change copies the state only while a snapshot is still held.
-    // ponytail: that copy is of the whole state, once per frame at most while a screen holds the last snapshot; a persistent
-    // structure for the conversations if a long chat's copy ever shows in a profile.
+    // ponytail: the live app always holds one (the UI's store keeps the last frame's), so every change copies the whole state
+    // once; the connection applies a burst of events as one change (`apply_all`), so that is once per burst, not per event.
+    // A persistent structure for the conversations if a long chat's copy ever shows in a profile (M7).
     state: Arc<AppState>,
     /// Goes up by one for each change the subscribers were told about.
     version: u64,
@@ -51,9 +52,21 @@ impl AppStore {
 
     /// Applies one protocol event (`applyEvent` through `update`), then tells the event listeners about it.
     pub fn apply(&mut self, event: &Event) {
-        self.update(|state| apply_event(state, event));
-        for (_, listener) in &mut self.event_listeners {
-            listener(event);
+        self.apply_all(std::slice::from_ref(event));
+    }
+
+    /// Applies events in order as ONE change: one copy of the state while a snapshot is held, and the subscribers told once,
+    /// with the state after the last. Then each event listener hears each event, in order.
+    pub fn apply_all(&mut self, events: &[Event]) {
+        self.update(|state| {
+            events
+                .iter()
+                .fold(false, |changed, event| apply_event(state, event) | changed)
+        });
+        for event in events {
+            for (_, listener) in &mut self.event_listeners {
+                listener(event);
+            }
         }
     }
 
@@ -255,10 +268,11 @@ mod tests {
         );
     }
 
-    /// M5 review M5: a snapshot costs nothing (the screens and the feed take one per frame), and the state is copied only when
-    /// a change meets a snapshot that is still held.
+    /// M5 review M5, as the host-wiring review M1 corrected it: a snapshot costs nothing, a change copies the state when it
+    /// meets a snapshot that is still held (which in the live app is always: the UI keeps the last frame's), and leaves that
+    /// snapshot as it was; with none held the change is made in place.
     #[test]
-    fn a_snapshot_shares_the_state_and_a_change_copies_it_only_while_one_is_held() {
+    fn a_change_copies_the_state_while_a_snapshot_is_held_and_leaves_that_snapshot_alone() {
         let mut store = AppStore::new();
         store.apply(&chain(5));
         let (first, second) = (store.snapshot(), store.snapshot());
@@ -283,6 +297,41 @@ mod tests {
             before,
             "the change copied the state"
         );
+    }
+
+    /// A batch is one change: one copy while a snapshot is held, one notification with the state after the last event, and the
+    /// event listeners still hear every event, in order.
+    #[test]
+    fn a_batch_of_events_is_one_change_and_every_event_is_still_heard() {
+        let (log, heard) = (
+            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Mutex::new(Vec::new())),
+        );
+        let mut store = AppStore::new();
+        store.subscribe(recording(&log));
+        let record = Arc::clone(&heard);
+        store.subscribe_events(move |event| {
+            if let Event::SettingsChanged(settings) = event {
+                record
+                    .lock()
+                    .expect("the log isn't poisoned")
+                    .push(settings.chain_limit);
+            }
+        });
+        let held = store.snapshot();
+        store.apply_all(&[chain(5), chain(6), chain(7)]);
+        assert_eq!(store.version(), 1, "three events were three changes");
+        assert!(!Arc::ptr_eq(&held, &store.snapshot()));
+        assert_eq!(*log.lock().expect("the log isn't poisoned"), vec![7]);
+        assert_eq!(
+            *heard.lock().expect("the log isn't poisoned"),
+            vec![5, 6, 7]
+        );
+        // Events that change nothing are not a change.
+        let unchanged = store.snapshot();
+        store.apply_all(&[chain(7), chain(7)]);
+        assert_eq!(store.version(), 1);
+        assert!(Arc::ptr_eq(&unchanged, &store.snapshot()));
     }
 
     #[test]

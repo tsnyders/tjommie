@@ -1626,7 +1626,26 @@ impl<E: Environment> AppConnection<E> {
             tokio::select! {
                 biased;
                 received = events.recv(), if events_open => match received {
-                    Ok(event) => self.on_event(&event, id),
+                    Ok(first) => {
+                        // What is already waiting goes in with it: one change of the state, so one copy of it (the UI
+                        // always holds the last frame's snapshot) however many events a burst brings.
+                        let mut burst = vec![first];
+                        loop {
+                            match events.try_recv() {
+                                Ok(event) => burst.push(event),
+                                Err(broadcast::error::TryRecvError::Empty) => break,
+                                Err(broadcast::error::TryRecvError::Closed) => {
+                                    events_open = false;
+                                    break;
+                                }
+                                Err(broadcast::error::TryRecvError::Lagged(_)) => {
+                                    self.close_in_background(raw.clone());
+                                    break;
+                                }
+                            }
+                        }
+                        self.on_events(&burst, id);
+                    }
                     Err(broadcast::error::RecvError::Lagged(_)) => {
                         // Events were lost, so the state can't be trusted: let the link end, and reconnect.
                         self.close_in_background(raw.clone());
@@ -1668,19 +1687,21 @@ impl<E: Environment> AppConnection<E> {
         })
     }
 
-    /// One event from the daemon: into the state, and into the catch-up of its conversation if that is being fetched. It
-    /// came from link `link`, and is dropped unless that is still the live one: the window may have moved to another PC while
+    /// The events the daemon sent in one burst, in order: into the state as one change, and each into the catch-up of its
+    /// conversation if that is being fetched. They came from link `link`, and are dropped unless that is still the live one: the window may have moved to another PC while
     /// the old link's task still held events it had received (M5 review, Minor 6; the Everyone room has one id on every PC).
-    fn on_event(&self, event: &Event, link: u64) {
+    fn on_events(&self, events: &[Event], link: u64) {
         let mut s = self.lock();
         if s.ready_id() != Some(link) {
             return;
         }
-        s.store.apply(event);
-        if let Some((conversation, message)) = message_event(event)
-            && let Some(arrival) = s.arriving.get_mut(&conversation)
-        {
-            arrival.events.push(message);
+        s.store.apply_all(events);
+        for event in events {
+            if let Some((conversation, message)) = message_event(event)
+                && let Some(arrival) = s.arriving.get_mut(&conversation)
+            {
+                arrival.events.push(message);
+            }
         }
     }
 
@@ -4127,6 +4148,32 @@ mod tests {
         w.pc().emit(Event::BotUpdated(bot("fresh")));
         w.settle().await;
         assert_eq!(w.bot_ids(), ["fresh"]);
+    }
+
+    /// Host-wiring review M1: the live app always holds a snapshot (the UI's store keeps the last frame's), so every change
+    /// copies the whole state. A burst of events is therefore one change, not one change each: the link task applies what is
+    /// already waiting in one go. The version goes up once per change.
+    #[tokio::test]
+    async fn a_burst_of_events_costs_one_copy_of_the_state() {
+        let w = desktop();
+        w.start().await;
+        let (before, held) = w.conn.state_and_version();
+        // Twenty events with no turn for the connection in between: all of them are waiting when it next runs.
+        for at in 0..20 {
+            w.pc().emit(Event::BotUpdated(bot(&format!("burst{at}"))));
+        }
+        w.settle().await;
+        let (after, state) = w.conn.state_and_version();
+        assert_eq!(state.bots.len(), 20, "every event of the burst was applied");
+        assert_eq!(
+            after,
+            before + 1,
+            "the burst was applied one event at a time, each one a copy of the state"
+        );
+        assert!(
+            held.bots.is_empty(),
+            "the snapshot a screen held was changed under it"
+        );
     }
 
     /// M5 review M5: the feed tells whether anything changed from a number, and takes the state as a pointer.
