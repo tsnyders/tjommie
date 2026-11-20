@@ -13,8 +13,9 @@ use protocol::model::{
 };
 
 use super::{approval, bubbles, notices, rows};
-use crate::model::format::{clock, file_size};
+use crate::model::format::clock;
 use crate::model::labels::DELETED_BOT;
+use crate::ui::files::card::FileFacts;
 use crate::ui::primitives::avatar::{BotAvatar, Pose};
 use crate::ui::style::{TypeExt as _, hsla, palette, r, theme};
 
@@ -163,36 +164,19 @@ fn view(
             rows::handoff(&message.id, &message.body, &handoff, context, window, cx)
         }
         MessageData::Routine(routine) => notices::routine(&message.id, &message.body, &routine, cx),
-        MessageData::File(file) => {
-            // The file card with its preview and Save is T4.4's; until then, the file's name and size.
-            let theme = theme(cx);
-            let colors = palette(cx);
-            div()
-                .flex()
-                .items_center()
-                .gap(r(theme.space.s8))
-                .h(r(36.))
-                .px(r(theme.space.s12))
-                .rounded(r(theme.radius.field))
-                .bg(hsla(colors.surface.raised))
-                .type_style(&theme.typography.desktop.small)
-                .text_color(hsla(colors.text.primary))
-                .child(
-                    svg()
-                        .path("icons/i/175/file-text.svg")
-                        .size(r(15.))
-                        .flex_none()
-                        .text_color(hsla(colors.icon.base)),
-                )
-                .child(SharedString::from(file.name))
-                .child(
-                    div()
-                        .type_style(&theme.typography.desktop.meta)
-                        .text_color(hsla(colors.text.tertiary))
-                        .child(SharedString::from(file_size(file.size))),
-                )
-                .into_any_element()
-        }
+        MessageData::File(file) => crate::ui::files::card::card(
+            &message.id,
+            0,
+            file.attachment_id,
+            FileFacts {
+                name: file.name,
+                path: file.path,
+                size: Some(file.size),
+                content_type: file.content_type,
+            },
+            window,
+            cx,
+        ),
     }
 }
 

@@ -421,3 +421,144 @@ mod exchange_view {
         assert!(node("exchange.x1.view").is_none());
     }
 }
+
+/// T4.4: a shared file's card, the viewer reading a Markdown file through the transfer, and the card offline.
+mod file_card {
+    use super::*;
+    use base64::Engine as _;
+    use protocol::attachments::{AttachmentChunk, AttachmentInfo, AttachmentOpen};
+    use protocol::wire::Empty;
+
+    use crate::model::state::Connection;
+
+    /// The protocol wants a UUID.
+    const FILE_ID: &str = "7d3f5b1e-2c4a-4e6b-9f80-1a2b3c4d5e6f";
+
+    fn shared(name: &str, size: u64, content_type: &str) -> AppState {
+        let file = with(
+            MessageKind::File,
+            json!({
+                "path": format!(r"D:\Shared\{name}"), "name": name, "size": size,
+                "attachmentId": FILE_ID, "contentType": content_type
+            }),
+            message("m1", "b1", "", 1),
+        );
+        chat(vec![file], false)
+    }
+
+    /// The daemon's side of one Markdown file: open, read in chunks as asked, close.
+    fn serving(text: &'static str) -> FakeRpc {
+        let size = text.len() as u64;
+        FakeRpc::new()
+            .on::<method::AttachmentsOpen>(move |_| {
+                Ok(AttachmentOpen {
+                    transfer_id: "t1".into(),
+                    attachment: AttachmentInfo {
+                        id: FILE_ID.into(),
+                        host_id: "h1".into(),
+                        name: "notes.md".into(),
+                        size,
+                        content_type: "text/markdown".into(),
+                        sha256: "rev".into(),
+                    },
+                    chunk_bytes: 262_144,
+                    expires_at: "2026-11-15T09:00:00.000Z".into(),
+                })
+            })
+            .on::<method::AttachmentsRead>(move |params| {
+                let offset = params["offset"].as_u64().unwrap();
+                let end = (offset + params["length"].as_u64().unwrap()).min(size);
+                let bytes = &text.as_bytes()[offset as usize..end as usize];
+                Ok(AttachmentChunk {
+                    transfer_id: "t1".into(),
+                    revision: "rev".into(),
+                    offset,
+                    bytes: base64::engine::general_purpose::STANDARD.encode(bytes),
+                    eof: end == size,
+                })
+            })
+            .on::<method::AttachmentsClose>(|_| Ok(Empty {}))
+    }
+
+    #[gpui::test]
+    fn a_shared_file_is_a_card_with_its_actions(cx: &mut TestAppContext) {
+        let (cx, _) = app(
+            cx,
+            Route::Chat("b1".into()),
+            shared("report.pdf", 2_516_582, "application/pdf"),
+            FakeRpc::new(),
+        );
+        draw(cx);
+        assert_eq!(node("file.m1.0").unwrap().text, "report.pdf");
+        assert_eq!(
+            node("file.m1.0.preview").unwrap().text,
+            "Preview report.pdf"
+        );
+        assert_eq!(
+            node("file.m1.0.download").unwrap().text,
+            "Download report.pdf"
+        );
+        assert_eq!(
+            node("file.m1.0.folder").unwrap().text,
+            "Show report.pdf in its folder",
+            "on this PC, the file's folder"
+        );
+    }
+
+    #[gpui::test]
+    fn the_viewer_reads_a_markdown_file_and_closes_its_transfer_with_it(cx: &mut TestAppContext) {
+        let (cx, calls) = app(
+            cx,
+            Route::Chat("b1".into()),
+            shared("notes.md", 26, "text/markdown"),
+            serving("# Plan\n\nShip **T4.4** now."),
+        );
+        draw(cx);
+        click(cx, "file.m1.0.preview");
+        draw(cx);
+        draw(cx);
+        assert!(node("file.m1.0.viewer").is_some(), "the viewer is open");
+        assert!(
+            node("file.m1.0.viewer.status").is_none() && node("file.m1.0.viewer.problem").is_none(),
+            "and its section is read"
+        );
+        let opens = calls_to(&calls, "attachments.open");
+        assert_eq!(
+            opens,
+            [json!({ "messageId": "m1", "attachmentIndex": 0, "attachmentId": FILE_ID })]
+        );
+        assert_eq!(calls_to(&calls, "attachments.read")[0]["offset"], 0);
+        assert!(calls_to(&calls, "attachments.close").is_empty());
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        assert!(node("file.m1.0.viewer").is_none(), "Escape closes it");
+        assert_eq!(
+            calls_to(&calls, "attachments.close"),
+            [json!({ "transferId": "t1" })],
+            "and its transfer with it"
+        );
+    }
+
+    #[gpui::test]
+    fn offline_the_card_says_why_it_cannot_download(cx: &mut TestAppContext) {
+        let mut state = shared("report.pdf", 2_516_582, "application/pdf");
+        state.connection = Connection::Reconnecting;
+        let (cx, calls) = app(cx, Route::Chat("b1".into()), state, FakeRpc::new());
+        draw(cx);
+        assert!(
+            !node("file.m1.0.preview").unwrap().enabled,
+            "no preview offline"
+        );
+        click(cx, "file.m1.0.download");
+        draw(cx);
+        assert_eq!(
+            node("file.m1.0.status").unwrap().text,
+            "The file host is offline. Reconnect to download it."
+        );
+        let asked: Vec<&str> = calls.calls().into_iter().map(|(name, _)| name).collect();
+        assert!(
+            !asked.iter().any(|name| name.starts_with("attachments.")),
+            "nothing asked of the file host: {asked:?}"
+        );
+    }
+}

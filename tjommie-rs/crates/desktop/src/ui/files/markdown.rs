@@ -238,14 +238,16 @@ pub fn reply(id: &str, text: &SharedString, window: &mut Window, cx: &mut App) -
         });
     }
     let safe = memo.read(cx).safe.clone();
-    styled(
-        TextView::markdown(SharedString::from(id.to_owned()), safe),
-        cx,
-    )
-    .image_source(|_| blocked())
-    .on_link_click(|url, _, _, cx| {
-        guarded("open a link", || open_web(url, cx));
-    })
+    document(SharedString::from(id.to_owned()), safe, cx)
+}
+
+/// Markdown already rewritten by [`sanitize`], drawn as prose: web links open in the default browser, images never load.
+pub fn document(id: SharedString, safe: SharedString, cx: &App) -> TextView {
+    styled(TextView::markdown(id, safe), cx)
+        .image_source(|_| blocked())
+        .on_link_click(|url, _, _, cx| {
+            guarded("open a link", || open_web(url, cx));
+        })
 }
 
 /// The Aegis prose style, shared by replies and Markdown files.
