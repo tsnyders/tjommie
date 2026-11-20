@@ -1,6 +1,6 @@
 # Tjommie
 
-Tjommie is a free, open-source Windows app for AI agents that chat with you, work on your PC, talk to each other and run routines.
+Tjommie is a free, open-source Windows 11 app for AI agents that chat with you, work on your PC, talk to each other and run routines.
 The agents run on your own computer through the official Claude Code and Codex command-line tools, signed in with your own accounts.
 
 ![Agents overview in dark mode](docs/screens/agents-dark.png)
@@ -11,24 +11,20 @@ The agents run on your own computer through the official Claude Code and Codex c
 
 ### 1. Install
 
-Download `Tjommie-Setup-<version>.exe` and run it. It installs for your Windows user only, needs no administrator rights, and starts Tjommie when it finishes.
-Windows SmartScreen may warn about an unknown publisher, because the installer isn't signed yet: click **More info**, then **Run anyway**.
+Download `Tjommie-Setup-<version>.exe` and run it. Tjommie needs Windows 11. It installs for your Windows user only, needs no administrator rights, and starts Tjommie when it finishes.
+Windows SmartScreen may warn about an unknown publisher, because the installer isn't signed yet: choose **More info**, then **Run anyway**.
 Your agents, chats and settings are kept in `%LOCALAPPDATA%\Tjommie`. Uninstalling leaves them there.
-
-| Windows asks once | Choose Run anyway |
-|---|---|
-| ![SmartScreen warning](docs/screens/install-smartscreen-1.png) | ![SmartScreen, Run anyway](docs/screens/install-smartscreen-2.png) |
 
 ### 2. Sign in
 
 Tjommie runs your agents with Claude Code and Codex, so install at least one of them first: Claude Code from [claude.com/claude-code](https://claude.com/claude-code), or Codex with `npm install -g @openai/codex`.
-The first screen has a card for each. Click **Sign in to Claude** or **Sign in to Codex**. Your browser opens the provider's sign-in page, and Tjommie notices when you are done.
+The first screen has a card for each, and says what is missing. Once a tool is installed, click **Sign in to Claude** or **Sign in to Codex**. Your browser opens the provider's sign-in page, and Tjommie notices when you are done.
 Tjommie keeps its own sign-in, separate from how you use these tools yourself, and never sees your password.
 Codex agents that work in their own folder need Codex's sandbox. The Codex card offers **Set up Codex's sandbox**, and Windows asks for administrator permission once.
 
-| Signed out | Signed in |
+| Before the tools are installed | Signed in |
 |---|---|
-| ![Set up Tjommie, signed out](docs/screens/setup-signed-out-dark.png) | ![Set up Tjommie, signed in](docs/screens/setup-signed-in-dark.png) |
+| ![Set up Tjommie, tools not installed](docs/screens/setup-not-installed-dark.png) | ![Set up Tjommie, signed in](docs/screens/setup-signed-in-dark.png) |
 
 ### 3. Create your first agent
 
@@ -37,7 +33,7 @@ Then choose its account and model, its folder, how much it may do without asking
 
 | New agent | Your agents |
 |---|---|
-| ![New agent form](docs/screens/new-agent-dark.png) | ![Agents screen with three agents](docs/screens/agents-dark.png) |
+| ![New agent form](docs/screens/new-agent-dark.png) | ![Agents screen with four agents](docs/screens/agents-dark.png) |
 
 ### 4. Chat and approvals
 
@@ -63,7 +59,17 @@ Settings, then Agents, sets how many requests agents may pass between each other
 |---|---|
 | ![The Everyone room](docs/screens/room-dark.png) | ![An exchange between two agents](docs/screens/exchange-dark.png) |
 
-### 6. Routines
+### 6. Projects
+
+A project is a team of agents working on one Git repository. **Projects** in the sidebar lists your teams. **New project** asks for a name, a repository you choose on this PC, a base branch and the branch to integrate into, and the agents on the team with a role each, Developer or Reviewer. An agent can be on only one active project.
+Add tasks to a team. A task has instructions and a developer, and can have a reviewer and a tester. Saving a team or a task starts no work: **Start task** does. Each task works in its own isolated worktree.
+**Run review** and **Run checks** look at the task's committed changes, and **Integrate accepted commit** brings the exact commit that passed into your target branch on this PC. **Open team room** opens the team's room.
+
+| Projects | A task |
+|---|---|
+| ![Projects screen with a team and its tasks](docs/screens/projects-dark.png) | ![A task's detail](docs/screens/project-task-dark.png) |
+
+### 7. Routines
 
 A routine is a prompt an agent runs on a schedule. **Routines** in the sidebar lists every agent's routines, and **Add routine** makes a new one.
 A routine has a name, what to do, the days and times, the time zone those times are read in, and a **Stop after** limit. The editor lists the routine's recent runs.
@@ -73,7 +79,7 @@ If a routine fails, Tjommie shows a notification.
 |---|---|
 | ![Routines screen](docs/screens/routines-dark.png) | ![Routine editor](docs/screens/routine-editor-dark.png) |
 
-### 7. The agent's browser and Logins
+### 8. The agent's browser and Logins
 
 Turn on **Browser** in an agent's settings. Then open the panel beside its chat with the panel button, **Ctrl+B**, or **Open browser** in the chat's More menu.
 The browser is built into Tjommie and uses Microsoft Edge WebView2. You and the agent share the same tabs, and each agent keeps its own browser profile.
@@ -87,7 +93,7 @@ Before it fills anything, Tjommie confirms the exact HTTPS site.
 |---|---|
 | ![Browser panel beside a chat](docs/screens/browser-dark.png) | ![Logins menu over a page](docs/screens/logins-menu-dark.png) |
 
-### 8. Pair the Android companion
+### 9. Pair the Android companion
 
 Install the Android app from the same release page. On the PC, open Settings, then Devices, then **Pair a device**, and scan the code in the Android app or paste it there.
 A code works once and lasts ten minutes. Pairing works on the same Wi-Fi as the PC, or over mobile data when the relay is on. The PC has to be awake.
@@ -100,13 +106,15 @@ See [`packages/mobile/README.md`](packages/mobile/README.md) for signing and bui
 
 ## Features
 
-| Accounts and spending caps | Usage | Light theme |
+| Accounts | Usage | Light theme |
 |---|---|---|
 | ![Accounts settings](docs/screens/accounts-dark.png) | ![Usage settings](docs/screens/usage-dark.png) | ![Agents screen in light mode](docs/screens/agents-light.png) |
 
 - **Accounts and usage**: Settings, then Accounts, holds your Claude Code and Codex accounts, each a subscription or an API key. Settings, then Usage, shows tokens and cost for today, this week, this month and this year, by agent, account or model.
 - **Spending caps**: An API-key account has a spending cap in dollars. Agents stop using the key once its total spend reaches the cap. The figure is an estimate from the prices Tjommie knows, not an invoice, so your provider's bill may be higher.
 - **Autonomy levels**: Each agent is set to **Always ask**, **Own folder** or **Full auto**. Always ask checks with you before every change. Own folder lets the agent work freely in its own folder and asks before anything else. Full auto never asks, and Tjommie asks you to confirm before it turns it on.
+- **Dictation**: Use the dictate button in a message box and speak. The words land in the box for you to edit, and dictation never sends. Speech recognition runs on this PC, with an English model you download in Settings, then Voice, where you also choose the microphone and the language. Windows asks for microphone access the first time you dictate.
+- **Files**: Files an agent shares appear as cards in the chat, with a preview and a **Download** that asks where to save. Settings, then Files, shows the size limits.
 - **The tray**: Closing the window keeps Tjommie running in the Windows tray. Left-click the icon to show the window. Right-click for **Open Tjommie**, **Restart to update** (when an update is ready) and **Quit Tjommie**.
 - **Notifications**: Tjommie shows a Windows notification when an agent needs approval, finishes, fails or hits a usage limit, and when a routine fails. It stays quiet while its window is in front. Clicking a notification opens that chat or room.
 - **Start at sign-in**: Tjommie starts hidden in the tray when you sign in to Windows. Turn it off in Settings, then General.
