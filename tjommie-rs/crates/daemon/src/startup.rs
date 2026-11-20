@@ -449,23 +449,24 @@ async fn start_with(
         publisher,
         workers,
     } = parts;
-    // Fixtures: the accounts are checked before the server answers. Until a check stores its report, the setup cache is
-    // empty, so a client that connected earlier would hear a `setup.changed` without the provider, and a message sent
-    // then would find the account not ready. The fixtures host answers every probe from memory, so this is quick. (A
-    // real daemon checks in the background after it answers, below.)
-    if fixtures_on && protected.is_ok() && accounts.runtime.check_all().await.is_err() {
-        eprintln!("The fixture accounts could not be checked.");
-    }
     // The folder protection pass, then `runner.start()` and `scheduler.start()`, run before the server answers, as in
     // `daemon.ts:646-648`.
-    let activated = protected
-        .and_then(|()| {
-            runner
-                .start()
-                .and_then(|()| m4.start_scheduler())
-                .map_err(rpc)
-        })
-        .and_then(|()| server.activate_with(token, handlers, routes).map_err(rpc));
+    let started = protected.and_then(|()| {
+        runner
+            .start()
+            .and_then(|()| m4.start_scheduler())
+            .map_err(rpc)
+    });
+    // Fixtures: the accounts are checked before the server answers, and after the runner is up, since each check tells the
+    // runner (`setup_changed`). Until a check stores its report, the setup cache is empty, so a client that connected earlier
+    // would hear a `setup.changed` without the provider, and a message sent then would find the account not ready. The
+    // fixtures host answers every probe from memory, so this is quick. (A real daemon checks in the background after it
+    // answers, below.)
+    if fixtures_on && started.is_ok() && accounts.runtime.check_all().await.is_err() {
+        eprintln!("The fixture accounts could not be checked.");
+    }
+    let activated =
+        started.and_then(|()| server.activate_with(token, handlers, routes).map_err(rpc));
     let daemon = Daemon {
         server,
         root,
