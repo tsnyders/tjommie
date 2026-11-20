@@ -5,6 +5,7 @@
 - The browser panel slides open with the live page moving with it.
 - Paired devices and the panel use the same live view of an agent's browser.
 - If Windows can't keep the Logins window out of screenshots and screen sharing, the window won't take a login.
+- File previews don't have search yet, and a password-protected PDF can't be opened in the preview; use Download to open it in another app.
 
 ## 0.5.1 — 2026-11-14
 
