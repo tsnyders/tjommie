@@ -577,3 +577,291 @@ fn the_vault_is_refused_for_an_unknown_bot_a_stopped_check_and_a_different_origi
     );
     assert_ne!(f.rig.state("alpha").private_active, Some(true));
 }
+
+// ---- the whole host stack: the daemon's routes, the clients, the vault, EngineLogin and the engine ----------------------
+//
+// A login is saved and filled the way the person does it from Logins: the daemon's `/vault-host` queues the commands (as it
+// does for the app's RPCs), the app's `Hosts` serves them with its vault, the vault asks the person's windows (here: always
+// yes, and a typed login), and the browser steps run on the real engine through `EngineLogin`, on a real HTTPS page, in
+// private mode. Only the Logins windows and Credential Manager are stand-ins (the secret is kept in memory).
+
+use std::collections::HashMap;
+use std::sync::Mutex;
+
+use daemon::native_browser_broker::NativeBrowserBroker;
+use daemon::server::{Handlers, Routes, Server, ServerOptions};
+use daemon::vault_host_broker::{VaultHostBroker, VaultRequestOptions};
+use daemon::worker_boundary_host::{WorkerBoundary, WorkerBoundaryHost, WorkerLease};
+use desktop_host::browser::engine::Reply;
+use desktop_host::browser::host_bridge::{Executor as BridgeExecutor, Job};
+use desktop_host::hosts::{BotDirectory, BotInfo, DirectoryError, Hosts, Local, Parts};
+use desktop_host::vault::entry::EntryInput;
+use desktop_host::vault::login::{Cancel, Confirmation, EntryWindow, SecretStore};
+use desktop_host::vault::storage::VaultError;
+use protocol::vault::{
+    LoginEntry, VaultEntry, VaultFill, VaultFinish as FinishCommand, VaultHostAction,
+    VaultHostCommand,
+};
+use serde_json::Value;
+
+struct Available;
+
+struct OneLease;
+
+impl WorkerLease for OneLease {
+    fn valid(&self) -> bool {
+        true
+    }
+
+    fn release(&self) {}
+}
+
+impl WorkerBoundary for Available {
+    fn unavailable_reason(&self) -> futures_util::future::BoxFuture<'static, Option<String>> {
+        Box::pin(async { None })
+    }
+
+    fn acquire(&self) -> futures_util::future::BoxFuture<'static, Option<Box<dyn WorkerLease>>> {
+        Box::pin(async { Some(Box::new(OneLease) as Box<dyn WorkerLease>) })
+    }
+
+    fn invalidate(&self) {}
+}
+
+/// The person: types one login into the entry window and says yes to every confirmation.
+struct Person {
+    origin: String,
+}
+
+impl EntryWindow for Person {
+    fn entry(
+        &self,
+        _: String,
+        _: Option<LoginEntry>,
+        _: Cancel,
+    ) -> BoxFuture<'_, Result<Option<EntryInput>, LoginError>> {
+        Box::pin(async move {
+            Ok(Some(EntryInput {
+                name: "Work login".to_owned(),
+                origin: LoginOrigin::new(&self.origin).map_err(|_| LoginError::Failed)?,
+                secret: VaultSecret::new("ada", "correct horse"),
+            }))
+        })
+    }
+
+    fn confirm(&self, _: Confirmation, _: Cancel) -> BoxFuture<'_, Result<bool, LoginError>> {
+        Box::pin(async { Ok(true) })
+    }
+
+    fn close(&self) {}
+}
+
+#[derive(Default)]
+struct Kept(Mutex<HashMap<String, (String, String)>>);
+
+impl SecretStore for Kept {
+    fn write(&self, reference: &str, secret: &VaultSecret) -> Result<(), VaultError> {
+        self.0.lock().expect("secrets").insert(
+            reference.to_owned(),
+            (secret.username().to_owned(), secret.password().to_owned()),
+        );
+        Ok(())
+    }
+
+    fn read(&self, reference: &str) -> Result<Option<VaultSecret>, VaultError> {
+        Ok(self
+            .0
+            .lock()
+            .expect("secrets")
+            .get(reference)
+            .map(|(user, password)| VaultSecret::new(user, password)))
+    }
+
+    fn delete(&self, reference: &str) -> Result<(), VaultError> {
+        self.0.lock().expect("secrets").remove(reference);
+        Ok(())
+    }
+}
+
+struct AlphaIsListed(BotIdentity);
+
+impl BotDirectory for AlphaIsListed {
+    fn find(&self, id: &str) -> BoxFuture<'_, Result<Option<BotInfo>, DirectoryError>> {
+        let found = (id == self.0.id).then(|| BotInfo {
+            identity: self.0.clone(),
+            browser: true,
+        });
+        Box::pin(async move { Ok(found) })
+    }
+}
+
+/// The browser jobs of the daemon's other route: none come in this test.
+struct NoJobs;
+
+impl BridgeExecutor for NoJobs {
+    fn execute(&self, _: Job) -> BoxFuture<'static, Result<Reply, String>> {
+        Box::pin(async { Ok(Reply::empty()) })
+    }
+}
+
+fn command(action: VaultHostAction) -> Value {
+    serde_json::to_value(VaultHostCommand {
+        controller_id: "local".into(),
+        action,
+    })
+    .expect("a command serializes")
+}
+
+/// What the person does from Logins, as the daemon queues it: the command goes to the broker, the vault answers on its
+/// thread, and this (the UI) thread pumps the browser's messages until the answer comes.
+fn ask(
+    f: &mut Fixture,
+    runtime: &tokio::runtime::Runtime,
+    broker: &Arc<VaultHostBroker>,
+    action: VaultHostAction,
+) -> Value {
+    let (broker, command) = (broker.clone(), command(action));
+    let request = runtime.spawn(async move {
+        broker
+            .request(command, VaultRequestOptions::default())
+            .await
+            .map_err(|error| error.to_string())
+    });
+    f.rig.ui.wait_until(
+        "the daemon's Logins request to be answered",
+        Duration::from_secs(60),
+        || request.is_finished(),
+    );
+    runtime
+        .block_on(request)
+        .expect("the request task")
+        .expect("the vault answered")
+}
+
+#[test]
+fn a_saved_login_is_filled_and_cleared_privately_through_the_daemons_vault_route() {
+    let mut f = Fixture::new();
+    f.on("/login.html");
+    let (origin, target) = (f.origin(), f.target());
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("a runtime");
+
+    // The daemon: the three host routes behind one host token.
+    let host_token = "h".repeat(43);
+    let renderer_token = "r".repeat(43);
+    let browser_broker = NativeBrowserBroker::new(host_token.clone(), Duration::from_secs(20));
+    let vault_broker = VaultHostBroker::new(host_token.clone(), Duration::from_secs(60));
+    let worker = WorkerBoundaryHost::new(Arc::new(Available), host_token.clone());
+    let server = runtime
+        .block_on(Server::start(ServerOptions {
+            port: 0,
+            token: renderer_token.clone(),
+            handlers: Handlers::default(),
+            allowed_origins: Vec::new(),
+            defer_requests: false,
+        }))
+        .expect("the daemon's server starts");
+    server
+        .activate_with(
+            &renderer_token,
+            Handlers::default(),
+            Routes::default()
+                .route("/browser-host", browser_broker.route())
+                .route("/vault-host", vault_broker.route())
+                .route("/worker-host", worker.route()),
+        )
+        .expect("the routes mount");
+
+    // The app: its vault and its clients, with the engine's browser steps served on this (the UI) thread.
+    let root = tempfile::tempdir().expect("a temp root");
+    let (hosts, requests) = Hosts::new(Parts {
+        root: root.path().to_owned(),
+        secrets: Some(Arc::new(Kept::default())),
+        entry: Arc::new(Person {
+            origin: origin.clone(),
+        }),
+        runtime: runtime.handle().clone(),
+    });
+    assert!(hosts.has_vault());
+    let spawner = f.rig.ui.spawner();
+    f.rig.ui.spawn(desktop_host::browser::login::serve(
+        f.rig.engine.clone(),
+        requests,
+        move |task| {
+            use futures::task::LocalSpawnExt as _;
+            let _ = spawner.spawn_local(task);
+        },
+    ));
+    let running = hosts
+        .start(
+            &Local {
+                port: server.port(),
+                token: renderer_token,
+                host_token,
+            },
+            Arc::new(AlphaIsListed(f.rig.bot("alpha"))),
+            Arc::new(NoJobs),
+        )
+        .expect("the clients start");
+
+    // What the person does from Logins, as the daemon queues it.
+    assert_eq!(
+        ask(&mut f, &runtime, &vault_broker, VaultHostAction::Unlock)["state"],
+        "unlocked"
+    );
+    let saved = ask(
+        &mut f,
+        &runtime,
+        &vault_broker,
+        VaultHostAction::Entry(VaultEntry {
+            bot_id: "alpha".into(),
+            id: None,
+            revision: None,
+        }),
+    );
+    assert_eq!(saved["status"], "saved", "{saved}");
+    let id = saved["entry"]["id"].as_str().expect("an id").to_owned();
+    let revision = saved["entry"]["revision"].as_u64().expect("a revision");
+
+    let filled = ask(
+        &mut f,
+        &runtime,
+        &vault_broker,
+        VaultHostAction::Fill(VaultFill {
+            bot_id: "alpha".into(),
+            generation: target.generation.clone(),
+            page_id: target.page_id.clone(),
+            control_epoch: target.control_epoch,
+            id,
+            revision,
+        }),
+    );
+    assert_eq!(filled["status"], "filled", "{filled}");
+    let private_epoch = filled["privateEpoch"].as_u64().expect("a private epoch");
+    assert_eq!(
+        f.rig.state("alpha").private_active,
+        Some(true),
+        "the page is private while it is filled"
+    );
+    assert_eq!(f.values(), "ada|correct horse", "the login is on the page");
+
+    let finished = ask(
+        &mut f,
+        &runtime,
+        &vault_broker,
+        VaultHostAction::Finish(FinishCommand {
+            bot_id: "alpha".into(),
+            generation: target.generation,
+            private_epoch,
+            mode: FinishMode::Clear,
+        }),
+    );
+    assert_eq!(finished["status"], "cleared", "{finished}");
+    assert_eq!(f.values(), "|", "the fields are cleared and verified");
+
+    runtime.block_on(hosts.stop(running));
+    runtime.block_on(server.close());
+}

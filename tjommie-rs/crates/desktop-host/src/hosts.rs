@@ -167,7 +167,8 @@ impl WindowFacts {
         self.ready.store(true, Ordering::SeqCst);
     }
 
-    /// Whether any of the window is being presented: a hidden, minimized or fully covered window is not trusted.
+    /// Whether the window is being presented (shown and not minimized, as GPUI reports it): a hidden or minimized window is not
+    /// trusted.
     pub fn set_visible(&self, visible: bool) {
         self.visible.store(visible, Ordering::SeqCst);
     }
@@ -175,11 +176,6 @@ impl WindowFacts {
     /// Whether the app's document has loaded and can take requests.
     pub fn set_ready(&self, ready: bool) {
         self.ready.store(ready, Ordering::SeqCst);
-    }
-
-    /// The window is gone.
-    pub fn closed(&self) {
-        self.present.store(false, Ordering::SeqCst);
     }
 
     fn quitting(&self) -> bool {

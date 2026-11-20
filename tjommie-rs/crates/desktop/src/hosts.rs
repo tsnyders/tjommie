@@ -41,8 +41,8 @@ use crate::model::logins::{CommandFailure, Desktop, NativeVault, RawAnswer};
 use crate::ui::browser::local::LocalBrowser;
 use crate::ui::vault_entry::EntryWindows;
 
-/// How long a stop waits for the UI thread to wind the clients down before it goes on without it.
-const STOP_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a stop before a daemon restart waits for the UI thread to wind the clients down before it goes on without it.
+pub const STOP_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long the bot watcher waits before it connects to the daemon again.
 const RETRY: Duration = Duration::from_secs(1);
 
@@ -115,15 +115,16 @@ impl HostControl {
         });
     }
 
-    /// The daemon is going (it restarts, or the app quits): stop the clients. Resolves when the UI thread has stopped
-    /// them, or after [`STOP_TIMEOUT`] without it.
+    /// The daemon is going (it restarts, or the app quits): stop the clients. Resolves when the UI thread has stopped them.
+    /// It holds no timer, so it runs on any executor (the UI's at quit, Tokio's at a restart): the caller bounds the wait,
+    /// with [`STOP_TIMEOUT`] or the quit timeout.
     pub fn stop(&self, browsers: bool) -> impl Future<Output = ()> + Send + use<> {
         self.generation.send_modify(|generation| *generation += 1);
         let (done, stopped) = oneshot::channel();
         let sent = self.orders.try_send(Order::Stop { browsers, done });
         async move {
             if sent.is_ok() {
-                let _ = tokio::time::timeout(STOP_TIMEOUT, stopped).await;
+                let _ = stopped.await;
             }
         }
     }
@@ -293,8 +294,8 @@ pub fn serve(app: AppHosts, orders: Receiver<Order>, requests: Receiver<Request>
 fn spawner(cx: &App) -> impl Fn(LocalBoxFuture<'static, ()>) + 'static {
     let executor = cx.foreground_executor().clone();
     move |task| {
-        // unguarded: a future, not a closure; guarded_async wraps it on the next line
         executor
+            // unguarded: a future, not a closure; guarded_async wraps it
             .spawn(guarded_async("a browser job", task))
             .detach();
     }
@@ -303,6 +304,7 @@ fn spawner(cx: &App) -> impl Fn(LocalBoxFuture<'static, ()>) + 'static {
 fn serve_login_steps(engine: &Rc<Engine>, requests: &Receiver<Request>, cx: &mut App) {
     let (engine, requests, spawn) = (engine.clone(), requests.clone(), spawner(cx));
     cx.foreground_executor()
+        // unguarded: a future, not a closure; guarded_async wraps it
         .spawn(guarded_async(
             "run the vault's browser steps",
             serve_logins(engine, requests, spawn),
@@ -322,6 +324,7 @@ fn start(
     let (queue, jobs) = JobQueue::new();
     let spawn = spawner(cx);
     cx.foreground_executor()
+        // unguarded: a future, not a closure; guarded_async wraps it
         .spawn(guarded_async(
             "serve the browser's jobs",
             serve_jobs(engine.clone(), jobs, spawn),
@@ -329,6 +332,7 @@ fn start(
         .detach();
     let (applying, locking) = (engine.clone(), hosts.clone());
     cx.foreground_executor()
+        // unguarded: a future, not a closure; guarded_async wraps it
         .spawn(guarded_async("hear the daemon's bots", async move {
             while let Ok(notice) = notices.recv().await {
                 match notice {
@@ -345,11 +349,12 @@ fn start(
                             );
                         }
                     }
+                    // unguarded: the engine's own method inside guarded_async, not a handler registration
                     Notice::Deleted(id) => applying.on_bot_event(BotEvent::Deleted { id }).await,
                     Notice::Updated { id, browser } => {
-                        applying
-                            .on_bot_event(BotEvent::Updated { id, browser })
-                            .await;
+                        let updated = BotEvent::Updated { id, browser };
+                        // unguarded: the engine's own method inside guarded_async, not a handler registration
+                        applying.on_bot_event(updated).await;
                     }
                     Notice::Lost => locking.lock(),
                 }
@@ -381,6 +386,7 @@ pub fn watch_window(app: &AppHosts, window: &mut Window, cx: &mut App) {
         })
         .detach();
     let quitting = app.clone();
+    // unguarded: guarded() wraps the whole body; a panic in it answers "close", which is the way out of a stuck quit
     window.on_window_should_close(cx, move |_, cx| {
         guarded("close the app", || quit(&quitting, cx)).unwrap_or(true)
     });
@@ -451,6 +457,7 @@ impl NativeVault for LocalVault {
         // UI task only awaits its answer.
         let answered = self
             .runtime
+            // unguarded: a tokio task, off the UI thread, where a panic ends only that task
             .spawn(async move { hosts.execute_local(action).await });
         async move {
             let reply = answered.await.map_err(|_| CommandFailure::Failed)?;

@@ -64,7 +64,7 @@ Needs the store wired (T1.4), so a chat has a bot with its browser on. Quiet PC,
 - [ ] A page `prompt()` (or `confirm()`) while you are in control: type in its answer field and press Escape. The dialog is
   cancelled and the panel stays open. With focus elsewhere, Escape closes the panel.
 
-### The Logins window (needs the vault host wired; no real account: a made-up login on a local test page)
+### The Logins window (the vault host is wired: the app starts it with its daemon; no real account: a made-up login on a local test page)
 - [ ] Open a Logins window (Unlock Logins from the logins menu). Take a screenshot (Win+Shift+S), share the screen in Teams
   and record it in OBS: in each, the Logins window is black or missing while the rest of the app shows. If the window
   instead says "This PC can't keep this window out of screen capture", Windows refused to hide it: note the Windows

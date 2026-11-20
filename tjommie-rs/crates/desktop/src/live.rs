@@ -231,7 +231,8 @@ impl Shared {
         // unguarded: a tokio task, off the UI thread, where a panic ends only that task
         self.runtime.spawn(async move {
             // The clients of the daemon that is going stop first: the vault locks and nothing polls a dying daemon.
-            shared.hosts.stop(false).await;
+            let _ =
+                tokio::time::timeout(crate::hosts::STOP_TIMEOUT, shared.hosts.stop(false)).await;
             if let Some(old) = old {
                 let _ = old.stop_before_quit(daemon_process::QUIT_TIMEOUT).await;
             }
