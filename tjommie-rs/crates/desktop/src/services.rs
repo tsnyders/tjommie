@@ -121,7 +121,8 @@ impl WindowState for Up {
 pub struct Services {
     window: AnyWindowHandle,
     hosts: AppHosts,
-    user_data: PathBuf,
+    /// Where the "still running" hint's marker is kept; `None` when the folders were refused (no hint is shown then).
+    user_data: Option<PathBuf>,
     notifier: Arc<Notifier>,
     notifications: Arc<Notifications>,
     updater: Updater,
@@ -181,14 +182,68 @@ impl Http for NoFeed {
     }
 }
 
+/// An updater over `feed` (none: it checks nothing and says `UpdateState::Unsupported`), started.
+fn build_updater(
+    app_id: &str,
+    feed: Option<Url>,
+    download_root: PathBuf,
+    http: Arc<dyn Http>,
+    runtime: &tokio::runtime::Handle,
+    quit: Arc<dyn Fn() + Send + Sync>,
+) -> Updater {
+    let updater = Updater::new(
+        UpdaterConfig {
+            app_id: app_id.to_owned(),
+            current: this_version(),
+            feed,
+            download_root,
+        },
+        UpdaterDeps {
+            http,
+            inspector: Arc::new(VersionResource),
+            launcher: Arc::new(DetachedLauncher),
+            quit,
+            before_restart: None,
+        },
+        runtime.clone(),
+    );
+    updater.start();
+    updater
+}
+
+/// An updater with no feed: nothing is ever fetched or installed, and its quit is a plain one. What the quit asks when the
+/// services did not start (it needs an updater to ask whether an update is waiting).
+fn no_feed_updater(runtime: &tokio::runtime::Handle) -> Updater {
+    build_updater(
+        "",
+        None,
+        PathBuf::new(),
+        Arc::new(NoFeed),
+        runtime,
+        Arc::new(|| {}),
+    )
+}
+
 /// This run's updater: its feed is the compiled-in one in a production build, a local one in an update test, and none
-/// otherwise; `UpdateState::Unsupported` says so. `quit` asks the app to run its graceful quit (Restart to update).
+/// otherwise; `UpdateState::Unsupported` says so. `quit` asks the app to run its graceful quit (Restart to update). With no
+/// folder to download to (`download_root`) it has no feed either.
 fn updater_for(
     identity: &Identity,
-    dirs: &AppDirs,
+    download_root: Option<&Path>,
     runtime: &tokio::runtime::Handle,
     quit: impl Fn() + Send + Sync + 'static,
 ) -> Updater {
+    let Some(download_root) = download_root else {
+        log::warn!("Updates are off: there is no folder to download them to.");
+        return build_updater(
+            identity.app_id,
+            None,
+            PathBuf::new(),
+            Arc::new(NoFeed),
+            runtime,
+            Arc::new(quit),
+        );
+    };
     let updates = std::env::var("TJOMMIE_UPDATES").ok();
     let update_feed = std::env::var("TJOMMIE_UPDATE_FEED").ok();
     let user_data = std::env::var("TJOMMIE_USER_DATA").ok();
@@ -211,28 +266,34 @@ fn updater_for(
         },
         _ => Arc::new(NoFeed),
     };
-    let updater = Updater::new(
-        UpdaterConfig {
-            app_id: identity.app_id.to_owned(),
-            current: this_version(),
-            feed,
-            download_root: dirs.download_root.clone(),
+    build_updater(
+        identity.app_id,
+        feed,
+        download_root.to_path_buf(),
+        http,
+        runtime,
+        Arc::new(quit),
+    )
+}
+
+/// A start-at-sign-in setting that is never allowed: it reads off and writes nothing. What stands in when its config can't
+/// be made.
+fn disallowed_login_item(identity: &Identity, registry: Arc<dyn Registry>) -> LoginItem {
+    LoginItem::new(
+        registry,
+        LoginItemConfig {
+            allowed: false,
+            value_name: identity.app_id.into(),
+            exe: PathBuf::new(),
+            user_data: PathBuf::new(),
         },
-        UpdaterDeps {
-            http,
-            inspector: Arc::new(VersionResource),
-            launcher: Arc::new(DetachedLauncher),
-            quit: Arc::new(quit),
-            before_restart: None,
-        },
-        runtime.clone(),
-    );
-    updater.start();
-    updater
+    )
 }
 
 /// Starts the tray, the notifications, the start-at-sign-in setting and the updater, for the window just opened. A part
-/// that can't start is logged and the app goes on without it.
+/// that can't start is logged and the app goes on without it, and without it the others and the quit still work: folders
+/// that were refused leave the setting off, the updater without a feed and the hint unshown, but keep the tray and the
+/// toasts.
 pub fn start(identity: &Identity, window: &mut Window, cx: &mut App) {
     let Some(hosts) = cx.try_global::<AppHosts>().cloned() else {
         return;
@@ -260,12 +321,12 @@ pub fn start(identity: &Identity, window: &mut Window, cx: &mut App) {
             roaming: roaming.as_deref(),
         },
     ) {
-        Ok(dirs) => dirs,
+        Ok(dirs) => Some(dirs),
         Err(refused) => {
             log::warn!(
-                "No tray, toasts, login item or updater: a folder was refused ({refused:?})"
+                "No start-at-sign-in setting, update downloads or still-running hint: a folder was refused ({refused:?})"
             );
-            return;
+            None
         }
     };
     let handle = window.window_handle();
@@ -281,17 +342,20 @@ pub fn start(identity: &Identity, window: &mut Window, cx: &mut App) {
     };
     #[cfg(not(any(test, feature = "test-driver")))]
     let registry: Arc<dyn Registry> = Arc::new(Windows);
-    let login_item = match login_item_for(
-        identity,
-        &dirs.user_data,
-        own_user_data.as_deref(),
-        registry.clone(),
-    ) {
-        Ok(item) => Arc::new(item),
-        Err(error) => {
+    let login_item = match dirs.as_ref().map(|dirs| {
+        login_item_for(
+            identity,
+            &dirs.user_data,
+            own_user_data.as_deref(),
+            registry.clone(),
+        )
+    }) {
+        Some(Ok(item)) => Arc::new(item),
+        Some(Err(error)) => {
             log::warn!("No start-at-sign-in setting: {error}");
-            return;
+            Arc::new(disallowed_login_item(identity, registry.clone()))
         }
+        None => Arc::new(disallowed_login_item(identity, registry.clone())),
     };
     if let Err(error) = login_item.sync() {
         log::warn!("Could not set start at sign-in: {error}");
@@ -311,9 +375,14 @@ pub fn start(identity: &Identity, window: &mut Window, cx: &mut App) {
 
     // The updater, and the quits it asks for.
     let (quit_asked, quit_requests) = unbounded::<()>();
-    let updater = updater_for(identity, &dirs, &runtime, move || {
-        let _ = quit_asked.unbounded_send(());
-    });
+    let updater = updater_for(
+        identity,
+        dirs.as_ref().map(|dirs| dirs.download_root.as_path()),
+        &runtime,
+        move || {
+            let _ = quit_asked.unbounded_send(());
+        },
+    );
 
     // The tray.
     let (picked, tray_events) = channel::<TrayEvent>();
@@ -343,7 +412,7 @@ pub fn start(identity: &Identity, window: &mut Window, cx: &mut App) {
     let services = Services {
         window: handle,
         hosts: hosts.clone(),
-        user_data: dirs.user_data.clone(),
+        user_data: dirs.map(|dirs| dirs.user_data),
         notifier,
         notifications,
         updater: updater.clone(),
@@ -462,8 +531,10 @@ pub fn on_close_requested(window: &mut Window, cx: &mut App) -> bool {
         return quit.done;
     }
     let Some(services) = services(cx) else {
-        // No services (a view test): closing ends the app as it always did.
-        return true;
+        // The services did not start: nothing can bring a hidden window back, so the window stays up and the app quits
+        // gracefully, as it did before the tray. (`begin_quit` quits at once where there is nothing to stop.)
+        begin_quit(cx);
+        return false;
     };
     if !services.has_tray() {
         begin_quit(cx);
@@ -471,9 +542,11 @@ pub fn on_close_requested(window: &mut Window, cx: &mut App) -> bool {
     }
     // The window is being updated now (this is its close hook), so it is hidden through the handle we were given.
     hide_command(window);
-    tray::hint_once(&services.user_data, |title, body| {
-        services.notifier.show_plain(title, body)
-    });
+    if let Some(user_data) = &services.user_data {
+        tray::hint_once(user_data, |title, body| {
+            services.notifier.show_plain(title, body)
+        });
+    }
     false
 }
 
@@ -505,7 +578,8 @@ struct AppQuit {
     cx: AsyncApp,
     hosts: AppHosts,
     stopper: Option<Arc<dyn DaemonControl>>,
-    window: AnyWindowHandle,
+    /// The window to bring back if the quit is given up; none without the services.
+    window: Option<AnyWindowHandle>,
     /// An e2e run can hold the quit once the daemon has stopped, to look at the app while it is still alive.
     #[cfg(any(test, feature = "test-driver"))]
     held: Option<Arc<std::sync::atomic::AtomicBool>>,
@@ -560,7 +634,9 @@ impl QuitHost for AppQuit {
             hosts.hosts.cancel_quit();
             // The app runs on: the daemon may restart and its clients start again.
             hosts.control.resume();
-            show_window(window, cx);
+            if let Some(window) = window {
+                show_window(window, cx);
+            }
             notices::raise(Notice::UpdateNotInstalled { daemon_stopped });
             // The service did not stop in time and is gone now: it starts again, and its clients with it.
             if let Some(stopper) = restarting {
@@ -577,22 +653,34 @@ pub fn begin_quit(cx: &mut App) {
     if cx.has_global::<Quit>() {
         return;
     }
-    let Some(services) = services(cx) else {
+    // The quit needs the clients' control, the daemon's owner and an updater to ask whether an update waits: not the services
+    // as a whole. Without them (a part that failed to start) it still stops everything, with a no-feed updater; only a
+    // view test with no hosts at all just quits.
+    let services = services(cx);
+    let hosts = cx.try_global::<AppHosts>().cloned();
+    let updater = match &services {
+        Some(services) => Some(services.updater.clone()),
+        None => cx
+            .try_global::<crate::live::Tokio>()
+            .map(|tokio| no_feed_updater(&tokio.0)),
+    };
+    let (Some(hosts), Some(updater)) = (hosts, updater) else {
         cx.quit();
         return;
     };
     cx.set_global(Quit { done: false });
-    hide_window(services.window, cx);
-    services.hosts.hosts.begin_quit();
+    let window = services.as_ref().map(|services| services.window);
+    if let Some(window) = window {
+        hide_window(window, cx);
+    }
+    hosts.hosts.begin_quit();
     log::info!("Closing: the browser, Logins and worker clients stop, then the daemon.");
-    let (hosts, window, updater) = (
-        services.hosts.clone(),
-        services.window,
-        services.updater.clone(),
-    );
     let stopper = crate::live::stopper(cx);
     #[cfg(any(test, feature = "test-driver"))]
-    let held = services.fakes.as_ref().map(|fakes| fakes.hold_quit.clone());
+    let held = services
+        .as_ref()
+        .and_then(|services| services.fakes.as_ref())
+        .map(|fakes| fakes.hold_quit.clone());
     cx.spawn(async move |cx| {
         guarded_async("quit", async move {
             let host = AppQuit {
@@ -991,6 +1079,7 @@ pub fn poke(poke: Poke, cx: &mut App) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::live::{DaemonOwner, Tokio};
     use desktop_host::daemon_process::DaemonError;
     use desktop_host::identity::{DEV, E2E, PRODUCTION, UPDATE_TEST};
     use desktop_host::shell::registry::Hive;
@@ -1033,6 +1122,101 @@ mod tests {
             }
             Ok(())
         }
+    }
+
+    /// A daemon's owner that counts what the quit asks of it, and answers its stop as told.
+    #[derive(Default)]
+    struct Owner {
+        stops: AtomicUsize,
+        restarts: AtomicUsize,
+        answer: Mutex<Option<DaemonStop>>,
+    }
+
+    impl DaemonControl for Owner {
+        fn stop(&self) -> BoxFuture<'static, Result<Option<DaemonStop>, String>> {
+            self.stops.fetch_add(1, Ordering::SeqCst);
+            let answer = *self.answer.lock().unwrap();
+            async move { Ok(answer) }.boxed()
+        }
+
+        fn restart_daemon(&self) {
+            self.restarts.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    /// A window with nothing in it, for a close hook to be asked about.
+    struct Blank;
+
+    impl gpui::Render for Blank {
+        fn render(
+            &mut self,
+            _: &mut Window,
+            _: &mut gpui::Context<Self>,
+        ) -> impl gpui::IntoElement {
+            gpui::div()
+        }
+    }
+
+    /// Re-review M1: the quit does not depend on the services having started. With no `Services` (a folder refused, an exe
+    /// path that cannot be read) closing the window used to be allowed with nothing stopped, and the process ran on with no
+    /// window and no tray. It now runs the whole graceful quit, and the window stays up until it is done.
+    #[gpui::test]
+    fn closing_the_window_without_the_services_runs_the_graceful_quit(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (app, orders, requests, root) =
+            crate::hosts::testing::app_hosts(runtime.handle(), "m1");
+        // Nothing serves the clients' stop, so it answers at once.
+        drop((orders, requests));
+        let owner = Arc::new(Owner::default());
+        cx.update(|cx| {
+            cx.set_global(app.clone());
+            cx.set_global(Tokio(runtime.handle().clone()));
+            cx.set_global(DaemonOwner(owner.clone()));
+        });
+        let window = cx.add_window(|_, _| Blank);
+        let closed = window
+            .update(cx, |_, window, cx| on_close_requested(window, cx))
+            .unwrap();
+        assert!(!closed, "the window closed with nothing stopped");
+        cx.run_until_parked();
+        assert_eq!(
+            owner.stops.load(Ordering::SeqCst),
+            1,
+            "the daemon was not stopped"
+        );
+        assert!(app.control.quitting(), "the clients were not stopped");
+        cx.update(|cx| {
+            assert!(cx.global::<Quit>().done, "the quit did not finish");
+        });
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Re-review M1: where the folders were refused (or the exe path can't be read) the start-at-sign-in setting stands in as
+    /// one that is never allowed, and the updater has no feed; neither writes or fetches anything.
+    #[test]
+    fn what_cannot_start_for_want_of_folders_is_off_and_does_nothing() {
+        let registry = Arc::new(Counting::default());
+        let item = disallowed_login_item(&PRODUCTION, registry.clone());
+        item.sync().unwrap();
+        item.set(true).unwrap();
+        assert!(!item.get());
+        assert_eq!(registry.writes.load(Ordering::SeqCst), 0);
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let updater = updater_for(&PRODUCTION, None, runtime.handle(), || {});
+        assert_eq!(updater.state(), UpdateState::Unsupported);
+        assert_eq!(
+            no_feed_updater(runtime.handle()).state(),
+            UpdateState::Unsupported
+        );
     }
 
     /// A folder of its own for one test, removed after.

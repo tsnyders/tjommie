@@ -564,17 +564,69 @@ impl Desktop for Bridge {
     }
 }
 
+/// The app's hosts over folders and stand-ins of a test's own: no engine, no daemon, no person at the Logins windows.
+#[cfg(test)]
+pub(crate) mod testing {
+    use std::path::PathBuf;
+
+    use desktop_host::vault::entry::EntryInput;
+    use desktop_host::vault::login::{Cancel, Confirmation, EntryWindow, LoginError};
+    use protocol::vault::LoginEntry;
+
+    use super::*;
+
+    /// A stand-in for the Logins windows: nothing in a test asks the person anything.
+    pub(crate) struct NoWindows;
+
+    impl EntryWindow for NoWindows {
+        fn entry(
+            &self,
+            _: String,
+            _: Option<LoginEntry>,
+            _: Cancel,
+        ) -> BoxFuture<'_, Result<Option<EntryInput>, LoginError>> {
+            Box::pin(async { Ok(None) })
+        }
+
+        fn confirm(&self, _: Confirmation, _: Cancel) -> BoxFuture<'_, Result<bool, LoginError>> {
+            Box::pin(async { Ok(false) })
+        }
+
+        fn close(&self) {}
+    }
+
+    /// `AppHosts` with its orders and vault-step inboxes, and the folder it keeps its records in (the caller removes it).
+    pub(crate) fn app_hosts(
+        runtime: &tokio::runtime::Handle,
+        name: &str,
+    ) -> (AppHosts, Receiver<Order>, Receiver<Request>, PathBuf) {
+        let root =
+            std::env::temp_dir().join(format!("tjommie-hosts-{name}-{}", std::process::id()));
+        let (hosts, requests) = Hosts::new(Parts {
+            root: root.clone(),
+            secrets: None,
+            entry: Arc::new(NoWindows),
+            runtime: runtime.clone(),
+        });
+        let (control, orders) = HostControl::new(runtime.clone());
+        let app = AppHosts {
+            hosts: Arc::new(hosts),
+            control,
+            runtime: runtime.clone(),
+        };
+        (app, orders, requests, root)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::Read as _;
     use std::net::{TcpListener, TcpStream};
     use std::time::Instant;
 
-    use desktop_host::vault::entry::EntryInput;
     use desktop_host::vault::host::HostToken;
-    use desktop_host::vault::login::{Cancel, Confirmation, EntryWindow, LoginError};
-    use protocol::vault::LoginEntry;
 
+    use super::testing::app_hosts;
     use super::*;
 
     fn local() -> Local {
@@ -607,26 +659,6 @@ mod tests {
         assert!(started(&inbox));
     }
 
-    /// A stand-in for the Logins windows: nothing in these tests asks the person anything.
-    struct NoWindows;
-
-    impl EntryWindow for NoWindows {
-        fn entry(
-            &self,
-            _: String,
-            _: Option<LoginEntry>,
-            _: Cancel,
-        ) -> BoxFuture<'_, Result<Option<EntryInput>, LoginError>> {
-            Box::pin(async { Ok(None) })
-        }
-
-        fn confirm(&self, _: Confirmation, _: Cancel) -> BoxFuture<'_, Result<bool, LoginError>> {
-            Box::pin(async { Ok(false) })
-        }
-
-        fn close(&self) {}
-    }
-
     /// What a connection to the stand-in daemon asked for first, if it has sent anything yet.
     fn first_request(mut stream: TcpStream) -> String {
         let _ = stream.set_nonblocking(false);
@@ -650,20 +682,8 @@ mod tests {
             .enable_all()
             .build()
             .unwrap();
-        let root =
-            std::env::temp_dir().join(format!("tjommie-hosts-minor1-{}", std::process::id()));
-        let (hosts, requests) = Hosts::new(Parts {
-            root: root.clone(),
-            secrets: None,
-            entry: Arc::new(NoWindows),
-            runtime: runtime.handle().clone(),
-        });
-        let (control, orders) = HostControl::new(runtime.handle().clone());
-        let app = AppHosts {
-            hosts: Arc::new(hosts),
-            control: control.clone(),
-            runtime: runtime.handle().clone(),
-        };
+        let (app, orders, requests, root) = app_hosts(runtime.handle(), "minor1");
+        let control = app.control.clone();
         cx.update(|cx| serve(app, orders, requests, cx));
         control.start(Local {
             port,
