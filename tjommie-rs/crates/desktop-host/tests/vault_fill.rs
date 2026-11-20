@@ -1,8 +1,12 @@
 //! T3.6: the browser's side of filling a saved login, on real HTTPS pages (`native-browser-login.ts` and `native-browser.ts`
 //! `beginVault`, `writeVault`, `finishVault`). The pages are served over TLS on loopback with a test certificate that the
 //! browser is told to accept twice over: `--ignore-certificate-errors` for the process (this binary only), and, before each
-//! navigation, `Security.setIgnoreCertificateErrors` on the tab (as `browser_prompts.rs` does). Nothing real is touched: no
-//! account, no Credential Manager entry, no network beyond 127.0.0.1.
+//! navigation, `Security.setIgnoreCertificateErrors` on the tab (as `browser_prompts.rs` does). By default nothing real is
+//! touched: no account, no Credential Manager entry (the host-stack test keeps its secrets in memory), no network beyond
+//! 127.0.0.1. `TJOMMIE_RS_CREDMAN_TESTS=1` makes the host-stack test use the real Credential Manager instead, under the temp
+//! root's own namespace (derived from its path, so never the installed app's or the dev daemon's), and its drop guard
+//! deletes exactly the entries it wrote. Compare `cmdkey /list` before and after when you opt in: a killed run (no drop) can
+//! leave one entry behind in a namespace nothing can enumerate.
 
 // Test helpers may panic: a failure here is the test failing (the deny lints guard shipped code).
 #![allow(
@@ -828,7 +832,7 @@ fn a_saved_login_is_filled_and_cleared_privately_through_the_daemons_vault_route
     let root = tempfile::tempdir().expect("a temp root");
     // Declared before `hosts`, so it drops after them: the vault is closed before its secrets are deleted.
     let (secrets, _cleanup): (Arc<dyn SecretStore>, Option<CredentialCleanup>) =
-        if std::env::var_os("TJOMMIE_CI_HOSTED").is_some() {
+        if std::env::var_os("TJOMMIE_RS_CREDMAN_TESTS").is_none() {
             (Arc::new(Kept::default()), None)
         } else {
             let credentials = Arc::new(
