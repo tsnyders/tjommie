@@ -79,7 +79,8 @@ jobs:
         run: |
           function Assert-NoFeed {
             $text = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes('target\debug\tjommie-desktop.exe'))
-            if ($text.Contains('github.com/tsnyders/tjommie')) { throw "The $env:TJOMMIE_IDENTITY desktop build contains the update feed." }
+            # The feed's path, not the project's address: About links to the project in every build.
+            if ($text.Contains('tsnyders/tjommie/releases/latest/download')) { throw "The $env:TJOMMIE_IDENTITY desktop build contains the update feed." }
           }
           $env:TJOMMIE_IDENTITY = 'dev'
           cargo test --workspace --locked --no-run
@@ -87,9 +88,14 @@ jobs:
           $env:TJOMMIE_IDENTITY = 'e2e'
           cargo test --workspace --locked --no-run --features desktop/test-driver
           Assert-NoFeed
-      # The e2e tests drive that e2e build through its test driver, each on a temp root (Phase 3 plan T0.5).
+      # The e2e tests start the daemon beside the app with TJOMMIE_PROVIDER_FIXTURES set (recorded turns, no real
+      # provider), and a daemon built without the provider-fixtures feature refuses to start with that variable set, so
+      # build it with the feature first. The feature-off build below replaces it before the daemon-process test.
+      - run: cargo build -p daemon --bin tjommie-daemon --features provider-fixtures --locked
+      # The e2e tests drive that e2e build through its test driver, each on a temp root (Phase 3 plan T0.5). Every e2e
+      # binary runs and reports, whichever fails first.
       - name: Desktop e2e tests
-        run: cargo test --workspace --locked --features desktop/test-driver --test 'e2e_*'
+        run: cargo test --workspace --locked --features desktop/test-driver --test 'e2e_*' --no-fail-fast
         env:
           TJOMMIE_IDENTITY: e2e
       # The desktop's daemon-process test hosts the Rust exe when TJOMMIE_DAEMON_EXE names it (plan T9.1). Build it here so

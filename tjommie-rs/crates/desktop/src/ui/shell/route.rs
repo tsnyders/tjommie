@@ -26,6 +26,15 @@ pub enum Section {
     About,
 }
 
+/// What a link into an account asks of Settings (`?action=` in `/settings/?section=accounts&account=…`): start its
+/// sign-in, set its spending cap, or check its limit again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccountAction {
+    SignIn,
+    Cap,
+    Retry,
+}
+
 /// What the main column shows. The app opens on Agents.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum Route {
@@ -38,6 +47,16 @@ pub enum Route {
     Projects,
     Routines,
     Settings(Section),
+    /// Settings, Accounts, on one account: the deep link (`/settings/?section=accounts&account=<id>&action=<…>`) that
+    /// the chat's setup banner and limit notices follow. The Accounts section focuses the control `action` names on that
+    /// account's card (Sign in, Raise or Edit cap, Retry queued work) once it's there, once; a link never starts a
+    /// sign-in or a retry by itself. The sidebar's Settings and the Accounts link show as selected.
+    /// Nothing produces this route yet: its keyboard path (and `e2e_keyboard_navigation`'s step through it) arrives with
+    /// the Chat lane's link producers, the setup banner and the limit notices (M5 review M8).
+    Account {
+        account: String,
+        action: Option<AccountAction>,
+    },
     NewBot,
     BotSettings(BotId),
 }
@@ -81,6 +100,12 @@ mod tests {
             assert_eq!(current(cx), Route::Chat("bot-1".into()));
             cx.navigate(Route::Settings(Section::Devices));
             assert_eq!(current(cx), Route::Settings(Section::Devices));
+            let signin = Route::Account {
+                account: "acct-1".into(),
+                action: Some(AccountAction::SignIn),
+            };
+            cx.navigate(signin.clone());
+            assert_eq!(current(cx), signin);
         });
     }
 }

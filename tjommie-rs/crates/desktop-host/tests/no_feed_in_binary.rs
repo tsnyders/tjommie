@@ -1,12 +1,18 @@
 //! Spec §3.10: a dev or e2e binary has no way to look for an update, and the production feed's address isn't even in it
 //! (CI runs the same scan on the finished `tjommie-desktop.exe`; this one covers what `desktop-host` itself compiles).
 //! This test's own executable links the library, so it holds whatever the library compiled in. It joins the address
-//! it looks for from its parts at run time, so the test doesn't put the address into its own executable.
+//! it looks for from its parts at run time, so the test doesn't put the address into its own executable. The needle is
+//! the feed's path, not the project's address: About links to the project in every build.
 
 use std::hint::black_box;
 
-/// The address, as one string only while the test runs.
+/// The feed's path, as one string only while the test runs.
 fn address() -> String {
+    black_box(["tsnyders", "tjommie", "releases", "latest", "download"]).join("/")
+}
+
+/// The project's address, also joined at run time.
+fn project() -> String {
     black_box(["github.com", "tsnyders", "tjommie"]).join("/")
 }
 
@@ -44,10 +50,22 @@ fn only_a_production_build_contains_the_release_feed_address() {
 }
 
 #[test]
-fn the_scan_can_find_the_address_when_it_is_there() {
-    // A mutation check for the scan itself: put the address in memory and it must be found.
+fn the_scan_finds_the_feed_and_not_the_project_links() {
+    // A mutation check for the scan itself: the feed's address must be found, and About's links (the releases page,
+    // the project, its license), which every build carries, must not.
     let needle = address();
-    let haystack = format!("....{needle}/releases/latest/download/latest.yml....").into_bytes();
-    assert!(contains(&haystack, needle.as_bytes()));
+    let project = project();
+    let feed = format!("....https://{project}/releases/latest/download/latest.yml....");
+    assert!(contains(feed.as_bytes(), needle.as_bytes()));
+    for link in [
+        format!("https://{project}/releases/latest"),
+        format!("https://{project}"),
+        format!("https://{project}/blob/main/LICENSE"),
+    ] {
+        assert!(
+            !contains(link.as_bytes(), needle.as_bytes()),
+            "{link} isn't the feed"
+        );
+    }
     assert!(!contains(b"github.com/someone/else", needle.as_bytes()));
 }

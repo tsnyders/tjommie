@@ -23,6 +23,7 @@ const COLOR_ROLES: Record<string, string> = {
   primary: "action.primary", "on-primary": "on.primary", "on-ink": "on.ink", "on-accent": "on.accent",
   hover: "state.hover", "sunk-hover": "state.sunkHover", "panel-hover": "state.panelHover",
   pressed: "state.pressed", focus: "state.focus",
+  "danger-text": "danger.text",
   scrim: "overlay.scrim", highlight: "overlay.highlight",
   "avatar-eye": "avatar.eye", sweep: "avatar.sweep",
   // The Tjommie mark: a body gradient from start to end, with eyes.

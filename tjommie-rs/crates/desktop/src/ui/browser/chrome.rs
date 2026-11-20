@@ -146,7 +146,7 @@ impl Chrome<'_> {
                         .mx(r(theme.space.s12))
                         .mb(r(theme.space.s12))
                         .type_style(&theme.typography.desktop.small)
-                        .text_color(hsla(theme.color.bot.red))
+                        .text_color(hsla(colors.danger.text))
                         .child(div().flex_1().min_w_0().child(error))
                         .when(retry, |row| {
                             row.child(

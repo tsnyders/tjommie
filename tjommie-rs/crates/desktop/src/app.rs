@@ -1,6 +1,8 @@
 //! Starting the app (Phase 3 plan T0.5): the bundled assets and fonts, the Aegis theme, notices, the zoom keys, the
 //! window and, in an e2e build, the test driver.
 
+use std::path::PathBuf;
+
 use desktop_host::identity::Identity;
 use desktop_host::shell::single_instance::Instance;
 use futures::StreamExt as _;
@@ -19,8 +21,9 @@ use crate::ui::shell::data::ShellData;
 use crate::ui::shell::{self, Shell};
 use crate::zoom::Zoom;
 
-/// Runs the app until its window closes. `after_crash`: Windows restarted it after a crash.
-pub fn run(identity: Identity, after_crash: bool, instance: Option<Instance>) {
+/// Runs the app until its window closes. `root` is the data root `main` checked with `owner_safety`; `after_crash`:
+/// Windows restarted it after a crash.
+pub fn run(identity: Identity, root: PathBuf, after_crash: bool, instance: Option<Instance>) {
     gpui_kit::application()
         .with_assets(Assets)
         .run(move |cx: &mut App| {
@@ -45,7 +48,14 @@ pub fn run(identity: Identity, after_crash: bool, instance: Option<Instance>) {
             kit.font_family = TEXT_FAMILY.into();
             kit.mono_font_family = MONO_FAMILY.into();
             shell::set_rem(Zoom::default(), cx);
+            cx.bind_keys(crate::keymap::field_tab(cx));
             cx.bind_keys(crate::keymap::bindings());
+            // The daemon and the connection (M5): until it's ready the shell says "Starting Tjommie". A test-driver run on
+            // the panel fixture keeps the fixture's store (`ui::browser::e2e_fixture`) until the host-wiring batch
+            // gives the panel its live path.
+            if !crate::ui::browser::panel_fixture() {
+                crate::live::start(identity, root.clone(), cx);
+            }
             if after_crash {
                 notices::raise(Notice::ClosedUnexpectedly);
             }

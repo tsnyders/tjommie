@@ -1,6 +1,6 @@
 //! The keymap (Phase 3 plan T2.4; gate condition 2): the one list of the app's key bindings, bound at start. The
 //! app-wide ones (`app_wide()`) work wherever the focus is in the app's window. A context binding works inside an
-//! element with that `key_context` (`COMPOSER`, `MENTIONS`, `APPROVAL`, `BUTTON`). Any binding added later goes in
+//! element with that `key_context` (`COMPOSER`, `MENTIONS`, `APPROVAL`, `BUTTON`, `LIST`). Any binding added later goes in
 //! `bindings()`.
 //!
 //! Escape and the overlays, for the Browser UI lane's T3.7 (M2 review F4): GPUI doesn't rank a deeper context's binding
@@ -59,6 +59,10 @@ actions!(
         /// Presses the focused button (Enter or Space): a binding, so the button's context beats a dialog's own
         /// Enter (review F1).
         Press,
+        /// The item before in a group: a radio group, a segmented control, a list, Recents, a tab row (T5.6).
+        Prev,
+        /// The item after.
+        Next,
     ]
 );
 
@@ -70,6 +74,8 @@ pub const MENTIONS: &str = "Mentions";
 pub const APPROVAL: &str = "Approval";
 /// A focused button: a pill, an icon button, a toggle, a sidebar row (`ui::primitives::button::pressable`).
 pub const BUTTON: &str = "Button";
+/// A group whose items the arrow keys move between (T5.6): up and left go back, down and right go on.
+pub const LIST: &str = "List";
 /// A Logins window: the main window's panel keys stand aside in it, and its Escape cancels it.
 pub const LOGINS: &str = "Logins";
 /// Not inside an open overlay: gpui-kit's dialog, sheet and menu (popover content) contexts, or a Logins window.
@@ -87,11 +93,40 @@ pub fn bindings() -> Vec<KeyBinding> {
         KeyBinding::new("tab", MentionPick, Some(MENTIONS)),
         KeyBinding::new("enter", MentionPick, Some(MENTIONS)),
         KeyBinding::new("escape", MentionClose, Some(MENTIONS)),
+        // In a text field the field's own bindings (gpui-kit's `Input`: Enter, the arrows, Tab and Escape) sit deeper
+        // than a Composer or Mentions element around it, and GPUI ranks the deeper binding first. These rank at the
+        // field's depth; bound after gpui-kit's, they come first there (same depth: the later binding). Mentions'
+        // Enter is after Composer's, so it picks while the list is open.
+        KeyBinding::new("enter", Send, Some("Composer > Input")),
+        KeyBinding::new("up", MentionUp, Some("Mentions > Input")),
+        KeyBinding::new("down", MentionDown, Some("Mentions > Input")),
+        KeyBinding::new("tab", MentionPick, Some("Mentions > Input")),
+        KeyBinding::new("enter", MentionPick, Some("Mentions > Input")),
+        KeyBinding::new("escape", MentionClose, Some("Mentions > Input")),
         KeyBinding::new("escape", CancelLogins, Some(LOGINS)),
         KeyBinding::new("enter", Press, Some(BUTTON)),
         KeyBinding::new("space", Press, Some(BUTTON)),
+        KeyBinding::new("up", Prev, Some(LIST)),
+        KeyBinding::new("left", Prev, Some(LIST)),
+        KeyBinding::new("down", Next, Some(LIST)),
+        KeyBinding::new("right", Next, Some(LIST)),
     ]);
     bindings
+}
+
+/// Tab and Shift+Tab leave a text field (T5.6). gpui-kit's multi-line field takes them for indenting, which traps the
+/// keyboard in it; these run gpui-kit's own focus moves (`root::Tab`, `root::TabPrev`, which keep the focus inside an
+/// open dialog) at the field's depth. Bind them after `gpui_kit::init` and before `bindings()`: at the same depth the
+/// later binding wins, so they beat the indent, and an open mention list's Tab (`Mentions > Input`) beats them.
+pub fn field_tab(cx: &gpui::App) -> Vec<KeyBinding> {
+    [("tab", "root::Tab"), ("shift-tab", "root::TabPrev")]
+        .into_iter()
+        .filter_map(|(keys, name)| {
+            let action = cx.build_action(name, None).ok()?;
+            let field = gpui::KeyBindingContextPredicate::parse("Input").ok()?;
+            KeyBinding::load(keys, action, Some(std::rc::Rc::new(field)), false, None, cx).ok()
+        })
+        .collect()
 }
 
 /// The bindings that work wherever the focus is in the app's window (`Dismiss` stands aside inside an open overlay, and
@@ -314,5 +349,15 @@ mod tests {
         assert_eq!(zoomed.get(), 2);
         // Windows never reports that chord as "=" with Shift held; it would match neither binding.
         assert!(!is_forwarded(&from_windows("=", true)));
+    }
+
+    /// M5 review Minor 28: both of a text field's Tab bindings load. `field_tab` builds them from gpui-kit's action
+    /// names, so a rename there would drop one silently, and Tab would trap the keyboard in every multi-line field.
+    #[gpui::test]
+    fn field_tab_loads_both_bindings(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            assert_eq!(field_tab(cx).len(), 2, "Tab and Shift+Tab");
+        });
     }
 }

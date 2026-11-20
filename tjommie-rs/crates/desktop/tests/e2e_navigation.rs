@@ -33,18 +33,11 @@ fn e2e_navigation() {
     let root = owner_safety::test_root().unwrap();
     let mut app = Client::launch(env!("CARGO_BIN_EXE_tjommie-desktop"), root.path()).unwrap();
 
-    // The app opens on Agents. No store is wired to a daemon yet (T1.4), so it is connecting: the connection screen
-    // fills the main column, and the sidebar still works.
+    // The app opens on Agents. The sidebar works whether the app's daemon has come up yet or not (connecting, the
+    // connection screen fills the main column; `e2e_live` follows the connection itself).
     app.wait("sidebar.nav.agents", Predicate::Selected, 30_000)
         .unwrap();
     let snapshot = app.snapshot().unwrap();
-    let title = snapshot
-        .node("connection.title")
-        .expect("the connection screen");
-    assert_eq!(
-        (title.role.as_str(), title.text.as_str()),
-        ("Heading", "Starting Tjommie")
-    );
     let agents = snapshot.node("sidebar.nav.agents").unwrap();
     assert_eq!(
         (agents.role.as_str(), agents.text.as_str()),

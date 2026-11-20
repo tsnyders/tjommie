@@ -5,7 +5,7 @@ registration runs its whole closure inside guarded( (or guarded_async( for a spa
 .spawn, .spawn_in, .defer or .defer_in. A closure inside cx.listener(...) counts; a method passed by name doesn't (wrap
 it in a guarded closure). Nothing may follow the guarded call but .await, a semicolon and the closing brace. Not
 checked: our primitives' .on_press and .on_toggle (ui/primitives runs them inside its own guarded handlers; gpui-kit
-has neither name), std::thread::spawn and background_spawn (off the UI thread, where a panic ends only that thread),
+has neither name), and ui::fields' .on_choose (its RadioGroup runs it inside its guarded handlers, as a primitive does), std::thread::spawn and background_spawn (off the UI thread, where a panic ends only that thread),
 Command::spawn(), definitions, and calls of a callback held in a variable (on_press(window, cx)). A registration that
 must not be guarded says why on the line above it: // unguarded: <reason>
 
@@ -16,7 +16,7 @@ param([string]$Path = (Join-Path (Split-Path $PSScriptRoot -Parent) 'crates\desk
 $ErrorActionPreference = 'Stop'
 
 # A registration: a method call with at least one argument, maybe with a turbofish, but not a primitive's builder.
-$call = [regex]'(?<=\.)(?!(?:on_press|on_toggle)\()(?:on_[a-z_]+|observe[a-z_]*|subscribe[a-z_]*|spawn(?:_in)?|defer(?:_in)?)(?:::<[^>]*>)?\((?!\s*\))'
+$call = [regex]'(?<=\.)(?!(?:on_press|on_toggle|on_choose)\()(?:on_[a-z_]+|observe[a-z_]*|subscribe[a-z_]*|spawn(?:_in)?|defer(?:_in)?)(?:::<[^>]*>)?\((?!\s*\))'
 # Where the closure must start, after any plain leading arguments (window, &entity, MouseButton::Left):
 # [cx.listener(] [async] [move] |params| [{] guarded( or guarded_async(
 $guardedStart = [regex]'\G\s*(?:[^,|(){}]+,\s*)*(?:cx\.listener\(\s*)?(?:async\s+)?(?:move\s+)?\|[^|]*\|\s*(?<brace>\{\s*)?guarded(?:_async)?\('

@@ -5,26 +5,128 @@
 
 use std::rc::Rc;
 
+use gpui::prelude::FluentBuilder;
 use gpui::{
-    App, Div, ParentElement as _, Role, SharedString, Stateful, StatefulInteractiveElement as _,
-    Styled as _, Window, div,
+    AnyElement, App, ClickEvent, Div, InteractiveElement as _, IntoElement, ParentElement, Pixels,
+    Role, ScrollHandle, SharedString, Stateful, StatefulInteractiveElement as _, Styled as _,
+    Window, div,
 };
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::dialog::{Dialog, DialogEntrance};
 
 use super::button::{Pill, PillVariant};
+use super::scroll::follow_focus;
 use super::shield::BrowserShield;
 use crate::semantic::{Semantic, SemanticExt as _};
 use crate::ui::style::{TypeExt as _, hsla, palette, r, shadows, theme};
+
+/// How many dialogs this app has opened (`open_dialog` counts them). A form reads it when Save is pressed, while its
+/// dialog is the one in front; a save that answers late closes the dialog only if none has opened since (M5 review
+/// Minor 4; the account dialogs' epoch, for every form).
+#[derive(Default)]
+struct Opened(u64);
+
+impl gpui::Global for Opened {}
+
+/// The number of the dialog opened last.
+pub fn opened(cx: &App) -> u64 {
+    cx.try_global::<Opened>().map_or(0, |opened| opened.0)
+}
+
+/// A dialog as its builder fills it (`open_dialog`): gpui-kit's dialog, with its body kept apart. gpui-kit scrolls a
+/// body taller than the window, but in a scroll area of its own that Tab can't move; this body is one of ours
+/// (`scroll::follow_focus`), so Tab brings each of its controls into view on a small window (M5 re-review). The title
+/// stays above it.
+pub struct Surface {
+    dialog: Dialog,
+    body: Vec<AnyElement>,
+}
+
+impl Surface {
+    pub fn w(mut self, width: impl Into<Pixels>) -> Self {
+        self.dialog = self.dialog.w(width);
+        self
+    }
+
+    pub fn title(mut self, title: impl IntoElement) -> Self {
+        self.dialog = self.dialog.title(title);
+        self
+    }
+
+    pub fn on_ok(
+        mut self,
+        on_ok: impl Fn(&ClickEvent, &mut Window, &mut App) -> bool + 'static,
+    ) -> Self {
+        // unguarded: forwards the builder's own handler, which the rule checks where the builder writes it
+        self.dialog = self.dialog.on_ok(on_ok);
+        self
+    }
+
+    pub fn on_close(
+        mut self,
+        on_close: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        // unguarded: forwards the builder's own handler, which the rule checks where the builder writes it
+        self.dialog = self.dialog.on_close(on_close);
+        self
+    }
+
+    pub fn on_cancel(
+        mut self,
+        on_cancel: impl Fn(&ClickEvent, &mut Window, &mut App) -> bool + 'static,
+    ) -> Self {
+        // unguarded: forwards the builder's own handler, which the rule checks where the builder writes it
+        self.dialog = self.dialog.on_cancel(on_cancel);
+        self
+    }
+
+    /// gpui-kit's dialog, its body in one scroll area that follows the focus. The body goes in gpui-kit's content slot,
+    /// which sits in the dialog's height-capped column (not in its own scroll area), so a body taller than the window
+    /// is bounded here and scrolls here.
+    fn into_dialog(self, scroll: &ScrollHandle) -> Dialog {
+        if self.body.is_empty() {
+            return self.dialog;
+        }
+        // gpui-kit may call the content builder again; each frame builds a new dialog, so the body is taken once.
+        let body = std::cell::RefCell::new(Some(self.body));
+        let scroll = scroll.clone();
+        self.dialog.content(move |content, _, _| {
+            let children = body.borrow_mut().take().unwrap_or_default();
+            content.min_h_0().child(follow_focus(
+                &scroll,
+                div()
+                    .id("dialog.body")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .track_scroll(&scroll)
+                    .flex()
+                    .flex_col()
+                    .children(children),
+            ))
+        })
+    }
+}
+
+impl ParentElement for Surface {
+    fn extend(&mut self, elements: impl IntoIterator<Item = AnyElement>) {
+        self.body.extend(elements);
+    }
+}
+
+impl FluentBuilder for Surface {}
 
 /// Opens a dialog. `build` fills the styled surface; gpui-kit may run it again while the dialog is open, so it creates
 /// no entities.
 pub fn open_dialog(
     window: &mut Window,
     cx: &mut App,
-    build: impl Fn(Dialog, &mut Window, &mut App) -> Dialog + 'static,
+    build: impl Fn(Surface, &mut Window, &mut App) -> Surface + 'static,
 ) {
+    cx.default_global::<Opened>().0 += 1;
     let shield = Rc::new(BrowserShield::raise(cx));
+    // The body's scroll position while the dialog is open: gpui-kit runs the builder again on each frame.
+    let scroll = ScrollHandle::new();
     window.open_dialog(cx, move |dialog, window, cx| {
         let _held_while_open = &shield;
         let theme = theme(cx);
@@ -38,7 +140,15 @@ pub fn open_dialog(
             .border_color(hsla(colors.overlay.highlight))
             .shadow(shadows(&theme.shadow.light.glass))
             .p(r(theme.space.s24));
-        build(surface, window, cx)
+        build(
+            Surface {
+                dialog: surface,
+                body: Vec::new(),
+            },
+            window,
+            cx,
+        )
+        .into_dialog(&scroll)
     });
 }
 
@@ -116,7 +226,6 @@ pub fn open_confirm(
 mod tests {
     use super::*;
     use crate::ui::primitives::test_window;
-    use gpui::IntoElement as _;
     use std::cell::Cell;
 
     /// Opens the Remove agent confirm; the count is how many times it removed.

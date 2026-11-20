@@ -11,6 +11,7 @@ use super::state::{AppState, apply_event};
 pub struct SubscriptionId(u64);
 
 type Listener = Box<dyn FnMut(&AppState) + Send>;
+type EventListener = Box<dyn FnMut(&Event) + Send>;
 
 /// The state and its subscribers. A listener is `Send`, so the store can move between threads.
 #[derive(Default)]
@@ -20,6 +21,7 @@ pub struct AppStore {
     version: u64,
     next_id: u64,
     listeners: Vec<(SubscriptionId, Listener)>,
+    event_listeners: Vec<(SubscriptionId, EventListener)>,
 }
 
 impl AppStore {
@@ -41,9 +43,25 @@ impl AppStore {
         self.version
     }
 
-    /// Applies one protocol event (`applyEvent` through `update`).
+    /// Applies one protocol event (`applyEvent` through `update`), then tells the event listeners about it.
     pub fn apply(&mut self, event: &Event) {
         self.update(|state| apply_event(state, event));
+        for (_, listener) in &mut self.event_listeners {
+            listener(event);
+        }
+    }
+
+    /// Told each event as it is applied, whether or not it changed the state: for what the state doesn't keep (projects,
+    /// devices, usage), which a screen reads again when its event arrives. The id is what `unsubscribe` takes.
+    pub fn subscribe_events(
+        &mut self,
+        listener: impl FnMut(&Event) + Send + 'static,
+    ) -> SubscriptionId {
+        let id = SubscriptionId(self.next_id);
+        self.next_id += 1;
+        let listener: EventListener = Box::new(listener);
+        self.event_listeners.push((id, listener));
+        id
     }
 
     /// `update(change)`: `change` edits the state in place and returns whether its content changed. Subscribers are told,
@@ -73,9 +91,11 @@ impl AppStore {
 
     /// The function `subscribe` returned in the TypeScript. Says whether the subscription was there.
     pub fn unsubscribe(&mut self, id: SubscriptionId) -> bool {
-        let before = self.listeners.len();
+        let before = self.listeners.len() + self.event_listeners.len();
         self.listeners.retain(|(listener_id, _)| *listener_id != id);
-        self.listeners.len() != before
+        self.event_listeners
+            .retain(|(listener_id, _)| *listener_id != id);
+        self.listeners.len() + self.event_listeners.len() != before
     }
 }
 
@@ -83,6 +103,25 @@ impl AppStore {
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
+
+    /// An event listener hears every event, even one the state doesn't keep, until it unsubscribes.
+    #[test]
+    fn event_listeners_hear_every_event_until_they_unsubscribe() {
+        let heard = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&heard);
+        let mut store = AppStore::new();
+        let id = store.subscribe_events(move |event| {
+            if matches!(event, Event::DevicesChanged(_)) {
+                counted.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+        store.apply(&Event::DevicesChanged(Empty::default()));
+        assert_eq!(heard.load(Ordering::SeqCst), 1);
+        assert_eq!(store.version(), 0, "the state didn't change");
+        assert!(store.unsubscribe(id));
+        store.apply(&Event::DevicesChanged(Empty::default()));
+        assert_eq!(heard.load(Ordering::SeqCst), 1);
+    }
 
     use protocol::model::Settings;
     use protocol::wire::{Empty, MessageDelta};

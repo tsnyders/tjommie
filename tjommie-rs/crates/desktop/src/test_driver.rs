@@ -9,7 +9,7 @@ use std::cell::RefCell;
 use std::fs::File;
 use std::io::{self, BufRead as _, BufReader, Write as _};
 use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -71,11 +71,26 @@ pub enum Request {
     Key {
         chord: String,
     },
+    /// Types `text` into whatever has the focus, with no click: the keyboard-only way in.
+    Text {
+        text: String,
+    },
     Snapshot,
     Wait {
         id: String,
         predicate: Predicate,
         timeout_ms: u64,
+    },
+    /// Answers the app's next file or folder prompt with `path`, in place of the system's picker, which keys can't
+    /// drive (M5 review M8). Its tag is the needle `tests/pins.rs` and CI look for: a release build has no such hook.
+    #[serde(rename = "tjommie-test-path-answer")]
+    AnswerPathPrompt {
+        path: String,
+    },
+    /// Sets the window's size, in logical pixels, so a test runs at the same size on every machine.
+    Resize {
+        width: f32,
+        height: f32,
     },
 }
 
@@ -128,6 +143,9 @@ impl Response {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UiSnapshot {
     pub nodes: Vec<UiNode>,
+    /// The window's content area, so a test can tell what shows (T5.6: keyboard focus never sits below the fold).
+    #[serde(default)]
+    pub viewport: Option<UiBounds>,
 }
 
 impl UiSnapshot {
@@ -147,6 +165,12 @@ pub struct UiNode {
     pub focused: bool,
     /// The selected row of a set, such as the sidebar's section or Recents row on show.
     pub selected: bool,
+    /// A switch that is on, a pressed toggle button, a checked radio (AccessKit's toggled state).
+    #[serde(default)]
+    pub toggled: bool,
+    /// A control, by its role: the keyboard must reach it (T5.6, `e2e_keyboard_navigation`).
+    #[serde(default)]
+    pub interactive: bool,
     /// In window coordinates, logical px.
     pub bounds: UiBounds,
 }
@@ -169,8 +193,14 @@ pub struct Client {
 impl Client {
     /// Starts `exe` with `root` as TJOMMIE_HOME and connects to its pipe.
     pub fn launch(exe: &str, root: &Path) -> io::Result<Client> {
+        Self::launch_with(exe, root, &[])
+    }
+
+    /// `launch`, with more variables for the app, such as a test's TJOMMIE_DAEMON_EXE.
+    pub fn launch_with(exe: &str, root: &Path, vars: &[(&str, &str)]) -> io::Result<Client> {
         let mut app = desktop_host::spawn::command(exe)
             .env("TJOMMIE_HOME", root)
+            .envs(vars.iter().copied())
             .spawn()?;
         let name = pipe_name(app.id());
         let deadline = Instant::now() + Duration::from_secs(60);
@@ -247,18 +277,57 @@ impl Client {
         .map(drop)
     }
 
+    /// Sets the window's size in logical pixels (`Resize`).
+    pub fn resize(&mut self, width: f32, height: f32) -> io::Result<()> {
+        self.expect_ok(&Request::Resize { width, height }).map(drop)
+    }
+
+    /// The app's next file or folder prompt answers `path` (`AnswerPathPrompt`).
+    pub fn answer_path_prompt(&mut self, path: &Path) -> io::Result<()> {
+        self.expect_ok(&Request::AnswerPathPrompt {
+            path: path.to_string_lossy().into_owned(),
+        })
+        .map(drop)
+    }
+
+    /// Types into the focused element (`Text`), as the keyboard does.
+    pub fn text(&mut self, text: &str) -> io::Result<()> {
+        self.expect_ok(&Request::Text {
+            text: text.to_owned(),
+        })
+        .map(drop)
+    }
+
     pub fn click(&mut self, id: &str) -> io::Result<()> {
         self.expect_ok(&Request::Click { id: id.to_owned() })
             .map(drop)
     }
 
+    /// Waits for `predicate` on `id`. A wait that fails says what the app's connection screen says, so a timeout in CI
+    /// reads as its reason (the daemon refused to start, say) rather than a bare timeout.
     pub fn wait(&mut self, id: &str, predicate: Predicate, timeout_ms: u64) -> io::Result<()> {
-        self.expect_ok(&Request::Wait {
-            id: id.to_owned(),
-            predicate,
-            timeout_ms,
+        let waited = self
+            .expect_ok(&Request::Wait {
+                id: id.to_owned(),
+                predicate,
+                timeout_ms,
+            })
+            .map(drop);
+        waited.map_err(|error| {
+            let said: Vec<String> = self
+                .snapshot()
+                .map(|snapshot| snapshot.nodes)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|node| node.id.starts_with("connection.") && !node.text.is_empty())
+                .map(|node| format!("{}: {}", node.id, node.text))
+                .collect();
+            if said.is_empty() {
+                error
+            } else {
+                io::Error::other(format!("{error}; the app says {}", said.join(" | ")))
+            }
         })
-        .map(drop)
     }
 
     /// The pipe's access list as Windows reports it, in SDDL.
@@ -342,12 +411,18 @@ pub fn begin_frame() {
     NODES.with(|nodes| nodes.borrow_mut().clear());
 }
 
+/// The semantic elements of the last frame drawn on this thread: what `snapshot` answers, for view tests.
+pub fn nodes() -> Vec<UiNode> {
+    NODES.with(|nodes| nodes.borrow().clone())
+}
+
 /// An element registered with `semantic()`, observed for the snapshot. Everything else, its accessibility included,
 /// it forwards to the element unchanged.
 pub struct Observed<E> {
     inner: E,
     id: SharedString,
     focus: Option<FocusHandle>,
+    disabled: bool,
 }
 
 impl<E> Observed<E> {
@@ -356,7 +431,20 @@ impl<E> Observed<E> {
             inner,
             id,
             focus: None,
+            disabled: false,
         }
+    }
+
+    /// The snapshot reports the element disabled (`SemanticDisabled`), as gpui's accessibility tree can't yet.
+    pub fn with_disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
+    }
+
+    /// The snapshot reads `focus` as this element's, without the element tracking it (`SemanticFocus`).
+    pub fn with_focus(mut self, focus: &FocusHandle) -> Self {
+        self.focus = Some(focus.clone());
+        self
     }
 }
 
@@ -407,8 +495,23 @@ impl<E: Element> Element for Observed<E> {
             id: self.id.to_string(),
             role: role.map(|role| format!("{role:?}")).unwrap_or_default(),
             text: node.label().or(node.value()).unwrap_or_default().to_owned(),
-            enabled: !node.is_disabled(),
+            enabled: !node.is_disabled() && !self.disabled,
             selected: node.is_selected().unwrap_or(false),
+            toggled: matches!(node.toggled(), Some(gpui::Toggled::True)),
+            interactive: matches!(
+                role,
+                Some(
+                    gpui::Role::Button
+                        | gpui::Role::Link
+                        | gpui::Role::TextInput
+                        | gpui::Role::ComboBox
+                        | gpui::Role::Switch
+                        | gpui::Role::RadioButton
+                        | gpui::Role::Tab
+                        | gpui::Role::MenuItem
+                        | gpui::Role::MenuItemRadio
+                )
+            ),
             focused: self
                 .focus
                 .as_ref()
@@ -615,15 +718,42 @@ fn ask(request: Request, asks: &UnboundedSender<Ask>) -> Response {
         .unwrap_or_else(|_| Response::failed("the app did not answer"))
 }
 
+thread_local! {
+    /// The test's answer for the app's next path prompt (`AnswerPathPrompt`).
+    static PATH_ANSWER: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+}
+
+/// The test's answer for this path prompt, if it gave one; it answers one prompt only.
+pub fn take_path_answer() -> Option<PathBuf> {
+    PATH_ANSWER.with(|answer| answer.borrow_mut().take())
+}
+
 fn handle(request: Request, window: &mut Window, cx: &mut App) -> Response {
     match request {
-        Request::Snapshot => Response {
-            ok: true,
-            snapshot: Some(UiSnapshot {
-                nodes: NODES.with(|nodes| nodes.borrow().clone()),
-            }),
-            error: None,
-        },
+        Request::Resize { width, height } => {
+            window.resize(gpui::size(gpui::px(width), gpui::px(height)));
+            Response::done()
+        }
+        Request::AnswerPathPrompt { path } => {
+            PATH_ANSWER.with(|answer| *answer.borrow_mut() = Some(PathBuf::from(path)));
+            Response::done()
+        }
+        Request::Snapshot => {
+            let size = window.viewport_size();
+            Response {
+                ok: true,
+                snapshot: Some(UiSnapshot {
+                    nodes: NODES.with(|nodes| nodes.borrow().clone()),
+                    viewport: Some(UiBounds {
+                        x: 0.,
+                        y: 0.,
+                        width: f32::from(size.width),
+                        height: f32::from(size.height),
+                    }),
+                }),
+                error: None,
+            }
+        }
         Request::Click { id } => match center(&id) {
             Some(position) => {
                 click(position, window, cx);
@@ -634,19 +764,15 @@ fn handle(request: Request, window: &mut Window, cx: &mut App) -> Response {
         Request::Type { id, text } => match center(&id) {
             Some(position) => {
                 click(position, window, cx);
-                for typed in text.chars() {
-                    let key_char = typed.to_string();
-                    let keystroke = Keystroke {
-                        modifiers: Modifiers::default(),
-                        key: key_char.to_lowercase(),
-                        key_char: Some(key_char),
-                    };
-                    window.dispatch_keystroke(keystroke, cx);
-                }
+                type_text(&text, window, cx);
                 Response::done()
             }
             None => Response::failed(format!("{id} is not on screen")),
         },
+        Request::Text { text } => {
+            type_text(&text, window, cx);
+            Response::done()
+        }
         Request::Key { chord } => match Keystroke::parse_with_os(&chord, cx.platform_info().os) {
             Ok(keystroke) => {
                 window.dispatch_keystroke(keystroke, cx);
@@ -655,6 +781,18 @@ fn handle(request: Request, window: &mut Window, cx: &mut App) -> Response {
             Err(error) => Response::failed(format!("{chord}: {error}")),
         },
         Request::Wait { .. } => Response::failed("wait is answered off the UI thread"),
+    }
+}
+
+fn type_text(text: &str, window: &mut Window, cx: &mut App) {
+    for typed in text.chars() {
+        let key_char = typed.to_string();
+        let keystroke = Keystroke {
+            modifiers: Modifiers::default(),
+            key: key_char.to_lowercase(),
+            key_char: Some(key_char),
+        };
+        window.dispatch_keystroke(keystroke, cx);
     }
 }
 
