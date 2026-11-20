@@ -15,7 +15,7 @@ use std::fmt;
 use std::io;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex};
 
 use async_channel::Receiver;
 use client::{Client, Endpoint};
@@ -26,6 +26,7 @@ use protocol::wire::{Empty, method};
 use crate::browser::BotIdentity;
 use crate::browser::host_bridge::{BridgeConfig, Executor as BrowserExecutor, HostBridge};
 use crate::browser::login::{BotLookup, EngineLogin, Request};
+use crate::daemon_process::locked;
 use crate::vault::gate::{GateError, GateInputs, Vault, VaultCommandGate, VaultReply, WindowState};
 use crate::vault::host::{HostConfig, HostEvent, HostToken, VaultHost};
 use crate::vault::login::{EntryWindow, LoginError, NativeLoginVault, SecretStore, VaultParts};
@@ -194,10 +195,6 @@ impl WindowFacts {
             quitting: self.quitting(),
         }
     }
-}
-
-fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// The current daemon's bot directory.
