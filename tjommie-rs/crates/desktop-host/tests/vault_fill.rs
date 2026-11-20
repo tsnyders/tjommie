@@ -583,7 +583,9 @@ fn the_vault_is_refused_for_an_unknown_bot_a_stopped_check_and_a_different_origi
 // A login is saved and filled the way the person does it from Logins: the daemon's `/vault-host` queues the commands (as it
 // does for the app's RPCs), the app's `Hosts` serves them with its vault, the vault asks the person's windows (here: always
 // yes, and a typed login), and the browser steps run on the real engine through `EngineLogin`, on a real HTTPS page, in
-// private mode. Only the Logins windows and Credential Manager are stand-ins (the secret is kept in memory).
+// private mode. Only the Logins windows are stand-ins. The secret goes to the real Credential Manager under the namespace of
+// the test's own temp root, and a guard deletes what the test saved (by reference, under that namespace only) even when it
+// fails; on a hosted runner, whose logons can't reach Credential Manager, it is kept in memory instead.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -595,6 +597,7 @@ use daemon::worker_boundary_host::{WorkerBoundary, WorkerBoundaryHost, WorkerLea
 use desktop_host::browser::engine::Reply;
 use desktop_host::browser::host_bridge::{Executor as BridgeExecutor, Job};
 use desktop_host::hosts::{BotDirectory, BotInfo, DirectoryError, Hosts, Local, Parts};
+use desktop_host::vault::credential::LoginCredentials;
 use desktop_host::vault::entry::EntryInput;
 use desktop_host::vault::login::{Cancel, Confirmation, EntryWindow, SecretStore};
 use desktop_host::vault::storage::VaultError;
@@ -680,6 +683,52 @@ impl SecretStore for Kept {
     fn delete(&self, reference: &str) -> Result<(), VaultError> {
         self.0.lock().expect("secrets").remove(reference);
         Ok(())
+    }
+}
+
+/// The real Credential Manager, under the test root's namespace, noting each reference the vault writes so that a guard can
+/// delete exactly those (the records' own list can be unreadable while the vault still holds its database open).
+struct Recording {
+    credentials: Arc<LoginCredentials>,
+    written: Arc<Mutex<Vec<String>>>,
+}
+
+impl SecretStore for Recording {
+    fn write(&self, reference: &str, secret: &VaultSecret) -> Result<(), VaultError> {
+        // Noted first: a write that fails half way is still deleted.
+        self.written
+            .lock()
+            .expect("references")
+            .push(reference.to_owned());
+        self.credentials.write(reference, secret)
+    }
+
+    fn read(&self, reference: &str) -> Result<Option<VaultSecret>, VaultError> {
+        self.credentials.read(reference)
+    }
+
+    fn delete(&self, reference: &str) -> Result<(), VaultError> {
+        self.credentials.delete(reference)
+    }
+}
+
+/// Deletes what the test wrote to Credential Manager, by reference and under the test root's namespace only, when the test ends,
+/// however it ends.
+struct CredentialCleanup {
+    credentials: Arc<LoginCredentials>,
+    written: Arc<Mutex<Vec<String>>>,
+}
+
+impl Drop for CredentialCleanup {
+    fn drop(&mut self) {
+        let references = self
+            .written
+            .lock()
+            .map(|references| references.clone())
+            .unwrap_or_default();
+        for reference in references {
+            let _ = self.credentials.delete(&reference);
+        }
     }
 }
 
@@ -777,9 +826,29 @@ fn a_saved_login_is_filled_and_cleared_privately_through_the_daemons_vault_route
 
     // The app: its vault and its clients, with the engine's browser steps served on this (the UI) thread.
     let root = tempfile::tempdir().expect("a temp root");
+    // Declared before `hosts`, so it drops after them: the vault is closed before its secrets are deleted.
+    let (secrets, _cleanup): (Arc<dyn SecretStore>, Option<CredentialCleanup>) =
+        if std::env::var_os("TJOMMIE_CI_HOSTED").is_some() {
+            (Arc::new(Kept::default()), None)
+        } else {
+            let credentials = Arc::new(
+                LoginCredentials::new(root.path()).expect("a namespace for the temp root"),
+            );
+            let written = Arc::new(Mutex::new(Vec::new()));
+            (
+                Arc::new(Recording {
+                    credentials: credentials.clone(),
+                    written: written.clone(),
+                }),
+                Some(CredentialCleanup {
+                    credentials,
+                    written,
+                }),
+            )
+        };
     let (hosts, requests) = Hosts::new(Parts {
         root: root.path().to_owned(),
-        secrets: Some(Arc::new(Kept::default())),
+        secrets: Some(secrets),
         entry: Arc::new(Person {
             origin: origin.clone(),
         }),
