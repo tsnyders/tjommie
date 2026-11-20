@@ -9,6 +9,8 @@ pub mod header;
 pub mod message_view;
 pub mod notices;
 pub mod rows;
+pub mod setup_banner;
+pub mod sign_in_toast;
 #[cfg(test)]
 mod tests;
 pub mod thread;
@@ -209,6 +211,16 @@ impl Render for ChatScreen {
             _ => div().flex_1().into_any_element(),
         };
         let header = header::header(&bot, &actions, window, cx);
+        sign_in_toast::forget_resolved(cx);
+        let banner = setup_banner::banner(&bot, window, cx);
+        let notice = sign_in_toast::view(cx).map(|notice| {
+            let theme = theme(cx);
+            div()
+                .absolute()
+                .top(r(theme.space.s56))
+                .right(r(theme.space.s16))
+                .child(notice)
+        });
         let composer = self
             .composer
             .get_or_insert_with(|| cx.new(|cx| Composer::new(&bot, window, cx)))
@@ -221,9 +233,12 @@ impl Render for ChatScreen {
             .w_full()
             .flex()
             .flex_col()
+            .relative()
             .child(header)
+            .children(banner)
             .child(body)
             .child(composer)
+            .children(notice)
     }
 }
 

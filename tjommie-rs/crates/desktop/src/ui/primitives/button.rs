@@ -15,7 +15,7 @@ use super::focus_handle;
 use crate::guard::guarded;
 use crate::keymap::{self, Press};
 use crate::semantic::{Semantic, SemanticDisabled as _, SemanticExt as _};
-use crate::ui::style::{TypeExt as _, focus_ring, focus_visible, hsla, palette, r, shadows, theme};
+use crate::ui::style::{TypeExt as _, hsla, palette, r, ring_or_reveal, shadows, theme};
 
 /// A press or select handler; the primitives run it inside the guard.
 pub type Handler = Rc<dyn Fn(&mut Window, &mut App)>;
@@ -107,7 +107,6 @@ impl Pill {
 impl RenderOnce for Pill {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let focus = focus_handle(&self.id, window, cx).tab_stop(!self.disabled);
-        let ring = focus_visible(&focus, window);
         let theme = theme(cx);
         let colors = palette(cx);
         let (fill, hover, text): (Rgba, Rgba, Rgba) = match self.variant {
@@ -168,7 +167,7 @@ impl RenderOnce for Pill {
                 )
             })
             .child(self.label)
-            .when(ring, |pill| pill.child(focus_ring(theme.radius.pill, cx)));
+            .children(ring_or_reveal(&focus, theme.radius.pill, window, cx));
         if self.disabled {
             return base(pill, self.id).opacity(0.38).cursor_default();
         }
@@ -235,7 +234,6 @@ impl IconButton {
 impl RenderOnce for IconButton {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let focus = focus_handle(&self.id, window, cx).tab_stop(!self.disabled);
-        let ring = focus_visible(&focus, window);
         let theme = theme(cx);
         let colors = palette(cx);
         let clear = colors.surface.raised_clear;
@@ -270,76 +268,11 @@ impl RenderOnce for IconButton {
                     .size(r(theme.size.icon))
                     .text_color(hsla(icon)),
             )
-            .when(ring, |button| {
-                button.child(focus_ring(theme.radius.pill, cx))
-            });
+            .children(ring_or_reveal(&focus, theme.radius.pill, window, cx));
         if self.disabled {
             return base(button, self.id).opacity(0.38).cursor_default();
         }
         pressable(base(button, self.id), self.on_press)
-    }
-}
-
-/// An underlined text action (`.link`): the quiet answer beside a loud one (Deny beside Approve), View thread. A quiet
-/// link is grey with a soft line.
-#[derive(IntoElement)]
-pub struct TextLink {
-    id: SharedString,
-    label: SharedString,
-    quiet: bool,
-    on_press: Option<Handler>,
-}
-
-impl TextLink {
-    pub fn new(id: impl Into<SharedString>, label: impl Into<SharedString>) -> Self {
-        TextLink {
-            id: id.into(),
-            label: label.into(),
-            quiet: false,
-            on_press: None,
-        }
-    }
-
-    pub fn quiet(mut self) -> Self {
-        self.quiet = true;
-        self
-    }
-
-    pub fn on_press(mut self, on_press: impl Fn(&mut Window, &mut App) + 'static) -> Self {
-        self.on_press = Some(Rc::new(on_press));
-        self
-    }
-}
-
-impl RenderOnce for TextLink {
-    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let focus = focus_handle(&self.id, window, cx);
-        let ring = focus_visible(&focus, window);
-        let theme = theme(cx);
-        let colors = palette(cx);
-        let (text, line) = if self.quiet {
-            (colors.text.secondary, colors.line.soft)
-        } else {
-            (colors.text.primary, colors.text.primary)
-        };
-        let link = div()
-            .semantic(self.id.clone(), Role::Button)
-            .aria_label(self.label.clone())
-            .track_focus(&focus)
-            .relative()
-            .flex_none()
-            .cursor_pointer()
-            .whitespace_nowrap()
-            .type_style(&theme.typography.desktop.button)
-            .line_height(r(18.))
-            .text_color(hsla(text))
-            .border_b_1()
-            .border_color(hsla(line))
-            .pb(gpui::px(1.))
-            .child(self.label)
-            // `.link:focus-visible`: the ring sits 3 px out with a 3 px radius.
-            .when(ring, |link| link.child(focus_ring(3., cx)));
-        pressable(link, self.on_press)
     }
 }
 

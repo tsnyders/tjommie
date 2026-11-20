@@ -23,7 +23,9 @@ use crate::keymap::{self, Next, Prev};
 use crate::semantic::{SemanticExt as _, SemanticFocus as _};
 use crate::ui::primitives::button::pressable;
 use crate::ui::primitives::focus_handle;
-use crate::ui::style::{TypeExt as _, focus_ring, focus_visible, hsla, palette, r, theme};
+use crate::ui::style::{
+    TypeExt as _, focus_ring, focus_visible, hsla, palette, r, ring_or_reveal, theme,
+};
 
 type OnChange<V> = Rc<dyn Fn(V, &mut Window, &mut App)>;
 
@@ -423,7 +425,6 @@ impl Link {
 impl RenderOnce for Link {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let focus = focus_handle(&self.id, window, cx);
-        let ring = focus_visible(&focus, window);
         let theme = theme(cx);
         let colors = palette(cx);
         let (text, edge) = if self.quiet {
@@ -458,7 +459,7 @@ impl RenderOnce for Link {
                 )
             })
             .child(self.label)
-            .when(ring, |link| link.child(focus_ring(theme.radius.xs, cx)));
+            .children(ring_or_reveal(&focus, theme.radius.xs, window, cx));
         pressable(link, self.on_press)
     }
 }

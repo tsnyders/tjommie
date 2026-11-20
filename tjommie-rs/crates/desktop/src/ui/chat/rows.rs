@@ -17,8 +17,9 @@ use protocol::model::{
 use super::message_view::MessageContext;
 use crate::model::labels::DELETED_BOT;
 use crate::semantic::SemanticExt as _;
+use crate::ui::fields::Link;
 use crate::ui::primitives::avatar::{BotAvatar, Pose};
-use crate::ui::primitives::button::{TextLink, pressable};
+use crate::ui::primitives::button::pressable;
 use crate::ui::shell::connection::spinner;
 use crate::ui::shell::route::{Navigate as _, Route};
 use crate::ui::style::{TypeExt as _, hsla, palette, r, shadows, theme};
@@ -295,7 +296,7 @@ fn exchange_card(
                 )
                 .child(
                     div().ml(r(theme.space.s12)).flex_none().child(
-                        TextLink::new(format!("exchange.{id}.open"), "View thread")
+                        Link::new(format!("exchange.{id}.open"), "View thread")
                             .on_press(move |window, cx| open(open_id.clone(), window, cx)),
                     ),
                 ),

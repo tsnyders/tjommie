@@ -38,8 +38,9 @@ use crate::model::mentions::{insert_mention, mention_options, typed_mention};
 use crate::motion::{clock, reduced, spring::Spring};
 use crate::semantic::SemanticExt as _;
 use crate::theme::TextStyle;
+use crate::ui::fields::Link;
 use crate::ui::primitives::avatar::{BotAvatar, Pose};
-use crate::ui::primitives::button::{IconButton, IconVariant, TextLink};
+use crate::ui::primitives::button::{IconButton, IconVariant};
 use crate::ui::primitives::menu::{Menu, MenuItem};
 use crate::ui::store;
 use crate::ui::style::{TypeExt as _, hsla, palette, r, shadows, theme};
@@ -921,14 +922,14 @@ impl Render for Composer {
                 .child(div().flex_1().min_w_0().child(note))
                 .when(recovered, |line| {
                     line.child(
-                        TextLink::new(format!("composer.{id}.voice.insert"), "Insert transcript")
+                        Link::new(format!("composer.{id}.voice.insert"), "Insert transcript")
                             .on_press(move |window, cx| {
                                 let _ =
                                     insert.update(cx, |this, cx| this.insert_recovered(window, cx));
                             }),
                     )
                     .child(
-                        TextLink::new(format!("composer.{id}.voice.discard"), "Discard")
+                        Link::new(format!("composer.{id}.voice.discard"), "Discard")
                             .quiet()
                             .on_press(move |_, cx| {
                                 let _ = discard.update(cx, |this, cx| {

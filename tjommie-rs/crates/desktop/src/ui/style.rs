@@ -147,6 +147,22 @@ pub fn focus_visible(focus: &FocusHandle, window: &Window) -> bool {
     focus.is_focused(window) && window.last_input_was_keyboard()
 }
 
+/// The focus ring while `focus` shows keyboard focus; for a control a link has just focused by mouse, the reveal alone, so
+/// it still scrolls into view with no ring (M5 review M9).
+pub fn ring_or_reveal(
+    focus: &FocusHandle,
+    radius: f32,
+    window: &Window,
+    cx: &App,
+) -> Option<gpui::AnyElement> {
+    use gpui::IntoElement as _;
+    if focus_visible(focus, window) {
+        return Some(focus_ring(radius, cx).into_any_element());
+    }
+    crate::ui::primitives::scroll::wants_reveal(focus, window, cx)
+        .then(|| crate::ui::primitives::scroll::reveal().into_any_element())
+}
+
 /// The Aegis focus ring (2 px ink, 2 px gap): a child laid over the element's edge, for an element with this corner
 /// radius in design px. Add it to a `relative()` element while `focus_visible`. It also scrolls its element into view
 /// in the nearest scroll area (`primitives::scroll`, T5.6): keyboard focus never sits below the fold.

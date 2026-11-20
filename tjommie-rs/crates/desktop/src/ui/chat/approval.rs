@@ -31,7 +31,8 @@ use crate::motion::spring::Spring;
 use crate::motion::{clock, reduced};
 use crate::semantic::SemanticExt as _;
 use crate::theme;
-use crate::ui::primitives::button::{Pill, PillVariant, TextLink};
+use crate::ui::fields::Link;
+use crate::ui::primitives::button::{Pill, PillVariant};
 use crate::ui::store;
 use crate::ui::style::{TypeExt as _, focus_ring, focus_visible, hsla, palette, r, shadows, theme};
 
@@ -476,12 +477,12 @@ fn pending(
                 )
                 .when(!busy, |row| {
                     row.child(
-                        TextLink::new(format!("approval.{id}.deny"), no)
+                        Link::new(format!("approval.{id}.deny"), no)
                             .on_press(answer_with(ApprovalDecision::Deny)),
                     )
                     .when(card.rule.is_some(), |row| {
                         row.child(
-                            TextLink::new(format!("approval.{id}.always"), "Always allow")
+                            Link::new(format!("approval.{id}.always"), "Always allow")
                                 .on_press(answer_with(ApprovalDecision::Always)),
                         )
                     })
