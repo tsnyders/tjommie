@@ -11,6 +11,7 @@
 
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_channel::{Receiver, Sender};
 use futures::channel::oneshot;
@@ -31,6 +32,9 @@ const CHANGED: &str = "The Logins operation was cancelled or its security bounda
 pub trait BotLookup: Send + Sync {
     fn bot(&self, id: &str) -> BoxFuture<'_, Result<BotIdentity, LoginError>>;
 }
+
+/// How often a step waiting for the UI thread asks its operation's check whether the operation is still wanted.
+const CHECK_EVERY: Duration = Duration::from_millis(100);
 
 type Answer<T> = oneshot::Sender<Result<T, LoginError>>;
 
@@ -80,13 +84,28 @@ impl EngineLogin {
         (EngineLogin { requests, bots }, inbox)
     }
 
-    /// Sends a request and waits for its answer. A UI thread that has gone (the app is closing) is a failed step.
-    async fn ask<T>(&self, request: impl FnOnce(Answer<T>) -> Request) -> Result<T, LoginError> {
-        let (answer, answered) = oneshot::channel();
+    /// Sends a request and waits for its answer. A UI thread that has gone (the app is closing) is a failed step. With a
+    /// `check` (the operation's), the wait also ends when the check says the operation is over, so a step that nothing
+    /// serves cannot hold the vault's one operation slot after a lock or a cancel. It runs on the vault's own runtime.
+    async fn ask<T>(
+        &self,
+        check: Option<&Check>,
+        request: impl FnOnce(Answer<T>) -> Request,
+    ) -> Result<T, LoginError> {
+        let (answer, mut answered) = oneshot::channel();
         self.requests
             .try_send(request(answer))
             .map_err(|_| LoginError::Failed)?;
-        answered.await.unwrap_or(Err(LoginError::Failed))
+        let Some(check) = check else {
+            return answered.await.unwrap_or(Err(LoginError::Failed));
+        };
+        let mut tick = tokio::time::interval(CHECK_EVERY);
+        loop {
+            tokio::select! {
+                answer = &mut answered => return answer.unwrap_or(Err(LoginError::Failed)),
+                _ = tick.tick() => check()?,
+            }
+        }
     }
 }
 
@@ -98,7 +117,7 @@ impl LoginBrowser for EngineLogin {
     ) -> BoxFuture<'_, Result<LoginOrigin, LoginError>> {
         Box::pin(async move {
             let bot = self.bots.bot(&target.bot_id).await?;
-            self.ask(|answer| Request::Destination {
+            self.ask(None, |answer| Request::Destination {
                 bot,
                 target,
                 owner,
@@ -118,7 +137,8 @@ impl LoginBrowser for EngineLogin {
         Box::pin(async move {
             let bot = self.bots.bot(&target.bot_id).await?;
             check()?;
-            self.ask(|answer| Request::Begin {
+            let waiting = check.clone();
+            self.ask(Some(&waiting), |answer| Request::Begin {
                 bot,
                 target,
                 owner,
@@ -140,7 +160,8 @@ impl LoginBrowser for EngineLogin {
         Box::pin(async move {
             let bot = self.bots.bot(&bot_id).await?;
             check()?;
-            self.ask(|answer| Request::Fill {
+            let waiting = check.clone();
+            self.ask(Some(&waiting), |answer| Request::Fill {
                 bot,
                 epoch: private_epoch,
                 secret,
@@ -162,7 +183,8 @@ impl LoginBrowser for EngineLogin {
         Box::pin(async move {
             let bot = self.bots.bot(&bot_id).await?;
             check()?;
-            self.ask(|answer| Request::Finish {
+            let waiting = check.clone();
+            self.ask(Some(&waiting), |answer| Request::Finish {
                 bot,
                 generation,
                 epoch: private_epoch,
