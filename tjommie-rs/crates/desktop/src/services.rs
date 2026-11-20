@@ -426,6 +426,7 @@ pub fn start(identity: &Identity, window: &mut Window, cx: &mut App) {
     cx.set_global(AppControls(Arc::new(RealApp {
         login_item: services.login_item.clone(),
         updater: updater.clone(),
+        runtime: runtime.clone(),
     })));
     cx.set_global(services);
 
@@ -850,6 +851,8 @@ fn clicked_toast(link: &str, cx: &mut App) {
 struct RealApp {
     login_item: Arc<LoginItem>,
     updater: Updater,
+    /// The runtime the updater was built on: its timers run there, and so does a check the person asks for.
+    runtime: tokio::runtime::Handle,
 }
 
 impl DesktopApp for RealApp {
@@ -867,15 +870,11 @@ impl DesktopApp for RealApp {
 
     fn check_for_updates(&self) {
         let updater = self.updater.clone();
-        // Its own thread: the check is a Tokio future and this is the UI thread, which has no runtime.
-        // unguarded: a plain thread; a panic in it ends only itself
-        std::thread::spawn(move || {
-            if let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            {
-                runtime.block_on(updater.check());
-            }
+        // On the updater's own runtime, not a throwaway one: a connection the check pools must outlive it, for the scheduled
+        // checks that follow. `check` itself refuses a second check while one runs.
+        // unguarded: a tokio task, off the UI thread, where a panic ends only that task
+        self.runtime.spawn(async move {
+            updater.check().await;
         });
     }
 
@@ -1346,6 +1345,44 @@ mod tests {
             no_feed_updater(runtime.handle()).state(),
             UpdateState::Unsupported
         );
+    }
+
+    /// Re-review M4: "Check now" runs the check on the runtime the updater was built on. It used to run on a runtime of its
+    /// own that was gone when it returned, taking the check's pooled connection with it. Here that shows as the check doing
+    /// nothing until the updater's runtime runs.
+    #[test]
+    fn check_now_runs_on_the_runtime_the_updater_was_built_on() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let feed = Url::parse("https://example.invalid/latest.yml").unwrap();
+        let updater = build_updater(
+            "app",
+            Some(feed),
+            PathBuf::new(),
+            Arc::new(NoFeed),
+            runtime.handle(),
+            Arc::new(|| {}),
+        );
+        assert_eq!(updater.state(), UpdateState::Idle);
+        let app = RealApp {
+            login_item: Arc::new(disallowed_login_item(
+                &PRODUCTION,
+                Arc::new(Counting::default()),
+            )),
+            updater: updater.clone(),
+            runtime: runtime.handle().clone(),
+        };
+        app.check_for_updates();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert_eq!(
+            updater.state(),
+            UpdateState::Idle,
+            "the check ran somewhere other than the updater's runtime"
+        );
+        runtime.block_on(async { tokio::time::sleep(std::time::Duration::from_millis(300)).await });
+        assert_ne!(updater.state(), UpdateState::Idle, "the check never ran");
     }
 
     /// A folder of its own for one test, removed after.
