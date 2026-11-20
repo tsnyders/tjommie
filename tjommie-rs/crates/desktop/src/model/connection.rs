@@ -76,6 +76,9 @@ const NOT_CONNECTED: &str = "Tjommie isn't connected right now.";
 const FILE_HOST_OFFLINE: &str = "The file host is offline. Reconnect to download it.";
 const FILE_HOST_GONE: &str = "The file host did not reconnect. Try downloading again.";
 const BACKGROUND_SERVICE: &str = "Tjommie couldn't reach its background service.";
+/// The most events applied as one burst: a producer that refills the channel as fast as it is drained must not keep the link's
+/// own end (and the reconnect it starts) waiting for ever.
+const MAX_BURST: usize = 1024;
 const FELL_BEHIND: &str = "The connection fell behind the daemon's events.";
 
 /// Where the desktop's own daemon listens (`DesktopConnection`). The token is a secret, so `Debug` leaves it out.
@@ -1630,7 +1633,7 @@ impl<E: Environment> AppConnection<E> {
                         // What is already waiting goes in with it: one change of the state, so one copy of it (the UI
                         // always holds the last frame's snapshot) however many events a burst brings.
                         let mut burst = vec![first];
-                        loop {
+                        while burst.len() < MAX_BURST {
                             match events.try_recv() {
                                 Ok(event) => burst.push(event),
                                 Err(broadcast::error::TryRecvError::Empty) => break,
@@ -4148,6 +4151,27 @@ mod tests {
         w.pc().emit(Event::BotUpdated(bot("fresh")));
         w.settle().await;
         assert_eq!(w.bot_ids(), ["fresh"]);
+    }
+
+    /// Re-review Nit 9: a burst is applied in bounded batches, so a long one is a few changes and not one that starves the link.
+    #[tokio::test]
+    async fn a_very_long_burst_is_applied_in_bounded_batches() {
+        let w = desktop();
+        w.env.0.event_capacity.store(4096, Ordering::SeqCst);
+        w.start().await;
+        let (before, _held) = w.conn.state_and_version();
+        let total = MAX_BURST + 76;
+        for at in 0..total {
+            w.pc().emit(Event::BotUpdated(bot(&format!("long{at}"))));
+        }
+        w.settle().await;
+        let (after, state) = w.conn.state_and_version();
+        assert_eq!(state.bots.len(), total, "an event of the burst was lost");
+        assert_eq!(
+            after,
+            before + 2,
+            "the burst was not applied in a full batch and the rest"
+        );
     }
 
     /// Host-wiring review M1: the live app always holds a snapshot (the UI's store keeps the last frame's), so every change
