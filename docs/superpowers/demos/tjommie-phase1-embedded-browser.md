@@ -29,7 +29,7 @@ Status: source integration passed; implementation committed as `6311819`. The re
 - Installed startup routine failure replay passed: orphan history is failed durably, and the desktop receives/handles/acknowledges the notice after daemon restart. This was intentional foreground suppression, not an assertion of OS toast rendering. See [startup-notice-results.json](startup-notice-results.json).
 - **All 9 installed Phase 1 acceptance checks passed**: provider readiness, cross-provider exchange, original-turn steering, both Stop timings, persistent exact Write approval, browser tools/profile, approved routine proposal, and scheduled execution with the window closed. Stop took **594 ms** immediately after approval and **602 ms** after the sandbox command was running; both persisted as interrupted. See [installed-automated-results.json](installed-automated-results.json).
 - Final provenance verification passed again after acceptance. Normal data retained **2 bots / 1 enabled routine**, and no temporary Own folder bot remains. The app was left closed.
-- Screenshots: [embedded side panel](../../screenshots/phase1-embedded-browser.png) and [installed chat](../../screenshots/phase1-installed-main-chat.png). The local synthetic page is intentionally plain; application chrome uses the existing wireframe/design system with the owner-requested browser extension.
+- Screenshots: embedded side panel (screenshot removed) and installed chat (screenshot removed). The local synthetic page is intentionally plain; application chrome uses the existing wireframe/design system with the owner-requested browser extension.
 
 ## Limits
 
