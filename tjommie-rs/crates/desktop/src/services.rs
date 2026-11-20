@@ -688,20 +688,23 @@ pub fn begin_quit(cx: &mut App) {
         .and_then(|services| services.fakes.as_ref())
         .map(|fakes| fakes.hold_quit.clone());
     cx.spawn(async move |cx| {
-        let for_host = cx.clone();
-        let outcome = guarded_async("quit", async move {
-            let host = AppQuit {
-                cx: for_host,
-                hosts,
-                stopper,
-                window,
-                #[cfg(any(test, feature = "test-driver"))]
-                held,
-            };
-            run_quit(&host, &updater).await
+        guarded_async("finish the quit", async move {
+            let for_host = cx.clone();
+            let outcome = guarded_async("quit", async move {
+                let host = AppQuit {
+                    cx: for_host,
+                    hosts,
+                    stopper,
+                    window,
+                    #[cfg(any(test, feature = "test-driver"))]
+                    held,
+                };
+                run_quit(&host, &updater).await
+            })
+            .await;
+            cx.update(|cx| finish_quit(outcome, cx, App::quit));
         })
         .await;
-        cx.update(|cx| finish_quit(outcome, cx, App::quit));
     })
     .detach();
 }
@@ -1257,7 +1260,7 @@ mod tests {
         let owner = Arc::new(Owner::default());
         owner.panics.store(true, Ordering::SeqCst);
         let (_app, root) = quitting_app(cx, &runtime, "m3", &owner);
-        cx.update(|cx| begin_quit(cx));
+        cx.update(begin_quit);
         cx.run_until_parked();
         assert_eq!(
             owner.stops.load(Ordering::SeqCst),
@@ -1322,7 +1325,7 @@ mod tests {
 
         // A second quit proceeds.
         *owner.answer.lock().unwrap() = Some(DaemonStop::Graceful);
-        cx.update(|cx| begin_quit(cx));
+        cx.update(begin_quit);
         cx.run_until_parked();
         assert_eq!(owner.stops.load(Ordering::SeqCst), 1);
         cx.update(|cx| {
