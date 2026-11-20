@@ -400,6 +400,7 @@ fn quit(app: &AppHosts, cx: &mut App) -> bool {
     }
     cx.set_global(Quit { done: false });
     app.hosts.begin_quit();
+    log::info!("Closing: the browser, Logins and worker clients stop, then the daemon.");
     let (hosts, stopper) = (app.control.clone(), crate::live::stopper(cx));
     cx.spawn(async move |cx| {
         guarded_async("quit", async move {
@@ -413,6 +414,7 @@ fn quit(app: &AppHosts, cx: &mut App) -> bool {
                 futures::pin_mut!(daemon);
                 let _ = futures::future::select(daemon, timeout.timer(QUIT_TIMEOUT)).await;
             }
+            log::info!("Closed: the clients and the daemon have stopped.");
             cx.update(|cx| {
                 cx.global_mut::<Quit>().done = true;
                 cx.quit();

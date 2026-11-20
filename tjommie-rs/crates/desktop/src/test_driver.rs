@@ -250,6 +250,11 @@ impl Client {
         self.app.id()
     }
 
+    /// Whether the app has exited by now.
+    pub fn has_exited(&mut self) -> io::Result<bool> {
+        Ok(self.app.try_wait()?.is_some())
+    }
+
     pub fn request(&mut self, request: &Request) -> io::Result<Response> {
         let mut line = serde_json::to_string(request)?;
         line.push('\n');

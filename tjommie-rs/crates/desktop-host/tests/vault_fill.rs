@@ -446,7 +446,7 @@ impl Fixture {
     }
 
     /// Runs `work` on a thread of its own, as the vault does, while this thread pumps the browser's messages.
-    fn from_the_vault<T: Send + 'static>(
+    fn on_the_vaults_thread<T: Send + 'static>(
         &mut self,
         work: impl Future<Output = T> + Send + 'static,
     ) -> T {
@@ -483,14 +483,14 @@ fn the_vault_fills_and_clears_a_login_through_the_engine_from_its_own_thread() {
 
     let (asking, aimed) = (login.clone(), target.clone());
     let found = f
-        .from_the_vault(async move { asking.destination(aimed, "local".into()).await })
+        .on_the_vaults_thread(async move { asking.destination(aimed, "local".into()).await })
         .expect("the page's origin");
     assert_eq!(found.as_str(), origin);
 
     let (beginning, aimed) = (login.clone(), target.clone());
     let wanted = LoginOrigin::new(&origin).expect("an https origin");
     let epoch = f
-        .from_the_vault(async move {
+        .on_the_vaults_thread(async move {
             beginning
                 .begin(aimed, "local".into(), wanted, allowed())
                 .await
@@ -499,7 +499,7 @@ fn the_vault_fills_and_clears_a_login_through_the_engine_from_its_own_thread() {
     assert_eq!(f.rig.state("alpha").private_active, Some(true));
 
     let filling = login.clone();
-    f.from_the_vault(async move {
+    f.on_the_vaults_thread(async move {
         filling
             .fill(
                 "alpha".into(),
@@ -513,7 +513,7 @@ fn the_vault_fills_and_clears_a_login_through_the_engine_from_its_own_thread() {
     assert_eq!(f.values(), "ada|correct horse");
 
     let (finishing, generation) = (login.clone(), target.generation.clone());
-    f.from_the_vault(async move {
+    f.on_the_vaults_thread(async move {
         finishing
             .finish(
                 "alpha".into(),
@@ -543,7 +543,7 @@ fn the_vault_is_refused_for_an_unknown_bot_a_stopped_check_and_a_different_origi
         ..aimed
     };
     assert_eq!(
-        f.from_the_vault(async move { asking.destination(stranger, "local".into()).await }),
+        f.on_the_vaults_thread(async move { asking.destination(stranger, "local".into()).await }),
         Err(LoginError::Failed)
     );
 
@@ -551,7 +551,7 @@ fn the_vault_is_refused_for_an_unknown_bot_a_stopped_check_and_a_different_origi
     let (beginning, aimed, origin_a) = (login.clone(), target.clone(), wanted.clone());
     let stopped: Check = Arc::new(|| Err(LoginError::Changed));
     assert!(
-        f.from_the_vault(async move {
+        f.on_the_vaults_thread(async move {
             beginning
                 .begin(aimed, "local".into(), origin_a, stopped)
                 .await
@@ -568,7 +568,7 @@ fn the_vault_is_refused_for_an_unknown_bot_a_stopped_check_and_a_different_origi
     let (beginning, aimed) = (login.clone(), target.clone());
     let elsewhere = LoginOrigin::new("https://example.com").expect("an https origin");
     assert!(
-        f.from_the_vault(async move {
+        f.on_the_vaults_thread(async move {
             beginning
                 .begin(aimed, "local".into(), elsewhere, allowed())
                 .await

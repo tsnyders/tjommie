@@ -175,3 +175,52 @@ fn e2e_daemon_restart_with_panel_open() {
     open_panel(&mut app, "Gale");
     common::wait_for_text(&mut app, "Second page", Duration::from_secs(30));
 }
+
+#[test]
+fn e2e_closing_the_window_stops_the_clients_and_the_daemon_before_the_app_exits() {
+    assert_eq!(identity::CURRENT.name, "e2e");
+    let root = owner_safety::test_root().unwrap();
+    let mut app = common::launch(root.path(), &[("default.json", common::QUIET)]);
+    // The vault is up, so there is something to lock.
+    assert!(logins_state(&mut app).starts_with("Logins locked."));
+    let daemon = daemons(app.pid());
+    assert_eq!(daemon.len(), 1, "the app's daemon: {daemon:?}");
+
+    // Close the window as the person does (WM_CLOSE, which taskkill without /F sends). The app holds the close while it
+    // stops its clients and the daemon, then exits.
+    let closed = desktop_host::spawn::command("taskkill")
+        .args(["/PID", &app.pid().to_string()])
+        .output()
+        .unwrap();
+    assert!(closed.status.success(), "the window was not asked to close");
+    let started = std::time::Instant::now();
+    while !app.has_exited().unwrap() {
+        assert!(
+            started.elapsed() < Duration::from_secs(60),
+            "the app did not exit after its window closed"
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    // The app held the close and stopped everything first (its log says so, in order), and the daemon is gone.
+    let log = std::fs::read_to_string(root.path().join("logs").join("desktop.log")).unwrap();
+    let closing =
+        log.find("Closing: the browser, Logins and worker clients stop, then the daemon.");
+    let closed = log.find("Closed: the clients and the daemon have stopped.");
+    assert!(
+        closing.is_some() && closed > closing,
+        "the app did not run its graceful quit: {log}"
+    );
+    assert!(
+        daemons(app.pid()).is_empty() && !process_alive(daemon[0]),
+        "the daemon outlived the app"
+    );
+}
+
+fn process_alive(pid: u32) -> bool {
+    let command = format!("(Get-Process -Id {pid} -ErrorAction SilentlyContinue) -ne $null");
+    let output = desktop_host::spawn::command("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &command])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&output.stdout).trim() == "True"
+}
