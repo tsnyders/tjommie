@@ -225,11 +225,21 @@ impl ExchangeView {
             .get(self.from.as_ref())
             .map(|conversation| conversation.messages.as_slice())
             .unwrap_or_default();
+        // In a room, the exchange's newest post or notice there: its reply and its failure are saved with its new status.
+        let posted = opener.iter().rev().find(|message| {
+            message
+                .data
+                .as_ref()
+                .and_then(|data| data.get("exchangeId"))
+                .and_then(|id| id.as_str())
+                == Some(self.id.as_ref())
+        });
         let progress = format!(
-            "{}:{:?}:{:?}",
+            "{}:{:?}:{:?}:{:?}",
             messages.len(),
             messages.last().map(|message| message.status),
-            handoff_status(opener, &self.id)
+            handoff_status(opener, &self.id),
+            posted.map(|message| (&message.id, message.status))
         );
         if self.read_for.as_ref() == Some(&progress) {
             return;

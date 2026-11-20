@@ -10,6 +10,8 @@ use gpui::{
 use protocol::model::{Message, MessageStatus, Room};
 use protocol::wire::{Id, method};
 
+use std::rc::Rc;
+
 use super::composer::RoomComposer;
 use super::{open_room_form, post};
 use crate::guard::{guarded, guarded_async};
@@ -18,6 +20,8 @@ use crate::model::state::{Connection, ConversationStatus, room_bots};
 use crate::model::timeline::{TimelineItem, timeline};
 use crate::semantic::SemanticExt as _;
 use crate::ui::agents::cards::more_trigger;
+use crate::ui::chat::exchange;
+use crate::ui::chat::message_view::MessageContext;
 use crate::ui::fields::{Link, problem};
 use crate::ui::primitives::button::{IconButton, IconVariant};
 use crate::ui::primitives::dialog::open_confirm;
@@ -76,6 +80,11 @@ pub struct RoomScreen {
 impl RoomScreen {
     fn new(room: &Room, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let (id, name) = (room.id.clone(), room.name.clone());
+        // An exchange opened from this room goes with it.
+        cx.on_release(|_, cx| {
+            guarded("close the exchange", || exchange::close(cx));
+        })
+        .detach();
         RoomScreen {
             room_id: room.id.clone(),
             composer: cx.new(|cx| RoomComposer::new(id, name, window, cx)),
@@ -135,12 +144,32 @@ impl Render for RoomScreen {
             self.seen = progress;
             self.problem = None;
         }
-        let shown = !cx
-            .try_global::<MembersHidden>()
-            .is_some_and(|hidden| hidden.0);
+        // An open exchange takes the members panel's place (`room-screen.tsx`).
+        exchange::reconcile(cx);
+        let exchanging = exchange::open_id(cx).is_some();
+        let shown = !exchanging
+            && !cx
+                .try_global::<MembersHidden>()
+                .is_some_and(|hidden| hidden.0);
         let screen = cx.entity();
-        let header = self.header(room, members.len(), shown, &screen, window, cx);
-        let body = self.body(room, chat, &state.bots, &members, cx);
+        let header = self.header(
+            room,
+            members.len(),
+            shown || exchanging,
+            &screen,
+            window,
+            cx,
+        );
+        let context = MessageContext {
+            bots: Rc::new(state.bots.clone()),
+            conversation_id: room.id.clone().into(),
+            open_exchange: exchange::open_id(cx),
+            on_open_exchange: {
+                let from = SharedString::from(room.id.clone());
+                Rc::new(move |id, window, cx| exchange::open(id, from.clone(), window, cx))
+            },
+        };
+        let body = self.body(room, chat, &members, &context, window, cx);
         let panel = shown.then(|| {
             let editing = room.clone();
             super::members::panel(
@@ -279,7 +308,14 @@ impl RoomScreen {
                             } else {
                                 IconVariant::Plain
                             })
-                            .on_press(move |_, cx| hide_members(shown, cx)),
+                            .on_press(move |_, cx| {
+                                // With an exchange open, the button closes it and the members come back.
+                                if exchange::open_id(cx).is_some() {
+                                    exchange::close(cx);
+                                } else {
+                                    hide_members(shown, cx);
+                                }
+                            }),
                     )
                     .children(more),
             )
@@ -292,8 +328,9 @@ impl RoomScreen {
         &self,
         room: &Room,
         chat: Option<&crate::model::state::Conversation>,
-        bots: &[protocol::model::Bot],
         members: &[&protocol::model::Bot],
+        context: &MessageContext,
+        window: &mut Window,
         cx: &mut App,
     ) -> AnyElement {
         let id = room.id.clone();
@@ -332,7 +369,6 @@ impl RoomScreen {
                     self.posts.scroll_to_bottom();
                 }
                 let now = jiff::Zoned::now();
-                let theme = theme(cx);
                 let older = chat.has_more.then(|| {
                     let id = room.id.clone();
                     div().flex().justify_center().child(
@@ -341,21 +377,22 @@ impl RoomScreen {
                         }),
                     )
                 });
-                let rows: Vec<AnyElement> = timeline(&chat.messages, &now)
-                    .into_iter()
-                    .map(|item| match item {
+                let mut rows: Vec<AnyElement> = Vec::new();
+                for item in timeline(&chat.messages, &now) {
+                    rows.push(match item {
                         TimelineItem::Stamp { label, .. } => div()
                             .flex()
                             .justify_center()
-                            .type_style(&theme.typography.desktop.meta)
+                            .type_style(&theme(cx).typography.desktop.meta)
                             .text_color(hsla(palette(cx).text.tertiary))
                             .child(label)
                             .into_any_element(),
                         TimelineItem::Message { message, .. } => {
-                            post::post(message, bots, members, &now, cx)
+                            post::post(message, &context.bots, members, context, &now, window, cx)
                         }
-                    })
-                    .collect();
+                    });
+                }
+                let theme = theme(cx);
                 follow_focus(
                     &self.posts,
                     div()
