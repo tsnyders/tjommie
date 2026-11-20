@@ -43,6 +43,20 @@ fn logins_state(app: &mut Client) -> String {
     }
 }
 
+/// Settings, Logins, once the vault says it is locked. A daemon that has only just started has no clients yet, and until they
+/// are up the vault reads "Logins unavailable": this asks again for up to `within`, and gives the last answer if it never
+/// locks.
+fn logins_locked(app: &mut Client, within: Duration) -> String {
+    let started = std::time::Instant::now();
+    loop {
+        let said = logins_state(app);
+        if said.starts_with("Logins locked.") || started.elapsed() > within {
+            return said;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
 /// The agent's chat with its browser panel open on the Browser pane.
 fn open_panel(app: &mut Client, agent: &str) {
     let recent = common::recent(app, agent);
@@ -144,8 +158,8 @@ fn e2e_daemon_restart_with_panel_open() {
     );
 
     // The new daemon's vault host and worker host are served: Logins reads locked again (not unavailable), and the vault
-    // locked with the restart.
-    let said = logins_state(&mut app);
+    // locked with the restart. A new daemon's pid is there seconds before its clients are, so this waits for them.
+    let said = logins_locked(&mut app, Duration::from_secs(30));
     assert!(
         said.starts_with("Logins locked."),
         "Logins after the restart said {said:?}"
