@@ -8,12 +8,14 @@
 #   -Tool pdfium  -Path <pdfium.dll>        the one file is compared with the recorded hash (tool-hashes.json pdfium.sha256, the same value
 #                                           as PDFIUM_SHA256 in the app). tjommie-rs/tools/fetch-pdfium.ps1 has already checked the archive
 #                                           and the DLL inside it; this is the release's own second look at the file it is about to ship.
+#   -Tool cargo-about -Path <cargo-about.exe>   the same, for the tool that lists the Rust crates' licences for the third-party notices
+#                                           (installer/fetch-cargo-about.ps1 checks the archive it came in first, then calls this on the exe).
 #
 # A value that has not been recorded yet ("pending") passes in a dry run, with a warning and the observed values in -Observed (a
 # dry run's artifact), so they can be recorded by a commit. With -Release a pending value fails: a release is never built with a tool
 # nobody has pinned. A recorded value that does not match fails in both, and prints what was seen.
 param(
-    [Parameter(Mandatory)][ValidateSet('nsis', 'pdfium')][string]$Tool,
+    [Parameter(Mandatory)][ValidateSet('nsis', 'pdfium', 'cargo-about')][string]$Tool,
     [Parameter(Mandatory)][string]$Path,
     [string]$Manifest = (Join-Path $PSScriptRoot 'tool-hashes.json'),
     [string]$Observed,
@@ -56,7 +58,7 @@ if ($Tool -eq 'nsis') {
     }
     foreach ($row in ($rows | Sort-Object -Property Name -CaseSensitive)) { $seen[$row.Name] = $row.Sha256 }
 } else {
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "pdfium.dll is missing: $Path" }
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "The file to check for $Tool is missing: $Path" }
     $seen[(Split-Path -Leaf $Path)] = Get-Sha256 $Path
 }
 

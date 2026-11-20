@@ -604,7 +604,7 @@ describe("release.yml", () => {
   it("has a mutation script that has not gone stale", () => {
     // LF, as the mutations are written: a Windows checkout may have CRLF.
     const text = readFileSync(join(workflowDir, "release.yml"), "utf8").replaceAll("\r\n", "\n");
-    expect(mutations.length).toBeGreaterThanOrEqual(42);
+    expect(mutations.length).toBeGreaterThanOrEqual(47);
     for (const { label, from } of mutations) expect(text.split(from).length - 1, `"${label}": its text is found once in release.yml`).toBe(1);
   });
 
@@ -768,6 +768,8 @@ describe("release.yml", () => {
         /check-production-binaries\.ps1/,
         /check-release-version\.ts/,
         /fetch-pdfium\.ps1/,
+        /fetch-cargo-about\.ps1/,
+        /make-third-party-notices\.ts/,
         /assemble-payload\.ps1/,
         /choco install nsis --version=3\.11/,
         /check-tool-hashes\.ps1 -Tool nsis/,
@@ -850,6 +852,31 @@ describe("release.yml", () => {
       expect(assemble).toContain('$more[\'PdfiumLicenses\'] = "$pdfium\\licenses"');
       expect(assemble).toMatch(/assemble-payload\.ps1 [^\n]*@more/);
       expect(assemble).toContain("-OutDir \"$env:RUNNER_TEMP\\payload\"");
+    });
+
+    // The third-party notices are required: the step that writes them fails on a licence nobody accepted, a release asks for pdfium's licences
+    // in them, and the assembler is handed the file (it refuses a release without it).
+    it("writes the third-party notices with a pinned cargo-about, fails on an unaccepted licence, and hands the file to the assembler", () => {
+      const fetch = findStep("windows", /fetch-cargo-about\.ps1/);
+      expect(fetch.name).toBe("Fetch cargo-about at the pinned version");
+      // A script fetches it (the pin is checked there); the step itself downloads nothing.
+      expect(fetch.run).toBe('./installer/fetch-cargo-about.ps1 -Destination "$env:RUNNER_TEMP\\cargo-about"');
+      const notices = findStep("windows", /make-third-party-notices\.ts/);
+      const run = notices.run ?? "";
+      expect(notices.name).toBe("Write the third-party notices");
+      expect(run).toContain('cargo-about.exe" generate --manifest-path Cargo.toml --workspace --locked --fail --config "$root\\installer\\about.toml" -o $crates "$root\\installer\\about.hbs"');
+      expect(run).toContain("Push-Location tjommie-rs");
+      // A failed cargo-about stops the build, which a plain native command in a pwsh step does not do by itself.
+      expect(run).toContain("$status = $LASTEXITCODE");
+      expect(run).toContain("if ($status -ne 0) { throw ");
+      expect(run).toContain("if ($LASTEXITCODE -ne 0) { throw ");
+      // The notices cover the speech runtime and pdfium's licences, and a release (anything but an exact 'true') requires pdfium's.
+      expect(run).toContain("--speech .cache\\speech-runtime");
+      expect(run).toContain("if ($env:DRY_RUN -ne 'true') { $more += '--strict' }");
+      expect(run).toContain("$more += '--pdfium-licenses', $pdfium");
+      expect(run).toContain('--out "$env:RUNNER_TEMP\\third-party-notices.txt" @more');
+      const assemble = findStep("windows", /assemble-payload\.ps1/).run ?? "";
+      expect(assemble).toContain('$more[\'ThirdPartyNotices\'] = "$env:RUNNER_TEMP\\third-party-notices.txt"');
     });
 
     it("uploads the release's files under windows-assets only for a release, and the dry run's under its own name", () => {

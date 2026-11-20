@@ -96,5 +96,12 @@
     "archiveSha256": "9a964261760cff52570aabf038ab346d3a5034dd8b30d0d5fe8861235d356b8b",
     "sha256": "4b0dec92555d69437bef0df37be630181ab3e83a6823ca264ede355a4f2ef994",
     "note": "sha256 is bin/pdfium.dll from the archive. tjommie-rs/tools/fetch-pdfium.ps1 downloads the archive, checks archiveSha256, then the DLL, and copies the DLL and pdfium's licence texts out; the app (PDFIUM_SHA256 in crates/desktop-host/src/pdf.rs) refuses any other DLL. Change version, archiveSha256 and sha256 here together with fetch-pdfium.ps1 and pdf.rs. The release workflow runs installer/check-tool-hashes.ps1 -Tool pdfium -Path <the DLL> on what it fetched, then passes the DLL and licences to installer/assemble-payload.ps1 -Pdfium and -PdfiumLicenses."
+  },
+  "cargo-about": {
+    "version": "0.9.3",
+    "source": "https://github.com/EmbarkStudios/cargo-about/releases/download/0.9.3/cargo-about-0.9.3-x86_64-pc-windows-msvc.tar.gz",
+    "archiveSha256": "9e2942533ef1c592c4a70bdb384cae1550a3f5fc9ae40379b6662e3d2f16fe02",
+    "sha256": "1d865e2cd72823b466a64831462046e6c9f7b6fb5d2984abfc186ccba1df9d89",
+    "note": "cargo-about lists the Rust crates in the Windows binaries with their licence texts, for third-party-notices.txt (installer/about.toml says which licences are accepted; installer/about.hbs is the template). archiveSha256 is the archive as GitHub publishes it (the same value as its .sha256 asset); sha256 is cargo-about.exe inside it. installer/fetch-cargo-about.ps1 checks both before the release workflow runs the tool; it only ever downloads and extracts, nothing is installed. To move to a new version, change version, source, archiveSha256 and sha256 together, in a reviewed commit."
   }
 }

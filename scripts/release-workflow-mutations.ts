@@ -55,6 +55,12 @@ export const mutations: Mutation[] = [
   { label: "the pdfium hash check fails open on the tag path", from: "if ($env:DRY_RUN -ne 'true') { $more['Release'] = $true }" + nl + "          $fetch = ", to: "if ($env:DRY_RUN -eq 'false') { $more['Release'] = $true }" + nl + "          $fetch = " },
   { label: "a release goes on without the pdfium script", from: "} elseif ($env:DRY_RUN -ne 'true') {", to: "} elseif ($false) {" },
   { label: "the assembler is not given pdfium's licences", from: '; $more[\'PdfiumLicenses\'] = "$pdfium\\licenses"', to: "" },
+  // The third-party notices: a pinned cargo-about, a licence nobody accepted stops the build, and the assembler is given the file.
+  { label: "the notices step downloads cargo-about itself", from: 'run: ./installer/fetch-cargo-about.ps1 -Destination "$env:RUNNER_TEMP\\cargo-about"', to: 'run: Invoke-WebRequest https://example.test/cargo-about.exe -OutFile "$env:RUNNER_TEMP\\cargo-about.exe"' },
+  { label: "a failed cargo-about does not stop the notices step", from: 'if ($status -ne 0) { throw "cargo-about failed', to: 'if ($false) { throw "cargo-about failed' },
+  { label: "cargo-about covers only the root crate", from: " generate --manifest-path Cargo.toml --workspace --locked", to: " generate --manifest-path Cargo.toml --locked" },
+  { label: "a release writes the notices without --strict", from: "if ($env:DRY_RUN -ne 'true') { $more += '--strict' }", to: "if ($false) { $more += '--strict' }" },
+  { label: "the assembler is not given the notices", from: "          $more['ThirdPartyNotices'] = \"$env:RUNNER_TEMP\\third-party-notices.txt\"" + nl, to: "" },
   // The review's F1: the NSIS compiler is checked against recorded hashes, strictly on the tag path.
   { label: "the NSIS hash check fails open on the tag path", from: "if ($env:DRY_RUN -ne 'true') { $more['Release'] = $true }" + nl + "          New-Item -ItemType Directory -Force -Path dist-desktop", to: "if ($env:DRY_RUN -eq 'false') { $more['Release'] = $true }" + nl + "          New-Item -ItemType Directory -Force -Path dist-desktop" },
   { label: "the NSIS hash check is removed", from: '          ./installer/check-tool-hashes.ps1 -Tool nsis -Path "${env:ProgramFiles(x86)}\\NSIS" -Observed dist-desktop\\tool-hashes-nsis.json @more', to: "          Write-Output 'skipped'" },

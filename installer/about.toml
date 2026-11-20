@@ -1,0 +1,28 @@
+# cargo-about's settings for the Rust crates in the installer's third-party notices (scripts/make-third-party-notices.ts adds the rest).
+# The release workflow runs: cargo-about generate --manifest-path tjommie-rs/Cargo.toml --workspace --locked --fail --config installer/about.toml
+#
+# `accepted` is the whole list of licences a shipped crate may be under. A crate whose licence is not on it fails the build: someone has to
+# read the new licence and add it here on purpose, in a reviewed commit. Never add a licence only to make a build pass.
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    # What the workspace's crates needed when this list was made (2026-11-20), each one a permissive licence:
+    "BSD-2-Clause", # arrayref
+    "BSD-3-Clause", # curve25519-dalek, ed25519-dalek, subtle, tiny-skia and others
+    "0BSD",         # enum-iterator
+    "Zlib",         # foldhash, slotmap
+    "Unicode-3.0",  # the icu_* family and its data, unicode-ident
+    "CC0-1.0",      # notify
+    "MIT-0",        # borrow-or-share
+    # The one weak copyleft: option-ext (file-level, so it only reaches that crate's own files; we ship it unmodified and the notices carry its
+    # text and source link). Listed so the build works today; it is the owner's call whether it stays (see the 0.6.0 release checklist).
+    "MPL-2.0",
+]
+
+# Only what is in the Windows binaries. A dependency used only by a build script or a test is not shipped, so it is not noticed.
+targets = ["x86_64-pc-windows-msvc"]
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+
+# Tjommie's own crates (publish = false) are not third-party.
+private = { ignore = true }

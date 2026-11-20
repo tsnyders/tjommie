@@ -155,14 +155,42 @@ jobs:
           } else {
             Write-Output "::warning::$fetch is missing, so this dry run goes on without pdfium. A release will not."
           }
-      # resources\daemon\tjommie-daemon.exe is where the app looks for its daemon, and where R1 kept it. A release needs pdfium.dll and its
-      # licence texts too, and the assembler refuses a release without them; a dry run records what is missing as pending.
+      # The third-party notices: the file the About screen shows, installed beside Tjommie.exe. cargo-about lists the Rust crates in the Windows
+      # binaries with their licence texts; it is fetched at the version and SHA-256 recorded in installer/tool-hashes.json (the archive is checked
+      # before it is extracted, the exe after), by a script, so this step runs no download of its own.
+      - name: Fetch cargo-about at the pinned version
+        shell: pwsh
+        run: ./installer/fetch-cargo-about.ps1 -Destination "$env:RUNNER_TEMP\cargo-about"
+      # A licence that installer/about.toml does not accept fails the build (cargo-about exits 1 and writes nothing), so a new licence is read and
+      # added on purpose. scripts/make-third-party-notices.ts then adds pdfium, the speech runtime, the fonts and the icon set, and refuses to
+      # write a shorter file if any of them is missing; a release also needs pdfium's licences in it (--strict).
+      - name: Write the third-party notices
+        shell: pwsh
+        run: |
+          $root = $env:GITHUB_WORKSPACE
+          $crates = "$env:RUNNER_TEMP\crates-licenses.txt"
+          # Run inside tjommie-rs, so the pinned toolchain from rust-toolchain.toml and Cargo.lock are the ones cargo-about reads.
+          Push-Location tjommie-rs
+          & "$env:RUNNER_TEMP\cargo-about\cargo-about.exe" generate --manifest-path Cargo.toml --workspace --locked --fail --config "$root\installer\about.toml" -o $crates "$root\installer\about.hbs"
+          $status = $LASTEXITCODE
+          Pop-Location
+          if ($status -ne 0) { throw "cargo-about failed (exit $status): a licence is not on the accepted list in installer/about.toml, or could not be worked out." }
+          # An array, because a lone string splatted into a native command is split into single characters.
+          $more = @()
+          if ($env:DRY_RUN -ne 'true') { $more += '--strict' }
+          $pdfium = Join-Path $env:RUNNER_TEMP 'pdfium\licenses'
+          if (Test-Path -LiteralPath $pdfium) { $more += '--pdfium-licenses', $pdfium }
+          node scripts/make-third-party-notices.ts --version $env:VERSION --crates $crates --speech .cache\speech-runtime --out "$env:RUNNER_TEMP\third-party-notices.txt" @more
+          if ($LASTEXITCODE -ne 0) { throw 'The third-party notices could not be written.' }
+      # resources\daemon\tjommie-daemon.exe is where the app looks for its daemon, and where R1 kept it. A release needs pdfium.dll, its
+      # licence texts and the notices too, and the assembler refuses a release without them; a dry run records what is missing as pending.
       - name: Assemble the installer's payload
         shell: pwsh
         run: |
           # A hashtable, because only that binds a switch: a splatted array of '-Release' is passed as a positional value and the switch stays off.
           # Anything but an exact 'true' is a release, so a missing mode output is the strict case.
           $more = @{}
+          $more['ThirdPartyNotices'] = "$env:RUNNER_TEMP\third-party-notices.txt"
           $pdfium = Join-Path $env:RUNNER_TEMP 'pdfium'
           if (Test-Path -LiteralPath "$pdfium\pdfium.dll") { $more['Pdfium'] = "$pdfium\pdfium.dll"; $more['PdfiumLicenses'] = "$pdfium\licenses" }
           if ($env:DRY_RUN -ne 'true') { $more['Release'] = $true }
