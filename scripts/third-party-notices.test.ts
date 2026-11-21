@@ -144,7 +144,8 @@ describe("the cargo-about settings", () => {
   const accepted = [...config.matchAll(/^\s*"([^"]+)",/gm)].map((match) => match[1]);
 
   it("accept permissive licences by name, and none of the strong copyleft or the unknown", () => {
-    for (const id of ["MIT", "Apache-2.0", "BSD-3-Clause", "Unicode-3.0"]) expect(accepted, id).toContain(id);
+    // ISC is what libloading (pdfium-render's loader) is under, so the PDF viewer's crates are on the list.
+    for (const id of ["MIT", "Apache-2.0", "BSD-3-Clause", "Unicode-3.0", "ISC"]) expect(accepted, id).toContain(id);
     for (const id of accepted) expect(id, "an SPDX identifier, not an expression").toMatch(/^[A-Za-z0-9][A-Za-z0-9.+-]*$/);
     expect(accepted.filter((id) => /^(?:A?GPL|LGPL|SSPL|BUSL|CC-BY-NC|Commons-Clause|LicenseRef)/i.test(id))).toEqual([]);
     // Each is on the list on purpose (the file says which crate needed it); a duplicate is a mistake.
