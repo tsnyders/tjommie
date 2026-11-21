@@ -1,7 +1,8 @@
 //! Dictation's link to the speech runtime (T4.3 over desktop-host's T6.5). A composer begins a session and finishes or
 //! cancels it here; the runtime's events (`SpeechEvent`) come back through the window's `Voice`, which the dictating
-//! composers subscribe to. The app installs desktop-host's `speech::capture::Dictation` as the backend with the rest
-//! of its live wiring; until then, and in a view test that installs none, dictation says it isn't available.
+//! composers subscribe to. `speech::start` installs desktop-host's `speech::capture::Dictation` as the backend, on the
+//! live runtime; without it (no speech folder this run, or a view test that installs none) dictation says it isn't
+//! available.
 
 use std::rc::Rc;
 

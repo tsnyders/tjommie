@@ -3,7 +3,8 @@
 //! the Aegis body size; one row of round controls attaches files, mentions an agent, shows the agent's model (a menu
 //! changes it), dictates, and sends. Enter sends at once and Shift+Enter starts a line. A working agent gets your
 //! message as steering, or queues it; with the field empty the round button stops the turn instead, and only a press
-//! stops it. Dictated words land in the draft for you to edit; dictation never sends.
+//! stops it. Dictated words land in the draft for you to edit; dictation never sends, and while it runs a line says
+//! what it's doing, with a way to cancel it.
 //!
 //! The draft is kept across a send (`use-draft.ts`): the send carries what was in the box when it was pressed, its
 //! success clears the text only if nothing was typed since, and only the files that went. One send at a time; the field
@@ -13,14 +14,14 @@ use std::path::PathBuf;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, App, AppContext as _, Context, Entity, ExternalPaths, InteractiveElement as _,
-    IntoElement, ParentElement as _, PathPromptOptions, Render, Role, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px, svg,
+    AnyElement, App, AppContext as _, Context, Entity, ExternalPaths, Focusable as _,
+    InteractiveElement as _, IntoElement, ParentElement as _, PathPromptOptions, Render, Role,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px, svg,
 };
 use gpui_kit::base::input::{InputEditorStyle, InputEvent, Textarea, TextareaState};
 use protocol::model::{
     ApprovalData, ApprovalStatus, Bot, BotPatch, BotState, Message, MessageData, MessageKind,
-    ModelInfo, message_data,
+    ModelInfo, Provider, message_data,
 };
 use protocol::speech::{SpeechEvent, SpeechPhase};
 use protocol::wire::{BotsUpdate, ChatSend, ChatStop, ProviderParams, method};
@@ -32,11 +33,11 @@ use crate::model::attachments::{MAX_FILES, add_files, file_name};
 use crate::model::dictation::{
     DraftEdit, InsertionRange, TRANSCRIPT_ADDED, TRANSCRIPT_MOVED, insert_transcript, move_range,
 };
-use crate::model::format::file_size;
 use crate::model::labels::{error_text, model_label};
 use crate::model::mentions::{insert_mention, mention_options, typed_mention};
+use crate::model::state::Connection;
 use crate::motion::{clock, reduced, spring::Spring};
-use crate::semantic::SemanticExt as _;
+use crate::semantic::{SemanticExt as _, SemanticFocus as _};
 use crate::theme::TextStyle;
 use crate::ui::fields::Link;
 use crate::ui::primitives::avatar::{BotAvatar, Pose};
@@ -104,11 +105,12 @@ fn byte_of(text: &str, unit: usize) -> usize {
     text.len()
 }
 
+/// A file to send, by its path on this PC. Its chip shows the name only, as the TypeScript's did: nothing is read from
+/// the disk on the UI thread (M4 review A3).
 #[derive(Clone)]
 struct Attachment {
     id: u64,
     path: String,
-    size: Option<u64>,
 }
 
 /// The "@..." being typed, and the highlighted completion.
@@ -128,6 +130,8 @@ struct Dictating {
 pub struct Composer {
     bot_id: SharedString,
     field: Entity<TextareaState>,
+    /// The agent's name as the placeholder says it ("Message <name>"), which follows a rename.
+    named: String,
     /// The draft as of its last change, to move a dictation's range by each edit.
     text: String,
     files: Vec<Attachment>,
@@ -138,8 +142,15 @@ pub struct Composer {
     stopping: bool,
     problem: Option<SharedString>,
     mention: Option<Mention>,
+    /// The agent's models, and the PC (`None`: this one) and provider they were asked of: a list is never shown for
+    /// another PC or provider.
     models: Option<Vec<ModelInfo>>,
+    models_for: Option<(Option<String>, Provider)>,
+    /// Whether the connection was Ready when last drawn: a list that never came is asked for again when it's back.
+    ready: bool,
     dictation: Option<Dictating>,
+    /// The dictation the runtime last ended: why it ended can come after the end (a microphone that wouldn't open).
+    ended: Option<String>,
     /// What dictation last said ("Transcript added to your draft. ..."), and a transcript that lost its place.
     voice_note: Option<SharedString>,
     recovered: Option<String>,
@@ -169,28 +180,18 @@ impl Composer {
                 guarded("follow dictation", || this.follow_speech(event, window, cx));
             }),
         ];
-        let models = store::request::<method::ModelsList>(
-            cx,
-            ProviderParams {
-                provider: bot.provider,
-            },
-        );
-        cx.spawn(async move |this, cx| {
-            guarded_async("list the models", async move {
-                if let Ok(models) = models.await {
-                    let _ = this.update(cx, |this, cx| {
-                        this.models = Some(models);
-                        cx.notify();
-                    });
-                }
-            })
-            .await;
+        // Leaving the chat ends its dictation: the microphone never listens for a chat that's gone.
+        cx.on_release(|this, cx| {
+            guarded("end a dictation with its chat", || {
+                this.cancel_dictation(cx)
+            });
         })
         .detach();
         let calm = &theme(cx).motion.spring.calm;
         Composer {
             bot_id: SharedString::from(bot.id.clone()),
             field,
+            named: bot.name.clone(),
             text: String::new(),
             files: Vec::new(),
             next_file: 0,
@@ -200,13 +201,66 @@ impl Composer {
             problem: None,
             mention: None,
             models: None,
+            models_for: None,
+            ready: false,
             dictation: None,
+            ended: None,
             voice_note: None,
             recovered: None,
             focused: false,
             lift: Spring::new(0., calm),
             _subscriptions: subscriptions,
         }
+    }
+
+    /// Asks for the agent's models once the connection is Ready, and again when it comes back if the list never came.
+    /// The list is for one PC and provider: on another PC's chat, or after a provider change, it's asked for afresh
+    /// and the old one isn't shown meanwhile (M4 review A2).
+    fn list_models(&mut self, provider: Provider, cx: &mut Context<Self>) {
+        let state = store::state(cx);
+        let ready = state.connection == Connection::Ready;
+        let current = self
+            .models_for
+            .as_ref()
+            .is_some_and(|(host, listed)| *host == state.host && *listed == provider);
+        if !current {
+            self.models = None;
+        }
+        let ask = ready && (!current || (self.models.is_none() && !self.ready));
+        self.ready = ready;
+        if !ask {
+            return;
+        }
+        let wanted = (state.host.clone(), provider);
+        self.models_for = Some(wanted.clone());
+        let call = store::request::<method::ModelsList>(cx, ProviderParams { provider });
+        cx.spawn(async move |this, cx| {
+            guarded_async("list the models", async move {
+                if let Ok(models) = call.await {
+                    let _ = this.update(cx, |this, cx| {
+                        // A list for a PC or provider no longer shown is dropped.
+                        if this.models_for.as_ref() == Some(&wanted) {
+                            this.models = Some(models);
+                            cx.notify();
+                        }
+                    });
+                }
+            })
+            .await;
+        })
+        .detach();
+    }
+
+    /// The placeholder follows a rename from another device, as the field's name does (exchange.rs does the same).
+    fn follow_name(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.named == name {
+            return;
+        }
+        self.named = name.to_owned();
+        let placeholder = format!("Message {name}");
+        self.field.update(cx, |field, cx| {
+            field.set_placeholder(placeholder, window, cx)
+        });
     }
 
     fn draft(&self, cx: &App) -> String {
@@ -412,12 +466,10 @@ impl Composer {
         match add_files(&current, &incoming) {
             Some(next) => {
                 for path in next.into_iter().skip(current.len()) {
-                    let size = std::fs::metadata(&path).ok().map(|meta| meta.len());
                     self.next_file += 1;
                     self.files.push(Attachment {
                         id: self.next_file,
                         path,
-                        size,
                     });
                 }
                 self.problem = None;
@@ -507,13 +559,14 @@ impl Composer {
             }),
             phase: None,
         });
+        self.ended = None;
         self.voice_note = None;
         self.recovered = None;
         backend.begin(&session, cx);
         cx.notify();
     }
 
-    fn cancel_dictation(&mut self, cx: &mut Context<Self>) {
+    fn cancel_dictation(&mut self, cx: &mut App) {
         if let Some(dictation) = self.dictation.take()
             && let Some(backend) = voice::backend(cx)
         {
@@ -535,12 +588,23 @@ impl Composer {
             } if mine(session_id) => {
                 if matches!(phase, SpeechPhase::Cancelled | SpeechPhase::Error) {
                     self.dictation = None;
+                    self.ended = Some(session_id.clone());
                     self.voice_note = problem
                         .as_ref()
                         .map(|problem| problem.message.clone().into());
                 } else if let Some(dictation) = &mut self.dictation {
                     dictation.phase = Some(*phase);
                 }
+                cx.notify();
+            }
+            // Why a dictation the runtime ended stopped, said after the end: a microphone that wouldn't open is
+            // cancelled first, and its reason follows.
+            SpeechEvent::Session {
+                session_id,
+                problem: Some(problem),
+                ..
+            } if self.ended.as_deref() == Some(session_id.as_str()) => {
+                self.voice_note = Some(problem.message.clone().into());
                 cx.notify();
             }
             SpeechEvent::Final { session_id, text } if mine(session_id) => {
@@ -605,8 +669,7 @@ fn editor_style(cx: &App) -> InputEditorStyle {
 
 impl Render for Composer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let state = store::state(cx);
-        let Some(bot) = state
+        let Some(bot) = store::state(cx)
             .bots
             .iter()
             .find(|bot| *bot.id == *self.bot_id)
@@ -614,6 +677,9 @@ impl Render for Composer {
         else {
             return div().into_any_element();
         };
+        self.list_models(bot.provider, cx);
+        self.follow_name(&bot.name, window, cx);
+        let state = store::state(cx);
         let messages = state
             .conversations
             .get(self.bot_id.as_ref())
@@ -646,6 +712,10 @@ impl Render for Composer {
 
         // The model pill is a Tab stop, as every menu's trigger is: Enter or Space opens its menu.
         let model_focus = focus_handle(&format!("composer.{}.model.open", self.bot_id), window, cx);
+        // The field's handle is kept under its id, so an answered approval can hand the keys back to it (A4).
+        let field_id = format!("composer.{}.field", self.bot_id);
+        let field_focus = self.field.focus_handle(cx);
+        crate::ui::primitives::remember_focus(&field_id, &field_focus, cx);
         let theme = theme(cx);
         let colors = palette(cx);
         let id = self.bot_id.clone();
@@ -706,15 +776,6 @@ impl Render for Composer {
                                 .text_color(hsla(colors.icon.base)),
                         )
                         .child(div().min_w_0().truncate().child(name))
-                        .when_some(file.size, |chip, size| {
-                            chip.child(
-                                div()
-                                    .flex_none()
-                                    .type_style(&theme.typography.desktop.meta)
-                                    .text_color(hsla(colors.text.tertiary))
-                                    .child(file_size(size)),
-                            )
-                        })
                         .child(remove)
                         .into_any_element()
                 })
@@ -728,15 +789,21 @@ impl Render for Composer {
             .as_ref()
             .filter(|_| !options.is_empty())
             .map(|mention| {
+                // A listbox the field owns, as the TypeScript's was (M4 review C2): the arrows move the selected
+                // option while the field keeps the keyboard.
                 let rows = options.iter().enumerate().map(|(index, option)| {
                     let highlighted = index == mention.highlighted;
                     let pick = entity.clone();
                     div()
                         .semantic(
                             format!("composer.{id}.mention.{}", option.id),
-                            Role::MenuItem,
+                            Role::ListBoxOption,
                         )
                         .aria_label(SharedString::from(option.name.clone()))
+                        .aria_selected(highlighted)
+                        // The screen reader's current option. gpui honours the claim only while an ancestor holds
+                        // the focus, and the field's input is a sibling of this list, so for now it is a no-op.
+                        .when(highlighted, |row| row.aria_active_descendant())
                         .h(r(36.))
                         .flex()
                         .items_center()
@@ -764,7 +831,7 @@ impl Render for Composer {
                         .child(SharedString::from(option.name.clone()))
                 });
                 div()
-                    .semantic(format!("composer.{id}.mentions"), Role::Menu)
+                    .semantic(format!("composer.{id}.mentions"), Role::ListBox)
                     .aria_label("Mention an agent")
                     .absolute()
                     .bottom_full()
@@ -779,6 +846,7 @@ impl Render for Composer {
                     .shadow(shadows(&theme.shadow.light.raised))
                     .children(rows)
             });
+        let listing = mention_list.is_some();
 
         let (provider, model) = {
             let label = model_label(bot.provider, &bot.model);
@@ -849,10 +917,18 @@ impl Render for Composer {
             menu
         };
 
+        // A file goes as its path on this PC, so on another PC's chat Attach is unavailable and its name says where to
+        // attach instead (the TypeScript's aria-disabled with its reason).
         let attach = {
             let entity = entity.clone();
-            IconButton::new(format!("composer.{id}.attach"), "plus", "Attach files")
+            let name = if local {
+                "Attach files"
+            } else {
+                ELSEWHERE.trim_end_matches('.')
+            };
+            IconButton::new(format!("composer.{id}.attach"), "plus", name)
                 .variant(IconVariant::Grey)
+                .disabled(!local)
                 .on_press(move |_, cx| {
                     let _ = entity.update(cx, |this, cx| this.pick_files(cx));
                 })
@@ -890,29 +966,67 @@ impl Render for Composer {
                 let _ = entity.update(cx, |this, cx| this.toggle_dictation(cx));
             })
         };
-        let round = if stop {
+        // Stop and Send are one button under one id, so a focused Stop that turns into Send keeps the focus (M4 review
+        // A4). Send with nothing to send is unavailable: no Tab stop, though a focused one keeps the focus.
+        let round = {
             let entity = entity.clone();
-            IconButton::new(
-                format!("composer.{id}.stop"),
-                "square",
-                format!("Stop {}", bot.name),
-            )
-            .variant(IconVariant::Dark)
-            .on_press(move |_, cx| {
-                let _ = entity.update(cx, |this, cx| this.stop(cx));
-            })
-        } else {
-            let entity = entity.clone();
-            IconButton::new(format!("composer.{id}.send"), "arrow-up", "Send")
-                .variant(if has_text {
+            let (icon, name): (&'static str, SharedString) = if stop {
+                ("square", format!("Stop {}", bot.name).into())
+            } else {
+                ("arrow-up", "Send".into())
+            };
+            IconButton::new(format!("composer.{id}.round"), icon, name)
+                .variant(if stop || has_text {
                     IconVariant::Dark
                 } else {
                     IconVariant::Grey
                 })
+                .disabled(!stop && !has_text)
                 .on_press(move |window, cx| {
-                    let _ = entity.update(cx, |this, cx| this.send(window, cx));
+                    let _ = entity.update(cx, |this, cx| {
+                        if stop {
+                            this.stop(cx);
+                        } else {
+                            this.send(window, cx);
+                        }
+                    });
                 })
         };
+
+        // While dictating: what it's doing, and a way out (the TypeScript's `DictationStatus`).
+        let dictation_line = self.dictation.as_ref().map(|dictation| {
+            let doing = match dictation.phase {
+                Some(SpeechPhase::Listening) => "Listening…",
+                Some(SpeechPhase::Transcribing) => "Transcribing…",
+                _ => "Preparing voice…",
+            };
+            let cancel = entity.clone();
+            div()
+                .semantic(format!("composer.{id}.dictation"), Role::Status)
+                .aria_label(doing)
+                .flex()
+                .items_center()
+                .gap(r(theme.space.s12))
+                .px(r(theme.space.s6))
+                .type_style(&theme.typography.desktop.small)
+                .text_color(hsla(colors.text.secondary))
+                .child(div().flex_1().min_w_0().child(doing))
+                .child(
+                    Link::new(
+                        format!("composer.{id}.dictation.cancel"),
+                        "Cancel dictation",
+                    )
+                    .quiet()
+                    .on_press(move |window, cx| {
+                        let _ = cancel.update(cx, |this, cx| {
+                            this.cancel_dictation(cx);
+                            // The line goes with the dictation, so the keyboard carries on from the field.
+                            this.field.update(cx, |field, cx| field.focus(window, cx));
+                            cx.notify();
+                        });
+                    }),
+                )
+        });
 
         let voice_line = self.voice_note.clone().map(|note| {
             let recovered = self.recovered.is_some();
@@ -950,9 +1064,13 @@ impl Render for Composer {
         });
 
         let body = field_type(cx).clone();
+        // The field owns the mention list (a combo box, as the room composer's is) and reports its input's focus to
+        // the test driver (M4 review C4).
         let field = div()
-            .semantic(format!("composer.{id}.field"), Role::Group)
+            .semantic(field_id, Role::ComboBox)
             .aria_label(SharedString::from(format!("Message {}", bot.name)))
+            .aria_expanded(listing)
+            .semantic_focus(&field_focus)
             .when(self.mention.is_some(), |field| {
                 field.key_context(keymap::MENTIONS)
             })
@@ -1080,6 +1198,7 @@ impl Render for Composer {
                         )
                     })
                     .child(field)
+                    .children(dictation_line)
                     .children(voice_line)
                     .child(
                         div()
@@ -1165,16 +1284,18 @@ mod tests {
         use std::rc::Rc;
 
         use gpui::TestAppContext;
-        use protocol::model::BotState;
-        use protocol::speech::SpeechEvent;
+        use protocol::model::{BotState, ModelInfo};
+        use protocol::speech::{SpeechEvent, SpeechPhase, SpeechProblem};
         use protocol::wire::method;
 
         use crate::model::dictation::TRANSCRIPT_ADDED;
+        use crate::model::state::Connection;
         use crate::model::testing::FakeRpc;
         use crate::ui::chat::tests::{calls_to, chat, message, turns};
         use crate::ui::chat::voice::{self, VoiceBackend};
         use crate::ui::shell::route::Route;
-        use crate::ui::testing::{app, bot, click, draw, node, state};
+        use crate::ui::store;
+        use crate::ui::testing::{app, bot, click, draw, node, state, text};
 
         fn sends() -> FakeRpc {
             FakeRpc::new().on::<method::ChatSend>(|params| {
@@ -1254,6 +1375,87 @@ mod tests {
             }
         }
 
+        /// The session the fake was asked to begin.
+        fn began(fake: &FakeVoice) -> String {
+            let calls = fake.0.borrow();
+            let session = calls.iter().find_map(|call| call.strip_prefix("begin "));
+            session.expect("dictation began").to_owned()
+        }
+
+        /// M4 review P1: while dictating, a status line says what it's doing; its Cancel is the Tab stop after the
+        /// field, ends the dictation and gives the keyboard back to the field (which reports its focus, review C4).
+        #[gpui::test]
+        fn dictation_says_what_it_is_doing_and_cancel_ends_it(cx: &mut TestAppContext) {
+            let (cx, _) = app(cx, Route::Chat("b1".into()), chat(turns(2), false), sends());
+            let fake = Rc::new(FakeVoice::default());
+            let backend: Rc<dyn VoiceBackend> = fake.clone();
+            cx.update(|_, cx| voice::install(backend, cx));
+            click(cx, "composer.b1.dictate");
+            let session = began(&fake);
+            assert_eq!(text("composer.b1.dictation"), "Preparing voice…");
+            for (phase, says) in [
+                (SpeechPhase::Listening, "Listening…"),
+                (SpeechPhase::Transcribing, "Transcribing…"),
+            ] {
+                let event = SpeechEvent::Session {
+                    session_id: session.clone(),
+                    phase,
+                    problem: None,
+                };
+                cx.update(|_, cx| voice::emit(event, cx));
+                draw(cx);
+                assert_eq!(text("composer.b1.dictation"), says);
+            }
+            click(cx, "composer.b1.field");
+            assert!(
+                node("composer.b1.field").unwrap().focused,
+                "the field reports its focus"
+            );
+            cx.simulate_keystrokes("tab");
+            draw(cx);
+            let cancel = node("composer.b1.dictation.cancel").unwrap();
+            assert!(cancel.focused, "Cancel is the next Tab stop");
+            assert_eq!(cancel.text, "Cancel dictation");
+            cx.simulate_keystrokes("enter");
+            draw(cx);
+            assert!(fake.0.borrow().contains(&format!("cancel {session}")));
+            assert!(node("composer.b1.dictation").is_none(), "it went");
+            assert!(
+                node("composer.b1.field").unwrap().focused,
+                "the keyboard is back in the field"
+            );
+        }
+
+        /// A microphone that wouldn't open: the runtime cancels the session first, then dictation says why.
+        #[gpui::test]
+        fn a_dictation_that_could_not_start_says_why(cx: &mut TestAppContext) {
+            let (cx, _) = app(cx, Route::Chat("b1".into()), chat(turns(2), false), sends());
+            let fake = Rc::new(FakeVoice::default());
+            let backend: Rc<dyn VoiceBackend> = fake.clone();
+            cx.update(|_, cx| voice::install(backend, cx));
+            click(cx, "composer.b1.dictate");
+            let session = began(&fake);
+            let why = "No microphone could be opened.";
+            for (phase, problem) in [
+                (SpeechPhase::Listening, None),
+                (SpeechPhase::Cancelled, None),
+                (SpeechPhase::Error, Some(why)),
+            ] {
+                let event = SpeechEvent::Session {
+                    session_id: session.clone(),
+                    phase,
+                    problem: problem.map(|message| SpeechProblem {
+                        code: "start_failed".into(),
+                        message: message.into(),
+                    }),
+                };
+                cx.update(|_, cx| voice::emit(event, cx));
+            }
+            draw(cx);
+            assert!(node("composer.b1.dictation").is_none(), "it ended");
+            assert_eq!(text("composer.b1.voice"), why);
+        }
+
         #[gpui::test]
         fn dictation_never_sends(cx: &mut TestAppContext) {
             let (cx, calls) = app(cx, Route::Chat("b1".into()), chat(turns(2), false), sends());
@@ -1322,7 +1524,9 @@ mod tests {
             click(cx, "composer.b1.field");
             cx.simulate_input("Ask @Sc");
             draw(cx);
-            assert!(node("composer.b1.mention.b2").is_some(), "Scout is offered");
+            let scout = node("composer.b1.mention.b2").expect("Scout is offered");
+            assert_eq!(scout.role, "ListBoxOption");
+            assert!(scout.selected, "the highlighted one is selected");
             assert!(
                 node("composer.b1.mention.b1").is_none(),
                 "not the agent you're talking to"
@@ -1357,12 +1561,12 @@ mod tests {
             working.conversations = chat(turns(2), false).conversations;
             let rpc = sends().on::<method::ChatStop>(|_| Ok(protocol::wire::Empty {}));
             let (cx, calls) = app(cx, Route::Chat("b1".into()), working, rpc);
-            assert!(node("composer.b1.send").is_none());
+            assert_eq!(text("composer.b1.round"), "Stop Forge");
             assert_eq!(
                 node("composer.b1.hint").unwrap().text,
                 "Forge is working. Your message joins this turn, or queues if it can't."
             );
-            click(cx, "composer.b1.stop");
+            click(cx, "composer.b1.round");
             assert_eq!(calls_to(&calls, "chat.stop").len(), 1);
             // Enter never stops an agent: with text it sends (steering), and an empty field does nothing on Enter.
             click(cx, "composer.b1.field");
@@ -1371,9 +1575,109 @@ mod tests {
             assert_eq!(calls_to(&calls, "chat.stop").len(), 1);
             cx.simulate_input("Check the main branch");
             draw(cx);
-            assert!(
-                node("composer.b1.send").is_some(),
+            assert_eq!(
+                text("composer.b1.round"),
+                "Send",
                 "with text, the round button sends"
+            );
+        }
+
+        /// M4 review A4 / C1: Stop and Send are one button, so a focused Stop that turns into Send keeps the focus.
+        /// With nothing to send, Send is unavailable and says so (review A-N5).
+        #[gpui::test]
+        fn the_round_button_keeps_the_focus_when_stop_turns_to_send(cx: &mut TestAppContext) {
+            let mut working = state(vec![bot("b1", "Forge", BotState::Working)], vec![], vec![]);
+            working.conversations = chat(turns(2), false).conversations;
+            let (cx, _) = app(cx, Route::Chat("b1".into()), working, FakeRpc::new());
+            let found = cx.update(|window, cx| {
+                crate::ui::primitives::focus_by_id("composer.b1.round", window, cx)
+            });
+            assert!(found, "the round button is drawn");
+            draw(cx);
+            assert_eq!(text("composer.b1.round"), "Stop Forge");
+            assert!(node("composer.b1.round").unwrap().focused);
+            // The turn ends.
+            cx.update(|_, cx| {
+                store::update(cx, |state| {
+                    state.bots[0].state = BotState::Idle;
+                    true
+                })
+            });
+            draw(cx);
+            let round = node("composer.b1.round").unwrap();
+            assert_eq!(round.text, "Send, unavailable");
+            assert!(!round.enabled, "nothing to send");
+            assert!(round.focused, "the same button, still focused");
+        }
+
+        /// M4 review A2: a model list that didn't come is asked for again on the next connection. A list is for one
+        /// PC: another PC's chat asks for its own and never shows this one's.
+        #[gpui::test]
+        fn the_model_menu_fills_after_a_failed_list_and_a_new_connection(cx: &mut TestAppContext) {
+            let mut lists = 0;
+            let rpc = FakeRpc::new().on::<method::ModelsList>(move |_| {
+                lists += 1;
+                let model = |id: &str, label: &str| ModelInfo {
+                    id: id.into(),
+                    label: label.into(),
+                    is_default: false,
+                };
+                match lists {
+                    1 => Err(client::RpcError::Daemon {
+                        code: protocol::ErrorCode::Unavailable,
+                        message: "The models couldn't be listed.".into(),
+                    }),
+                    2 => Ok(vec![model("opus", "Opus")]),
+                    _ => Ok(vec![model("haiku", "Haiku")]),
+                }
+            });
+            let (cx, calls) = app(cx, Route::Chat("b1".into()), chat(turns(2), false), rpc);
+            draw(cx);
+            assert_eq!(
+                calls_to(&calls, "models.list").len(),
+                1,
+                "asked once; it failed"
+            );
+            // The connection drops and comes back.
+            for connection in [Connection::Reconnecting, Connection::Ready] {
+                cx.update(|_, cx| {
+                    store::update(cx, |state| {
+                        state.connection = connection;
+                        true
+                    })
+                });
+                draw(cx);
+                draw(cx);
+            }
+            assert_eq!(
+                calls_to(&calls, "models.list").len(),
+                2,
+                "asked again once Ready"
+            );
+            click(cx, "composer.b1.model.open");
+            assert!(node("composer.b1.model.opus").is_some(), "the menu fills");
+            // Another PC's chat, for an agent with the same id.
+            cx.update(|_, cx| {
+                store::update(cx, |state| {
+                    state.host = Some("pc-2".into());
+                    true
+                })
+            });
+            draw(cx);
+            draw(cx);
+            assert_eq!(calls_to(&calls, "models.list").len(), 3);
+            assert!(
+                node("composer.b1.model.opus").is_none(),
+                "not this PC's list"
+            );
+            assert!(
+                node("composer.b1.model.haiku").is_some(),
+                "but that PC's own"
+            );
+            // There, a file of this PC's can't be attached: Attach is unavailable and says where to attach (A-N5).
+            assert_eq!(
+                text("composer.b1.attach"),
+                "Attach files in Tjommie on that PC, unavailable"
             );
         }
     }
