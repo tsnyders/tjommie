@@ -326,9 +326,16 @@ impl Dictation {
             .await?;
         let (heard, mut received) = tokio::sync::mpsc::unbounded_channel::<Heard>();
         let sender = heard.clone();
-        let capture = match self.source.start(Arc::new(move |pcm| {
+        let sink: Sink = Arc::new(move |pcm| {
             let _ = sender.send(Heard::Chunk(pcm));
-        })) {
+        });
+        // Opening the device waits on WASAPI, seconds when the audio service is cold: on the blocking pool, so the
+        // runtime's workers (the daemon's calls among them) go on meanwhile (M4 re-review R4).
+        let source = Arc::clone(&self.source);
+        let opened = tokio::task::spawn_blocking(move || source.start(sink))
+            .await
+            .unwrap_or_else(|_| Err(NO_MICROPHONE.to_string()));
+        let capture = match opened {
             Ok(capture) => capture,
             Err(error) => {
                 let _ = self.runtime.cancel(session_id).await;
