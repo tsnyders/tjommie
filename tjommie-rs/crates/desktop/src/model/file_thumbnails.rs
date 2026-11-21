@@ -221,6 +221,79 @@ pub fn raster_dimensions(bytes: &[u8], content_type: &str) -> Result<Dimensions,
     Err(unsupported_raster())
 }
 
+/// Whether a GIF or WebP holds more than one frame. GPUI decodes every frame of one to a buffer the size of the whole
+/// picture, so a small file with many frames is gigabytes once decoded (M4 review C2): an animation is never handed to
+/// the decoder, and a GIF whose blocks don't read is treated as one. A GIF is animated with a second image descriptor or
+/// a NETSCAPE2.0 (loop) extension; a WebP when its VP8X flags say so.
+pub fn animated(bytes: &[u8], content_type: &str) -> bool {
+    match content_type {
+        "image/gif" => gif_animated(bytes),
+        "image/webp" => {
+            bytes.get(12..16) == Some(&b"VP8X"[..])
+                && bytes.get(20).is_some_and(|flags| flags & 0x02 != 0)
+        }
+        _ => false,
+    }
+}
+
+fn gif_animated(bytes: &[u8]) -> bool {
+    /// The size of a colour table the packed byte announces, if any.
+    fn table(packed: u8) -> usize {
+        if packed & 0x80 == 0 {
+            0
+        } else {
+            3 << ((packed & 7) + 1)
+        }
+    }
+    /// The offset after the data sub-blocks starting at `at`, if they end.
+    fn skip_blocks(bytes: &[u8], mut at: usize) -> Option<usize> {
+        loop {
+            let size = usize::from(*bytes.get(at)?);
+            at += 1;
+            if size == 0 {
+                return Some(at);
+            }
+            at += size;
+        }
+    }
+    let Some(&packed) = bytes.get(10) else {
+        return true;
+    };
+    let mut at = 13 + table(packed);
+    let mut images = 0;
+    loop {
+        match bytes.get(at) {
+            // The trailer, or the end of the bytes: done, one frame at most.
+            Some(0x3B) | None => return images > 1,
+            Some(0x2C) => {
+                images += 1;
+                if images > 1 {
+                    return true;
+                }
+                let Some(&packed) = bytes.get(at + 9) else {
+                    return true;
+                };
+                // The descriptor, its colour table, and the LZW code size before the data.
+                let Some(next) = skip_blocks(bytes, at + 10 + table(packed) + 1) else {
+                    return true;
+                };
+                at = next;
+            }
+            Some(0x21) => {
+                let label = bytes.get(at + 1).copied();
+                if label == Some(0xFF) && bytes.get(at + 3..at + 14) == Some(&b"NETSCAPE2.0"[..]) {
+                    return true;
+                }
+                let Some(next) = skip_blocks(bytes, at + 2) else {
+                    return true;
+                };
+                at = next;
+            }
+            Some(_) => return true,
+        }
+    }
+}
+
 /// The frame sizes: the markers that start a frame header (SOF0 to SOF15, without DHT, JPG and DAC).
 const FRAME_MARKERS: [u8; 13] = [
     192, 193, 194, 195, 197, 198, 199, 201, 202, 203, 205, 206, 207,
@@ -1128,5 +1201,53 @@ mod tests {
             Some(ThumbnailError::NotText)
         );
         assert_eq!(previews.closed(), 1);
+    }
+
+    /// A 64 x 64 GIF of `frames` frames (two colours, one tiny LZW block each), with the NETSCAPE2.0 loop extension or
+    /// not. The pixels don't matter: what's checked is the structure.
+    pub(crate) fn gif(frames: usize, looping: bool) -> Vec<u8> {
+        let mut gif = b"GIF89a".to_vec();
+        gif.extend_from_slice(&[64, 0, 64, 0, 0x80, 0, 0]);
+        gif.extend_from_slice(&[0, 0, 0, 255, 255, 255]);
+        if looping {
+            gif.extend_from_slice(&[0x21, 0xFF, 11]);
+            gif.extend_from_slice(b"NETSCAPE2.0");
+            gif.extend_from_slice(&[3, 1, 0, 0, 0]);
+        }
+        for _ in 0..frames {
+            gif.extend_from_slice(&[0x21, 0xF9, 4, 0, 10, 0, 0, 0]);
+            gif.extend_from_slice(&[0x2C, 0, 0, 0, 0, 64, 0, 64, 0, 0]);
+            gif.extend_from_slice(&[2, 2, 0x4C, 0x01, 0]);
+        }
+        gif.push(0x3B);
+        gif
+    }
+
+    /// M4 review C2: an animated GIF or WebP is found from its structure before any decoder sees it.
+    #[test]
+    fn an_animation_is_found_before_it_is_decoded() {
+        assert!(animated(&gif(3, false), "image/gif"), "three frames");
+        assert!(animated(&gif(1, true), "image/gif"), "one frame that loops");
+        assert!(
+            animated(&gif(1000, false), "image/gif"),
+            "a thousand frames"
+        );
+        assert!(!animated(&gif(1, false), "image/gif"), "a still GIF");
+        assert!(
+            animated(b"GIF89a", "image/gif"),
+            "a header with nothing after it reads as unsafe"
+        );
+        let mut webp = b"RIFF\0\0\0\0WEBPVP8X\x0a\0\0\0".to_vec();
+        webp.extend_from_slice(&[0x02, 0, 0, 0, 63, 0, 0, 63, 0, 0]);
+        assert!(
+            animated(&webp, "image/webp"),
+            "a VP8X with the animation flag"
+        );
+        webp[20] = 0x10;
+        assert!(!animated(&webp, "image/webp"), "a VP8X without it");
+        assert!(
+            !animated(&gif(3, false), "image/png"),
+            "only GIF and WebP animate"
+        );
     }
 }
