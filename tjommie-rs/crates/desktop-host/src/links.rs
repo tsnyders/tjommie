@@ -61,12 +61,17 @@ pub fn open_external(url: &str) -> Result<(), String> {
     open_external_with(url, shell_open)
 }
 
-/// `open_external` with the opener passed in, so a test can see what would have been opened.
+/// `open_external` with the opener passed in, so a test can see what would have been opened. The address must be
+/// written whole, `//` and a host after the scheme: the URL standard reads `http:x` as `http://x/`, which isn't what the
+/// text said (M4 review B1).
 pub fn open_external_with(
     url: &str,
     open: impl FnOnce(&str) -> Result<(), String>,
 ) -> Result<(), String> {
-    if navigation_for(url) != Navigation::Browser {
+    let written_whole = url
+        .split_once(':')
+        .is_some_and(|(_, rest)| rest.starts_with("//"));
+    if !written_whole || navigation_for(url) != Navigation::Browser {
         return Err("Only web links open outside Tjommie.".into());
     }
     let parsed = Url::parse(url).map_err(|_| "Only web links open outside Tjommie.".to_string())?;
@@ -170,6 +175,8 @@ mod tests {
             "javascript:alert(1)",
             "calc.exe",
             "https://",
+            "http:x",
+            "https:example.com",
         ] {
             assert!(open_external_with(blocked, never).is_err(), "{blocked}");
         }
