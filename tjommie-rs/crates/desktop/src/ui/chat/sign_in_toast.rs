@@ -1,7 +1,9 @@
 //! Account notices (`sign-in-toast.tsx`): an account or provider that isn't signed in, or couldn't be checked, says so
-//! in one dismissible notice under the header, with the way to fix it (Sign in, or Settings), instead of taking the
-//! chat's space. Each is shown once per PC: a dismissed one stays closed through status refreshes and revisits, and
-//! comes back only after that account or provider has signed in and signed out again. It closes by itself after 8 s.
+//! in one dismissible notice under the chat's header, with the way to fix it (Sign in, or Settings), instead of taking
+//! the chat's space. The chat raises it and the shell draws it, as the app-level toast viewport did, so it stays
+//! through a navigation. Each is shown once per PC: a dismissed one stays closed through status refreshes and revisits,
+//! and comes back only after that account or provider has signed in and signed out again. It closes by itself after
+//! 8 s.
 
 use std::collections::HashSet;
 use std::time::Duration;
@@ -69,11 +71,29 @@ pub fn provider_subject(provider: Provider) -> String {
 }
 
 /// Shows the notice for `subject` unless this PC already has. It closes itself after 8 s (a GPUI timer: real time in
-/// the app, the test's clock in a test), unless a newer notice has taken its place.
+/// the app, the test's clock in a test), unless a newer notice has taken its place. The banner asks on every frame it
+/// draws, so a notice already shown is found without a copy (M4 review A9).
 pub fn raise(subject: &str, title: String, fix: Fix, route: Route, cx: &mut App) {
+    let host = store::state(cx).host.as_deref();
+    let known = cx.try_global::<SignInNotices>().is_some_and(|notices| {
+        notices
+            .shown
+            .iter()
+            .any(|(at, shown)| at.as_deref() == host && shown == subject)
+    });
+    if known {
+        return;
+    }
     let host = store::state(cx).host.clone();
     let notices = cx.default_global::<SignInNotices>();
-    if !notices.shown.insert((host, subject.to_owned())) {
+    notices.shown.insert((host, subject.to_owned()));
+    // Already on screen (forgotten by a sign-in the banner hasn't caught up with yet): marked again, nothing more. A new
+    // notice here would redraw the window, and the next frame would forget and raise it again, without end.
+    if notices
+        .current
+        .as_ref()
+        .is_some_and(|shown| shown.title.as_ref() == title)
+    {
         return;
     }
     notices.serial += 1;
@@ -84,6 +104,8 @@ pub fn raise(subject: &str, title: String, fix: Fix, route: Route, cx: &mut App)
         fix,
         route,
     });
+    // The shell has already drawn this frame's notice (none): the next frame shows it.
+    cx.refresh_windows();
     cx.spawn(async move |cx| {
         guarded_async("close an account notice", async move {
             cx.background_executor().timer(SHOWN_FOR).await;
@@ -153,8 +175,8 @@ fn signed_in(state: &AppState) -> (Option<String>, Vec<String>) {
     (host, signed_in)
 }
 
-/// The notice on screen, if any; it closes after 8 s, by its x, or by its button.
-pub fn view(cx: &mut App) -> Option<AnyElement> {
+/// The notice on screen, if any, for the shell to draw; it closes after 8 s, by its x, or by its button.
+pub fn view(cx: &App) -> Option<AnyElement> {
     let shown = cx.try_global::<SignInNotices>()?.current.clone()?;
     let theme = theme(cx);
     let colors = palette(cx);
@@ -320,6 +342,8 @@ mod tests {
         cx.update(|_, cx| store::update(cx, set(true)));
         draw(cx);
         cx.update(|_, cx| store::update(cx, set(false)));
+        // The chat raises it as it draws; the shell, which drew first, shows it on the next frame.
+        draw(cx);
         draw(cx);
         assert!(
             node("chat.notice").is_some(),
@@ -333,9 +357,32 @@ mod tests {
             })
         });
         draw(cx);
+        draw(cx);
         assert!(
             node("chat.notice").is_some(),
             "another PC keeps its own notices"
+        );
+    }
+
+    /// M4 review A9: the notice is the app's, not the chat's.
+    #[gpui::test]
+    fn the_notice_stays_through_a_navigation(cx: &mut TestAppContext) {
+        let accounts = Some(vec![account(claude(false, None))]);
+        let (cx, _) = app(
+            cx,
+            Route::Chat("b1".into()),
+            needs(&sign_in_reason(), accounts),
+            FakeRpc::new(),
+        );
+        draw(cx);
+        assert!(node("chat.notice").is_some());
+        cx.update(|_, cx| cx.navigate(Route::Agents));
+        draw(cx);
+        assert!(node("screen.chat").is_none(), "the chat is gone");
+        assert_eq!(
+            node("chat.notice").unwrap().text,
+            "Claude (Personal) isn't signed in.",
+            "and its notice stays for its 8 s"
         );
     }
 

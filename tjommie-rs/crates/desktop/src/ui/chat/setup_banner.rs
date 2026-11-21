@@ -205,9 +205,12 @@ pub fn shown_of(bot: &Bot, banner: &Banner, now: &Zoned) -> Shown {
     }
 }
 
-/// What a banner's action last said.
+/// What a banner's action is doing: its request on its way, when its buttons wait (M4 review A-N6), then why it failed.
 #[derive(Default)]
-struct Problem(Option<SharedString>);
+struct Problem {
+    busy: bool,
+    said: Option<SharedString>,
+}
 
 /// The banner for `bot`, if one shows beside the chat. A notice it calls for is raised once per PC.
 pub fn banner(bot: &Bot, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
@@ -233,7 +236,10 @@ pub fn banner(bot: &Bot, window: &mut Window, cx: &mut App) -> Option<AnyElement
         cx,
         |_, _| Problem::default(),
     );
-    let said = problem.read(cx).0.clone();
+    let (busy, said) = {
+        let problem = problem.read(cx);
+        (problem.busy, problem.said.clone())
+    };
     let theme = theme(cx);
     let colors = palette(cx);
     let id = bot.id.clone();
@@ -241,7 +247,7 @@ pub fn banner(bot: &Bot, window: &mut Window, cx: &mut App) -> Option<AnyElement
         .acts
         .iter()
         .enumerate()
-        .map(|(index, act)| act_view(&id, index, act, &problem))
+        .map(|(index, act)| act_view(&id, index, act, &problem, busy))
         .collect();
     let text = SharedString::from(line.text.clone());
     Some(
@@ -313,7 +319,15 @@ pub fn banner(bot: &Bot, window: &mut Window, cx: &mut App) -> Option<AnyElement
     )
 }
 
-fn act_view(bot_id: &str, index: usize, act: &Act, problem: &Entity<Problem>) -> AnyElement {
+/// An action's control. `busy`: a Set up or Switch request is on its way, so those wait (a second press would send it
+/// again).
+fn act_view(
+    bot_id: &str,
+    index: usize,
+    act: &Act,
+    problem: &Entity<Problem>,
+    busy: bool,
+) -> AnyElement {
     let id = format!("chat.{bot_id}.banner.{index}");
     match act {
         Act::Go {
@@ -339,6 +353,7 @@ fn act_view(bot_id: &str, index: usize, act: &Act, problem: &Entity<Problem>) ->
             Pill::new(id, "Set up")
                 .variant(PillVariant::Primary)
                 .small()
+                .disabled(busy)
                 .on_press(move |_, cx| {
                     let call = store::request::<method::SetupPrepareCodexSandbox>(cx, Empty {});
                     report(&problem, call, cx);
@@ -348,6 +363,10 @@ fn act_view(bot_id: &str, index: usize, act: &Act, problem: &Entity<Problem>) ->
         Act::Switch(others) => {
             let move_to = |account: String, problem: Entity<Problem>, bot: String| {
                 move |_: &mut Window, cx: &mut App| {
+                    // The menu's rows can't be dimmed while its trigger opens it: they wait here.
+                    if problem.read(cx).busy {
+                        return;
+                    }
                     let call = store::request::<method::BotsUpdate>(
                         cx,
                         BotsUpdate {
@@ -365,14 +384,16 @@ fn act_view(bot_id: &str, index: usize, act: &Act, problem: &Entity<Problem>) ->
                 [(account, label)] => Pill::new(id, format!("Switch to {label}"))
                     .variant(PillVariant::Primary)
                     .small()
+                    .disabled(busy)
                     .on_press(move_to(account.clone(), problem.clone(), bot_id.to_owned()))
                     .into_any_element(),
                 _ => {
                     let trigger = format!("{id}.open");
-                    let mut menu = Menu::new(SharedString::from(id.clone()), move |_, _, _| {
+                    let mut menu = Menu::new(SharedString::from(id.clone()), move |open, _, _| {
                         Pill::new(trigger, "Switch account")
                             .variant(PillVariant::Primary)
                             .small()
+                            .expanded(open)
                             .into_any_element()
                     })
                     .anchor(gpui::Anchor::TopRight)
@@ -391,25 +412,26 @@ fn act_view(bot_id: &str, index: usize, act: &Act, problem: &Entity<Problem>) ->
     }
 }
 
-/// Says why an action failed, under the banner.
+/// Runs an action: its buttons wait until the daemon answers, then a failure says why under the banner.
 fn report<T: 'static>(
     problem: &Entity<Problem>,
     call: futures::future::BoxFuture<'static, Result<T, crate::model::connection::RequestError>>,
     cx: &mut App,
 ) {
     problem.update(cx, |problem, cx| {
-        problem.0 = None;
+        problem.busy = true;
+        problem.said = None;
         cx.notify();
     });
     let problem = problem.clone();
     cx.spawn(async move |cx| {
         guarded_async("run a banner action", async move {
-            if let Err(error) = call.await {
-                problem.update(cx, |problem, cx| {
-                    problem.0 = Some(error_text(&error).into());
-                    cx.notify();
-                });
-            }
+            let outcome = call.await;
+            problem.update(cx, |problem, cx| {
+                problem.busy = false;
+                problem.said = outcome.err().map(|error| error_text(&error).into());
+                cx.notify();
+            });
         })
         .await;
     })

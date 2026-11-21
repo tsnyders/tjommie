@@ -173,7 +173,7 @@ impl Render for ChatScreen {
         };
         let actions = HeaderActions {
             panel_open,
-            on_toggle_panel: Rc::new(|window, cx| exchange::toggle_panel(window, cx)),
+            on_toggle_panel: Rc::new(|window, cx| exchange::toggle_panel(Trigger::of(window), cx)),
             on_open_browser: Rc::new(|window, cx| {
                 exchange::close(cx);
                 BrowserPanel::open_browser(Trigger::of(window), cx);
@@ -197,15 +197,8 @@ impl Render for ChatScreen {
         };
         let header = header::header(&bot, &actions, window, cx);
         sign_in_toast::forget_resolved(cx);
+        // An account notice it raises is the shell's to draw: it stays through a navigation (M4 review A9).
         let banner = setup_banner::banner(&bot, window, cx);
-        let notice = sign_in_toast::view(cx).map(|notice| {
-            let theme = theme(cx);
-            div()
-                .absolute()
-                .top(r(theme.space.s56))
-                .right(r(theme.space.s16))
-                .child(notice)
-        });
         let composer = self
             .composer
             .get_or_insert_with(|| cx.new(|cx| Composer::new(&bot, window, cx)))
@@ -223,7 +216,6 @@ impl Render for ChatScreen {
             .children(banner)
             .child(body)
             .child(composer)
-            .children(notice)
     }
 }
 

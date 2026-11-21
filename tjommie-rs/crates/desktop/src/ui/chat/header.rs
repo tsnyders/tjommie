@@ -4,7 +4,7 @@
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, App, Entity, IntoElement, ParentElement as _, Role, SharedString,
+    AnyElement, App, AppContext as _, Entity, IntoElement, ParentElement as _, Role, SharedString,
     StatefulInteractiveElement as _, Styled as _, Window, div, svg,
 };
 use jiff::tz::TimeZone;
@@ -147,6 +147,7 @@ pub fn header(bot: &Bot, actions: &HeaderActions, window: &mut Window, cx: &mut 
                 } else {
                     IconVariant::Plain
                 })
+                .expanded(open)
                 .into_any_element()
         },
     )
@@ -171,11 +172,22 @@ pub fn header(bot: &Bot, actions: &HeaderActions, window: &mut Window, cx: &mut 
                 format!("chat.{id}.more.folder"),
                 "Open home folder",
                 move |_, cx| {
-                    let opened = desktop_host::links::open_folder(&folder);
-                    problem.update(cx, |problem, cx| {
-                        problem.0 = opened.err().map(SharedString::from);
-                        cx.notify();
-                    });
+                    // Explorer starts off the UI thread: a cold one can take seconds (M4 review A-N7).
+                    let folder = folder.clone();
+                    let opening = cx
+                        .background_spawn(async move { desktop_host::links::open_folder(&folder) });
+                    let problem = problem.clone();
+                    cx.spawn(async move |cx| {
+                        guarded_async("open the home folder", async move {
+                            let opened = opening.await;
+                            problem.update(cx, |problem, cx| {
+                                problem.0 = opened.err().map(SharedString::from);
+                                cx.notify();
+                            });
+                        })
+                        .await;
+                    })
+                    .detach();
                 },
             )
             .icon("folder-git-2"),

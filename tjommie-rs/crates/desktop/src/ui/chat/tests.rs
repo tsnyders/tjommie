@@ -304,6 +304,25 @@ fn pause_asks_the_daemon(cx: &mut TestAppContext) {
     assert_eq!(pauses[0], json!({ "id": "b1", "paused": true }));
 }
 
+/// chat-header.test.tsx's desktop case: the state beside the name and the panel button; More says whether its menu is
+/// open (M4 review C-N3).
+#[gpui::test]
+fn the_header_shows_the_state_the_panel_button_and_whether_more_is_open(cx: &mut TestAppContext) {
+    let mut state = chat(turns(2), false);
+    state.bots[0].state = BotState::Working;
+    let (cx, _) = app(cx, Route::Chat("b1".into()), state, FakeRpc::new());
+    assert_eq!(node("chat.b1.state").unwrap().text, "Working");
+    assert_eq!(node("chat.b1.panel").unwrap().text, "Show the panel");
+    assert_eq!(node("chat.b1.more.open").unwrap().expanded, Some(false));
+    click(cx, "chat.b1.more.open");
+    draw(cx);
+    assert_eq!(
+        node("chat.b1.more.open").unwrap().expanded,
+        Some(true),
+        "its menu is open"
+    );
+}
+
 mod exchange_view {
     use super::*;
     use protocol::wire::ExchangeView;
@@ -908,6 +927,227 @@ mod file_card {
         assert!(
             closes.len() >= 2,
             "the preview's transfer and the download's both closed: {closes:?}"
+        );
+    }
+}
+
+/// The keyboard, as the modules below drive it.
+mod keys {
+    use gpui::VisualTestContext;
+
+    use crate::ui::testing::{draw, node};
+
+    /// Presses Tab until `id` has the focus.
+    pub(super) fn tab_to(cx: &mut VisualTestContext, id: &str) {
+        for _ in 0..80 {
+            if node(id).is_some_and(|node| node.focused) {
+                return;
+            }
+            cx.simulate_keystrokes("tab");
+            draw(cx);
+        }
+        assert!(
+            node(id).is_some_and(|node| node.focused),
+            "Tab never reached {id}"
+        );
+    }
+
+    /// The ids of the nodes with the focus.
+    pub(super) fn focused() -> Vec<String> {
+        crate::test_driver::nodes()
+            .into_iter()
+            .filter(|node| node.focused)
+            .map(|node| node.id)
+            .collect()
+    }
+}
+
+/// M4 review A1: reaching the top asks for one older page, and for the next only once the top is reached again.
+mod older_pages {
+    use super::*;
+    use gpui::VisualTestContext;
+
+    /// A page from the day before, oldest first ("o0"), yours and Forge's in turn.
+    fn day_before(count: usize) -> Vec<Message> {
+        turns(count)
+            .into_iter()
+            .map(|mut older| {
+                older.id = older.id.replacen('m', "o", 1);
+                older.created_at = older.created_at.replace("2026-11-15", "2026-11-14");
+                older
+            })
+            .collect()
+    }
+
+    /// Turns the wheel up as far as it goes, then draws.
+    fn scroll_up(cx: &mut VisualTestContext) {
+        let thread = cx.debug_bounds("chat.thread").unwrap().center();
+        cx.simulate_event(ScrollEvent {
+            position: thread,
+            delta: ScrollDelta::Pixels(point(px(0.), px(100_000.))),
+            modifiers: Modifiers::none(),
+            touch_phase: TouchPhase::Moved,
+            source: ScrollSource::Pointer,
+        });
+        draw(cx);
+    }
+
+    #[gpui::test]
+    fn reaching_the_top_loads_one_page_and_the_next_only_at_the_top_again(cx: &mut TestAppContext) {
+        let rpc = FakeRpc::new().on::<method::ChatHistory>(|params| {
+            // The page before the messages the chat opened with has more before it; the one before that is empty.
+            let more = params["before"] == "m0";
+            Ok(MessagePage {
+                messages: if more { day_before(60) } else { Vec::new() },
+                has_more: more,
+            })
+        });
+        let (cx, calls) = app(cx, Route::Chat("b1".into()), chat(turns(4), true), rpc);
+        for _ in 0..4 {
+            draw(cx);
+        }
+        let history = calls_to(&calls, "chat.history");
+        assert_eq!(
+            history.len(),
+            1,
+            "one page for one reach of the top: {history:?}"
+        );
+        assert_eq!(history[0]["before"], "m0");
+        assert!(
+            node("prose.m3").is_some() && node("bubble.o0").is_none(),
+            "the page landed above what shows"
+        );
+        for _ in 0..40 {
+            if calls_to(&calls, "chat.history").len() > 1 {
+                break;
+            }
+            scroll_up(cx);
+        }
+        let history = calls_to(&calls, "chat.history");
+        assert_eq!(history.len(), 2, "the top reached again: {history:?}");
+        assert_eq!(
+            history[1]["before"], "o0",
+            "the page before the oldest loaded message"
+        );
+    }
+}
+
+/// M4 review A4: a card answered from the keyboard leaves the keyboard near: when its record takes its place, the focus
+/// goes on to the composer's field, or the record keeps it; it never falls back to the window.
+mod answered_card_focus {
+    use super::*;
+
+    #[gpui::test]
+    fn approving_by_keys_keeps_the_keyboard_near(cx: &mut TestAppContext) {
+        let card = with(
+            MessageKind::Approval,
+            json!({
+                "approvalId": "a1", "tool": "Bash", "detail": "{\"command\":\"git push\"}", "status": "pending",
+                "rule": null
+            }),
+            message("m1", "b1", "Forge wants to run a command", 1),
+        );
+        let rpc = FakeRpc::new().on::<method::ApprovalsRespond>(|_| {
+            Ok(serde_json::from_value(json!({
+                "id": "a1", "botId": "b1", "kind": "tool", "tool": "Bash", "summary": "Forge wants to run a command",
+                "detail": "{\"command\":\"git push\"}", "rule": null, "payload": null, "status": "allowed",
+                "messageId": "m1", "createdAt": "2026-11-15T08:01:00.000Z"
+            }))
+            .unwrap())
+        });
+        let (cx, calls) = app(cx, Route::Chat("b1".into()), chat(vec![card], false), rpc);
+        keys::tab_to(cx, "approval.m1.approve");
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        draw(cx);
+        assert_eq!(calls_to(&calls, "approvals.respond").len(), 1);
+        assert_eq!(
+            node("approval.m1").unwrap().text,
+            "Approved: Forge wants to run a command",
+            "the record took the card's place"
+        );
+        assert!(
+            !node("root").unwrap().focused,
+            "the keyboard didn't fall back to the window"
+        );
+        assert_eq!(
+            keys::focused(),
+            ["composer.b1.field"],
+            "on to the composer's field"
+        );
+    }
+}
+
+/// M4 review A4, A5, C4, A-N9: the exchange view gives the keyboard back to the "View thread" link that opened it, from
+/// its x and by Escape.
+mod exchange_focus {
+    use super::*;
+    use protocol::wire::ExchangeView;
+
+    /// Forge's chat with its exchange with Scout, and the daemon's answer for that exchange.
+    fn asked() -> (AppState, FakeRpc) {
+        let handoff = with(
+            MessageKind::Handoff,
+            json!({ "exchangeId": "x1", "fromBotId": "b1", "toBotId": "b2", "messages": 0, "status": "replied" }),
+            message("m1", "b1", "Does the bundled SQLite match?", 1),
+        );
+        let mut state = chat(vec![handoff], false);
+        state.bots.push(bot("b2", "Scout", BotState::Idle));
+        let rpc = FakeRpc::new().on::<method::ExchangesGet>(|_| {
+            Ok(serde_json::from_value::<ExchangeView>(json!({
+                "messages": [],
+                "hasMore": false,
+                "exchange": {
+                    "id": "x1", "fromBotId": "b1", "toBotId": "b2", "request": "Does the bundled SQLite match?",
+                    "reply": "Yes.", "status": "replied",
+                    "createdAt": "2026-11-15T08:01:00.000Z", "repliedAt": "2026-11-15T08:02:00.000Z"
+                }
+            }))
+            .unwrap())
+        });
+        (state, rpc)
+    }
+
+    #[gpui::test]
+    fn its_x_gives_the_keyboard_back_to_view_thread(cx: &mut TestAppContext) {
+        let (state, rpc) = asked();
+        let (cx, _) = app(cx, Route::Chat("b1".into()), state, rpc);
+        click(cx, "exchange.x1.open");
+        draw(cx);
+        assert_eq!(
+            node("exchange.x1").unwrap().text,
+            "Forge asked Scout, selected",
+            "the open exchange's card says so"
+        );
+        click(cx, "exchange.x1.reply");
+        assert!(
+            node("exchange.x1.reply").unwrap().focused,
+            "the reply field reports its focus"
+        );
+        click(cx, "exchange.x1.close");
+        assert!(node("exchange.x1.view").is_none(), "closed");
+        assert!(
+            node("exchange.x1.open").unwrap().focused,
+            "View thread has the keyboard again"
+        );
+        assert_eq!(node("exchange.x1").unwrap().text, "Forge asked Scout");
+    }
+
+    #[gpui::test]
+    fn escape_closes_it_and_gives_the_keyboard_back(cx: &mut TestAppContext) {
+        let (state, rpc) = asked();
+        let (cx, _) = app(cx, Route::Chat("b1".into()), state, rpc);
+        keys::tab_to(cx, "exchange.x1.open");
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert!(node("exchange.x1.view").is_some(), "opened by keys");
+        keys::tab_to(cx, "exchange.x1.close");
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        assert!(node("exchange.x1.view").is_none(), "Escape closed it");
+        assert!(
+            node("exchange.x1.open").unwrap().focused,
+            "and View thread has the keyboard again"
         );
     }
 }

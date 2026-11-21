@@ -1,13 +1,14 @@
 //! The exchange view (Phase 3 plan T4.1; `exchange/exchange-view.tsx`, WF6): who asked whom, the whole exchange, and a box
 //! that replies in Everyone with both agents mentioned. It opens beside the chat or room it was opened from, in the right
 //! panel's place: opening it closes the browser panel, and the panel opening again closes it (the newer one wins, as the
-//! TypeScript showed one or the other). Closing it, opening another, or leaving forgets its conversation.
+//! TypeScript showed one or the other). Closing it, opening another, or leaving forgets its conversation; its x and
+//! Escape give the keyboard back to the link that opened it.
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, AnyView, App, AppContext as _, Context, Entity, Global, InteractiveElement as _,
-    IntoElement, ParentElement as _, Render, Role, ScrollHandle, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, svg,
+    AnyElement, AnyView, App, AppContext as _, Context, Entity, Focusable as _, Global,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, Role, ScrollHandle,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, svg,
 };
 use gpui_kit::base::input::{InputEditorStyle, InputEvent, Textarea, TextareaState};
 use jiff::Zoned;
@@ -17,15 +18,16 @@ use protocol::wire::{Id, RoomPost, method};
 use super::message_view::{self, MessageContext, shown};
 use crate::guard::{guarded, guarded_async};
 use crate::keymap::{self, Send};
-use crate::model::exchange::{exchange_caption, exchange_meta, handoff_status};
+use crate::model::exchange::{exchange_caption, exchange_id, exchange_meta, handoff_status};
 use crate::model::labels::{DELETED_BOT, error_text};
 use crate::model::state::ConversationStatus;
 use crate::motion::keyboard::Trigger;
-use crate::semantic::SemanticExt as _;
+use crate::semantic::{SemanticExt as _, SemanticFocus as _};
 use crate::ui::browser::panel::BrowserPanel;
 use crate::ui::fields::Link;
 use crate::ui::primitives::avatar::{BotAvatar, Pose};
 use crate::ui::primitives::button::{IconButton, IconVariant};
+use crate::ui::primitives::focus_by_id;
 use crate::ui::shell::connection::failed_load;
 use crate::ui::shell::route::{Navigate as _, Route};
 use crate::ui::store::{self, History};
@@ -59,6 +61,24 @@ pub fn close(cx: &mut App) {
     cx.set_global(Open(None));
     store::close_conversation(cx, &id);
     cx.refresh_windows();
+}
+
+/// Closes the exchange view from its own x or by Escape (M4 review A4, A5): the keyboard goes back to the "View
+/// thread" link that opened it or, when that row isn't drawn, to the panel button: the chat's, or a room's Members.
+/// Whether one was open.
+pub fn dismiss(window: &mut Window, cx: &mut App) -> bool {
+    let Some(view) = cx.try_global::<Open>().and_then(|open| open.0.clone()) else {
+        return false;
+    };
+    let (id, from) = {
+        let view = view.read(cx);
+        (view.id.clone(), view.from.clone())
+    };
+    close(cx);
+    let _ = focus_by_id(&format!("exchange.{id}.open"), window, cx)
+        || focus_by_id(&format!("chat.{from}.panel"), window, cx)
+        || focus_by_id("room.panel", window, cx);
+    true
 }
 
 /// The open exchange's id.
@@ -226,14 +246,10 @@ impl ExchangeView {
             .map(|conversation| conversation.messages.as_slice())
             .unwrap_or_default();
         // In a room, the exchange's newest post or notice there: its reply and its failure are saved with its new status.
-        let posted = opener.iter().rev().find(|message| {
-            message
-                .data
-                .as_ref()
-                .and_then(|data| data.get("exchangeId"))
-                .and_then(|id| id.as_str())
-                == Some(self.id.as_ref())
-        });
+        let posted = opener
+            .iter()
+            .rev()
+            .find(|message| exchange_id(message).as_deref() == Some(self.id.as_ref()));
         let progress = format!(
             "{}:{:?}:{:?}:{:?}",
             messages.len(),
@@ -375,6 +391,7 @@ impl Render for ExchangeView {
             }
         };
         let can_send = !agents.is_empty() && !self.text.trim().is_empty();
+        let reply_focus = self.reply.focus_handle(cx);
         let entity = cx.entity().downgrade();
         let send_entity = entity.clone();
 
@@ -499,7 +516,9 @@ impl Render for ExchangeView {
                     )
                     .child(
                         IconButton::new(format!("exchange.{id}.close"), "x", "Close the exchange")
-                            .on_press(|_, cx| close(cx)),
+                            .on_press(|window, cx| {
+                                dismiss(window, cx);
+                            }),
                     ),
             )
             .child(body)
@@ -569,6 +588,9 @@ impl Render for ExchangeView {
                                         div()
                                             .semantic(format!("exchange.{id}.reply"), Role::Group)
                                             .aria_label(SharedString::from(placeholder))
+                                            // The field inside is gpui-kit's: the driver reads its focus as this
+                                            // group's (M4 review C4).
+                                            .semantic_focus(&reply_focus)
                                             .flex_1()
                                             .min_w_0()
                                             .px(r(theme.space.s6))
@@ -619,11 +641,12 @@ pub fn reconcile(cx: &mut App) {
     }
 }
 
-/// The header's panel button: closes the exchange if one shows, otherwise opens or closes the browser panel.
-pub fn toggle_panel(window: &Window, cx: &mut App) {
+/// The header's panel button and Ctrl+B (M4 review A6): closes the exchange if one shows, otherwise opens or closes the
+/// browser panel.
+pub fn toggle_panel(trigger: Trigger, cx: &mut App) {
     if open_id(cx).is_some() {
         close(cx);
     } else {
-        BrowserPanel::toggle(Trigger::of(window), cx);
+        BrowserPanel::toggle(trigger, cx);
     }
 }

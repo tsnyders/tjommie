@@ -252,9 +252,15 @@ fn exchange_card(
     let id = exchange.exchange_id.clone();
     let open = context.on_open_exchange.clone();
     let open_id = SharedString::from(id.clone());
+    // The open exchange's card says so to a screen reader too (legacy `aria-pressed`; M4 review A-N9).
+    let name = if selected {
+        SharedString::from(format!("{title}, selected"))
+    } else {
+        title.clone()
+    };
     div()
         .semantic(format!("exchange.{id}"), Role::Group)
-        .aria_label(title.clone())
+        .aria_label(name)
         .w_full()
         .max_w(r(600.))
         .flex()
@@ -267,9 +273,13 @@ fn exchange_card(
         .border_t_1()
         .border_color(hsla(colors.overlay.highlight))
         .shadow(shadows(&theme.shadow.light.card))
-        // The open exchange's card is marked while the view beside the chat shows it.
+        // The open exchange's card is marked while the view beside the chat shows it: an ink edge all round, with a
+        // pixel less padding on the sides and bottom, so nothing inside moves (M4 review A-N9).
         .when(selected, |card| {
-            card.border_1().border_color(hsla(colors.ink.base))
+            card.border_1()
+                .border_color(hsla(colors.ink.base))
+                .px(r(theme.space.s16 - 1.))
+                .pb(r(theme.space.s10 - 1.))
         })
         .child(
             div()

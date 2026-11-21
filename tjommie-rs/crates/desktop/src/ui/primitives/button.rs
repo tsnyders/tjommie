@@ -43,6 +43,7 @@ pub struct Pill {
     small: bool,
     tight: bool,
     disabled: bool,
+    expanded: Option<bool>,
     on_press: Option<Handler>,
 }
 
@@ -57,8 +58,15 @@ impl Pill {
             small: false,
             tight: false,
             disabled: false,
+            expanded: None,
             on_press: None,
         }
+    }
+
+    /// A menu's trigger: whether its menu is open, as `aria-expanded` said (M4 review C-N3).
+    pub fn expanded(mut self, open: bool) -> Self {
+        self.expanded = Some(open);
+        self
     }
 
     /// Unavailable now (M5 review M2): dimmed, not pressable and not a Tab stop, and said so (", unavailable" in its
@@ -144,6 +152,7 @@ impl RenderOnce for Pill {
         let pill = div()
             .semantic(self.id.clone(), Role::Button)
             .aria_label(name)
+            .when_some(self.expanded, |pill, open| pill.aria_expanded(open))
             .semantic_disabled(self.disabled)
             .track_focus(&focus)
             .h(r(height))
@@ -196,6 +205,7 @@ pub struct IconButton {
     variant: IconVariant,
     disabled: bool,
     busy: bool,
+    expanded: Option<bool>,
     on_press: Option<Handler>,
 }
 
@@ -212,12 +222,19 @@ impl IconButton {
             variant: IconVariant::Plain,
             disabled: false,
             busy: false,
+            expanded: None,
             on_press: None,
         }
     }
 
     pub fn variant(mut self, variant: IconVariant) -> Self {
         self.variant = variant;
+        self
+    }
+
+    /// A menu's trigger: whether its menu is open, as `aria-expanded` said (M4 review C-N3).
+    pub fn expanded(mut self, open: bool) -> Self {
+        self.expanded = Some(open);
         self
     }
 
@@ -283,6 +300,7 @@ impl RenderOnce for IconButton {
         let button = div()
             .semantic(self.id.clone(), Role::Button)
             .aria_label(name)
+            .when_some(self.expanded, |button, open| button.aria_expanded(open))
             .semantic_disabled(self.disabled)
             .track_focus(&focus)
             .size(r(size))

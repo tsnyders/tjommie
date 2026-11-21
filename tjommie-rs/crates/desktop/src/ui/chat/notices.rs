@@ -133,6 +133,7 @@ pub fn error(
                     column.child(
                         div()
                             .semantic(format!("error.{id}.problem"), Role::Alert)
+                            .aria_label(problem.clone())
                             .text_color(hsla(theme.color.bot.red))
                             .child(problem),
                     )

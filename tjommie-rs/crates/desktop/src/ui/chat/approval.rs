@@ -8,6 +8,9 @@
 //! flashes ochre and settles to ink; after a 260 ms beat it closes into its one-line record, whose check draws on.
 //! Deny lets go quietly, with no stamp. A key (Ctrl+Enter in the card, or Enter on Approve) snaps: the record shows at
 //! once, as under reduced motion. An answer the daemon refuses undoes the motion from wherever it is.
+//!
+//! The keyboard is never dropped (M4 review A4): the answers stay in place while one is sent, and when the record takes
+//! the card's place, the keyboard that answered goes on to the composer's field, or stays on the record in a room.
 
 use std::collections::HashMap;
 
@@ -33,6 +36,7 @@ use crate::semantic::SemanticExt as _;
 use crate::theme;
 use crate::ui::fields::Link;
 use crate::ui::primitives::button::{Pill, PillVariant};
+use crate::ui::primitives::focus_by_id;
 use crate::ui::store;
 use crate::ui::style::{TypeExt as _, focus_ring, focus_visible, hsla, palette, r, shadows, theme};
 
@@ -46,6 +50,18 @@ const STAMP_KICK: f32 = 128.;
 struct Decided(HashMap<String, ApprovalDecision>);
 
 impl Global for Decided {}
+
+/// The card last answered from inside it (its answers have the focus, or it has): its record keeps the card's focus,
+/// and the first time the record shows, the keyboard goes on from it.
+#[derive(Default)]
+struct HandOff {
+    /// The card's message.
+    id: String,
+    /// The record hasn't shown yet.
+    due: bool,
+}
+
+impl Global for HandOff {}
 
 /// The Approve motion, as plain state: the time comes in, so it is tested without a window.
 pub struct Approving {
@@ -230,23 +246,68 @@ pub fn card(
             .try_global::<Decided>()
             .and_then(|decided| decided.0.get(fields.approval_id).copied());
         let text = record(&message.body, data, decision);
+        // The daemon's record takes over the focus of a card answered from inside it.
+        let focus = handed_off(&message.id, cx).then(|| card_focus(&message.id, window, cx));
+        if let Some(focus) = &focus {
+            pass_on(focus, bot, window, cx);
+        }
         return answered(
             &message.id,
             &text,
             fields.status == ApprovalStatus::Allowed,
             None,
+            focus.as_ref(),
             cx,
         );
     }
     pending(message, &fields, bot, window, cx)
 }
 
-/// The one-line record. `check` is the drawn fraction of an approval's check while it draws on.
+/// The card's focus, kept under its message while the card shows, and while its record keeps it.
+fn card_focus(id: &str, window: &mut Window, cx: &mut App) -> FocusHandle {
+    window
+        .use_keyed_state(
+            SharedString::from(format!("approval.{id}.focus")),
+            cx,
+            |_, cx| cx.focus_handle(),
+        )
+        .read(cx)
+        .clone()
+}
+
+/// Whether `id`'s card is the one last answered from inside it: its record keeps the card's focus.
+fn handed_off(id: &str, cx: &App) -> bool {
+    cx.try_global::<HandOff>()
+        .is_some_and(|hand_off| hand_off.id == id)
+}
+
+/// The first time the record of a card answered from inside it shows, the keyboard (if it is still in the card) goes on
+/// to the composer's field, the next thing to do; where there is none (a room) the record keeps it. It moves after this
+/// frame, once the card's controls are gone.
+fn pass_on(focus: &FocusHandle, bot: Option<&Bot>, window: &mut Window, cx: &mut App) {
+    let due = std::mem::take(&mut cx.default_global::<HandOff>().due);
+    if !due || !focus.contains_focused(window, cx) {
+        return;
+    }
+    let field = bot.map(|bot| format!("composer.{}.field", bot.id));
+    let record = focus.clone();
+    window.defer(cx, move |window, cx| {
+        guarded("pass the keyboard on from an answered card", || {
+            if !field.is_some_and(|field| focus_by_id(&field, window, cx)) {
+                window.focus(&record, cx);
+            }
+        });
+    });
+}
+
+/// The one-line record. `check` is the drawn fraction of an approval's check while it draws on; `focus`, the card's
+/// focus when the record keeps it.
 fn answered(
     id: &str,
     text: &str,
     allowed: bool,
     check_progress: Option<f32>,
+    focus: Option<&FocusHandle>,
     cx: &App,
 ) -> AnyElement {
     let theme = theme(cx);
@@ -269,6 +330,7 @@ fn answered(
     div()
         .semantic(format!("approval.{id}"), Role::Status)
         .aria_label(text.clone())
+        .when_some(focus, |record, focus| record.track_focus(focus))
         .max_w_full()
         .flex()
         .items_center()
@@ -311,12 +373,7 @@ fn pending(
         cx,
         |_, _| Answer::default(),
     );
-    let focus: Entity<FocusHandle> = window.use_keyed_state(
-        SharedString::from(format!("approval.{id}.focus")),
-        cx,
-        |_, cx| cx.focus_handle(),
-    );
-    let focus = focus.read(cx).clone();
+    let focus = card_focus(&id, window, cx);
 
     // The motion's frame.
     let now = clock::now(cx);
@@ -348,10 +405,12 @@ fn pending(
     if closed && let Some(decision) = decision {
         let allowed = decision != ApprovalDecision::Deny;
         let text = record_of(&message.body, card.routine, allowed, Some(decision));
-        return div()
-            .opacity(arrival)
-            .child(answered(&id, &text, allowed, progress, cx))
-            .into_any_element();
+        let keeps = handed_off(&id, cx);
+        if keeps {
+            pass_on(&focus, bot, window, cx);
+        }
+        let record = answered(&id, &text, allowed, progress, keeps.then_some(&focus), cx);
+        return div().opacity(arrival).child(record).into_any_element();
     }
 
     let theme = theme(cx);
@@ -364,8 +423,14 @@ fn pending(
     let answer_with = |decision: ApprovalDecision| {
         let answer = answer.clone();
         let approval_id = card.approval_id.to_owned();
+        let id = id.clone();
         move |window: &mut Window, cx: &mut App| {
             if !answer.read(cx).busy {
+                // Pressed or keyed inside the card: its record passes the keyboard on.
+                cx.set_global(HandOff {
+                    id: id.clone(),
+                    due: true,
+                });
                 respond(&answer, &approval_id, decision, Trigger::of(window), cx);
             }
         }
@@ -475,23 +540,24 @@ fn pending(
                         )
                         .child(div().min_w_0().truncate().child(SharedString::from(detail))),
                 )
-                .when(!busy, |row| {
+                // While an answer goes, the answers stay where they are (Approve dimmed), so the one with the keyboard
+                // keeps it; a press does nothing until the daemon has the answer or refuses it.
+                .child(
+                    Link::new(format!("approval.{id}.deny"), no)
+                        .on_press(answer_with(ApprovalDecision::Deny)),
+                )
+                .when(card.rule.is_some(), |row| {
                     row.child(
-                        Link::new(format!("approval.{id}.deny"), no)
-                            .on_press(answer_with(ApprovalDecision::Deny)),
+                        Link::new(format!("approval.{id}.always"), "Always allow")
+                            .on_press(answer_with(ApprovalDecision::Always)),
                     )
-                    .when(card.rule.is_some(), |row| {
-                        row.child(
-                            Link::new(format!("approval.{id}.always"), "Always allow")
-                                .on_press(answer_with(ApprovalDecision::Always)),
-                        )
-                    })
-                    .child(
-                        Pill::new(format!("approval.{id}.approve"), yes)
-                            .variant(PillVariant::Primary)
-                            .on_press(answer_with(ApprovalDecision::Once)),
-                    )
-                }),
+                })
+                .child(
+                    Pill::new(format!("approval.{id}.approve"), yes)
+                        .variant(PillVariant::Primary)
+                        .disabled(busy)
+                        .on_press(answer_with(ApprovalDecision::Once)),
+                ),
         )
         .when_some(rule_line, |card, line| {
             card.child(
@@ -820,6 +886,24 @@ mod tests {
             // The daemon refused it: the card is back, saying why.
             assert!(node("approval.m1.problem").is_some());
             assert!(node("approval.m1.approve").is_some());
+        }
+
+        #[gpui::test]
+        fn offers_always_allow_only_when_the_daemon_has_a_rule_to_save(cx: &mut TestAppContext) {
+            let ruled = with(
+                MessageKind::Approval,
+                json!({ "approvalId": "a2", "tool": "Bash", "detail": "{\"command\":\"npm test\"}", "status": "pending", "rule": "Bash(npm test:*)" }),
+                message("m2", "b1", "Forge wants to run the tests", 2),
+            );
+            let _ = app(
+                cx,
+                Route::Chat("b1".into()),
+                chat(vec![pending_card(), ruled], false),
+                FakeRpc::new(),
+            );
+            assert!(node("approval.m1.approve").is_some());
+            assert!(node("approval.m1.always").is_none(), "no rule to save");
+            assert!(node("approval.m2.always").is_some(), "a rule to save");
         }
     }
 }

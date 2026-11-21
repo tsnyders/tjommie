@@ -135,7 +135,8 @@ pub struct Thread {
     shape: Option<Shape>,
     /// The newest shown message, to see your own new one arrive.
     newest: Option<SharedString>,
-    /// Whether the last frame drew the oldest row: the list draws only what shows and its overdraw.
+    /// Whether the last frame drew the oldest row (the list draws only what shows and its overdraw); cleared when an
+    /// older row takes its place.
     top_drawn: Rc<Cell<bool>>,
 }
 
@@ -183,6 +184,11 @@ impl Thread {
         if prefix + suffix < old.len().max(next.len()) {
             self.list
                 .splice(prefix..old.len() - suffix, next.len() - prefix - suffix);
+        }
+        // A new oldest row (an older page landed above): the last frame drew the one before it, so the top is in reach
+        // again only once this one is drawn, not on the strength of the last frame (M4 review A1).
+        if prefix == 0 {
+            self.top_drawn.set(false);
         }
         let newest = messages.iter().rev().find(|message| shown(message));
         let newest_id = newest.map(|message| SharedString::from(message.id.clone()));
