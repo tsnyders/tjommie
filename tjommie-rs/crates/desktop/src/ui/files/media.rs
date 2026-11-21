@@ -24,6 +24,7 @@ use crate::guard::{guarded, guarded_async};
 use crate::semantic::SemanticExt as _;
 use crate::ui::browser::local::{LocalBrowser, physical, window_hwnd};
 use crate::ui::primitives::focus_handle;
+use crate::ui::primitives::shield::BrowserShield;
 use crate::ui::style::{TypeExt as _, hsla, palette, r, ring_or_reveal, theme};
 
 const FAILED: &str = "This media is corrupt or its codec is unsupported on this device. Download is still available.";
@@ -42,6 +43,8 @@ impl MediaSource for Transfer {
         &self.0.info().content_type
     }
 
+    // This runs on the player's own reading thread, outside any guard, where a panic would leave the request hanging:
+    // it must stay panic-free, as it is (no index, no unwrap; a failed read is an `Err`) (M4 review L6).
     fn read(&self, offset: u64, len: usize) -> Result<Vec<u8>, String> {
         let end = offset.saturating_add(len as u64);
         futures::executor::block_on(self.0.read_span(offset, end))
@@ -69,6 +72,8 @@ struct Shared {
     inbox: async_channel::Receiver<Keyboard>,
     opened: Arc<Opened>,
     video: bool,
+    /// Another overlay is open over the viewer: the player's window is hidden, as GPUI can't draw over it.
+    covered: Rc<Cell<bool>>,
 }
 
 pub struct MediaView {
@@ -76,6 +81,8 @@ pub struct MediaView {
     shared: Shared,
     /// The player has the keyboard since the app's focus came to its place.
     handed: bool,
+    /// The overlays open when the player came (its own viewer's dialog among them): more than these cover it.
+    under: usize,
 }
 
 impl MediaView {
@@ -91,6 +98,7 @@ impl MediaView {
             inbox,
             opened,
             video,
+            covered: Rc::default(),
         };
         let closing = shared.clone();
         cx.on_release(move |_, cx| {
@@ -113,6 +121,7 @@ impl MediaView {
             id,
             shared,
             handed: false,
+            under: BrowserShield::raised(cx),
         }
     }
 }
@@ -203,6 +212,10 @@ fn open(shared: Shared, view: EntityId, rect: RECT, window: &mut Window, cx: &mu
             if let Err(error) = keyboard {
                 log::warn!("The media player keeps the keyboard: {error}");
             }
+            // Opened under another overlay: hidden until it goes.
+            if shared.covered.get() {
+                viewer.set_visible(false);
+            }
             *shared.player.borrow_mut() = Some(viewer);
             cx.update(|cx| cx.notify(view));
             while let Ok(news) = shared.inbox.recv().await {
@@ -223,6 +236,19 @@ fn open(shared: Shared, view: EntityId, rect: RECT, window: &mut Window, cx: &mu
 
 impl Render for MediaView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The shield, as the browser panel's (M4 review P3): GPUI can't draw over the player's window, so while another
+        // overlay is open over the viewer (a confirm, a menu, the connection sheet) the player hides; its sound goes on.
+        let covered = BrowserShield::raised(cx) > self.under;
+        if covered != self.shared.covered.replace(covered) {
+            let player = self.shared.player.clone();
+            window.defer(cx, move |_, _| {
+                guarded("shield the media player", || {
+                    if let Some(viewer) = player.borrow().as_ref() {
+                        viewer.set_visible(!covered);
+                    }
+                });
+            });
+        }
         let id = self.id.clone();
         let focus = focus_handle(&format!("{id}.player"), window, cx);
         // The app's focus came to the player's place: the player takes the keyboard, once it's open.
