@@ -109,12 +109,14 @@ pub fn feed(state: &AppState, cx: &mut App) {
 }
 
 /// Ctrl+B opens or closes the panel, and Escape (outside an overlay) closes it; both are keys, so both snap. They are
-/// app-level handlers, so they work wherever the focus is (keymap.rs, M2 review F4).
+/// app-level handlers, so they work wherever the focus is (keymap.rs, M2 review F4). An open exchange goes first:
+/// Ctrl+B closes only it, as the chat header's panel button does (M4 review A6), and the shell's root takes Escape for
+/// it.
 pub fn init(cx: &mut App) {
     cx.default_global::<BrowserData>();
     cx.on_action(|_: &TogglePanel, cx| {
         guarded("toggle the browser panel", || {
-            panel::BrowserPanel::toggle(Trigger::Keyboard, cx)
+            crate::ui::chat::exchange::toggle_panel(Trigger::Keyboard, cx)
         });
     });
     cx.on_action(|_: &Dismiss, cx| {

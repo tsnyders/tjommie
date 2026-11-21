@@ -366,10 +366,15 @@ fn about(bot: &Bot, notes: &Notes, local: bool, cx: &App) -> AnyElement {
                 .children(local.then(|| {
                     Link::new("bot_settings.open_folder", "Open folder")
                         .icon("folder")
-                        .on_press(move |_, _| {
-                            if let Err(why) = desktop_host::links::open_folder(&home) {
-                                log::warn!("Open folder: {why}");
-                            }
+                        .on_press(move |_, cx| {
+                            // Explorer starts off the UI thread: a cold one can take seconds (M4 review A-N7).
+                            let home = home.clone();
+                            cx.background_spawn(async move {
+                                if let Err(why) = desktop_host::links::open_folder(&home) {
+                                    log::warn!("Open folder: {why}");
+                                }
+                            })
+                            .detach();
                         })
                 }))
                 .child(caption("Notes"))
@@ -395,12 +400,18 @@ fn about(bot: &Bot, notes: &Notes, local: bool, cx: &App) -> AnyElement {
                                     return;
                                 };
                                 let agents = root.0.join("bots");
-                                if let Err(why) = desktop_host::links::open_notes(
-                                    &agents,
-                                    std::path::Path::new(&notes_home),
-                                ) {
-                                    log::warn!("Open notes.md: {why}");
-                                }
+                                let home = notes_home.clone();
+                                // Off the UI thread too, as Open folder.
+                                cx.background_spawn(async move {
+                                    let opened = desktop_host::links::open_notes(
+                                        &agents,
+                                        std::path::Path::new(&home),
+                                    );
+                                    if let Err(why) = opened {
+                                        log::warn!("Open notes.md: {why}");
+                                    }
+                                })
+                                .detach();
                             },
                         ),
                     )

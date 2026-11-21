@@ -1272,7 +1272,9 @@ pub(super) fn section(window: &mut Window, cx: &mut App) -> AnyElement {
             // After this draw, once the control has drawn its focus handle.
             window.defer(cx, move |window, cx| {
                 guarded("focus the control a link points at", || {
-                    focus_by_id(&control, window, cx);
+                    if focus_by_id(&control, window, cx) {
+                        crate::ui::primitives::scroll::reveal_focused(window, cx);
+                    }
                 });
             });
         }
@@ -1602,6 +1604,45 @@ mod tests {
         );
         draw(cx);
         assert!(node("settings.accounts.k1.cap").unwrap().focused);
+    }
+
+    /// M5 review M9: a link followed with the mouse (the chat's Raise cap) scrolls its control into view, with no ring, as
+    /// `scrollIntoView` did; a 240 px window puts it below the fold first.
+    #[gpui::test]
+    fn a_link_reached_by_mouse_scrolls_its_control_into_view(cx: &mut TestAppContext) {
+        let keys: Vec<AccountInfo> = (1..=4)
+            .map(|n| {
+                key(json!({
+                    "id": format!("k{n}"), "label": format!("Key {n}"),
+                    "createdAt": format!("2026-11-0{n}T09:00:00.000Z")
+                }))
+            })
+            .collect();
+        let (cx, _) = open(cx, settings(), keys, rpc());
+        cx.simulate_resize(gpui::size(gpui::px(1000.), gpui::px(240.)));
+        draw(cx);
+        let target = "settings.accounts.k4.cap";
+        let fold = gpui::px(240.);
+        assert!(
+            cx.debug_bounds(target)
+                .is_none_or(|bounds| bounds.top() >= fold),
+            "below the fold to begin with"
+        );
+        // The mouse has the input (a click), then the link moves the focus.
+        let somewhere = cx.debug_bounds("settings.accounts.k1").unwrap().center();
+        cx.simulate_click(somewhere, gpui::Modifiers::none());
+        cx.update(|_, cx| {
+            use crate::ui::shell::route::Navigate as _;
+            cx.navigate(link("k4", AccountAction::Cap));
+        });
+        draw(cx);
+        draw(cx);
+        assert!(node(target).unwrap().focused);
+        let bounds = cx.debug_bounds(target).unwrap();
+        assert!(
+            bounds.top() >= gpui::px(0.) && bounds.bottom() <= fold,
+            "scrolled into view: {bounds:?}"
+        );
     }
 
     /// accounts.test.tsx: "holds the API key in a masked field … with a Show button" and "keeps Add key disabled until

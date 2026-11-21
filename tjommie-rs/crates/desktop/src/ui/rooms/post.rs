@@ -6,7 +6,7 @@ use std::ops::Range;
 
 use gpui::{
     AnyElement, App, FontWeight, HighlightStyle, IntoElement, ParentElement as _, Role,
-    StatefulInteractiveElement as _, Styled as _, StyledText, div,
+    SharedString, StatefulInteractiveElement as _, Styled as _, StyledText, Window, div,
 };
 use jiff::Zoned;
 use protocol::mentions::mention_ranges;
@@ -15,6 +15,10 @@ use protocol::model::{Bot, Message, MessageData, MessageKind, TextData, message_
 use crate::model::format::clock;
 use crate::model::labels::DELETED_BOT;
 use crate::semantic::SemanticExt as _;
+use crate::ui::chat::bubbles;
+use crate::ui::chat::message_view::{self, MessageContext};
+use crate::ui::fields::Link;
+use crate::ui::files::card::{FileFacts, card};
 use crate::ui::primitives::avatar::BotAvatar;
 use crate::ui::style::{TypeExt as _, hsla, palette, r, theme};
 
@@ -45,15 +49,51 @@ fn in_text(text: &str, lowered: usize) -> Option<usize> {
     (at == lowered).then_some(text.len())
 }
 
-/// A message in the room: a text message as a post; anything else (an agent at work, a notice, an error) as its text
-/// on a line under the posts.
+/// A message in the room: a text message as a post; anything else (an agent at work, a notice, an error) as a chat
+/// draws it, in line with the posts' text (`MessageView` in `room-screen.tsx`).
 pub fn post(
     message: &Message,
     bots: &[Bot],
     members: &[&Bot],
+    context: &MessageContext,
     now: &Zoned,
-    cx: &App,
+    window: &mut Window,
+    cx: &mut App,
 ) -> AnyElement {
+    if message.kind != MessageKind::Text {
+        return div()
+            .w_full()
+            .pl(r(28.))
+            .child(message_view::row(message, false, context, window, cx))
+            .into_any_element();
+    }
+    // An agent's post: its Markdown, then, for a post between agents, its files and Open exchange (`room-post.tsx`).
+    let exchange = match message_data(message) {
+        Ok(MessageData::Text(Some(TextData::ExchangePost(post)))) => Some(post),
+        _ => None,
+    };
+    let (bubble, files) = if message.author == "you" {
+        (None, Vec::new())
+    } else {
+        let files: Vec<AnyElement> = exchange
+            .iter()
+            .flat_map(|post| post.files.iter().flatten().enumerate())
+            .map(|(index, file)| {
+                card(
+                    &message.id,
+                    index as u64,
+                    file.attachment_id.clone(),
+                    FileFacts {
+                        name: file.name.clone(),
+                        path: file.path.clone(),
+                        size: file.size,
+                        content_type: file.content_type.clone(),
+                    },
+                )
+            })
+            .collect();
+        (Some(bubbles::bot(message, window, cx)), files)
+    };
     let theme = theme(cx);
     let colors = palette(cx);
     let id = format!("room.post.{}", message.id);
@@ -72,18 +112,6 @@ pub fn post(
             .text_color(hsla(colors.text.primary))
             .child(name.to_owned())
     };
-    if message.kind != MessageKind::Text {
-        // ponytail: activity rows, notices and errors as their text alone; the Chat lane's message view (T4.1) draws
-        // them in full, with Retry, once it lands.
-        return div()
-            .semantic(id, Role::Paragraph)
-            .aria_label(message.body.clone())
-            .pl(r(28.))
-            .type_style(&theme.typography.desktop.meta)
-            .text_color(hsla(colors.text.tertiary))
-            .child(message.body.clone())
-            .into_any_element();
-    }
     if message.author == "you" {
         let mention = HighlightStyle {
             color: Some(hsla(colors.accent.text)),
@@ -120,15 +148,20 @@ pub fn post(
     }
     let author = bots.iter().find(|bot| bot.id == message.author);
     let name = author.map_or(DELETED_BOT, |bot| bot.name.as_str());
-    // A post between agents names the one it went to; its files and Open exchange come with the exchange view (T4.1).
-    let to = match message_data(message) {
-        Ok(MessageData::Text(Some(TextData::ExchangePost(post)))) => Some(
-            bots.iter()
-                .find(|bot| bot.id == post.to_bot_id)
-                .map_or(DELETED_BOT, |bot| bot.name.as_str()),
-        ),
-        _ => None,
-    };
+    // A post between agents names the one it went to.
+    let to = exchange.as_ref().map(|post| {
+        bots.iter()
+            .find(|bot| bot.id == post.to_bot_id)
+            .map_or(DELETED_BOT, |bot| bot.name.as_str())
+    });
+    let open = exchange.map(|post| {
+        let (exchange_id, on_open) = (
+            SharedString::from(post.exchange_id),
+            context.on_open_exchange.clone(),
+        );
+        Link::new(format!("{id}.exchange"), "Open exchange")
+            .on_press(move |window, cx| on_open(exchange_id.clone(), window, cx))
+    });
     let avatar = match author {
         Some(bot) => BotAvatar::new(bot.color, bot.shape, 20.).into_any_element(),
         None => div()
@@ -152,11 +185,8 @@ pub fn post(
                 .children(to.map(|to| format!("to {to}")))
                 .child(time),
         )
-        .child(
-            div()
-                .type_style(&theme.typography.desktop.body)
-                .text_color(hsla(colors.text.primary))
-                .child(message.body.clone()),
-        )
+        .children(bubble)
+        .children(files)
+        .children(open)
         .into_any_element()
 }

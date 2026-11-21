@@ -64,6 +64,10 @@ struct Inner {
     initialized: OnceCell<bool>,
     verification: tokio::sync::Mutex<()>,
     download: Mutex<Option<Download>>,
+    /// The model file's last write when it last hashed whole, kept only if that write was over two seconds old by then:
+    /// the same size and last write since means the same bytes, so a dictation start doesn't hash a few hundred MiB
+    /// again (M4 re-review R5). A write after the hash has a later time; one within two seconds of the first might not.
+    hashed: Mutex<Option<std::time::SystemTime>>,
     /// A test can make removing a partial file fail, as a locked file would.
     #[cfg(test)]
     fail_partial_cleanup: std::sync::atomic::AtomicBool,
@@ -133,6 +137,7 @@ impl SpeechModel {
                 initialized: OnceCell::new(),
                 verification: tokio::sync::Mutex::new(()),
                 download: Mutex::new(None),
+                hashed: Mutex::new(None),
                 #[cfg(test)]
                 fail_partial_cleanup: std::sync::atomic::AtomicBool::new(false),
             }),
@@ -224,7 +229,8 @@ impl SpeechModel {
         }
     }
 
-    /// Whether the model on disk is whole. Revalidated on every call, not remembered.
+    /// Whether the model on disk is whole. Revalidated on every call: the file is hashed again unless its size and last
+    /// write are the ones it last hashed whole at (`Inner::hashed`).
     pub async fn verify(&self) -> bool {
         if lock(&self.inner.state).cleanup_failed || self.downloading() {
             return false;
@@ -233,15 +239,25 @@ impl SpeechModel {
         if self.initialize().await.is_err() {
             return false;
         }
-        let (path, bytes, sha) = (
-            self.inner.path.clone(),
-            self.inner.source.bytes,
-            self.inner.source.sha256.clone(),
-        );
+        let inner = Arc::clone(&self.inner);
         let valid = tokio::task::spawn_blocking(move || {
-            std::fs::symlink_metadata(&path)
-                .is_ok_and(|meta| meta.file_type().is_file() && meta.len() == bytes)
-                && sha256_file(&path).is_ok_and(|digest| digest == sha)
+            let (path, bytes) = (&inner.path, inner.source.bytes);
+            let Some(written) = std::fs::symlink_metadata(path)
+                .ok()
+                .filter(|meta| meta.file_type().is_file() && meta.len() == bytes)
+                .and_then(|meta| meta.modified().ok())
+            else {
+                return false;
+            };
+            if *lock(&inner.hashed) == Some(written) {
+                return true;
+            }
+            let whole = sha256_file(path).is_ok_and(|digest| digest == inner.source.sha256);
+            let settled = written
+                .elapsed()
+                .is_ok_and(|age| age > std::time::Duration::from_secs(2));
+            *lock(&inner.hashed) = (whole && settled).then_some(written);
+            whole
         })
         .await
         .unwrap_or(false);
@@ -253,7 +269,7 @@ impl SpeechModel {
             } else {
                 SpeechModelState::Missing
             };
-            state.received = if valid { bytes } else { 0 };
+            state.received = if valid { self.inner.source.bytes } else { 0 };
         }
         valid
     }
@@ -563,6 +579,31 @@ mod tests {
         model.remove().await.unwrap();
         assert_eq!(names(dir.path()), ["unrelated.txt"]);
         assert_eq!(model.status().await.state, SpeechModelState::Missing);
+    }
+
+    /// M4 re-review R5: a model whose size and last write haven't changed since it hashed whole isn't hashed again; a
+    /// write since is. (Bytes changed under the same size and last write, which no ordinary write leaves, go unseen.)
+    #[tokio::test]
+    async fn an_unchanged_model_is_not_hashed_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let (model, _) = model(dir.path(), Serve::Bytes(BYTES.to_vec()), source());
+        model.download_model().await.unwrap();
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        let age = |path: &Path| {
+            let file = std::fs::File::options().write(true).open(path).unwrap();
+            file.set_modified(old).unwrap();
+        };
+        age(model.path());
+        assert!(model.verify().await, "hashed whole");
+        let mut damaged = BYTES.to_vec();
+        if let Some(first) = damaged.first_mut() {
+            *first ^= 1;
+        }
+        std::fs::write(model.path(), &damaged).unwrap();
+        age(model.path());
+        assert!(model.verify().await, "not hashed again");
+        std::fs::write(model.path(), &damaged).unwrap();
+        assert!(!model.verify().await, "a new write is hashed again");
     }
 
     // "never publishes truncated / corrupt / oversized data"

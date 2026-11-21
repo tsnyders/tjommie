@@ -3,7 +3,9 @@
 pub mod agents;
 pub mod bots;
 pub mod browser;
+pub mod chat;
 pub mod fields;
+pub mod files;
 pub mod logins;
 pub mod primitives;
 pub mod projects;
@@ -31,4 +33,20 @@ pub(crate) fn prompt_for_paths(
         return picked;
     }
     cx.prompt_for_paths(options)
+}
+
+/// This PC's save dialog, opening in `directory` with `name` suggested. In a test-driver build, the test's answer when it
+/// gave one, as [`prompt_for_paths`] (M4 review C8: an e2e can then drive Download and Save report).
+pub(crate) fn prompt_for_new_path(
+    directory: &std::path::Path,
+    name: Option<&str>,
+    cx: &gpui::App,
+) -> futures::channel::oneshot::Receiver<gpui::Result<Option<std::path::PathBuf>>> {
+    #[cfg(feature = "test-driver")]
+    if let Some(path) = crate::test_driver::take_path_answer() {
+        let (answer, picked) = futures::channel::oneshot::channel();
+        let _ = answer.send(Ok(Some(path)));
+        return picked;
+    }
+    cx.prompt_for_new_path(directory, name)
 }

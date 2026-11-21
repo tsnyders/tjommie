@@ -9,7 +9,7 @@ use gpui::{
     App, IntoElement, ParentElement as _, RenderOnce, Rgba, Styled as _, Transformation, Window,
     div, point, px, size, svg,
 };
-use protocol::model::{BotColor, BotShape};
+use protocol::model::{BotColor, BotShape, BotState};
 
 use crate::ui::style::{hsla, palette, r, theme};
 
@@ -33,6 +33,20 @@ pub struct Gaze {
     pub lid: f32,
     pub x: f32,
     pub y: f32,
+}
+
+impl Pose {
+    /// The eyes for a bot's state: it looks up when it needs you, scans while working, drowses when limited and rests
+    /// when paused.
+    pub fn of(state: BotState) -> Pose {
+        match state {
+            BotState::Waiting => Pose::Waiting,
+            BotState::Working => Pose::Working,
+            BotState::Limited => Pose::Limited,
+            BotState::Paused => Pose::Paused,
+            BotState::Idle | BotState::NeedsSetup => Pose::Idle,
+        }
+    }
 }
 
 impl Gaze {

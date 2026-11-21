@@ -57,17 +57,6 @@ impl ShellData {
             None => log::info!("No store yet for {command:?}"),
         }
     }
-
-    /// A bot's or a room's name from the Recents, or its id.
-    pub fn name_of(&self, id: &str) -> SharedString {
-        self.recents
-            .iter()
-            .find(|recent| recent.id == id)
-            .map_or_else(
-                || SharedString::from(id.to_owned()),
-                |recent| recent.name.clone(),
-            )
-    }
 }
 
 /// The first letter of `name`, upper-cased (`rail.tsx`'s initial); empty without a name.

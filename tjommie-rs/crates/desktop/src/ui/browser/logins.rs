@@ -105,7 +105,7 @@ pub fn menu(state: &BrowserState, window: &mut Window, cx: &mut App) -> AnyEleme
     Menu::new("browser.logins.menu", |open, _, _| {
         div()
             .when(open, |trigger| trigger.rounded_full())
-            .child(IconButton::new("browser.logins", "key-round", "Logins"))
+            .child(IconButton::new("browser.logins", "key-round", "Logins").expanded(open))
             .into_any_element()
     })
     .anchor(gpui::Anchor::TopRight)
