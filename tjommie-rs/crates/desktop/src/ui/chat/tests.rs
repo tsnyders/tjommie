@@ -852,6 +852,37 @@ mod file_card {
         );
     }
 
+    /// M4 review P4: a file shared before the daemon linked its attachment draws its thumbnail once the link lands,
+    /// with no scroll: the card reads its facts from the message each frame.
+    #[gpui::test]
+    fn a_card_takes_the_attachment_the_daemon_links_later(cx: &mut TestAppContext) {
+        let png = decoded(PNG);
+        let files: [(&str, &str, &str, &[u8]); 1] = [("m1", "chart.png", "image/png", &png)];
+        let (rpc, _) = host(&files);
+        let mut state = files_chat(&files);
+        // As the daemon first shares it: no attachment and no type yet.
+        let first = &mut state.conversations.get_mut("b1").unwrap().messages[0];
+        let data = first.data.as_mut().unwrap();
+        data.remove("attachmentId");
+        data.remove("contentType");
+        let (cx, _) = app(cx, Route::Chat("b1".into()), state, rpc);
+        let _runtime = runtime(cx);
+        draw(cx);
+        assert!(node("file.m1.0.thumbnail").is_none(), "nothing to read yet");
+        cx.update(|_, cx| {
+            store::update(cx, |state| {
+                let linked = &mut state.conversations.get_mut("b1").unwrap().messages[0];
+                let data = linked.data.as_mut().unwrap();
+                data.insert("attachmentId".into(), json!(FILE_ID));
+                data.insert("contentType".into(), json!("image/png"));
+                true
+            })
+        });
+        until(cx, "the linked file's thumbnail", || {
+            node("file.m1.0.thumbnail").is_some()
+        });
+    }
+
     /// M4 review M2: an image the viewer showed leaves GPUI's image cache when the viewer closes.
     #[gpui::test]
     fn closing_the_viewer_frees_its_image(cx: &mut TestAppContext) {
@@ -1148,6 +1179,28 @@ mod exchange_focus {
         assert!(
             node("exchange.x1.open").unwrap().focused,
             "and View thread has the keyboard again"
+        );
+    }
+
+    /// M4 review A6: Ctrl+B with an exchange open closes only the exchange, as the header's panel button does.
+    #[gpui::test]
+    fn ctrl_b_closes_only_the_exchange(cx: &mut TestAppContext) {
+        let (state, rpc) = asked();
+        let (cx, _) = app(cx, Route::Chat("b1".into()), state, rpc);
+        // Ctrl+B's app-level handler, as the app registers it (app.rs).
+        cx.update(|_, cx| crate::ui::browser::init(cx));
+        click(cx, "exchange.x1.open");
+        draw(cx);
+        assert!(node("exchange.x1.view").is_some());
+        cx.simulate_keystrokes("ctrl-b");
+        draw(cx);
+        assert!(
+            node("exchange.x1.view").is_none(),
+            "Ctrl+B closed the exchange"
+        );
+        assert!(
+            node("browser.panel").is_none(),
+            "and opened no panel in its place"
         );
     }
 }
