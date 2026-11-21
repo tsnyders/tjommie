@@ -154,6 +154,11 @@ fn keep_in_view(bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App) {
         return;
     }
     *revealed = Some(focused.downgrade());
+    // A link's reveal is once: the same control focused by mouse later doesn't scroll (M4 review C-N5).
+    let wanted = &mut cx.default_global::<Wanted>().0;
+    if wanted.as_ref().is_some_and(|wanted| *wanted == focused) {
+        *wanted = None;
+    }
     let Some(area) = AREAS.with(|areas| areas.borrow().last().cloned()) else {
         return;
     };

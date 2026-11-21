@@ -302,7 +302,6 @@ mod tests {
             open_dialog(window, cx, move |dialog, _, _| {
                 let (counted, cancels) = (counted.clone(), cancels.clone());
                 dialog
-                    // unguarded: a test's counter, which on_submit runs in guarded
                     .on_submit(move |_, _| counted.set(counted.get() + 1))
                     .child(crate::ui::fields::TextField::new(
                         "form.name",
