@@ -560,5 +560,354 @@ mod file_card {
             !asked.iter().any(|name| name.starts_with("attachments.")),
             "nothing asked of the file host: {asked:?}"
         );
+        assert_eq!(
+            node("file.m1.0.preview").unwrap().text,
+            "Preview report.pdf, unavailable",
+            "M4 review C3: an unavailable Preview says so"
+        );
+    }
+
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    use client::RpcError;
+    use desktop_host::sha2::{Digest as _, Sha256};
+    use gpui::{Image, ImageFormat, VisualTestContext};
+    use protocol::wire::ErrorCode;
+
+    /// A 1 x 1 PNG and a still 1 x 1 GIF, real enough for GPUI's decoder.
+    const PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+    const STILL_GIF: &str = "R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==";
+
+    fn decoded(text: &str) -> Vec<u8> {
+        base64::engine::general_purpose::STANDARD
+            .decode(text)
+            .unwrap()
+    }
+
+    /// A 64 x 64 GIF of three frames, which no decoder is given.
+    fn animated_gif() -> Vec<u8> {
+        let mut gif = b"GIF89a".to_vec();
+        gif.extend_from_slice(&[64, 0, 64, 0, 0x80, 0, 0, 0, 0, 0, 255, 255, 255]);
+        for _ in 0..3 {
+            gif.extend_from_slice(&[0x2C, 0, 0, 0, 0, 64, 0, 64, 0, 0, 2, 2, 0x4C, 0x01, 0]);
+        }
+        gif.push(0x3B);
+        gif
+    }
+
+    fn sha256(bytes: &[u8]) -> String {
+        format!("{:x}", Sha256::digest(bytes))
+    }
+
+    /// The live runtime the app's file work runs on, for the test's life.
+    fn runtime(cx: &mut VisualTestContext) -> tokio::runtime::Runtime {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        let handle = runtime.handle().clone();
+        cx.update(|_, cx| cx.set_global(crate::live::Tokio(handle)));
+        // The runtime's threads (a save's file writes) wake the app's tasks from outside the test's executor.
+        cx.executor().allow_parking();
+        runtime
+    }
+
+    /// Draws until `done`, giving the runtime's threads time: their wakes come from outside the test's executor.
+    fn until(cx: &mut VisualTestContext, what: &str, mut done: impl FnMut() -> bool) {
+        for _ in 0..300 {
+            draw(cx);
+            if done() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("timed out: {what}");
+    }
+
+    /// Shared files in Forge's chat: one file message each, `(message id, name, content type, bytes)`.
+    fn files_chat(files: &[(&str, &str, &str, &[u8])]) -> AppState {
+        let messages = files
+            .iter()
+            .enumerate()
+            .map(|(at, (id, name, content_type, bytes))| {
+                with(
+                    MessageKind::File,
+                    json!({
+                        "path": format!(r"D:\Shared\{name}"), "name": name, "size": bytes.len(),
+                        "attachmentId": FILE_ID, "contentType": content_type
+                    }),
+                    message(id, "b1", "", at),
+                )
+            })
+            .collect();
+        chat(messages, false)
+    }
+
+    /// The files a fake host serves: (message id, name, content type, bytes).
+    type Served = Arc<Vec<(String, String, String, Vec<u8>)>>;
+
+    /// The daemon's side of shared files, by message id: metadata, open, read in chunks, close. At most two transfers
+    /// are open at once, as the daemon allows; a third is refused as busy. The pair is (open now, most open at once).
+    fn host(files: &[(&str, &str, &str, &[u8])]) -> (FakeRpc, Arc<Mutex<(usize, usize)>>) {
+        let served: Served = Arc::new(
+            files
+                .iter()
+                .map(|(id, name, kind, bytes)| {
+                    (
+                        id.to_string(),
+                        name.to_string(),
+                        kind.to_string(),
+                        bytes.to_vec(),
+                    )
+                })
+                .collect(),
+        );
+        let leases = Arc::new(Mutex::new((0usize, 0usize)));
+        let info = |served: &Served, id: &str| {
+            let (_, name, kind, bytes) = served.iter().find(|(known, ..)| known == id).unwrap();
+            AttachmentInfo {
+                id: FILE_ID.into(),
+                host_id: "h1".into(),
+                name: name.clone(),
+                size: bytes.len() as u64,
+                content_type: kind.clone(),
+                sha256: sha256(bytes),
+            }
+        };
+        let (opening, reading, metadata) = (served.clone(), served.clone(), served);
+        let (opened, closed) = (leases.clone(), leases.clone());
+        let rpc = FakeRpc::new()
+            .on::<method::AttachmentsMetadata>(move |params| {
+                Ok(info(&metadata, params["messageId"].as_str().unwrap()))
+            })
+            .on::<method::AttachmentsOpen>(move |params| {
+                let mut leases = opened.lock().unwrap();
+                if leases.0 >= 2 {
+                    return Err(RpcError::Daemon {
+                        code: ErrorCode::Busy,
+                        message: "Two file transfers are already active".into(),
+                    });
+                }
+                leases.0 += 1;
+                leases.1 = leases.1.max(leases.0);
+                let id = params["messageId"].as_str().unwrap();
+                Ok(AttachmentOpen {
+                    transfer_id: id.into(),
+                    attachment: info(&opening, id),
+                    chunk_bytes: 262_144,
+                    expires_at: "2026-11-15T09:00:00.000Z".into(),
+                })
+            })
+            .on::<method::AttachmentsRead>(move |params| {
+                let id = params["transferId"].as_str().unwrap();
+                let (.., bytes) = reading.iter().find(|(known, ..)| known == id).unwrap();
+                let offset = params["offset"].as_u64().unwrap();
+                let end = (offset + params["length"].as_u64().unwrap()).min(bytes.len() as u64);
+                Ok(AttachmentChunk {
+                    transfer_id: id.into(),
+                    revision: sha256(bytes),
+                    offset,
+                    bytes: base64::engine::general_purpose::STANDARD
+                        .encode(&bytes[offset as usize..end as usize]),
+                    eof: end == bytes.len() as u64,
+                })
+            })
+            .on::<method::AttachmentsClose>(move |_| {
+                let mut leases = closed.lock().unwrap();
+                leases.0 = leases.0.saturating_sub(1);
+                Ok(Empty {})
+            });
+        (rpc, leases)
+    }
+
+    /// M4 review C1: a reply quoted twenty thousand deep draws as plain text; parsed as written it was a stack overflow,
+    /// which no guard catches, and the chat aborted the app on every open.
+    #[gpui::test]
+    fn a_reply_nested_thousands_deep_draws_as_text(cx: &mut TestAppContext) {
+        let deep = format!("{}hello", ">".repeat(20_000));
+        let state = chat(vec![message("m1", "b1", &deep, 1)], false);
+        let (cx, _) = app(cx, Route::Chat("b1".into()), state, FakeRpc::new());
+        draw(cx);
+        assert!(node("prose.m1").is_some(), "the reply is drawn");
+    }
+
+    /// M4 review M1 (`file-viewer-download.test.tsx`: "retires a background thumbnail before opening the explicit
+    /// viewer"): three image cards read their thumbnails one at a time, and a preview opened meanwhile isn't refused
+    /// by the daemon's two-transfer limit.
+    #[gpui::test]
+    fn three_thumbnails_and_a_preview_share_the_two_transfers(cx: &mut TestAppContext) {
+        let png = decoded(PNG);
+        let files: [(&str, &str, &str, &[u8]); 3] = [
+            ("m1", "one.png", "image/png", &png),
+            ("m2", "two.png", "image/png", &png),
+            ("m3", "three.png", "image/png", &png),
+        ];
+        let (rpc, leases) = host(&files);
+        let (cx, _) = app(cx, Route::Chat("b1".into()), files_chat(&files), rpc);
+        let _runtime = runtime(cx);
+        draw(cx);
+        click(cx, "file.m2.0.preview");
+        until(cx, "the preview", || {
+            node("file.m2.0.viewer.image").is_some() || node("file.m2.0.viewer.problem").is_some()
+        });
+        assert!(
+            node("file.m2.0.viewer.problem").is_none(),
+            "the preview wasn't refused"
+        );
+        // The thumbnails held back while it was open; they all come once it closes.
+        cx.simulate_keystrokes("escape");
+        until(cx, "all three thumbnails", || {
+            ["m1", "m2", "m3"]
+                .iter()
+                .all(|id| node(&format!("file.{id}.0.thumbnail")).is_some())
+        });
+        assert!(
+            leases.lock().unwrap().1 <= 2,
+            "never more than two transfers"
+        );
+    }
+
+    /// M4 review M3: a card's thumbnail outlives the card: scrolled away and back (here, its message gone and back),
+    /// it isn't read again.
+    #[gpui::test]
+    fn a_card_scrolled_away_and_back_reads_its_thumbnail_once(cx: &mut TestAppContext) {
+        let png = decoded(PNG);
+        let files: [(&str, &str, &str, &[u8]); 1] = [("m1", "one.png", "image/png", &png)];
+        let (rpc, _) = host(&files);
+        let state = files_chat(&files);
+        let (cx, calls) = app(cx, Route::Chat("b1".into()), state.clone(), rpc);
+        let _runtime = runtime(cx);
+        until(cx, "the thumbnail", || {
+            node("file.m1.0.thumbnail").is_some()
+        });
+        let kept = state.conversations["b1"].messages.clone();
+        cx.update(|_, cx| {
+            store::update(cx, |state| {
+                state.conversations.get_mut("b1").unwrap().messages =
+                    vec![message("m9", "b1", "Moved on.", 9)];
+                true
+            })
+        });
+        draw(cx);
+        assert!(node("file.m1.0").is_none(), "the card is gone");
+        cx.update(|_, cx| {
+            store::update(cx, |state| {
+                state.conversations.get_mut("b1").unwrap().messages = kept;
+                true
+            })
+        });
+        until(cx, "the card back", || {
+            node("file.m1.0.thumbnail").is_some()
+        });
+        assert_eq!(calls_to(&calls, "attachments.open").len(), 1, "read once");
+    }
+
+    /// M4 review C2: an animated GIF is never decoded, neither for its thumbnail nor in the viewer, which says it's too
+    /// large to preview; a still GIF still shows.
+    #[gpui::test]
+    fn an_animated_gif_is_refused_and_a_still_one_shows(cx: &mut TestAppContext) {
+        let (animated, still) = (animated_gif(), decoded(STILL_GIF));
+        let files: [(&str, &str, &str, &[u8]); 2] = [
+            ("m1", "moving.gif", "image/gif", &animated),
+            ("m2", "still.gif", "image/gif", &still),
+        ];
+        let (rpc, _) = host(&files);
+        let (cx, _) = app(cx, Route::Chat("b1".into()), files_chat(&files), rpc);
+        let _runtime = runtime(cx);
+        until(cx, "the still GIF's thumbnail", || {
+            node("file.m2.0.thumbnail").is_some()
+        });
+        assert!(
+            node("file.m1.0.thumbnail").is_none(),
+            "no thumbnail for the animation"
+        );
+        click(cx, "file.m1.0.preview");
+        until(cx, "the viewer's answer", || {
+            node("file.m1.0.viewer.problem").is_some()
+        });
+        assert_eq!(
+            node("file.m1.0.viewer.problem").unwrap().text,
+            "This image is too large to preview. Download is still available."
+        );
+    }
+
+    /// M4 review M2: an image the viewer showed leaves GPUI's image cache when the viewer closes.
+    #[gpui::test]
+    fn closing_the_viewer_frees_its_image(cx: &mut TestAppContext) {
+        let png = decoded(PNG);
+        let files: [(&str, &str, &str, &[u8]); 1] = [("m1", "one.png", "image/png", &png)];
+        let (rpc, _) = host(&files);
+        let (cx, _) = app(cx, Route::Chat("b1".into()), files_chat(&files), rpc);
+        let _runtime = runtime(cx);
+        draw(cx);
+        click(cx, "file.m1.0.preview");
+        let shown = Arc::new(Image::from_bytes(ImageFormat::Png, png.clone()));
+        until(cx, "the image drawn", || {
+            node("file.m1.0.viewer.image").is_some()
+        });
+        for _ in 0..300 {
+            if cx.update(|_, cx| shown.is_asset_cached(cx)) {
+                break;
+            }
+            draw(cx);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            cx.update(|_, cx| shown.is_asset_cached(cx)),
+            "drawn, so cached"
+        );
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        assert!(node("file.m1.0.viewer").is_none());
+        assert!(
+            !cx.update(|_, cx| shown.is_asset_cached(cx)),
+            "out of the cache"
+        );
+    }
+
+    /// `file-card.test.tsx` ("offers local file reveal only while showing this PC") and `file-viewer-download.test.tsx`
+    /// ("closes ... the document before starting a new download"): another PC's file has no Show in folder; the
+    /// viewer's Download closes the preview, asks where to save and saves the file whole, verified.
+    #[gpui::test]
+    fn the_viewers_download_closes_it_and_saves_the_file(cx: &mut TestAppContext) {
+        let png = decoded(PNG);
+        let files: [(&str, &str, &str, &[u8]); 1] = [("m1", "one.png", "image/png", &png)];
+        let (rpc, leases) = host(&files);
+        let mut state = files_chat(&files);
+        state.host = Some("pc-2".into());
+        let (cx, calls) = app(cx, Route::Chat("b1".into()), state, rpc);
+        let _runtime = runtime(cx);
+        draw(cx);
+        assert!(
+            node("file.m1.0.folder").is_none(),
+            "another PC's file has no folder here"
+        );
+        click(cx, "file.m1.0.preview");
+        until(cx, "the preview", || {
+            node("file.m1.0.viewer.image").is_some()
+        });
+        let folder = desktop_host::owner_safety::test_root().unwrap();
+        let target = folder.path().join("one.png");
+        click(cx, "file.m1.0.viewer.download");
+        draw(cx);
+        assert!(cx.did_prompt_for_new_path(), "it asks where to save");
+        let answer = target.clone();
+        cx.simulate_new_path_selection(move |_| Some(answer));
+        until(cx, "the save", || {
+            node("file.m1.0.status").is_some_and(|status| status.text == "Saved on this device.")
+        });
+        assert!(
+            node("file.m1.0.viewer").is_none(),
+            "the preview closed first"
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), png, "the file, whole");
+        assert!(leases.lock().unwrap().1 <= 2);
+        let closes = calls_to(&calls, "attachments.close");
+        assert!(
+            closes.len() >= 2,
+            "the preview's transfer and the download's both closed: {closes:?}"
+        );
     }
 }

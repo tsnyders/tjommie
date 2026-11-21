@@ -89,8 +89,6 @@ pub fn post(
                         size: file.size,
                         content_type: file.content_type.clone(),
                     },
-                    window,
-                    cx,
                 )
             })
             .collect();

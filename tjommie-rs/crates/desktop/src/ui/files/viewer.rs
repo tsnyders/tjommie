@@ -1,6 +1,8 @@
 //! The file viewer (`file-viewer.tsx`): a dialog titled with the file's name, with Expand or Restore and Download, over
 //! the preview the file's kind has: an image (zoom 1–6×), a Markdown file by sections, PDF pages, or the media
-//! player. The transfer is opened once and closed when the viewer goes, however the dialog closes.
+//! player. The transfer is opened once and closed when the viewer goes, however the dialog closes. While it is open the
+//! thumbnails hold back, and the one being read settles before the preview opens its transfer: the daemon allows two
+//! per connection (M4 review M1).
 
 use std::sync::Arc;
 
@@ -8,20 +10,19 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, Image, ImageFormat, InteractiveElement as _,
     IntoElement, ObjectFit, ParentElement as _, Render, Role, ScrollHandle, SharedString,
-    StatefulInteractiveElement as _, Styled as _, StyledImage as _, WeakEntity, Window, div, img,
-    px,
+    StatefulInteractiveElement as _, Styled as _, StyledImage as _, Window, div, img, px,
 };
 use gpui_kit::component::WindowExt as _;
 use protocol::attachments::AttachmentRef;
 
-use super::card::FileCard;
+use super::card::{self, FileFacts, FileKey, Paused};
 use super::media::MediaView;
 use super::pdf::PdfView;
 use super::source::Opened;
 use super::{PreviewKind, preview_kind};
 use crate::guard::{guarded, guarded_async};
 use crate::model::document_ranges::Signal;
-use crate::model::file_thumbnails::raster_dimensions;
+use crate::model::file_thumbnails::{animated, raster_dimensions};
 use crate::model::markdown_document::{MARKDOWN_SECTION_BYTES, markdown_section};
 use crate::semantic::SemanticExt as _;
 use crate::ui::primitives::button::{IconButton, Pill, PillVariant};
@@ -34,6 +35,7 @@ use crate::ui::style::{TypeExt as _, hsla, palette, r, theme};
 const IMAGE_BYTES: u64 = 64 * 1024 * 1024;
 const IMAGE_PIXELS: u64 = 64 * 1024 * 1024;
 const ZOOM_MAX: f32 = 6.;
+const TOO_LARGE: &str = "This image is too large to preview. Download is still available.";
 
 enum Body {
     Opening,
@@ -51,29 +53,30 @@ enum Body {
 }
 
 pub struct FileViewer {
-    card: WeakEntity<FileCard>,
+    key: FileKey,
+    reference: AttachmentRef,
     id: SharedString,
     name: SharedString,
     expanded: bool,
     body: Body,
     opened: Option<Arc<Opened>>,
     scroll: ScrollHandle,
+    /// The thumbnails hold back while it's open.
+    _paused: Paused,
 }
 
-/// Opens the viewer for the file `card` shows.
-pub fn open(card: &Entity<FileCard>, window: &mut Window, cx: &mut App) {
-    let (facts, reference) = {
-        let card = card.read(cx);
-        (card.facts().clone(), card.reference().clone())
-    };
+/// Opens the viewer for a shared file.
+pub fn open(
+    key: &FileKey,
+    reference: &AttachmentRef,
+    facts: &FileFacts,
+    window: &mut Window,
+    cx: &mut App,
+) {
     let kind = preview_kind(facts.content_type.as_deref().unwrap_or(""));
-    let id = SharedString::from(format!(
-        "file.{}.{}.viewer",
-        reference.message_id, reference.attachment_index
-    ));
-    let weak = card.downgrade();
-    let name = SharedString::from(facts.name);
-    let viewer = cx.new(|cx| FileViewer::new(weak, id, name, kind, reference, cx));
+    let name = SharedString::from(facts.name.clone());
+    let (key, reference) = (key.clone(), reference.clone());
+    let viewer = cx.new(|cx| FileViewer::new(key, reference, name, kind, cx));
     open_dialog(window, cx, move |dialog, window, cx| {
         let viewer_now = viewer.read(cx);
         let room = f32::from(window.viewport_size().width);
@@ -92,16 +95,18 @@ pub fn open(card: &Entity<FileCard>, window: &mut Window, cx: &mut App) {
 
 impl FileViewer {
     fn new(
-        card: WeakEntity<FileCard>,
-        id: SharedString,
+        key: FileKey,
+        reference: AttachmentRef,
         name: SharedString,
         kind: PreviewKind,
-        reference: AttachmentRef,
         cx: &mut Context<Self>,
     ) -> Self {
-        // However the dialog closes, the transfer is closed once the viewer goes.
+        // However the dialog closes, the transfer is closed and the image leaves GPUI's cache once the viewer goes.
         cx.on_release(|this, cx| {
             guarded("let a file's preview go", || {
+                if let Body::Image { image, .. } = &this.body {
+                    image.clone().remove_asset(cx);
+                }
                 if let Some(opened) = this.opened.take() {
                     cx.spawn(async move |_| {
                         guarded_async("close a file's preview", opened.close()).await;
@@ -111,13 +116,16 @@ impl FileViewer {
             });
         })
         .detach();
+        let queue = card::queue(cx);
+        let paused = Paused::new(queue.clone());
         let body = if kind == PreviewKind::Unsupported {
             Body::Unsupported
         } else {
-            let rpc = store::rpc(cx);
+            let (rpc, tokio, opening) = (store::rpc(cx), card::live_tokio(cx), reference.clone());
             cx.spawn(async move |this, cx| {
                 guarded_async("open a file's preview", async move {
-                    let opened = match Opened::open(rpc, reference).await {
+                    card::settled(&queue, tokio).await;
+                    let opened = match Opened::open(rpc, opening).await {
                         Ok(opened) => opened,
                         Err(error) => {
                             let _ = this.update(cx, |this, cx| this.fail(error, cx));
@@ -170,13 +178,15 @@ impl FileViewer {
             Body::Opening
         };
         FileViewer {
-            card,
-            id,
+            id: format!("{}.viewer", key.id()).into(),
+            key,
+            reference,
             name,
             expanded: false,
             body,
             opened: None,
             scroll: ScrollHandle::new(),
+            _paused: paused,
         }
     }
 
@@ -200,7 +210,8 @@ impl FileViewer {
     }
 }
 
-/// An image, read whole within the limits, its size checked from its header before GPUI decodes it.
+/// An image, read whole within the limits, its size and frames checked before GPUI decodes it: an animated GIF or WebP
+/// is never decoded, as each of its frames would be a buffer the size of the picture (M4 review C2).
 async fn read_image(opened: &Opened) -> Result<(Arc<Image>, f32, f32), String> {
     const CORRUPT: &str = "This image is corrupt or unsupported. Download is still available.";
     let info = opened.info().clone();
@@ -213,8 +224,10 @@ async fn read_image(opened: &Opened) -> Result<(Arc<Image>, f32, f32), String> {
     };
     let bytes = opened.read_all(IMAGE_BYTES).await?;
     let size = raster_dimensions(&bytes, &info.content_type).map_err(|_| CORRUPT.to_owned())?;
-    if u64::from(size.width) * u64::from(size.height) > IMAGE_PIXELS {
-        return Err("This image is too large to preview. Download is still available.".into());
+    if u64::from(size.width) * u64::from(size.height) > IMAGE_PIXELS
+        || animated(&bytes, &info.content_type)
+    {
+        return Err(TOO_LARGE.into());
     }
     Ok((
         Arc::new(Image::from_bytes(format, bytes)),
@@ -254,7 +267,8 @@ impl Render for FileViewer {
         };
         let actions = {
             let expand = entity.clone();
-            let card = self.card.clone();
+            let (key, reference) = (self.key.clone(), self.reference.clone());
+            let file = self.name.to_string();
             div()
                 .flex()
                 .justify_end()
@@ -277,11 +291,10 @@ impl Render for FileViewer {
                     Pill::new(format!("{id}.download"), "Download")
                         .small()
                         .on_press(move |window, cx| {
-                            // The preview closes first (its transfer with it), then the card's download starts.
+                            // The preview closes first (its transfer with it), then the download starts; its status
+                            // shows on the file's card.
                             window.close_dialog(cx);
-                            if let Some(card) = card.upgrade() {
-                                FileCard::start_download(&card, cx);
-                            }
+                            card::download(&key, &reference, &file, cx);
                         }),
                 )
         };
@@ -434,11 +447,17 @@ impl MarkdownFile {
                 if signal.aborted() {
                     return;
                 }
+                // Rewritten off the UI thread, and never inside an update.
+                let read = match read {
+                    Ok(read) => Ok(cx
+                        .background_spawn(async move { super::markdown::sanitize(&read.text) })
+                        .await),
+                    Err(error) => Err(error),
+                };
                 let _ = this.update(cx, |this, cx| {
                     match read {
-                        Ok(read) => {
-                            this.shown =
-                                Some((section, super::markdown::sanitize(&read.text).into()));
+                        Ok(safe) => {
+                            this.shown = Some((section, safe.into()));
                             this.problem = None;
                         }
                         Err(error) => this.problem = Some(error.to_string().into()),

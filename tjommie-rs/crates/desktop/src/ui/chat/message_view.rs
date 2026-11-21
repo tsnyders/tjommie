@@ -174,8 +174,6 @@ fn view(
                 size: Some(file.size),
                 content_type: file.content_type,
             },
-            window,
-            cx,
         ),
     }
 }

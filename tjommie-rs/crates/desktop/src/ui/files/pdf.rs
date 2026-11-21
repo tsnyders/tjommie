@@ -13,7 +13,7 @@ use gpui::{
 };
 
 use super::source::Opened;
-use crate::guard::guarded_async;
+use crate::guard::{guarded, guarded_async};
 use crate::semantic::SemanticExt as _;
 use crate::ui::primitives::button::IconButton;
 use crate::ui::style::{TypeExt as _, hsla, palette, r, theme};
@@ -35,6 +35,8 @@ impl RangeSource for Transfer {
         self.0.info().size
     }
 
+    // This runs inside pdfium's read callback (an `extern "C"` frame), where a panic is an abort: it must stay
+    // panic-free, as it is (no index, no unwrap; a failed read is an `Err`) (M4 review L6).
     fn read(&self, offset: u64, len: usize) -> Result<Vec<u8>, String> {
         let end = offset.saturating_add(len as u64);
         futures::executor::block_on(self.0.read_span(offset, end))
@@ -106,6 +108,16 @@ pub struct PdfView {
 
 impl PdfView {
     pub fn new(id: SharedString, opened: Arc<Opened>, cx: &mut Context<Self>) -> Self {
+        // The page on screen leaves GPUI's image cache with the view (M4 review M2); the document goes with the last
+        // draw that holds it.
+        cx.on_release(|this, cx| {
+            guarded("let a PDF page go", || {
+                if let Some(page) = this.shown.take() {
+                    page.image.remove_asset(cx);
+                }
+            });
+        })
+        .detach();
         let tokio = cx
             .try_global::<crate::live::Tokio>()
             .map(|tokio| tokio.0.clone());
@@ -223,13 +235,6 @@ impl PdfView {
             .await;
         })
         .detach();
-    }
-}
-
-impl Drop for PdfView {
-    fn drop(&mut self) {
-        // The document goes with the last draw that holds it; the page's picture with the app's next frame.
-        self.shown.take();
     }
 }
 
