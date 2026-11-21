@@ -24,3 +24,6 @@ pub mod spawn;
 pub mod speech;
 pub mod updater;
 pub mod vault;
+
+/// SHA-256 for the desktop (it checks a saved download against the daemon's digest), the version this crate uses.
+pub use sha2;
