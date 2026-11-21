@@ -13,7 +13,7 @@
 use std::collections::VecDeque;
 use std::fmt;
 use std::io::{self, Read, Seek, SeekFrom, Write as _};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
@@ -132,25 +132,66 @@ impl<S> Seek for ChunkReader<S> {
 pub struct PdfLibrary(&'static Pdfium);
 
 static LIBRARY: OnceLock<Pdfium> = OnceLock::new();
+/// The file pdfium was checked and loaded from: asked for again, it isn't hashed again (M4 review L2).
+static LOADED_FROM: OnceLock<PathBuf> = OnceLock::new();
 /// Held through the first load, so two threads asking at once load pdfium once.
 static LOADING: Mutex<()> = Mutex::new(());
 
 /// Loads pdfium from `dll` if the file's SHA-256 is `expected_sha256` (the app passes [`PDFIUM_SHA256`]), in either
-/// case. The file is hashed first, and a mismatch is refused before Windows loads anything. Once pdfium is loaded, a
-/// later call with a matching file gets the library already loaded.
+/// case. The file is hashed first, and a mismatch is refused before Windows loads anything; it is held open with writes
+/// and deletes denied from the hash until Windows has loaded it, so the file loaded is the file hashed (M4 review L4).
+/// Once pdfium is loaded, the same file again gets the library already loaded, unhashed; another file is checked.
 pub fn load_library(dll: &Path, expected_sha256: &str) -> Result<PdfLibrary, PdfError> {
     // Absolute, so Windows loads the file that was hashed rather than searching its DLL path for the name.
     let dll = std::path::absolute(dll).map_err(|_| PdfError::LibraryMissing)?;
-    let sha256 = crate::speech::sha256_file(&dll).map_err(|_| PdfError::LibraryMissing)?;
+    if let (Some(pdfium), Some(from)) = (LIBRARY.get(), LOADED_FROM.get())
+        && *from == dll
+    {
+        return Ok(PdfLibrary(pdfium));
+    }
+    let _loading = LOADING.lock().unwrap_or_else(PoisonError::into_inner);
+    let held = held_open(&dll).map_err(|_| PdfError::LibraryMissing)?;
+    let sha256 = sha256_of(&held).map_err(|_| PdfError::LibraryMissing)?;
     if !sha256.eq_ignore_ascii_case(expected_sha256) {
         return Err(PdfError::LibraryNotPinned);
     }
-    let _loading = LOADING.lock().unwrap_or_else(PoisonError::into_inner);
     if let Some(pdfium) = LIBRARY.get() {
         return Ok(PdfLibrary(pdfium));
     }
-    let bindings = Pdfium::bind_to_library(dll).map_err(|_| PdfError::LibraryLoad)?;
+    let bindings = Pdfium::bind_to_library(&dll).map_err(|_| PdfError::LibraryLoad)?;
+    drop(held);
+    let _ = LOADED_FROM.set(dll);
     Ok(PdfLibrary(LIBRARY.get_or_init(|| Pdfium::new(bindings))))
+}
+
+/// The DLL opened to be read, shared for reading only: nothing writes, renames or deletes it while it's held. A link is
+/// refused, as the speech runtime's files are.
+fn held_open(path: &Path) -> io::Result<std::fs::File> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    if std::fs::symlink_metadata(path)?.file_type().is_symlink() {
+        return Err(io::Error::other("pdfium.dll is a link"));
+    }
+    /// `FILE_SHARE_READ`.
+    const SHARE_READ: u32 = 0x1;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(SHARE_READ)
+        .open(path)
+}
+
+/// The SHA-256 of what `file` holds, as lowercase hex.
+fn sha256_of(mut file: &std::fs::File) -> io::Result<String> {
+    use sha2::{Digest as _, Sha256};
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(buffer.get(..read).unwrap_or_default());
+    }
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 impl PdfLibrary {
