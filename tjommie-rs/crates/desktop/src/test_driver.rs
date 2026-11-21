@@ -178,11 +178,19 @@ pub struct UiNode {
     /// A switch that is on, a pressed toggle button, a checked radio (AccessKit's toggled state).
     #[serde(default)]
     pub toggled: bool,
+    /// A menu's trigger or a combo box: whether its list is open (AccessKit's expanded state); `None` where the idea
+    /// doesn't apply (M4 review C-N3).
+    #[serde(default)]
+    pub expanded: Option<bool>,
     /// A control, by its role: the keyboard must reach it (T5.6, `e2e_keyboard_navigation`).
     #[serde(default)]
     pub interactive: bool,
     /// In window coordinates, logical px.
     pub bounds: UiBounds,
+    /// The part of `bounds` its scroll areas and clips let show (GPUI's content mask as it was drawn), where a click
+    /// lands; `None` when none of it shows (M4 review M5).
+    #[serde(default)]
+    pub visible: Option<UiBounds>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -542,6 +550,7 @@ impl<E: Element> Element for Observed<E> {
             enabled: !node.is_disabled() && !self.disabled,
             selected: node.is_selected().unwrap_or(false),
             toggled: matches!(node.toggled(), Some(gpui::Toggled::True)),
+            expanded: node.is_expanded(),
             interactive: matches!(
                 role,
                 Some(
@@ -560,11 +569,12 @@ impl<E: Element> Element for Observed<E> {
                 .focus
                 .as_ref()
                 .is_some_and(|focus| focus.is_focused(window)),
-            bounds: UiBounds {
-                x: f32::from(bounds.origin.x),
-                y: f32::from(bounds.origin.y),
-                width: f32::from(bounds.size.width),
-                height: f32::from(bounds.size.height),
+            bounds: ui_bounds(bounds),
+            // What a hit test sees: the bounds within the mask the element is drawn under.
+            visible: {
+                let shown = bounds.intersect(&window.content_mask().bounds);
+                (shown.size.width > Pixels::ZERO && shown.size.height > Pixels::ZERO)
+                    .then(|| ui_bounds(shown))
             },
         };
         NODES.with(|nodes| nodes.borrow_mut().push(observed));
@@ -869,37 +879,57 @@ fn type_text(text: &str, window: &mut Window, cx: &mut App) {
 /// Where a click on `id` lands: the middle of the part of it inside the window. A node wholly outside the window
 /// (scrolled away, or past a small window's edge) is refused, rather than clicked into nothing.
 fn target(id: &str, window: &Window) -> Result<Point<Pixels>, String> {
-    let (bounds, root) = NODES.with(|nodes| {
+    let size = window.viewport_size();
+    let viewport = UiBounds {
+        x: 0.,
+        y: 0.,
+        width: f32::from(size.width),
+        height: f32::from(size.height),
+    };
+    aim(id, viewport).map(|(x, y)| point(px(x), px(y)))
+}
+
+/// Where a click on `id` lands, in the last frame drawn: the middle of the part of it that shows (inside its scroll
+/// areas and clips, M4 review M5) and inside the window as that frame drew it (the shell's root fills it; right after a
+/// resize the live size, `viewport`, has changed and the bounds are still the last frame's). Each refusal says why.
+fn aim(id: &str, viewport: UiBounds) -> Result<(f32, f32), String> {
+    let (node, root) = NODES.with(|nodes| {
         let nodes = nodes.borrow();
         let find = |id: &str| {
             nodes
                 .iter()
                 .find(|node| node.id == id)
-                .map(|node| node.bounds)
+                .map(|node| (node.bounds, node.visible))
         };
         (find(id), find("root"))
     });
-    let bounds = bounds.ok_or_else(|| format!("{id} is not on screen"))?;
-    // The window as that frame drew it (the shell's root fills it), as the click is matched against that frame: right
-    // after a resize the live size has changed and the bounds are still the last frame's.
-    let (width, height) = match root {
-        Some(root) => (root.x + root.width, root.y + root.height),
-        None => {
-            let size = window.viewport_size();
-            (f32::from(size.width), f32::from(size.height))
-        }
-    };
-    visible_center(bounds, width, height)
-        .map(|(x, y)| point(px(x), px(y)))
-        .ok_or_else(|| format!("{id} is outside the window"))
+    let (bounds, visible) = node.ok_or_else(|| format!("{id} is not on screen"))?;
+    if bounds.width <= 0. || bounds.height <= 0. {
+        return Err(format!("{id} has no size: {bounds:?}"));
+    }
+    let visible = visible.ok_or_else(|| format!("{id} is scrolled out of view: {bounds:?}"))?;
+    let frame = root.map_or(viewport, |(root, _)| root);
+    visible_center(visible, frame)
+        .ok_or_else(|| format!("{id} is outside the window: {bounds:?} in {frame:?}"))
 }
 
-/// The middle of the part of `bounds` inside a `width` × `height` window, if any of it is.
-fn visible_center(bounds: UiBounds, width: f32, height: f32) -> Option<(f32, f32)> {
-    let (left, top) = (bounds.x.max(0.), bounds.y.max(0.));
-    let right = (bounds.x + bounds.width).min(width);
-    let bottom = (bounds.y + bounds.height).min(height);
+/// The middle of the part of `bounds` inside `frame`, if any of it is.
+fn visible_center(bounds: UiBounds, frame: UiBounds) -> Option<(f32, f32)> {
+    let left = bounds.x.max(frame.x);
+    let top = bounds.y.max(frame.y);
+    let right = (bounds.x + bounds.width).min(frame.x + frame.width);
+    let bottom = (bounds.y + bounds.height).min(frame.y + frame.height);
     (right > left && bottom > top).then(|| ((left + right) / 2., (top + bottom) / 2.))
+}
+
+/// A frame's bounds as the snapshot gives them.
+fn ui_bounds(bounds: Bounds<Pixels>) -> UiBounds {
+    UiBounds {
+        x: f32::from(bounds.origin.x),
+        y: f32::from(bounds.origin.y),
+        width: f32::from(bounds.size.width),
+        height: f32::from(bounds.size.height),
+    }
 }
 
 fn click(position: Point<Pixels>, window: &mut Window, cx: &mut App) {
@@ -936,26 +966,73 @@ fn click(position: Point<Pixels>, window: &mut Window, cx: &mut App) {
 
 #[cfg(test)]
 mod click_tests {
-    use super::{UiBounds, visible_center};
+    use super::{NODES, UiBounds, UiNode, aim, visible_center};
 
-    #[test]
-    fn a_click_lands_on_the_part_inside_the_window() {
-        let at = |x: f32, y: f32, width: f32, height: f32| UiBounds {
+    fn at(x: f32, y: f32, width: f32, height: f32) -> UiBounds {
+        UiBounds {
             x,
             y,
             width,
             height,
-        };
+        }
+    }
+
+    fn node(id: &str, bounds: UiBounds, visible: Option<UiBounds>) -> UiNode {
+        UiNode {
+            id: id.into(),
+            role: "Button".into(),
+            text: String::new(),
+            enabled: true,
+            focused: false,
+            selected: false,
+            toggled: false,
+            expanded: None,
+            interactive: true,
+            bounds,
+            visible,
+        }
+    }
+
+    #[test]
+    fn a_click_lands_on_the_part_inside_the_window() {
+        let window = at(0., 0., 100., 100.);
         assert_eq!(
-            visible_center(at(10., 10., 20., 20.), 100., 100.),
+            visible_center(at(10., 10., 20., 20.), window),
             Some((20., 20.))
         );
         // Its middle is past the bottom edge; its top half isn't.
         assert_eq!(
-            visible_center(at(10., 90., 20., 40.), 100., 100.),
+            visible_center(at(10., 90., 20., 40.), window),
             Some((20., 95.))
         );
-        assert_eq!(visible_center(at(10., 120., 20., 20.), 100., 100.), None);
-        assert_eq!(visible_center(at(-30., 10., 20., 20.), 100., 100.), None);
+        assert_eq!(visible_center(at(10., 120., 20., 20.), window), None);
+        assert_eq!(visible_center(at(-30., 10., 20., 20.), window), None);
+    }
+
+    /// M4 review M5: a node scrolled out of its scroll area, though inside the window, is refused, and one half shown is
+    /// clicked on its shown half; each refusal names why.
+    #[test]
+    fn a_click_lands_only_on_what_its_scroll_area_shows() {
+        let window = at(0., 0., 1000., 700.);
+        NODES.with(|nodes| {
+            *nodes.borrow_mut() = vec![
+                node("root", window, Some(window)),
+                node("hidden", at(10., 300., 80., 40.), None),
+                node(
+                    "half",
+                    at(10., 380., 80., 40.),
+                    Some(at(10., 380., 80., 20.)),
+                ),
+                node("flat", at(10., 10., 80., 0.), None),
+            ];
+        });
+        assert!(
+            aim("hidden", window)
+                .unwrap_err()
+                .contains("scrolled out of view")
+        );
+        assert_eq!(aim("half", window), Ok((50., 390.)));
+        assert!(aim("flat", window).unwrap_err().contains("has no size"));
+        assert!(aim("gone", window).unwrap_err().contains("not on screen"));
     }
 }
