@@ -544,11 +544,13 @@ fn pending(
                 // keeps it; a press does nothing until the daemon has the answer or refuses it.
                 .child(
                     Link::new(format!("approval.{id}.deny"), no)
+                        .disabled(busy)
                         .on_press(answer_with(ApprovalDecision::Deny)),
                 )
                 .when(card.rule.is_some(), |row| {
                     row.child(
                         Link::new(format!("approval.{id}.always"), "Always allow")
+                            .disabled(busy)
                             .on_press(answer_with(ApprovalDecision::Always)),
                     )
                 })
@@ -904,6 +906,37 @@ mod tests {
             assert!(node("approval.m1.approve").is_some());
             assert!(node("approval.m1.always").is_none(), "no rule to save");
             assert!(node("approval.m2.always").is_some(), "a rule to save");
+        }
+
+        /// M4 re-review R9: while an answer goes, Deny and Always allow say they are unavailable, as Approve does.
+        #[gpui::test]
+        fn while_an_answer_goes_every_answer_says_it_is_unavailable(cx: &mut TestAppContext) {
+            let ruled = with(
+                MessageKind::Approval,
+                json!({ "approvalId": "a2", "tool": "Bash", "detail": "{\"command\":\"npm test\"}", "status": "pending", "rule": "Bash(npm test:*)" }),
+                message("m2", "b1", "Forge wants to run the tests", 2),
+            );
+            let rpc = FakeRpc::new().on::<protocol::wire::method::ApprovalsRespond>(|_| {
+                Ok(serde_json::from_value(json!({
+                    "id": "a2", "botId": "b1", "kind": "tool", "tool": "Bash", "summary": "Forge wants to run the tests",
+                    "detail": "{\"command\":\"npm test\"}", "rule": "Bash(npm test:*)", "payload": null,
+                    "status": "allowed", "messageId": "m2", "createdAt": "2026-11-15T08:02:00.000Z"
+                }))
+                .unwrap())
+            });
+            let (cx, _) = app(cx, Route::Chat("b1".into()), chat(vec![ruled], false), rpc);
+            let answers = [
+                "approval.m2.deny",
+                "approval.m2.always",
+                "approval.m2.approve",
+            ];
+            for id in answers {
+                assert!(node(id).unwrap().enabled, "{id} before");
+            }
+            click(cx, "approval.m2.approve");
+            for id in answers {
+                assert!(!node(id).unwrap().enabled, "{id} while the answer goes");
+            }
         }
     }
 }

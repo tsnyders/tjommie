@@ -20,7 +20,7 @@ use gpui_kit::component::input::{InputState, TextareaState};
 
 use crate::guard::guarded;
 use crate::keymap::{self, Next, Prev};
-use crate::semantic::{SemanticExt as _, SemanticFocus as _};
+use crate::semantic::{SemanticDisabled as _, SemanticExt as _, SemanticFocus as _};
 use crate::ui::primitives::button::pressable;
 use crate::ui::primitives::focus_handle;
 use crate::ui::style::{
@@ -392,6 +392,7 @@ pub struct Link {
     label: SharedString,
     quiet: bool,
     icon: Option<&'static str>,
+    disabled: bool,
     on_press: Option<crate::ui::primitives::button::Handler>,
 }
 
@@ -402,12 +403,20 @@ impl Link {
             label: label.into(),
             quiet: false,
             icon: None,
+            disabled: false,
             on_press: None,
         }
     }
 
     pub fn quiet(mut self) -> Self {
         self.quiet = true;
+        self
+    }
+
+    /// Unavailable for now, and says so: dimmed and pressing does nothing, but it keeps the keyboard if it has it (M4
+    /// re-review R9).
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
         self
     }
 
@@ -435,6 +444,8 @@ impl RenderOnce for Link {
         let link = div()
             .semantic(self.id, Role::Button)
             .aria_label(self.label.clone())
+            .semantic_disabled(self.disabled)
+            .when(self.disabled, |link| link.opacity(0.5))
             .track_focus(&focus)
             .relative()
             .flex()
@@ -460,7 +471,7 @@ impl RenderOnce for Link {
             })
             .child(self.label)
             .children(ring_or_reveal(&focus, theme.radius.xs, window, cx));
-        pressable(link, self.on_press)
+        pressable(link, self.on_press.filter(|_| !self.disabled))
     }
 }
 
