@@ -25,10 +25,20 @@ pub fn web(url: &str) -> bool {
     lower.starts_with("http:") || lower.starts_with("https:")
 }
 
-/// Opens `url` in the default browser if it is a web link; any other target does nothing.
-pub fn open_web(url: &str, cx: &App) {
-    if web(url) {
-        cx.open_url(url);
+/// Opens `url` in the default browser if it is a web link; any other target does nothing. Windows gets the address
+/// `links::open_external` parsed and normalised, never the raw text, so `http:x` or `https://` with no host doesn't
+/// open (M4 review B1).
+pub fn open_web(url: &str) {
+    opens(url, desktop_host::links::open_external);
+}
+
+/// [`open_web`] with the opener passed in, for the tests.
+fn opens(url: &str, open: impl FnOnce(&str) -> Result<(), String>) {
+    if !web(url) {
+        return;
+    }
+    if let Err(why) = open(url) {
+        log::warn!("A link in a reply didn't open: {why}");
     }
 }
 
@@ -80,8 +90,114 @@ fn link(text: &str, url: &str) -> String {
     format!("[{text}](<{url}>)")
 }
 
-/// The reply as Markdown that is safe to draw. A reply that doesn't parse is shown as its plain text.
+/// Deeper than prose nests: quotes and list markers opened at a line's start, or emphasis and brackets left open in a
+/// paragraph. Past it a reply is shown as plain text, which nests nothing.
+const MAX_NESTING: usize = 32;
+/// The widest indent prose uses, in columns (a tab is to the next multiple of 4).
+const MAX_INDENT: usize = 256;
+
+/// Whether `text` nests deeper than [`MAX_NESTING`] or indents past [`MAX_INDENT`], measured by one pass over the text
+/// before anything parses it. The parser, the rewrite and gpui-kit's own walk of the result all recurse once a level, on
+/// the UI thread: a few thousand `>` were a stack overflow, which no guard catches (M4 review C1).
+fn too_deep(text: &str) -> bool {
+    let mut fenced = false;
+    let mut inline = 0usize;
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            fenced = !fenced;
+            continue;
+        }
+        if fenced {
+            continue;
+        }
+        if trimmed.is_empty() {
+            // A paragraph ends: no emphasis or bracket stays open past it.
+            inline = 0;
+            continue;
+        }
+        if block_nesting(line) {
+            return true;
+        }
+        let mut chars = line.chars().peekable();
+        let mut before = ' ';
+        while let Some(c) = chars.next() {
+            match c {
+                '[' => inline += 1,
+                ']' => inline = inline.saturating_sub(1),
+                '*' | '_' | '~' => {
+                    while chars.peek() == Some(&c) {
+                        chars.next();
+                    }
+                    let after = chars.peek().copied().unwrap_or(' ');
+                    match (before.is_whitespace(), after.is_whitespace()) {
+                        (true, false) => inline += 1,
+                        (false, true) => inline = inline.saturating_sub(1),
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+            if inline > MAX_NESTING {
+                return true;
+            }
+            before = c;
+        }
+    }
+    false
+}
+
+/// The containers a line opens at its start (`>` quotes and list markers) and its indent, against the limits.
+fn block_nesting(line: &str) -> bool {
+    let (mut depth, mut columns) = (0usize, 0usize);
+    let mut chars = line.chars().peekable();
+    while let Some(&c) = chars.peek() {
+        let mut ahead = chars.clone();
+        ahead.next();
+        let spaced = matches!(ahead.peek(), Some(' ' | '\t'));
+        match c {
+            ' ' => columns += 1,
+            '\t' => columns += 4 - columns % 4,
+            '>' => {
+                depth += 1;
+                columns += 1;
+            }
+            '-' | '*' | '+' if spaced => {
+                depth += 1;
+                columns += 1;
+            }
+            '0'..='9' => {
+                // An ordered marker: up to nine digits, then `.` or `)`, then a space.
+                let digits = chars.clone().take_while(char::is_ascii_digit).count();
+                let mut rest = chars.clone().skip(digits);
+                let marker = digits <= 9
+                    && matches!(rest.next(), Some('.' | ')'))
+                    && matches!(rest.next(), Some(' ' | '\t'));
+                if !marker {
+                    break;
+                }
+                depth += 1;
+                columns += digits + 1;
+                for _ in 0..digits {
+                    chars.next();
+                }
+            }
+            _ => break,
+        }
+        chars.next();
+        if depth > MAX_NESTING || columns > MAX_INDENT {
+            return true;
+        }
+    }
+    false
+}
+
+/// The reply as Markdown that is safe to draw. A reply that nests too deeply or doesn't parse is shown as its plain
+/// text.
 pub fn sanitize(text: &str) -> String {
+    if too_deep(text) {
+        return plain(text);
+    }
     let Ok(tree) = markdown::to_mdast(text, &ParseOptions::gfm()) else {
         return plain(text);
     };
@@ -245,8 +361,8 @@ pub fn reply(id: &str, text: &SharedString, window: &mut Window, cx: &mut App) -
 pub fn document(id: SharedString, safe: SharedString, cx: &App) -> TextView {
     styled(TextView::markdown(id, safe), cx)
         .image_source(|_| blocked())
-        .on_link_click(|url, _, _, cx| {
-            guarded("open a link", || open_web(url, cx));
+        .on_link_click(|url, _, _, _| {
+            guarded("open a link", || open_web(url));
         })
 }
 
@@ -429,5 +545,65 @@ mod tests {
         );
         assert!(web("HTTPS://example.com") && web("http:x"));
         assert!(!web("mailto:you@example.com") && !web("file:///C:/x") && !web("javascript:x"));
+    }
+
+    /// M4 review B1: a link opens through `links::open_external`, which parses and normalises it; one with no host
+    /// (`http:x`, `https://`) never reaches Windows, and anything but the web isn't even tried.
+    #[test]
+    fn a_link_opens_only_through_the_normaliser() {
+        let opened = std::cell::RefCell::new(Vec::new());
+        let open = |url: &str| {
+            desktop_host::links::open_external_with(url, |normal| {
+                opened.borrow_mut().push(normal.to_owned());
+                Ok(())
+            })
+        };
+        for url in [
+            "http:x",
+            "https://",
+            "mailto:you@example.com",
+            "HTTPS://Example.com/a b",
+        ] {
+            opens(url, open);
+        }
+        assert_eq!(*opened.borrow(), ["https://example.com/a%20b"]);
+    }
+
+    fn depth(node: &Node) -> usize {
+        1 + node
+            .children()
+            .into_iter()
+            .flatten()
+            .map(depth)
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// M4 review C1: nesting past the limit (quotes, lists, emphasis or indent) is shown as plain text, found without
+    /// parsing, in bounded time; what's left nests nothing, so neither the parser nor gpui-kit's walk can recurse deep.
+    #[test]
+    fn a_reply_nested_past_the_limit_is_plain_text() {
+        let quoted = format!("{}hello", ">".repeat(50_000));
+        let listed = format!("{}item", "- ".repeat(20_000));
+        let emphasised = format!("{}x", "*a ".repeat(20_000));
+        let bracketed = format!("{}x", "[".repeat(20_000));
+        let indented = format!("{}x", " ".repeat(MAX_INDENT + 1));
+        for deep in [&quoted, &listed, &emphasised, &bracketed, &indented] {
+            let started = std::time::Instant::now();
+            let safe = sanitize(deep);
+            assert!(started.elapsed() < Duration::from_secs(2), "measured fast");
+            assert_eq!(safe, plain(deep));
+            let tree = markdown::to_mdast(&safe, &ParseOptions::gfm()).unwrap();
+            assert!(depth(&tree) <= 4, "nests nothing");
+        }
+        // Within the limits, and in a fenced block, Markdown still reads as Markdown.
+        let nested = format!("{}quoted", "> ".repeat(MAX_NESTING));
+        assert_ne!(sanitize(&nested), plain(&nested));
+        let code = format!("```\n{}deep code\n```", " ".repeat(MAX_INDENT + 10));
+        assert_eq!(sanitize(&code), code);
+        assert_ne!(
+            sanitize("**bold** and *em* and [a](https://x.example)"),
+            plain("**bold**")
+        );
     }
 }
