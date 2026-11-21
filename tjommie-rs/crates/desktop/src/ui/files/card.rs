@@ -73,7 +73,10 @@ impl FileKey {
 enum Thumb {
     Loading,
     Ready(Arc<Image>),
+    /// Didn't come: asked for again after a reconnect.
     Failed,
+    /// Too large or animated: the file stays so, so it isn't read again (M4 re-review R6).
+    Refused,
 }
 
 #[derive(Default)]
@@ -118,16 +121,20 @@ impl Files {
         self.thumbs.last().map(|(_, thumb)| thumb)
     }
 
-    /// Keeps `thumb` for `key`, forgetting the oldest beyond [`THUMBNAILS`]: the pictures forgotten, for the caller to
-    /// take out of GPUI's cache.
+    /// Keeps `thumb` for `key`, forgetting the oldest beyond [`THUMBNAILS`]: the pictures forgotten or replaced, for the
+    /// caller to take out of GPUI's cache (M4 re-review R10).
     fn put(&mut self, key: FileKey, thumb: Thumb) -> Vec<Arc<Image>> {
-        self.thumbs.retain(|(known, _)| *known != key);
-        self.thumbs.push((key, thumb));
         let mut forgotten = Vec::new();
+        let picture = |(_, thumb): (FileKey, Thumb)| match thumb {
+            Thumb::Ready(image) => Some(image),
+            _ => None,
+        };
+        if let Some(at) = self.thumbs.iter().position(|(known, _)| *known == key) {
+            forgotten.extend(picture(self.thumbs.remove(at)));
+        }
+        self.thumbs.push((key, thumb));
         while self.thumbs.len() > THUMBNAILS {
-            if let (_, Thumb::Ready(image)) = self.thumbs.remove(0) {
-                forgotten.push(image);
-            }
+            forgotten.extend(picture(self.thumbs.remove(0)));
         }
         forgotten
     }
@@ -310,7 +317,7 @@ fn shrink(bytes: Vec<u8>, format: ImageFormat) -> Result<Arc<Image>, String> {
     Ok(Arc::new(Image::from_bytes(ImageFormat::Bmp, bmp)))
 }
 
-/// After a reconnect, the thumbnails that failed are asked for again.
+/// After a reconnect, the thumbnails that failed are asked for again; those refused stay refused.
 fn follow_connection(cx: &mut App) {
     let ready = connected(cx);
     let files = cx.default_global::<Files>();
@@ -359,25 +366,34 @@ fn load_thumbnail(key: &FileKey, reference: &AttachmentRef, facts: &FileFacts, c
             )
             .await;
             let made = match read {
-                Ok(bytes) => cx
+                Ok(bytes) => match cx
                     .background_spawn(async move { shrink(bytes, format) })
                     .await
-                    .map(Some),
+                {
+                    Ok(image) => Some(Thumb::Ready(image)),
+                    Err(error) => {
+                        log::debug!("A thumbnail wasn't drawn: {error}");
+                        Some(Thumb::Failed)
+                    }
+                },
                 // Stopped for a preview or a download: asked for again later.
-                Err(ThumbnailError::Paused | ThumbnailError::Cancelled) => Ok(None),
-                Err(error) => Err(error.to_string()),
+                Err(ThumbnailError::Paused | ThumbnailError::Cancelled) => None,
+                Err(ThumbnailError::Limit(why)) => {
+                    log::debug!("No thumbnail: {why}");
+                    Some(Thumb::Refused)
+                }
+                Err(error) => {
+                    log::debug!("A thumbnail wasn't drawn: {error}");
+                    Some(Thumb::Failed)
+                }
             };
             cx.update(|cx| {
                 match made {
-                    Ok(Some(image)) => keep(key, Thumb::Ready(image), cx),
-                    Ok(None) => cx
+                    Some(thumb) => keep(key, thumb, cx),
+                    None => cx
                         .default_global::<Files>()
                         .thumbs
                         .retain(|(known, _)| *known != key),
-                    Err(error) => {
-                        log::debug!("A thumbnail wasn't drawn: {error}");
-                        keep(key, Thumb::Failed, cx);
-                    }
                 }
                 cx.refresh_windows();
             });
@@ -419,21 +435,35 @@ pub fn download(key: &FileKey, reference: &AttachmentRef, name: &str, cx: &mut A
         .map(std::path::PathBuf::from)
         .unwrap_or_default()
         .join("Downloads");
-    let picked = crate::ui::prompt_for_new_path(&directory, Some(&safe_file_name(name)), cx);
+    let (suggested, shortened) = safe_file_name(name);
+    let picked = crate::ui::prompt_for_new_path(&directory, Some(&suggested), cx);
     let signal = Signal::new();
-    set_save(
-        key,
-        Some(signal.clone()),
-        Some("Choose where to save…".into()),
-        cx,
-    );
+    let choose = if shortened {
+        "Choose where to save… Its name was shortened to fit Windows."
+    } else {
+        "Choose where to save…"
+    };
+    set_save(key, Some(signal.clone()), Some(choose.into()), cx);
     let (queue, tokio, rpc) = (queue(cx), live_tokio(cx), store::rpc(cx));
     let (key, reference) = (key.clone(), reference.clone());
     cx.spawn(async move |cx| {
         guarded_async("download a file", async move {
-            let Some(path) = picked.await.ok().and_then(Result::ok).flatten() else {
-                cx.update(|cx| set_save(&key, None, Some("Download cancelled.".into()), cx));
-                return;
+            // A dialog that couldn't open says so: only the person's own Cancel is a cancelled download (M4
+            // re-review R3).
+            let path = match picked.await {
+                Ok(Ok(Some(path))) => path,
+                Ok(Ok(None)) => {
+                    cx.update(|cx| set_save(&key, None, Some("Download cancelled.".into()), cx));
+                    return;
+                }
+                failed => {
+                    if let Ok(Err(error)) = failed {
+                        log::warn!("The save dialog failed: {error:#}");
+                    }
+                    let said = "Windows couldn't show the save dialog. Try again.";
+                    cx.update(|cx| set_save(&key, None, Some(said.into()), cx));
+                    return;
+                }
             };
             // The daemon allows two transfers per connection: the thumbnails hold back, and the one reading settles.
             let _paused = Paused::new(queue.clone());
@@ -698,5 +728,30 @@ impl RenderOnce for FileCard {
                         .child(status),
                 )
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// M4 re-review R10: a picture replaced under its key is handed back for GPUI's cache, as one pushed out is.
+    #[test]
+    fn a_replaced_or_forgotten_picture_is_handed_back() {
+        let mut files = Files::default();
+        let picture = || Arc::new(Image::from_bytes(ImageFormat::Bmp, Vec::new()));
+        let key = |index| FileKey {
+            message_id: "m1".into(),
+            index,
+        };
+        let first = picture();
+        assert!(files.put(key(0), Thumb::Ready(first.clone())).is_empty());
+        let replaced = files.put(key(0), Thumb::Ready(picture()));
+        assert!(matches!(replaced.as_slice(), [image] if Arc::ptr_eq(image, &first)));
+        // Full, the picture the oldest: the next one pushes it out.
+        for index in 1..THUMBNAILS as u64 {
+            assert!(files.put(key(index), Thumb::Failed).is_empty());
+        }
+        assert_eq!(files.put(key(99), Thumb::Refused).len(), 1);
     }
 }

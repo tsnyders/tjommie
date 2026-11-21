@@ -852,6 +852,62 @@ mod file_card {
         );
     }
 
+    /// M4 re-review R6: a picture refused for good (too large, or animated) isn't read again when the connection comes
+    /// back.
+    #[gpui::test]
+    fn a_refused_thumbnail_is_not_read_again_after_a_reconnect(cx: &mut TestAppContext) {
+        let animated = animated_gif();
+        let files: [(&str, &str, &str, &[u8]); 1] = [("m1", "moving.gif", "image/gif", &animated)];
+        let (rpc, _) = host(&files);
+        let (cx, calls) = app(cx, Route::Chat("b1".into()), files_chat(&files), rpc);
+        let _runtime = runtime(cx);
+        until(cx, "the animation was read and refused", || {
+            calls_to(&calls, "attachments.close").len() == 1
+        });
+        for connection in [Connection::Reconnecting, Connection::Ready] {
+            cx.update(|_, cx| {
+                store::update(cx, |state| {
+                    state.connection = connection.clone();
+                    true
+                })
+            });
+            draw(cx);
+        }
+        for _ in 0..20 {
+            draw(cx);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            calls_to(&calls, "attachments.open").len(),
+            1,
+            "not read again"
+        );
+        assert!(node("file.m1.0.thumbnail").is_none());
+    }
+
+    /// M4 re-review R3: a name past Windows' reach is suggested shortened, and the card says so; the person's own
+    /// Cancel is a cancelled download.
+    #[gpui::test]
+    fn a_long_name_is_shortened_and_the_card_says_so(cx: &mut TestAppContext) {
+        let name = format!("{}.pdf", "a".repeat(300));
+        let (cx, _) = app(
+            cx,
+            Route::Chat("b1".into()),
+            shared(&name, 10, "application/pdf"),
+            FakeRpc::new(),
+        );
+        click(cx, "file.m1.0.download");
+        assert!(cx.did_prompt_for_new_path());
+        let status = || node("file.m1.0.status").map(|node| node.text);
+        assert_eq!(
+            status().as_deref(),
+            Some("Choose where to save… Its name was shortened to fit Windows.")
+        );
+        cx.simulate_new_path_selection(|_| None);
+        draw(cx);
+        assert_eq!(status().as_deref(), Some("Download cancelled."));
+    }
+
     /// M4 review P4: a file shared before the daemon linked its attachment draws its thumbnail once the link lands,
     /// with no scroll: the card reads its facts from the message each frame.
     #[gpui::test]

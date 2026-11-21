@@ -62,8 +62,10 @@ impl Progress {
         let Stage::Writing(writing) = std::mem::replace(&mut self.stage, Stage::Closed) else {
             return Err(gone());
         };
+        // The daemon writes its digest in lowercase hex; one in capitals is the same digest (M4 re-review R7).
         let whole = self.expected.as_ref().is_some_and(|(size, sha256)| {
-            writing.written == *size && format!("{:x}", writing.hash.finalize()) == *sha256
+            writing.written == *size
+                && format!("{:x}", writing.hash.finalize()).eq_ignore_ascii_case(sha256)
         });
         if !whole {
             return Err(TransferError::Native {
@@ -155,7 +157,7 @@ fn create_partial(target: &Path) -> std::io::Result<(PathBuf, File)> {
 /// the like make a name read backwards), path separators or the other characters Windows refuses, without the trailing
 /// dots and spaces Windows drops, and with a device name (CON, PRN, AUX, NUL, COM1, LPT1…, with or without an
 /// extension) behind an underscore. Never empty: "download" stands in.
-pub fn safe_file_name(name: &str) -> String {
+pub fn safe_file_name(name: &str) -> (String, bool) {
     let bidi = |c: char| matches!(u32::from(c), 0x061C | 0x200E | 0x200F | 0x202A..=0x202E | 0x2066..=0x2069);
     let kept: String = name
         .chars()
@@ -167,11 +169,12 @@ pub fn safe_file_name(name: &str) -> String {
         .collect();
     let name = kept.trim_end_matches(['.', ' ']);
     if name.is_empty() {
-        return "download".to_owned();
+        return ("download".to_owned(), false);
     }
+    let (name, shortened) = shorten(name);
     let stem = name
         .split_once('.')
-        .map_or(name, |(stem, _)| stem)
+        .map_or(name.as_str(), |(stem, _)| stem)
         .trim_end_matches(' ')
         .to_ascii_uppercase();
     let port = |kind: &str| {
@@ -181,11 +184,40 @@ pub fn safe_file_name(name: &str) -> String {
             (Some('0'..='9' | '¹' | '²' | '³'), None)
         )
     };
-    if matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL") || port("COM") || port("LPT") {
-        format!("_{name}")
-    } else {
-        name.to_owned()
+    let name =
+        if matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL") || port("COM") || port("LPT") {
+            format!("_{name}")
+        } else {
+            name
+        };
+    (name, shortened)
+}
+
+/// The most characters of a name's stem the save dialog is offered: a shared file's name has no limit, and Windows'
+/// dialog and paths do (M4 re-review R3).
+const STEM_CHARS: usize = 120;
+
+/// `name` with its stem cut to [`STEM_CHARS`], keeping an extension of up to 16 characters, and whether it was cut.
+fn shorten(name: &str) -> (String, bool) {
+    let (stem, extension) = match name.rsplit_once('.') {
+        Some((stem, extension)) if !stem.is_empty() && extension.chars().count() <= 16 => {
+            (stem, Some(extension))
+        }
+        _ => (name, None),
+    };
+    if stem.chars().count() <= STEM_CHARS {
+        return (name.to_owned(), false);
     }
+    let cut: String = stem.chars().take(STEM_CHARS).collect();
+    let cut = match cut.trim_end_matches(['.', ' ']) {
+        "" => "download",
+        cut => cut,
+    };
+    let name = match extension {
+        Some(extension) => format!("{cut}.{extension}"),
+        None => cut.to_owned(),
+    };
+    (name, true)
 }
 
 impl AttachmentNative for SaveTo {
@@ -377,6 +409,13 @@ mod tests {
         assert_eq!(first.finish_save("s").await, Ok(SaveStatus::Saved));
         assert_eq!(std::fs::read(&destination).unwrap(), bytes);
 
+        // M4 re-review R7: the digest in capitals is the same digest.
+        let mut shouted = info(bytes);
+        shouted.sha256.make_ascii_uppercase();
+        let again = ready(&destination, shouted).await;
+        put(&again, 0, bytes).await.unwrap();
+        assert_eq!(again.finish_save("s").await, Ok(SaveStatus::Saved));
+
         let cancelled = ready(&destination, info(bytes)).await;
         put(&cancelled, 0, b"some").await.unwrap();
         cancelled.cancel_save("s").await.unwrap();
@@ -548,7 +587,20 @@ mod tests {
             (" .. ", "download"),
             ("\u{202E}", "download"),
         ] {
-            assert_eq!(safe_file_name(name), safe, "{name:?}");
+            assert_eq!(safe_file_name(name), (safe.to_owned(), false), "{name:?}");
+        }
+        // M4 re-review R3: a name past Windows' reach keeps 120 characters of its stem and its extension, and says so.
+        let long = "a".repeat(5_000);
+        for (name, safe) in [
+            (format!("{long}.pdf"), format!("{}.pdf", "a".repeat(120))),
+            (long.clone(), "a".repeat(120)),
+            (format!("{long}.{long}"), "a".repeat(120)),
+            (
+                format!("{}{long}.txt", ". ".repeat(70)),
+                "download.txt".to_owned(),
+            ),
+        ] {
+            assert_eq!(safe_file_name(&name), (safe, true), "{name:.40}");
         }
     }
 }
