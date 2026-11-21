@@ -1,9 +1,10 @@
-//! Port of `packages/ui/lib/exchange.ts`: the exchange view's meta line and caption, and an exchange's status as the chat's
-//! handoff row shows it.
+//! Port of `packages/ui/lib/exchange.ts`: the exchange view's meta line and caption, an exchange's status as the chat's
+//! handoff row shows it, and the exchange a message belongs to.
 
 use jiff::{Timestamp, Zoned};
 use protocol::model::{
-    Bot, Exchange, ExchangeStatus, HandoffData, Message, MessageData, MessageKind, message_data,
+    Bot, Exchange, ExchangeStatus, HandoffData, Message, MessageData, MessageKind, TextData,
+    message_data,
 };
 
 use super::format::stamp;
@@ -92,6 +93,20 @@ pub fn handoff_status(messages: &[Message], exchange_id: &str) -> Option<Exchang
             }
             _ => None,
         })
+}
+
+/// The exchange a message belongs to, read through its kind's checked payload (M4 review A7): a chat's hand-off row, an
+/// exchange's post in a room, or the room's notice that the exchange failed (the daemon's `NoticeData`). Any other
+/// message, or a payload that doesn't match its kind, has none.
+pub fn exchange_id(message: &Message) -> Option<String> {
+    // Most messages carry no payload: nothing to decode.
+    message.data.as_ref()?;
+    match message_data(message).ok()? {
+        MessageData::Handoff(HandoffData::Exchange(row)) => Some(row.exchange_id),
+        MessageData::Text(Some(TextData::ExchangePost(post))) => Some(post.exchange_id),
+        MessageData::Notice(Some(notice)) => Some(notice.exchange_id),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -258,5 +273,44 @@ mod tests {
         );
         assert_eq!(handoff_status(&messages, "x2"), None);
         assert_eq!(handoff_status(&messages, "x9"), None);
+    }
+
+    #[test]
+    fn reads_a_messages_exchange_through_its_kinds_payload() {
+        let handoff = row(
+            "h1",
+            json!({"exchangeId": "x1", "fromBotId": "b1", "toBotId": "b2", "messages": 1, "status": "waiting"}),
+        );
+        assert_eq!(
+            exchange_id(&handoff).as_deref(),
+            Some("x1"),
+            "a hand-off row"
+        );
+        let post = message(json!({
+            "id": "p1", "conversationId": "team", "author": "b2", "kind": "text", "body": "@Pnet apply Done.",
+            "data": {"exchangeId": "x1", "toBotId": "b1"}, "status": "done", "createdAt": "2026-09-27T14:00:00.000Z"
+        }));
+        assert_eq!(
+            exchange_id(&post).as_deref(),
+            Some("x1"),
+            "an exchange's post in a room"
+        );
+        let notice = |data: Value| {
+            message(json!({
+                "id": "n1", "conversationId": "team", "author": "system", "kind": "notice",
+                "body": "CV Writer couldn't answer Pnet apply: it was stopped.", "data": data, "status": "done",
+                "createdAt": "2026-09-27T14:00:00.000Z"
+            }))
+        };
+        assert_eq!(exchange_id(&notice(Value::Null)), None, "a notice");
+        assert_eq!(
+            exchange_id(&notice(json!({"exchangeId": "x1"}))).as_deref(),
+            Some("x1"),
+            "the room's notice that the exchange failed"
+        );
+        // Kinds that carry none.
+        let room_answer = row("h2", json!({"roomMessageId": "r1"}));
+        assert_eq!(exchange_id(&room_answer), None);
+        assert_eq!(exchange_id(&file_message()), None);
     }
 }

@@ -189,13 +189,17 @@ fn picker(
     choices
         .into_iter()
         .fold(
-            Menu::new(SharedString::from(format!("{id}.menu")), move |_, _, _| {
-                Pill::new(id, label.clone())
-                    .name(name.clone())
-                    .small()
-                    .icon("chevron-down")
-                    .into_any_element()
-            })
+            Menu::new(
+                SharedString::from(format!("{id}.menu")),
+                move |open, _, _| {
+                    Pill::new(id, label.clone())
+                        .name(name.clone())
+                        .small()
+                        .icon("chevron-down")
+                        .expanded(open)
+                        .into_any_element()
+                },
+            )
             .anchor(gpui::Anchor::TopRight)
             .offset(gpui::px(6.)),
             |menu, (key, text)| {

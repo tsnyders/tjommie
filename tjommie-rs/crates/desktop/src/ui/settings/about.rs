@@ -24,8 +24,9 @@ const RELEASES: &str = "https://github.com/tsnyders/tjommie/releases/latest";
 const PROJECT: &str = "https://github.com/tsnyders/tjommie";
 const LICENSE: &str = "https://github.com/tsnyders/tjommie/blob/main/LICENSE";
 
-/// The notices' largest size (256 KiB, as the TypeScript allows).
-const NOTICES_LIMIT: u64 = 262_144;
+/// The notices' largest size: 4 MiB. The release generates them (the crates, pdfium's licences, whisper, the fonts and
+/// the icons: about 400 KiB) and checks they stay under this; the TypeScript's 256 KiB held only its own list.
+const NOTICES_LIMIT: u64 = 4 * 1024 * 1024;
 
 /// Opens a link in the default browser; one that can't open is only logged, as the TypeScript's did nothing.
 pub(super) fn open(url: &str) {

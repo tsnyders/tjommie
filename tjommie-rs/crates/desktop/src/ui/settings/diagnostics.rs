@@ -215,7 +215,7 @@ fn save(exports: &Entity<Exports>, report: String, cx: &mut App) {
                     &report,
                     move || async move {
                         let picked = picker.update(|cx| {
-                            cx.prompt_for_new_path(&directory, Some(REPORT_FILE_NAME))
+                            crate::ui::prompt_for_new_path(&directory, Some(REPORT_FILE_NAME), cx)
                         });
                         picked.await.ok().and_then(Result::ok).flatten()
                     },

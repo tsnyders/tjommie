@@ -1,14 +1,18 @@
 //! Full keyboard navigation (Phase 3 plan T5.6; owner decision 4): from launch, keys only (`key` and typing, never
-//! `click`). It goes to every screen and every settings section, creates an agent, mentions it in a room and sees its
-//! answer (a recorded provider fixture, invented here), works a menu and dialogs from the keyboard, and on each screen
-//! and dialog fails on any control that no Tab sequence reaches. Every dialog is opened by keys from its screen (M5
-//! review M8), with two exceptions: Devices' Rename and Revoke need a paired phone, which this run can't make, so
+//! `click`). It goes to every screen and every settings section, creates an agent, sends it a message from its chat
+//! (Shift+Enter starts a line, Enter sends) and approves the card its next turn raises, mentions it in a room and sees
+//! its answer (recorded provider fixtures, invented here), works a menu and dialogs from the keyboard, and on each
+//! screen and dialog fails on any control that no Tab sequence reaches. Every dialog is opened by keys from its screen
+//! (M5 review M8), with two exceptions: Devices' Rename and Revoke need a paired phone, which this run can't make, so
 //! `settings::devices::tests::the_device_dialogs_work_from_the_keyboard` covers them with a device in the view model;
 //! and `Route::Account`'s keyboard path arrives with the Chat lane's link producers. The system's folder picker can't be
-//! driven by keys either, so the test driver answers it (`answer_path_prompt`) for the team's repository. Approving a
-//! card (T4.2) and moving into and out of a bot's page (T3.5) are the Chat and Browser lanes' steps. The API-key account
-//! it adds has an invented key, and every Credential Manager target in this temp root's namespace is deleted when the
-//! test ends, failed or not (`Credentials`). Needs the daemon built with the switch, beside the app:
+//! driven by keys either, so the test driver answers it (`answer_path_prompt`) for the team's repository. Exchange and
+//! file card: waiting for a fixture `mcp` event (a fixture turn calling the session's `tjommie` tools, `message_bot` and
+//! `share_file`, with a second fixture agent for the exchange; Batch 4). Until then the view tests cover them by keys
+//! (`ui::chat::tests::exchange_view`, `ui::chat::tests::file_card`). Moving into and out of a
+//! bot's page (T3.5) is the Browser lane's step. The API-key account it adds has an invented key, and every Credential
+//! Manager target in this temp root's namespace is deleted when the test ends, failed or not (`Credentials`). Needs
+//! the daemon built with the switch, beside the app:
 //! `cargo build -p daemon --bin tjommie-daemon --features provider-fixtures --locked`, then
 //! `TJOMMIE_IDENTITY=e2e cargo test -p desktop --features test-driver --test e2e_keyboard_navigation --locked`.
 #![cfg(feature = "test-driver")]
@@ -47,10 +51,17 @@ fn daemon_exe() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_tjommie-desktop")).with_file_name("tjommie-daemon.exe")
 }
 
-/// Harbour's one turn.
-const HARBOUR: &str = r#"{ "version": 1, "turns": [ { "events": [
-  { "type": "text", "delta": "Harbour here: all clear." }, { "type": "text_end" },
-  { "type": "usage", "model": "sonnet", "input": 10, "output": 5 } ] } ] }"#;
+/// Harbour's turns, one per message, in the order the test sends them: two lines from its chat's composer (as one
+/// message), a request that waits on an approval card, and the mention in Everyone.
+const HARBOUR: &str = r#"{ "version": 1, "turns": [
+  { "expect": "First line\nsecond line", "events": [
+    { "type": "text", "delta": "Both lines arrived." }, { "type": "text_end" } ] },
+  { "expect": "check the moorings", "events": [
+    { "type": "approval", "id": "ask-1", "tool": "Bash", "summary": "Run git status", "rule": "Bash(git status:*)",
+      "then": { "once": [ { "type": "text", "delta": "Ran it once." }, { "type": "text_end" } ] } } ] },
+  { "expect": "all clear?", "events": [
+    { "type": "text", "delta": "Harbour here: all clear." }, { "type": "text_end" },
+    { "type": "usage", "model": "sonnet", "input": 10, "output": 5 } ] } ] }"#;
 
 const SECTIONS: [&str; 12] = [
     "general",
@@ -375,6 +386,92 @@ fn sweep_in(app: &mut Client, place: &str, prefixes: &[&str]) {
     );
 }
 
+/// Polls `done` for up to a minute. A failure names `place` and says what the chat's errors, notices and problems say,
+/// such as a fixture turn's own error.
+fn until(app: &mut Client, place: &str, what: &str, mut done: impl FnMut(&mut Client) -> bool) {
+    let started = Instant::now();
+    while !done(app) {
+        if started.elapsed() > Duration::from_secs(60) {
+            let said: Vec<String> = app
+                .snapshot()
+                .unwrap()
+                .nodes
+                .into_iter()
+                .filter(|node| {
+                    node.id.starts_with("error.")
+                        || node.id.starts_with("notice.")
+                        || node.id.ends_with(".problem")
+                })
+                .map(|node| node.text)
+                .collect();
+            panic!("{place}: {what}; the chat says {said:?}");
+        }
+        sleep(Duration::from_millis(100));
+    }
+}
+
+/// How many of the agent's replies its chat shows (`prose.<message id>`).
+fn replies(app: &mut Client) -> usize {
+    ids_like(app, "prose.", "")
+        .iter()
+        .filter(|id| id.matches('.').count() == 1)
+        .count()
+}
+
+/// The chat's composer by keys (review C5): Tab reaches its field, Shift+Enter starts a new line, Enter sends, and the
+/// two lines show as one bubble of yours (Harbour's fixture turn expects them as one message too). Harbour answers.
+fn composer(app: &mut Client, bot: &str) {
+    tab_to(app, &format!("composer.{bot}.field"));
+    app.text("First line").unwrap();
+    app.key("shift-enter").unwrap();
+    app.text("second line").unwrap();
+    app.key("enter").unwrap();
+    wait_for_text(app, "bubble.", "First line\nsecond line");
+    assert_eq!(
+        ids_like(app, "bubble.", "").len(),
+        1,
+        "Composer: Shift+Enter sent a message of its own"
+    );
+    until(app, "Composer", "Harbour didn't answer", |app| {
+        replies(app) > 0
+    });
+}
+
+/// An approval card by keys (review C5): a message sent from the composer brings Harbour's card, whose every control is
+/// a Tab stop; Enter on Approve answers it, its record replaces it, and the focus lands on the composer's field (M4
+/// review A4). Harbour's turn then goes on.
+fn approval(app: &mut Client, bot: &str) {
+    let field = format!("composer.{bot}.field");
+    if focused(app).as_deref() != Some(field.as_str()) {
+        tab_to(app, &field);
+    }
+    let before = replies(app);
+    app.text("Please check the moorings").unwrap();
+    app.key("enter").unwrap();
+    until(app, "Approval", "no card came", |app| {
+        !ids_like(app, "approval.", ".approve").is_empty()
+    });
+    let approve = ids_like(app, "approval.", ".approve").pop().unwrap();
+    let card = approve.trim_end_matches(".approve").to_owned();
+    sweep(app, "Chat, approval card");
+    activate(app, &approve);
+    app.wait(
+        &card,
+        Predicate::Text("Approved: Run git status".into()),
+        10_000,
+    )
+    .unwrap();
+    until(
+        app,
+        "Approval",
+        "the focus isn't on the composer's field",
+        |app| focused(app).is_some_and(|id| id == field),
+    );
+    until(app, "Approval", "Harbour's turn didn't go on", |app| {
+        replies(app) > before
+    });
+}
+
 #[test]
 fn e2e_keyboard_navigation() {
     assert_eq!(
@@ -443,20 +540,25 @@ fn e2e_keyboard_navigation() {
     app.wait("screen.chat", Predicate::Exists, 30_000).unwrap();
     sweep(&mut app, "Chat");
 
+    // The chat by keys (review C5): its composer, then an approval card.
+    let bot = ids_like(&mut app, "composer.", ".field")
+        .pop()
+        .expect("Harbour's composer")
+        .trim_start_matches("composer.")
+        .trim_end_matches(".field")
+        .to_owned();
+    composer(&mut app, &bot);
+    approval(&mut app, &bot);
+    // Left out, as no fixture turn can make them: an exchange between two agents (View thread opens its view, Escape
+    // closes it back to the link) and a shared file's card and viewer (Preview, Download to an answered path). Both
+    // come only from tools on the session's own `tjommie` MCP server (`message_bot`, `share_file`), and no fixture
+    // event calls that server: `browser` calls the `browser` server's tools alone.
+
     // Its card's More menu, from the keyboard: Enter opens it on its first row, the arrows move, Enter chooses.
     activate(&mut app, "sidebar.nav.agents");
     app.wait("screen.agents", Predicate::Exists, 10_000)
         .unwrap();
-    let card = app
-        .snapshot()
-        .unwrap()
-        .nodes
-        .into_iter()
-        .find(|node| node.id.starts_with("agents.card.") && node.id.matches('.').count() == 2)
-        .map(|node| node.id)
-        .expect("Harbour's card");
-    let bot = card.trim_start_matches("agents.card.").to_owned();
-    activate(&mut app, &format!("{card}.more"));
+    activate(&mut app, &format!("agents.card.{bot}.more"));
     app.wait(
         &format!("agents.menu.{bot}.chat"),
         Predicate::Focused,

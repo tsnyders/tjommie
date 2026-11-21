@@ -37,6 +37,13 @@ pub(crate) fn focus_handle(id: &str, window: &mut Window, cx: &mut App) -> Focus
     handle
 }
 
+/// Keeps `handle`, a control's own (a text field's, made by gpui-kit), under `id` for [`focus_by_id`].
+pub(crate) fn remember_focus(id: &str, handle: &FocusHandle, cx: &mut App) {
+    cx.default_global::<Drawn>()
+        .0
+        .insert(SharedString::from(id.to_owned()), handle.downgrade());
+}
+
 /// Focuses the control last drawn under `id` (a link's wish, such as Accounts' Sign in); false if it isn't there.
 pub(crate) fn focus_by_id(id: &str, window: &mut Window, cx: &mut App) -> bool {
     let handle = cx

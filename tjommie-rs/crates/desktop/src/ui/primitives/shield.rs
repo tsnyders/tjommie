@@ -30,8 +30,13 @@ impl BrowserShield {
 
     /// Whether any overlay is open over the page. The panel reads it as it renders.
     pub fn is_raised(cx: &App) -> bool {
+        Self::raised(cx) > 0
+    }
+
+    /// How many overlays are open. The media player, itself inside a dialog, compares it with the count it opened under.
+    pub fn raised(cx: &App) -> usize {
         cx.try_global::<BrowserShield>()
-            .is_some_and(|shield| shield.0.get() > 0)
+            .map_or(0, |shield| shield.0.get())
     }
 }
 

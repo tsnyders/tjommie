@@ -9,9 +9,9 @@ use std::cell::RefCell;
 use std::panic::Location;
 
 use gpui::{
-    AnyElement, App, Bounds, Element, ElementId, Global, GlobalElementId, InspectorElementId,
-    IntoElement, LayoutId, Pixels, ScrollHandle, SharedString, Styled as _, WeakFocusHandle,
-    Window, canvas, point, px,
+    AnyElement, App, Bounds, Element, ElementId, FocusHandle, Global, GlobalElementId,
+    InspectorElementId, IntoElement, LayoutId, Pixels, ScrollHandle, SharedString, Styled as _,
+    WeakFocusHandle, Window, canvas, point, px,
 };
 
 thread_local! {
@@ -111,6 +111,29 @@ impl Element for Scroller {
     }
 }
 
+/// A control a link moved the focus to (`focus_by_id`), to scroll into view whatever the input: a mouse focus draws no
+/// ring, and with it no reveal, so a deep link reached by mouse asks for one (M5 review M9).
+#[derive(Default)]
+struct Wanted(Option<WeakFocusHandle>);
+
+impl Global for Wanted {}
+
+/// The focused control scrolls into view on its next frame, as a keyboard focus does, though the focus came by mouse.
+pub(crate) fn reveal_focused(window: &Window, cx: &mut App) {
+    cx.default_global::<Wanted>().0 = window.focused(cx).map(|focus| focus.downgrade());
+    // Once per focus: this one hasn't been revealed for the link yet.
+    cx.default_global::<Revealed>().0 = None;
+}
+
+/// Whether `focus` is the control a link asked to reveal, still focused.
+pub(crate) fn wants_reveal(focus: &FocusHandle, window: &Window, cx: &App) -> bool {
+    focus.is_focused(window)
+        && cx
+            .try_global::<Wanted>()
+            .and_then(|wanted| wanted.0.as_ref())
+            .is_some_and(|wanted| wanted == focus)
+}
+
 /// Laid over a focus ring: scrolls the nearest scroll area so the ring shows.
 pub(crate) fn reveal() -> impl IntoElement {
     canvas(keep_in_view, |_, _, _, _| {})
@@ -131,6 +154,11 @@ fn keep_in_view(bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App) {
         return;
     }
     *revealed = Some(focused.downgrade());
+    // A link's reveal is once: the same control focused by mouse later doesn't scroll (M4 review C-N5).
+    let wanted = &mut cx.default_global::<Wanted>().0;
+    if wanted.as_ref().is_some_and(|wanted| *wanted == focused) {
+        *wanted = None;
+    }
     let Some(area) = AREAS.with(|areas| areas.borrow().last().cloned()) else {
         return;
     };

@@ -118,7 +118,7 @@ fn e2e_quit_from_the_tray_hides_the_window_at_once_and_stops_everything() {
     ];
     let mut at = 0;
     for step in steps {
-        match log[at..].find(step) {
+        match log.get(at..).and_then(|rest| rest.find(step)) {
             Some(found) => at += found + step.len(),
             None => panic!("the app's graceful quit lacks {step:?} (in order): {log}"),
         }

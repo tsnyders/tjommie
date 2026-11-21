@@ -3,6 +3,11 @@
 //! element with that `key_context` (`COMPOSER`, `MENTIONS`, `APPROVAL`, `BUTTON`, `LIST`). Any binding added later goes in
 //! `bindings()`.
 //!
+//! A text field is gpui-kit's input, whose own `Input` context binds Enter, the arrows, Tab and Escape. GPUI ranks the
+//! deepest matching context first, so the composer's and the mention list's keys are bound at the field itself
+//! (`Composer > Input`, `Mentions > Input`): they match at its depth and, bound after gpui-kit's, win there. The
+//! field keeps Shift+Enter, its own new line.
+//!
 //! Escape and the overlays, for the Browser UI lane's T3.7 (M2 review F4): GPUI doesn't rank a deeper context's binding
 //! above a context-free one, so a context-free Escape bound after gpui-kit's would take the key from an open sheet or
 //! dialog, and gpui-kit's sheet passes Escape on (`cx.propagate()`) after closing. So `Dismiss` is bound only
@@ -46,8 +51,6 @@ actions!(
         Approve,
         /// Sends the composer's message (T4.3).
         Send,
-        /// Starts a new line in the composer (T4.3).
-        NewLine,
         /// The mention list's row above (T4.3, T5.2).
         MentionUp,
         /// The row below.
@@ -66,10 +69,14 @@ actions!(
     ]
 );
 
-/// A composer's text field: Enter sends, Shift+Enter starts a line.
+/// A composer, around its text field: Enter in the field sends.
 pub const COMPOSER: &str = "Composer";
-/// The room composer's mention list while it is open (`room-composer.tsx:119-135`).
+/// A composer's mention list while it is open (`room-composer.tsx:119-135`), around the field.
 pub const MENTIONS: &str = "Mentions";
+/// The text field inside a composer (gpui-kit's input context).
+const IN_COMPOSER: &str = "Composer > Input";
+/// The text field while its mention list is open.
+const IN_MENTIONS: &str = "Mentions > Input";
 /// A focused approval card.
 pub const APPROVAL: &str = "Approval";
 /// A focused button: a pill, an icon button, a toggle, a sidebar row (`ui::primitives::button::pressable`).
@@ -87,7 +94,6 @@ pub fn bindings() -> Vec<KeyBinding> {
     bindings.extend([
         KeyBinding::new("ctrl-enter", Approve, Some(APPROVAL)),
         KeyBinding::new("enter", Send, Some(COMPOSER)),
-        KeyBinding::new("shift-enter", NewLine, Some(COMPOSER)),
         KeyBinding::new("up", MentionUp, Some(MENTIONS)),
         KeyBinding::new("down", MentionDown, Some(MENTIONS)),
         KeyBinding::new("tab", MentionPick, Some(MENTIONS)),
@@ -96,13 +102,13 @@ pub fn bindings() -> Vec<KeyBinding> {
         // In a text field the field's own bindings (gpui-kit's `Input`: Enter, the arrows, Tab and Escape) sit deeper
         // than a Composer or Mentions element around it, and GPUI ranks the deeper binding first. These rank at the
         // field's depth; bound after gpui-kit's, they come first there (same depth: the later binding). Mentions'
-        // Enter is after Composer's, so it picks while the list is open.
-        KeyBinding::new("enter", Send, Some("Composer > Input")),
-        KeyBinding::new("up", MentionUp, Some("Mentions > Input")),
-        KeyBinding::new("down", MentionDown, Some("Mentions > Input")),
-        KeyBinding::new("tab", MentionPick, Some("Mentions > Input")),
-        KeyBinding::new("enter", MentionPick, Some("Mentions > Input")),
-        KeyBinding::new("escape", MentionClose, Some("Mentions > Input")),
+        // Enter is after Composer's, so it picks while the list is open. The field keeps Shift+Enter, its new line.
+        KeyBinding::new("enter", Send, Some(IN_COMPOSER)),
+        KeyBinding::new("up", MentionUp, Some(IN_MENTIONS)),
+        KeyBinding::new("down", MentionDown, Some(IN_MENTIONS)),
+        KeyBinding::new("tab", MentionPick, Some(IN_MENTIONS)),
+        KeyBinding::new("enter", MentionPick, Some(IN_MENTIONS)),
+        KeyBinding::new("escape", MentionClose, Some(IN_MENTIONS)),
         KeyBinding::new("escape", CancelLogins, Some(LOGINS)),
         KeyBinding::new("enter", Press, Some(BUTTON)),
         KeyBinding::new("space", Press, Some(BUTTON)),
@@ -231,6 +237,7 @@ mod tests {
         let list = focus.clone();
         let cx = test_window(cx, move |_, _| {
             let (on_close, on_dismiss) = (on_close.clone(), on_dismiss.clone());
+            // The list is open around a text field, which has gpui-kit's own Escape (`Input` context).
             div()
                 .size_full()
                 .on_action(move |_: &Dismiss, _, _| {
@@ -239,11 +246,11 @@ mod tests {
                 .child(
                     div()
                         .key_context(MENTIONS)
-                        .track_focus(&list)
                         .size_full()
                         .on_action(move |_: &MentionClose, _, _| {
                             guarded("test close the list", || on_close.set(true));
-                        }),
+                        })
+                        .child(div().key_context("Input").track_focus(&list).size_full()),
                 )
                 .into_any_element()
         });

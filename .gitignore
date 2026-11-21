@@ -22,6 +22,8 @@ design/_smoke.fig
 # Grok Bot screenshots and scraped tokens: xAI's material, kept on this PC only
 docs/reference/
 /tjommie-rs/target/
+# pdfium.dll as tools/fetch-pdfium.ps1 fetches it for a run from source: a pinned download, never committed.
+/tjommie-rs/resources/pdfium/
 
 # Python bytecode: it embeds the absolute path of the script it came from.
 __pycache__/

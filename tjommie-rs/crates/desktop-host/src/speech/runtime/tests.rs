@@ -693,6 +693,46 @@ async fn until(what: &str, mut done: impl FnMut() -> bool) {
     panic!("never happened: {what}");
 }
 
+/// A microphone that takes its time to open: it waits for the runtime to tell it to go on.
+struct SlowSource {
+    waiting: Arc<std::sync::atomic::AtomicBool>,
+    go: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+}
+
+impl CaptureSource for SlowSource {
+    fn start(&self, _: Sink) -> Result<Box<dyn CaptureHandle>, String> {
+        let go = self.go.lock().unwrap().take().unwrap();
+        self.waiting.store(true, Ordering::SeqCst);
+        go.recv_timeout(Duration::from_secs(5))
+            .map_err(|_| "the runtime never went on".to_owned())?;
+        Ok(Box::new(FakeCapture(Arc::new(AtomicUsize::new(0)))))
+    }
+}
+
+/// M4 re-review R4: the microphone opens on the blocking pool, so the runtime goes on meanwhile. On this one-thread
+/// runtime the device waits for a task of the runtime's own, which runs only if opening it doesn't hold the thread.
+#[tokio::test(flavor = "current_thread")]
+async fn the_microphone_opens_without_holding_the_runtime() {
+    let f = fixture();
+    let waiting = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (go, gone) = std::sync::mpsc::channel();
+    let dictation = Dictation::new(
+        f.runtime.clone(),
+        Arc::new(SlowSource {
+            waiting: Arc::clone(&waiting),
+            go: Mutex::new(Some(gone)),
+        }) as Arc<dyn CaptureSource>,
+    );
+    tokio::spawn(async move {
+        while !waiting.load(Ordering::SeqCst) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let _ = go.send(());
+    });
+    dictation.begin("slow-one").await.unwrap();
+    dictation.cancel().await.unwrap();
+}
+
 #[tokio::test]
 async fn stops_on_blur() {
     let f = fixture();

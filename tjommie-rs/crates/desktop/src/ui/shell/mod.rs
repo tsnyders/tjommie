@@ -11,17 +11,17 @@ mod sidebar;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, AnyView, App, Context, FocusHandle, InteractiveElement as _, IntoElement,
-    ParentElement as _, Render, Role, SharedString, StatefulInteractiveElement as _, Styled as _,
-    Subscription, Window, WindowControlArea, div, px, svg,
+    ParentElement as _, Render, Role, StatefulInteractiveElement as _, Styled as _, Subscription,
+    Window, WindowControlArea, div, px, svg,
 };
 
 use self::data::ShellData;
 use self::route::Route;
 use crate::guard::guarded;
-use crate::keymap::{ZoomIn, ZoomOut, ZoomReset};
+use crate::keymap::{Dismiss, ZoomIn, ZoomOut, ZoomReset};
 use crate::semantic::SemanticExt as _;
 use crate::theme::Theme;
-use crate::ui::style::{TypeExt as _, hsla, r, shadows};
+use crate::ui::style::{hsla, r, shadows};
 use crate::zoom::Zoom;
 
 /// The rem follows the zoom and the text size (Settings, Appearance): gpui-kit's root sets the window's rem from its
@@ -37,6 +37,7 @@ pub struct Shell {
     /// The browser panel (T3.7), beside the main column while a chat shows it.
     panel: Option<AnyView>,
     _hold_focus: Subscription,
+    _blur: Subscription,
 }
 
 impl Shell {
@@ -47,11 +48,20 @@ impl Shell {
         let hold_focus = cx.on_focus_lost(window, |this, window, cx| {
             guarded("hold focus", || this.focus.focus(window, cx));
         });
+        // Dictation that has heard something stops when the window loses focus, as 0.5.x's did (M4 re-review R2).
+        let blur = cx.observe_window_activation(window, |_, window, cx| {
+            guarded("stop dictation behind another window", || {
+                if !window.is_window_active() {
+                    crate::ui::chat::voice::blur(cx);
+                }
+            });
+        });
         Self {
             focus,
             zoom: Zoom::default(),
             panel: None,
             _hold_focus: hold_focus,
+            _blur: blur,
         }
     }
 
@@ -78,9 +88,12 @@ impl Render for Shell {
         let sidebar = sidebar::sidebar(&route, &data, window, cx);
         let shown = match connection::words(&data.connection, data.host.as_deref(), &data.saved) {
             Some(words) => connection::screen(&data, words, window, cx),
-            None => screen(&route, &data, window, cx),
+            None => screen(&route, window, cx),
         };
         let status = connection::status_pill(&data.connection, window, cx);
+        // The account notice a chat raised is the app's, as `sign-in-toast.tsx`'s viewport was: it stays through a
+        // navigation for its 8 s (M4 review A9).
+        let notice = crate::ui::chat::sign_in_toast::view(cx);
         let theme = cx.global::<Theme>();
         let colors = &theme.color.light;
         div()
@@ -95,6 +108,15 @@ impl Render for Shell {
             .on_action(cx.listener(|this, _: &ZoomReset, _, cx| {
                 guarded("reset the zoom", || this.zoom_to(Zoom::default(), cx));
             }))
+            // Escape closes an open exchange first, wherever the focus is, giving the keyboard back to the link that
+            // opened it; with none open, Escape goes on to the browser panel's handler (M4 review A5).
+            .on_action(|_: &Dismiss, window, cx| {
+                guarded("close the exchange by Escape", || {
+                    if !crate::ui::chat::exchange::dismiss(window, cx) {
+                        cx.propagate();
+                    }
+                });
+            })
             .size_full()
             .relative()
             .flex()
@@ -127,6 +149,8 @@ impl Render for Shell {
                             .child(shown)
                             .children(status),
                     )
+                    // An open exchange takes the right panel's place (T4.1); the panel stays drawn, closed, beside it.
+                    .children(crate::ui::chat::exchange::side(cx))
                     .when_some(self.panel.clone(), |column, panel| column.child(panel)),
             )
             .child(
@@ -140,40 +164,32 @@ impl Render for Shell {
             )
             .child(caption_buttons(theme))
             .child(crate::ui::primitives::toast::toasts(cx))
+            .children(notice.map(|notice| {
+                // Under the chat header's line, at the main column's right.
+                div()
+                    .absolute()
+                    .top(r(theme.size.titlebar_height + theme.space.s56))
+                    .right(r(theme.space.s28))
+                    .child(notice)
+            }))
             .child(crate::motion::clock::painted())
     }
 }
 
-/// The route's screen. The screens come with their own tasks (M4, M5); until then each shows its name.
-fn screen(route: &Route, data: &ShellData, window: &mut gpui::Window, cx: &mut App) -> AnyElement {
-    let (key, title): (&str, SharedString) = match route {
-        Route::Agents => return crate::ui::agents::screen(window, cx),
-        Route::Projects => return crate::ui::projects::screen(window, cx),
-        Route::Routines => return crate::ui::routines::screen(window, cx),
-        Route::NewBot => return crate::ui::bots::new::screen(window, cx),
-        Route::BotSettings(id) => return crate::ui::bots::settings::screen(id, window, cx),
-        Route::Settings(section) => return crate::ui::settings::screen(*section, window, cx),
-        Route::Account { .. } => {
-            return crate::ui::settings::screen(route::Section::Accounts, window, cx);
-        }
-        Route::Rooms => return crate::ui::rooms::list::screen(window, cx),
-        Route::Room(id) => return crate::ui::rooms::screen::screen(id, window, cx),
-        Route::Chat(id) => ("chat", data.name_of(id)),
-    };
-    let theme = cx.global::<Theme>();
-    div()
-        .flex_1()
-        .px(r(theme.space.s32))
-        .pt(r(theme.space.s32))
-        .child(
-            div()
-                .semantic(format!("screen.{key}"), Role::Heading)
-                .aria_label(title.clone())
-                .type_style(&theme.typography.desktop.display_m)
-                .text_color(hsla(theme.color.light.text.primary))
-                .child(title),
-        )
-        .into_any_element()
+/// The route's screen.
+fn screen(route: &Route, window: &mut gpui::Window, cx: &mut App) -> AnyElement {
+    match route {
+        Route::Agents => crate::ui::agents::screen(window, cx),
+        Route::Projects => crate::ui::projects::screen(window, cx),
+        Route::Routines => crate::ui::routines::screen(window, cx),
+        Route::NewBot => crate::ui::bots::new::screen(window, cx),
+        Route::BotSettings(id) => crate::ui::bots::settings::screen(id, window, cx),
+        Route::Settings(section) => crate::ui::settings::screen(*section, window, cx),
+        Route::Account { .. } => crate::ui::settings::screen(route::Section::Accounts, window, cx),
+        Route::Rooms => crate::ui::rooms::list::screen(window, cx),
+        Route::Room(id) => crate::ui::rooms::screen::screen(id, window, cx),
+        Route::Chat(id) => crate::ui::chat::screen(id, window, cx),
+    }
 }
 
 /// Minimize, maximize and close: Lucide at stroke 1.25, as the Aegis shell draws them.

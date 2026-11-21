@@ -178,6 +178,28 @@ impl BrowserPanel {
         }
     }
 
+    /// Opens the panel on the bot's browser (the chat's More, Open browser): the Browser pane, not expanded.
+    pub fn open_browser(trigger: Trigger, cx: &mut App) {
+        if let Some(panel) = Self::handle(cx) {
+            panel.update(cx, |panel, cx| {
+                if let Some(bot) = chat_bot(cx) {
+                    panel.view = set_expanded(
+                        &choose_pane(&panel.view, &bot.id, Pane::Browser),
+                        &bot.id,
+                        false,
+                    );
+                }
+                panel.set_open(true, trigger, cx);
+                cx.notify();
+            });
+        }
+    }
+
+    /// Whether the window's panel is open or opening (the chat's panel button shows it pressed).
+    pub fn open_now(cx: &App) -> bool {
+        Self::handle(cx).is_some_and(|panel| panel.read(cx).is_open())
+    }
+
     /// Whether the panel is open, or opening.
     pub fn is_open(&self) -> bool {
         self.motion.is_open()

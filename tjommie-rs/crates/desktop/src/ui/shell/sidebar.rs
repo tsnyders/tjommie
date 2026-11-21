@@ -261,18 +261,6 @@ pub(super) fn mark(kind: &RecentKind) -> (Option<Mark>, Option<&'static str>) {
     }
 }
 
-/// The eyes for a bot's state: it looks up when it needs you, scans while working, drowses when limited and rests
-/// when paused.
-fn pose(state: BotState) -> Pose {
-    match state {
-        BotState::Waiting => Pose::Waiting,
-        BotState::Working => Pose::Working,
-        BotState::Limited => Pose::Limited,
-        BotState::Paused => Pose::Paused,
-        BotState::Idle | BotState::NeedsSetup => Pose::Idle,
-    }
-}
-
 fn recent_row(recent: &Recent, route: &Route, window: &mut Window, cx: &mut App) -> AnyElement {
     let (to, selected) = match recent.kind {
         RecentKind::Bot { .. } => (
@@ -306,7 +294,7 @@ fn recent_row(recent: &Recent, route: &Route, window: &mut Window, cx: &mut App)
             shape,
             state,
         } => BotAvatar::new(color, shape, theme.size.avatar20)
-            .pose(pose(state))
+            .pose(Pose::of(state))
             .into_any_element(),
         RecentKind::Room { .. } => div()
             .size(r(theme.size.avatar20))
