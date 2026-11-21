@@ -109,9 +109,11 @@ impl RangeFetch for Opened {
         let bytes = self
             .read_span(begin, last.saturating_add(1).min(size))
             .await?;
+        // The range the bytes cover, which is shorter than asked at the file's end (M4 review L5).
+        let end = begin.saturating_add(bytes.len() as u64).saturating_sub(1);
         Ok(RangeReply {
             status: 206,
-            content_range: Some(format!("bytes {begin}-{last}/{size}")),
+            content_range: Some(format!("bytes {begin}-{end}/{size}")),
             content_length: Some(bytes.len().to_string()),
             body: bytes,
         })
