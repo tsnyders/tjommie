@@ -96,9 +96,9 @@ const MAX_NESTING: usize = 32;
 /// The widest indent prose uses, in columns (a tab is to the next multiple of 4).
 const MAX_INDENT: usize = 256;
 /// The most that emphasis and brackets may bound their depth at (see [`inline_too_deep`]). The bound is loose for pairs
-/// that close one after another in one paragraph, so it sits well above prose; the parser and gpui-kit's walk run out
-/// of stack only in the thousands.
-const MAX_INLINE: usize = 128;
+/// that close one after another in one paragraph (one of N bold pairs bounds at about N), so it sits well above prose;
+/// the parser and gpui-kit's walk run out of stack only in the thousands.
+const MAX_INLINE: usize = 512;
 
 /// Whether `text` nests deeper than the limits above, found before it is parsed for drawing. The parser, the rewrite
 /// and gpui-kit's own walk of the result all recurse once a level, on the UI thread: a few thousand levels were a stack
@@ -830,7 +830,8 @@ mod tests {
         ]);
     }
 
-    /// What prose and code hold stays Markdown: long lists and tables of bold labels, and emphasis in code.
+    /// What prose and code hold stays Markdown: long lists and tables of bold labels, one paragraph of 200 bold pairs
+    /// (which bounds at about 200, over the first limit of 128), and emphasis in code.
     #[test]
     fn long_lists_tables_and_code_keep_their_markdown() {
         let python = "def f(*args, **kwargs):\n    return my_func(x**2, *args)\n".repeat(100);
@@ -842,6 +843,7 @@ mod tests {
             format!("| a | b |\n|---|---|\n{}", "| **x** | *y* |\n".repeat(300)),
             format!("```python\n{python}```\n"),
             "Some *emphasis* and **strong** words, _here_ and __there__. ".repeat(40),
+            "A **bold** word. ".repeat(200),
         ] {
             assert_ne!(sanitize(&text), plain(&text), "{text:.40}");
         }
