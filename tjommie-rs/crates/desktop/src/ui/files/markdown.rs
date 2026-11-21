@@ -90,64 +90,214 @@ fn link(text: &str, url: &str) -> String {
     format!("[{text}](<{url}>)")
 }
 
-/// Deeper than prose nests: quotes and list markers opened at a line's start, or emphasis and brackets left open in a
-/// paragraph. Past it a reply is shown as plain text, which nests nothing.
+/// Deeper than prose nests: quotes, list items and footnote definitions opened at a line's start. Past it a reply is
+/// shown as plain text, which nests nothing.
 const MAX_NESTING: usize = 32;
 /// The widest indent prose uses, in columns (a tab is to the next multiple of 4).
 const MAX_INDENT: usize = 256;
+/// The most that emphasis and brackets may bound their depth at (see [`inline_too_deep`]). The bound is loose for pairs
+/// that close one after another in one paragraph, so it sits well above prose; the parser and gpui-kit's walk run out
+/// of stack only in the thousands.
+const MAX_INLINE: usize = 128;
 
-/// Whether `text` nests deeper than [`MAX_NESTING`] or indents past [`MAX_INDENT`], measured by one pass over the text
-/// before anything parses it. The parser, the rewrite and gpui-kit's own walk of the result all recurse once a level, on
-/// the UI thread: a few thousand `>` were a stack overflow, which no guard catches (M4 review C1).
+/// Whether `text` nests deeper than the limits above, found before it is parsed for drawing. The parser, the rewrite
+/// and gpui-kit's own walk of the result all recurse once a level, on the UI thread: a few thousand levels were a stack
+/// overflow, which no guard catches (M4 review C1). Every line's containers are counted first, code or not. With those
+/// within the limits, the parser can lay out the blocks with everything that nests inside a paragraph switched off: what
+/// is code and what is a paragraph is then its own answer, where a guess that disagreed with it was a way past the
+/// measure (M4 re-review R1). A code block holding a line past the container limits shows the reply as plain text.
 fn too_deep(text: &str) -> bool {
-    let mut fenced = false;
-    let mut inline = 0usize;
-    for line in text.lines() {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
-            fenced = !fenced;
-            continue;
-        }
-        if fenced {
-            continue;
-        }
-        if trimmed.is_empty() {
-            // A paragraph ends: no emphasis or bracket stays open past it.
-            inline = 0;
-            continue;
-        }
-        if block_nesting(line) {
-            return true;
-        }
-        let mut chars = line.chars().peekable();
-        let mut before = ' ';
-        while let Some(c) = chars.next() {
-            match c {
-                '[' => inline += 1,
-                ']' => inline = inline.saturating_sub(1),
-                '*' | '_' | '~' => {
-                    while chars.peek() == Some(&c) {
-                        chars.next();
-                    }
-                    let after = chars.peek().copied().unwrap_or(' ');
-                    match (before.is_whitespace(), after.is_whitespace()) {
-                        (true, false) => inline += 1,
-                        (false, true) => inline = inline.saturating_sub(1),
-                        _ => {}
-                    }
-                }
-                _ => {}
-            }
-            if inline > MAX_NESTING {
-                return true;
-            }
-            before = c;
-        }
+    // A line ends at `\n`, `\r` or both, as the parser has it.
+    if text.split(['\n', '\r']).any(block_nesting) {
+        return true;
     }
-    false
+    // Every marker in the text bounds each paragraph's own: under the limit, no paragraph can pass it, and the parse
+    // that tells paragraphs from code isn't needed.
+    if !inline_too_deep(text, 0..text.len(), &[]) {
+        return false;
+    }
+    let mut blocks = ParseOptions::gfm();
+    let constructs = &mut blocks.constructs;
+    constructs.attention = false;
+    constructs.gfm_strikethrough = false;
+    constructs.label_start_link = false;
+    constructs.label_start_image = false;
+    constructs.label_end = false;
+    constructs.gfm_label_start_footnote = false;
+    match markdown::to_mdast(text, &blocks) {
+        Ok(tree) => inline_too_deep_in(&tree, text),
+        Err(_) => true,
+    }
 }
 
-/// The containers a line opens at its start (`>` quotes and list markers) and its indent, against the limits.
+/// Whether any paragraph, heading or table cell under `node` (the only places emphasis and links are read) could nest
+/// past [`MAX_INLINE`]. One with no place in `text` counts as too deep.
+fn inline_too_deep_in(node: &Node, text: &str) -> bool {
+    match node {
+        Node::Paragraph(_) | Node::Heading(_) | Node::TableCell(_) => {
+            let Some(span) = place(node) else {
+                return true;
+            };
+            let mut literal = Vec::new();
+            literal_parts(node, &mut literal);
+            literal.sort_by_key(|part| part.start);
+            inline_too_deep(text, span, &literal)
+        }
+        _ => node
+            .children()
+            .into_iter()
+            .flatten()
+            .any(|child| inline_too_deep_in(child, text)),
+    }
+}
+
+/// The code spans and HTML under `node`, which hold no emphasis or links.
+fn literal_parts(node: &Node, into: &mut Vec<Range<usize>>) {
+    for child in node.children().into_iter().flatten() {
+        match child {
+            Node::InlineCode(_) | Node::Html(_) => into.extend(place(child)),
+            _ => literal_parts(child, into),
+        }
+    }
+}
+
+/// Where `node` is in the text, in bytes.
+fn place(node: &Node) -> Option<Range<usize>> {
+    node.position()
+        .map(|position| position.start.offset..position.end.offset)
+}
+
+/// Emphasis by its marker (`*`, `_`, `~`), then brackets: a pair is only ever two of one kind.
+const KINDS: usize = 4;
+
+/// Whether the emphasis and brackets in `span` of `text` (one paragraph, heading or cell, less its `literal` parts)
+/// could nest past [`MAX_INLINE`]. A pair that encloses a point has its opener before the point and its closer after
+/// it, so the depth there is at most the markers that could open before it against those that could close after it,
+/// kind by kind. Nothing is taken off for a closer on the way: an escape or a link's address makes the parser ignore a
+/// marker this scan may still see, and a closer it fakes would hide real openers (M4 re-review R1).
+fn inline_too_deep(text: &str, span: Range<usize>, literal: &[Range<usize>]) -> bool {
+    let mut after = [0usize; KINDS];
+    runs(text, span.clone(), literal, |kind, _, closes| {
+        if let Some(after) = after.get_mut(kind) {
+            *after += closes;
+        }
+    });
+    let (mut before, mut deep) = ([0usize; KINDS], false);
+    runs(text, span, literal, |kind, opens, closes| {
+        let bound: usize = before.iter().zip(&after).map(|(o, c)| *o.min(c)).sum();
+        deep |= bound > MAX_INLINE;
+        if let (Some(before), Some(after)) = (before.get_mut(kind), after.get_mut(kind)) {
+            *before += opens;
+            *after = after.saturating_sub(closes);
+        }
+    });
+    deep
+}
+
+/// Each emphasis run and bracket in `span` of `text` outside its `literal` parts (in order, apart), as `(kind, markers
+/// that could open, markers that could close)`. A backslash before punctuation escapes it, as in the parser, and a run
+/// is classed by the characters beside it as written, past the span's ends too, as the parser classes it.
+fn runs(
+    text: &str,
+    span: Range<usize>,
+    literal: &[Range<usize>],
+    mut each: impl FnMut(usize, usize, usize),
+) {
+    let Some(inside) = text.get(span.clone()) else {
+        return;
+    };
+    let mut before = text
+        .get(..span.start)
+        .and_then(|head| head.chars().next_back());
+    let mut chars = inside.char_indices().peekable();
+    let mut parts = literal.iter().peekable();
+    while let Some((at, c)) = chars.next() {
+        let at = span.start + at;
+        while parts.next_if(|part| part.end <= at).is_some() {}
+        let counted = !parts.peek().is_some_and(|part| part.contains(&at));
+        if let ('\\', Some(&(_, next))) = (c, chars.peek())
+            && next.is_ascii_punctuation()
+        {
+            chars.next();
+            before = Some(next);
+            continue;
+        }
+        match c {
+            '*' | '_' | '~' => {
+                let mut size = 1;
+                while chars.next_if(|&(_, m)| m == c).is_some() {
+                    size += 1;
+                }
+                // A marker is one byte.
+                let after = text.get(at + size..).and_then(|tail| tail.chars().next());
+                let (opens, closes) = flanks(c, before, after);
+                let kind = match c {
+                    '*' => 0,
+                    '_' => 1,
+                    _ => 2,
+                };
+                if counted {
+                    each(
+                        kind,
+                        if opens { size } else { 0 },
+                        if closes { size } else { 0 },
+                    );
+                }
+            }
+            '[' if counted => each(3, 1, 0),
+            ']' if counted => each(3, 0, 1),
+            _ => {}
+        }
+        before = Some(c);
+    }
+}
+
+/// How the parser classes a character beside an emphasis run.
+#[derive(Clone, Copy, PartialEq)]
+enum Class {
+    Whitespace,
+    Punctuation,
+    Other,
+}
+
+/// The classes `c` can have for the parser (markdown-rs `classify`). Outside ASCII it tells punctuation from the rest by
+/// a table this crate can't read, so anything there that isn't whitespace is tried both ways.
+fn classes(c: Option<char>) -> &'static [Class] {
+    match c {
+        None => &[Class::Whitespace],
+        Some(c) if c.is_whitespace() => &[Class::Whitespace],
+        Some(c) if c.is_ascii_punctuation() => &[Class::Punctuation],
+        Some(c) if c.is_ascii() => &[Class::Other],
+        Some(_) => &[Class::Punctuation, Class::Other],
+    }
+}
+
+/// Whether a run of `marker` between `before` and `after` (the characters beside it as written, `None` at a line's
+/// ends) could open and could close emphasis, by the parser's rules (markdown-rs `attention::get_sequences`).
+fn flanks(marker: char, before: Option<char>, after: Option<char>) -> (bool, bool) {
+    let (mut opens, mut closes) = (false, false);
+    for &b in classes(before) {
+        for &a in classes(after) {
+            let open = a == Class::Other
+                || (a == Class::Punctuation && b != Class::Other)
+                || (marker != '~' && matches!(after, Some('*' | '_' | '~')));
+            let close = b == Class::Other
+                || (b == Class::Punctuation && a != Class::Other)
+                || (marker != '~' && matches!(before, Some('*' | '_' | '~')));
+            if marker == '_' {
+                opens |= open && (b != Class::Other || !close);
+                closes |= close && (a != Class::Other || !open);
+            } else {
+                opens |= open;
+                closes |= close;
+            }
+        }
+    }
+    (opens, closes)
+}
+
+/// The containers a line opens at its start (`>` quotes, list markers and footnote definitions) and its indent,
+/// against the limits.
 fn block_nesting(line: &str) -> bool {
     let (mut depth, mut columns) = (0usize, 0usize);
     let mut chars = line.chars().peekable();
@@ -165,6 +315,20 @@ fn block_nesting(line: &str) -> bool {
             '-' | '*' | '+' if spaced => {
                 depth += 1;
                 columns += 1;
+            }
+            '[' if ahead.peek() == Some(&'^') => {
+                // A footnote definition, `[^label]:`, holds blocks as a list item does (M4 re-review R1).
+                let label = ahead.clone().take_while(|c| *c != ']').count();
+                let mut rest = ahead.clone().skip(label);
+                if !(rest.next() == Some(']') && rest.next() == Some(':')) {
+                    break;
+                }
+                depth += 1;
+                columns += label + 3;
+                // The `[`, the label and its `]`; the `:` is taken below.
+                for _ in 0..label + 2 {
+                    chars.next();
+                }
             }
             '0'..='9' => {
                 // An ordered marker: up to nine digits, then `.` or `)`, then a space.
@@ -579,31 +743,107 @@ mod tests {
             .unwrap_or(0)
     }
 
-    /// M4 review C1: nesting past the limit (quotes, lists, emphasis or indent) is shown as plain text, found without
-    /// parsing, in bounded time; what's left nests nothing, so neither the parser nor gpui-kit's walk can recurse deep.
-    #[test]
-    fn a_reply_nested_past_the_limit_is_plain_text() {
-        let quoted = format!("{}hello", ">".repeat(50_000));
-        let listed = format!("{}item", "- ".repeat(20_000));
-        let emphasised = format!("{}x", "*a ".repeat(20_000));
-        let bracketed = format!("{}x", "[".repeat(20_000));
-        let indented = format!("{}x", " ".repeat(MAX_INDENT + 1));
-        for deep in [&quoted, &listed, &emphasised, &bracketed, &indented] {
+    /// Each of `deep` is shown as plain text, in bounded time, and what's left nests nothing.
+    fn all_plain(deep: &[(&str, String)]) {
+        for (case, deep) in deep {
             let started = std::time::Instant::now();
             let safe = sanitize(deep);
-            assert!(started.elapsed() < Duration::from_secs(2), "measured fast");
-            assert_eq!(safe, plain(deep));
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "{case}: measured fast"
+            );
+            assert_eq!(safe, plain(deep), "{case}");
             let tree = markdown::to_mdast(&safe, &ParseOptions::gfm()).unwrap();
-            assert!(depth(&tree) <= 4, "nests nothing");
+            assert!(depth(&tree) <= 4, "{case}: nests nothing");
         }
-        // Within the limits, and in a fenced block, Markdown still reads as Markdown.
+    }
+
+    /// M4 review C1: nesting past the limit (quotes, lists, emphasis, brackets or indent) is shown as plain text, so
+    /// neither the parser nor gpui-kit's walk can recurse deep.
+    #[test]
+    fn a_reply_nested_past_the_limit_is_plain_text() {
+        all_plain(&[
+            ("quoted", format!("{}hello", ">".repeat(50_000))),
+            ("listed", format!("{}item", "- ".repeat(20_000))),
+            (
+                "emphasised",
+                format!("{}x{}", "*a ".repeat(20_000), " a*".repeat(20_000)),
+            ),
+            (
+                "bracketed",
+                format!("{}x{}", "[".repeat(20_000), "]".repeat(20_000)),
+            ),
+            ("indented", format!("{}x", " ".repeat(MAX_INDENT + 1))),
+        ]);
+        // Within the limits Markdown still reads as Markdown; a code block holding a line past them doesn't.
         let nested = format!("{}quoted", "> ".repeat(MAX_NESTING));
         assert_ne!(sanitize(&nested), plain(&nested));
         let code = format!("```\n{}deep code\n```", " ".repeat(MAX_INDENT + 10));
-        assert_eq!(sanitize(&code), code);
+        assert_eq!(sanitize(&code), plain(&code));
         assert_ne!(
             sanitize("**bold** and *em* and [a](https://x.example)"),
             plain("**bold**")
         );
+    }
+
+    /// M4 re-review R1: the measure can't be stepped around. A to D are lines that look like a fence but aren't one to
+    /// the parser; E nests emphasis opened after punctuation. The rest each defeated a count that takes a closer off:
+    /// an escaped marker, a closer in a code span, a closer of another kind, a closer escaped beside a marker; nested
+    /// footnote definitions and a lone `\r` line ending defeated the line measure. Each nests about 300 deep at 300.
+    /// Those four with closers in them run at 5 000: the parser itself takes seconds over 50 000 escapes or code spans
+    /// in one paragraph, deep or not.
+    #[test]
+    fn the_measure_cant_be_stepped_around() {
+        let (n, m) = (50_000, 5_000);
+        let quotes = ">".repeat(n);
+        all_plain(&[
+            ("A, an indented fence", format!("    ```\n{quotes}hello")),
+            (
+                "B, a backtick in the info string",
+                format!("``` a`b\n{quotes}hello"),
+            ),
+            (
+                "C, a fence in a list item",
+                format!("- item\n  ```\n{quotes}hello"),
+            ),
+            ("D, a fence in HTML", format!("<div>\n```\n\n{quotes}hello")),
+            ("E, *", format!("{}x{}", "(*a".repeat(n), "*)".repeat(n))),
+            ("E, _", format!("{}x{}", "(_a".repeat(n), "_)".repeat(n))),
+            (
+                "an escape",
+                format!("{}x{}", "(*a\\* ".repeat(m), "*)".repeat(m)),
+            ),
+            (
+                "a code span",
+                format!("{}x{}", "(*a`a* `".repeat(m), "*)".repeat(m)),
+            ),
+            (
+                "another kind",
+                format!("{}x{}", "(*a_)".repeat(m), "*)".repeat(m)),
+            ),
+            (
+                "an escaped neighbour",
+                format!("{}x{}", "(*a".repeat(m), "\\**a".repeat(m)),
+            ),
+            ("footnotes", format!("{}x", "[^a]: ".repeat(n))),
+            ("a lone CR", format!("x\r{quotes}hello")),
+        ]);
+    }
+
+    /// What prose and code hold stays Markdown: long lists and tables of bold labels, and emphasis in code.
+    #[test]
+    fn long_lists_tables_and_code_keep_their_markdown() {
+        let python = "def f(*args, **kwargs):\n    return my_func(x**2, *args)\n".repeat(100);
+        for text in [
+            "- **Item**: text\n".repeat(200),
+            (1..=100)
+                .map(|n| format!("{n}. **Item**: text\n"))
+                .collect(),
+            format!("| a | b |\n|---|---|\n{}", "| **x** | *y* |\n".repeat(300)),
+            format!("```python\n{python}```\n"),
+            "Some *emphasis* and **strong** words, _here_ and __there__. ".repeat(40),
+        ] {
+            assert_ne!(sanitize(&text), plain(&text), "{text:.40}");
+        }
     }
 }
