@@ -20,6 +20,7 @@ use webview2_com::{
         COREWEBVIEW2_COLOR, COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC,
         COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL, ICoreWebView2, ICoreWebView2Controller,
         ICoreWebView2Controller2, ICoreWebView2Environment, ICoreWebView2Settings3,
+        ICoreWebView2Settings4, ICoreWebView2Settings6, ICoreWebView2Settings8,
         ICoreWebView2WebResourceRequestedEventArgs,
     },
     NavigationStartingEventHandler, NewWindowRequestedEventHandler,
@@ -349,9 +350,10 @@ fn prepare(
     }
 }
 
-/// The player page's settings: no script, menus, dev tools, status bar, zoom or browser shortcuts. The player's
-/// controls are the browser's own and need none of them (a bot's page gets the same lockdown, `engine::configure`, but
-/// keeps its script).
+/// The player page's settings: no script, web messages, host objects, menus, dev tools, status bar, zoom, error page,
+/// autofill, password saving, swipe navigation, browser shortcuts or reputation checks (the address is never on the
+/// network, and isn't sent to SmartScreen). The player's controls are the browser's own and need none of them (a bot's
+/// page gets the same lockdown, `engine::configure`, but keeps its script) (M4 review B3).
 fn lock_down(webview: &ICoreWebView2) {
     // SAFETY: plain COM calls on the page we hold; a setting an older runtime lacks is skipped.
     unsafe {
@@ -359,12 +361,25 @@ fn lock_down(webview: &ICoreWebView2) {
             return;
         };
         let _ = settings.SetIsScriptEnabled(false);
+        let _ = settings.SetIsWebMessageEnabled(false);
+        let _ = settings.SetAreHostObjectsAllowed(false);
         let _ = settings.SetAreDefaultContextMenusEnabled(false);
         let _ = settings.SetAreDevToolsEnabled(false);
         let _ = settings.SetIsStatusBarEnabled(false);
         let _ = settings.SetIsZoomControlEnabled(false);
+        let _ = settings.SetIsBuiltInErrorPageEnabled(false);
         if let Ok(settings) = settings.cast::<ICoreWebView2Settings3>() {
             let _ = settings.SetAreBrowserAcceleratorKeysEnabled(false);
+        }
+        if let Ok(settings) = settings.cast::<ICoreWebView2Settings4>() {
+            let _ = settings.SetIsGeneralAutofillEnabled(false);
+            let _ = settings.SetIsPasswordAutosaveEnabled(false);
+        }
+        if let Ok(settings) = settings.cast::<ICoreWebView2Settings6>() {
+            let _ = settings.SetIsSwipeNavigationEnabled(false);
+        }
+        if let Ok(settings) = settings.cast::<ICoreWebView2Settings8>() {
+            let _ = settings.SetIsReputationCheckingRequired(false);
         }
     }
 }
