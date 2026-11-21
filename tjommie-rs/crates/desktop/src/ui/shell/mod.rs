@@ -37,6 +37,7 @@ pub struct Shell {
     /// The browser panel (T3.7), beside the main column while a chat shows it.
     panel: Option<AnyView>,
     _hold_focus: Subscription,
+    _blur: Subscription,
 }
 
 impl Shell {
@@ -47,11 +48,20 @@ impl Shell {
         let hold_focus = cx.on_focus_lost(window, |this, window, cx| {
             guarded("hold focus", || this.focus.focus(window, cx));
         });
+        // Dictation that has heard something stops when the window loses focus, as 0.5.x's did (M4 re-review R2).
+        let blur = cx.observe_window_activation(window, |_, window, cx| {
+            guarded("stop dictation behind another window", || {
+                if !window.is_window_active() {
+                    crate::ui::chat::voice::blur(cx);
+                }
+            });
+        });
         Self {
             focus,
             zoom: Zoom::default(),
             panel: None,
             _hold_focus: hold_focus,
+            _blur: blur,
         }
     }
 

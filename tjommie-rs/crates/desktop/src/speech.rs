@@ -97,6 +97,8 @@ trait Dictate: Send + Sync {
     fn finish(&self) -> BoxFuture<'_, Result<(), String>>;
     fn cancel(&self) -> BoxFuture<'_, Result<(), String>>;
     fn abort(&self, session_id: String) -> BoxFuture<'_, Result<(), String>>;
+    /// The window lost focus: a recording with audio in it is cancelled. True if it was.
+    fn blur(&self) -> BoxFuture<'_, bool>;
 }
 
 /// The default microphone (WASAPI through `CpalSource`) into this run's runtime.
@@ -121,13 +123,18 @@ impl Dictate for Microphone {
     fn abort(&self, session_id: String) -> BoxFuture<'_, Result<(), String>> {
         async move { self.runtime.cancel(&session_id).await }.boxed()
     }
+
+    fn blur(&self) -> BoxFuture<'_, bool> {
+        self.dictation.on_window_blur().boxed()
+    }
 }
 
-/// What a composer asks of dictation, in the order it asked.
+/// What a composer asks of dictation, in the order it asked; `Blur` is the window's, when it loses focus.
 enum Ask {
     Begin(String),
     Finish,
     Cancel,
+    Blur,
 }
 
 /// Runs the composers' asks on the live runtime, one at a time, so a finish never overtakes the begin it ends. A begin
@@ -160,6 +167,11 @@ async fn serve(
             Ask::Cancel => {
                 let _ = dictation.cancel().await;
             }
+            Ask::Blur => {
+                if dictation.blur().await {
+                    log::info!("Dictation was cancelled: the window lost focus");
+                }
+            }
         }
     }
 }
@@ -189,6 +201,10 @@ impl VoiceBackend for LiveVoice {
             let _ = dictation.abort(session_id).await;
         });
         let _ = self.asks.unbounded_send(Ask::Cancel);
+    }
+
+    fn blur(&self, _: &mut App) {
+        let _ = self.asks.unbounded_send(Ask::Blur);
     }
 }
 
@@ -387,6 +403,11 @@ mod tests {
             let _ = self.asked.send(format!("abort {session_id}"));
             done(Ok(()))
         }
+
+        fn blur(&self) -> BoxFuture<'_, bool> {
+            let _ = self.asked.send("blur".to_owned());
+            Box::pin(futures::future::ready(true))
+        }
     }
 
     /// The composers' asks run in order. A begin that failed is its session's error; a finish that found nothing to
@@ -399,7 +420,12 @@ mod tests {
             refuse: Some("No microphone could be opened."),
         });
         let (asks, queue) = unbounded();
-        for ask in [Ask::Begin("dictation-1".into()), Ask::Finish, Ask::Cancel] {
+        for ask in [
+            Ask::Begin("dictation-1".into()),
+            Ask::Finish,
+            Ask::Cancel,
+            Ask::Blur,
+        ] {
             asks.unbounded_send(ask).unwrap();
         }
         drop(asks);
@@ -407,7 +433,7 @@ mod tests {
         futures::executor::block_on(serve(microphone, queue, report));
         assert_eq!(
             told.try_iter().collect::<Vec<_>>(),
-            ["begin dictation-1", "finish", "cancel"]
+            ["begin dictation-1", "finish", "cancel", "blur"]
         );
         let events: Vec<SpeechEvent> = std::iter::from_fn(|| reported.try_recv().ok()).collect();
         assert_eq!(

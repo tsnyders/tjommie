@@ -14,6 +14,8 @@ pub trait VoiceBackend {
     fn begin(&self, session_id: &str, cx: &mut App);
     fn finish(&self, session_id: &str, cx: &mut App);
     fn cancel(&self, session_id: &str, cx: &mut App);
+    /// The window lost focus: a recording that has heard something is thrown away, as 0.5.x did (`main.ts:640`).
+    fn blur(&self, _: &mut App) {}
 }
 
 /// The speech runtime as the window sees it: the backend, and the events it reports.
@@ -46,6 +48,13 @@ pub fn install(backend: Rc<dyn VoiceBackend>, cx: &mut App) {
 /// The installed backend, if any.
 pub fn backend(cx: &mut App) -> Option<Rc<dyn VoiceBackend>> {
     voice(cx).read(cx).backend.clone()
+}
+
+/// The window lost focus (the shell's activation observer): the backend decides what that ends (M4 re-review R2).
+pub fn blur(cx: &mut App) {
+    if let Some(backend) = backend(cx) {
+        backend.blur(cx);
+    }
 }
 
 /// Tells the dictating composers what the runtime did (the backend's `emit`).

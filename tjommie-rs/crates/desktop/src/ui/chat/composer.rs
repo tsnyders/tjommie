@@ -1373,6 +1373,32 @@ mod tests {
             fn cancel(&self, session_id: &str, _: &mut gpui::App) {
                 self.0.borrow_mut().push(format!("cancel {session_id}"));
             }
+            fn blur(&self, _: &mut gpui::App) {
+                self.0.borrow_mut().push("blur".to_owned());
+            }
+        }
+
+        /// M4 re-review R2: the window losing focus tells dictation, which stops a recording that has heard something.
+        #[gpui::test]
+        fn the_window_losing_focus_tells_dictation(cx: &mut TestAppContext) {
+            let (cx, _) = app(cx, Route::Chat("b1".into()), chat(turns(2), false), sends());
+            let fake = Rc::new(FakeVoice::default());
+            let backend: Rc<dyn VoiceBackend> = fake.clone();
+            cx.update(|_, cx| voice::install(backend, cx));
+            click(cx, "composer.b1.dictate");
+            // A test window starts inactive: it's activated first, then the person goes elsewhere.
+            cx.update(|window, _| window.activate_window());
+            draw(cx);
+            assert!(
+                fake.0
+                    .borrow()
+                    .last()
+                    .is_some_and(|call| call.starts_with("begin ")),
+                "dictating, nothing else asked yet"
+            );
+            cx.deactivate_window();
+            draw(cx);
+            assert_eq!(fake.0.borrow().last().map(String::as_str), Some("blur"));
         }
 
         /// The session the fake was asked to begin.
