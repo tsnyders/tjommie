@@ -492,6 +492,54 @@ mod tests {
     }
 
     #[gpui::test]
+    /// M7 review m10: a zoom (or text-size) change moves every Recents row by its new size, which is no reorder: they are in
+    /// place at once, as a key's change always is.
+    #[gpui::test]
+    fn a_zoom_change_puts_recents_in_place_at_once(cx: &mut gpui::TestAppContext) {
+        use crate::ui::testing::next_frame;
+        let room = |id: &str| Recent {
+            id: id.to_owned().into(),
+            name: id.to_owned().into(),
+            kind: RecentKind::Room { unread: false },
+        };
+        let cx = shell_window(
+            cx,
+            ShellData {
+                connection: Connection::Ready,
+                recents: vec![room("launch"), room("everyone"), room("design")],
+                ..ShellData::default()
+            },
+        );
+        cx.update(|window, cx| {
+            window.activate_window();
+            crate::motion::clock::fixed_step(1. / 60., cx);
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        for _ in 0..300 {
+            if !next_frame(cx) {
+                break;
+            }
+        }
+        let before = cx
+            .debug_bounds("sidebar.recent.design")
+            .expect("Design's row");
+        cx.dispatch_action(ZoomIn);
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let after = cx
+            .debug_bounds("sidebar.recent.design")
+            .expect("Design's row");
+        assert!(
+            after.origin.y > before.origin.y,
+            "the bigger rows above moved it down: {before:?} -> {after:?}"
+        );
+        assert!(
+            !next_frame(cx),
+            "in place at once, with no frames in between"
+        );
+    }
+
     fn the_connection_screen_takes_the_main_columns_place(cx: &mut gpui::TestAppContext) {
         let cx = shell_window(cx, ShellData::default());
         assert!(

@@ -8,8 +8,8 @@ use std::rc::Rc;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, Div, FocusHandle, FontWeight, InteractiveElement as _, IntoElement,
-    ParentElement as _, Point, Role, SharedString, Stateful, StatefulInteractiveElement as _,
-    Styled as _, Window, div, px, svg,
+    ParentElement as _, Pixels, Point, Role, SharedString, Stateful,
+    StatefulInteractiveElement as _, Styled as _, Window, div, px, svg,
 };
 use protocol::model::BotState;
 
@@ -43,6 +43,8 @@ pub(super) struct RecentsMotion {
     /// The rows of the last frame, to tell which left.
     shown: Vec<Recent>,
     leaving: Vec<Leaving>,
+    /// The window's rem in the last frame: a zoom or text-size change moves every row, which is no reorder (M7 review m10).
+    rem: Option<Pixels>,
 }
 
 /// A row on its way out: what it showed, where it was painted (relative to the list), and how much of it is left (1
@@ -60,6 +62,7 @@ impl RecentsMotion {
             flip: Rc::new(RefCell::new(Flip::new(calm))),
             shown: Vec::new(),
             leaving: Vec::new(),
+            rem: None,
         }
     }
 
@@ -210,7 +213,12 @@ pub(super) fn sidebar(
     let motion = window.use_keyed_state("sidebar.recents.motion", cx, |_, cx| {
         RecentsMotion::new(&theme(cx).motion.spring.calm)
     });
-    let snap = reduced::is_on(cx);
+    // A zoom or text-size change (a new rem) puts every row in place at once: it moves them all, and is no reorder.
+    let rem = window.rem_size();
+    let resized = motion.update(cx, |motion, _| {
+        motion.rem.replace(rem).is_some_and(|was| was != rem)
+    });
+    let snap = reduced::is_on(cx) || resized;
     let dt = clock::dt(cx);
     if motion.update(cx, |motion, _| motion.frame(&data.recents, snap, dt)) {
         clock::keep_moving(window, cx);
