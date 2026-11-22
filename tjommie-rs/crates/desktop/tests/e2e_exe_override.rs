@@ -16,7 +16,7 @@ use desktop_host::owner_safety;
 const BUILT: &str = r"C:\built\target\debug\tjommie-desktop.exe";
 
 fn resolve(over: Option<&OsStr>) -> Result<String, String> {
-    resolve_desktop_exe(over, BUILT)
+    resolve_desktop_exe(over, BUILT, None)
 }
 
 #[test]
@@ -73,6 +73,38 @@ fn an_empty_value_is_refused_not_ignored() {
     assert!(
         error.contains(E2E_EXE_VAR) && error.contains("empty"),
         "{error}"
+    );
+}
+
+#[test]
+fn the_installed_production_app_is_refused_and_a_test_identity_build_is_not() {
+    // A stand-in for %LOCALAPPDATA%, with an exe in the production app's install folder and one in the update test app's.
+    let root = owner_safety::test_root().unwrap();
+    let local = root.path();
+    let production = local.join("Programs").join("Tjommie");
+    let update_test = local.join("Programs").join("tjommie-updatetest");
+    std::fs::create_dir_all(&production).unwrap();
+    std::fs::create_dir_all(&update_test).unwrap();
+    let production_exe = production.join("Tjommie.exe");
+    let test_exe = update_test.join("Tjommie Update Test.exe");
+    std::fs::write(&production_exe, b"x").unwrap();
+    std::fs::write(&test_exe, b"x").unwrap();
+    let local = Some(local.as_os_str());
+    let error = resolve_desktop_exe(Some(production_exe.as_os_str()), BUILT, local).unwrap_err();
+    assert!(
+        error.contains(E2E_EXE_VAR) && error.contains("installed Tjommie"),
+        "{error}"
+    );
+    // However the folder is spelled: other case, forward slashes.
+    let spelled = production_exe
+        .to_string_lossy()
+        .replace('\\', "/")
+        .to_uppercase();
+    assert!(resolve_desktop_exe(Some(OsStr::new(&spelled)), BUILT, local).is_err());
+    // The update test app is another folder, and is what the override is for.
+    assert_eq!(
+        resolve_desktop_exe(Some(test_exe.as_os_str()), BUILT, local).unwrap(),
+        test_exe.to_str().unwrap()
     );
 }
 

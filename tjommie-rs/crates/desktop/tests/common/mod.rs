@@ -20,8 +20,15 @@ pub const E2E_EXE_VAR: &str = "TJOMMIE_E2E_EXE";
 
 /// The exe an e2e test launches: `over` (the value of [`E2E_EXE_VAR`]) when it is set, else `built`, the one cargo built. The
 /// value must be the absolute path of an existing file, and anything else is an error that says so, never a silent fallback to
-/// the built exe: a run that meant to test the installed build must not test another one. An empty value counts as set.
-pub fn resolve_desktop_exe(over: Option<&OsStr>, built: &str) -> Result<String, String> {
+/// the built exe: a run that meant to test the installed build must not test another one. An empty value counts as set. A
+/// file in the production app's install folder, `<local_app_data>\Programs\Tjommie\`, is refused too: an e2e test never
+/// launches a person's own Tjommie (it would take the production single-instance path and ask the running one to show its
+/// window), and only a test-identity build belongs here.
+pub fn resolve_desktop_exe(
+    over: Option<&OsStr>,
+    built: &str,
+    local_app_data: Option<&OsStr>,
+) -> Result<String, String> {
     let Some(value) = over else {
         return Ok(built.to_owned());
     };
@@ -47,6 +54,18 @@ pub fn resolve_desktop_exe(over: Option<&OsStr>, built: &str) -> Result<String, 
             "{E2E_EXE_VAR} must name the desktop exe, a file, but {shown} is not a file."
         ));
     }
+    if let Some(local) = local_app_data {
+        let lower = |path: &OsStr| path.to_string_lossy().replace('/', "\\").to_lowercase();
+        let production = format!(
+            "{}\\programs\\tjommie\\",
+            lower(local).trim_end_matches('\\')
+        );
+        if lower(value).starts_with(&production) {
+            return Err(format!(
+                "{E2E_EXE_VAR} names {shown}, which is in the installed Tjommie's folder. An e2e test never launches a person's own app: name a test-identity build."
+            ));
+        }
+    }
     path.to_str().map(str::to_owned).ok_or_else(|| {
         format!("{E2E_EXE_VAR} names {shown}, which is not valid text, so it can't be launched.")
     })
@@ -58,6 +77,7 @@ pub fn desktop_exe() -> String {
     match resolve_desktop_exe(
         std::env::var_os(E2E_EXE_VAR).as_deref(),
         env!("CARGO_BIN_EXE_tjommie-desktop"),
+        std::env::var_os("LOCALAPPDATA").as_deref(),
     ) {
         Ok(exe) => exe,
         Err(reason) => panic!("{reason}"),
@@ -316,14 +336,16 @@ pub fn wait_for_text(app: &mut Client, needle: &str, timeout: Duration) -> Strin
         {
             return node.text.clone();
         }
+        // The ids of what has text, never the text: a test's output is in a public job log on a runner, and on a PC the texts
+        // can hold temp paths and the Windows account's name. The needle is the test's own.
         assert!(
             started.elapsed() < timeout,
-            "no node says {needle:?}: {:?}",
+            "no node says {needle:?}; the nodes with text: {:?}",
             snapshot
                 .nodes
                 .iter()
                 .filter(|node| !node.text.is_empty())
-                .map(|node| (node.id.as_str(), node.text.as_str()))
+                .map(|node| node.id.as_str())
                 .collect::<Vec<_>>()
         );
         std::thread::sleep(Duration::from_millis(200));
