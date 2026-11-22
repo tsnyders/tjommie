@@ -20,6 +20,7 @@ use tokio::process::{ChildStdin, Command};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
+use crate::identity::Kind;
 use crate::spawn;
 
 /// An environment as name and value pairs. Names compare without case, as on Windows.
@@ -250,6 +251,33 @@ pub fn daemon_command(
             _ => BUILD_RUST_DAEMON.to_owned(),
         },
     ))
+}
+
+/// The exe the app starts as its daemon, by which app it is (`kind`) and where it is (`app_exe`, this app's own exe):
+///
+/// * **Production** runs the daemon bundled beside it, `resources\daemon\tjommie-daemon.exe`, whatever the environment says,
+///   and whether or not it is there (a missing one fails to start, and says so).
+/// * **Update test** is installed by the same installer with the same layout, so it runs its bundled daemon too, and no
+///   environment variable can swap another in: a test that names its own daemon is not testing the install. Run from source
+///   (`cargo run` with that identity) it has no `resources` folder beside it, and follows the development rules.
+/// * **Dev** and **e2e** run from source and follow [`daemon_command`]'s development rules: `TJOMMIE_DAEMON_EXE`, else the
+///   debug build under the repo, three folders above the exe's own folder (`target\debug\tjommie-desktop.exe`). A bundled
+///   daemon that happens to sit beside one is not used.
+pub fn daemon_exe_for(
+    kind: Kind,
+    app_exe: &Path,
+    env: &[(String, String)],
+    exists: impl Fn(&Path) -> bool,
+) -> Result<PathBuf, DaemonError> {
+    let folder = app_exe.parent().unwrap_or(Path::new("."));
+    let bundled = packaged_daemon_path(&folder.join("resources"));
+    let packaged = match kind {
+        Kind::Production => true,
+        Kind::UpdateTest => exists(&bundled),
+        Kind::Dev | Kind::E2e => false,
+    };
+    let repo = folder.ancestors().nth(3).unwrap_or(folder);
+    daemon_command(env, packaged.then_some(bundled).as_deref(), repo, exists)
 }
 
 /// What the app says when development mode finds no running daemon: with no `TJOMMIE_HOME` or `TJOMMIE_PORT` of its own the
@@ -810,6 +838,103 @@ mod tests {
         // An installed app never runs an override, and never looks for the debug build.
         let elsewhere = env(&[("TJOMMIE_DAEMON_EXE", "C:\\elsewhere\\daemon.exe")]);
         assert_eq!(command(&elsewhere), bundled);
+    }
+
+    /// The daemon an app starts, by identity: both packaged apps (production and update test) run the daemon bundled beside
+    /// their exe, and the two source identities (dev and e2e) keep the development rules.
+    #[test]
+    fn every_packaged_identity_runs_its_bundled_daemon_and_a_source_run_keeps_the_development_rules()
+     {
+        let installed = Path::new("C:\\Apps\\Tjommie\\Tjommie.exe");
+        let bundled = PathBuf::from("C:\\Apps\\Tjommie\\resources\\daemon\\tjommie-daemon.exe");
+        let from_source =
+            Path::new("C:\\work\\repo\\tjommie-rs\\target\\debug\\tjommie-desktop.exe");
+        let debug_build =
+            PathBuf::from("C:\\work\\repo\\tjommie-rs\\target\\debug\\tjommie-daemon.exe");
+        let elsewhere = env(&[("TJOMMIE_DAEMON_EXE", "C:\\elsewhere\\daemon.exe")]);
+        let nothing_there = |_: &Path| false;
+        let everything_there = |_: &Path| true;
+        fn only(wanted: PathBuf) -> impl Fn(&Path) -> bool {
+            move |path| path == wanted
+        }
+
+        // Production: its bundled daemon, whatever the environment says and even when the file is missing.
+        for vars in [&Vec::new(), &elsewhere] {
+            assert_eq!(
+                daemon_exe_for(Kind::Production, installed, vars, nothing_there).unwrap(),
+                bundled
+            );
+        }
+
+        // Update test, installed: the same, and the override that production ignores is ignored here too.
+        for vars in [&Vec::new(), &elsewhere] {
+            assert_eq!(
+                daemon_exe_for(Kind::UpdateTest, installed, vars, only(bundled.clone())).unwrap(),
+                bundled,
+                "{vars:?}"
+            );
+        }
+
+        // Update test run from source has no bundled daemon beside it: the development rules, so the override is honoured,
+        // and with none the debug build is looked for and its absence says how to build it.
+        assert_eq!(
+            daemon_exe_for(
+                Kind::UpdateTest,
+                from_source,
+                &elsewhere,
+                only(PathBuf::from("C:\\elsewhere\\daemon.exe"))
+            )
+            .unwrap(),
+            PathBuf::from("C:\\elsewhere\\daemon.exe")
+        );
+        assert_eq!(
+            daemon_exe_for(
+                Kind::UpdateTest,
+                from_source,
+                &[],
+                only(debug_build.clone())
+            )
+            .unwrap(),
+            debug_build
+        );
+        assert_eq!(
+            daemon_exe_for(Kind::UpdateTest, from_source, &[], nothing_there)
+                .unwrap_err()
+                .to_string(),
+            BUILD_RUST_DAEMON
+        );
+
+        // Dev and e2e: the development rules, whatever sits beside the exe. A bundled daemon is never picked up.
+        for kind in [Kind::Dev, Kind::E2e] {
+            assert_eq!(
+                daemon_exe_for(kind, from_source, &[], everything_there).unwrap(),
+                debug_build,
+                "{kind:?}"
+            );
+            assert_eq!(
+                daemon_exe_for(kind, from_source, &elsewhere, everything_there).unwrap(),
+                PathBuf::from("C:\\elsewhere\\daemon.exe"),
+                "{kind:?}"
+            );
+            let beside = PathBuf::from(
+                "C:\\work\\repo\\tjommie-rs\\target\\debug\\resources\\daemon\\tjommie-daemon.exe",
+            );
+            assert_eq!(
+                daemon_exe_for(kind, from_source, &[], only(beside))
+                    .unwrap_err()
+                    .to_string(),
+                BUILD_RUST_DAEMON,
+                "{kind:?}"
+            );
+            // Even an installed-looking exe of these identities keeps the development rules: it never uses the bundled one.
+            assert_eq!(
+                daemon_exe_for(kind, installed, &elsewhere, only(bundled.clone()))
+                    .unwrap_err()
+                    .to_string(),
+                "TJOMMIE_DAEMON_EXE names a daemon that is not there: C:\\elsewhere\\daemon.exe",
+                "{kind:?}"
+            );
+        }
     }
 
     #[test]
