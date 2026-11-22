@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  DATA_ROOT_POLICY, compareCounts, compareTrees, eventually, pendingNotices, plantPendingNotice, seedBrowserProfiles, snapshotRoot, startFeed, treeOf, withTimeout,
+  DATA_ROOT_POLICY, compareCounts, compareTrees, eventually, pendingNotices, plantPendingNotice, r1UpdateEnv, seedBrowserProfiles, snapshotRoot, startFeed, treeOf, withTimeout,
 } from "./phase3-acceptance.ts";
 
 // The Phase 3 acceptance run's Node half (scripts/phase3-acceptance.ts). Nothing here starts R1, an installer or a daemon: the data-root rules are tried
@@ -44,11 +44,14 @@ describe("the data-root rules", () => {
 
   it("accepts a root in which only known app-written things changed or arrived", () => {
     const before = tree({ "bots/a/notes.md": "1", "data/native-browser/b/Default/Preferences": "2", "data/tjommie.db": "3", "logs/desktop.log": "4", "daemon-token": "5" });
-    const after = tree({ ...before, "data/tjommie.db": "changed", "logs/desktop.log": "more", "logs/desktop-crash.log": "x", "data/backup/tjommie-0.6.0.db": "b", "data/desktop-ui.json": "j", "data/tjommie.db-wal": "w" });
+    const after = tree({
+      ...before, "data/tjommie.db": "changed", "logs/desktop.log": "more", "logs/desktop-crash.log": "x", "data/backup/tjommie-0.6.0.db": "b", "data/desktop-ui.json": "j", "data/tjommie.db-wal": "w",
+      "data/logins.sqlite-wal": "w", "data/logins.sqlite-shm": "s",
+    });
     delete after["daemon-token"];
     const result = compareTrees(before, after);
     expect(result.problems).toEqual([]);
-    expect(result.added.sort()).toEqual(["data/backup/tjommie-0.6.0.db", "data/desktop-ui.json", "data/tjommie.db-wal", "logs/desktop-crash.log"]);
+    expect(result.added.sort()).toEqual(["data/backup/tjommie-0.6.0.db", "data/desktop-ui.json", "data/logins.sqlite-shm", "data/logins.sqlite-wal", "data/tjommie.db-wal", "logs/desktop-crash.log"]);
     expect(result.changedAppFiles.sort()).toEqual(["data/tjommie.db", "logs/desktop.log"]);
   });
 
@@ -56,6 +59,8 @@ describe("the data-root rules", () => {
     const before = tree({ "bots/a/notes.md": "1", "accounts/x/state.json": "2", "data/native-browser/b/Cookies": "3", "sentinel/notes.md": "4", "settings.json": "5" });
     const after = tree({ "bots/a/notes.md": "1", "accounts/x/state.json": "changed", "data/native-browser/b/Cookies": "3", "sentinel/notes.md": "4", "surprise/new.bin": "9" });
     expect(compareTrees(before, after).problems.sort()).toEqual(["changed: accounts/x/state.json", "missing: settings.json", "unexpected addition: surprise/new.bin"]);
+    // Only the logins vault's own sidecars are allowed beside its database: another file in data/ is still a surprise.
+    expect(compareTrees({}, { "data/logins.sqlite": "x", "data/logins.sqlite.bak": "y", "data/other.sqlite-wal": "z" }).problems.sort()).toEqual(["unexpected addition: data/logins.sqlite.bak", "unexpected addition: data/other.sqlite-wal"]);
     // A browser profile and a sentinel are held byte for byte too.
     const profile = compareTrees(tree({ "data/native-browser/b/Cookies": "3" }), tree({ "data/native-browser/b/Cookies": "4" }));
     expect(profile.problems).toEqual(["changed: data/native-browser/b/Cookies"]);
@@ -163,6 +168,25 @@ describe("the local update feed", () => {
       server.closeAllConnections();
       await new Promise<void>((done) => server.close(() => done()));
     }
+  });
+});
+
+describe("the update-test R1's environment, which the new app inherits", () => {
+  const install = "C:\\Temp\\tjommie-updatetest\\Tjommie Update Test";
+  const env = r1UpdateEnv({ PATH: "p", TJOMMIE_DAEMON_EXE: "C:\\somewhere\\else.exe" }, install, "C:\\Temp\\data", "C:\\Temp\\electron", "http://127.0.0.1:1234");
+
+  it("gives the new app the bundled daemon's path, because the update-test identity starts only a daemon it is handed", () => {
+    // Run 2: live.rs takes the bundled daemon for the production identity alone, so the update-test app had no daemon until it was told where one is.
+    expect(env.TJOMMIE_DAEMON_EXE).toBe(join(install, "resources", "daemon", "tjommie-daemon.exe"));
+    // It replaces what the runner had, rather than being overridden by it.
+    expect(env.PATH).toBe("p");
+  });
+
+  it("sets the disposable data root, a port the system picks, the feed, and the folders R1's test identity keeps its own state in", () => {
+    expect(env).toMatchObject({
+      TJOMMIE_HOME: "C:\\Temp\\data", TJOMMIE_USER_DATA: "C:\\Temp\\electron", TJOMMIE_PORT: "0", TJOMMIE_UPDATE_FEED: "http://127.0.0.1:1234", TJOMMIE_BROWSER_HEADLESS: "1",
+    });
+    expect(env.TJOMMIE_ACCOUNTS_DIR).toBe(join("C:\\Temp\\data", "accounts"));
   });
 });
 

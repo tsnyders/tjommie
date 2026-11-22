@@ -51,7 +51,9 @@ export const DATA_ROOT_POLICY: TreePolicy = {
   // Files that exist only while a program runs, or that a running daemon rewrites as a matter of course.
   runtimeOnly: [/^daemon-token/, /\.lock$/, /(^|\/)lockfile$/, /-(wal|shm)$/, /^logs\//, /^data\/tjommie\.db$/],
   contentKept: [/^bots\//, /^accounts\//, /^data\/native-browser\//, /^sentinel\//],
-  allowedAdditions: [/^logs\//, /^data\/backup\//, /^data\/desktop-ui\.json$/, /^data\/tjommie\.db(-wal|-shm)?$/, /^daemon-token/, /\.lock$/, /(^|\/)lockfile$/],
+  // data/logins.sqlite is the saved-logins vault's database, which R1 and the new app both open: its WAL and shared-memory files come and go with the
+  // process that has it open (run 2: both appeared at the new app's start and again at R1's, and nothing else did).
+  allowedAdditions: [/^logs\//, /^data\/backup\//, /^data\/desktop-ui\.json$/, /^data\/tjommie\.db(-wal|-shm)?$/, /^data\/logins\.sqlite(-wal|-shm)?$/, /^daemon-token/, /\.lock$/, /(^|\/)lockfile$/],
 };
 
 export function compareTrees(before: Tree, after: Tree, policy: TreePolicy = DATA_ROOT_POLICY): { problems: string[]; added: string[]; changedAppFiles: string[] } {
@@ -180,6 +182,27 @@ export async function eventually<T>(what: string, timeoutMs: number, probe: () =
   }
 }
 
+// The environment the update-test R1 is launched with, and the new app inherits it (R1 starts the installer, which starts the app). The update-test
+// identity is a disposable one: its data root is TJOMMIE_HOME, and it starts the bundled daemon only if it is HANDED the daemon's path
+// (live.rs daemon_exe takes the bundled one for the production identity alone; otherwise TJOMMIE_DAEMON_EXE, else a debug build beside the exe).
+// Run 2 of the acceptance: without it the new app had no daemon to start, so no process, and a notice that stayed pending. R1 itself runs the daemon
+// bundled with it whatever the environment says, so the variable changes nothing for R1; it is what the new app finds.
+export function r1UpdateEnv(base: NodeJS.ProcessEnv, install: string, root: string, userData: string, feedUrl: string): Record<string, string> {
+  // Playwright takes strings only: a variable the runner does not have is left out, not passed as "undefined".
+  const inherited: Record<string, string> = {};
+  for (const [name, value] of Object.entries(base)) if (value !== undefined) inherited[name] = value;
+  return {
+    ...inherited,
+    TJOMMIE_HOME: root,
+    TJOMMIE_USER_DATA: userData,
+    TJOMMIE_ACCOUNTS_DIR: join(root, "accounts"),
+    TJOMMIE_PORT: "0",
+    TJOMMIE_UPDATE_FEED: feedUrl,
+    TJOMMIE_BROWSER_HEADLESS: "1",
+    TJOMMIE_DAEMON_EXE: join(install, "resources", "daemon", "tjommie-daemon.exe"),
+  };
+}
+
 type UpdateState = { status: string; version?: string; message?: string; percent?: number };
 type Bridge = { tjommie: { updates: { state(): Promise<UpdateState>; check(): Promise<void>; restart(): void } } };
 
@@ -202,7 +225,7 @@ async function r1Update(args: string[]): Promise<void> {
   const app = await _electron.launch({
     executablePath: exe,
     args: ["--hidden"],
-    env: { ...process.env, TJOMMIE_HOME: root, TJOMMIE_USER_DATA: userData, TJOMMIE_ACCOUNTS_DIR: join(root, "accounts"), TJOMMIE_PORT: "0", TJOMMIE_UPDATE_FEED: feed.url, TJOMMIE_BROWSER_HEADLESS: "1" },
+    env: r1UpdateEnv(process.env, install, root, userData, feed.url),
   });
   const mainPid = app.process().pid;
   try {
