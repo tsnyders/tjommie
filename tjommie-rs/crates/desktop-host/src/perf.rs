@@ -39,6 +39,24 @@ pub fn above_normal() -> Result<(), String> {
     Ok(())
 }
 
+/// The motion-idle check (M7 review m8): puts the taskbar in front, so the app's window stays visible but is no longer
+/// the active one. A process in the foreground may hand the foreground on.
+pub fn put_taskbar_in_front() -> Result<(), String> {
+    use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, SetForegroundWindow};
+    // SAFETY: a lookup by class name, and a foreground request for the window it found.
+    unsafe {
+        let taskbar = FindWindowW(
+            windows::core::w!("Shell_TrayWnd"),
+            windows::core::PCWSTR::null(),
+        )
+        .map_err(|error| format!("no taskbar: {error}"))?;
+        if !SetForegroundWindow(taskbar).as_bool() {
+            return Err("Windows kept the app in front".to_owned());
+        }
+    }
+    Ok(())
+}
+
 /// The counter now.
 pub fn qpc() -> i64 {
     let mut count = 0;

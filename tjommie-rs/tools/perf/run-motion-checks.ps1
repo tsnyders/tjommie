@@ -1,10 +1,11 @@
 <#
-Plan T7.2 and T7.4: every timed motion (3 runs of 50 loops, PresentMon p95 at most 16.7 ms) and the two checks
-(keyboard, simulated reduced motion), for tjommie-desktop.exe.
+Plan T7.2 and T7.4: every timed motion (3 runs of 50 loops, PresentMon p95 at most 16.7 ms) and the three checks
+(keyboard, simulated reduced motion, and idle: a window not in front draws at most 1 frame a second), for
+tjommie-desktop.exe.
 
     .\tools\perf\run-motion-checks.ps1                       # everything (about 40 minutes on a quiet PC)
     .\tools\perf\run-motion-checks.ps1 -Only p95             # just the timed runs
-    .\tools\perf\run-motion-checks.ps1 -Only checks          # just the two checks (no timing)
+    .\tools\perf\run-motion-checks.ps1 -Only checks          # just the three checks (no timing)
     .\tools\perf\run-motion-checks.ps1 -Only p95 -Labels motion-flight,motion-alive    # some of them
     .\tools\perf\run-motion-checks.ps1 -Smoke -Labels motion-flight,motion-toast      # a quick proof
 
@@ -12,7 +13,7 @@ The list of motions is tjommie-rs\motion-map.md; $timed below must match it (add
 -Smoke: one run of 5 loops (motion-alive: 5 s) per named motion (all when no -Labels), filed under
 evidence\smoke-<name>\ so real evidence is never overwritten, no checks, no verdict: it proves the plumbing only.
 
-Writes evidence\motion\results.jsonl (one JSON line per check: keyboard, reduced) and
+Writes evidence\motion\results.jsonl (one JSON line per check: keyboard, reduced, idle) and
 evidence\<name>\ (PresentMon p95 per motion, via run-scenario.ps1). Timed runs wait for a quiet PC: up to
 QuietTimeout s per motion in total, then they run anyway and record their load. Each app run gets a fresh
 TJOMMIE_HOME under %TEMP% (deleted after). Build first, see run-scenario.ps1.
@@ -65,7 +66,8 @@ function Invoke-Check([string[]]$Arguments) {
 # Interruption (the spike report's two rules) is proven by unit tests per motion (motion-map.md); no app scenario.
 $checks = @(
     @{ Label = 'motion-keyboard'; Note = 'keyboard: key-triggered motions land with no frames in between'; Args = @('--scenario', 'motion-keyboard') },
-    @{ Label = 'motion-reduced'; Note = 'reduced motion, simulated (--force-reduced; the real check is the owner''s)'; Args = @('--scenario', 'motion-reduced', '--force-reduced') }
+    @{ Label = 'motion-reduced'; Note = 'reduced motion, simulated (--force-reduced; the real check is the owner''s)'; Args = @('--scenario', 'motion-reduced', '--force-reduced') },
+    @{ Label = 'motion-idle'; Note = 'idle: one agent at work, the window not in front draws at most 1 frame a second (its in-front rate beside it; about 45 s)'; Args = @('--scenario', 'motion-idle', '--seconds', '20') }
 )
 if (-not $Smoke -and (-not $Only -or $Only -eq 'checks')) {
     New-Item -ItemType Directory -Force $evidence | Out-Null

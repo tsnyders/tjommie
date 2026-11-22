@@ -74,11 +74,14 @@ the 10,000-message scroll; they use the same rule.
 .\tjommie-rs\tools\perf\run-motion-checks.ps1 -Only checks
 ```
 
-This runs two checks and prints one line per result (`pass: true/false`):
+This runs three checks and prints one line per result (`pass: true/false`):
 
 - keyboard: the motions a key can start (opening a chat from Recents, closing a toast) land with 0 in-between frames;
 - reduced motion, **simulated** (`--force-reduced`): the same by the pointer, and Recents reordering, with 0 in-between
-  frames.
+  frames;
+- idle (about 45 s): with one agent at work, the window draws for 20 s in front, then the taskbar takes the front and the
+  window, still visible, must draw at most 1 frame a second for 20 s. Leave the PC alone while it runs. Record both
+  rates from the results file (`frames_per_second_behind`, `frames_per_second_in_front`).
 
 Interruption (a motion caught mid-flight turns without a jump) is proven by each motion's unit tests (`motion-map.md`).
 

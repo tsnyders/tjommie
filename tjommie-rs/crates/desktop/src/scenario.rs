@@ -143,12 +143,13 @@ fn chat(count: usize) -> Vec<Message> {
 }
 
 /// The invented data: six agents, none working (a working agent's scan never rests, which a loop waits for; the
-/// living scenario sets two to work), two rooms, and Forge's chat (10,000 messages for the scroll).
+/// living scenario sets two to work, the idle check one), two rooms, and Forge's chat (10,000 messages for the scroll).
 fn fixture(name: &str) -> AppState {
-    let working = if name == "motion-alive" {
-        BotState::Working
-    } else {
-        BotState::Idle
+    let (scout, quill) = match name {
+        "motion-alive" => (BotState::Working, BotState::Working),
+        // One agent at work among quiet ones: what a window not in front must not redraw for (M7 review m8).
+        "motion-idle" => (BotState::Working, BotState::Idle),
+        _ => (BotState::Idle, BotState::Idle),
     };
     let bots = vec![
         bot(
@@ -158,14 +159,8 @@ fn fixture(name: &str) -> AppState {
             BotShape::Hexagon,
             BotState::Waiting,
         ),
-        bot("scout", "Scout", BotColor::Teal, BotShape::Blob, working),
-        bot(
-            "quill",
-            "Quill",
-            BotColor::Purple,
-            BotShape::Droplet,
-            working,
-        ),
+        bot("scout", "Scout", BotColor::Teal, BotShape::Blob, scout),
+        bot("quill", "Quill", BotColor::Purple, BotShape::Droplet, quill),
         bot(
             "ledger",
             "Ledger",
@@ -524,6 +519,41 @@ async fn alive(options: &Options, cx: &mut AsyncApp) -> Result<bool, String> {
     Ok(true)
 }
 
+/// The app at rest (M7 review m8, the owner's "stop when not in front"): with one agent at work among quiet ones, the
+/// frames drawn over `--seconds` in front (as launched), then with the window not in front (the taskbar takes the
+/// foreground; the window stays visible), which must stay at most 1 a second. The in-front rate is reported beside it.
+async fn idle(
+    options: &Options,
+    window: AnyWindowHandle,
+    cx: &mut AsyncApp,
+) -> Result<bool, String> {
+    let seconds = f64::from(options.seconds).max(1.);
+    let ms = (seconds * 1000.) as u64;
+    let rate = |before: u64, cx: &mut AsyncApp| {
+        cx.update(|cx| clock::drawn(cx)).saturating_sub(before) as f64 / seconds
+    };
+    let was_in_front = act(window, cx, |window, _| window.is_window_active())?;
+    let before = cx.update(|cx| clock::drawn(cx));
+    sleep(cx, ms).await;
+    let in_front = rate(before, cx);
+    // Outside any update: Windows activates the taskbar, and the window's deactivation comes as a message.
+    desktop_host::perf::put_taskbar_in_front()?;
+    // The redraw that comes with the deactivation.
+    sleep(cx, 1000).await;
+    let behind_now = act(window, cx, |window, _| !window.is_window_active())?;
+    let before = cx.update(|cx| clock::drawn(cx));
+    sleep(cx, ms).await;
+    let behind = rate(before, cx);
+    let pass = behind_now && behind <= 1.;
+    record(
+        options,
+        json!({ "scenario": options.name, "pass": pass, "seconds": seconds, "bar_frames_per_second": 1.0,
+                "frames_per_second_behind": behind, "was_behind": behind_now,
+                "frames_per_second_in_front": in_front, "was_in_front": was_in_front }),
+    );
+    Ok(pass)
+}
+
 /// The 10,000-message thread, scrolled up and back by the wheel, `loops` times.
 async fn scroll(
     options: &Options,
@@ -664,12 +694,14 @@ async fn run(
     window: AnyWindowHandle,
     cx: &mut AsyncApp,
 ) -> Result<bool, String> {
-    // A motion check keeps the display's rate even when the window isn't in front (gate condition 5).
-    let _live = cx.update(Live::hold);
+    // A motion check keeps the display's rate even when the window isn't in front (gate condition 5); the idle check
+    // measures the app as it is, so it holds nothing.
+    let _live = (options.name != "motion-idle").then(|| cx.update(Live::hold));
     // Fonts, icons and the first frames.
     sleep(cx, 1500).await;
     match options.name.as_str() {
         "motion-alive" => alive(options, cx).await,
+        "motion-idle" => idle(options, window, cx).await,
         "scroll-10k" => scroll(options, window, cx).await,
         "motion-keyboard" | "motion-reduced" => snaps(options, window, cx).await,
         name if TIMED.contains(&name) => loops(options, window, cx).await,
