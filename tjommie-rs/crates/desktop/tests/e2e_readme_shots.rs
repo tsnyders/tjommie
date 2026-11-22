@@ -13,8 +13,12 @@
 //! `cargo build -p daemon --bin tjommie-daemon --features provider-fixtures --locked`, then
 //! `TJOMMIE_IDENTITY=e2e cargo test -p desktop --features test-driver --test e2e_readme_shots --locked -- --ignored --nocapture`.
 //!
-//! A picture that can't be taken is reported at the end and does not stop the others, so a run keeps what it got; the test
-//! fails when any is missing.
+//! A picture that can't be taken is reported (with a `_failed-<name>.png` of what the window showed, which is in the public
+//! artifact too, and is not a README picture) and does not stop the others, so a run keeps what it got; a part of the tour
+//! that is not a picture (a daemon that must start, the agents that must be made) ends that part and not the run, and the
+//! summary of what was and was not taken is printed whatever happened. The test fails when any picture is missing. Devices
+//! leaves no `_failed-` picture, and is not photographed at all unless the relay address was replaced first: the app's
+//! default relay is a person's account name on a workers.dev host.
 #![cfg(feature = "test-driver")]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -215,6 +219,27 @@ impl Shots {
     /// `prepare` brings the screen to its state; the picture follows once the screen has settled (its entrance motion is
     /// 500 ms). A panic in `prepare` is this picture's failure and nothing else's.
     fn take(&mut self, name: &'static str, app: &mut Client, prepare: impl FnOnce(&mut Client)) {
+        self.take_with(name, app, true, prepare);
+    }
+
+    /// [`Shots::take`] for a screen that may show something that must not leave the run, and so leaves no `_failed-` picture
+    /// of it either (that picture is in the public artifact, and is photographed from wherever the step stopped).
+    fn take_without_failure_picture(
+        &mut self,
+        name: &'static str,
+        app: &mut Client,
+        prepare: impl FnOnce(&mut Client),
+    ) {
+        self.take_with(name, app, false, prepare);
+    }
+
+    fn take_with(
+        &mut self,
+        name: &'static str,
+        app: &mut Client,
+        failure_picture: bool,
+        prepare: impl FnOnce(&mut Client),
+    ) {
         let out = self.dir.join(format!("{name}.png"));
         let result = catch_unwind(AssertUnwindSafe(|| {
             prepare(app);
@@ -224,21 +249,61 @@ impl Shots {
         match result {
             Ok(()) => self.taken.push(name),
             Err(why) => {
-                let why = why
-                    .downcast_ref::<String>()
-                    .cloned()
-                    .or_else(|| why.downcast_ref::<&str>().map(|why| (*why).to_owned()))
-                    .unwrap_or_default();
+                let why = panic_text(why.as_ref());
                 println!("NOT TAKEN {name}: {why}");
-                // What the window showed when it went wrong, for whoever reads the artifact (never a README picture:
-                // its name starts with an underscore).
-                let _ = catch_unwind(AssertUnwindSafe(|| {
-                    common::picture(&self.dir.join(format!("_failed-{name}.png")));
-                }));
+                if failure_picture {
+                    // What the window showed when it went wrong, for whoever reads the artifact (never a README picture:
+                    // its name starts with an underscore).
+                    let _ = catch_unwind(AssertUnwindSafe(|| {
+                        common::picture(&self.dir.join(format!("_failed-{name}.png")));
+                    }));
+                }
                 self.failed.push((name, why));
             }
         }
     }
+
+    /// A picture that is not attempted, and why.
+    fn skip(&mut self, name: &'static str, why: &str) {
+        println!("NOT TAKEN {name}: {why}");
+        self.failed.push((name, why.to_owned()));
+    }
+
+    /// Runs a part of the tour that is not itself a picture (a daemon that must start, the agents that must be made). A
+    /// panic in it ends that part and not the run: the pictures taken so far are kept, and the summary is still printed.
+    /// Whether it finished.
+    fn attempt(&mut self, what: &'static str, part: impl FnOnce(&mut Shots)) -> bool {
+        match catch_unwind(AssertUnwindSafe(|| part(self))) {
+            Ok(()) => true,
+            Err(why) => {
+                let why = panic_text(why.as_ref());
+                println!("STEP FAILED {what}: {why}");
+                self.failed.push((what, why));
+                false
+            }
+        }
+    }
+
+    /// The summary, printed whatever went wrong before it, and the run's verdict: every picture of the shot list or a
+    /// failure that names the missing ones.
+    fn finish(&self) {
+        println!("taken: {:?}", self.taken);
+        let missing: Vec<&str> = PICTURES
+            .iter()
+            .copied()
+            .filter(|name| !self.taken.contains(name))
+            .collect();
+        println!("not taken: {missing:?}");
+        assert!(missing.is_empty(), "pictures not taken: {missing:?}");
+    }
+}
+
+/// The text of a panic, for the run's own log.
+fn panic_text(why: &(dyn std::any::Any + Send)) -> String {
+    why.downcast_ref::<String>()
+        .cloned()
+        .or_else(|| why.downcast_ref::<&str>().map(|why| (*why).to_owned()))
+        .unwrap_or_default()
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -380,9 +445,16 @@ fn fixtures(page: &str) -> Vec<(&'static str, String)> {
             ]
             .concat(),
         ),
-        // Slow: each event waits 40 s, so the agent is working for as long as the picture needs.
-        json!({ "expect": "run the tests", "delay_ms": 40_000, "events":
-            [json!({ "type": "text", "delta": "Running the test suite now. " }), json!({ "type": "text_end" })] }),
+        // Slow: each of its five events waits 60 s (the most a file allows), so Scout is working for five minutes: the three
+        // pictures that show it working (Agents in dark and in light, and Atlas's approval between them) take about two, with
+        // room for the retries that open a chat or a Settings section.
+        json!({ "expect": "run the tests", "delay_ms": 60_000, "events": [
+            json!({ "type": "text", "delta": "Running the test suite now. " }),
+            json!({ "type": "text", "delta": "Unit tests first. " }),
+            json!({ "type": "text", "delta": "Then the end-to-end set. " }),
+            json!({ "type": "text", "delta": "Nearly done. " }),
+            json!({ "type": "text_end" }),
+        ] }),
     ]);
     let atlas = fixture(vec![turn(
         "repository status",
@@ -490,14 +562,26 @@ fn e2e_readme_shots() {
     );
     let mut shots = Shots::new();
 
-    // One picture with the normal daemon, then the fixtures daemon for the rest.
+    // One picture with the normal daemon, then the fixtures daemon for the rest. Each part is attempted on its own: a daemon
+    // that doesn't start, or an agent that isn't made, ends that part and not the run, and the summary is printed whatever
+    // happened.
     match std::env::var_os("TJOMMIE_SHOTS_PLAIN_DAEMON") {
-        Some(plain) => not_installed(&mut shots, Path::new(&plain)),
-        None => println!(
-            "NOT TAKEN setup-not-installed-dark: TJOMMIE_SHOTS_PLAIN_DAEMON names no normal daemon (a PC with Claude Code or Codex must not run it)"
+        Some(plain) => {
+            shots.attempt("the first run with the normal daemon", |shots| {
+                not_installed(shots, Path::new(&plain));
+            });
+        }
+        None => shots.skip(
+            "setup-not-installed-dark",
+            "TJOMMIE_SHOTS_PLAIN_DAEMON names no normal daemon (a PC with Claude Code or Codex must not run it)",
         ),
     }
+    shots.attempt("the tour with the fixtures daemon", tour);
+    shots.finish();
+}
 
+/// Every picture that uses the fixtures daemon, in order.
+fn tour(shots: &mut Shots) {
     let pages = Orders::start();
     let root = owner_safety::test_root().unwrap();
     let mut app = common::launch(
@@ -823,7 +907,7 @@ fn e2e_readme_shots() {
         activate(app, &row.unwrap());
         app.wait("routine.name", Predicate::Exists, 10_000).unwrap();
     });
-    app.key("escape").unwrap();
+    let _ = app.key("escape");
 
     // The agent's browser, and its logins menu.
     shots.take("browser-dark", &mut app, |app| {
@@ -848,22 +932,57 @@ fn e2e_readme_shots() {
         app.click("browser.logins").unwrap();
         common::wait_for_text(app, "Fill a saved login", Duration::from_secs(10));
     });
-    app.key("escape").unwrap();
+    let _ = app.key("escape");
 
     // Settings: pairing, accounts, usage.
-    shots.take("devices-dark", &mut app, |app| {
-        settings_section(app, "devices");
-        // The relay row shows the app's default relay address, which is a person's account name on a workers.dev host. The
-        // picture shows an invented address instead, typed into the field and never saved.
+    //
+    // Devices shows the relay's address in a field, seeded with the app's default, which is a person's account name on a
+    // workers.dev host. It is replaced before anything of Devices is photographed, as a step of its own (never inside a
+    // picture's step, where a failure would photograph the default, into the public artifact): the invented address is
+    // typed and saved, and the Use the public relay button, which only shows once the saved address is not the default, is
+    // the proof that it is. From then on every render of Devices, behind the pairing dialog and in a failure picture too,
+    // shows the invented one. If that step fails, neither Devices picture is taken at all. Nothing dials the relay: with no
+    // device and no pairing code shown, the daemon connects to nothing.
+    let relay_hidden = shots.attempt("replacing the relay address before Devices", |_| {
+        settings_section(&mut app, "devices");
         app.click("settings.devices.relay.address").unwrap();
         app.key("ctrl-a").unwrap();
         app.text("https://relay.example.com").unwrap();
+        until(
+            &mut app,
+            "Save didn't offer to save the invented address",
+            |app| {
+                app.snapshot()
+                    .unwrap()
+                    .node("settings.devices.relay.save")
+                    .is_some_and(|node| node.enabled)
+            },
+        );
+        app.click("settings.devices.relay.save").unwrap();
+        until(&mut app, "the invented relay address wasn't saved", |app| {
+            app.snapshot()
+                .unwrap()
+                .node("settings.devices.relay.public")
+                .is_some()
+        });
     });
-    shots.take("pair-dialog-dark", &mut app, |app| {
-        activate(app, "settings.devices.pair");
-        app.wait("dialog.title", Predicate::Exists, 10_000).unwrap();
-    });
-    app.key("escape").unwrap();
+    if relay_hidden {
+        shots.take_without_failure_picture("devices-dark", &mut app, |app| {
+            settings_section(app, "devices");
+        });
+        shots.take_without_failure_picture("pair-dialog-dark", &mut app, |app| {
+            activate(app, "settings.devices.pair");
+            app.wait("dialog.title", Predicate::Exists, 10_000).unwrap();
+        });
+        let _ = app.key("escape");
+    } else {
+        for name in ["devices-dark", "pair-dialog-dark"] {
+            shots.skip(
+                name,
+                "the relay address could not be replaced, so nothing of Devices is photographed",
+            );
+        }
+    }
     shots.take("accounts-dark", &mut app, |app| {
         settings_section(app, "accounts");
     });
@@ -905,17 +1024,6 @@ fn e2e_readme_shots() {
         common::wait_for_text(app, "Needs you", Duration::from_secs(30));
         show_every_card(app, &forge_id);
     });
-
-    println!("taken: {:?}", shots.taken);
-    for (name, why) in &shots.failed {
-        println!("NOT TAKEN {name}: {why}");
-    }
-    let missing: Vec<&str> = PICTURES
-        .iter()
-        .copied()
-        .filter(|name| !shots.taken.contains(name))
-        .collect();
-    assert!(missing.is_empty(), "pictures not taken: {missing:?}");
 }
 
 /// The Agents screen at 1000 by 700 shows its Needs you group and one row of cards; Tab to the last card's Open chat
@@ -948,9 +1056,17 @@ fn wait_post(app: &mut Client, text: &str) {
     });
 }
 
-/// Runs git in `folder`, with an invented identity, and fails if it does.
+/// Runs git in `folder`, with an invented identity, and fails if it does. Nothing of the machine's own git setup reaches it:
+/// not its global or system configuration (a `commit.gpgsign` there would fail the commit), and not an author or committer
+/// named in the environment (which outranks `-c`).
 fn git(folder: &Path, args: &[&str]) {
     let out = desktop_host::spawn::command("git")
+        .env("GIT_CONFIG_GLOBAL", "nul")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env_remove("GIT_AUTHOR_NAME")
+        .env_remove("GIT_AUTHOR_EMAIL")
+        .env_remove("GIT_COMMITTER_NAME")
+        .env_remove("GIT_COMMITTER_EMAIL")
         .args([
             "-c",
             "user.name=Sample Author",

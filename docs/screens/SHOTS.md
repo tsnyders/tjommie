@@ -15,9 +15,9 @@ The README uses the pictures listed here, under `docs/screens/`. None of them ex
 
 ### The capture job
 
-A manually started workflow does all the capturing. This section is its specification, and the workflow file is `.github/workflows/readme-shots.yml`.
+A workflow that is started on purpose does all the capturing. This section is its specification, and the workflow file is `.github/workflows/readme-shots.yml`.
 
-- **Trigger:** `workflow_dispatch` only. It never runs on a push, a pull request or a tag. Start it with `gh workflow run readme-shots.yml --ref <branch>`.
+- **Trigger:** `workflow_dispatch`, and a push of a branch named `readme-shots-<anything>`. GitHub starts a `workflow_dispatch` run only from a workflow file that is on the default branch, so until this file is on `main` the capture is started by pushing a commit to such a branch (`git push origin <commit>:refs/heads/readme-shots-1`); once it is on `main`, `gh workflow run readme-shots.yml --ref <branch>` works too. No other branch, no pull request and no tag runs it.
 - **Permissions:** `contents: read`. It uses no secrets, and it never pushes, commits or comments.
 - **Runner:** `windows-latest`, the same image as the e2e job in `ci.yml`. Its display is 1024 by 768 at 100% scale, so a 1000 by 700 window fits and the PNGs are 1000 by 700 pixels.
 - **Steps, in order:**
@@ -26,9 +26,10 @@ A manually started workflow does all the capturing. This section is its specific
   3. Check that neither `claude` nor `codex` is on PATH, and fail if one is. The "tools not installed" picture depends on it.
   4. Build the **normal** daemon (`cargo build -p daemon --bin tjommie-daemon --locked`) and copy it to a folder of its own, for example `target\readme-shots\plain\tjommie-daemon.exe`.
   5. Build the **fixtures** daemon (`cargo build -p daemon --bin tjommie-daemon --features provider-fixtures --locked`). It writes `target\debug\tjommie-daemon.exe`, which is why step 4 copies the normal one away first.
-  6. Run the capture test with `TJOMMIE_IDENTITY=e2e`: `cargo test -p desktop --features test-driver --test e2e_readme_shots --locked -- --ignored --nocapture`. The test is ignored in a normal run, because `ci.yml` runs every `e2e_*` test and this one takes pictures instead of checking anything. It calls `app.resize(1000., 700.)` right after each launch and takes one picture per row in the tables below.
-  7. Upload `tjommie-rs/target/readme-shots/*.png` with `actions/upload-artifact`, named `readme-shots`, `if-no-files-found: error`, a short retention (7 days).
-- **After the run:** a person downloads the artifact (`gh run download`), checks every picture by eye (rule 6), copies the ones that pass into `docs/screens/`, and commits them in an ordinary commit.
+  6. Fetch the pinned `pdfium.dll` (`tools/fetch-pdfium.ps1`) and point `TJOMMIE_PDFIUM_DLL` at it, as `ci.yml` does.
+  7. Run the capture test with `TJOMMIE_IDENTITY=e2e`: `cargo test -p desktop --features test-driver --test e2e_readme_shots --locked -- --ignored --nocapture`. The test is ignored in a normal run, because `ci.yml` runs every `e2e_*` test and this one takes pictures instead of checking anything. It calls `app.resize(1000., 700.)` right after each launch and takes one picture per row in the tables below.
+  8. Upload `tjommie-rs/target/readme-shots/*.png` with `actions/upload-artifact`, named `readme-shots`, `if-no-files-found: error`, a short retention (7 days).
+- **After the run:** a person downloads the artifact (`gh run download`), checks every picture by eye (rule 6, and the `_failed-` pictures too: see "After the capture"), copies the ones that pass into `docs/screens/`, and commits them in an ordinary commit.
 
 ### The capture test
 
@@ -130,7 +131,7 @@ These need the Chat lane's work (the chat screen, approval cards and file cards)
 
 | File | Screen and state | Fixture data | Notes |
 |---|---|---|---|
-| `devices-dark.png` | Settings, Devices, with **Pair a device**, the empty list ("No devices paired yet."), and the relay row. | None. | The relay row may show the relay's address. It is public, but look at it. Check the PC name. |
+| `devices-dark.png` | Settings, Devices, with **Pair a device**, the empty list ("No devices paired yet."), and the relay row. | None. | The relay row's field starts with the app's default relay address, which is a person's account name on a workers.dev host. The capture test types an invented address (`https://relay.example.com`) into the field and saves it before Devices is photographed, as a step of its own, and photographs nothing of Devices if that step fails; the picture then also shows a **Use the public relay** button. Look at the field. Check the PC name. |
 | `pair-dialog-dark.png` | The **Pair a device** dialog before the code is shown: the explanation (works once, ten minutes, same Wi-Fi or mobile data) and the **Show pairing code** button. | None. | Do not press **Show pairing code**. A shown QR code and its text are live and may carry the PC's address. |
 
 ### Features table
@@ -144,7 +145,7 @@ Dictation and Files are Features bullets with no picture.
 
 ## After the capture
 
-1. Run every picture through the eye check in rule 6, at full size.
+1. Run every picture through the eye check in rule 6, at full size. The artifact also holds a `_failed-<name>.png` for each picture that could not be taken: it is whatever the runner's window showed when that step stopped. It is not a README picture and is never copied into `docs/screens/`, but it is as public as the artifact is, so give it the same eye check, and if it shows anything private, say so and have the artifact deleted. The Devices pictures leave no `_failed-` picture, for that reason.
 2. Copy the ones that pass to `docs/screens/`, with the file names above.
 3. Scan the PNG files, not only the text, for private strings before committing: search the raw bytes of each file for the owner's username, the owner's computer name and profile path (a metadata chunk can carry them even when the picture looks clean). A runner has none of them, so a hit means something is wrong. Prove the scan works first by planting a known string in a test copy and finding it.
 4. Open the README on the branch and check that every image link resolves.
