@@ -57,6 +57,8 @@ pub struct Clock {
     moving: bool,
     /// The marked motions that drew in this frame.
     marks: u8,
+    /// Every frame drawn since the clock started (the log keeps only the last `LOG`).
+    drawn: u64,
     /// A throttled frame is on its way: only its own timer clears this, so a redraw in between starts no second
     /// chain (review F2).
     throttled: bool,
@@ -111,9 +113,10 @@ impl Clock {
         }
     }
 
-    /// The throttled frame's timer fired.
-    fn fired(&mut self) {
+    /// The throttled frame's timer fired: its frame is drawn.
+    fn fired(&mut self) -> bool {
         self.throttled = false;
+        true
     }
 
     /// Whether a wake at `at` needs a timer: not while an earlier or equal one is pending.
@@ -125,11 +128,14 @@ impl Clock {
         true
     }
 
-    /// The wake at `at` fired.
-    fn woke(&mut self, at: Instant) {
-        if self.wake_at == Some(at) {
+    /// The wake at `at` fired: whether it still counted. One an earlier wake replaced draws nothing (M7 review n13): the
+    /// earlier wake's frame asked for it again.
+    fn woke(&mut self, at: Instant) -> bool {
+        let counted = self.wake_at == Some(at);
+        if counted {
             self.wake_at = None;
         }
+        counted
     }
 }
 
@@ -144,6 +150,7 @@ impl Default for Clock {
             last_moving: None,
             moving: false,
             marks: 0,
+            drawn: 0,
             throttled: false,
             wake_at: None,
             log: VecDeque::with_capacity(LOG),
@@ -227,12 +234,12 @@ pub fn next_frame(active: bool, live: bool) -> Option<Duration> {
     (!active && !live).then_some(INACTIVE)
 }
 
-/// Draws a frame after `delay`, settling the clock's state for it first.
+/// Draws a frame after `delay`, settling the clock's state for it first: unless `settle` says it no longer counts.
 fn timed_frame(
     delay: Duration,
     window: &mut Window,
     cx: &mut App,
-    settle: impl FnOnce(&mut Clock) + 'static,
+    settle: impl FnOnce(&mut Clock) -> bool + 'static,
 ) {
     let timer = cx.background_executor().timer(delay);
     window
@@ -240,8 +247,9 @@ fn timed_frame(
             guarded_async("draw a timed frame", async move {
                 timer.await;
                 let _ = cx.update(|window, cx| {
-                    settle(cx.default_global::<Clock>());
-                    window.refresh();
+                    if settle(cx.default_global::<Clock>()) {
+                        window.refresh();
+                    }
                 });
             })
             .await
@@ -268,6 +276,7 @@ fn end_frame(cx: &mut App) {
         moving: clock.moving,
         marks: clock.marks,
     };
+    clock.drawn += 1;
     if clock.log.len() == LOG {
         clock.log.pop_front();
     }
@@ -279,6 +288,11 @@ fn end_frame(cx: &mut App) {
         }
     }
     clock.last_moving = clock.moving.then_some(clock.frame);
+}
+
+/// Every frame drawn since the clock started: the motion checks' markers count a run's frames by it (M7 review n4).
+pub fn drawn(cx: &App) -> u64 {
+    cx.try_global::<Clock>().map_or(0, |clock| clock.drawn)
 }
 
 /// The frame log, oldest first.
@@ -448,6 +462,22 @@ mod tests {
         });
     }
 
+    /// M7 review n13: a wake replaced by an earlier one says, when its timer fires, that it no longer counts, so that timer
+    /// draws no spare frame; the wake that counts does.
+    #[test]
+    fn a_superseded_wake_draws_no_frame() {
+        let mut clock = Clock::default();
+        let now = Instant::now();
+        let (later, earlier) = (
+            now + Duration::from_millis(500),
+            now + Duration::from_millis(100),
+        );
+        assert!(clock.wake(later));
+        assert!(clock.wake(earlier), "an earlier wake replaces it");
+        assert!(!clock.woke(later), "the later timer fires for nothing");
+        assert!(clock.woke(earlier), "the earlier one draws");
+    }
+
     /// M7 review m3: a frame keeps the motions marked in it, for the motion checks to count; the next starts with none.
     #[gpui::test]
     fn a_frame_keeps_the_motions_marked_in_it(cx: &mut gpui::TestAppContext) {
@@ -477,6 +507,11 @@ mod tests {
             }
             let frames = frames(cx);
             assert_eq!(frames.len(), LOG, "the ring keeps the last {LOG}");
+            assert_eq!(
+                drawn(cx),
+                (LOG + 5) as u64,
+                "and counts every frame (M7 review n4)"
+            );
             assert!(
                 frames
                     .iter()

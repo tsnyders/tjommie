@@ -128,6 +128,10 @@ impl Eyes {
             return still;
         }
         let blinks = pose != Pose::Paused;
+        // A pose that doesn't blink drops a second blink that was due, so it doesn't fire on resume (M7 review n11).
+        if !blinks {
+            self.double_at = None;
+        }
         if blinks && self.blink_started.is_none() && now >= self.next_blink {
             self.blink_started = Some(now);
             self.double_at = (self.rng.next() < 0.18).then_some(now + DOUBLE);
@@ -162,13 +166,17 @@ impl Eyes {
     }
 
     /// Seconds until the eyes next change by themselves: 0 while they move (a blink, the scan, a glance), and never
-    /// (infinity) under reduced motion or while paused, when they keep still (M2 review F6).
+    /// (infinity) under reduced motion or while paused, when they keep still (M2 review F6); a blink under way when the
+    /// pause came finishes first (M7 review n11).
     pub fn next_change(&self, now: f32, pose: Pose, reduced: bool) -> f32 {
-        if reduced || (pose == Pose::Paused && self.glance.is_none()) {
+        if reduced {
             return f32::INFINITY;
         }
         if self.blink_started.is_some() || self.glance.is_some() || pose == Pose::Working {
             return 0.;
+        }
+        if pose == Pose::Paused {
+            return f32::INFINITY;
         }
         let next = self
             .double_at
@@ -251,6 +259,30 @@ pub fn glance(id: &SharedString, cx: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// M7 review n11: paused mid-blink, the blink still finishes (the eyes ask for frames until it has), and a second
+    /// blink that was due drops, so it doesn't fire on resume.
+    #[test]
+    fn a_pause_mid_blink_lets_the_blink_finish_and_drops_its_double() {
+        let motion = crate::theme::Theme::aegis().unwrap().motion;
+        let mut eyes = Eyes::new(7, 0., &motion);
+        eyes.blink_started = Some(1.0);
+        eyes.double_at = Some(1.24);
+        assert_eq!(
+            eyes.next_change(1.05, Pose::Paused, false),
+            0.,
+            "the blink under way finishes"
+        );
+        eyes.gaze(1.05, Pose::Paused, false, &motion);
+        assert!(eyes.double_at.is_none(), "no second blink on resume");
+        eyes.gaze(2.0, Pose::Paused, false, &motion);
+        assert!(eyes.blink_started.is_none(), "the blink finished");
+        assert_eq!(
+            eyes.next_change(2.0, Pose::Paused, false),
+            f32::INFINITY,
+            "then the paused eyes keep still"
+        );
+    }
     use crate::theme::Theme;
 
     fn motion() -> theme::Motion {

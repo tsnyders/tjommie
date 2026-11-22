@@ -29,7 +29,8 @@ use crate::zoom::Zoom;
 /// navigation and the side panels (the browser panel, an exchange, a room's members) open as sheets over the content.
 pub const NARROW: f32 = 640.;
 
-/// Whether `window` is narrow: under 640 design px wide at its zoom.
+/// Whether `window` is narrow: under 640 design px wide at its rem, which the zoom and the text size (Settings,
+/// Appearance) both scale (M7 review n7).
 pub fn narrow(window: &Window) -> bool {
     let zoom = f32::from(window.rem_size()) / 16.;
     f32::from(window.viewport_size().width) / zoom.max(0.1) < NARROW
@@ -491,7 +492,6 @@ mod tests {
         assert!(!next_frame(cx), "reduced: the rows are in place at once");
     }
 
-    #[gpui::test]
     /// M7 review m10: a zoom (or text-size) change moves every Recents row by its new size, which is no reorder: they are in
     /// place at once, as a key's change always is.
     #[gpui::test]
@@ -540,6 +540,7 @@ mod tests {
         );
     }
 
+    #[gpui::test]
     fn the_connection_screen_takes_the_main_columns_place(cx: &mut gpui::TestAppContext) {
         let cx = shell_window(cx, ShellData::default());
         assert!(

@@ -26,12 +26,22 @@ impl Spring {
 
     /// A spring whose unit spans `scale` pixels on screen: a 0-to-1 fraction of a 36 px row has 36.
     pub fn scaled(value: f32, tokens: &theme::Spring, scale: f32) -> Self {
+        // A degenerate token (0, negative or NaN) would never come to rest (M7 review n12): the calm spring's values.
+        let usable = |token: f32| token.is_finite() && token > 0.;
         Self {
             value,
             velocity: 0.,
             target: value,
-            stiffness: tokens.stiffness,
-            damping_ratio: tokens.damping_ratio,
+            stiffness: if usable(tokens.stiffness) {
+                tokens.stiffness
+            } else {
+                260.
+            },
+            damping_ratio: if usable(tokens.damping_ratio) {
+                tokens.damping_ratio
+            } else {
+                1.
+            },
             scale: scale.max(1.),
         }
     }
@@ -82,6 +92,22 @@ mod tests {
 
     fn springs() -> theme::Springs {
         Theme::aegis().unwrap().motion.spring
+    }
+
+    /// M7 review n12: a degenerate token (stiffness 0, damping NaN) still comes to rest, on the calm spring's values.
+    #[test]
+    fn a_degenerate_token_still_settles() {
+        let mut tokens = springs().calm;
+        tokens.stiffness = 0.;
+        tokens.damping_ratio = f32::NAN;
+        let mut spring = Spring::new(0., &tokens);
+        spring.set_target(40.);
+        let mut steps = 0;
+        while spring.step(0.016) {
+            steps += 1;
+            assert!(steps < 200, "it settles");
+        }
+        assert_eq!(spring.value, 40.);
     }
 
     /// Runs at 100 Hz until rest: (seconds to rest, peak overshoot as a fraction of the distance).

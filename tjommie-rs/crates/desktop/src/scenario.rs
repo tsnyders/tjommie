@@ -61,7 +61,9 @@ pub fn options() -> Option<Options> {
             .and_then(|at| args.get(at + 1))
             .cloned()
     };
-    let name = value("--scenario")?;
+    // A --scenario with no name runs nothing and fails, rather than starting the app as usual (M7 review n10).
+    let at = args.iter().position(|arg| arg == "--scenario")?;
+    let name = args.get(at + 1).cloned().unwrap_or_default();
     Some(Options {
         name,
         loops: value("--loops").and_then(|n| n.parse().ok()).unwrap_or(50),
@@ -432,11 +434,13 @@ async fn loops(
     let mut windows = Vec::with_capacity(options.loops);
     let mut durations = Vec::with_capacity(options.loops);
     let start = qpc();
+    let drawn_before = cx.update(|cx| clock::drawn(cx));
     for i in 0..options.loops {
         if options.name == "motion-toast" {
             // In, then out: two spans a loop.
             for step in [false, true] {
                 let began = qpc();
+                let timer = Instant::now();
                 if step {
                     click(window, "toast.close.0", cx)?;
                 } else {
@@ -447,6 +451,8 @@ async fn loops(
                 }
                 until_rest(began, cx, 4000).await?;
                 windows.push((began, qpc()));
+                // Each span is a motion, in or out: its time counts (M7 review n5).
+                durations.push(timer.elapsed().as_secs_f64() * 1000.);
                 sleep(cx, 150).await;
             }
             continue;
@@ -459,7 +465,7 @@ async fn loops(
         durations.push(timer.elapsed().as_secs_f64() * 1000.);
         sleep(cx, 150).await;
     }
-    write_markers(options, start, qpc(), &windows, cx);
+    write_markers(options, start, qpc(), &windows, drawn_before, cx);
     durations.sort_by(f64::total_cmp);
     let median = durations.get(durations.len() / 2).copied();
     record(
@@ -475,12 +481,16 @@ fn write_markers(
     start: i64,
     end: i64,
     windows: &[(i64, i64)],
+    drawn_before: u64,
     cx: &mut AsyncApp,
 ) {
     let Some(markers) = &options.markers else {
         return;
     };
-    let frames = cx.update(|cx| clock::frames(cx).len());
+    // Every frame drawn in the run: the log is a ring of the last 2048 (M7 review n4).
+    let frames = cx
+        .update(|cx| clock::drawn(cx))
+        .saturating_sub(drawn_before);
     let _ = std::fs::write(
         markers,
         format!(
@@ -503,9 +513,10 @@ fn write_markers(
 /// The living avatars for `--seconds`: every agent blinks on its own clock, two scan as they work.
 async fn alive(options: &Options, cx: &mut AsyncApp) -> Result<bool, String> {
     let start = qpc();
+    let drawn_before = cx.update(|cx| clock::drawn(cx));
     sleep(cx, (options.seconds * 1000.) as u64).await;
     let end = qpc();
-    write_markers(options, start, end, &[(start, end)], cx);
+    write_markers(options, start, end, &[(start, end)], drawn_before, cx);
     record(
         options,
         json!({ "scenario": options.name, "pass": true, "seconds": options.seconds }),
@@ -520,6 +531,7 @@ async fn scroll(
     cx: &mut AsyncApp,
 ) -> Result<bool, String> {
     let start = qpc();
+    let drawn_before = cx.update(|cx| clock::drawn(cx));
     let mut windows = Vec::new();
     for i in 0..options.loops {
         let began = qpc();
@@ -546,7 +558,7 @@ async fn scroll(
         }
         windows.push((began, qpc()));
     }
-    write_markers(options, start, qpc(), &windows, cx);
+    write_markers(options, start, qpc(), &windows, drawn_before, cx);
     record(
         options,
         json!({ "scenario": options.name, "pass": true, "loops": options.loops }),
