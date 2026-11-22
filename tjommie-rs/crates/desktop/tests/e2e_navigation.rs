@@ -3,6 +3,8 @@
 #![cfg(feature = "test-driver")]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+mod common;
+
 use std::time::{Duration, Instant};
 
 use desktop::test_driver::{Client, Predicate};
@@ -31,7 +33,7 @@ fn e2e_navigation() {
         "build the e2e app: TJOMMIE_IDENTITY=e2e"
     );
     let root = owner_safety::test_root().unwrap();
-    let mut app = Client::launch(env!("CARGO_BIN_EXE_tjommie-desktop"), root.path()).unwrap();
+    let mut app = Client::launch(&common::desktop_exe(), root.path()).unwrap();
 
     // The app opens on Agents. The sidebar works whether the app's daemon has come up yet or not (connecting, the
     // connection screen fills the main column; `e2e_live` follows the connection itself).

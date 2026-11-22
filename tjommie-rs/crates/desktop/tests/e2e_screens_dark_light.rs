@@ -8,10 +8,13 @@
 #![cfg(feature = "test-driver")]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::thread::sleep;
 use std::time::Duration;
 
+use common::daemon_exe;
 use desktop::test_driver::{Client, Predicate};
 use desktop_host::{identity, owner_safety};
 
@@ -38,18 +41,12 @@ const SECTIONS: [&str; 12] = [
     "about",
 ];
 
-fn daemon_exe() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_tjommie-desktop")).with_file_name("tjommie-daemon.exe")
-}
-
 /// Keeps a picture of the app's window as a PNG: the window of the process started from this test's app, drawn by
 /// itself (PrintWindow with PW_RENDERFULLCONTENT, 2), so a window over it never shows in the picture. A blank picture
 /// fails (M5 review Minor 29): a 40 by 40 grid of its pixels must hold at least four colours, as any drawn screen does
 /// (the sidebar, the page, a card and text).
 fn picture(out: &Path) {
-    let exe = env!("CARGO_BIN_EXE_tjommie-desktop")
-        .replace('/', "\\")
-        .replace('\'', "''");
+    let exe = common::desktop_exe().replace('/', "\\").replace('\'', "''");
     let out = out.display().to_string().replace('\'', "''");
     let script = format!(
         r#"
@@ -65,7 +62,7 @@ public static class Win {{
 }}
 '@
 [Win]::SetProcessDPIAware() | Out-Null
-$app = Get-CimInstance Win32_Process -Filter "Name='tjommie-desktop.exe'" |
+$app = Get-CimInstance Win32_Process |
   Where-Object {{ $_.ExecutablePath -eq '{exe}' }} | Sort-Object CreationDate -Descending | Select-Object -First 1
 $window = (Get-Process -Id $app.ProcessId).MainWindowHandle
 $rect = New-Object Win+Rect
@@ -144,7 +141,7 @@ fn e2e_screens_dark_light() {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/m5-screens");
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = Client::launch_with(
-        env!("CARGO_BIN_EXE_tjommie-desktop"),
+        &common::desktop_exe(),
         root.path(),
         &[("TJOMMIE_DAEMON_EXE", daemon_exe().to_str().unwrap())],
     )
