@@ -377,7 +377,7 @@ async fn trigger(
         }
         // Forge's and Ledger's rows in turn: each opens its chat, and its avatar flies into the header.
         "motion-flight" => {
-            let row = if i % 2 == 0 {
+            let row = if i.is_multiple_of(2) {
                 "sidebar.recent.ledger"
             } else {
                 "sidebar.recent.forge"
