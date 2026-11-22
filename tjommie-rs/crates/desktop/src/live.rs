@@ -528,7 +528,7 @@ impl Shared {
 /// ([`daemon_process::daemon_exe_for`] has the rule, with its tests).
 fn daemon_exe(identity: &Identity, env: &[(String, String)]) -> Result<PathBuf, String> {
     let exe = std::env::current_exe().map_err(|error| error.to_string())?;
-    daemon_process::daemon_exe_for(identity.kind, &exe, env, Path::exists)
+    daemon_process::daemon_exe_for(identity, &exe, env, Path::exists)
         .map_err(|error| error.to_string())
 }
 
