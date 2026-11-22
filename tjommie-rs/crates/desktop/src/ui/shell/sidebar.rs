@@ -114,10 +114,15 @@ fn sections() -> [(&'static str, &'static str, &'static str, Route); 5] {
 }
 
 /// The compact navigation of a narrow window (below 640 px, as `rail.tsx` hid itself under `sm`): a 56 px column of the
-/// five sections as icon links, then New agent. Recents and the host button wait for a wider window; Agents lists every
-/// agent and room, and Settings, Devices switches PCs. The links keep their ids, names and keys: Tab and the arrows
-/// reach them as they reach the full sidebar's.
-pub(super) fn compact(route: &Route, window: &mut Window, cx: &mut App) -> AnyElement {
+/// five sections as icon links, then at its foot the host button (its face; Switch PC, M7 review m1) and New agent.
+/// Recents wait for a wider window: Agents lists every agent and room. The links keep their ids, names and keys: Tab and
+/// the arrows reach them as they reach the full sidebar's.
+pub(super) fn compact(
+    route: &Route,
+    data: &ShellData,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
     let links: Vec<AnyElement> = sections()
         .into_iter()
         .map(|(key, icon, label, to)| {
@@ -152,6 +157,7 @@ pub(super) fn compact(route: &Route, window: &mut Window, cx: &mut App) -> AnyEl
     let new = crate::ui::primitives::button::IconButton::new("sidebar.new", "plus", "New agent")
         .variant(crate::ui::primitives::button::IconVariant::Dark)
         .on_press(|_, cx| cx.navigate(Route::NewBot));
+    let host = host_menu(data, focus_handle("sidebar.host", window, cx), true);
     let theme = theme(cx);
     div()
         .semantic("sidebar.compact", Role::Navigation)
@@ -172,7 +178,16 @@ pub(super) fn compact(route: &Route, window: &mut Window, cx: &mut App) -> AnyEl
                 .gap(r(theme.space.s4))
                 .children(links),
         )
-        .child(div().mt_auto().child(new))
+        .child(
+            div()
+                .mt_auto()
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(r(theme.space.s8))
+                .child(host)
+                .child(new),
+        )
         .into_any_element()
 }
 
@@ -216,7 +231,7 @@ pub(super) fn sidebar(
         .map(|leaving| leaving_row(leaving, cx))
         .collect();
     let view_all = view_all(window, cx);
-    let host = host_menu(data, focus_handle("sidebar.host", window, cx));
+    let host = host_menu(data, focus_handle("sidebar.host", window, cx), false);
     // The arrows move between the sections, and between Recents (T5.6); Tab still stops at each.
     let sections_list = window
         .use_keyed_state("sidebar.sections.list", cx, |_, cx| cx.focus_handle())
@@ -673,14 +688,15 @@ pub(super) fn host_button(data: &ShellData) -> HostButton {
     }
 }
 
-/// The host button's menu. The button is a tab stop: Enter or Space opens the menu (T5.6).
-fn host_menu(data: &ShellData, focus: FocusHandle) -> Menu {
+/// The host button's menu. The button is a tab stop: Enter or Space opens the menu (T5.6). `compact`: the rail's, its
+/// face alone.
+fn host_menu(data: &ShellData, focus: FocusHandle, compact: bool) -> Menu {
     let button = host_button(data);
     let via = data.via.clone();
     let current: Option<SharedString> = data.host.clone();
     let on = current.clone().unwrap_or_else(|| THIS_PC.into());
     let menu = Menu::new("sidebar.host.menu", move |open, window, cx| {
-        host_trigger(button, via, open, &focus, window, cx)
+        host_trigger(button, via, open, &focus, compact, window, cx)
     })
     .anchor(gpui::Anchor::BottomLeft)
     .offset(px(8.));
@@ -720,6 +736,7 @@ fn host_trigger(
     via: Option<SharedString>,
     open: bool,
     focus: &FocusHandle,
+    compact: bool,
     window: &Window,
     cx: &App,
 ) -> AnyElement {
@@ -758,33 +775,36 @@ fn host_trigger(
         .gap(r(theme.space.s10))
         .min_w_0()
         .p(r(theme.space.s4))
-        .pr(r(theme.space.s8))
+        .when(!compact, |host| host.pr(r(theme.space.s8)))
         .rounded_full()
         .cursor_pointer()
         .when(open, |host| host.bg(hsla(colors.state.hover)))
         .hover(|style| style.bg(hsla(colors.state.hover)))
         .child(face)
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .min_w_0()
-                .child(
-                    div()
-                        .type_style(&theme.typography.desktop.ui_strong)
-                        .text_color(hsla(colors.text.primary))
-                        .whitespace_nowrap()
-                        .child(button.name),
-                )
-                .when_some(via, |lines, via| {
-                    lines.child(
+        // In the rail the face alone: its name is the button's accessible name.
+        .when(!compact, |host| {
+            host.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .min_w_0()
+                    .child(
                         div()
-                            .type_style(&theme.typography.desktop.meta)
-                            .text_color(hsla(colors.text.tertiary))
-                            .child(via),
+                            .type_style(&theme.typography.desktop.ui_strong)
+                            .text_color(hsla(colors.text.primary))
+                            .whitespace_nowrap()
+                            .child(button.name),
                     )
-                }),
-        )
+                    .when_some(via, |lines, via| {
+                        lines.child(
+                            div()
+                                .type_style(&theme.typography.desktop.meta)
+                                .text_color(hsla(colors.text.tertiary))
+                                .child(via),
+                        )
+                    }),
+            )
+        })
         .into_any_element()
 }
 

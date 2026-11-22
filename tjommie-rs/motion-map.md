@@ -151,9 +151,14 @@ The phone's Needs you item becoming the approval card is phone only.
 ## The narrow window (not a motion.html card)
 
 Below 640 design px wide (`ui::shell::narrow`), the sidebar becomes the compact navigation (`sidebar::compact`: the five
-sections as icon links, then New agent) and the side panels open as sheets over the content: the browser panel, an
-exchange and a room's members (`shell::sheet`, `members::panel`). Checks: `projects::tests::a_narrow_window_has_compact_navigation_and_projects_fits`,
-`rooms::tests::a_narrow_window_shows_the_members_as_a_sheet`.
+sections as icon links, then at its foot the host button and New agent), and the chat header keeps the name and two
+buttons (Pause and Agent settings move into More, the state under the name). Side panels lie over the content as sheets
+wherever it is too narrow for both (`shell::overlaid`: under 1000 design px of content, as 0.5.x did, and always below
+640 px): the browser panel, an exchange and a room's members (`shell::sheet`, `members::panel`; the members as a sheet
+open only when asked for). A sheet takes the keyboard and keeps Tab inside, says what it covers, and Escape closes it,
+the keyboard back on its opener. Checks: `projects::tests::a_narrow_window_has_compact_navigation_and_projects_fits`,
+`rooms::tests::a_narrow_window_shows_the_members_as_a_sheet`,
+`rooms::tests::at_the_640_threshold_the_members_are_a_sheet_and_at_1000_beside_the_posts`, `chat::tests::side_panels::*`.
 
 ## Deferred to 0.6.1 (owner decision, 2026-11-22)
 

@@ -420,6 +420,13 @@ fn a_narrow_window_has_compact_navigation_and_projects_fits(cx: &mut TestAppCont
         "narrow: the compact navigation"
     );
     assert!(node("sidebar.wordmark").is_none() && node("sidebar.view_all").is_none());
+    // M7 review m1: switching PCs stays at hand, at the rail's foot.
+    let host = node("sidebar.host").expect("the host button at the rail's foot");
+    assert!(
+        host.bounds.x + host.bounds.width <= 56. && host.bounds.width <= 48.,
+        "a face in the rail: {:?}",
+        host.bounds
+    );
     let new = node("projects.new").expect("New project");
     assert!(
         new.bounds.x >= 0. && new.bounds.x + new.bounds.width <= 360.,
@@ -456,6 +463,22 @@ fn a_narrow_window_has_compact_navigation_and_projects_fits(cx: &mut TestAppCont
         cx.update(|_, cx| crate::ui::shell::route::current(cx)),
         Route::Rooms
     );
+    // The host button's menu opens by Enter, as the full sidebar's does.
+    cx.update(|window, cx| {
+        assert!(crate::ui::primitives::focus_by_id(
+            "sidebar.host",
+            window,
+            cx
+        ));
+    });
+    cx.simulate_keystrokes("enter");
+    draw(cx);
+    assert!(
+        node("host.connect").is_some(),
+        "its menu offers the other PCs"
+    );
+    cx.simulate_keystrokes("escape");
+    draw(cx);
     // Wide again: the full sidebar comes back.
     cx.simulate_resize(size(px(1000.), px(700.)));
     draw(cx);

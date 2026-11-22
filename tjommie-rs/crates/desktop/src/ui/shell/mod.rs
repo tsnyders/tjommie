@@ -170,7 +170,7 @@ impl Render for Shell {
         let data = cx.try_global::<ShellData>().cloned().unwrap_or_default();
         let narrow = narrow(window);
         let sidebar = if narrow {
-            sidebar::compact(&route, window, cx)
+            sidebar::compact(&route, &data, window, cx)
         } else {
             sidebar::sidebar(&route, &data, window, cx)
         };
