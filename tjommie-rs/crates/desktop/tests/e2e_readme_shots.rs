@@ -27,6 +27,7 @@ use std::path::{Path, PathBuf};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
+use common::daemon_exe;
 use desktop::test_driver::{Client, Predicate};
 use desktop_host::{identity, owner_safety};
 use serde_json::{Value, json};
@@ -56,10 +57,6 @@ const PICTURES: [&str; 19] = [
     "approval-dark",
     "agents-light",
 ];
-
-fn daemon_exe() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_tjommie-desktop")).with_file_name("tjommie-daemon.exe")
-}
 
 // ---------------------------------------------------------------------------------------------------------------------
 // The driver's small helpers
@@ -449,7 +446,7 @@ fn not_installed(shots: &mut Shots, plain: &Path) {
     let folder = root.path().join("none");
     std::fs::create_dir_all(&folder).unwrap();
     let mut app = Client::launch_with(
-        env!("CARGO_BIN_EXE_tjommie-desktop"),
+        &common::desktop_exe(),
         root.path(),
         &[("TJOMMIE_DAEMON_EXE", plain.to_str().unwrap())],
     )

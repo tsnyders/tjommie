@@ -110,6 +110,7 @@ The app starts the daemon without `TJOMMIE_DEV`, `TJOMMIE_ACCOUNTS_DIR` and ever
 | `TJOMMIE_UPDATES=off` | Turns the updater off. |
 | `TJOMMIE_UPDATE_FEED` | A local update feed. Only the `updatetest` identity honours it. |
 | `TJOMMIE_PROVIDER_FIXTURES` | A folder of recorded conversations. Only a daemon built with `--features provider-fixtures` accepts it. |
+| `TJOMMIE_E2E_EXE` | Tests only. The e2e tests launch this desktop exe (an absolute path to an existing file) instead of the one cargo built, and look for `tjommie-daemon.exe` beside it. A bad value fails the test with the reason; it never falls back. Production code does not read it. |
 | `TJOMMIE_ACCOUNTS_DIR` | Tests only. Uses a folder of signed-in account folders with a disposable data root. |
 | `TJOMMIE_CI_HOSTED=1` | Set on GitHub's hosted runners. Tests that need Credential Manager or a real logon skip themselves, and run on real PCs instead. |
 

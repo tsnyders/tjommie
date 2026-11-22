@@ -6,16 +6,13 @@
 #![cfg(feature = "test-driver")]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use std::path::PathBuf;
+mod common;
+
 use std::time::{Duration, Instant};
 
+use common::daemon_exe;
 use desktop::test_driver::{Client, Predicate};
 use desktop_host::{identity, owner_safety};
-
-/// The debug daemon beside the app, built with `--features provider-fixtures`.
-fn daemon_exe() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_tjommie-desktop")).with_file_name("tjommie-daemon.exe")
-}
 
 /// Harbour's one turn: a short answer, streamed in two parts.
 const HARBOUR: &str = r#"{ "version": 1, "turns": [ { "events": [
@@ -62,7 +59,7 @@ fn e2e_room_mention() {
     std::fs::create_dir_all(&fixtures).unwrap();
     std::fs::write(fixtures.join("Harbour.json"), HARBOUR).unwrap();
     let mut app = Client::launch_with(
-        env!("CARGO_BIN_EXE_tjommie-desktop"),
+        &common::desktop_exe(),
         root.path(),
         &[
             ("TJOMMIE_DAEMON_EXE", daemon_exe().to_str().unwrap()),

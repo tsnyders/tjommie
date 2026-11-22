@@ -6,6 +6,7 @@
 //! `TJOMMIE_IDENTITY=e2e cargo test -p desktop --features test-driver --test <name> --locked`.
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use std::ffi::OsStr;
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -13,9 +14,59 @@ use std::time::{Duration, Instant};
 
 use desktop::test_driver::{Client, Predicate};
 
+/// Test only: the desktop exe the e2e tests launch in place of the one cargo built. An acceptance run on a runner installs a
+/// packaged test-identity build (with the `test-driver` feature) and runs the e2e set against it. Unset, nothing changes.
+pub const E2E_EXE_VAR: &str = "TJOMMIE_E2E_EXE";
+
+/// The exe an e2e test launches: `over` (the value of [`E2E_EXE_VAR`]) when it is set, else `built`, the one cargo built. The
+/// value must be the absolute path of an existing file, and anything else is an error that says so, never a silent fallback to
+/// the built exe: a run that meant to test the installed build must not test another one. An empty value counts as set.
+pub fn resolve_desktop_exe(over: Option<&OsStr>, built: &str) -> Result<String, String> {
+    let Some(value) = over else {
+        return Ok(built.to_owned());
+    };
+    let path = Path::new(value);
+    let shown = path.display();
+    if value.is_empty() {
+        return Err(format!(
+            "{E2E_EXE_VAR} is set but empty. Give the absolute path of the desktop exe to test, or leave it unset to test the one cargo built."
+        ));
+    }
+    if !path.is_absolute() {
+        return Err(format!(
+            "{E2E_EXE_VAR} must be an absolute path to the desktop exe, but {shown} is not absolute."
+        ));
+    }
+    if !path.exists() {
+        return Err(format!(
+            "{E2E_EXE_VAR} names {shown}, which does not exist."
+        ));
+    }
+    if !path.is_file() {
+        return Err(format!(
+            "{E2E_EXE_VAR} must name the desktop exe, a file, but {shown} is not a file."
+        ));
+    }
+    path.to_str().map(str::to_owned).ok_or_else(|| {
+        format!("{E2E_EXE_VAR} names {shown}, which is not valid text, so it can't be launched.")
+    })
+}
+
+/// The desktop exe the e2e tests launch ([`resolve_desktop_exe`] over this process's environment). A bad
+/// [`E2E_EXE_VAR`] fails the test with the reason.
+pub fn desktop_exe() -> String {
+    match resolve_desktop_exe(
+        std::env::var_os(E2E_EXE_VAR).as_deref(),
+        env!("CARGO_BIN_EXE_tjommie-desktop"),
+    ) {
+        Ok(exe) => exe,
+        Err(reason) => panic!("{reason}"),
+    }
+}
+
 /// The debug daemon beside the app, built with `--features provider-fixtures`.
 pub fn daemon_exe() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_tjommie-desktop")).with_file_name("tjommie-daemon.exe")
+    PathBuf::from(desktop_exe()).with_file_name("tjommie-daemon.exe")
 }
 
 /// A fixture for an agent that is never messaged: its folder needs a file the daemon can read, or it refuses to start.
@@ -45,7 +96,7 @@ pub fn launch_args(root: &Path, fixtures: &[(&str, &str)], args: &[&str]) -> Cli
         std::fs::write(folder.join(name), contents).unwrap();
     }
     Client::launch_args(
-        env!("CARGO_BIN_EXE_tjommie-desktop"),
+        &desktop_exe(),
         root,
         &[
             ("TJOMMIE_DAEMON_EXE", daemon_exe().to_str().unwrap()),
@@ -175,9 +226,7 @@ pub fn make_agent(app: &mut Client, name: &str, browser: bool) {
 /// grid of its pixels must hold at least four colours, as any drawn screen does (the sidebar, the page, a card and text).
 /// Nothing but the app's own window is ever drawn, so nothing else on the desktop can get into a picture.
 pub fn picture(out: &Path) {
-    let exe = env!("CARGO_BIN_EXE_tjommie-desktop")
-        .replace('/', "\\")
-        .replace('\'', "''");
+    let exe = desktop_exe().replace('/', "\\").replace('\'', "''");
     let out = out.display().to_string().replace('\'', "''");
     let script = format!(
         r#"
@@ -194,7 +243,7 @@ public static class Win {{
 }}
 '@
 [Win]::SetProcessDPIAware() | Out-Null
-$app = Get-CimInstance Win32_Process -Filter "Name='tjommie-desktop.exe'" |
+$app = Get-CimInstance Win32_Process |
   Where-Object {{ $_.ExecutablePath -eq '{exe}' }} | Sort-Object CreationDate -Descending | Select-Object -First 1
 $window = (Get-Process -Id $app.ProcessId).MainWindowHandle
 $rect = New-Object Win+Rect

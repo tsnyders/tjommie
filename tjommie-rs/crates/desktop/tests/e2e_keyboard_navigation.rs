@@ -19,11 +19,14 @@
 #![cfg(feature = "test-driver")]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
+use common::daemon_exe;
 use desktop::test_driver::{Client, Predicate};
 use desktop_host::{identity, owner_safety};
 
@@ -46,10 +49,6 @@ fn log_tail() -> String {
         }
         Err(error) => format!("(no log at {}: {error})", path.display()),
     }
-}
-
-fn daemon_exe() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_tjommie-desktop")).with_file_name("tjommie-daemon.exe")
 }
 
 /// Harbour's turns, one per message, in the order the test sends them: two lines from its chat's composer (as one
@@ -626,7 +625,7 @@ fn e2e_keyboard_navigation() {
     std::fs::write(fixtures.join("Harbour.json"), HARBOUR).unwrap();
     std::fs::write(fixtures.join("Lantern.json"), LANTERN).unwrap();
     let mut app = Client::launch_with(
-        env!("CARGO_BIN_EXE_tjommie-desktop"),
+        &common::desktop_exe(),
         root.path(),
         &[
             ("TJOMMIE_DAEMON_EXE", daemon_exe().to_str().unwrap()),
