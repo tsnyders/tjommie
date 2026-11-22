@@ -241,9 +241,15 @@ describe("the update-path script and the installer script agree", () => {
   });
 
   it("on what U7 and U8 can and cannot show: the daemon is the new app's by when it started, and a notification is an inference", () => {
-    // R1's exe has the new exe's name and path, so a daemon is told to be the new app's by starting, under a new-exe process, after R1 had quit (U3).
+    // R1's exe has the new exe's name and path, so a daemon is told to be the new app's by starting, under a new-exe process, after R1 had quit (U3). The
+    // instant is the one the driver took in R1's own close handler, never the time U3 regains control (run 6: the installer had started the new app by then).
     const u3 = update.slice(update.indexOf("Invoke-Step 'U3 "), update.indexOf("Invoke-Step 'U4 "));
-    expect(u3).toContain("$state['handover'] = Get-Date");
+    expect(u3).toContain("Get-R1QuitTime @($updated['lines'])");
+    expect(u3).toContain("$state['handover'] = $quit");
+    expect(u3).not.toContain("Get-Date");
+    const driver = readFileSync(join(repo, "scripts", "phase3-acceptance.ts"), "utf8");
+    expect(driver).toContain('app.once("close", () => { quitAt = new Date(); done(); })');
+    expect(driver).toContain("R1 quit at ${quitAt.toISOString()}");
     const u7 = update.slice(update.indexOf("Invoke-Step 'U7 "), update.indexOf("Invoke-Step 'U8 "));
     expect(u7).toContain("$parent.CreationDate -gt $handover");
     expect(u7).toContain("$_.CreationDate -gt $handover");

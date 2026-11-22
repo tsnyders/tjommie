@@ -2,11 +2,12 @@ import { spawnSync } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
+import { userInfo } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { VaultRecords, WindowsLoginCredentials, type VaultCredentials } from "../packages/desktop/src/vault-storage.ts";
-import { type Counts, assertCi, diffCounts, readCounts, runInstalledDaemon, seedRoot } from "./r1-acceptance.ts";
+import { type Counts, assertCi, diffCounts, hostedRunnerProblems, readCounts, runInstalledDaemon, seedRoot } from "./r1-acceptance.ts";
 
 // The Phase 3 acceptance run on a runner with R1 installed (plan T8.4, .github/workflows/desktop-acceptance.yml). The PowerShell scripts in installer/
 // (accept-update-path.ps1, accept-production-over-r1.ps1) install, update and roll back; this is the part that is easier here: seeding a data root,
@@ -124,6 +125,13 @@ const canonicalJson = (text: string): string => {
   return JSON.stringify(sorted(JSON.parse(text)));
 };
 
+// Where a snapshot reads secrets from when it is not handed a reader. `snapshot` and `verify` have no runner guard, so that they can still count and compare
+// a data root by hand; but a secret is read, and written down as a hash, only on a GitHub-hosted runner, where every login is one this run invented. Anywhere
+// else a hash of a real person's password would land in a file, so there the secrets are not read at all (every one is "not readable", and says so).
+export function credentialsFor(root: string, env: NodeJS.ProcessEnv = process.env, user: string = userInfo().username): Pick<VaultCredentials, "read"> {
+  return hostedRunnerProblems(env, user).length === 0 ? new WindowsLoginCredentials(root) : { read: async () => null };
+}
+
 async function secretHash(credentials: Pick<VaultCredentials, "read">, reference: string): Promise<string | null> {
   try {
     const secret = await credentials.read(reference);
@@ -134,7 +142,7 @@ async function secretHash(credentials: Pick<VaultCredentials, "read">, reference
 }
 
 // The vault as it is now, or null when the root has none. Read-only: this runs against whatever app has the file open, and by hand it must never be able to write.
-export async function snapshotVault(root: string, credentials: Pick<VaultCredentials, "read"> = new WindowsLoginCredentials(root)): Promise<VaultSnapshot | null> {
+export async function snapshotVault(root: string, credentials: Pick<VaultCredentials, "read"> = credentialsFor(root)): Promise<VaultSnapshot | null> {
   const file = join(root, "data", "logins.sqlite");
   if (!existsSync(file)) return null;
   const db = new DatabaseSync(file, { readOnly: true });
@@ -366,10 +374,13 @@ async function r1Update(args: string[]): Promise<void> {
     plantPendingNotice(join(root, "data", "tjommie.db"));
     writeFileSync(required(args, "baseline"), `${JSON.stringify(await snapshotRoot(root), null, 2)}\n`);
     console.error("Baseline written; asking R1 to restart to update.");
-    const closed = new Promise<void>((done) => app.once("close", () => done()));
+    // The instant R1's process ended, taken in the close handler itself: the PowerShell side (U7) tells the new app's processes from R1's by whether they
+    // started after it. (Run 6: the time this script returns is too late, the installer had already started the new app by then.)
+    let quitAt = new Date();
+    const closed = new Promise<void>((done) => app.once("close", () => { quitAt = new Date(); done(); }));
     await page.evaluate(() => (globalThis as unknown as Bridge).tjommie.updates.restart());
     await withTimeout(closed, 120_000, "R1 did not quit within 120 seconds of Restart to update.");
-    console.error("R1 quit; its installer hand-over has started.");
+    console.error(`R1 quit at ${quitAt.toISOString()}; its installer hand-over has started.`);
   } catch (error) {
     killTree(mainPid);
     throw error;

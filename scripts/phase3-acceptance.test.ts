@@ -4,9 +4,9 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { VaultRecords, type VaultCredentials, type VaultSecret } from "../packages/desktop/src/vault-storage.ts";
+import { VaultRecords, WindowsLoginCredentials, type VaultCredentials, type VaultSecret } from "../packages/desktop/src/vault-storage.ts";
 import {
-  DATA_ROOT_POLICY, type VaultSnapshot, compareCounts, compareTrees, compareVaults, eventually, pendingNotices, plantPendingNotice, r1UpdateEnv, seedBrowserProfiles, seedVault, snapshotRoot, snapshotVault, startFeed,
+  DATA_ROOT_POLICY, type VaultSnapshot, compareCounts, compareTrees, compareVaults, credentialsFor, eventually, pendingNotices, plantPendingNotice, r1UpdateEnv, seedBrowserProfiles, seedVault, snapshotRoot, snapshotVault, startFeed,
   summarizeVault, treeOf, withTimeout,
 } from "./phase3-acceptance.ts";
 
@@ -197,6 +197,26 @@ describe("the saved-logins vault", () => {
     // A root with no vault has none to snapshot, and reading one never creates one.
     expect(await snapshotVault(temp(), credentials)).toBeNull();
     expect(summarizeVault(null)).toBeNull();
+  });
+
+  // snapshot and verify have no runner guard, so that a data root can still be counted and compared by hand. A secret is read and written down (as a hash)
+  // only where every login is one this run invented: a GitHub-hosted runner. Anywhere else the secrets are simply not read.
+  it("reads secrets only on a GitHub-hosted runner, and asks no Credential Manager anywhere else", async () => {
+    const root = dataRoot();
+    const hosted = { GITHUB_ACTIONS: "true", RUNNER_ENVIRONMENT: "github-hosted", RUNNER_TEMP: "D:\\a\\_temp", GITHUB_RUN_ID: "1", GITHUB_RUN_ATTEMPT: "1" };
+    expect(credentialsFor(root, hosted, "runneradmin")).toBeInstanceOf(WindowsLoginCredentials);
+    for (const [env, user] of [[{}, "runneradmin"], [hosted, "someone-else"], [{ ...hosted, RUNNER_ENVIRONMENT: "self-hosted" }, "runneradmin"]] as const) {
+      const reader = credentialsFor(root, env, user);
+      expect(reader).not.toBeInstanceOf(WindowsLoginCredentials);
+      expect(await reader.read("0f0f0f0f-1111-4222-8333-444455556666")).toBeNull();
+    }
+    // A snapshot taken without a reader, on a PC that is not a hosted runner (this one), holds records and no secret hash at all, even for a stored secret.
+    const { credentials } = memoryCredentials();
+    await seedVault(root, credentials);
+    const here = await snapshotVault(root, credentialsFor(root, {}, "someone-else"));
+    expect(here?.logins).toHaveLength(2);
+    expect(here?.logins.every((login) => login.secret === null)).toBe(true);
+    expect(summarizeVault(here)).toMatchObject({ logins: 2, secretsReadable: 0 });
   });
 
   it("is read without writing a byte, even where a program has it open", async () => {

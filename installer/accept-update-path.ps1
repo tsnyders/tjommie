@@ -100,8 +100,11 @@ Invoke-Step 'U3 R1 finds the update in the local feed, downloads it and quits to
     $updated = Invoke-Phase3Driver @('r1-update', '--install', $installDir, '--feed', $feedDir, '--root', $dataRoot, '--user-data', $userData, '--baseline', $baseline, '--expect-version', $NewVersion)
     Assert-Check ($updated['exitCode'] -eq 0) 'U3: R1 downloaded the update from the feed and quit for it' @($updated['lines'] | Select-Object -Last 10)
     Assert-Check (Test-Path -LiteralPath $baseline) 'U3: the baseline of the data root was taken just before the restart' $baseline
-    # R1 has quit: the driver returns only after R1's close event. Every process of the exe that starts after this instant is the new app's, never R1's (U7).
-    $state['handover'] = Get-Date
+    # When R1's process ended, as the driver saw it in R1's close handler. Every process of the exe that started after it is the new app's, never R1's (U7).
+    # (Not the time this script regains control: by then the installer, which runs while R1 shuts down, had already started the new app. Run 6.)
+    $quit = Get-R1QuitTime @($updated['lines'])
+    Assert-Check ($null -ne $quit) 'U3: the driver said when R1 quit (the instant U7 tells the new app''s processes from R1''s by)' @($updated['lines'] | Select-Object -Last 4)
+    if ($null -ne $quit) { $state['handover'] = $quit }
 }
 
 Invoke-Step 'U4 the new app runs, started with --updated, and R1 is gone' {

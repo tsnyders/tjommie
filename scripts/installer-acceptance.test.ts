@@ -273,6 +273,20 @@ describe.skipIf(!windows)("the acceptance library's pure helpers", () => {
     expect(unchecked.some((check) => check.check.includes("read back identical"))).toBe(false);
   });
 
+  // Run 6 of T8.4: the instant that tells the new app's processes from R1's is the one the update driver prints from R1's own close handler. It is read as a
+  // local time, because that is how CIM spells a process's CreationDate, and a comparison of two DateTimes ignores their Kind.
+  it("reads when R1 quit from the update driver's line, as a local time, and says nothing when no line has it", () => {
+    const result = runBody("accept-lib.ps1", String.raw`
+      . '${join(installer, "accept-phase3-lib.ps1")}'
+      $quit = Get-R1QuitTime @('R1 downloaded 0.6.0.', 'R1 quit at 2026-11-22T19:30:27.123Z; its installer hand-over has started.')
+      [ordered]@{
+        utc = $quit.ToUniversalTime().ToString('o'); kind = [string]$quit.Kind
+        noTime = ($null -eq (Get-R1QuitTime @('R1 quit; its installer hand-over has started.'))); empty = ($null -eq (Get-R1QuitTime @()))
+      } | ConvertTo-Json -Compress
+    `) as { utc: string; kind: string; noTime: boolean; empty: boolean };
+    expect(result).toEqual({ utc: "2026-11-22T19:30:27.1230000Z", kind: "Local", noTime: true, empty: true });
+  });
+
   it("snapshots a tree, finds a file that is gone, changed or added, and adds sentinels of known size", () => {
     const root = temp();
     const result = runBody("accept-lib.ps1", String.raw`

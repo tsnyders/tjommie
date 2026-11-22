@@ -23,6 +23,18 @@ function Invoke-Phase3Driver([string[]]$Arguments) {
     return [ordered]@{ exitCode = $code; lines = $lines; json = $json }
 }
 
+# When R1 quit, from the line the update driver prints in R1's close handler ("R1 quit at 2026-11-22T19:30:27.123Z; ..."): as a local time, which is how
+# CIM spells a process's CreationDate, or $null when no line says. This is the instant before which every process of the exe may be R1's, and after
+# which none is (the installer cannot copy over a running exe, and starts the new app only after the copy).
+function Get-R1QuitTime([string[]]$Lines) {
+    foreach ($line in $Lines) {
+        if ($line -match 'R1 quit at (\d{4}-\d{2}-\d{2}T[\d:.]+Z)') {
+            return ([datetimeoffset]::Parse($Matches[1], [Globalization.CultureInfo]::InvariantCulture)).LocalDateTime
+        }
+    }
+    return $null
+}
+
 # The processes whose executable is exactly $Exe, with their command lines (CIM is where Windows keeps them). $Exe is taken to its long form,
 # because a hosted runner's temp folder is spelled with an 8.3 alias (RUNNER~1) and a process's path is not.
 function Get-ProcessesOfExe([string]$Exe) {
