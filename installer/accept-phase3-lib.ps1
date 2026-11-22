@@ -60,6 +60,15 @@ function Test-InstalledPayload([string]$Folder, [string]$ManifestPath, [string]$
     Assert-Check (($files -join '|') -ceq ($expected -join '|')) "$Label`: the install holds the new payload and the uninstaller, and nothing else" @{ files = $files.Count; expected = $expected.Count; extra = @($files | Where-Object { $expected -notcontains $_ }); missing = @($expected | Where-Object { $files -notcontains $_ }) }
     $electron = @($files | Where-Object { $_ -match '\.asar$|\.pak$|^locales\\|^resources\\app' -or $_ -match '^(ffmpeg|libEGL|libGLESv2|d3dcompiler_47)\.dll$' })
     Assert-Check ($electron.Count -eq 0) "$Label`: no Electron file is left in the install" $electron
+    # Names are not enough: R1 and the new payload have paths in common (the daemon, the speech files), and a file of R1's left in place under one of
+    # them would pass a check of names. So every file is compared with the build's own SHA-256 from the payload manifest: the daemon that is there is
+    # the one that was built, never R1's.
+    $built = @((Read-Json $ManifestPath).files)
+    $different = @($built | Where-Object {
+        $installed = Join-Path $Folder ([string]$_.path)
+        -not (Test-Path -LiteralPath $installed -PathType Leaf) -or ((Get-FileHash -LiteralPath $installed -Algorithm SHA256).Hash.ToLowerInvariant() -ne ([string]$_.sha256).ToLowerInvariant())
+    } | ForEach-Object { [string]$_.path })
+    Assert-Check ($different.Count -eq 0) "$Label`: every installed file is byte for byte the one the build made ($($built.Count) files compared by SHA-256), so none is a file of R1's left in place" $different
     Add-Note "$Label`: the install holds $($files.Count) files" $files.Count
 }
 

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -204,6 +205,37 @@ describe.skipIf(!windows)("the acceptance library's pure helpers", () => {
     expect(result.files).toEqual(["note.txt"]);
     expect(result.links).toBe(0);
     expect(result.absent).toBe("threw");
+  });
+
+  // Run 2 of T8.4: the check that an install holds exactly the payload compared names, and R1 and the new payload share paths (the daemon, the speech
+  // files), so a daemon of R1's left in place would have passed it. Every installed file is now compared with the build manifest's SHA-256.
+  it("tells a file the build made from one of the same name that was left in place, by its SHA-256", () => {
+    const root = temp();
+    const folder = join(root, "install");
+    mkdirSync(join(folder, "resources", "daemon"), { recursive: true });
+    const content = { "Tjommie.exe": "the app", "resources\\daemon\\tjommie-daemon.exe": "the built daemon", "Uninstall Tjommie.exe": "uninstaller" };
+    writeFileSync(join(folder, "Tjommie.exe"), content["Tjommie.exe"]);
+    writeFileSync(join(folder, "resources", "daemon", "tjommie-daemon.exe"), "R1's daemon, left in place");
+    writeFileSync(join(folder, "Uninstall Tjommie.exe"), content["Uninstall Tjommie.exe"]);
+    const sha = (text: string): string => createHash("sha256").update(text).digest("hex");
+    const manifest = join(root, "payload-manifest.json");
+    writeFileSync(manifest, JSON.stringify({ files: [
+      { path: "Tjommie.exe", bytes: 7, sha256: sha(content["Tjommie.exe"]) },
+      { path: "resources\\daemon\\tjommie-daemon.exe", bytes: 16, sha256: sha(content["resources\\daemon\\tjommie-daemon.exe"]) },
+    ], pending: [] }));
+    const run = (): { checks: { ok: boolean; check: string; detail: unknown }[] } => runBody("accept-lib.ps1", String.raw`
+      . '${join(installer, "accept-phase3-lib.ps1")}'
+      Start-Acceptance 'x' '${join(root, "out")}'
+      Test-InstalledPayload '${folder}' '${manifest}' 'Tjommie' 'T' | Out-Null
+      [ordered]@{ checks = @($script:Checks.ToArray() | ForEach-Object { [ordered]@{ ok = $_['ok']; check = $_['check']; detail = $_['detail'] } }) } | ConvertTo-Json -Depth 6 -Compress
+    `) as { checks: { ok: boolean; check: string; detail: unknown }[] };
+    const wrong = run().checks.filter((check) => !check.ok);
+    // The names are right (so the name check passes) and only the daemon's bytes are not the build's: that alone is what fails.
+    expect(wrong.map((check) => check.check)).toEqual([expect.stringContaining("byte for byte the one the build made")]);
+    expect(wrong[0].detail).toEqual(["resources\\daemon\\tjommie-daemon.exe"]);
+    // With the built daemon in place everything passes.
+    writeFileSync(join(folder, "resources", "daemon", "tjommie-daemon.exe"), content["resources\\daemon\\tjommie-daemon.exe"]);
+    expect(run().checks.filter((check) => !check.ok)).toEqual([]);
   });
 
   it("snapshots a tree, finds a file that is gone, changed or added, and adds sentinels of known size", () => {
