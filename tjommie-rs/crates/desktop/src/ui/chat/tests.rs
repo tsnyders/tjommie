@@ -1669,6 +1669,52 @@ mod side_panels {
         holds_the_keyboard_until_escape(cx);
     }
 
+    /// M7 review M2: at 360 px the chat header keeps the name readable and every button inside the window: Pause and
+    /// Agent settings fold into More, and the state pill sits under the name, clear of the buttons.
+    #[gpui::test]
+    fn a_narrow_window_folds_pause_and_settings_into_more(cx: &mut TestAppContext) {
+        let mut state = working();
+        state.bots[0].state = BotState::Waiting;
+        let (cx, _) = app_with_panel(cx, Route::Chat("b1".into()), state, FakeRpc::default());
+        cx.simulate_resize(size(px(360.), px(600.)));
+        draw(cx);
+        let name = node("chat.b1.name").expect("the name");
+        assert!(
+            name.bounds.width >= 40.,
+            "the name has width: {:?}",
+            name.bounds
+        );
+        let pill = node("chat.b1.state").expect("the state pill");
+        assert!(
+            pill.bounds.y >= name.bounds.y + name.bounds.height - 0.5,
+            "the pill is under the name: {:?} under {:?}",
+            pill.bounds,
+            name.bounds
+        );
+        let more = node("chat.b1.more.open").expect("More");
+        let panel = node("chat.b1.panel").expect("the panel button");
+        assert!(
+            pill.bounds.x + pill.bounds.width <= more.bounds.x,
+            "the pill clears the buttons: {:?} beside {:?}",
+            pill.bounds,
+            more.bounds
+        );
+        assert!(
+            panel.bounds.x + panel.bounds.width <= 360.,
+            "the panel button ends inside the window: {:?}",
+            panel.bounds
+        );
+        assert!(
+            node("chat.b1.pause").is_none() && node("chat.b1.settings").is_none(),
+            "Pause and Agent settings are in More"
+        );
+        click(cx, "chat.b1.more.open");
+        assert!(
+            node("chat.b1.more.pause").is_some() && node("chat.b1.more.settings").is_some(),
+            "More holds them"
+        );
+    }
+
     /// A narrow window (360 x 600): the chat header's title and subtitle keep one line each, however little room they
     /// have beside the header's buttons.
     #[gpui::test]
