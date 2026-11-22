@@ -131,6 +131,26 @@ describe.skipIf(!windows)("the payload assembly", () => {
     expect(existsSync(join(stub.root, "rel"))).toBe(false);
   });
 
+  // The acceptance run's updatetest identity has its own exe name. The default is production's, so a release is not changed by the option.
+  it("names the desktop exe for the identity (-ExeName), Tjommie.exe by default, and refuses a name that is a path", () => {
+    const stub = inputs();
+    const base = ["-Desktop", stub.desktop, "-Daemon", stub.daemon, "-SpeechDir", stub.speech];
+    const named = powershell("assemble-payload.ps1", ["-OutDir", join(stub.root, "test-identity"), ...base, "-ExeName", "Tjommie Update Test.exe", "-ManifestPath", join(stub.root, "named.json")]);
+    expect(named.status, named.output).toBe(0);
+    expect(walk(join(stub.root, "test-identity"))).toContain("Tjommie Update Test.exe");
+    expect(walk(join(stub.root, "test-identity"))).not.toContain("Tjommie.exe");
+    expect(sha256(join(stub.root, "test-identity", "Tjommie Update Test.exe"))).toBe(sha256(stub.desktop));
+    const plain = powershell("assemble-payload.ps1", ["-OutDir", join(stub.root, "production"), ...base, "-ManifestPath", join(stub.root, "plain.json")]);
+    expect(plain.status, plain.output).toBe(0);
+    expect(walk(join(stub.root, "production"))).toContain("Tjommie.exe");
+    for (const bad of ["..\\Tjommie.exe", "sub\\Tjommie.exe", "Tjommie", "Tjommie.txt", "a:b.exe"]) {
+      const refused = powershell("assemble-payload.ps1", ["-OutDir", join(stub.root, "bad"), ...base, "-ExeName", bad]);
+      expect(refused.status, bad).not.toBe(0);
+      expect(refused.output, bad).toMatch(/bare\s+file\s+name/);
+      expect(existsSync(join(stub.root, "bad")), bad).toBe(false);
+    }
+  });
+
   it("refuses notices that are not there, are empty or are too big for the About screen (4 MiB), and writes nothing for them", () => {
     const stub = inputs();
     const base = ["-Desktop", stub.desktop, "-Daemon", stub.daemon, "-SpeechDir", stub.speech];
