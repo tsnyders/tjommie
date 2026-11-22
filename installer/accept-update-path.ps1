@@ -11,7 +11,8 @@
 #   U4  the new app runs, started with --updated, and what is installed is the new payload and nothing of R1's
 #   U5  the uninstall entry points at the new uninstaller (a different file from R1's) and says the new version
 #   U6  the shortcut's AppUserModelID is the one R1's shortcut had
-#   U7  the data root: user_version and row counts unchanged, nothing gone, nothing of the user's changed, additions only where the apps write
+#   U7  the new app runs the daemon bundled in its install folder, though nothing hands it one (image path and parent checked); the data root:
+#       user_version and row counts unchanged, nothing gone, nothing of the user's changed, additions only where the apps write
 #   U8  the new app acknowledged the pending notice, which it does only after the OS has taken the toast: a notification posted
 #
 # The data root is TJOMMIE_HOME, a folder under %TEMP%: the test identity never touches %LOCALAPPDATA%\Tjommie. Evidence: installer-acceptance-update-path.json.
@@ -144,12 +145,29 @@ Invoke-Step 'U6 the shortcut carries the same AppUserModelID' {
     Assert-Check ($now[0]['target'] -ieq (Get-LongPath $newExe) -or $now[0]['target'] -ieq $newExe) 'U6: and it starts the new exe' $now[0]['target']
 }
 
-Invoke-Step 'U7 the data root is what R1 left, and the database is as it was' {
+Invoke-Step 'U7 the app runs the daemon it was installed with, and the data root is what R1 left' {
     # The new app's own daemon opens the database; wait for it so what is compared is what the new app does, not nothing.
+    # Nothing hands the app a daemon: the update-test R1 was started without TJOMMIE_DAEMON_EXE (scripts/phase3-acceptance.ts r1UpdateEnv removes any), and
+    # the new app inherits that. So a daemon running here means the installed update-test app found the one bundled in its install folder, which is
+    # what a person's installed copy has to do.
     $daemon = Join-Path $installDir 'resources\daemon\tjommie-daemon.exe'
     $running = Wait-Until { @(Get-ProcessesOfExe $daemon).Count -ge 1 } 120
-    Assert-Check $running 'U7: the new app''s daemon runs from the install folder' $daemon
-    if (-not $running) { Add-AppDiagnostics $installDir $dataRoot 'U7' }
+    Assert-Check $running 'U7: a daemon runs from the install folder, resources\daemon\tjommie-daemon.exe, though the app was handed none' $daemon
+    if ($running) {
+        $long = Get-LongPath $daemon
+        # By image path, not by what the app says: every tjommie-daemon.exe on the machine is the install folder's own.
+        $everyDaemon = @(Get-CimInstance Win32_Process -Filter "Name = 'tjommie-daemon.exe'")
+        $elsewhere = @($everyDaemon | Where-Object { -not $_.ExecutablePath -or ($_.ExecutablePath -ine $long) } | ForEach-Object { "$($_.ProcessId): $($_.ExecutablePath)" })
+        Assert-Check ($elsewhere.Count -eq 0) 'U7: no daemon runs from anywhere but the install folder (the image path of each is resources\daemon\tjommie-daemon.exe there)' $elsewhere
+        # And it is the new app's: started by the new exe, not a leftover of R1's from the same path.
+        $newLong = Get-LongPath $newExe
+        $notTheNewApps = @(Get-ProcessesOfExe $daemon | Where-Object {
+            $parent = Get-CimInstance Win32_Process -Filter "ProcessId = $($_.ParentProcessId)"
+            -not ($parent -and $parent.ExecutablePath -and ($parent.ExecutablePath -ieq $newLong))
+        } | ForEach-Object { "$($_.ProcessId) (parent $($_.ParentProcessId))" })
+        Assert-Check ($notTheNewApps.Count -eq 0) 'U7: every such daemon was started by the new exe in the install folder' $notTheNewApps
+        Add-Note 'U7: the daemons running, with the image path and parent of each' @($everyDaemon | ForEach-Object { [ordered]@{ id = $_.ProcessId; parent = $_.ParentProcessId; exe = $_.ExecutablePath; started = [string]$_.CreationDate } })
+    } else { Add-AppDiagnostics $installDir $dataRoot 'U7' }
     Start-Sleep -Seconds 5
     Test-DataRootAsBaseline $dataRoot $baseline $report 'U7' @('routine_failure_notifications')
 }

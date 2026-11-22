@@ -194,6 +194,22 @@ describe("the update-path script and the installer script agree", () => {
     expect(update.indexOf("Invoke-Step 'U7 ")).toBeGreaterThan(update.indexOf("Invoke-Step 'U4 "));
   });
 
+  it("on the new app finding its own daemon: nothing hands it one, and U7 reads the image path and the parent of every daemon running", () => {
+    // The product runs the daemon bundled in an installed update-test app's folder (daemon_exe_for), so the update path must not supply one.
+    expect(update).not.toMatch(/DAEMON_EXE/);
+    const u7 = update.slice(update.indexOf("Invoke-Step 'U7 "), update.indexOf("Invoke-Step 'U8 "));
+    expect(u7).toContain("resources\\daemon\\tjommie-daemon.exe");
+    // Every daemon on the machine by image path (not only those the install's path selects), and the parent of each by its image path.
+    expect(u7).toContain(`-Filter "Name = 'tjommie-daemon.exe'"`);
+    expect(u7).toMatch(/\$_\.ExecutablePath -ine \$long/);
+    expect(u7).toMatch(/Win32_Process -Filter "ProcessId = \$\(\$_\.ParentProcessId\)"/);
+    expect(u7).toMatch(/\$parent\.ExecutablePath -ieq \$newLong/);
+    // The harness side: the driver builds the update-test R1's environment without any daemon.
+    const driver = readFileSync(join(repo, "scripts", "phase3-acceptance.ts"), "utf8");
+    const env = driver.slice(driver.indexOf("export function r1UpdateEnv"), driver.indexOf("export function", driver.indexOf("export function r1UpdateEnv") + 1));
+    expect(env).not.toMatch(/TJOMMIE_DAEMON_EXE:/);
+  });
+
   it("with the production script on the order of install, seed, export, takeover, start at login, carry-over and rollback", () => {
     const production = codeOf(join(installer, "accept-production-over-r1.ps1"));
     const labels = [...production.matchAll(/Invoke-Step '(P\d) /g)].map((match) => match[1]);

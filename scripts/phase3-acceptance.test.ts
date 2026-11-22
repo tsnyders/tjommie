@@ -172,13 +172,12 @@ describe("the local update feed", () => {
 });
 
 describe("the update-test R1's environment, which the new app inherits", () => {
-  const install = "C:\\Temp\\tjommie-updatetest\\Tjommie Update Test";
-  const env = r1UpdateEnv({ PATH: "p", TJOMMIE_DAEMON_EXE: "C:\\somewhere\\else.exe" }, install, "C:\\Temp\\data", "C:\\Temp\\electron", "http://127.0.0.1:1234");
+  const env = r1UpdateEnv({ PATH: "p", TJOMMIE_DAEMON_EXE: "C:\\somewhere\\else.exe", tjommie_daemon_exe: "C:\\and\\another.exe" }, "C:\\Temp\\data", "C:\\Temp\\electron", "http://127.0.0.1:1234");
 
-  it("gives the new app the bundled daemon's path, because the update-test identity starts only a daemon it is handed", () => {
-    // Run 2: live.rs takes the bundled daemon for the production identity alone, so the update-test app had no daemon until it was told where one is.
-    expect(env.TJOMMIE_DAEMON_EXE).toBe(join(install, "resources", "daemon", "tjommie-daemon.exe"));
-    // It replaces what the runner had, rather than being overridden by it.
+  // The update-test app runs the daemon bundled in its install folder (daemon_exe_for), and the update path has to prove exactly that, so the
+  // environment may not name a daemon: not one the harness sets, and not one the runner happens to carry, in any case.
+  it("hands the new app no daemon, and removes any the runner carries, so the install's own is what it must find", () => {
+    expect(Object.keys(env).filter((name) => name.toUpperCase() === "TJOMMIE_DAEMON_EXE")).toEqual([]);
     expect(env.PATH).toBe("p");
   });
 

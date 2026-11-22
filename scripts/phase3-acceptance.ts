@@ -183,14 +183,14 @@ export async function eventually<T>(what: string, timeoutMs: number, probe: () =
 }
 
 // The environment the update-test R1 is launched with, and the new app inherits it (R1 starts the installer, which starts the app). The update-test
-// identity is a disposable one: its data root is TJOMMIE_HOME, and it starts the bundled daemon only if it is HANDED the daemon's path
-// (live.rs daemon_exe takes the bundled one for the production identity alone; otherwise TJOMMIE_DAEMON_EXE, else a debug build beside the exe).
-// Run 2 of the acceptance: without it the new app had no daemon to start, so no process, and a notice that stayed pending. R1 itself runs the daemon
-// bundled with it whatever the environment says, so the variable changes nothing for R1; it is what the new app finds.
-export function r1UpdateEnv(base: NodeJS.ProcessEnv, install: string, root: string, userData: string, feedUrl: string): Record<string, string> {
+// identity is a disposable one, so its data root is TJOMMIE_HOME. It is deliberately NOT handed a daemon: an installed update-test app runs the daemon
+// bundled in its install folder (desktop_host::daemon_process::daemon_exe_for), and that is what the update path has to prove, so nothing here may
+// name one. (Run 2 injected TJOMMIE_DAEMON_EXE to get past the app, which did not look in its install; the app was fixed instead.) Any
+// TJOMMIE_DAEMON_EXE the runner might carry is removed too, whatever its case, so no inherited variable can supply a daemon.
+export function r1UpdateEnv(base: NodeJS.ProcessEnv, root: string, userData: string, feedUrl: string): Record<string, string> {
   // Playwright takes strings only: a variable the runner does not have is left out, not passed as "undefined".
   const inherited: Record<string, string> = {};
-  for (const [name, value] of Object.entries(base)) if (value !== undefined) inherited[name] = value;
+  for (const [name, value] of Object.entries(base)) if (value !== undefined && name.toUpperCase() !== "TJOMMIE_DAEMON_EXE") inherited[name] = value;
   return {
     ...inherited,
     TJOMMIE_HOME: root,
@@ -199,7 +199,6 @@ export function r1UpdateEnv(base: NodeJS.ProcessEnv, install: string, root: stri
     TJOMMIE_PORT: "0",
     TJOMMIE_UPDATE_FEED: feedUrl,
     TJOMMIE_BROWSER_HEADLESS: "1",
-    TJOMMIE_DAEMON_EXE: join(install, "resources", "daemon", "tjommie-daemon.exe"),
   };
 }
 
@@ -225,7 +224,7 @@ async function r1Update(args: string[]): Promise<void> {
   const app = await _electron.launch({
     executablePath: exe,
     args: ["--hidden"],
-    env: r1UpdateEnv(process.env, install, root, userData, feed.url),
+    env: r1UpdateEnv(process.env, root, userData, feed.url),
   });
   const mainPid = app.process().pid;
   try {
