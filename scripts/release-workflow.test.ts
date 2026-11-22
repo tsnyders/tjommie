@@ -608,7 +608,7 @@ describe("release.yml", () => {
   it("has a mutation script that has not gone stale", () => {
     // LF, as the mutations are written: a Windows checkout may have CRLF.
     const text = readFileSync(join(workflowDir, "release.yml"), "utf8").replaceAll("\r\n", "\n");
-    expect(mutations.length).toBeGreaterThanOrEqual(50);
+    expect(mutations.length).toBeGreaterThanOrEqual(53);
     for (const { label, from } of mutations) expect(text.split(from).length - 1, `"${label}": its text is found once in release.yml`).toBe(1);
   });
 
@@ -670,12 +670,14 @@ describe("release.yml", () => {
       ["an event nobody listed", "schedule", "refs/heads/main"],
     ];
 
-    it.each(dryRuns)("%s builds and checks, publishes nothing, and uploads only the dry run's own artifacts", (_label, event, ref) => {
+    it.each(dryRuns)("%s builds and checks (the Android APK too), publishes nothing, and uploads only the dry run's own artifacts", (_label, event, ref) => {
       const context = contextFor(event, ref);
       expect(context.dryRun).toBe("true");
       const run = walk(context);
-      expect(run.jobs).toEqual(["verify", "windows"]);
-      expect(uploads(run.steps)).toEqual(["release-dryrun-tool-hashes", "release-dryrun-windows"]);
+      // The APK is built in every dry run (the owner's decision, 2026-11-22), and the publish job never is.
+      expect(run.jobs).toEqual(["verify", "windows", "android"]);
+      expect(run.jobs).not.toContain("release");
+      expect(uploads(run.steps)).toEqual(["release-dryrun-apk", "release-dryrun-tool-hashes", "release-dryrun-windows"]);
       for (const { job, step } of run.steps) {
         for (const pattern of PUBLISHING) expect(step.run ?? "", `${job}: "${step.name ?? step.uses}" ran in a dry run and matches ${pattern}`).not.toMatch(pattern);
         if (step.uses) expect(ALLOWED_ACTIONS).toContain(step.uses.split("@")[0]);
@@ -686,16 +688,27 @@ describe("release.yml", () => {
       expect(names).toContain("Write the release manifest");
     });
 
-    it("never builds the signed Android APK, which needs the release secrets", () => {
-      for (const [, event, ref] of dryRuns) expect(walk(contextFor(event, ref)).jobs).not.toContain("android");
+    // The APK is built and checked (signed, signer verified) in every dry run, so the Android build is proved before a release needs it. All a dry
+    // run does with it is upload it under a name of its own: never the name the publish job downloads.
+    it("builds the Android APK in every dry run, and uploads it as release-dryrun-apk and never as android-assets", () => {
+      for (const [label, event, ref] of dryRuns) {
+        const run = walk(contextFor(event, ref));
+        expect(run.jobs, label).toContain("android");
+        const apk = run.steps.filter(({ job }) => job === "android").map(({ step }) => step);
+        expect(apk.map((step) => step.name ?? "")).toEqual(expect.arrayContaining(["Build signed release APK", "Verify APK signer"]));
+        expect(uploads(run.steps), label).toContain("release-dryrun-apk");
+        expect(uploads(run.steps), label).not.toContain("android-assets");
+      }
     });
 
     it("publishes nothing even if the mode output is lost, and then asks for the strict payload", () => {
       for (const lost of ["", "maybe", "TRUE"]) {
         const run = walk(contextFor("push", "refs/tags/v0.6.0", lost));
         expect(run.jobs, `dry_run is "${lost}"`).not.toContain("release");
-        expect(run.jobs).not.toContain("android");
+        // The APK is built whatever the mode says, but with no clear mode it is uploaded under no name at all.
+        expect(run.jobs).toContain("android");
         expect(uploads(run.steps)).not.toContain("windows-assets");
+        expect(uploads(run.steps)).not.toContain("android-assets");
       }
       const assemble = findStep("windows", /assemble-payload\.ps1/).run ?? "";
       expect(assemble).toContain("if ($env:DRY_RUN -ne 'true') { $more['Release'] = $true }");
@@ -943,9 +956,37 @@ describe("release.yml", () => {
       expect(report.run).toContain("apply-native.mjs --check");
     });
 
-    it("the Android build is a release-only job", () => {
-      expect(jobs.android.if).toBe("${{ needs.verify.outputs.dry_run == 'false' }}");
+    // The owner's decision (2026-11-22): the APK is built in every run. So the job has no `if` at all, and what is conditional is only where the
+    // APK goes: android-assets (which the publish job downloads) for a release, release-dryrun-apk for a dry run, for 3 days.
+    it("the Android build runs in every run, and uploads the APK by mode: android-assets for a release only, release-dryrun-apk for a dry run", () => {
+      expect(jobs.android.if, "no condition on the job: a dry run builds the APK too").toBeUndefined();
       expect(needsOf(jobs.android)).toEqual(["verify"]);
+      expect(jobs.android.permissions, "no permission of its own").toBeUndefined();
+      const release = stepsOf("android").filter((step) => step.with?.name === "android-assets");
+      const dry = stepsOf("android").filter((step) => step.with?.name === "release-dryrun-apk");
+      expect(release).toHaveLength(1);
+      expect(dry).toHaveLength(1);
+      expect(release[0].if).toBe("${{ needs.verify.outputs.dry_run == 'false' }}");
+      expect(dry[0].if).toBe("${{ needs.verify.outputs.dry_run == 'true' }}");
+      expect(dry[0].with).toMatchObject({ path: "dist-mobile/Tjommie-Android-*.apk", "if-no-files-found": "error", "retention-days": 3 });
+      expect(release[0].with).toMatchObject({ path: "dist-mobile/Tjommie-Android-*.apk", "if-no-files-found": "error" });
+      expect(release[0].with?.["retention-days"], "a release's APK keeps the default retention").toBeUndefined();
+    });
+
+    // Building the APK in a dry run must not open a way to publish it: the publish job is the only job with a write permission, it is the only
+    // one that downloads the release's artifacts, and it asks for a v* tag and a release mode before it runs.
+    it("lets nothing in a dry run publish the APK: only the release job downloads artifacts or writes, behind its unchanged tag guard", () => {
+      expect(jobs.release.if).toBe("${{ needs.verify.outputs.dry_run == 'false' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}");
+      for (const { job, step } of everyStep()) {
+        if (job === "release") continue;
+        expect(step.uses ?? "", `${job}: "${step.name ?? step.uses}"`).not.toMatch(/download-artifact/);
+      }
+      for (const name of jobNames.filter((job) => job !== "release")) expect(jobs[name].permissions, `${name} has no permission of its own`).toBeUndefined();
+      expect(jobs.release.permissions).toEqual({ contents: "write" });
+      // The only artifact the publish job downloads for the APK is the one a dry run never writes.
+      const downloads = stepsOf("release").filter((step) => step.uses?.startsWith("actions/download-artifact@")).map((step) => String(step.with?.name));
+      expect(downloads).toContain("android-assets");
+      expect(downloads).not.toContain("release-dryrun-apk");
     });
   });
 
