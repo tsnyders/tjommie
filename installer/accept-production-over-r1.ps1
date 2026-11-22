@@ -116,8 +116,11 @@ Invoke-Step 'P4 the Phase 3 installer takes over from R1' {
     Assert-Check ($old.Count -ge 1) 'P4: R1''s own uninstaller was run, as old-uninstaller.exe' @($update['processes'] | ForEach-Object { $_['name'] })
     Assert-Check (@(Get-RunningFrom $folder).Count -eq 0) 'P4: nothing runs from the install folder'
     Test-InstalledPayload $folder $manifest $prod.product 'P4'
-    $leftovers = @($state['r1Files'] | Where-Object { (Test-Path -LiteralPath (Join-Path $folder $_)) -and $_ -notmatch '^Uninstall ' -and $_ -ne $prod.exe })
-    Assert-Check ($leftovers.Count -eq 0) 'P4: no file of R1''s is left' @($leftovers | Select-Object -First 10)
+    # R1 and the new payload have paths in common (the daemon, the speech files), and those are the new ones now: what must be gone is a file of R1's that
+    # the new payload does not have.
+    $payload = @(Get-ExpectedPayloadFiles $manifest $prod.product)
+    $leftovers = @($state['r1Files'] | Where-Object { $payload -notcontains $_ -and (Test-Path -LiteralPath (Join-Path $folder $_)) })
+    Assert-Check ($leftovers.Count -eq 0) 'P4: no file of R1''s that the new payload does not have is left' @($leftovers | Select-Object -First 10)
     Test-InstalledAsR1Did $facts $folder $NewVersion 'P4'
     Test-ShortcutsAsR1Had $facts $folder $prod.product $prod.exe $prod.appId 'P4'
     $run = Get-RunValue $prod.appId

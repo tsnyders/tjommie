@@ -105,8 +105,11 @@ Invoke-Step 'U4 the new app runs, started with --updated, and R1 is gone' {
     $state['newMain'] = @(Get-ProcessesOfExe $newExe | Where-Object { [string]$_.CommandLine -match '--updated' })
     # Telling it from R1: the payload has no Electron file, and is exactly the build job's.
     Test-InstalledPayload $installDir $manifest $test.product 'U4'
-    $leftovers = @($state['r1Files'] | Where-Object { (Test-Path -LiteralPath (Join-Path $installDir $_)) -and $_ -notmatch '^Uninstall ' -and $_ -ne $test.exe })
-    Assert-Check ($leftovers.Count -eq 0) 'U4: no file of R1''s is left' @($leftovers | Select-Object -First 10)
+    # R1 and the new payload have paths in common (the daemon, the speech files), and those are the new ones now: what must be gone is a file of R1's that
+    # the new payload does not have.
+    $payload = @(Get-ExpectedPayloadFiles $manifest $test.product)
+    $leftovers = @($state['r1Files'] | Where-Object { $payload -notcontains $_ -and (Test-Path -LiteralPath (Join-Path $installDir $_)) })
+    Assert-Check ($leftovers.Count -eq 0) 'U4: no file of R1''s that the new payload does not have is left' @($leftovers | Select-Object -First 10)
 }
 
 Invoke-Step 'U5 the uninstall entry points at the new uninstaller' {
@@ -121,7 +124,12 @@ Invoke-Step 'U5 the uninstall entry points at the new uninstaller' {
         Assert-Check ($names.Count -ge 1) "U5: $name runs the new uninstaller in the install folder" $value
     }
     Assert-Check ([string](Get-FactValue $after 'DisplayVersion') -ceq $NewVersion) 'U5: DisplayVersion is the new version' (Get-FactValue $after 'DisplayVersion')
-    Assert-Check (Test-SameLongFolder ([string](Get-FactValue $after 'InstallLocation')) ([string](Get-FactValue $state['uninstallBefore'] 'InstallLocation'))) 'U5: InstallLocation is where R1 had it' (Get-FactValue $after 'InstallLocation')
+    # (R1 keeps the install folder under HKCU\Software\<GUID> and not in the uninstall entry, so that is what the next check reads. Here the entry's
+    # own values: every one the entry has is there, so nothing a person sees in Apps & features, or a cleaner reads, went missing.)
+    $namesAfter = @($after['values'] | ForEach-Object { $_['name'] })
+    $core = @('DisplayName', 'DisplayVersion', 'DisplayIcon', 'Publisher', 'UninstallString', 'QuietUninstallString')
+    Assert-Check (@($core | Where-Object { $namesAfter -notcontains $_ }).Count -eq 0) 'U5: the uninstall entry has its display name, version, icon, publisher and both uninstall commands' @{ after = $namesAfter }
+    Add-Note 'U5: the values of the uninstall entry, under R1 and now' @{ r1 = @($state['uninstallBefore']['values'] | ForEach-Object { $_['name'] }); now = $namesAfter }
     Assert-Check (Test-SameLongFolder ([string](Get-InstallLocation $test.guid)) $installDir) 'U5: the install key still names the install folder' (Get-InstallLocation $test.guid)
     Assert-Check ((Test-Path -LiteralPath $newUninstaller) -and ((Get-FileHash -LiteralPath $newUninstaller -Algorithm SHA256).Hash -ne $state['r1UninstallerHash'])) 'U5: the uninstaller in the folder is the new one, not R1''s' $state['r1UninstallerHash']
 }
@@ -141,6 +149,7 @@ Invoke-Step 'U7 the data root is what R1 left, and the database is as it was' {
     $daemon = Join-Path $installDir 'resources\daemon\tjommie-daemon.exe'
     $running = Wait-Until { @(Get-ProcessesOfExe $daemon).Count -ge 1 } 120
     Assert-Check $running 'U7: the new app''s daemon runs from the install folder' $daemon
+    if (-not $running) { Add-AppDiagnostics $installDir $dataRoot 'U7' }
     Start-Sleep -Seconds 5
     Test-DataRootAsBaseline $dataRoot $baseline $report 'U7' @('routine_failure_notifications')
 }
@@ -155,10 +164,7 @@ Invoke-Step 'U8 the new app showed the pending notice, and only then acknowledge
         if (-not $gone) { Start-Sleep -Seconds 3 }
     }
     Assert-Check $gone 'U8: the planted routine-failure notice was acknowledged by the new app, after the OS took the toast' $null
-    if (-not $gone) {
-        $log = Join-Path $dataRoot 'logs\desktop.log'
-        if (Test-Path -LiteralPath $log) { Add-Note 'U8: the new app''s log, last lines (look for "notification")' @(Get-Content -LiteralPath $log -Tail 60) }
-    }
+    if (-not $gone) { Add-AppDiagnostics $installDir $dataRoot 'U8' }
 }
 
 Invoke-Step 'U9 keep the evidence, and stop what this run started' {

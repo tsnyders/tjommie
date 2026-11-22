@@ -103,3 +103,30 @@ function Save-AppLogs([string]$Root, [string]$OutDir, [string]$Label) {
         if (Test-Path -LiteralPath $logs -PathType Container) { Copy-Item -LiteralPath $logs -Destination (Join-Path $OutDir "app-logs-$Label") -Recurse -Force }
     } catch { }
 }
+
+# What to look at when an app that should be running is not doing what it should (a daemon that never starts): the processes that run from its install
+# folder with their parents and command lines, the data root's most recently written files, anything that looks like a crash log, the Application
+# event log's recent errors, and the app's own log. Recorded as notes, never as passes or failures, and never fails the run.
+function Add-AppDiagnostics([string]$InstallFolder, [string]$Root, [string]$Label) {
+    try {
+        $running = @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and (Test-PathInFolder $_.ExecutablePath $InstallFolder) })
+        Add-Note "$Label`: the processes running from the install folder ($($running.Count))" @($running | ForEach-Object {
+            [ordered]@{ id = $_.ProcessId; parent = $_.ParentProcessId; started = [string]$_.CreationDate; exe = $_.ExecutablePath; commandLine = $_.CommandLine }
+        })
+    } catch { Add-Note "$Label`: the process list could not be read: $($_.Exception.Message)" }
+    try {
+        $recent = @(Get-ChildItem -LiteralPath $Root -Recurse -Force -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime | Select-Object -Last 60)
+        Add-Note "$Label`: the data root's most recently written files" @($recent | ForEach-Object { '{0} {1,10} {2}' -f $_.LastWriteTime.ToString('o'), $_.Length, $_.FullName.Substring($Root.Length) })
+        $crash = @(Get-ChildItem -LiteralPath $Root -Recurse -Force -File -Include '*crash*', '*.dmp', '*panic*' -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName.Substring($Root.Length) })
+        Add-Note "$Label`: files that look like crash logs ($($crash.Count))" $crash
+        $log = Join-Path $Root 'logs\desktop.log'
+        if (Test-Path -LiteralPath $log) { Add-Note "$Label`: the app's log, last lines" @(Get-Content -LiteralPath $log -Tail 80) }
+    } catch { Add-Note "$Label`: the data root could not be read: $($_.Exception.Message)" }
+    try {
+        $events = @(Get-WinEvent -FilterHashtable @{ LogName = 'Application'; Level = 1, 2 } -MaxEvents 20 -ErrorAction Stop | ForEach-Object {
+            $text = ([string]$_.Message -replace '\s+', ' ')
+            '{0} {1}: {2}' -f $_.TimeCreated.ToString('o'), $_.ProviderName, $text.Substring(0, [Math]::Min(300, $text.Length))
+        })
+        Add-Note "$Label`: the Application event log's last errors ($($events.Count))" $events
+    } catch { Add-Note "$Label`: the Application event log could not be read: $($_.Exception.Message)" }
+}
