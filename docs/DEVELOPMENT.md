@@ -134,7 +134,7 @@ stack: tjommie-desktop.exe+0x471bfb tjommie-desktop.exe+0x3aa073 tjommie-desktop
 
 A release is built with line tables kept, and its PDBs are in `Tjommie-<version>-symbols.zip` on the release. To read an entry's stack by function and line:
 
-1. Download that zip for the version the entry names and extract it into a new empty folder.
+1. Download that zip for the version the entry names and extract it into a new empty folder. It holds `tjommie_desktop.pdb` and `tjommie_daemon.pdb` at its top level.
 2. Check that the PDB is the one that was built with the exe: the entry's `guid` and `age` for the exe must be the PDB's own. `llvm-pdbutil dump --summary tjommie_desktop.pdb` prints them as `GUID` and `Age`. A PDB from another build, even of the same version, has another GUID and gives wrong names, so do not use one.
 3. Put the PDB beside a copy of the same version's `tjommie-desktop.exe` (the installed app's, or the release payload's). The symboliser finds the PDB next to the exe, and says `no such file or directory` when it can't.
 4. Ask `llvm-symbolizer` (LLVM's, from `winget install LLVM.LLVM` or `scoop install llvm`) for each offset. Every frame is a return address, the instruction after a call, so ask for the offset minus 1:
