@@ -2,8 +2,8 @@
 
 Every card in `design/claude-design/aegis/components/motion.html` (numbered as there, 00 to 12, plus the README's shared
 elements) and every motion inside it: its tokens (`design/themes/aegis.json` `motion.*`), the type that implements it,
-and the check that proves it. A motion the desktop has no place for says "n/a on desktop" and why; one the app does not
-do yet says "Not yet" and why, and is listed again at the end.
+and the check that proves it. A motion the desktop has no place for says "n/a on desktop" and why; one that waits for
+0.6.1 says "0.6.1: deferred by owner decision (2026-11-22)", with what the app does meanwhile, and is listed again at the end.
 
 The rules every motion keeps (plan T2.3, T7.2):
 
@@ -46,7 +46,7 @@ pickers keep still poses.
 | needs you: looks up; limited: drowsy; paused: rests | poses | `ui::primitives::avatar::{Pose, Gaze}`, `Eyes::gaze` (drowsy blinks 2.4× and 3× slower; paused never blinks) | `eyes::a_paused_agent_rests_its_eyes`, `avatar::tests` |
 | reduced motion: still poses | | `Eyes::gaze`, `Eyes::next_change` (no frames) | `eyes::reduced_motion_keeps_the_pose_still`, `a_living_avatar_asks_for_frames_only_while_its_eyes_move` |
 
-The glance moves the eyes in one frame and holds them (the design eases it on the snappy spring).
+The glance moves the eyes in one frame and holds them. Its ease on the snappy spring: 0.6.1: deferred by owner decision (2026-11-22).
 
 ## 02 Approve
 
@@ -70,18 +70,18 @@ stagger.
 | their checks draw on | `spring.calm` | `motion::check::DrawOn` in `step_motion` | same tests |
 | words fade in 34 ms apart, per run | `duration.base` 280, 34 ms | gpui-kit's `TextViewMotion` stream fade (`ui::files::markdown::styled`); gpui-kit follows `reduce_motion` | gpui-kit's own tests; scenario `motion-arrival` |
 | the code block grows to its height, lines 40 ms apart | `spring.calm`, `stagger.tight` | n/a on desktop: the code block is drawn inside gpui-kit's `TextView`, which has no height motion, and the pins forbid patching gpui-kit before the release (plan "Pins and upgrades"); its lines appear as they stream, fading word by word | n/a |
-| the bottom-anchored thread glides as it grows | `duration.base`, `easing.out` | Not yet: the thread (`ui::chat::thread`) follows its newest message with GPUI's `FollowMode::Tail`, which jumps | n/a |
+| the bottom-anchored thread glides as it grows | `duration.base`, `easing.out` | 0.6.1: deferred by owner decision (2026-11-22). Meanwhile the thread (`ui::chat::thread`) follows its newest message with GPUI's `FollowMode::Tail`, which jumps | none in 0.6.0 |
 
 ## 04 Composer
 
 | Motion | Tokens | Implemented by | Check |
 |---|---|---|---|
 | the card lifts 2 px on focus | `distance.lift` 2, `spring.calm` | `ui::chat::composer::Composer` (`lift`); focus by Tab lands at once | composer view tests |
-| it grows to 76 px | | Not yet: the card keeps its height on focus | n/a |
-| the model pill grows into its menu | `spring.snappy`, 90 ms | Not yet: the menu opens at once under the pill (gpui-kit's menu) | n/a |
-| the dictation meter, a spring per bar | `spring.snappy` | Not yet: the microphone capture (`desktop-host::speech`) reports no level to draw; 0.5.x had no meter | n/a |
+| it grows to 76 px | | 0.6.1: deferred by owner decision (2026-11-22). Meanwhile the card keeps its height on focus | none in 0.6.0 |
+| the model pill grows into its menu | `spring.snappy`, 90 ms | 0.6.1: deferred by owner decision (2026-11-22). Meanwhile the menu opens at once under the pill (gpui-kit's menu) | none in 0.6.0 |
+| the dictation meter, a spring per bar | `spring.snappy` | 0.6.1: deferred by owner decision (2026-11-22). The microphone capture (`desktop-host::speech`) reports no level to draw yet; 0.5.x had no meter | none in 0.6.0 |
 | the send button pops awake | `spring.snappy` | `motion::keyed::spring` on `IconButton::icon_scale` (the composer's round button) | the keyed spring's tests (10) |
-| the draft flies into the thread (FLIP) | `spring.calm` | Not yet: the new message appears in the thread at once | n/a |
+| the draft flies into the thread (FLIP) | `spring.calm` | 0.6.1: deferred by owner decision (2026-11-22). Meanwhile the new message appears in the thread at once | none in 0.6.0 |
 
 ## 05 Phone drawer
 
@@ -93,7 +93,7 @@ the end).
 | Motion | Tokens | Implemented by | Check |
 |---|---|---|---|
 | the Needs you count rolls, digit by digit | `spring.playful` | `motion::digits::Rolling` (Agents overview) | `digits::a_changed_digit_rolls_and_the_rest_stays`, `a_roll_lands_on_its_digit_without_a_jump`, `a_length_change_snaps_the_whole_number`; scenario `motion-numbers` |
-| spend and quota roll; bars ease to their length | `spring.playful`, `spring.calm` | Not yet: Usage and Accounts show the new figures and bar lengths at once | n/a |
+| spend and quota roll; bars ease to their length | `spring.playful`, `spring.calm` | 0.6.1: deferred by owner decision (2026-11-22). Meanwhile Usage and Accounts show the new figures and bar lengths at once | none in 0.6.0 |
 
 ## 07 The stone mark
 
@@ -116,10 +116,10 @@ n/a on desktop: phone only (plan T7.1 item 9).
 
 | Motion | Tokens | Implemented by | Check |
 |---|---|---|---|
-| a pressed fill compresses, its words stay | `distance.pressFill` 0.94 | `ui::primitives::button::press_fill` (GPUI's active style: at once) | button view tests. Not yet: the 140 ms ease in and the snappy release |
+| a pressed fill compresses, its words stay; letting go springs it back | `distance.pressFill` 0.94, `spring.snappy` | `ui::primitives::button::{press_motion, press_fill}` on `motion::keyed::spring`: the pointer's press springs the fill in and back with the snappy settle; a key's press shows none | `button::a_press_springs_the_fill_in_and_back`. The 140 ms ease in: 0.6.1: deferred by owner decision (2026-11-22); meanwhile the fill springs in on the snappy spring too |
 | an icon button may scale whole | `spring.snappy` | `IconButton::icon_scale` (the send button's pop) | the keyed spring's tests |
-| hover | `duration.hover` 200 | Not yet: GPUI's hover style changes at once | n/a |
-| glass cards lift 2 px as their shadow deepens | `distance.lift`, `spring.calm` | Not yet: cards keep their place and shadow on hover | n/a |
+| hover | `duration.hover` 200 | 0.6.1: deferred by owner decision (2026-11-22). Meanwhile GPUI's hover style changes at once | none in 0.6.0 |
+| glass cards lift 2 px as their shadow deepens | `distance.lift`, `spring.calm` | 0.6.1: deferred by owner decision (2026-11-22). Meanwhile cards keep their place and shadow on hover | none in 0.6.0 |
 | toggles land with the snappy settle | `spring.snappy` | `ui::primitives::toggle::Toggle` on `motion::keyed::spring` | `toggle::the_knob_springs_across_after_a_click_and_lands_at_once_after_a_key` |
 
 ## 11 Lists reorder and reflow
@@ -137,7 +137,7 @@ turns mid-flight without a jump, so a reorder settles in about 560 ms.
 | Motion | Tokens | Implemented by | Check |
 |---|---|---|---|
 | the panel opens and closes while the chat resizes; its content is revealed, not squashed | `spring.calm` | `ui::browser::motion` (T3.7), the live variant by default with the snapshot fallback (`panel_variant::choose`) | `panel::keyboard_toggle_snaps`, `motion::tests::interrupt_continues_from_value`, `panel_variant::tests::choose`, `e2e_panel_open_close`; scenario `motion-panel` |
-| the live dot pulses while frames arrive | `duration.pulse` 1600, `easing.pulse` | Not yet: the panel's control bar has no "Live, 58 fps" mark (T3.7 shipped without it) | n/a |
+| the live dot pulses while frames arrive | `duration.pulse` 1600, `easing.pulse` | 0.6.1: deferred by owner decision (2026-11-22). The panel's control bar has no "Live, 58 fps" mark yet (T3.7 shipped without it) | none in 0.6.0 |
 
 ## Shared elements (README "Shared elements across screens")
 
@@ -155,11 +155,17 @@ sections as icon links, then New agent) and the side panels open as sheets over 
 exchange and a room's members (`shell::sheet`, `members::panel`). Checks: `projects::tests::a_narrow_window_has_compact_navigation_and_projects_fits`,
 `rooms::tests::a_narrow_window_shows_the_members_as_a_sheet`.
 
-## Not yet (the motions above marked so)
+## Deferred to 0.6.1 (owner decision, 2026-11-22)
 
+0.6.0 ships the motions above that have a check; these wait for 0.6.1:
+
+- 01: the glance's ease on the snappy spring (it moves in one frame).
 - 03: the bottom-anchored glide.
-- 04: the composer growing to 76 px, the pill growing into its menu, the dictation meter, the send flight.
+- 04: the composer growing to 76 px, the pill growing into its menu, the dictation meter's springs, the send flight.
 - 06: spend and quota rolling, bars easing.
-- 10: the 140 ms press and snappy release, the hover fade, the cards' lift.
-- 01: the glance's snappy ease (it moves in one frame).
+- 10: the press's 140 ms ease in (the fill springs in and back on the snappy spring meanwhile), the hover fade, the
+  cards' lift.
 - 12: the live mark and its pulsing dot.
+
+Not deferred, n/a on desktop: 03's code block growing (drawn inside gpui-kit), 05 the phone drawer, 07 the stone mark,
+08 first open.

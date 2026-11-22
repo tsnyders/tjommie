@@ -8,7 +8,9 @@ Every command is PowerShell, run from the repo folder of this branch. Nothing he
 (`%LOCALAPPDATA%\Tjommie`), its ports 47100/47101, or Credential Manager. The app's data goes to throwaway folders under
 `%TEMP%` or to `%LOCALAPPDATA%\Tjommie-rs\perf\`.
 
-The list of motions is `tjommie-rs\motion-map.md`; the scripts below time every motion in it.
+The motions are listed in `tjommie-rs\motion-map.md`. Step 2 times the ones 0.6.0 ships that have a timed scenario:
+`motion-recents`, `motion-flight`, `motion-toast`, `motion-panel`, `motion-numbers`, `motion-arrival`, `motion-alive`
+and `scroll-10k`. The motions the map defers to 0.6.1 are not in this build, so nothing here measures them.
 
 ## 0. Close everything first
 
@@ -45,7 +47,7 @@ build with the test driver; the normal release stays free of it.) Run the plumbi
 
 It runs 5 loops of each named motion once. If it ends without a warning, the tools work. It is not a measurement.
 
-## 2. Motion p95 (T7.2, T7.4): every motion, 3 runs of 50 loops
+## 2. Motion p95 (T7.2, T7.4): every timed motion, 3 runs of 50 loops
 
 ```powershell
 .\tjommie-rs\tools\perf\run-motion-checks.ps1 -Only p95
