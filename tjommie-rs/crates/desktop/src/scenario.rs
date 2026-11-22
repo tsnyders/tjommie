@@ -520,8 +520,9 @@ async fn alive(options: &Options, cx: &mut AsyncApp) -> Result<bool, String> {
 }
 
 /// The app at rest (M7 review m8, the owner's "stop when not in front"): with one agent at work among quiet ones, the
-/// frames drawn over `--seconds` in front (as launched), then with the window not in front (the taskbar takes the
-/// foreground; the window stays visible), which must stay at most 1 a second. The in-front rate is reported beside it.
+/// frames drawn over `--seconds` in front, then with the window not in front (the taskbar takes the foreground; the
+/// window stays visible), which must stay at most 1 a second. The in-front rate is reported beside it. A window that
+/// opened behind (launched by a process not in front, which Windows lets take no foreground) is measured behind only.
 async fn idle(
     options: &Options,
     window: AnyWindowHandle,
@@ -533,13 +534,16 @@ async fn idle(
         cx.update(|cx| clock::drawn(cx)).saturating_sub(before) as f64 / seconds
     };
     let was_in_front = act(window, cx, |window, _| window.is_window_active())?;
-    let before = cx.update(|cx| clock::drawn(cx));
-    sleep(cx, ms).await;
-    let in_front = rate(before, cx);
-    // Outside any update: Windows activates the taskbar, and the window's deactivation comes as a message.
-    desktop_host::perf::put_taskbar_in_front()?;
-    // The redraw that comes with the deactivation.
-    sleep(cx, 1000).await;
+    let mut in_front = None;
+    if was_in_front {
+        let before = cx.update(|cx| clock::drawn(cx));
+        sleep(cx, ms).await;
+        in_front = Some(rate(before, cx));
+        // Outside any update: Windows activates the taskbar, and the window's deactivation comes as a message.
+        desktop_host::perf::put_taskbar_in_front()?;
+        // The redraw that comes with the deactivation.
+        sleep(cx, 1000).await;
+    }
     let behind_now = act(window, cx, |window, _| !window.is_window_active())?;
     let before = cx.update(|cx| clock::drawn(cx));
     sleep(cx, ms).await;

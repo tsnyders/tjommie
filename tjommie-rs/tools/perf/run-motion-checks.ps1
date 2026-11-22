@@ -69,9 +69,12 @@ $checks = @(
     @{ Label = 'motion-reduced'; Note = 'reduced motion, simulated (--force-reduced; the real check is the owner''s)'; Args = @('--scenario', 'motion-reduced', '--force-reduced') },
     @{ Label = 'motion-idle'; Note = 'idle: one agent at work, the window not in front draws at most 1 frame a second (its in-front rate beside it; about 45 s)'; Args = @('--scenario', 'motion-idle', '--seconds', '20') }
 )
+# The verdict reads only the lines this run appends: a partial run (-Only, -Labels) keeps the earlier lines.
+$earlier = 0
 if (-not $Smoke -and (-not $Only -or $Only -eq 'checks')) {
     New-Item -ItemType Directory -Force $evidence | Out-Null
     if (-not $Only -and -not $Labels) { Remove-Item $results -ErrorAction SilentlyContinue }
+    if (Test-Path $results) { $earlier = @(Get-Content $results).Count }
     foreach ($check in $checks | Where-Object { -not $Labels -or $Labels -contains $_.Label }) {
         Write-Host "== $($check.Note) (CPU before: $(Wait-Quiet)%)"
         try { Invoke-Check $check.Args } catch { Write-Warning "$($check.Label): $($_.Exception.Message)"; $problems += $check.Label }
@@ -99,8 +102,9 @@ if ($Smoke -or -not $Only -or $Only -eq 'p95') {
     }
 }
 if (Test-Path $results) {
-    Get-Content $results | ForEach-Object { $_ }
-    $bad = @(Get-Content $results | ForEach-Object { try { $_ | ConvertFrom-Json } catch { } } | Where-Object { $_.pass -eq $false })
+    $mine = @(Get-Content $results | Select-Object -Skip $earlier)
+    $mine | ForEach-Object { $_ }
+    $bad = @($mine | ForEach-Object { try { $_ | ConvertFrom-Json } catch { } } | Where-Object { $_.pass -eq $false })
     foreach ($b in $bad) { $problems += "$($b.scenario)/$($b.motion)" }
 }
 if ($Smoke) { Write-Host 'smoke: the plumbing ran; nothing here is a verdict'; if ($problems) { Write-Warning ('smoke problems: ' + ($problems -join ', ')); exit 1 }; exit 0 }
