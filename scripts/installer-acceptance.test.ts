@@ -180,6 +180,32 @@ describe.skipIf(!windows)("the installer scripts, linted", () => {
 
 describe.skipIf(!windows)("the acceptance library's pure helpers", () => {
   // Only the helpers that take a folder: the ones that read production's registry keys are never called in a test.
+  // Run 1 of T8.4: on a newer runner image the all-users Desktop folder is a hidden one, and a plain Get-Item on a hidden folder's literal path fails with
+  // "Could not find item" though Test-Path says it is there. That stopped three jobs that had passed before (the shortcut check reads that folder to
+  // show nothing of ours is in it). A hidden folder is read, and a folder that is not there still holds nothing and still throws where it should.
+  it("reads a hidden folder, finds no shortcut in it, and still refuses a folder that is not there", () => {
+    const root = temp();
+    const hidden = join(root, "Desktop");
+    mkdirSync(hidden);
+    writeFileSync(join(hidden, "note.txt"), "x");
+    const result = runBody("accept-lib.ps1", String.raw`
+      $dir = '${hidden}'
+      (Get-Item -LiteralPath $dir -Force).Attributes = 'Directory, Hidden, System'
+      $plain = $null
+      try { $plain = [bool](Get-Item -LiteralPath $dir -ErrorAction Stop) } catch { $plain = $false }
+      $files = @(Get-FilesUnder $dir | ForEach-Object { $_.Relative })
+      $links = @(Get-ShortcutFacts $dir)
+      $missing = 'none'
+      try { [void](Get-FilesUnder '${join(root, "absent")}') ; $missing = 'no error' } catch { $missing = 'threw' }
+      (Get-Item -LiteralPath $dir -Force).Attributes = 'Directory'
+      [ordered]@{ plainGetItemSeesIt = $plain; files = $files; links = $links.Count; absent = $missing } | ConvertTo-Json -Compress
+    `) as { plainGetItemSeesIt: boolean; files: string[]; links: number; absent: string };
+    // (The first line documents why: a plain Get-Item does not see it. If a future Windows does, the fix is simply not needed, and this still passes.)
+    expect(result.files).toEqual(["note.txt"]);
+    expect(result.links).toBe(0);
+    expect(result.absent).toBe("threw");
+  });
+
   it("snapshots a tree, finds a file that is gone, changed or added, and adds sentinels of known size", () => {
     const root = temp();
     const result = runBody("accept-lib.ps1", String.raw`
