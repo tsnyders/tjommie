@@ -6,9 +6,15 @@ name: README shots
 # downloads the artifact (`gh run download <id> --name readme-shots`), looks at every picture, and commits the good ones
 # under docs/screens/.
 #
-#   gh workflow run readme-shots.yml --ref <branch>
+#   gh workflow run readme-shots.yml --ref <branch>     (workflow_dispatch: works once this file is on the default branch)
+#   git push origin <commit>:refs/heads/readme-shots-<anything>     (works from any branch, as release.yml's dry run does)
+#
+# GitHub starts a workflow_dispatch run only from a workflow file that exists on the default branch, so until this file is on
+# main, a branch named readme-shots-<anything> starts the capture by being pushed. No other branch, tag or pull request does.
 
 on:
+  push:
+    branches: ['readme-shots-*']
   workflow_dispatch:
 
 permissions:
