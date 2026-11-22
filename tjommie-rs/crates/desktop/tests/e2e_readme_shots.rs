@@ -307,10 +307,10 @@ fn turn(expect: &str, events: Vec<Value>) -> Value {
 /// The files of recorded turns, by agent. Each agent's turns are used in this order:
 ///
 /// * Forge: its chat (a tool line, a Markdown reply, a file card, usage), a mention in Everyone, a request to ask Scout, Scout's
-///   answer coming back, and a page opened in its browser.
+///   answer coming back.
 /// * Scout: a mention in Everyone, the request Forge sends, and last a slow turn that stays "working" for the Agents picture.
 /// * Atlas: a request that waits on an approval card nobody answers.
-/// * Quill: nothing; it stays idle.
+/// * Quill: a page opened in its browser, in a chat of its own.
 fn fixtures(page: &str) -> Vec<(&'static str, String)> {
     let forge = fixture(vec![
         turn(
@@ -352,15 +352,17 @@ fn fixtures(page: &str) -> Vec<(&'static str, String)> {
             ]
             .concat(),
         ),
-        turn(
-            "orders page",
-            [
-                vec![json!({ "type": "browser", "id": "b1", "tool": "browser_navigate", "arguments": { "url": page } })],
-                text("The Orders page is open."),
-            ]
-            .concat(),
-        ),
     ]);
+    // Quill is the agent with the browser: a chat of its own, short enough that the narrow column beside the browser panel
+    // shows all of it (an older tool line there wraps a letter at a time, which a longer history would put in the picture).
+    let quill = fixture(vec![turn(
+        "orders page",
+        [
+            vec![json!({ "type": "browser", "id": "b1", "tool": "browser_navigate", "arguments": { "url": page } })],
+            text("The Orders page is open. It lists three orders: 1041 for Harbour Books, 1042 for Lantern Cafe and 1043 for North Pier Tackle, 404.75 in all."),
+        ]
+        .concat(),
+    )]);
     let scout = fixture(vec![
         turn(
             "release notes",
@@ -395,6 +397,7 @@ fn fixtures(page: &str) -> Vec<(&'static str, String)> {
     )]);
     vec![
         ("Forge.json", forge),
+        ("Quill.json", quill),
         ("Scout.json", scout),
         ("Atlas.json", atlas),
         ("default.json", common::QUIET.to_owned()),
@@ -525,7 +528,7 @@ fn e2e_readme_shots() {
         name: "Quill",
         instructions: "Keeps the notes folder tidy and writes the weekly cleanup report.",
         ask: false,
-        browser: false,
+        browser: true,
         can_message: &[],
     };
     let atlas = Spec {
@@ -546,7 +549,7 @@ fn e2e_readme_shots() {
         name: "Forge",
         instructions: "Builds and fixes the Orders app, and explains what it changed.",
         ask: false,
-        browser: true,
+        browser: false,
         can_message: &["Scout"],
     };
     // The New agent picture is the form for Forge, filled in and not saved.
@@ -690,11 +693,35 @@ fn e2e_readme_shots() {
             activate(app, "task_form.save");
             wait_gone(app, "task_form.title");
         }
-        // Saving a task opens it; the picture is the team, with both tasks in its list.
-        activate(app, &team);
-        until(app, "the tasks aren't in the list", |app| {
-            ids_like(app, "projects.task.", "").len() >= 2
-        });
+        // Saving a task opens it; the picture is the team, with both tasks in its list. The team's own entry brings the team
+        // back, and a runner showed that the first try can go unheard: so the screen is asked for until it is the team's
+        // (its New task button, and no task's detail), and left for Agents and come back to if it still is not.
+        let team_shown = |app: &mut Client| {
+            let snapshot = app.snapshot().unwrap();
+            snapshot.node("projects.detail").is_none()
+                && snapshot.node("projects.new_task").is_some()
+                && snapshot
+                    .nodes
+                    .iter()
+                    .filter(|node| node.id.starts_with("projects.task."))
+                    .count()
+                    >= 2
+        };
+        for attempt in 0..4 {
+            if attempt == 2 {
+                open(app, "sidebar.nav.agents", "screen.agents");
+                open(app, "sidebar.nav.projects", "screen.projects");
+            }
+            activate(app, &team);
+            let waited = Instant::now();
+            while !team_shown(app) && waited.elapsed() < Duration::from_secs(6) {
+                sleep(Duration::from_millis(150));
+            }
+            if team_shown(app) {
+                break;
+            }
+        }
+        assert!(team_shown(app), "the team never showed with its two tasks");
     });
     shots.take("project-task-dark", &mut app, |app| {
         let task = app
@@ -785,7 +812,7 @@ fn e2e_readme_shots() {
 
     // The agent's browser, and its logins menu.
     shots.take("browser-dark", &mut app, |app| {
-        open_chat(app, "Forge");
+        open_chat(app, "Quill");
         say(app, "Please open the orders page");
         until(app, "the browser tool didn't finish", |app| {
             app.snapshot().unwrap().nodes.iter().any(|node| {
