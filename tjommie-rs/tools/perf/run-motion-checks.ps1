@@ -1,23 +1,41 @@
 <#
-Criterion 8 and the owner's two motion measurements, for the spike's Aegis motions.
+Plan T7.2 and T7.4: every timed motion (3 runs of 50 loops, PresentMon p95 at most 16.7 ms) and the two checks
+(keyboard, simulated reduced motion), for tjommie-desktop.exe.
 
-    .\scripts\run-motion-checks.ps1              # everything (about 30 minutes on a quiet PC)
-    .\scripts\run-motion-checks.ps1 -Only p95    # just the timed runs (about 25 minutes)
-    .\scripts\run-motion-checks.ps1 -Only p95 -Labels motion-approve,living-30   # some of them
+    .\tools\perf\run-motion-checks.ps1                       # everything (about 40 minutes on a quiet PC)
+    .\tools\perf\run-motion-checks.ps1 -Only p95             # just the timed runs
+    .\tools\perf\run-motion-checks.ps1 -Only checks          # just the two checks (no timing)
+    .\tools\perf\run-motion-checks.ps1 -Only p95 -Labels motion-flight,motion-alive    # some of them
+    .\tools\perf\run-motion-checks.ps1 -Smoke -Labels motion-flight,motion-toast      # a quick proof
 
-Writes evidence\motion\results.jsonl (pivot, keyboard, interruption, lag, simulated reduced motion) and
-evidence\motion-<name>\ (PresentMon p95 per motion, 3 runs of 50 loops each, via run-scenario.ps1).
-Timed runs wait for a quiet PC: up to QuietTimeout s per motion in total, then they run anyway and
-record their load. Build first: cargo build --release.
+The list of motions is tjommie-rs\motion-map.md; $timed below must match it (add a line when a motion is added).
+-Smoke: one run of 5 loops (motion-alive: 5 s) per named motion (all when no -Labels), filed under
+evidence\smoke-<name>\ so real evidence is never overwritten, no checks, no verdict: it proves the plumbing only.
+
+Writes evidence\motion\results.jsonl (one JSON line per check: keyboard, reduced) and
+evidence\<name>\ (PresentMon p95 per motion, via run-scenario.ps1). Timed runs wait for a quiet PC: up to
+QuietTimeout s per motion in total, then they run anyway and record their load. Each app run gets a fresh
+TJOMMIE_HOME under %TEMP% (deleted after). Build first, see run-scenario.ps1.
+The real reduced-motion check (Windows' Animation effects off) is the owner's by hand: owner-perf-run.md.
+Exit code: 0 when every timed motion passed and every check passed, else 1.
 #>
-param([string]$Only = '', [string[]]$Labels = @(), [int]$Runs = 3, [double]$MaxLoad = 35, [int]$QuietTimeout = 1200)
+param(
+    [ValidateSet('', 'p95', 'checks')][string]$Only = '',
+    [string[]]$Labels = @(),
+    [int]$Runs = 3,
+    [switch]$Smoke,
+    [double]$MaxLoad = 35,
+    [int]$QuietTimeout = 1200,
+    [string]$Exe = ''
+)
 $ErrorActionPreference = 'Stop'
-$crate = Split-Path $PSScriptRoot -Parent
-$exe = Join-Path $crate 'target\release\tjommie-spike.exe'
+$crate = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent   # tjommie-rs
+if (-not $Exe) { $Exe = Join-Path $crate 'target\perf\tjommie-desktop.exe' }
+if (-not (Test-Path $Exe)) { throw "Missing $Exe (cargo build --profile perf -p desktop --features test-driver --locked, inside tjommie-rs)" }
 $evidence = Join-Path $crate 'evidence\motion'
-New-Item -ItemType Directory -Force $evidence | Out-Null
 $results = Join-Path $evidence 'results.jsonl'
 $counter = '\Processor(_Total)\% Processor Time'
+$problems = @()
 
 function Wait-Quiet {
     $deadline = (Get-Date).AddSeconds($QuietTimeout)
@@ -29,42 +47,60 @@ function Wait-Quiet {
     }
 }
 
-function Invoke-Spike([string[]]$Arguments) {
-    $app = Start-Process -FilePath $exe -PassThru -ArgumentList ($Arguments + @('--out', $results, '--shots', $evidence))
-    if (-not $app.WaitForExit(300000)) { Stop-Process -Id $app.Id; throw "spike timed out: $Arguments" }
+# One check: the app runs the scenario, appends its JSON lines to results.jsonl and exits 0 only when it passed.
+function Invoke-Check([string[]]$Arguments) {
+    $temp = Join-Path ([IO.Path]::GetTempPath()) ('tjommie-perf-' + [guid]::NewGuid().ToString('N').Substring(0, 12))
+    $saved = $env:TJOMMIE_HOME
+    New-Item -ItemType Directory -Force $temp | Out-Null
+    $env:TJOMMIE_HOME = $temp
+    try {
+        $app = Start-Process -FilePath $Exe -PassThru -ArgumentList ($Arguments + @('--out', $results))
+        if (-not $app.WaitForExit(300000)) { Stop-Process -Id $app.Id; throw "timed out: $Arguments" }
+        if ($app.ExitCode -ne 0) { throw "failed (exit $($app.ExitCode)): $Arguments; see $temp\logs\desktop.log" }
+        Remove-Item $temp -Recurse -Force -ErrorAction SilentlyContinue
+    } finally { $env:TJOMMIE_HOME = $saved }
 }
 
-if (-not $Only -or $Only -eq 'checks') {
-    if (-not $Only) { Remove-Item $results -ErrorAction SilentlyContinue }
-    Write-Host '== eyes pivot'; Invoke-Spike @('--scenario', 'eyes-pivot')
-    Write-Host '== keyboard'; Invoke-Spike @('--scenario', 'motion-keyboard')
-    Write-Host '== reduced motion, simulated (--force-reduced; the real check is the owner''s)'; Invoke-Spike @('--scenario', 'motion-reduced', '--force-reduced')
-    Write-Host "== interruption (CPU before: $(Wait-Quiet)%)"; Invoke-Spike @('--scenario', 'motion-interrupt')
-    Write-Host "== panel lag (CPU before: $(Wait-Quiet)%)"; Invoke-Spike @('--scenario', 'motion-lag')
-    Write-Host '== flight shots'; Invoke-Spike @('--scenario', 'flight-shots')
-}
-if ($Only -eq 'rerun') {
-    Write-Host "== interruption (CPU before: $(Wait-Quiet)%)"; Invoke-Spike @('--scenario', 'motion-interrupt')
-    Write-Host '== flight shots'; Invoke-Spike @('--scenario', 'flight-shots')
-}
-
-if (-not $Only -or $Only -eq 'p95') {
-    $runScenario = Join-Path $PSScriptRoot 'run-scenario.ps1'
-    $timed = @(
-        @{ Label = 'motion-panel-snapshot'; Scenario = 'motion-panel'; AppArgs = @() },
-        @{ Label = 'motion-panel-live'; Scenario = 'motion-panel'; AppArgs = @('--panel-live') },
-        @{ Label = 'motion-recents'; Scenario = 'motion-recents'; AppArgs = @() },
-        @{ Label = 'motion-approve'; Scenario = 'motion-approve'; AppArgs = @() },
-        @{ Label = 'motion-flight'; Scenario = 'motion-flight'; AppArgs = @() },
-        # The flight on its own (with the browser, every flight also swaps the bots' WebView2 pages).
-        @{ Label = 'motion-flight-nobrowser'; Scenario = 'motion-flight'; AppArgs = @('--no-browser') },
-        @{ Label = 'living-30'; Scenario = 'living'; AppArgs = @('--seconds', '20') }
-    )
-    foreach ($job in $timed | Where-Object { -not $Labels -or $Labels -contains $_.Label }) {
-        Write-Host "== $($job.Label) ($(Get-Date -Format 'HH:mm:ss'))"
-        # One motion's failure must not stop the others.
-        try { & $runScenario -Scenario $job.Scenario -Label $job.Label -Runs $Runs -MaxLoad $MaxLoad -QuietTimeout $QuietTimeout -AppArgs $job.AppArgs }
-        catch { Write-Warning "$($job.Label): $($_.Exception.Message)" }
+# Interruption (the spike report's two rules) is proven by unit tests per motion (motion-map.md); no app scenario.
+$checks = @(
+    @{ Label = 'motion-keyboard'; Note = 'keyboard: key-triggered motions land with no frames in between'; Args = @('--scenario', 'motion-keyboard') },
+    @{ Label = 'motion-reduced'; Note = 'reduced motion, simulated (--force-reduced; the real check is the owner''s)'; Args = @('--scenario', 'motion-reduced', '--force-reduced') }
+)
+if (-not $Smoke -and (-not $Only -or $Only -eq 'checks')) {
+    New-Item -ItemType Directory -Force $evidence | Out-Null
+    if (-not $Only -and -not $Labels) { Remove-Item $results -ErrorAction SilentlyContinue }
+    foreach ($check in $checks | Where-Object { -not $Labels -or $Labels -contains $_.Label }) {
+        Write-Host "== $($check.Note) (CPU before: $(Wait-Quiet)%)"
+        try { Invoke-Check $check.Args } catch { Write-Warning "$($check.Label): $($_.Exception.Message)"; $problems += $check.Label }
     }
 }
-if (Test-Path $results) { Get-Content $results | ForEach-Object { $_ -replace ',"shot":"[^"]*"', '' -replace ',"frames":\{.*\}\}', '}' } }
+
+if ($Smoke -or -not $Only -or $Only -eq 'p95') {
+    $runScenario = Join-Path $PSScriptRoot 'run-scenario.ps1'
+    # The app's timed scenarios (crates/desktop/src/scenario.rs TIMED, plus motion-alive and scroll-10k).
+    $timed = @(
+        'motion-recents', 'motion-flight', 'motion-toast', 'motion-panel', 'motion-numbers', 'motion-arrival',
+        'motion-alive', 'scroll-10k'
+    )
+    foreach ($name in $timed | Where-Object { -not $Labels -or $Labels -contains $_ }) {
+        Write-Host "== $name ($(Get-Date -Format 'HH:mm:ss'))"
+        $extra = @{}
+        if ($name -eq 'motion-alive') { $extra.Seconds = if ($Smoke) { 5 } else { 20 } }
+        if ($Smoke) { $extra.Loops = 5; $extra.Runs = 1; $extra.Label = "smoke-$name" } else { $extra.Runs = $Runs; $extra.Label = $name }
+        # One motion's failure must not stop the others.
+        try {
+            $line = & $runScenario -Scenario $name -MaxLoad $MaxLoad -QuietTimeout $QuietTimeout -Exe $Exe @extra
+            $line
+            if (-not $Smoke -and "$($line | Select-Object -Last 1)" -notmatch 'pass \(p95 <= 16\.7 ms on every run\): True') { $problems += $name }
+        } catch { Write-Warning "${name}: $($_.Exception.Message)"; $problems += $name }
+    }
+}
+if (Test-Path $results) {
+    Get-Content $results | ForEach-Object { $_ }
+    $bad = @(Get-Content $results | ForEach-Object { try { $_ | ConvertFrom-Json } catch { } } | Where-Object { $_.pass -eq $false })
+    foreach ($b in $bad) { $problems += "$($b.scenario)/$($b.motion)" }
+}
+if ($Smoke) { Write-Host 'smoke: the plumbing ran; nothing here is a verdict'; if ($problems) { Write-Warning ('smoke problems: ' + ($problems -join ', ')); exit 1 }; exit 0 }
+if ($problems) { Write-Warning ('NOT PASSING: ' + (($problems | Select-Object -Unique) -join ', ')); exit 1 }
+Write-Host 'all motions and checks passed'
+exit 0

@@ -5,8 +5,16 @@ set is kept only for continuity with the 496.1 MiB baseline (it counts shared pa
 
     # Owner step D2: the installed production app, already running in state S0 (then again in S1):
     & "<repo>\tjommie-rs\tools\perf\measure-memory.ps1" -Target Electron -State S0
-    # The desktop app (its root process):
+    # The desktop app on a dev root (its root process is tjommie-desktop.exe; its children are tjommie-daemon.exe and, once
+    # a bot's browser opens, WebView2's browser process msedgewebview2.exe with its GPU, utility, crashpad and renderer
+    # children; WebView2 starts its browser process as a child of the host app, so the tree holds them all):
     & "<repo>\tjommie-rs\tools\perf\measure-memory.ps1" -Target Desktop -State S1 -Pid <pid>
+    # S2 to S4 are judged against S1 (the targets are relative); pass S1's numbers from its saved report:
+    & "<repo>\tjommie-rs\tools\perf\measure-memory.ps1" -Target Desktop -State S2 -Pid <pid> -S1Mib 231.4 -S1CommitMib 260.2
+    # Leak check: measure S1 before and again after the 30 panel cycles and 20 bot switches (-Compare is the first report):
+    & "<repo>\tjommie-rs\tools\perf\measure-memory.ps1" -Target Desktop -State S1 -Pid <pid> -Compare <memory-desktop-S1-...json>
+    # Hidden bots use no CPU (the panel closed, every bot hidden and idle): renderer CPU seconds over 60 s, at most 1 s each:
+    & "<repo>\tjommie-rs\tools\perf\measure-memory.ps1" -Target Desktop -Pid <pid> -HiddenCpu
     # The tool's own check, on a hidden cmd.exe tree it starts (no CPU gate, no idle wait):
     & "<repo>\tjommie-rs\tools\perf\measure-memory.ps1" -SelfTest
 
@@ -29,6 +37,13 @@ param(
     [int]$Samples = 10,
     [double]$MaxLoad = 35,
     [int]$QuietTimeout = 600,
+    # S2 to S4 targets are relative to S1: the private working set (and, for S2, the private commit) measured in S1.
+    [double]$S1Mib = 0,
+    [double]$S1CommitMib = 0,
+    # A saved earlier report (memory-*.json): this run's private commit must be at most 15 MiB above it (leak check).
+    [string]$Compare = '',
+    # Not a memory run: CPU seconds each msedgewebview2.exe in the tree used over 60 s (at most 1 s each when hidden and idle).
+    [switch]$HiddenCpu,
     [switch]$SelfTest
 )
 $ErrorActionPreference = 'Stop'
@@ -127,6 +142,27 @@ $rootProcess = Get-Process -Id $RootPid
 $exe = $rootProcess.Path
 $version = if ($exe) { (Get-Item $exe).VersionInfo.ProductVersion } else { $null }
 
+if ($HiddenCpu) {
+    $cpuAt = { @(Get-Tree $RootPid | Where-Object Name -eq 'msedgewebview2.exe' | ForEach-Object { $p = Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue; if ($p) { [pscustomobject]@{ pid = $p.Id; cpu = $p.TotalProcessorTime.TotalSeconds; cmd = $_.CommandLine } } }) }
+    $a = & $cpuAt
+    Start-Sleep -Seconds 60
+    $b = & $cpuAt
+    $rows = @(foreach ($x in $b) {
+        $y = $a | Where-Object pid -eq $x.pid
+        if ($y) { [ordered]@{ pid = $x.pid; type = $(if ($x.cmd -match '--type=(\S+)') { $Matches[1] } else { 'browser' }); cpu_seconds_over_60s = [math]::Round($x.cpu - $y.cpu, 2) } }
+    })
+    $renderers = @($rows | Where-Object { $_.type -eq 'renderer' })
+    $worst = ($renderers | ForEach-Object { $_.cpu_seconds_over_60s } | Measure-Object -Maximum).Maximum
+    $pass = $renderers.Count -gt 0 -and $worst -le 1
+    $dir = Join-Path $env:LOCALAPPDATA 'Tjommie-rs\perf'
+    New-Item -ItemType Directory -Force $dir | Out-Null
+    $file = Join-Path $dir ('hidden-cpu-{0}.json' -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
+    [ordered]@{ measured = (Get-Date).ToString('s'); root_pid = $RootPid; pass_renderers_le_1s = $pass; processes = $rows } | ConvertTo-Json -Depth 4 | Set-Content -Encoding utf8 $file
+    '{0} renderer(s), worst {1} s CPU over 60 s: pass = {2}. Saved {3}' -f $renderers.Count, $worst, $pass, $file
+    if (-not $renderers.Count) { Write-Warning 'No renderer in the tree: was a bot browser opened and then hidden?' }
+    exit $(if ($pass) { 0 } else { 1 })
+}
+
 $deadline = (Get-Date).AddSeconds($QuietTimeout)
 while ($true) {
     $before = Get-Load 5
@@ -148,8 +184,29 @@ $result = [ordered]@{
     working_set_mib = $m.working_set_mib
     processes = $m.processes
 }
+# The budget (plan "Memory budget"). S2 to S4 need -S1Mib.
+$limit = $null
+switch ($State) {
+    'S0' { $limit = @{ ws = 120; commit = 160 } }
+    'S1' { $limit = @{ ws = 280; commit = 330 } }
+    'S2' { if ($S1Mib) { $limit = @{ ws = $S1Mib + 40; commit = $(if ($S1CommitMib) { $S1CommitMib + 50 } else { $null }) } } }
+    'S3' { if ($S1Mib) { $limit = @{ ws = $S1Mib - 20; commit = $null } } }
+    'S4' { if ($S1Mib) { $limit = @{ ws = $S1Mib + 10; commit = $null } } }
+}
+if ($limit -and $Target -eq 'Desktop') {
+    $result['target_private_ws_mib'] = [math]::Round($limit.ws, 2)
+    $result['pass_private_ws'] = $m.private_working_set_mib -le $limit.ws
+    if ($null -ne $limit.commit) { $result['target_private_commit_mib'] = [math]::Round($limit.commit, 2); $result['pass_private_commit'] = $m.private_commit_mib -le $limit.commit }
+} elseif ($Target -eq 'Desktop' -and $State -in 'S2', 'S3', 'S4') { Write-Warning "$State is judged against S1: pass -S1Mib (and -S1CommitMib for S2)." }
+if ($Compare) {
+    $before = Get-Content $Compare -Raw | ConvertFrom-Json
+    $growth = [math]::Round($m.private_commit_mib - $before.private_commit_mib, 2)
+    $result['leak_commit_growth_mib'] = $growth
+    $result['pass_leak_le_15_mib'] = $growth -le 15
+}
 $dir = Join-Path $env:LOCALAPPDATA 'Tjommie-rs\perf'
 New-Item -ItemType Directory -Force $dir | Out-Null
 $file = Join-Path $dir ('memory-{0}-{1}-{2}.json' -f $Target.ToLower(), $State, (Get-Date -Format 'yyyyMMdd-HHmmss'))
 $result | ConvertTo-Json -Depth 4 | Set-Content -Encoding utf8 $file
 '{0} {1} {2}: private WS {3} MiB, private commit {4} MiB, WS {5} MiB, {6} processes; CPU before {7}%, idle {8}%{9}. Saved {10}' -f $Target, $version, $State, $m.private_working_set_mib, $m.private_commit_mib, $m.working_set_mib, $m.processes.Count, $before, $idle, $(if ($result.loaded) { ' (LOADED)' } else { '' }), $file
+foreach ($key in 'pass_private_ws', 'pass_private_commit', 'pass_leak_le_15_mib') { if ($result.Contains($key)) { Write-Host ('{0}: {1}' -f $key, $result[$key]) } }

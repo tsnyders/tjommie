@@ -1,9 +1,9 @@
 """Frame-time stats for one PresentMon run (plan: "Measurement method").
 
-    python -I scripts/frame-stats.py <presentmon.csv> <markers.csv> [<trimmed.csv> [<trace.csv> [<cpu.csv> [<windows.csv>]]]]
-    python -I scripts/frame-stats.py --self-test
+    python -I tools/perf/frame-stats.py [--process <exe name>] <presentmon.csv> <markers.csv> [<trimmed.csv> [<trace.csv> [<cpu.csv> [<windows.csv>]]]]
+    python -I tools/perf/frame-stats.py --self-test
 
-Takes tjommie-spike.exe presents whose whole interval lies inside the scenario window
+Takes tjommie-desktop.exe (the default; --process names another) presents whose whole interval lies inside the scenario window
 [start_qpc, end_qpc] written by the app, and reports msBetweenPresents p50 / p95 / max with
 nearest-rank percentiles (every reported number is a frame that really happened).
 Writes the in-window rows, trimmed to the useful columns, to <trimmed.csv> when given.
@@ -22,6 +22,7 @@ import json
 import math
 import sys
 
+PROCESS = "tjommie-desktop.exe"  # the app's process name; --process overrides it
 KEEP = ["QPCTime", "msBetweenPresents", "msBetweenDisplayChange", "msInPresentAPI", "msGPUActive", "Dropped", "PresentMode"]
 
 
@@ -34,9 +35,10 @@ def summarize(values):
     return {"n": len(s), "p50": nearest_rank(s, 0.50), "p95": nearest_rank(s, 0.95), "max": s[-1]}
 
 
-def in_window(rows, start, end, freq, incomplete=None):
+def in_window(rows, start, end, freq, incomplete=None, process=None):
+    process = (process or PROCESS).lower()
     for row in rows:
-        if row["Application"].lower() != "tjommie-spike.exe":
+        if row["Application"].lower() != process:
             continue
         if not row.get("QPCTime") or not row.get("msBetweenPresents"):
             if incomplete is not None:
@@ -101,14 +103,14 @@ def cpu_stats(cpu_csv):
     return {"cpu_mean": round(sum(values) / len(values), 1), "cpu_max": round(max(values), 1)} if values else {}
 
 
-def main(pm_csv, markers_csv, trimmed=None, trace_csv=None, cpu_csv=None, windows_csv=None):
+def main(pm_csv, markers_csv, trimmed=None, trace_csv=None, cpu_csv=None, windows_csv=None, process=None):
     with open(markers_csv, newline="", encoding="utf-8-sig") as f:
         marker = next(csv.DictReader(f))
     start, end, freq = int(marker["start_qpc"]), int(marker["end_qpc"]), int(marker["qpc_freq"])
     incomplete = []
     try:
         with open(pm_csv, newline="", encoding="utf-8-sig") as f:
-            rows = list(in_window(csv.DictReader(f), start, end, freq, incomplete))
+            rows = list(in_window(csv.DictReader(f), start, end, freq, incomplete, process))
     except FileNotFoundError:
         rows = []  # PresentMon wrote nothing for this run; the app's own intervals still count
     windows = None
@@ -123,13 +125,18 @@ def main(pm_csv, markers_csv, trimmed=None, trace_csv=None, cpu_csv=None, window
     result["incomplete_rows"] = len(incomplete)
     if trace_csv:
         result.update({k: round(v, 3) for k, v in trace_stats(trace_csv, freq).items()})
-        if windows:
+        if windows or trace_csv:
             with open(trace_csv, newline="", encoding="utf-8-sig") as f:
                 frames = [(int(r["begin_qpc"]), int(r["painted_qpc"])) for r in csv.DictReader(f)]
-            gaps = sorted(app_intervals(frames, windows, freq))
+            # No windows file (time-based scenarios, the scroll): the whole scenario is one window.
+            gaps = sorted(app_intervals(frames, windows or [(start, end)], freq))
             if gaps:
                 result.update({"app_interval_n": len(gaps), "app_interval_p50": round(nearest_rank(gaps, 0.5), 3),
                                "app_interval_p95": round(nearest_rank(gaps, 0.95), 3), "app_interval_max": round(gaps[-1], 3)})
+    # What the verdict rests on: PresentMon, or the app's own intervals when PresentMon lost too many presents.
+    judged = "app" if result["presentmon_unusable"] else "presentmon"
+    result["judged_on"] = judged
+    result["judged_p95"] = result.get("app_interval_p95") if judged == "app" else result["p95"]
     if cpu_csv:
         result.update(cpu_stats(cpu_csv))
     if trimmed:
@@ -146,11 +153,11 @@ def self_test():
     assert summarize([10.0] * 19 + [40.0]) == {"n": 20, "p50": 10.0, "p95": 10.0, "max": 40.0}
     assert summarize([10.0] * 18 + [40.0, 40.0])["p95"] == 40.0
     rows = [
-        {"Application": "tjommie-spike.exe", "QPCTime": "1000", "msBetweenPresents": "0.05"},  # began 500 < start
-        {"Application": "tjommie-spike.exe", "QPCTime": "1600", "msBetweenPresents": "0.05"},  # inside
+        {"Application": "tjommie-desktop.exe", "QPCTime": "1000", "msBetweenPresents": "0.05"},  # began 500 < start
+        {"Application": "tjommie-desktop.exe", "QPCTime": "1600", "msBetweenPresents": "0.05"},  # inside
         {"Application": "other.exe", "QPCTime": "1700", "msBetweenPresents": "0.01"},
-        {"Application": "tjommie-spike.exe", "QPCTime": "2600", "msBetweenPresents": "0.05"},  # after end
-        {"Application": "tjommie-spike.exe", "QPCTime": "", "msBetweenPresents": None},  # cut-off line
+        {"Application": "tjommie-desktop.exe", "QPCTime": "2600", "msBetweenPresents": "0.05"},  # after end
+        {"Application": "tjommie-desktop.exe", "QPCTime": "", "msBetweenPresents": None},  # cut-off line
     ]
     cut = []
     assert [r["QPCTime"] for r in in_window(rows, 1000, 2000, 10_000_000, cut)] == ["1600"]
@@ -166,11 +173,31 @@ def self_test():
     assert present_stats([])["presentmon_unusable"] is True
     assert cpu_values('"h","cpu"\r\n"t1"," "\r\n"t2","100"\r\n"t3","4') == [100.0]  # "4" was cut off from e.g. "45.2"
     assert cpu_values('"h","cpu"\r\n"t1","50"\r\n') == [50.0]
+    assert [r["QPCTime"] for r in in_window(rows, 1000, 2000, 10_000_000, None, "OTHER.exe")] == ["1700"]  # --process
+    assert [r["QPCTime"] for r in in_window(rows, 1000, 2000, 10_000_000)] == ["1600"]  # the default process
+    import os, tempfile
+    with tempfile.TemporaryDirectory() as tmp:  # end to end: unusable PresentMon, so the app's intervals decide
+        w = lambda name, text: (open(os.path.join(tmp, name), "w", newline="").write(text), os.path.join(tmp, name))[1]
+        pm = w("pm.csv", "Application,QPCTime,msBetweenPresents,Dropped\ntjommie-desktop.exe,1500,0,0\n")
+        mk = w("mk.csv", "start_qpc,end_qpc,qpc_freq,frames\n1000,2000,1000,3\n")
+        tr = w("tr.csv", "begin_qpc,painted_qpc\n1000,1004\n1016,1020\n1050,1055\n")
+        buf = io.StringIO()
+        old, sys.stdout = sys.stdout, buf
+        try:
+            main(pm, mk, None, tr)
+        finally:
+            sys.stdout = old
+        out = json.loads(buf.getvalue())
+        assert out["judged_on"] == "app" and out["judged_p95"] == 34.0 and out["app_interval_n"] == 2, out
     print("self-test ok")
 
 
 if __name__ == "__main__":
-    if sys.argv[1:] == ["--self-test"]:
+    args = sys.argv[1:]
+    proc = None
+    if args[:1] == ["--process"] and len(args) > 1:
+        proc, args = args[1], args[2:]
+    if args == ["--self-test"]:
         self_test()
     else:
-        main(*sys.argv[1:])
+        main(*args, process=proc)

@@ -22,6 +22,8 @@ design/_smoke.fig
 # Grok Bot screenshots and scraped tokens: xAI's material, kept on this PC only
 docs/reference/
 /tjommie-rs/target/
+# The motion checks' and memory runs' evidence (tools/perf): machine details, sent back, never committed.
+/tjommie-rs/evidence/
 # pdfium.dll as tools/fetch-pdfium.ps1 fetches it for a run from source: a pinned download, never committed.
 /tjommie-rs/resources/pdfium/
 
