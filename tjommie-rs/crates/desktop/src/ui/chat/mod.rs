@@ -232,7 +232,11 @@ fn empty_chat(bot: &protocol::model::Bot, cx: &App) -> AnyElement {
         .justify_center()
         .gap(r(theme.space.s12))
         .px(r(theme.space.s32))
-        .child(BotAvatar::new(bot.color, bot.shape, theme.size.avatar64).pose(Pose::of(bot.state)))
+        .child(
+            BotAvatar::new(bot.color, bot.shape, theme.size.avatar64)
+                .pose(Pose::of(bot.state))
+                .living(bot.id.clone().into()),
+        )
         .child(
             div()
                 .semantic("chat.empty", Role::Heading)

@@ -67,6 +67,14 @@ impl Flip {
         point(row.x.value, row.y.value)
     }
 
+    /// Where `key` was painted last frame, relative to the list: its place plus its offset then. A row that leaves
+    /// fades out from there.
+    pub fn painted(&self, key: &str) -> Option<Point<f32>> {
+        self.rows
+            .get(key)
+            .map(|row| point(row.place.x + row.x.value, row.place.y + row.y.value))
+    }
+
     /// Steps every row by `dt` and forgets the rows that left. Returns whether any still moves.
     pub fn step(&mut self, dt: f32) -> bool {
         self.rows
@@ -216,6 +224,11 @@ impl Element for FlipItem {
             let place = point(f32::from(relative.x), f32::from(relative.y));
             flip.place(&self.key, place, self.snap)
         };
+        // A move is only found here, after the frame's render has stepped and asked for its frames: this one asks for
+        // the next itself, so the slide starts without waiting for something else to draw.
+        if offset != Point::default() {
+            super::clock::keep_moving(window, cx);
+        }
         window.with_element_offset(point(px(offset.x), px(offset.y)), |window| {
             self.child.prepaint(window, cx);
         });

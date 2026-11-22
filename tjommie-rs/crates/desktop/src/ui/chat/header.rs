@@ -13,6 +13,7 @@ use protocol::wire::{BotsPause, method};
 
 use crate::guard::guarded_async;
 use crate::model::labels::{error_text, model_label, state_label};
+use crate::motion::flight;
 use crate::semantic::SemanticExt as _;
 use crate::ui::primitives::avatar::{BotAvatar, Pose};
 use crate::ui::primitives::button::{Handler, IconButton, IconVariant};
@@ -109,6 +110,7 @@ pub fn header(bot: &Bot, actions: &HeaderActions, window: &mut Window, cx: &mut 
     let id = bot.id.clone();
     let name = SharedString::from(bot.name.clone());
     let pill = state_pill(bot, cx);
+    let landing = flight::end("header", &bot.id);
 
     let pause = {
         let (problem, id, paused) = (problem.clone(), id.clone(), bot.paused);
@@ -219,7 +221,19 @@ pub fn header(bot: &Bot, actions: &HeaderActions, window: &mut Window, cx: &mut 
         .gap(r(theme.space.s12))
         .pl(r(theme.space.s24))
         .pr(r(theme.space.s16))
-        .child(BotAvatar::new(bot.color, bot.shape, theme.size.avatar40).pose(Pose::of(bot.state)))
+        // The end a flying avatar lands on (motion.html "shared elements"): hidden while it flies here.
+        .child(
+            div()
+                .relative()
+                .flex_none()
+                .when(flight::hides(&bot.id, &landing, cx), |slot| slot.opacity(0.))
+                .child(
+                    BotAvatar::new(bot.color, bot.shape, theme.size.avatar40)
+                        .pose(Pose::of(bot.state))
+                        .living(bot.id.clone().into()),
+                )
+                .child(flight::end_capture(landing.clone())),
+        )
         .child(
             div()
                 .flex_1()

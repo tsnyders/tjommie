@@ -4,15 +4,153 @@
 //! their own copy; under reduced motion the ends cross-fade instead and nothing flies.
 
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use gpui::{
-    Bounds, Deferred, IntoElement, ParentElement as _, Pixels, Styled as _, canvas, deferred, div,
-    point, px, size,
+    AnyElement, App, Bounds, Deferred, Global, InteractiveElement as _, IntoElement,
+    ParentElement as _, Pixels, SharedString, Styled as _, Window, canvas, deferred, div, point,
+    px, size,
 };
+use protocol::model::{BotColor, BotShape};
 
+use super::clock;
+use super::keyboard::Trigger;
 use super::spring::Spring;
-use crate::theme;
+use crate::theme::{self, Theme};
+use crate::ui::primitives::avatar::{BotAvatar, Pose};
+use crate::ui::shell::route::Route;
+
+/// How many frames a flight waits for the chat header to be painted before it gives up and lets the header show.
+const WAIT_FRAMES: u32 = 30;
+
+/// The avatar flying into a chat (aegis/README.md "Shared elements across screens"): opened from a Recents row or an
+/// Agents card by the pointer, the agent's avatar flies from there into the chat header. Each end records where it was
+/// painted, and while the avatar flies both ends hide their own copy. A key or reduced motion opens the chat with no
+/// flight: the header simply shows.
+#[derive(Default)]
+pub struct SharedAvatar {
+    /// Where each end's avatar was painted in the last frame, by `end` key.
+    ends: HashMap<SharedString, Bounds<Pixels>>,
+    /// The ends painted in this frame so far.
+    painted: HashMap<SharedString, Bounds<Pixels>>,
+    flying: Option<Flying>,
+}
+
+impl Global for SharedAvatar {}
+
+struct Flying {
+    id: SharedString,
+    from: SharedString,
+    look: (BotColor, BotShape, Pose),
+    flight: Option<Flight>,
+    frames: u32,
+}
+
+/// The key of agent `id`'s avatar at `place`: `recents`, `card` or `header`.
+pub fn end(place: &str, id: &str) -> SharedString {
+    format!("{place}:{id}").into()
+}
+
+/// Records where the avatar at end `key` is painted: a child of the avatar's (relative) box.
+pub fn end_capture(key: SharedString) -> impl IntoElement {
+    canvas(
+        move |bounds, _, cx| {
+            cx.default_global::<SharedAvatar>()
+                .painted
+                .insert(key, bounds);
+        },
+        |_, _, _, _| {},
+    )
+    .absolute()
+    .inset_0()
+}
+
+/// Whether the avatar at end `key` hides while the flight carries agent `id`: the end it left and the header.
+pub fn hides(id: &str, key: &str, cx: &App) -> bool {
+    cx.try_global::<SharedAvatar>()
+        .and_then(|shared| shared.flying.as_ref())
+        .is_some_and(|flying| {
+            *flying.id == *id && (*flying.from == *key || *key == *end("header", id))
+        })
+}
+
+/// Whether an avatar is flying (the motion checks).
+pub fn is_flying(cx: &App) -> bool {
+    cx.try_global::<SharedAvatar>()
+        .is_some_and(|shared| shared.flying.is_some())
+}
+
+/// Agent `id`'s chat is being opened from its avatar at end `from`: after the pointer, the avatar takes off for the
+/// chat header. A key or reduced motion opens it with no flight.
+pub fn take_off(
+    id: &str,
+    from: SharedString,
+    look: (BotColor, BotShape, Pose),
+    window: &Window,
+    cx: &mut App,
+) {
+    if Trigger::of(window).snaps(cx) {
+        return;
+    }
+    let shared = cx.default_global::<SharedAvatar>();
+    if shared.ends.contains_key(&from) {
+        shared.flying = Some(Flying {
+            id: id.to_owned().into(),
+            from,
+            look,
+            flight: None,
+            frames: 0,
+        });
+    }
+}
+
+/// The frame's flight, called by the shell as each frame starts: it takes off from where its end was painted, heads
+/// for the header once the header has been painted, and lands there. Returns the overlay to draw while it flies.
+pub fn frame(route: &Route, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
+    let calm = cx.global::<Theme>().motion.spring.calm.clone();
+    let dt = clock::dt(cx);
+    let zoom = f32::from(window.rem_size()) / 16.;
+    let shared = cx.default_global::<SharedAvatar>();
+    shared.ends = std::mem::take(&mut shared.painted);
+    let flying = shared.flying.as_mut()?;
+    flying.frames += 1;
+    let header = shared.ends.get(&end("header", &flying.id)).copied();
+    let from = shared.ends.get(&flying.from).copied();
+    let on_chat = matches!(route, Route::Chat(id) if **id == *flying.id);
+    let (Some(from), true) = (from, on_chat) else {
+        shared.flying = None;
+        return None;
+    };
+    if header.is_none() && flying.frames > WAIT_FRAMES {
+        shared.flying = None;
+        return None;
+    }
+    let flight = flying
+        .flight
+        .get_or_insert_with(|| Flight::launch(from, header.unwrap_or(from), &calm));
+    if let Some(header) = header {
+        flight.retarget(header);
+    }
+    if !flight.step(dt) && header.is_some() {
+        // Landed: the header shows its own copy from this frame on.
+        shared.flying = None;
+        return None;
+    }
+    let (color, shape, pose) = flying.look;
+    // The avatar's size is in design px, which the zoom scales.
+    let side = f32::from(flight.bounds().size.width) / zoom;
+    let overlay = flight
+        .overlay(
+            div()
+                .debug_selector(|| "flight.avatar".into())
+                .size_full()
+                .child(BotAvatar::new(color, shape, side).pose(pose)),
+        )
+        .into_any_element();
+    clock::keep_moving(window, cx);
+    Some(overlay)
+}
 
 /// Where an element was painted last frame, for a flight to start or land: `capture` keeps it up to date.
 pub type Captured = Rc<Cell<Option<Bounds<Pixels>>>>;

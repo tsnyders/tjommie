@@ -1260,3 +1260,146 @@ mod exchange_focus {
         );
     }
 }
+
+/// motion.html "shared elements": opened from its Recents row by the pointer, the agent's avatar flies into the chat
+/// header, the two ends hiding their own copies on the way; a key opens the chat with no flight.
+mod shared_avatar {
+    use super::*;
+    use crate::ui::shell::data::{Recent, RecentKind, ShellData};
+    use crate::ui::testing::next_frame;
+    use gpui::VisualTestContext;
+    use protocol::model::{BotColor, BotShape};
+
+    fn forge_recent() -> Recent {
+        Recent {
+            id: "b1".into(),
+            name: "Forge".into(),
+            kind: RecentKind::Bot {
+                color: BotColor::Blue,
+                shape: BotShape::Hexagon,
+                state: BotState::Idle,
+            },
+        }
+    }
+
+    fn agents_with_forge(cx: &mut TestAppContext) -> &mut VisualTestContext {
+        let (cx, _) = app(cx, Route::Agents, chat(turns(2), false), FakeRpc::default());
+        cx.update(|_, cx| cx.global_mut::<ShellData>().recents = vec![forge_recent()]);
+        // An inactive window gets its frames at 30 fps by timer instead (gate condition 5).
+        cx.update(|window, _| window.activate_window());
+        draw(cx);
+        draw(cx);
+        cx
+    }
+
+    #[gpui::test]
+    fn the_avatar_flies_from_its_row_into_the_chat_header(cx: &mut TestAppContext) {
+        let cx = agents_with_forge(cx);
+        click(cx, "sidebar.recent.b1");
+        assert_eq!(cx.update(|_, cx| route::current(cx)), Route::Chat("b1".into()));
+        let first = cx.debug_bounds("flight.avatar").expect("the avatar takes off");
+        let mut frames = 0;
+        let mut last = first;
+        while let Some(now) = cx.debug_bounds("flight.avatar") {
+            last = now;
+            assert!(next_frame(cx), "it flies frame by frame");
+            frames += 1;
+            assert!(frames < 200, "and lands");
+        }
+        assert!(frames > 5, "over several frames: {frames}");
+        assert!(
+            last.origin.y < first.origin.y || last.origin.x > first.origin.x,
+            "from the sidebar row toward the header: {first:?} -> {last:?}"
+        );
+        assert!(!cx.update(|_, cx| crate::motion::flight::is_flying(cx)), "landed");
+        for _ in 0..10 {
+            next_frame(cx);
+        }
+        assert!(cx.debug_bounds("flight.avatar").is_none(), "and it stays landed");
+    }
+
+    #[gpui::test]
+    fn a_key_opens_the_chat_with_no_flight(cx: &mut TestAppContext) {
+        let cx = agents_with_forge(cx);
+        assert!(cx.update(|window, cx| {
+            crate::ui::primitives::focus_by_id("sidebar.recent.b1", window, cx)
+        }));
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert_eq!(cx.update(|_, cx| route::current(cx)), Route::Chat("b1".into()));
+        assert!(cx.debug_bounds("flight.avatar").is_none(), "no flight after a key");
+    }
+}
+
+/// motion.html "Message arrival": a tool step that shows up while it runs ticks in, and its check draws on when it
+/// finishes; an older turn's steps show still, and reduced motion shows everything at once.
+mod tool_rows {
+    use super::*;
+    use crate::ui::testing::next_frame;
+    use gpui::VisualTestContext;
+
+    fn steps(status: &str) -> Message {
+        with(
+            MessageKind::Activity,
+            json!({ "items": [{ "id": "t1", "name": "Read", "summary": "Read the schema", "status": status }] }),
+            message("m1", "b1", "", 1),
+        )
+    }
+
+    fn settle(cx: &mut VisualTestContext) -> usize {
+        let mut frames = 0;
+        while next_frame(cx) {
+            frames += 1;
+            assert!(frames < 120, "it comes to rest");
+        }
+        frames
+    }
+
+    fn open<'a>(cx: &'a mut TestAppContext, status: &str) -> &'a mut VisualTestContext {
+        let (cx, _) = app(cx, Route::Chat("b1".into()), chat(vec![steps(status)], false), FakeRpc::default());
+        // An inactive window gets its frames at 30 fps by timer instead (gate condition 5).
+        cx.update(|window, _| window.activate_window());
+        draw(cx);
+        cx
+    }
+
+    #[gpui::test]
+    fn a_running_step_ticks_in_and_its_check_draws_on(cx: &mut TestAppContext) {
+        let cx = open(cx, "running");
+        let first = cx.debug_bounds("tools.m1.t1").expect("the step");
+        // Its spinner turns while it runs, so the frames go on: 40 of them (two thirds of a second) land the rise.
+        for _ in 0..40 {
+            assert!(next_frame(cx), "it moves");
+        }
+        let rest = cx.debug_bounds("tools.m1.t1").expect("the step");
+        assert!(first.origin.y > rest.origin.y, "from below its place: {first:?} -> {rest:?}");
+        cx.update(|_, cx| {
+            store::update(cx, |state| {
+                if let Some(chat) = state.conversations.get_mut("b1") {
+                    chat.messages = vec![steps("done")];
+                }
+                true
+            })
+        });
+        draw(cx);
+        assert!(settle(cx) > 3, "its check draws on");
+    }
+
+    #[gpui::test]
+    fn an_older_turns_steps_show_still(cx: &mut TestAppContext) {
+        let cx = open(cx, "done");
+        assert_eq!(settle(cx), 0, "no frames for a step that was over when drawn");
+    }
+
+    #[gpui::test]
+    fn under_reduced_motion_a_step_shows_at_once(cx: &mut TestAppContext) {
+        let (cx, _) = app(cx, Route::Agents, chat(vec![steps("running")], false), FakeRpc::default());
+        cx.update(|window, cx| {
+            window.activate_window();
+            crate::motion::reduced::set_for_test(true, cx);
+            crate::ui::shell::route::Navigate::navigate(cx, Route::Chat("b1".into()));
+        });
+        draw(cx);
+        assert_eq!(settle(cx), 0, "no frames in between");
+    }
+}

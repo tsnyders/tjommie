@@ -97,6 +97,8 @@ impl Render for Shell {
         let theme = cx.global::<Theme>();
         let colors = &theme.color.light;
         div()
+        // An avatar flying into a chat header, over everything (motion.html "shared elements").
+        let flight = crate::motion::flight::frame(&route, window, cx);
             .semantic("root", Role::Group)
             .track_focus(&self.focus)
             .on_action(cx.listener(|this, _: &ZoomIn, _, cx| {
@@ -117,6 +119,7 @@ impl Render for Shell {
                     }
                 });
             })
+        let toasts = crate::ui::primitives::toast::toasts(window, cx);
             .size_full()
             .relative()
             .flex()
@@ -163,7 +166,7 @@ impl Render for Shell {
                     .window_control_area(WindowControlArea::Drag),
             )
             .child(caption_buttons(theme))
-            .child(crate::ui::primitives::toast::toasts(cx))
+            .child(toasts)
             .children(notice.map(|notice| {
                 // Under the chat header's line, at the main column's right.
                 div()
@@ -199,6 +202,7 @@ fn caption_buttons(theme: &Theme) -> impl IntoElement {
         div()
             .semantic(id, Role::Button)
             .aria_label(label)
+            .children(flight)
             .w(px(theme.size.caption_button_width))
             .h(px(theme.size.titlebar_height))
             .flex()
@@ -333,3 +337,55 @@ mod tests {
         );
     }
 }
+    fn recents_slide_to_new_places_and_snap_under_reduced_motion(cx: &mut gpui::TestAppContext) {
+        use crate::ui::testing::next_frame;
+        let room = |id: &str| Recent {
+            id: id.to_owned().into(),
+            name: id.to_owned().into(),
+            kind: RecentKind::Room { unread: false },
+        };
+        let cx = shell_window(
+            cx,
+            ShellData {
+                connection: Connection::Ready,
+                recents: vec![room("launch"), room("everyone"), room("design")],
+                ..ShellData::default()
+            },
+        );
+        let draw = |cx: &mut VisualTestContext| cx.update(|window, cx| window.draw(cx).clear(cx));
+        // An inactive window would get its frames at 30 fps by timer instead (gate condition 5).
+        cx.update(|window, cx| {
+            window.activate_window();
+            crate::motion::clock::fixed_step(1. / 60., cx);
+        });
+        cx.run_until_parked();
+        draw(cx);
+        let settle = |cx: &mut VisualTestContext| {
+            for _ in 0..300 {
+                if !next_frame(cx) {
+                    return;
+                }
+            }
+            panic!("still moving after 300 frames");
+        };
+        settle(cx);
+        let before = cx.debug_bounds("sidebar.recent.launch").expect("Launch's row");
+        cx.update(|_, cx| cx.global_mut::<ShellData>().recents.rotate_left(1));
+        draw(cx);
+        let moved = cx.debug_bounds("sidebar.recent.launch").expect("Launch's row");
+        assert!(
+            (moved.origin.y - before.origin.y).abs() < gpui::px(1.),
+            "on the first frame Launch is painted where it was: {before:?} -> {moved:?}"
+        );
+        assert!(next_frame(cx), "then the rows slide to their new places");
+        settle(cx);
+        let landed = cx.debug_bounds("sidebar.recent.launch").expect("Launch's row");
+        assert!(landed.origin.y > before.origin.y, "Launch ends at the bottom");
+
+        cx.update(|_, cx| crate::motion::reduced::set_for_test(true, cx));
+        cx.update(|_, cx| cx.global_mut::<ShellData>().recents.rotate_left(1));
+        draw(cx);
+        assert!(!next_frame(cx), "reduced: the rows are in place at once");
+    }
+
+    #[gpui::test]

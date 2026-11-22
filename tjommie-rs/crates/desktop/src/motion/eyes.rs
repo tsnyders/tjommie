@@ -3,9 +3,23 @@
 //! at the composer. Poses are still looks, so a still frame reads; under reduced motion the eyes keep their pose and
 //! nothing blinks, scans or glances. The eyes layer is cropped to its own box, so the lids scale about the eyes' centre
 //! (GPUI scales an svg about the centre of its bounds).
+//!
+//! `living` gives an avatar its gaze each frame from `Living`, one set of eyes per agent: every avatar of an agent (its
+//! Recents row, its card, the chat header) blinks, scans and glances together, as one agent would.
 
-use crate::theme;
+use std::collections::HashMap;
+use std::hash::{Hash as _, Hasher as _};
+use std::time::Duration;
+
+use gpui::{App, BorrowAppContext as _, Global, SharedString, Window};
+
+use super::{clock, reduced};
+use crate::theme::{self, Theme};
 use crate::ui::primitives::avatar::{Gaze, Pose};
+
+/// Where the composer lies from an agent's avatar on the desktop: below it and to its right, from the chat header and
+/// from a Recents row alike, so a glance looks down and right.
+const TOWARD_COMPOSER: (f32, f32) = (0.6, 0.8);
 
 /// A blink's closing curve (motion.html's blinkOnce).
 const BLINK_IN: [f32; 4] = [0.5, 0., 1., 1.];
@@ -168,6 +182,72 @@ fn gap(rng: &mut Rng, motion: &theme::Motion) -> f32 {
     (eyes.blink_min + rng.next() * (eyes.blink_max - eyes.blink_min)) / 1000.
 }
 
+/// The living avatars' eyes, by agent id.
+#[derive(Default)]
+pub struct Living(HashMap<SharedString, Eyes>);
+
+impl Global for Living {}
+
+impl Living {
+    fn eyes(&mut self, id: &SharedString, now: f32, motion: &theme::Motion) -> &mut Eyes {
+        self.0
+            .entry(id.clone())
+            .or_insert_with(|| Eyes::new(seed(id), now, motion))
+    }
+
+    /// Agent `id`'s gaze at `now` in `pose`, and the seconds until its eyes next change by themselves.
+    fn gaze(
+        &mut self,
+        id: &SharedString,
+        now: f32,
+        pose: Pose,
+        reduced: bool,
+        motion: &theme::Motion,
+    ) -> (Gaze, f32) {
+        let eyes = self.eyes(id, now, motion);
+        let gaze = eyes.gaze(now, pose, reduced, motion);
+        (gaze, eyes.next_change(now, pose, reduced))
+    }
+
+    fn glance(&mut self, id: &SharedString, now: f32, motion: &theme::Motion) {
+        self.eyes(id, now, motion)
+            .glance(now, TOWARD_COMPOSER, motion);
+    }
+}
+
+/// An agent's own blink clock, from its id.
+fn seed(id: &str) -> u64 {
+    let mut hasher = std::hash::DefaultHasher::new();
+    id.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Agent `id`'s gaze this frame, asking for the frame in which its eyes next change: the next display frame while they
+/// move (a blink, the scan, a glance), a wake at the next blink, and none under reduced motion or while it rests.
+pub fn living(id: &SharedString, pose: Pose, window: &mut Window, cx: &mut App) -> Gaze {
+    let now = clock::now(cx);
+    let reduced = reduced::is_on(cx);
+    cx.default_global::<Living>();
+    let (gaze, next) = cx.update_global::<Living, _>(|living, cx| {
+        living.gaze(id, now, pose, reduced, &cx.global::<Theme>().motion)
+    });
+    if next == 0. {
+        clock::keep_moving(window, cx);
+    } else if let Ok(delay) = Duration::try_from_secs_f32(next) {
+        clock::wake_in(delay, window, cx);
+    }
+    gaze
+}
+
+/// You are typing to agent `id`: its eyes glance at the composer. Typing is no command, so this moves after a key too.
+pub fn glance(id: &SharedString, cx: &mut App) {
+    let now = clock::now(cx);
+    cx.default_global::<Living>();
+    cx.update_global::<Living, _>(|living, cx| {
+        living.glance(id, now, &cx.global::<Theme>().motion);
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -259,6 +339,75 @@ mod tests {
             );
         }
         assert_eq!(eyes.next_change(first, Pose::Paused, false), f32::INFINITY);
+    }
+
+    #[test]
+    fn every_avatar_of_an_agent_shares_its_eyes_and_agents_blink_apart() {
+        let motion = motion();
+        let mut living = Living::default();
+        let (forge, scout): (SharedString, SharedString) = ("bot-1".into(), "bot-2".into());
+        let (_, first) = living.gaze(&forge, 0., Pose::Idle, false, &motion);
+        let (_, again) = living.gaze(&forge, 0., Pose::Idle, false, &motion);
+        assert_eq!(
+            first, again,
+            "one clock per agent: its next blink is the same wherever it shows"
+        );
+        let (_, other) = living.gaze(&scout, 0., Pose::Idle, false, &motion);
+        assert_ne!(first, other, "each agent blinks on its own clock");
+        assert!((2.6..=6.4).contains(&first) && (2.6..=6.4).contains(&other));
+    }
+
+    #[test]
+    fn typing_makes_the_agent_glance_down_at_the_composer() {
+        let motion = motion();
+        let mut living = Living::default();
+        let forge: SharedString = "bot-1".into();
+        living.glance(&forge, 1., &motion);
+        let (gaze, next) = living.gaze(&forge, 1.1, Pose::Idle, false, &motion);
+        assert!(
+            gaze.x > 0.5 && gaze.y > 0.5,
+            "down and to the right, where the composer is: {gaze:?}"
+        );
+        assert_eq!(next, 0., "its eyes move while it glances");
+        let (still, _) = living.gaze(&forge, 1.1, Pose::Idle, true, &motion);
+        assert_eq!(
+            still,
+            Gaze::of(Pose::Idle),
+            "under reduced motion it keeps its pose"
+        );
+    }
+
+    #[gpui::test]
+    fn a_living_avatar_asks_for_frames_only_while_its_eyes_move(cx: &mut gpui::TestAppContext) {
+        use crate::ui::primitives::avatar::BotAvatar;
+        use crate::ui::testing::next_frame;
+        use gpui::IntoElement as _;
+        use protocol::model::{BotColor, BotShape};
+        let pose = std::rc::Rc::new(std::cell::Cell::new(Pose::Working));
+        let shown = pose.clone();
+        let cx = crate::ui::primitives::test_window(cx, move |_, _| {
+            BotAvatar::new(BotColor::Teal, BotShape::Blob, 40.)
+                .pose(shown.get())
+                .living("bot-2".into())
+                .into_any_element()
+        });
+        // An inactive window would get its frames at 30 fps by timer instead (gate condition 5).
+        cx.update(|window, _| window.activate_window());
+        crate::ui::testing::draw(cx);
+        assert!(next_frame(cx), "a working agent's eyes scan: the next frame comes");
+        assert!(next_frame(cx), "and the one after");
+        // The frame the working pose already asked for still comes; after it, none.
+        pose.set(Pose::Paused);
+        next_frame(cx);
+        assert!(!next_frame(cx), "a paused agent rests: no frames");
+        pose.set(Pose::Working);
+        cx.update(|_, cx| reduced::set_for_test(true, cx));
+        next_frame(cx);
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            !next_frame(cx),
+            "under reduced motion the scan stops: no frames"
+        );
     }
 
     #[test]

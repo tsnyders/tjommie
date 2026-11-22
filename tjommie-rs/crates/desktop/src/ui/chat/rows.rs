@@ -16,6 +16,9 @@ use protocol::model::{
 
 use super::message_view::MessageContext;
 use crate::model::labels::DELETED_BOT;
+use crate::motion::check::{DrawOn, check};
+use crate::motion::spring::Spring;
+use crate::motion::{clock, reduced};
 use crate::semantic::SemanticExt as _;
 use crate::ui::fields::Link;
 use crate::ui::primitives::avatar::{BotAvatar, Pose};
@@ -68,10 +71,70 @@ pub fn tools(id: &str, items: &[ActivityItem], window: &mut Window, cx: &mut App
         .into_any_element()
 }
 
+/// A step's motion (motion.html "Message arrival"): a step that shows up while it runs ticks in, rising 8 px into its
+/// place as it fades in on the snappy spring, and when its result lands its check draws on. A step already over when it
+/// is first drawn (an older turn) shows still, and reduced motion shows everything at once.
+struct StepMotion {
+    /// 1 a whole rise below its place and unseen, 0 in place.
+    rise: Spring,
+    /// It was drawn running, so its result arrives now.
+    ran: bool,
+    check: Option<DrawOn>,
+}
+
+/// The step's rise (0 in place) and how much of its check shows, if it is drawing on; asks for frames while they move.
+fn step_motion(key: String, item: &ActivityItem, window: &mut Window, cx: &mut App) -> (f32, Option<f32>) {
+    let running = item.status == ActivityStatus::Running;
+    let snap = reduced::is_on(cx);
+    let motion = theme(cx).motion.clone();
+    let rise = motion.distance.rise;
+    let state = window.use_keyed_state(SharedString::from(key), cx, |_, _| {
+        let mut spring = Spring::scaled(if running && !snap { 1. } else { 0. }, &motion.spring.snappy, rise);
+        spring.set_target(0.);
+        StepMotion {
+            rise: spring,
+            ran: running,
+            check: None,
+        }
+    });
+    let dt = clock::dt(cx);
+    let (rise, drawn, moving) = state.update(cx, |step, _| {
+        if step.ran && item.status == ActivityStatus::Done && step.check.is_none() {
+            let mut check = DrawOn::new(&motion.spring.calm);
+            check.draw(snap);
+            step.check = Some(check);
+        }
+        step.ran |= running;
+        if snap {
+            step.rise.snap(0.);
+        }
+        let mut moving = step.rise.step(dt);
+        if let Some(check) = &mut step.check {
+            moving |= check.step(dt);
+        }
+        (
+            step.rise.value,
+            step.check.as_ref().map(DrawOn::progress),
+            moving,
+        )
+    });
+    if moving {
+        clock::keep_moving(window, cx);
+    }
+    (rise, drawn)
+}
+
 fn step(id: &str, item: &ActivityItem, window: &mut Window, cx: &mut App) -> AnyElement {
     let running = item.status == ActivityStatus::Running;
+    let (rise, drawn) = step_motion(format!("tools.{id}.{}.motion", item.id), item, window, cx);
     let result = match item.status {
         ActivityStatus::Running => spinner(14., window, cx),
+        ActivityStatus::Done if drawn.is_some() => check(
+            drawn.unwrap_or(1.),
+            14.,
+            crate::ui::style::hsla(palette(cx).text.primary),
+        )
+        .into_any_element(),
         ActivityStatus::Done | ActivityStatus::Failed => {
             let icon = if item.status == ActivityStatus::Done {
                 "check"
@@ -89,10 +152,16 @@ fn step(id: &str, item: &ActivityItem, window: &mut Window, cx: &mut App) -> Any
     let theme = theme(cx);
     let colors = palette(cx);
     let label = SharedString::from(format!("{}, {}", item.summary, state_word(item.status)));
+    let rise_px = theme.motion.distance.rise;
     div()
         .semantic(format!("tools.{id}.{}", item.id), Role::ListItem)
         .aria_label(label)
         .h(r(28.))
+        .when(rise != 0., |row| {
+            row.relative()
+                .top(r(rise_px * rise))
+                .opacity((1. - rise).clamp(0., 1.))
+        })
         .flex()
         .items_center()
         .gap(r(theme.space.s10))
