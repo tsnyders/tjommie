@@ -53,7 +53,7 @@ cargo build -p desktop --bin tjommie-desktop    # target\debug\tjommie-desktop.e
 
 A cold debug build compiles GPUI and takes a while. The dev profile keeps debug information to line tables only, so `target` stays smaller. Several worktrees each with their own `target` add up fast, so check the free disk space before you start another.
 
-`TJOMMIE_IDENTITY` is read when the crates are built. It picks which app the binary is. Unset, it is `dev`. Changing it rebuilds the desktop crates.
+`TJOMMIE_IDENTITY` is read when the crates are built. It picks which app the binary is. Unset, it is `dev`. Changing it rebuilds the daemon and the desktop crates.
 
 | Identity | Product name | Data folder | Ports (app, phones) | Update feed |
 |---|---|---|---|---|
@@ -76,7 +76,7 @@ cargo run -p desktop --bin tjommie-desktop
 
 A run from source is the `dev` identity. It keeps its data in `%LOCALAPPDATA%\Tjommie-rs` and uses ports 47200 and 47201, so it runs beside an installed Tjommie without touching its data, its ports or its login entry. It never looks for updates.
 
-The app starts its own daemon. It runs `tjommie-rs\target\debug\tjommie-daemon.exe`, or the exe named by `TJOMMIE_DAEMON_EXE`. If neither exists, the app says to build the daemon. An installed app runs the daemon bundled in its `resources` folder, whatever the environment says. That holds for both apps the installer installs, production and update test. The update test identity run from source has no `resources` folder beside it and follows the source rules above, as do the `dev` and `e2e` identities, which never use a bundled daemon.
+The app starts its own daemon. It runs `tjommie-rs\target\debug\tjommie-daemon.exe`, or the exe named by `TJOMMIE_DAEMON_EXE`. If the exe it chose is missing, the app says so (and, for the debug build, to build the daemon). An installed app runs the daemon bundled in its `resources` folder, whatever the environment says. That holds for both apps the installer installs, production and update test: the update test app is installed when its exe is named `Tjommie Update Test.exe`, and then it runs its bundled daemon and nothing else (a missing one is an error that names the file, never a fall-back to `TJOMMIE_DAEMON_EXE`). The update test identity run from source (an exe named `tjommie-desktop.exe`) follows the source rules above, as do the `dev` and `e2e` identities, which never use a bundled daemon.
 
 To debug the daemon on its own, start it in development mode first and then start the app:
 
@@ -95,7 +95,7 @@ The app has no console window. Its log is `logs\desktop.log` in the data folder,
 
 ### How the app starts the daemon
 
-The app passes the daemon a fresh token as the first line of its standard input, with `--token-stdin`, and keeps that pipe open. The token is 32 random bytes as 43 base64url characters. The daemon requires at least 43 characters within 5 seconds, never saves the token to a file, deletes an old `daemon-token` file left by development mode, and stops when the pipe closes. Quitting or crashing the app therefore never leaves a daemon running. A daemon started with neither `--dev` nor `--token-stdin` exits with an error.
+The app passes the daemon two fresh tokens (the daemon's own, and the one the app's host uses) on one JSON line, the first line of its standard input, with `--token-stdin`, and keeps that pipe open. Each token is 32 random bytes as 43 base64url characters. The daemon requires two different tokens of at least 43 characters within 5 seconds, never saves the token to a file, deletes an old `daemon-token` file left by development mode, and stops when the pipe closes. Quitting or crashing the app therefore never leaves a daemon running. A daemon started with neither `--dev` nor `--token-stdin` exits with an error.
 The app starts the daemon without `TJOMMIE_DEV`, `TJOMMIE_ACCOUNTS_DIR` and every `TJOMMIE_SKIP_*` switch, so nothing meant only for development or tests reaches it.
 
 ### Folders and environment variables
@@ -105,12 +105,12 @@ The app starts the daemon without `TJOMMIE_DEV`, `TJOMMIE_ACCOUNTS_DIR` and ever
 | `TJOMMIE_IDENTITY` | Build time. `dev`, `e2e`, `updatetest` or `production`. |
 | `TJOMMIE_HOME` | Another data folder. Give the daemon the same value as the app. |
 | `TJOMMIE_PORT`, `TJOMMIE_LAN_PORT` | Another port for the app's connection and for phones. |
-| `TJOMMIE_USER_DATA` | Another folder for what the app writes beside the data folder: the one-time markers (`tray-hint-shown`, `login-item-set`) and the speech model. By default a `dev` run uses `<data folder>\electron` for the markers (the name is historical) and `<data folder>\speech` for the model. The installed app uses `%APPDATA%\Tjommie`. |
+| `TJOMMIE_USER_DATA` | Another folder for what the app writes beside the data folder: the one-time markers (`tray-hint-shown`, `login-item-set`) and the speech model. By default a `dev` run uses `<data folder>\electron` for the markers (the name is historical) and `<data folder>\speech` for the model. The installed app uses `%APPDATA%\Tjommie`. A production app run with its own `TJOMMIE_USER_DATA` (a smoke run beside a real install) never checks for updates and never writes the start-at-sign-in entry. |
 | `TJOMMIE_DAEMON_EXE` | The daemon exe a non-production app runs. |
 | `TJOMMIE_UPDATES=off` | Turns the updater off. |
 | `TJOMMIE_UPDATE_FEED` | A local update feed. Only the `updatetest` identity honours it. |
 | `TJOMMIE_PROVIDER_FIXTURES` | A folder of recorded conversations. Only a daemon built with `--features provider-fixtures` accepts it. |
-| `TJOMMIE_E2E_EXE` | Tests only. The e2e tests launch this desktop exe (an absolute path to an existing file) instead of the one cargo built, and look for `tjommie-daemon.exe` beside it. A bad value fails the test with the reason; it never falls back. Production code does not read it. |
+| `TJOMMIE_E2E_EXE` | Tests only. The e2e tests launch this desktop exe (an absolute path to an existing file) instead of the one cargo built, and look for `tjommie-daemon.exe` beside it. A bad value fails the test with the reason, and so does a file in the installed production app's folder (`%LOCALAPPDATA%\Programs\Tjommie`); it never falls back. Production code does not read it. |
 | `TJOMMIE_ACCOUNTS_DIR` | Tests only. Uses a folder of signed-in account folders with a disposable data root. |
 | `TJOMMIE_CI_HOSTED=1` | Set on GitHub's hosted runners. Tests that need Credential Manager or a real logon skip themselves, and run on real PCs instead. |
 
@@ -118,7 +118,7 @@ An app never opens a data folder that belongs to another identity. A `dev`, `e2e
 
 ### Reading a crash log
 
-A panic on the UI thread that nothing catches is a crash. The app adds an entry to `logs\desktop-crash.log` in its data folder and stops, and Windows starts it again (`--hidden --after-crash`). Panics that were caught, and panics on other threads, are logged too, but a panic from one place is written in full once a minute at most. Each entry has a timestamp, the version, the thread and the panic's message, then what a later reader needs to match it to the release that wrote it:
+A panic on the UI thread that nothing catches is a crash. The app adds an entry to `logs\desktop-crash.log` in its data folder and stops. Once the app has run for 60 seconds, Windows starts it again after a crash (`--hidden --after-crash`). Panics that were caught, and panics on other threads, are logged too, but a panic from one place is written in full once a minute at most. Each entry has a timestamp, the version, the thread and the panic's message, then what a later reader needs to match it to the release that wrote it:
 
 ```
 2026-11-22T13:08:45Z Tjommie 0.6.0 crash in thread 'main': panicked at crates\desktop\src\ui\example.rs:12:5:
@@ -127,10 +127,10 @@ modules:
   tjommie-desktop.exe base=0x00007ff78a280000 size=0x1b01000 timestamp=0x6b02e94d pdb=tjommie_desktop.pdb guid=01234567-89AB-CDEF-0123-456789ABCDEF age=1
   tjommie-daemon.exe (another process) size=0x9c4000 timestamp=0x6b02e931 pdb=tjommie_daemon.pdb guid=FEDCBA98-7654-3210-FEDC-BA9876543210 age=1
 stack: tjommie-desktop.exe+0x471bfb tjommie-desktop.exe+0x3aa073 tjommie-desktop.exe+0x3aac03 0x7ffa1c2d1234
-   0: …a backtrace, with names when the PDB was beside the exe…
+   0: ... a backtrace, with names when the PDB was beside the exe ...
 ```
 
-- `modules:` names each exe by file name only (never a folder) and gives its build id: the PE header's `timestamp` and `size`, and the name, `guid` and `age` of the PDB that goes with it. The running app also has `base`, where Windows loaded it this time. The daemon is another process with an address space of its own, so its line has no `base`; it is there so that a failure of the daemon can be matched to its PDB.
+- `modules:` names each exe by file name only (never a folder) and gives its build id: the PE header's `timestamp` and `size`, and the name, `guid` and `age` of the PDB that goes with it. The running app also has `base`, where Windows loaded it this time. The daemon is another process with an address space of its own, so its line has no `base`; it is there so that a failure of the daemon can be matched to its PDB. It is listed only when the app started the daemon itself, not in a `--dev` run.
 - `stack:` is the return addresses of the panicking thread. A frame inside the app is `tjommie-desktop.exe+0x<offset from base>`, and the others (Windows' own libraries) are plain addresses. The first frames are the crash handler's own and the standard library's panic machinery; the code that panicked comes after them.
 
 A release is built with line tables kept, and its PDBs are in `Tjommie-<version>-symbols.zip` on the release. To read an entry's stack by function and line:
@@ -230,18 +230,19 @@ cargo build -p daemon --bin tjommie-daemon --features provider-fixtures --locked
 $env:TJOMMIE_IDENTITY = 'e2e'; cargo test -p desktop --features test-driver --test e2e_navigation --locked
 ```
 
-The test driver is never in a release build; `tests/pins.rs` checks it. An e2e app puts fake in-memory versions of the tray, notifications and registry in place of the real ones, so a test never adds an icon to your tray, a notification to your desktop or a value to your registry. It never takes your keyboard focus.
+The test driver is never in a release build: `tests/pins.rs` checks that it is in the app exactly when the `test-driver` feature is on, the release workflow builds without that feature, and `installer/check-production-binaries.ps1` searches the release exe for it. An e2e app puts fake in-memory versions of the tray, notifications and registry in place of the real ones, so a test never adds an icon to your tray, a notification to your desktop or a value to your registry. It never takes your keyboard focus.
 
-**Every e2e test runs the window at 1000 by 700.** `common::make_agent` calls `app.resize(1000., 700.)`, and the keyboard test sets the same size. The size is the same on every machine on purpose: it fits a hosted runner's 1024 by 768 display, and Windows holds a window to its display, so a taller window cannot exist there. Nothing in a test may depend on a taller one. A click on a control below the fold lands outside the window and does nothing, without an error. Use `tab_to`, which sends Tab until the control has focus, because the screen scrolls the focused control into view.
+**Every e2e test that reaches a screen with controls below the fold runs the window at 1000 by 700.** `common::make_agent` calls `app.resize(1000., 700.)`, and the keyboard test and the README capture set the same size; the other e2e tests (`e2e_live`, `e2e_navigation`, `e2e_window`, `e2e_screens_dark_light`, `e2e_room_mention` and `e2e_exe_override`) keep the app's default window, which Windows holds to the display. The size is the same on every machine on purpose: it fits a hosted runner's 1024 by 768 display, and Windows holds a window to its display, so a taller window cannot exist there. Nothing in a test may depend on a taller one. A click on a control below the fold lands outside the window and does nothing, without an error. Use `tab_to`, which sends Tab until the control has focus, because the screen scrolls the focused control into view.
 
 ### The README's pictures
 
 The pictures in the README (`docs/screens/`) are taken by one e2e test, `e2e_readme_shots`, which `.github/workflows/readme-shots.yml` runs on a GitHub hosted runner. `docs/screens/SHOTS.md` lists every picture, the invented data it shows, and what to check by eye before one is committed.
 
-**Never take them on your own PC, and never commit a picture made on one.** The sidebar's host button shows the first letter of the Windows account's name, and Settings shows the PC's host name. A runner's are generic. The workflow has `contents: read`, uses no secrets, and runs only when started by hand:
+**Never take them on your own PC, and never commit a picture made on one.** The sidebar's host button shows the first letter of the Windows account's name, and Settings shows the PC's host name. A runner's are generic. The workflow has `contents: read`, uses no secrets, and runs only when it is started on purpose. GitHub starts a `workflow_dispatch` run only from a workflow file that is on the default branch, so until `readme-shots.yml` is on `main`, pushing a commit to a branch named `readme-shots-<anything>` starts it (nothing else does: no other branch, pull request or tag), and once it is on `main`, `gh workflow run` works too:
 
 ```powershell
-gh workflow run readme-shots.yml --ref <branch>
+git push origin <commit>:refs/heads/readme-shots-1        # until the workflow is on main
+gh workflow run readme-shots.yml --ref <branch>             # once it is
 gh run download <run id> --name readme-shots --dir <a new empty folder>
 ```
 
@@ -254,11 +255,11 @@ cargo build -p daemon --bin tjommie-daemon --features provider-fixtures --locked
 $env:TJOMMIE_IDENTITY = 'e2e'; cargo test -p desktop --features test-driver --test e2e_readme_shots --locked -- --ignored --nocapture
 ```
 
-A picture that can't be taken is reported at the end of the run and does not stop the others. The artifact keeps whatever was taken, and the test fails when any is missing.
+A picture that can't be taken is reported, with a `_failed-<name>.png` of what the window showed, and does not stop the others, and a part of the tour that is not a picture (a daemon that must start, the agents that must be made) ends that part and not the run. The summary of what was and was not taken is printed whatever happened. The artifact keeps whatever was taken, `_failed-*.png` included (they are as public as the artifact is, so look at them too; the Devices pictures leave none, because the app's default relay address is a person's account name and is replaced before Devices is photographed), and the test fails when any picture is missing.
 
 ### Rules the code enforces
 
-- **No panics at UI boundaries.** The `client`, `desktop-host` and `desktop` crates deny `unwrap`, `expect`, indexing, `panic!`, `unreachable!`, `todo!`, `unimplemented!` and string slicing in non-test code (`[workspace.lints.clippy]` in `tjommie-rs/Cargo.toml`). The daemon does not carry these lints.
+- **No panics at UI boundaries.** The `client`, `desktop-host` and `desktop` crates deny `unwrap`, `expect`, indexing, `panic!`, `unreachable!`, `todo!`, `unimplemented!` and string slicing (`[workspace.lints.clippy]` in `tjommie-rs/Cargo.toml`). Tests may use `unwrap`, `expect`, `panic!` and indexing (`clippy.toml`); the other denies hold in tests too. The daemon does not carry these lints.
 - **Every handler runs inside `guarded(`.** In the `desktop` crate, every handler registration runs its whole closure inside `guarded(`, so a panic in a handler becomes a notice instead of closing the app. `tools/check-guarded.ps1` checks this, and `-SelfTest` runs the checker's own self-test first.
 - **Dependencies are pinned.** GPUI and its component kit are pinned to exact versions, and `crates/desktop/tests/pins.rs` checks the pins. Upgrade only for a named reason.
 - **TypeScript has no `any`.**

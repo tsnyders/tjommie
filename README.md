@@ -61,7 +61,7 @@ Settings, then Agents, sets how many requests agents may pass between each other
 
 ### 6. Projects
 
-A project is a team of agents working on one Git repository. **Projects** in the sidebar lists your teams. **New project** asks for a name, a repository you choose on this PC, a base branch and the branch to integrate into, and the agents on the team with a role each, Developer or Reviewer. An agent can be on only one active project.
+A project is a team of agents working on one Git repository. **Projects** in the sidebar lists your teams. **New project** asks for a name, a repository you choose on this PC, a base branch and the branch to integrate into, and the agents on the team, each with one or more roles: Lead, Developer, Reviewer or Tester. An agent can be on only one active project.
 Add tasks to a team. A task has instructions and a developer, and can have a reviewer and a tester. Saving a team or a task starts no work: **Start task** does. Each task works in its own isolated worktree.
 **Run review** and **Run checks** look at the task's committed changes, and **Integrate accepted commit** brings the exact commit that passed into your target branch on this PC. **Open team room** opens the team's room.
 
