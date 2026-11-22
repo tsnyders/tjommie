@@ -6,12 +6,14 @@ Never run by CI; it puts real load on the PC, so run it only in the owner's T7.3
     .\tools\perf\load.ps1                       # Threads = 70% of the logical processors, 60 s
     .\tools\perf\load.ps1 -Threads 9 -Seconds 300
 
-Stops at its deadline or on Ctrl+C (the threads are background threads, so they die with the process).
+Stops at its deadline or on Ctrl+C (the threads are background threads, so they die with the process), or, with
+-ParentPid, within 10 s of that process ending: a run that started it and was killed leaves no load behind.
 Aim for 60 to 80% system CPU: raise -Threads if it reaches less, lower it if more.
 #>
 param(
     [int]$Threads = 0,
-    [int]$Seconds = 60
+    [int]$Seconds = 60,
+    [int]$ParentPid = 0
 )
 $ErrorActionPreference = 'Stop'
 if ($Threads -le 0) { $Threads = [math]::Max(1, [int][math]::Round([Environment]::ProcessorCount * 0.7)) }
@@ -54,6 +56,10 @@ try {
     Write-Host "load: system CPU reached $(Get-Load 5)%"
     while ((Get-Date) -lt $deadline) {
         Start-Sleep -Seconds ([math]::Min(10, [math]::Max(1, ($deadline - (Get-Date)).TotalSeconds)))
+        if ($ParentPid -gt 0 -and -not (Get-Process -Id $ParentPid -ErrorAction SilentlyContinue)) {
+            Write-Host 'load: the run that started it is gone'
+            break
+        }
         if ((Get-Date) -lt $deadline) { Write-Host "load: system CPU $(Get-Load 2)%" }
     }
 } finally {

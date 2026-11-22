@@ -99,9 +99,15 @@ for ($run = 1; $run -le $Runs; $run++) {
         if ($temp) { Remove-Item $temp -Recurse -Force -ErrorAction SilentlyContinue }
     }
 }
+# The median of the runs that measured it: a run with no number is left out, not counted (M7 review n3).
+function Get-Median($values) {
+    $sorted = @($values | Where-Object { $null -ne $_ } | Sort-Object)
+    if ($sorted.Count -eq 0) { return $null }
+    $sorted[[math]::Floor(($sorted.Count - 1) / 2)]
+}
 [ordered]@{
     measured = (Get-Date).ToString('s'); baseline_first_present_ms = 3837.5; runs = $results
-    median_first_present_ms = ($results | Where-Object { $null -ne $_.cold_start_to_first_present_ms } | ForEach-Object { $_.cold_start_to_first_present_ms } | Sort-Object | Select-Object -Skip ([math]::Floor(($results.Count - 1) / 2)) -First 1)
-    median_ui_ready_ms = ($results | Where-Object { $null -ne $_.cold_start_to_ui_ready_ms } | ForEach-Object { $_.cold_start_to_ui_ready_ms } | Sort-Object | Select-Object -Skip ([math]::Floor(($results.Count - 1) / 2)) -First 1)
+    median_first_present_ms = Get-Median ($results | ForEach-Object { $_.cold_start_to_first_present_ms })
+    median_ui_ready_ms = Get-Median ($results | ForEach-Object { $_.cold_start_to_ui_ready_ms })
 } | ConvertTo-Json -Depth 4 | Set-Content -Encoding utf8 (Join-Path $evidence 'summary.json')
 Write-Host "Saved $(Join-Path $evidence 'summary.json') (baseline: 3,837.5 ms to the first present)"

@@ -255,7 +255,8 @@ Close the `python -m http.server` window.
 ```
 
 It launches the app 3 times (each on a fresh throwaway root, with the perf daemon), each time to the first present and to
-the log marker `ui ready` (the shell's first frame is presented and the daemon is connected). Ports 47200 and 47201 must
+the log marker `ui ready` (logged as the shell renders its first frame with the daemon connected, one frame before that
+frame is presented; the first present beside it is PresentMon's). Ports 47200 and 47201 must
 be free (no dev daemon running). Compare with the installed 0.4.2.0's **3,837.5 ms** (to the first present).
 Record both numbers per run and the medians. Evidence: `tjommie-rs\evidence\cold-start\summary.json`.
 

@@ -42,7 +42,8 @@ foreach ($scenario in $scenarios) {
         & $runScenario -Scenario $scenario -Label "t73-$scenario-$name-quiet" -Runs $Runs -AppArgs $options[$name] @exeArgs | Select-Object -Last 1
     }
 }
-$loadArgs = @('-NoProfile', '-File', $load, '-Seconds', '7200')
+# The load stops with this script, even if it is killed (M7 review n6): load.ps1 watches this process.
+$loadArgs = @('-NoProfile', '-File', $load, '-Seconds', '7200', '-ParentPid', $PID)
 if ($LoadThreads -gt 0) { $loadArgs += '-Threads', $LoadThreads }
 $loader = Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList $loadArgs -WindowStyle Hidden -PassThru
 try {
