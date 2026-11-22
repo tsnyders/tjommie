@@ -13,17 +13,26 @@ pub struct Spring {
     pub target: f32,
     stiffness: f32,
     damping_ratio: f32,
+    /// Pixels per unit, for the rest rule: a spring in px has 1; a fraction (a check drawn on, a row's share) has the
+    /// pixels its whole spans, so it comes to rest within a quarter pixel and not a quarter of its whole.
+    scale: f32,
 }
 
 impl Spring {
     /// At rest at `value`, on one of the theme's springs (`motion.spring.calm`, `snappy` or `playful`; mass 1).
     pub fn new(value: f32, tokens: &theme::Spring) -> Self {
+        Self::scaled(value, tokens, 1.)
+    }
+
+    /// A spring whose unit spans `scale` pixels on screen: a 0-to-1 fraction of a 36 px row has 36.
+    pub fn scaled(value: f32, tokens: &theme::Spring, scale: f32) -> Self {
         Self {
             value,
             velocity: 0.,
             target: value,
             stiffness: tokens.stiffness,
             damping_ratio: tokens.damping_ratio,
+            scale: scale.max(1.),
         }
     }
 
@@ -57,7 +66,7 @@ impl Spring {
             self.velocity += acceleration * h;
             x += self.velocity * h;
         }
-        if x.abs() < 0.25 && self.velocity.abs() < 8. {
+        if (x * self.scale).abs() < 0.25 && (self.velocity * self.scale).abs() < 8. {
             self.snap(self.target);
             return false;
         }
@@ -128,6 +137,30 @@ mod tests {
         assert!(spring.velocity < velocity);
         while spring.step(0.01) {}
         assert_eq!(spring.value, 0.);
+    }
+
+    #[test]
+    fn a_fraction_lands_without_a_jump() {
+        // A check drawn on, 24 px of stroke: it may not jump the last quarter of its length when it comes to rest.
+        let mut drawn = Spring::scaled(0., &springs().calm, 24.);
+        drawn.set_target(1.);
+        let mut last = 0f32;
+        let mut largest_late_step = 0f32;
+        while drawn.step(1. / 60.) {
+            if drawn.value > 0.9 {
+                largest_late_step = largest_late_step.max(drawn.value - last);
+            }
+            last = drawn.value;
+        }
+        let landing = drawn.value - last;
+        assert_eq!(drawn.value, 1.);
+        // At rest within a quarter pixel, after a last frame at under the rest speed (8 px/s).
+        assert!(
+            landing * 24. <= 0.25 + 8. / 60.,
+            "the last step was {} px",
+            landing * 24.
+        );
+        assert!(largest_late_step < 0.05, "no jump near the end: {largest_late_step}");
     }
 
     #[test]
