@@ -31,7 +31,9 @@ use desktop::test_driver::{Client, Predicate};
 use desktop_host::{identity, owner_safety};
 
 /// The app's own log, once the test has its data root: a failing run carries what the app was doing (review of the host
-/// wiring: an intermittent `tab_to` failure that no reading explained needs the run's own evidence).
+/// wiring: an intermittent `tab_to` failure that no reading explained needs the run's own evidence). On a failure its last
+/// lines are in the test's panic message, and so in the public job log of `ci.yml`: nothing in this test's data (an invented
+/// key, temp paths) is private, and nothing the daemon writes to its stderr may be (no settings value, no token).
 static APP_LOG: OnceLock<PathBuf> = OnceLock::new();
 
 /// The last lines of the app's log.

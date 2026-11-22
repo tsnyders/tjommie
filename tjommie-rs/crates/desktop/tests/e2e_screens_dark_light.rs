@@ -41,58 +41,6 @@ const SECTIONS: [&str; 12] = [
     "about",
 ];
 
-/// Keeps a picture of the app's window as a PNG: the window of the process started from this test's app, drawn by
-/// itself (PrintWindow with PW_RENDERFULLCONTENT, 2), so a window over it never shows in the picture. A blank picture
-/// fails (M5 review Minor 29): a 40 by 40 grid of its pixels must hold at least four colours, as any drawn screen does
-/// (the sidebar, the page, a card and text).
-fn picture(out: &Path) {
-    let exe = common::desktop_exe().replace('/', "\\").replace('\'', "''");
-    let out = out.display().to_string().replace('\'', "''");
-    let script = format!(
-        r#"
-$ErrorActionPreference = 'Stop'
-Add-Type -AssemblyName System.Drawing
-Add-Type @'
-using System; using System.Runtime.InteropServices;
-public static class Win {{
-  [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
-  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr window, out Rect rect);
-  [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr window, IntPtr dc, uint flags);
-  public struct Rect {{ public int Left, Top, Right, Bottom; }}
-}}
-'@
-[Win]::SetProcessDPIAware() | Out-Null
-$app = Get-CimInstance Win32_Process |
-  Where-Object {{ $_.ExecutablePath -eq '{exe}' }} | Sort-Object CreationDate -Descending | Select-Object -First 1
-$window = (Get-Process -Id $app.ProcessId).MainWindowHandle
-$rect = New-Object Win+Rect
-[Win]::GetWindowRect($window, [ref]$rect) | Out-Null
-$bitmap = New-Object System.Drawing.Bitmap ($rect.Right - $rect.Left), ($rect.Bottom - $rect.Top)
-$graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-$dc = $graphics.GetHdc()
-$drawn = [Win]::PrintWindow($window, $dc, 2)
-$graphics.ReleaseHdc($dc)
-if (-not $drawn) {{ throw 'PrintWindow drew nothing' }}
-$seen = @{{}}
-$stepY = [Math]::Max(1, [int]($bitmap.Height / 40))
-$stepX = [Math]::Max(1, [int]($bitmap.Width / 40))
-for ($y = 0; $y -lt $bitmap.Height; $y += $stepY) {{
-  for ($x = 0; $x -lt $bitmap.Width; $x += $stepX) {{ $seen[$bitmap.GetPixel($x, $y).ToArgb()] = $true }}
-}}
-if ($seen.Count -lt 4) {{ throw "The picture is blank: $($seen.Count) colours" }}
-$bitmap.Save('{out}', [System.Drawing.Imaging.ImageFormat]::Png)
-"#
-    );
-    let status = desktop_host::spawn::command("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-        .status()
-        .unwrap();
-    assert!(
-        status.success(),
-        "no picture of the window, or a blank one, for {out}"
-    );
-}
-
 /// Clicks `nav` until `title` shows: a click that lands while the app is busy can go unheard.
 fn open(app: &mut Client, nav: &str, title: &str) {
     for _ in 0..3 {
@@ -109,7 +57,7 @@ fn tour(app: &mut Client, mode: &str, dir: &Path) {
     let keep = |name: &str| {
         // Past the screens' entrances and the focus ring's settling.
         sleep(Duration::from_millis(500));
-        picture(&dir.join(format!("{mode}-{name}.png")));
+        common::picture(&dir.join(format!("{mode}-{name}.png")));
     };
     for (nav, title, name) in SCREENS {
         open(app, nav, title);
