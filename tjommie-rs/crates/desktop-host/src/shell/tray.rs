@@ -9,7 +9,7 @@
 use std::ffi::c_void;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU8, AtomicU32, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -140,12 +140,39 @@ pub struct TrayConfig {
     pub icon_png: Option<&'static [u8]>,
 }
 
+/// Where the tray icon stands (M7 review m2): offered to Windows and not answered yet (Explorer can take seconds), taken,
+/// or not there (Windows refused it, the tray's window could not be made, or the icon was taken away).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IconState {
+    Pending,
+    Added,
+    Failed,
+}
+
+impl IconState {
+    fn from_u8(value: u8) -> IconState {
+        match value {
+            1 => IconState::Added,
+            2 => IconState::Failed,
+            _ => IconState::Pending,
+        }
+    }
+
+    fn to_u8(self) -> u8 {
+        match self {
+            IconState::Pending => 0,
+            IconState::Added => 1,
+            IconState::Failed => 2,
+        }
+    }
+}
+
 struct Shared {
     state: Mutex<UpdateState>,
     events: Sender<TrayEvent>,
     icon: isize,
     tooltip: String,
-    icon_added: AtomicBool,
+    icon_state: AtomicU8,
     /// The registered `TaskbarCreated` message: Explorer restarted, so the icon has to be added again.
     taskbar_created: AtomicU32,
     /// The tray's window, once its thread has made it and offered Windows the icon; 0 until then.
@@ -162,14 +189,14 @@ pub struct Tray {
 impl Tray {
     /// Starts the tray's thread, which makes its window, adds the icon and sends what the user picks to `events`. It
     /// returns without waiting for them, as Explorer can take seconds to take an icon (M6 re-review Nit 3): until it has,
-    /// `icon_added` is false. A window that can't be made is logged, and leaves it false.
+    /// the icon is `Pending`. A window that can't be made is logged, and leaves it `Failed`, as a panic on the thread does.
     pub fn start(config: TrayConfig, events: Sender<TrayEvent>) -> Result<Tray, String> {
         let shared = Arc::new(Shared {
             state: Mutex::new(UpdateState::Idle),
             events,
             icon: icon_from(config.icon_png).0 as isize,
             tooltip: config.tooltip,
-            icon_added: AtomicBool::new(false),
+            icon_state: AtomicU8::new(IconState::Pending.to_u8()),
             taskbar_created: AtomicU32::new(0),
             hwnd: AtomicIsize::new(0),
             stopping: AtomicBool::new(false),
@@ -177,7 +204,11 @@ impl Tray {
         let thread_shared = Arc::clone(&shared);
         let thread = std::thread::Builder::new()
             .name("tray".into())
-            .spawn(move || run(&thread_shared))
+            .spawn(move || {
+                if catch_unwind(AssertUnwindSafe(|| run(&thread_shared))).is_err() {
+                    thread_shared.set_icon(IconState::Failed);
+                }
+            })
             .map_err(|error| format!("The tray thread could not start: {error}"))?;
         Ok(Tray {
             shared,
@@ -192,9 +223,14 @@ impl Tray {
         }
     }
 
+    /// Where the icon stands: on its way, taken, or not there.
+    pub fn icon_state(&self) -> IconState {
+        IconState::from_u8(self.shared.icon_state.load(Ordering::SeqCst))
+    }
+
     /// Whether Windows took the icon (it doesn't when there is no shell, such as in some services).
     pub fn icon_added(&self) -> bool {
-        self.shared.icon_added.load(Ordering::SeqCst)
+        self.icon_state() == IconState::Added
     }
 
     /// The tray's window, so tests can post it the icon's messages; 0 until its thread has made it.
@@ -206,6 +242,12 @@ impl Tray {
     /// notification area until the pointer passes over it. The window goes with it (on its own thread, a moment later).
     pub fn remove(&self) {
         stop(&self.shared);
+    }
+}
+
+impl Shared {
+    fn set_icon(&self, state: IconState) {
+        self.icon_state.store(state.to_u8(), Ordering::SeqCst);
     }
 }
 
@@ -273,7 +315,11 @@ fn add_icon(hwnd: HWND, shared: &Shared) {
     }
     // SAFETY: `data` is a fully initialised NOTIFYICONDATAW for our own window.
     let added = unsafe { Shell_NotifyIconW(NIM_ADD, &data).as_bool() };
-    shared.icon_added.store(added, Ordering::SeqCst);
+    shared.set_icon(if added {
+        IconState::Added
+    } else {
+        IconState::Failed
+    });
     if !added {
         log::warn!("Windows didn't take the tray icon; Tjommie keeps running without it.");
     }
@@ -312,6 +358,7 @@ fn run(shared: &Arc<Shared>) {
         };
         if RegisterClassW(&class) == 0 {
             log::warn!("No tray icon: the tray window class could not be registered.");
+            shared.set_icon(IconState::Failed);
             return;
         }
         // A hidden top-level window, never shown. Not message-only: `SetForegroundWindow` (which makes the context menu
@@ -336,6 +383,7 @@ fn run(shared: &Arc<Shared>) {
             Err(error) => {
                 let _ = UnregisterClassW(PCWSTR(class_name.as_ptr()), Some(instance));
                 log::warn!("No tray icon: the tray window could not be created: {error}");
+                shared.set_icon(IconState::Failed);
                 return;
             }
         };
@@ -344,7 +392,10 @@ fn run(shared: &Arc<Shared>) {
             RegisterWindowMessageW(w!("TaskbarCreated")),
             Ordering::SeqCst,
         );
-        if !shared.stopping.load(Ordering::SeqCst) {
+        if shared.stopping.load(Ordering::SeqCst) {
+            // Asked to go before the icon was offered: there is none.
+            shared.set_icon(IconState::Failed);
+        } else {
             add_icon(hwnd, shared);
         }
         shared.hwnd.store(hwnd.0 as isize, Ordering::SeqCst);
@@ -403,8 +454,8 @@ fn handle(hwnd: HWND, message: u32, lparam: LPARAM) -> Option<LRESULT> {
     }
     if message == WM_DESTROY {
         remove_icon(hwnd);
-        // The icon is gone, so `icon_added` stops saying the window can be brought back from the tray.
-        shared.icon_added.store(false, Ordering::SeqCst);
+        // The icon is gone, so the tray stops saying the window can be brought back from it.
+        shared.set_icon(IconState::Failed);
         // SAFETY: ends this thread's message loop.
         unsafe { PostQuitMessage(0) };
         return Some(LRESULT(0));

@@ -610,8 +610,18 @@ impl Services {
         if self.fakes.is_some() {
             return true;
         }
-        self.tray.as_ref().is_some_and(|tray| tray.icon_added())
+        can_hide(self.tray.as_ref().map(|tray| tray.icon_state()))
     }
+}
+
+/// Whether a closed window may hide rather than quit: its tray icon is there, or still on its way (Explorer can take
+/// seconds to take one, and closing meanwhile must not quit; M7 review m2); not when Windows refused it or there is no
+/// tray. An icon refused after the window hid leaves a second launch to show it.
+fn can_hide(icon: Option<tray::IconState>) -> bool {
+    matches!(
+        icon,
+        Some(tray::IconState::Pending | tray::IconState::Added)
+    )
 }
 
 /// How the daemon's stop reads to the quit (`stopDaemonBeforeQuit`'s "forced" or not). `Ok(None)` is that there was no daemon
@@ -1156,6 +1166,17 @@ pub fn poke(poke: Poke, cx: &mut App) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    /// M7 review m2: a window closed while Windows is still taking the tray icon hides, as it does with the icon there;
+    /// it quits only when Windows refused the icon, or there is no tray.
+    #[test]
+    fn a_window_hides_while_its_tray_icon_is_on_its_way_and_quits_without_one() {
+        use desktop_host::shell::tray::IconState;
+        assert!(super::can_hide(Some(IconState::Pending)));
+        assert!(super::can_hide(Some(IconState::Added)));
+        assert!(!super::can_hide(Some(IconState::Failed)));
+        assert!(!super::can_hide(None));
+    }
+
     use super::*;
     use crate::live::{DaemonOwner, Tokio};
     use desktop_host::daemon_process::DaemonError;
