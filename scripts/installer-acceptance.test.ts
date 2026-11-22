@@ -10,7 +10,7 @@ import { codeOf, installer, powershell, repo, runBody, temp, windows } from "./p
 
 vi.setConfig({ testTimeout: 90_000 });
 
-const acceptance = ["accept-fresh.ps1", "accept-over-r1.ps1"];
+const acceptance = ["accept-fresh.ps1", "accept-over-r1.ps1", "accept-update-path.ps1", "accept-production-over-r1.ps1"];
 
 describe.skipIf(!windows)("the installer acceptance scripts", () => {
   // Each is started with an environment that is not a hosted runner's, and with every argument it needs, so the guard (which
@@ -162,7 +162,7 @@ describe.skipIf(!windows)("the installer scripts, linted", () => {
   };
 
   it("finds no variable that is read and never assigned, and no command that is not defined", () => {
-    const files = ["accept-fresh.ps1", "accept-over-r1.ps1", "accept-lib.ps1", "build-installer.ps1", "build-acceptance-installers.ps1", "build-stub-payload.ps1", "stop-install-processes.ps1", "unlink-reparse-points.ps1", "helper-log.ps1", "scoped-processes.ps1", "set-shortcut-aumid.ps1", "hosted-runner.ps1", "install-latest-r1.ps1"];
+    const files = ["accept-fresh.ps1", "accept-over-r1.ps1", "accept-update-path.ps1", "accept-production-over-r1.ps1", "accept-phase3-lib.ps1", "accept-lib.ps1", "build-installer.ps1", "build-acceptance-installers.ps1", "build-stub-payload.ps1", "stop-install-processes.ps1", "unlink-reparse-points.ps1", "helper-log.ps1", "scoped-processes.ps1", "set-shortcut-aumid.ps1", "hosted-runner.ps1", "install-latest-r1.ps1"];
     const report = lint(installer, files);
     for (const file of files) expect(report[file], file).toEqual([]);
   });
