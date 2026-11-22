@@ -565,6 +565,8 @@ pub fn start(identity: Identity, root: PathBuf, cx: &mut App) {
     } else {
         match daemon_exe(&identity, &env) {
             Ok(exe) => {
+                // The crash log names the daemon's build too, so a failure of it can be matched to its PDB.
+                desktop_host::crash::note_exe(&exe);
                 let (_, idle) = watch::channel(DaemonState::Starting);
                 Daemon::Supervised {
                     launch: Box::new(move || DaemonLaunch::new(exe.clone(), env.clone())),
