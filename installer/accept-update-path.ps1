@@ -37,7 +37,10 @@ Start-Acceptance 'update-path' $OutDir 45
 
 $table = Read-Json (Join-Path $PSScriptRoot 'identities.json')
 $test = $table.identities.updatetest
-$temp = [IO.Path]::GetTempPath().TrimEnd('\')
+# %TEMP% exactly as the environment spells it: R1's update-test installer holds the install folder's name as the build spelled it (from the same
+# variable), and compares it with the folder it is run for. The workflow sets it to the long form, so the installer script, which resolves
+# paths to the long form, agrees with it.
+$temp = $env:TEMP.TrimEnd('\')
 # Where R1's update test installs, and where the Phase 3 updatetest installer installs by default: two levels under %TEMP%, named for the product.
 $testRoot = Join-Path $temp 'tjommie-updatetest'
 $installDir = Join-Path $testRoot $test.product
@@ -53,6 +56,7 @@ $newUninstaller = Join-Path $installDir "Uninstall $($test.product).exe"
 $state = @{}
 
 Invoke-Step 'U0 the build job''s output is here' {
+    Assert-Check ($temp -ieq (Get-LongPath $temp)) 'U0: %TEMP% is spelled in its long form, as the build job spelled it (no 8.3 alias for R1''s guards to trip on)' $temp
     foreach ($needed in $r1Installer, (Join-Path $feedDir 'latest.yml'), (Join-Path $feedDir "Tjommie-Setup-$NewVersion.exe"), $manifest) {
         Assert-Check (Test-Path -LiteralPath $needed -PathType Leaf) "U0: $needed exists" $needed
     }

@@ -199,6 +199,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # R1's update-test guards compare folder names as they are spelled, and a hosted runner's TEMP is an 8.3 alias (RUNNER~1) that Node, .NET and NSIS
+      # spell three ways (run 1: "Update test packaging requires a disposable data root"). The long spelling, for every step after this one.
+      - name: Spell the temp folder in its long form
+        shell: pwsh
+        run: |
+          $long = (Get-Item -LiteralPath $env:TEMP -Force).FullName.TrimEnd('\')
+          "TEMP=$long", "TMP=$long" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Output "TEMP and TMP are now $long (they were $env:TEMP)."
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24'
@@ -260,7 +268,7 @@ jobs:
       - name: Package R1's update-test build
         shell: pwsh
         run: |
-          $testRoot = Join-Path ([IO.Path]::GetTempPath()).TrimEnd('\') 'tjommie-updatetest'
+          $testRoot = Join-Path ($env:TEMP.TrimEnd('\')) 'tjommie-updatetest'
           New-Item -ItemType Directory -Force -Path $testRoot | Out-Null
           $env:TJOMMIE_PACKAGE_TEST_ROOT = $testRoot
           $env:TJOMMIE_PACKAGE_APP_ID = 'com.tsnyders.tjommie.updatetest'
@@ -297,6 +305,13 @@ jobs:
           . ./installer/hosted-runner.ps1
           Assert-HostedRunner
           Assert-FreshRunner
+      # The same long spelling as the build job: R1's update-test installer holds the install folder's name, spelled as it was built, and checks that
+      # it is installed, updated and removed there.
+      - name: Spell the temp folder in its long form
+        run: |
+          $long = (Get-Item -LiteralPath $env:TEMP -Force).FullName.TrimEnd('\')
+          "TEMP=$long", "TMP=$long" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Output "TEMP and TMP are now $long (they were $env:TEMP)."
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24'

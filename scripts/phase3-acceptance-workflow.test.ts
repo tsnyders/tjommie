@@ -63,6 +63,27 @@ describe("the T8.4 jobs", () => {
     expect(identities.updatetest.product).toBe("Tjommie Update Test");
   });
 
+  // Run 1: "Update test packaging requires a disposable data root". The guard compares the folder's parent with Node's os.tmpdir(), spelled as TEMP is
+  // set, and a hosted runner's TEMP is an 8.3 alias that .NET spells in its long form. R1's own NSIS guard and the Phase 3 installer compare spellings
+  // too. So the jobs that build and install the update-test app spell TEMP and TMP in their long form first, and everything after uses that.
+  it("spell the temp folder in its long form before anything that builds or installs the update-test app, and the scripts read it from TEMP", () => {
+    for (const name of ["acceptance-build", "update-path"]) {
+      const step = steps(name).find((candidate) => /Spell the temp folder in its long form/.test(candidate.name ?? ""));
+      expect(step, name).toBeDefined();
+      expect(step?.run).toContain("(Get-Item -LiteralPath $env:TEMP -Force).FullName");
+      expect(step?.run).toContain('"TEMP=$long", "TMP=$long" | Out-File -FilePath $env:GITHUB_ENV -Append');
+      const at = index(name, /Spell the temp folder/);
+      for (const later of [/npm ci/, /build-speech-runtime|cargo build|accept-|download-artifact/]) expect(index(name, later), `${name}: ${later}`).toBeGreaterThan(at);
+    }
+    // The package step builds the test root from TEMP, not from .NET's idea of the temp folder, and the script that installs there does too.
+    const build = steps("acceptance-build").find((step) => /Package R1's update-test build/.test(step.name ?? ""))?.run ?? "";
+    expect(build).toContain("$testRoot = Join-Path ($env:TEMP.TrimEnd('\\')) 'tjommie-updatetest'");
+    expect(build).not.toContain("GetTempPath");
+    const update = codeOf(join(installer, "accept-update-path.ps1"));
+    expect(update).toContain("$temp = $env:TEMP.TrimEnd('\\')");
+    expect(update).not.toContain("GetTempPath");
+  });
+
   it("make R1's update-test build older than the update, so its updater takes it", () => {
     const [phase3, r1] = [workflow.env?.PHASE3_VERSION ?? "", workflow.env?.R1_TEST_VERSION ?? ""];
     expect(phase3).toMatch(/^\d+\.\d+\.\d+$/);
