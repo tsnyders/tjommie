@@ -22,7 +22,8 @@ name: "Desktop acceptance (Phase 3: the installer, over R1)"
 #                             row counts and files are unchanged, the uninstall entry and AppUserModelID are right, and a notification posts.
 #   production-over-r1 (T8.4 steps 2 and 3)  The published R1 (v0.5.1), seeded, with the Phase 3 installer over it; start at login still starts the
 #                             app; R1's exported paired PCs and appearance are imported; then R1 is installed back over Phase 3 (the rollback).
-#   e2e (T8.4 step 4)         The black-box e2e set against a packaged e2e build. Pending: it needs the tests' TJOMMIE_E2E_EXE override.
+#   e2e (T8.4 step 4)         The black-box e2e set against a packaged e2e build (the e2e identity with the test driver, and the fixtures daemon
+#                             beside it), through the tests' TJOMMIE_E2E_EXE override. It needs nothing from the build job.
 #
 # Nothing here ever runs on the owner's PC: every script in installer/ that installs or uninstalls refuses to run unless
 # RUNNER_ENVIRONMENT is github-hosted (and the jobs below that run an installer also need a fresh runner).
@@ -376,14 +377,16 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
-  # PENDING. The e2e tests find the app through the exe cargo built for them (CARGO_BIN_EXE_tjommie-desktop). The fixtures lane adds a test-only
-  # TJOMMIE_E2E_EXE override, which lets them drive a PACKAGED build instead. Until that is in this branch the job is off (the `if` below); it is
-  # written against the variable so that turning it on is the removal of one line. The packaged build is the e2e identity WITH the test driver, which is
-  # never production: the production build's check for a driver stays in rust-dev.yml and release.yml.
+  # T8.4 step 4: the black-box e2e set against a PACKAGED test-identity build. The e2e tests drive an app through its test driver; by default they
+  # launch the exe cargo built for them (CARGO_BIN_EXE_tjommie-desktop). With TJOMMIE_E2E_EXE set (the fixtures lane's test-only override, in
+  # tjommie-rs/crates/desktop/tests/common) every test launches THAT exe instead:
+  #   - the value is the absolute path of an existing file, or the test fails naming the variable, and it never falls back to the cargo-built exe;
+  #   - the fixtures daemon (built with provider-fixtures) sits BESIDE it as tjommie-daemon.exe, which the tests pass to the app as TJOMMIE_DAEMON_EXE.
+  # So the package here is a folder with those two files, built as the e2e identity WITH the test driver, which is never production: the release
+  # workflow's check that a production build has no driver is what stays in force for a release, and check-e2e-package.ps1 shows this one is not one.
+  # It needs nothing from the build job and installs nothing of Tjommie's, so it runs beside the others, not after them.
   e2e:
-    name: T8.4 step 4 - the black-box e2e set against the packaged test identity (pending TJOMMIE_E2E_EXE)
-    needs: acceptance-build
-    if: ${{ false }}
+    name: T8.4 step 4 - the black-box e2e set against the packaged test identity
     runs-on: windows-latest
     timeout-minutes: 120
     defaults:
@@ -393,40 +396,38 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: '24'
-          cache: npm
-      - run: npm ci
-      - name: Build and verify pinned local speech runtime
-        run: ./packages/desktop/scripts/build-speech-runtime.ps1
       - name: Install the pinned Rust toolchain
         working-directory: tjommie-rs
         run: rustup toolchain install
-      # The e2e identity with the test driver, and the daemon that plays recorded provider turns (no real provider).
+      # The e2e app's PDF viewer finds pdfium through TJOMMIE_PDFIUM_DLL, and the tests fail without it on CI rather than skip, as in ci.yml.
+      - name: Fetch the pinned pdfium.dll
+        run: |
+          $dll = ./tjommie-rs/tools/fetch-pdfium.ps1 -Destination (Join-Path $env:RUNNER_TEMP 'pdfium\pdfium.dll')
+          "TJOMMIE_PDFIUM_DLL=$dll" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      # The e2e identity with the test driver (never production). The daemon is built as ci.yml builds it for the e2e tests: with the
+      # provider-fixtures feature, which replays recorded turns in place of a real provider, and under the default identity.
       - name: Build the e2e desktop app (with the test driver) and the fixtures daemon
         working-directory: tjommie-rs
-        env:
-          TJOMMIE_IDENTITY: e2e
         run: |
+          $env:TJOMMIE_IDENTITY = 'e2e'
           cargo build --release --locked -p desktop --features desktop/test-driver
-          cargo build --release --locked -p daemon --features provider-fixtures
-      - name: Fetch pdfium
-        run: |
-          $dir = Join-Path $env:RUNNER_TEMP 'pdfium'
-          ./tjommie-rs/tools/fetch-pdfium.ps1 -Destination "$dir\pdfium.dll" -Licenses "$dir\licenses"
-      # "Packaged": the same payload layout the installer installs, so the tests drive an app in its installed shape.
+          if ($LASTEXITCODE -ne 0) { throw 'The e2e desktop build failed.' }
+          Remove-Item Env:\TJOMMIE_IDENTITY
+          cargo build --release --locked -p daemon --bin tjommie-daemon --features provider-fixtures
+          if ($LASTEXITCODE -ne 0) { throw 'The fixtures daemon build failed.' }
+      # The package: the two files side by side in a folder of their own, by absolute path.
       - name: Package the e2e build
         run: |
-          $pdfium = Join-Path $env:RUNNER_TEMP 'pdfium'
-          $notices = Join-Path $env:RUNNER_TEMP 'third-party-notices.txt'
-          Set-Content -LiteralPath $notices -Value 'Acceptance build.'
-          ./installer/assemble-payload.ps1 -OutDir "$env:RUNNER_TEMP\payload-e2e" -ManifestPath "$env:RUNNER_TEMP\payload-e2e-manifest.json" -Desktop tjommie-rs\target\release\tjommie-desktop.exe -Daemon tjommie-rs\target\release\tjommie-daemon.exe -SpeechDir .cache\speech-runtime -Pdfium "$pdfium\pdfium.dll" -PdfiumLicenses "$pdfium\licenses" -ThirdPartyNotices $notices -ExeName tjommie-desktop.exe
+          $package = Join-Path $env:RUNNER_TEMP 'e2e-package'
+          New-Item -ItemType Directory -Force -Path $package | Out-Null
+          Copy-Item tjommie-rs\target\release\tjommie-desktop.exe, tjommie-rs\target\release\tjommie-daemon.exe -Destination $package
+      - name: The package has the test driver, no update feed, and the fixtures daemon beside it
+        run: ./installer/check-e2e-package.ps1 -Desktop "$env:RUNNER_TEMP\e2e-package\tjommie-desktop.exe" -Daemon "$env:RUNNER_TEMP\e2e-package\tjommie-daemon.exe"
+      # --no-fail-fast: one run shows every failing test binary, not only the first one cargo stops at. The tests are compiled here, on the
+      # runner; the app they drive is the package.
       - name: Run the e2e tests against the packaged build
         working-directory: tjommie-rs
         env:
           TJOMMIE_IDENTITY: e2e
-          TJOMMIE_E2E_EXE: ${{ runner.temp }}\payload-e2e\tjommie-desktop.exe
-          TJOMMIE_DAEMON_EXE: ${{ runner.temp }}\payload-e2e\resources\daemon\tjommie-daemon.exe
-          TJOMMIE_PDFIUM_DLL: ${{ runner.temp }}\payload-e2e\resources\pdfium.dll
+          TJOMMIE_E2E_EXE: ${{ runner.temp }}\e2e-package\tjommie-desktop.exe
         run: cargo test --workspace --locked --features desktop/test-driver --test 'e2e_*' --no-fail-fast

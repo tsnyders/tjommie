@@ -22,9 +22,11 @@ const index = (name: string, pattern: RegExp): number => steps(name).findIndex((
 const identities = (JSON.parse(readFileSync(join(installer, "identities.json"), "utf8")) as { identities: Record<string, { folder: string; product: string; exe: string; appId: string; guid: string }> }).identities;
 
 describe("the T8.4 jobs", () => {
-  it("are built from one build job, and the three that install run on fresh runners of their own", () => {
-    for (const name of ["update-path", "production-over-r1", "e2e"]) expect(jobs[name]?.needs, name).toBe("acceptance-build");
+  it("are built from one build job, and the two that install run on fresh runners of their own", () => {
+    for (const name of ["update-path", "production-over-r1"]) expect(jobs[name]?.needs, name).toBe("acceptance-build");
     expect(jobs["acceptance-build"].needs).toBeUndefined();
+    // The e2e job builds its own package and installs nothing of Tjommie's, so it waits for nothing and runs beside the others.
+    expect(jobs.e2e.needs).toBeUndefined();
     // The jobs that install something start with the guard and the fresh-runner check, before anything they install or run.
     for (const name of ["update-path", "production-over-r1"]) {
       const guard = index(name, /Assert-HostedRunner/);
@@ -112,16 +114,39 @@ describe("the T8.4 jobs", () => {
     for (const name of Object.keys(jobs)) for (const step of steps(name)) if (step.uses) expect(step.uses, `${name}: ${step.uses}`).toMatch(/@[0-9a-f]{40}\b/);
   });
 
-  it("keep the e2e job off until the tests can be pointed at a packaged build, and then run only a non-production identity with the test driver", () => {
-    expect(jobs.e2e.if).toBe("${{ false }}");
-    const body = text("e2e");
-    expect(body).toContain("TJOMMIE_E2E_EXE");
-    expect(body).toContain("--features desktop/test-driver");
-    // Every step that sets an identity sets the e2e one, and at least the build and the test run do.
+  // The fixtures lane's override (tests/common): TJOMMIE_E2E_EXE is the ABSOLUTE path of an existing desktop exe, which every e2e test launches; the
+  // fixtures daemon sits beside it as tjommie-daemon.exe; the package is the e2e identity with the test driver, never production.
+  it("run the e2e set against a packaged e2e build through TJOMMIE_E2E_EXE, as the override's contract asks, and never a production build", () => {
+    expect(jobs.e2e.if, "the job is on").toBeUndefined();
+    const build = steps("e2e").find((step) => /Build the e2e desktop app/.test(step.name ?? ""))?.run ?? "";
+    // The desktop app is the e2e identity with the test driver; the daemon is the fixtures build, beside it after packaging.
+    expect(build).toContain("$env:TJOMMIE_IDENTITY = 'e2e'");
+    expect(build).toContain("cargo build --release --locked -p desktop --features desktop/test-driver");
+    expect(build).toContain("cargo build --release --locked -p daemon --bin tjommie-daemon --features provider-fixtures");
+    expect(build.indexOf("$env:TJOMMIE_IDENTITY = 'e2e'")).toBeLessThan(build.indexOf("-p desktop --features desktop/test-driver"));
+    const packageStep = steps("e2e").find((step) => /Package the e2e build/.test(step.name ?? ""))?.run ?? "";
+    expect(packageStep).toContain("Copy-Item tjommie-rs\\target\\release\\tjommie-desktop.exe, tjommie-rs\\target\\release\\tjommie-daemon.exe -Destination $package");
+    // The package is checked before it is tested, and the tests run with the variable set to its absolute path.
+    expect(index("e2e", /check-e2e-package\.ps1/)).toBeGreaterThan(index("e2e", /Package the e2e build/));
+    expect(index("e2e", /check-e2e-package\.ps1/)).toBeLessThan(index("e2e", /cargo test/));
+    expect(steps("e2e").find((step) => /check-e2e-package/.test(step.run ?? ""))?.run).toContain('-Desktop "$env:RUNNER_TEMP\\e2e-package\\tjommie-desktop.exe" -Daemon "$env:RUNNER_TEMP\\e2e-package\\tjommie-daemon.exe"');
+    const tests = steps("e2e").find((step) => /cargo test/.test(step.run ?? ""));
+    expect(tests?.env).toEqual({ TJOMMIE_IDENTITY: "e2e", TJOMMIE_E2E_EXE: "${{ runner.temp }}\\e2e-package\\tjommie-desktop.exe" });
+    expect(tests?.run).toBe("cargo test --workspace --locked --features desktop/test-driver --test 'e2e_*' --no-fail-fast");
+    expect(tests?.["working-directory"]).toBe("tjommie-rs");
+    // The pdfium the e2e app's PDF viewer needs, as ci.yml gives it.
+    expect(text("e2e")).toContain("TJOMMIE_PDFIUM_DLL=$dll");
+    // The override this relies on is in the tests, and says what the contract says.
+    const common = readFileSync(join(repo, "tjommie-rs", "crates", "desktop", "tests", "common", "mod.rs"), "utf8");
+    expect(common).toContain('pub const E2E_EXE_VAR: &str = "TJOMMIE_E2E_EXE"');
+    expect(common).toContain("must be an absolute path");
+    expect(common).toContain('with_file_name("tjommie-daemon.exe")');
+    // No production identity anywhere in the job, and every step that sets one sets the e2e one.
     const identitySteps = steps("e2e").filter((step) => step.env?.TJOMMIE_IDENTITY !== undefined);
-    expect(identitySteps.length).toBeGreaterThanOrEqual(2);
+    expect(identitySteps.length).toBeGreaterThanOrEqual(1);
     for (const step of identitySteps) expect(step.env?.TJOMMIE_IDENTITY, step.name).toBe("e2e");
-    expect(body).not.toMatch(/"TJOMMIE_IDENTITY":"(production|updatetest|dev)"/);
+    const body = text("e2e");
+    expect(body).not.toMatch(/TJOMMIE_IDENTITY\s*=\s*'(production|updatetest|dev)'|"TJOMMIE_IDENTITY":"(production|updatetest|dev)"/);
     // Nothing else in the file builds the test driver: the production and update-test builds have none.
     for (const name of Object.keys(jobs).filter((job) => job !== "e2e")) expect(text(name), name).not.toMatch(/test-driver/);
   });
