@@ -4,6 +4,7 @@
 
 pub mod app_dirs;
 pub mod browser;
+pub mod build_id;
 pub mod crash;
 pub mod daemon_process;
 pub mod device_keys;

@@ -6,11 +6,12 @@
 //! (M5 review M8), with two exceptions: Devices' Rename and Revoke need a paired phone, which this run can't make, so
 //! `settings::devices::tests::the_device_dialogs_work_from_the_keyboard` covers them with a device in the view model;
 //! and `Route::Account`'s keyboard path arrives with the Chat lane's link producers. The system's folder picker can't be
-//! driven by keys either, so the test driver answers it (`answer_path_prompt`) for the team's repository. Exchange and
-//! file card: waiting for a fixture `mcp` event (a fixture turn calling the session's `tjommie` tools, `message_bot` and
-//! `share_file`, with a second fixture agent for the exchange; Batch 4). Until then the view tests cover them by keys
-//! (`ui::chat::tests::exchange_view`, `ui::chat::tests::file_card`). Moving into and out of a
-//! bot's page (T3.5) is the Browser lane's step. The API-key account it adds has an invented key, and every Credential
+//! driven by keys either, so the test driver answers it (`answer_path_prompt`) for the team's repository, and for the
+//! save path of a file card's Download. The exchange and the file card come from fixture `mcp` events (a fixture turn
+//! calling the session's own `tjommie` tools): Harbour asks a second fixture agent, Lantern, through `message_bot`, and
+//! shares a Markdown file the test wrote in its own folder through `share_file`. The exchange view opens from View thread
+//! and closes with Escape; the card's Preview opens the viewer, and Download saves to the answered path. Moving into and
+//! out of a bot's page (T3.5) is the Browser lane's step. The API-key account it adds has an invented key, and every Credential
 //! Manager target in this temp root's namespace is deleted when the test ends, failed or not (`Credentials`). Needs
 //! the daemon built with the switch, beside the app:
 //! `cargo build -p daemon --bin tjommie-daemon --features provider-fixtures --locked`, then
@@ -18,16 +19,21 @@
 #![cfg(feature = "test-driver")]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
+use common::daemon_exe;
 use desktop::test_driver::{Client, Predicate};
 use desktop_host::{identity, owner_safety};
 
 /// The app's own log, once the test has its data root: a failing run carries what the app was doing (review of the host
-/// wiring: an intermittent `tab_to` failure that no reading explained needs the run's own evidence).
+/// wiring: an intermittent `tab_to` failure that no reading explained needs the run's own evidence). On a failure its last
+/// lines are in the test's panic message, and so in the public job log of `ci.yml`: nothing in this test's data (an invented
+/// key, temp paths) is private, and nothing the daemon writes to its stderr may be (no settings value, no token).
 static APP_LOG: OnceLock<PathBuf> = OnceLock::new();
 
 /// The last lines of the app's log.
@@ -47,21 +53,37 @@ fn log_tail() -> String {
     }
 }
 
-fn daemon_exe() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_tjommie-desktop")).with_file_name("tjommie-daemon.exe")
-}
-
 /// Harbour's turns, one per message, in the order the test sends them: two lines from its chat's composer (as one
-/// message), a request that waits on an approval card, and the mention in Everyone.
+/// message), a request that waits on an approval card, a request that has it ask Lantern through its `tjommie` server's
+/// `message_bot` (Lantern's answer then reaches it as a message of its own, which plays the next turn), a request that has
+/// it share a file of its own folder through `share_file`, and the mention in Everyone.
 const HARBOUR: &str = r#"{ "version": 1, "turns": [
   { "expect": "First line\nsecond line", "events": [
     { "type": "text", "delta": "Both lines arrived." }, { "type": "text_end" } ] },
   { "expect": "check the moorings", "events": [
     { "type": "approval", "id": "ask-1", "tool": "Bash", "summary": "Run git status", "rule": "Bash(git status:*)",
       "then": { "once": [ { "type": "text", "delta": "Ran it once." }, { "type": "text_end" } ] } } ] },
+  { "expect": "ask Lantern", "events": [
+    { "type": "mcp", "id": "m1", "tool": "message_bot",
+      "arguments": { "bot": "Lantern", "message": "Is the tide table ready?" } },
+    { "type": "text", "delta": "I asked Lantern." }, { "type": "text_end" } ] },
+  { "expect": "The tide table is ready.", "events": [
+    { "type": "text", "delta": "Lantern says the table is ready." }, { "type": "text_end" } ] },
+  { "expect": "share the tide report", "events": [
+    { "type": "mcp", "id": "m2", "tool": "share_file",
+      "arguments": { "path": "tide-report.md", "caption": "Tide report" } },
+    { "type": "text", "delta": "I shared the report." }, { "type": "text_end" } ] },
   { "expect": "all clear?", "events": [
     { "type": "text", "delta": "Harbour here: all clear." }, { "type": "text_end" },
     { "type": "usage", "model": "sonnet", "input": 10, "output": 5 } ] } ] }"#;
+
+/// Lantern's one turn: the answer to Harbour's request, which the daemon hands it as a message from Harbour.
+const LANTERN: &str = r#"{ "version": 1, "turns": [
+  { "expect": "Is the tide table ready?", "events": [
+    { "type": "text", "delta": "The tide table is ready." }, { "type": "text_end" } ] } ] }"#;
+
+/// The file Harbour shares: Markdown, so the viewer renders it.
+const TIDE_REPORT: &str = "# Tide report\n\nLow tide at **06:40**, high tide at **12:55**.\n";
 
 const SECTIONS: [&str; 12] = [
     "general",
@@ -472,6 +494,119 @@ fn approval(app: &mut Client, bot: &str) {
     });
 }
 
+/// The id of the agent whose chat is open: the one whose composer is on screen.
+fn chat_bot(app: &mut Client) -> String {
+    let started = Instant::now();
+    loop {
+        if let Some(field) = ids_like(app, "composer.", ".field").pop() {
+            return field
+                .trim_start_matches("composer.")
+                .trim_end_matches(".field")
+                .to_owned();
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "no chat's composer is on screen"
+        );
+        sleep(Duration::from_millis(100));
+    }
+}
+
+/// Types `text` in the open chat's composer and sends it with Enter.
+fn say(app: &mut Client, bot: &str, text: &str) {
+    let field = format!("composer.{bot}.field");
+    if focused(app).as_deref() != Some(field.as_str()) {
+        tab_to(app, &field);
+    }
+    app.text(text).unwrap();
+    app.key("enter").unwrap();
+}
+
+/// An exchange by keys: a request has Harbour ask Lantern (its fixture turn calls `message_bot` on the session's own
+/// `tjommie` server), the chat shows the hand-off row with its View thread link, and Lantern's answer reaches Harbour as a
+/// message of its own that plays Harbour's next turn. Enter on View thread opens the exchange beside the chat, every control
+/// in it is a Tab stop, and Escape closes it and gives the keyboard back to the link.
+fn exchange(app: &mut Client, bot: &str) {
+    let before = replies(app);
+    say(app, bot, "Please ask Lantern about the tide table");
+    until(app, "Exchange", "no View thread link came", |app| {
+        !ids_like(app, "exchange.", ".open").is_empty()
+    });
+    until(
+        app,
+        "Exchange",
+        "Lantern's answer didn't reach Harbour",
+        |app| replies(app) >= before + 2,
+    );
+    let open = ids_like(app, "exchange.", ".open").pop().unwrap();
+    let view = format!("{}.view", open.trim_end_matches(".open"));
+    activate(app, &open);
+    app.wait(&view, Predicate::Exists, 10_000).unwrap();
+    // The exchange's own words: who asked whom.
+    app.wait(
+        &format!("{}.title", open.trim_end_matches(".open")),
+        Predicate::Text("Harbour asked Lantern".into()),
+        10_000,
+    )
+    .unwrap();
+    sweep(app, "Chat, exchange");
+    app.key("escape").unwrap();
+    wait_gone(app, &view);
+    until(
+        app,
+        "Exchange",
+        "the focus isn't back on View thread",
+        |app| focused(app).is_some_and(|id| id == open),
+    );
+}
+
+/// A shared file's card by keys: Harbour's fixture turn calls `share_file` on a file the test wrote in Harbour's own folder,
+/// so a card of Harbour's shows with Preview and Download. Enter on Preview opens the viewer, which renders the Markdown
+/// through the transfer, every control in it is a Tab stop, and Escape closes it. Download saves to the path the test
+/// answers (the system's save dialog can't be driven by keys) and says it saved; the file there is the one shared.
+fn file_card(app: &mut Client, bot: &str, root: &Path) {
+    // The agent's own folder under the data root: `share_file` reads a path in the agent's folders, relative to its own.
+    std::fs::write(
+        root.join("bots").join(bot).join("tide-report.md"),
+        TIDE_REPORT,
+    )
+    .unwrap();
+    say(app, bot, "Please share the tide report");
+    until(app, "File card", "no file card came", |app| {
+        !ids_like(app, "file.", ".preview").is_empty()
+    });
+    let preview = ids_like(app, "file.", ".preview").pop().unwrap();
+    let card = preview.trim_end_matches(".preview").to_owned();
+    assert_eq!(
+        app.snapshot().unwrap().node(&card).unwrap().text,
+        "tide-report.md"
+    );
+    sweep(app, "Chat, file card");
+    activate(app, &preview);
+    let viewer = format!("{card}.viewer");
+    app.wait(&viewer, Predicate::Exists, 10_000).unwrap();
+    until(app, "File viewer", "the file didn't load", |app| {
+        let snapshot = app.snapshot().unwrap();
+        snapshot.node(&format!("{viewer}.problem")).is_none()
+            && snapshot.node(&format!("{viewer}.status")).is_none()
+    });
+    sweep_in(app, "File viewer", &[viewer.as_str()]);
+    app.key("escape").unwrap();
+    wait_gone(app, &viewer);
+    // Download: the answered path is where the file is saved.
+    let saved = root.join("downloads").join("tide-report.md");
+    std::fs::create_dir_all(saved.parent().unwrap()).unwrap();
+    app.answer_path_prompt(&saved).unwrap();
+    activate(app, &format!("{card}.download"));
+    app.wait(
+        &format!("{card}.status"),
+        Predicate::Text("Saved on this device.".into()),
+        30_000,
+    )
+    .unwrap();
+    assert_eq!(std::fs::read_to_string(&saved).unwrap(), TIDE_REPORT);
+}
+
 #[test]
 fn e2e_keyboard_navigation() {
     assert_eq!(
@@ -490,8 +625,9 @@ fn e2e_keyboard_navigation() {
     let fixtures = root.path().join("provider-fixtures");
     std::fs::create_dir_all(&fixtures).unwrap();
     std::fs::write(fixtures.join("Harbour.json"), HARBOUR).unwrap();
+    std::fs::write(fixtures.join("Lantern.json"), LANTERN).unwrap();
     let mut app = Client::launch_with(
-        env!("CARGO_BIN_EXE_tjommie-desktop"),
+        &common::desktop_exe(),
         root.path(),
         &[
             ("TJOMMIE_DAEMON_EXE", daemon_exe().to_str().unwrap()),
@@ -530,29 +666,45 @@ fn e2e_keyboard_navigation() {
     }
     sweep(&mut app, "Agents");
 
-    // A new agent, made from the keyboard: its chat opens.
+    // Lantern first, from the keyboard, so Harbour can be allowed to message it: its chat opens, and the Agents screen
+    // again for the next New agent.
+    activate(&mut app, "agents.new");
+    app.wait("screen.new", Predicate::Exists, 10_000).unwrap();
+    tab_to(&mut app, "bot_form.name");
+    app.text("Lantern").unwrap();
+    activate(&mut app, "new_bot.create");
+    app.wait("screen.chat", Predicate::Exists, 30_000).unwrap();
+    let lantern = chat_bot(&mut app);
+    activate(&mut app, "sidebar.nav.agents");
+    app.wait("agents.new", Predicate::Exists, 10_000).unwrap();
+
+    // A new agent, made from the keyboard: Can message holds Lantern, and its chat opens.
     activate(&mut app, "agents.new");
     app.wait("screen.new", Predicate::Exists, 10_000).unwrap();
     tab_to(&mut app, "bot_form.name");
     app.text("Harbour").unwrap();
+    // The row opens on Enter, and Lantern's switch is the only one in it.
+    activate(&mut app, "bot_form.can_message");
+    let allow = format!("bot_form.can_message.{lantern}");
+    activate(&mut app, &allow);
+    until(&mut app, "New agent", "Lantern isn't allowed", |app| {
+        app.snapshot()
+            .unwrap()
+            .node(&allow)
+            .is_some_and(|node| node.toggled)
+    });
     sweep(&mut app, "New agent");
     activate(&mut app, "new_bot.create");
     app.wait("screen.chat", Predicate::Exists, 30_000).unwrap();
     sweep(&mut app, "Chat");
 
-    // The chat by keys (review C5): its composer, then an approval card.
-    let bot = ids_like(&mut app, "composer.", ".field")
-        .pop()
-        .expect("Harbour's composer")
-        .trim_start_matches("composer.")
-        .trim_end_matches(".field")
-        .to_owned();
+    // The chat by keys (review C5): its composer, then an approval card, then an exchange with Lantern and a file card.
+    let bot = chat_bot(&mut app);
+    assert_ne!(bot, lantern, "Harbour's chat is open");
     composer(&mut app, &bot);
     approval(&mut app, &bot);
-    // Left out, as no fixture turn can make them: an exchange between two agents (View thread opens its view, Escape
-    // closes it back to the link) and a shared file's card and viewer (Preview, Download to an answered path). Both
-    // come only from tools on the session's own `tjommie` MCP server (`message_bot`, `share_file`), and no fixture
-    // event calls that server: `browser` calls the `browser` server's tools alone.
+    exchange(&mut app, &bot);
+    file_card(&mut app, &bot, root.path());
 
     // Its card's More menu, from the keyboard: Enter opens it on its first row, the arrows move, Enter chooses.
     activate(&mut app, "sidebar.nav.agents");
@@ -763,7 +915,20 @@ fn e2e_keyboard_navigation() {
         "settings.accounts.claude.add",
         "settings.accounts.claude.add.key",
     );
-    app.wait("dialog.title", Predicate::Exists, 10_000).unwrap();
+    if app.wait("dialog.title", Predicate::Exists, 30_000).is_err() {
+        // What the window and the app's log say, for a run nobody watched.
+        let snapshot = app.snapshot().unwrap();
+        let shown: Vec<(String, String, bool)> = snapshot
+            .nodes
+            .iter()
+            .filter(|node| node.id.starts_with("dialog.") || node.id.contains(".add"))
+            .map(|node| (node.id.clone(), node.text.clone(), node.focused))
+            .collect();
+        panic!(
+            "the Add API key dialog didn't open: {shown:?}\n--- the app's log, last lines ---\n{}",
+            log_tail()
+        );
+    }
     sweep_in(&mut app, "Add API key dialog", &form);
     tab_to(&mut app, "account_form.name");
     app.text("Invented key").unwrap();
@@ -810,9 +975,9 @@ fn e2e_keyboard_navigation() {
             app.snapshot()
                 .unwrap()
                 .node(id)
-                .is_some_and(|node| node.text == "1 agent")
+                .is_some_and(|node| node.text == "2 agents")
         })
-        .expect("Harbour's account")
+        .expect("Harbour's and Lantern's account")
         .trim_end_matches(".users")
         .to_owned();
     dialog(
