@@ -1296,8 +1296,13 @@ mod shared_avatar {
     fn the_avatar_flies_from_its_row_into_the_chat_header(cx: &mut TestAppContext) {
         let cx = agents_with_forge(cx);
         click(cx, "sidebar.recent.b1");
-        assert_eq!(cx.update(|_, cx| route::current(cx)), Route::Chat("b1".into()));
-        let first = cx.debug_bounds("flight.avatar").expect("the avatar takes off");
+        assert_eq!(
+            cx.update(|_, cx| route::current(cx)),
+            Route::Chat("b1".into())
+        );
+        let first = cx
+            .debug_bounds("flight.avatar")
+            .expect("the avatar takes off");
         let mut frames = 0;
         let mut last = first;
         while let Some(now) = cx.debug_bounds("flight.avatar") {
@@ -1311,11 +1316,17 @@ mod shared_avatar {
             last.origin.y < first.origin.y || last.origin.x > first.origin.x,
             "from the sidebar row toward the header: {first:?} -> {last:?}"
         );
-        assert!(!cx.update(|_, cx| crate::motion::flight::is_flying(cx)), "landed");
+        assert!(
+            !cx.update(|_, cx| crate::motion::flight::is_flying(cx)),
+            "landed"
+        );
         for _ in 0..10 {
             next_frame(cx);
         }
-        assert!(cx.debug_bounds("flight.avatar").is_none(), "and it stays landed");
+        assert!(
+            cx.debug_bounds("flight.avatar").is_none(),
+            "and it stays landed"
+        );
     }
 
     #[gpui::test]
@@ -1326,8 +1337,14 @@ mod shared_avatar {
         }));
         cx.simulate_keystrokes("enter");
         draw(cx);
-        assert_eq!(cx.update(|_, cx| route::current(cx)), Route::Chat("b1".into()));
-        assert!(cx.debug_bounds("flight.avatar").is_none(), "no flight after a key");
+        assert_eq!(
+            cx.update(|_, cx| route::current(cx)),
+            Route::Chat("b1".into())
+        );
+        assert!(
+            cx.debug_bounds("flight.avatar").is_none(),
+            "no flight after a key"
+        );
     }
 }
 
@@ -1356,7 +1373,12 @@ mod tool_rows {
     }
 
     fn open<'a>(cx: &'a mut TestAppContext, status: &str) -> &'a mut VisualTestContext {
-        let (cx, _) = app(cx, Route::Chat("b1".into()), chat(vec![steps(status)], false), FakeRpc::default());
+        let (cx, _) = app(
+            cx,
+            Route::Chat("b1".into()),
+            chat(vec![steps(status)], false),
+            FakeRpc::default(),
+        );
         // An inactive window gets its frames at 30 fps by timer instead (gate condition 5).
         cx.update(|window, _| window.activate_window());
         draw(cx);
@@ -1372,7 +1394,10 @@ mod tool_rows {
             assert!(next_frame(cx), "it moves");
         }
         let rest = cx.debug_bounds("tools.m1.t1").expect("the step");
-        assert!(first.origin.y > rest.origin.y, "from below its place: {first:?} -> {rest:?}");
+        assert!(
+            first.origin.y > rest.origin.y,
+            "from below its place: {first:?} -> {rest:?}"
+        );
         cx.update(|_, cx| {
             store::update(cx, |state| {
                 if let Some(chat) = state.conversations.get_mut("b1") {
@@ -1388,12 +1413,21 @@ mod tool_rows {
     #[gpui::test]
     fn an_older_turns_steps_show_still(cx: &mut TestAppContext) {
         let cx = open(cx, "done");
-        assert_eq!(settle(cx), 0, "no frames for a step that was over when drawn");
+        assert_eq!(
+            settle(cx),
+            0,
+            "no frames for a step that was over when drawn"
+        );
     }
 
     #[gpui::test]
     fn under_reduced_motion_a_step_shows_at_once(cx: &mut TestAppContext) {
-        let (cx, _) = app(cx, Route::Agents, chat(vec![steps("running")], false), FakeRpc::default());
+        let (cx, _) = app(
+            cx,
+            Route::Agents,
+            chat(vec![steps("running")], false),
+            FakeRpc::default(),
+        );
         cx.update(|window, cx| {
             window.activate_window();
             crate::motion::reduced::set_for_test(true, cx);

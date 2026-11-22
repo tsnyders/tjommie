@@ -415,7 +415,10 @@ fn a_narrow_window_has_compact_navigation_and_projects_fits(cx: &mut TestAppCont
     assert!(node("sidebar.wordmark").is_some(), "wide: the full sidebar");
     cx.simulate_resize(size(px(360.), px(600.)));
     draw(cx);
-    assert!(node("sidebar.compact").is_some(), "narrow: the compact navigation");
+    assert!(
+        node("sidebar.compact").is_some(),
+        "narrow: the compact navigation"
+    );
     assert!(node("sidebar.wordmark").is_none() && node("sidebar.view_all").is_none());
     let new = node("projects.new").expect("New project");
     assert!(
@@ -429,12 +432,23 @@ fn a_narrow_window_has_compact_navigation_and_projects_fits(cx: &mut TestAppCont
         "the title has a line of its own, not a word per line: {:?}",
         title.bounds
     );
-    assert!(new.bounds.y < title.bounds.y, "New project above the title, as `page.tsx` put it");
+    assert!(
+        new.bounds.y < title.bounds.y,
+        "New project above the title, as `page.tsx` put it"
+    );
     let rooms = node("sidebar.nav.rooms").expect("the Rooms link");
-    assert!(rooms.bounds.width <= 48., "an icon link: {:?}", rooms.bounds);
+    assert!(
+        rooms.bounds.width <= 48.,
+        "an icon link: {:?}",
+        rooms.bounds
+    );
     // The keys still go: Enter on a focused section opens it.
     cx.update(|window, cx| {
-        assert!(crate::ui::primitives::focus_by_id("sidebar.nav.rooms", window, cx));
+        assert!(crate::ui::primitives::focus_by_id(
+            "sidebar.nav.rooms",
+            window,
+            cx
+        ));
     });
     cx.simulate_keystrokes("enter");
     draw(cx);

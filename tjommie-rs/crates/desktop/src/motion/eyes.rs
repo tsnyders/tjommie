@@ -394,7 +394,10 @@ mod tests {
         // An inactive window would get its frames at 30 fps by timer instead (gate condition 5).
         cx.update(|window, _| window.activate_window());
         crate::ui::testing::draw(cx);
-        assert!(next_frame(cx), "a working agent's eyes scan: the next frame comes");
+        assert!(
+            next_frame(cx),
+            "a working agent's eyes scan: the next frame comes"
+        );
         assert!(next_frame(cx), "and the one after");
         // The frame the working pose already asked for still comes; after it, none.
         pose.set(Pose::Paused);

@@ -15,8 +15,8 @@ use protocol::model::{
 
 use super::{approval, bubbles, notices, rows};
 use crate::model::format::clock;
-use crate::model::state::AppState;
 use crate::model::labels::DELETED_BOT;
+use crate::model::state::AppState;
 use crate::ui::files::card::FileFacts;
 use crate::ui::primitives::avatar::{BotAvatar, Pose};
 use crate::ui::style::{TypeExt as _, hsla, palette, r, theme};

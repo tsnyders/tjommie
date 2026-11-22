@@ -149,7 +149,11 @@ fn flight_end(bot: &Bot, place: &str, avatar: BotAvatar, opacity: f32, cx: &App)
 }
 
 /// Opens `bot`'s chat from its card at `place` (`card` or `need`): after the pointer, its avatar flies there.
-fn open_chat(bot: &Bot, place: &'static str, pose: Pose) -> impl Fn(&mut Window, &mut App) + 'static {
+fn open_chat(
+    bot: &Bot,
+    place: &'static str,
+    pose: Pose,
+) -> impl Fn(&mut Window, &mut App) + 'static {
     let (id, look) = (bot.id.clone(), (bot.color, bot.shape, pose));
     move |window, cx| {
         flight::take_off(&id, flight::end(place, &id), look, window, cx);
@@ -334,12 +338,13 @@ pub(super) fn bot_card(
                 .flex()
                 .items_center()
                 .gap(r(theme.space.s4))
-                .child(
-                    div().mr_auto().child(
-                        Link::new(format!("{card_id}.open"), "Open chat")
-                            .on_press(open_chat(bot, "card", pose(bot.state))),
-                    ),
-                )
+                .child(div().mr_auto().child(
+                    Link::new(format!("{card_id}.open"), "Open chat").on_press(open_chat(
+                        bot,
+                        "card",
+                        pose(bot.state),
+                    )),
+                ))
                 .when(bot.state == BotState::Waiting, |acts| {
                     acts.child(
                         Pill::new(format!("{card_id}.review"), "Review")

@@ -119,7 +119,9 @@ mod tests {
     /// The knob against overlays.html's `.toggle::after`: its insets are from the padding box, inside the 1.5 px
     /// border, so from the track's outer edge it sits at (5.5, 5) off and (20.5, 4) on, centred (M2 review F9).
     #[gpui::test]
-    fn the_knob_springs_across_after_a_click_and_lands_at_once_after_a_key(cx: &mut gpui::TestAppContext) {
+    fn the_knob_springs_across_after_a_click_and_lands_at_once_after_a_key(
+        cx: &mut gpui::TestAppContext,
+    ) {
         use crate::ui::testing::{click, draw, next_frame};
         use std::cell::Cell;
         let on = Rc::new(Cell::new(false));
@@ -135,7 +137,12 @@ mod tests {
         let track = cx.debug_bounds("test.toggle").expect("the track");
         click(cx, "test.toggle");
         assert!(on.get());
-        let first = cx.debug_bounds("test.toggle.knob").expect("the knob").origin.x - track.origin.x;
+        let first = cx
+            .debug_bounds("test.toggle.knob")
+            .expect("the knob")
+            .origin
+            .x
+            - track.origin.x;
         assert!(first < px(20.5), "it starts from where it was: {first:?}");
         let mut frames = 0;
         while next_frame(cx) {
@@ -143,7 +150,12 @@ mod tests {
             assert!(frames < 60, "it lands");
         }
         assert!(frames > 3, "over several frames: {frames}");
-        let landed = cx.debug_bounds("test.toggle.knob").expect("the knob").origin.x - track.origin.x;
+        let landed = cx
+            .debug_bounds("test.toggle.knob")
+            .expect("the knob")
+            .origin
+            .x
+            - track.origin.x;
         assert_eq!(landed, px(20.5), "on: where the design puts it");
         // By key: Tab to it, Space flips it, and the knob is there at once.
         cx.simulate_keystrokes("tab");
@@ -151,7 +163,12 @@ mod tests {
         draw(cx);
         assert!(!on.get());
         assert!(!next_frame(cx), "no frames in between after a key");
-        let off = cx.debug_bounds("test.toggle.knob").expect("the knob").origin.x - track.origin.x;
+        let off = cx
+            .debug_bounds("test.toggle.knob")
+            .expect("the knob")
+            .origin
+            .x
+            - track.origin.x;
         assert_eq!(off, px(5.5));
     }
 

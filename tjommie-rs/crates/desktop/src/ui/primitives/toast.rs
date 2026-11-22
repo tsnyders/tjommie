@@ -41,9 +41,7 @@ fn step(shown: &[Notice], cx: &mut App) -> bool {
     let snap = reduced::is_on(cx);
     let dt = clock::dt(cx);
     let motion = cx.default_global::<ToastMotion>();
-    motion
-        .arriving
-        .retain(|(notice, _)| shown.contains(notice));
+    motion.arriving.retain(|(notice, _)| shown.contains(notice));
     for notice in shown {
         if !motion.arriving.iter().any(|(each, _)| each == notice) {
             let mut drop = Spring::scaled(1., &playful, DROP);
@@ -161,8 +159,7 @@ pub fn toasts(window: &mut Window, cx: &mut App) -> impl IntoElement + use<> {
                 .semantic(format!("toast.{index}"), Role::Status)
                 .aria_label(notice.text())
                 .when(drop != 0., |pill| {
-                    pill.top(r(-DROP * drop))
-                        .opacity((1. - drop).clamp(0., 1.))
+                    pill.top(r(-DROP * drop)).opacity((1. - drop).clamp(0., 1.))
                 })
                 .child(notice.text())
                 .child(
@@ -207,7 +204,10 @@ mod tests {
             out += 1;
             assert!(out < 60, "and is gone");
         }
-        assert!(out > 2 && out < frames, "out is faster than in: {out} < {frames}");
+        assert!(
+            out > 2 && out < frames,
+            "out is faster than in: {out} < {frames}"
+        );
     }
 
     #[gpui::test]

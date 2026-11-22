@@ -83,13 +83,22 @@ struct StepMotion {
 }
 
 /// The step's rise (0 in place) and how much of its check shows, if it is drawing on; asks for frames while they move.
-fn step_motion(key: String, item: &ActivityItem, window: &mut Window, cx: &mut App) -> (f32, Option<f32>) {
+fn step_motion(
+    key: String,
+    item: &ActivityItem,
+    window: &mut Window,
+    cx: &mut App,
+) -> (f32, Option<f32>) {
     let running = item.status == ActivityStatus::Running;
     let snap = reduced::is_on(cx);
     let motion = theme(cx).motion.clone();
     let rise = motion.distance.rise;
     let state = window.use_keyed_state(SharedString::from(key), cx, |_, _| {
-        let mut spring = Spring::scaled(if running && !snap { 1. } else { 0. }, &motion.spring.snappy, rise);
+        let mut spring = Spring::scaled(
+            if running && !snap { 1. } else { 0. },
+            &motion.spring.snappy,
+            rise,
+        );
         spring.set_target(0.);
         StepMotion {
             rise: spring,

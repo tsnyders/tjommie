@@ -385,7 +385,10 @@ fn press_motion(id: &SharedString, window: &mut Window, cx: &mut App) -> (f32, E
 }
 
 /// The pointer down on the button presses its fill; up, here or anywhere, lets go.
-fn press_listeners(element: Semantic<Stateful<Div>>, down: Entity<bool>) -> Semantic<Stateful<Div>> {
+fn press_listeners(
+    element: Semantic<Stateful<Div>>,
+    down: Entity<bool>,
+) -> Semantic<Stateful<Div>> {
     let set = |down: &Entity<bool>, pressed: bool, window: &mut Window, cx: &mut App| {
         down.update(cx, |down, _| *down = pressed);
         window.refresh();
@@ -399,7 +402,9 @@ fn press_listeners(element: Semantic<Stateful<Div>>, down: Entity<bool>) -> Sema
             guarded("let go of a button", || set(&release, false, window, cx));
         })
         .on_mouse_up_out(MouseButton::Left, move |_, window, cx| {
-            guarded("let go of a button outside it", || set(&outside, false, window, cx));
+            guarded("let go of a button outside it", || {
+                set(&outside, false, window, cx)
+            });
         })
 }
 
@@ -448,7 +453,11 @@ mod tests {
         cx.update(|window, _| window.activate_window());
         draw(cx);
         let button = cx.debug_bounds("test.press").expect("the pill");
-        let full = cx.debug_bounds("test.press.fill").expect("its fill").size.width;
+        let full = cx
+            .debug_bounds("test.press.fill")
+            .expect("its fill")
+            .size
+            .width;
         cx.simulate_mouse_down(button.center(), MouseButton::Left, Modifiers::none());
         draw(cx);
         let mut frames = 0;
@@ -457,7 +466,11 @@ mod tests {
             assert!(frames < 60, "it lands");
         }
         assert!(frames > 2, "pressed over several frames: {frames}");
-        let pressed = cx.debug_bounds("test.press.fill").expect("its fill").size.width;
+        let pressed = cx
+            .debug_bounds("test.press.fill")
+            .expect("its fill")
+            .size
+            .width;
         assert!(
             (pressed / full - 0.94).abs() < 0.01,
             "pressed to 94%: {pressed:?} of {full:?}"
@@ -466,7 +479,11 @@ mod tests {
         draw(cx);
         assert!(next_frame(cx), "letting go springs it back");
         while next_frame(cx) {}
-        let back = cx.debug_bounds("test.press.fill").expect("its fill").size.width;
+        let back = cx
+            .debug_bounds("test.press.fill")
+            .expect("its fill")
+            .size
+            .width;
         assert_eq!(back, full);
         cx.simulate_keystrokes("tab");
         cx.simulate_keystrokes("enter");

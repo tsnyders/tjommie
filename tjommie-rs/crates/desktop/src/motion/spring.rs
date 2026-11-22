@@ -160,7 +160,10 @@ mod tests {
             "the last step was {} px",
             landing * 24.
         );
-        assert!(largest_late_step < 0.05, "no jump near the end: {largest_late_step}");
+        assert!(
+            largest_late_step < 0.05,
+            "no jump near the end: {largest_late_step}"
+        );
     }
 
     #[test]

@@ -12,8 +12,8 @@ use std::time::{Duration, Instant};
 
 use desktop_host::perf::{qpc, qpc_frequency};
 use gpui::{
-    AnyWindowHandle, App, AsyncApp, Modifiers, PlatformInput, ScrollDelta, ScrollEvent, ScrollSource,
-    TouchPhase, Window, point, px,
+    AnyWindowHandle, App, AsyncApp, Modifiers, PlatformInput, ScrollDelta, ScrollEvent,
+    ScrollSource, TouchPhase, Window, point, px,
 };
 use protocol::model::{
     Autonomy, Bot, BotColor, BotShape, BotState, Message, MessageKind, MessageStatus, Provider,
@@ -149,12 +149,42 @@ fn fixture(name: &str) -> AppState {
         BotState::Idle
     };
     let bots = vec![
-        bot("forge", "Forge", BotColor::Blue, BotShape::Hexagon, BotState::Waiting),
+        bot(
+            "forge",
+            "Forge",
+            BotColor::Blue,
+            BotShape::Hexagon,
+            BotState::Waiting,
+        ),
         bot("scout", "Scout", BotColor::Teal, BotShape::Blob, working),
-        bot("quill", "Quill", BotColor::Purple, BotShape::Droplet, working),
-        bot("ledger", "Ledger", BotColor::Amber, BotShape::RoundedSquare, BotState::Idle),
-        bot("pixel", "Pixel", BotColor::Pink, BotShape::Cloud, BotState::Limited),
-        bot("atlas", "Atlas", BotColor::Green, BotShape::Triangle, BotState::Paused),
+        bot(
+            "quill",
+            "Quill",
+            BotColor::Purple,
+            BotShape::Droplet,
+            working,
+        ),
+        bot(
+            "ledger",
+            "Ledger",
+            BotColor::Amber,
+            BotShape::RoundedSquare,
+            BotState::Idle,
+        ),
+        bot(
+            "pixel",
+            "Pixel",
+            BotColor::Pink,
+            BotShape::Cloud,
+            BotState::Limited,
+        ),
+        bot(
+            "atlas",
+            "Atlas",
+            BotColor::Green,
+            BotShape::Triangle,
+            BotState::Paused,
+        ),
     ];
     let rooms = vec![
         Room {
@@ -305,7 +335,9 @@ fn act<R>(
 
 /// Clicks the element with `id`, as the pointer does.
 fn click(window: AnyWindowHandle, id: &str, cx: &mut AsyncApp) -> Result<(), String> {
-    act(window, cx, |window, cx| crate::test_driver::click_id(id, window, cx))?
+    act(window, cx, |window, cx| {
+        crate::test_driver::click_id(id, window, cx)
+    })?
 }
 
 /// Waits until a frame that began after `after` (QPC) is drawn with nothing moving.
@@ -392,7 +424,11 @@ async fn trigger(
 }
 
 /// p95 runs: the motion `loops` times, each loop's span recorded, then the markers written.
-async fn loops(options: &Options, window: AnyWindowHandle, cx: &mut AsyncApp) -> Result<bool, String> {
+async fn loops(
+    options: &Options,
+    window: AnyWindowHandle,
+    cx: &mut AsyncApp,
+) -> Result<bool, String> {
     let mut windows = Vec::with_capacity(options.loops);
     let mut durations = Vec::with_capacity(options.loops);
     let start = qpc();
@@ -478,7 +514,11 @@ async fn alive(options: &Options, cx: &mut AsyncApp) -> Result<bool, String> {
 }
 
 /// The 10,000-message thread, scrolled up and back by the wheel, `loops` times.
-async fn scroll(options: &Options, window: AnyWindowHandle, cx: &mut AsyncApp) -> Result<bool, String> {
+async fn scroll(
+    options: &Options,
+    window: AnyWindowHandle,
+    cx: &mut AsyncApp,
+) -> Result<bool, String> {
     let start = qpc();
     let mut windows = Vec::new();
     for i in 0..options.loops {
@@ -491,7 +531,10 @@ async fn scroll(options: &Options, window: AnyWindowHandle, cx: &mut AsyncApp) -
                 window.dispatch_event(
                     PlatformInput::Scroll(ScrollEvent {
                         position,
-                        delta: ScrollDelta::Pixels(point(px(0.), px(if up { 120. } else { -120. }))),
+                        delta: ScrollDelta::Pixels(point(
+                            px(0.),
+                            px(if up { 120. } else { -120. }),
+                        )),
                         modifiers: Modifiers::none(),
                         touch_phase: TouchPhase::Moved,
                         source: ScrollSource::Pointer,
@@ -513,7 +556,11 @@ async fn scroll(options: &Options, window: AnyWindowHandle, cx: &mut AsyncApp) -
 
 /// Keyboard actions never animate: opened by a key, the chat shows with no flight; closed by a key, a toast is gone at
 /// once. Under `--force-reduced`, the same by the pointer, and Recents reorder in place.
-async fn snaps(options: &Options, window: AnyWindowHandle, cx: &mut AsyncApp) -> Result<bool, String> {
+async fn snaps(
+    options: &Options,
+    window: AnyWindowHandle,
+    cx: &mut AsyncApp,
+) -> Result<bool, String> {
     let by_key = options.name == "motion-keyboard";
     let mut passed = true;
     // The flight.
@@ -588,7 +635,11 @@ async fn snaps(options: &Options, window: AnyWindowHandle, cx: &mut AsyncApp) ->
     Ok(passed)
 }
 
-async fn run(options: &Options, window: AnyWindowHandle, cx: &mut AsyncApp) -> Result<bool, String> {
+async fn run(
+    options: &Options,
+    window: AnyWindowHandle,
+    cx: &mut AsyncApp,
+) -> Result<bool, String> {
     // A motion check keeps the display's rate even when the window isn't in front (gate condition 5).
     let _live = cx.update(Live::hold);
     // Fonts, icons and the first frames.

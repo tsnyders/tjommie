@@ -525,10 +525,7 @@ pub fn reply(id: &str, text: &str, streaming: bool, window: &mut Window, cx: &mu
     });
     let (stale, waited) = {
         let memo = memo.read(cx);
-        (
-            memo.source.as_ref() != text,
-            memo.at.map(|at| at.elapsed()),
-        )
+        (memo.source.as_ref() != text, memo.at.map(|at| at.elapsed()))
     };
     let due = !streaming || waited.is_none_or(|waited| waited >= STREAM_REWRITE);
     if stale && due {

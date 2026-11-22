@@ -226,7 +226,9 @@ pub fn header(bot: &Bot, actions: &HeaderActions, window: &mut Window, cx: &mut 
             div()
                 .relative()
                 .flex_none()
-                .when(flight::hides(&bot.id, &landing, cx), |slot| slot.opacity(0.))
+                .when(flight::hides(&bot.id, &landing, cx), |slot| {
+                    slot.opacity(0.)
+                })
                 .child(
                     BotAvatar::new(bot.color, bot.shape, theme.size.avatar40)
                         .pose(Pose::of(bot.state))

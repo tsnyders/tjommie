@@ -178,7 +178,9 @@ impl Render for Shell {
                     // An open exchange takes the right panel's place (T4.1); the panel stays drawn, closed, beside it.
                     // In a narrow window both open as sheets over the main column, as the TypeScript's did under `sm`.
                     .relative()
-                    .children(crate::ui::chat::exchange::side(cx).map(|side| sheet(side, narrow, theme)))
+                    .children(
+                        crate::ui::chat::exchange::side(cx).map(|side| sheet(side, narrow, theme)),
+                    )
                     .when_some(self.panel.clone(), |column, panel| {
                         column.child(sheet(panel, narrow, theme))
                     }),
@@ -387,18 +389,27 @@ mod tests {
             panic!("still moving after 300 frames");
         };
         settle(cx);
-        let before = cx.debug_bounds("sidebar.recent.launch").expect("Launch's row");
+        let before = cx
+            .debug_bounds("sidebar.recent.launch")
+            .expect("Launch's row");
         cx.update(|_, cx| cx.global_mut::<ShellData>().recents.rotate_left(1));
         draw(cx);
-        let moved = cx.debug_bounds("sidebar.recent.launch").expect("Launch's row");
+        let moved = cx
+            .debug_bounds("sidebar.recent.launch")
+            .expect("Launch's row");
         assert!(
             (moved.origin.y - before.origin.y).abs() < gpui::px(1.),
             "on the first frame Launch is painted where it was: {before:?} -> {moved:?}"
         );
         assert!(next_frame(cx), "then the rows slide to their new places");
         settle(cx);
-        let landed = cx.debug_bounds("sidebar.recent.launch").expect("Launch's row");
-        assert!(landed.origin.y > before.origin.y, "Launch ends at the bottom");
+        let landed = cx
+            .debug_bounds("sidebar.recent.launch")
+            .expect("Launch's row");
+        assert!(
+            landed.origin.y > before.origin.y,
+            "Launch ends at the bottom"
+        );
 
         cx.update(|_, cx| crate::motion::reduced::set_for_test(true, cx));
         cx.update(|_, cx| cx.global_mut::<ShellData>().recents.rotate_left(1));

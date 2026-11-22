@@ -9,8 +9,8 @@ pub mod digits;
 pub mod eyes;
 pub mod flight;
 pub mod flip;
-pub mod keyed;
 pub mod keyboard;
+pub mod keyed;
 pub mod reduced;
 pub mod spring;
 

@@ -582,7 +582,8 @@ fn a_narrow_window_shows_the_members_as_a_sheet(cx: &mut TestAppContext) {
     let sheet = node("room.members").expect("the members panel");
     let room = node("room").expect("the room");
     assert!(
-        (sheet.bounds.x - room.bounds.x).abs() < 1. && (sheet.bounds.width - room.bounds.width).abs() < 1.,
+        (sheet.bounds.x - room.bounds.x).abs() < 1.
+            && (sheet.bounds.width - room.bounds.width).abs() < 1.,
         "narrow: a sheet over the room: {:?} over {:?}",
         sheet.bounds,
         room.bounds
