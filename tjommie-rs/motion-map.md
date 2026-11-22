@@ -143,7 +143,7 @@ turns mid-flight without a jump, so a reorder settles in about 560 ms.
 
 | Motion | Tokens | Implemented by | Check |
 |---|---|---|---|
-| the avatar flies from its Recents row, Agents card or Needs you card into the chat header; both ends hide their copy | `spring.calm` | `motion::flight::{Flight, SharedAvatar, take_off, frame}` | `flight::flies_from_the_row_to_the_header`, `a_recall_mid_flight_keeps_its_velocity`, `chat::tests::shared_avatar::the_avatar_flies_from_its_row_into_the_chat_header`; scenario `motion-flight` |
+| the avatar flies from its Recents row, Agents card or Needs you card into the chat header; both ends hide their copy | `spring.calm` | `motion::flight::{Flight, SharedAvatar, take_off, frame}` | `flight::flies_from_the_row_to_the_header`, `a_recall_mid_flight_keeps_its_velocity`, `chat::tests::shared_avatar::the_avatar_flies_from_its_row_into_the_chat_header`, `the_avatar_flies_from_its_card_into_the_chat_header`, `in_a_narrow_window_the_avatar_flies_from_its_card` (the flight keeps the bounds it took off from: a card's screen is gone from the chat's first frame); scenario `motion-flight` |
 | opened by a key, or under reduced motion: no flight | | `take_off` | `chat::tests::shared_avatar::a_key_opens_the_chat_with_no_flight`; scenarios `motion-keyboard`, `motion-reduced` |
 
 The phone's Needs you item becoming the approval card is phone only.

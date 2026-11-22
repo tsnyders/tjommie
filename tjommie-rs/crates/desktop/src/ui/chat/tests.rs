@@ -1370,6 +1370,50 @@ mod shared_avatar {
         );
     }
 
+    /// Clicks `opener` and follows the flight: it takes off, lives on past its second frame, and lands.
+    fn flies_from(cx: &mut VisualTestContext, opener: &'static str) {
+        click(cx, opener);
+        assert_eq!(
+            cx.update(|_, cx| route::current(cx)),
+            Route::Chat("b1".into())
+        );
+        assert!(
+            cx.debug_bounds("flight.avatar").is_some(),
+            "the avatar takes off"
+        );
+        let mut frames = 0;
+        while cx.debug_bounds("flight.avatar").is_some() {
+            assert!(next_frame(cx), "it flies frame by frame");
+            frames += 1;
+            assert!(frames < 200, "and lands");
+        }
+        assert!(frames > 5, "past its second frame, over several: {frames}");
+        assert!(
+            !cx.update(|_, cx| crate::motion::flight::is_flying(cx)),
+            "landed"
+        );
+    }
+
+    /// M7 review M1: from an Agents card the avatar flies too, though the card's screen is gone from the chat's first frame
+    /// on: the flight keeps the bounds it took off from.
+    #[gpui::test]
+    fn the_avatar_flies_from_its_card_into_the_chat_header(cx: &mut TestAppContext) {
+        let cx = agents_with_forge(cx);
+        flies_from(cx, "agents.card.b1.open");
+    }
+
+    /// A narrow window has no Recents in its rail: an Agents card is where a chat opens from, and the avatar flies from it.
+    #[gpui::test]
+    fn in_a_narrow_window_the_avatar_flies_from_its_card(cx: &mut TestAppContext) {
+        let cx = agents_with_forge(cx);
+        // 768 high, so Forge's card is on screen without scrolling.
+        cx.simulate_resize(gpui::size(px(360.), px(768.)));
+        draw(cx);
+        draw(cx);
+        assert!(node("sidebar.compact").is_some(), "narrow: no Recents");
+        flies_from(cx, "agents.card.b1.open");
+    }
+
     #[gpui::test]
     fn a_key_opens_the_chat_with_no_flight(cx: &mut TestAppContext) {
         let cx = agents_with_forge(cx);

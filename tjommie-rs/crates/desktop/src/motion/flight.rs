@@ -41,7 +41,10 @@ impl Global for SharedAvatar {}
 
 struct Flying {
     id: SharedString,
+    /// The end it left, which hides its own copy while it flies.
     from: SharedString,
+    /// Where it took off, captured once: an Agents card's screen is gone from the chat's first frame on (M7 review M1).
+    start: Bounds<Pixels>,
     look: (BotColor, BotShape, Pose),
     flight: Option<Flight>,
     frames: u32,
@@ -94,10 +97,11 @@ pub fn take_off(
         return;
     }
     let shared = cx.default_global::<SharedAvatar>();
-    if shared.ends.contains_key(&from) {
+    if let Some(start) = shared.ends.get(&from).copied() {
         shared.flying = Some(Flying {
             id: id.to_owned().into(),
             from,
+            start,
             look,
             flight: None,
             frames: 0,
@@ -105,8 +109,9 @@ pub fn take_off(
     }
 }
 
-/// The frame's flight, called by the shell as each frame starts: it takes off from where its end was painted, heads
-/// for the header once the header has been painted, and lands there. Returns the overlay to draw while it flies.
+/// The frame's flight, called by the shell as each frame starts: it takes off from where its end was painted when it
+/// left (that end need not be painted again), heads for the header once the header has been painted, and lands there.
+/// Returns the overlay to draw while it flies.
 pub fn frame(route: &Route, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     let calm = cx.global::<Theme>().motion.spring.calm.clone();
     let dt = clock::dt(cx);
@@ -116,19 +121,15 @@ pub fn frame(route: &Route, window: &mut Window, cx: &mut App) -> Option<AnyElem
     let flying = shared.flying.as_mut()?;
     flying.frames += 1;
     let header = shared.ends.get(&end("header", &flying.id)).copied();
-    let from = shared.ends.get(&flying.from).copied();
     let on_chat = matches!(route, Route::Chat(id) if **id == *flying.id);
-    let (Some(from), true) = (from, on_chat) else {
-        shared.flying = None;
-        return None;
-    };
-    if header.is_none() && flying.frames > WAIT_FRAMES {
+    if !on_chat || (header.is_none() && flying.frames > WAIT_FRAMES) {
         shared.flying = None;
         return None;
     }
+    let start = flying.start;
     let flight = flying
         .flight
-        .get_or_insert_with(|| Flight::launch(from, header.unwrap_or(from), &calm));
+        .get_or_insert_with(|| Flight::launch(start, header.unwrap_or(start), &calm));
     if let Some(header) = header {
         flight.retarget(header);
     }
