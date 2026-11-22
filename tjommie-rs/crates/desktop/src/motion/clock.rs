@@ -54,6 +54,9 @@ pub struct Clock {
     wake_at: Option<Instant>,
     log: VecDeque<Frame>,
     trace: Option<BufWriter<File>>,
+    /// A view test's frame step, so its motions advance the same on any machine.
+    #[cfg(test)]
+    fixed: Option<f32>,
 }
 
 impl Global for Clock {}
@@ -75,6 +78,10 @@ impl Clock {
         self.dt = self
             .last_moving
             .map_or(FIRST, |last| (now - last).as_secs_f32());
+        #[cfg(test)]
+        if let Some(fixed) = self.fixed {
+            self.dt = fixed;
+        }
         self.frame = now;
         self.frame_qpc = qpc();
         self.moving = false;
@@ -129,8 +136,17 @@ impl Default for Clock {
             wake_at: None,
             log: VecDeque::with_capacity(LOG),
             trace: None,
+            #[cfg(test)]
+            fixed: None,
         }
     }
+}
+
+/// Every frame steps its motions by `dt` seconds, as at a steady display rate: a view test's frames come microseconds
+/// apart.
+#[cfg(test)]
+pub fn fixed_step(dt: f32, cx: &mut App) {
+    cx.default_global::<Clock>().fixed = Some(dt);
 }
 
 /// Starts the clock, writing each frame to `trace` (`--trace <csv>`) when given.

@@ -25,6 +25,17 @@ pub fn is_on(cx: &App) -> bool {
     cx.try_global::<Reduced>().is_some_and(|reduced| reduced.on)
 }
 
+/// Reduced motion on or off for a view test, without a watcher on the owner's setting.
+#[cfg(test)]
+pub fn set_for_test(on: bool, cx: &mut App) {
+    cx.set_global(Reduced {
+        on,
+        forced: on,
+        _watcher: None,
+    });
+    cx.set_reduce_motion(on);
+}
+
 /// Reads Animation effects and follows it from now on; `forced` (`--force-reduced`) keeps motion reduced.
 pub fn init(forced: bool, cx: &mut App) {
     start(animation::animations_on, forced, cx);

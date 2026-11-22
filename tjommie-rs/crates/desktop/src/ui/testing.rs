@@ -34,6 +34,7 @@ pub fn app(
             ..ShellData::default()
         });
         cx.navigate(route);
+        crate::motion::clock::fixed_step(1. / 60., cx);
         crate::ui::store::fake(cx, state, rpc)
     });
     let (_, cx) = cx.add_window_view(|window, cx| {
