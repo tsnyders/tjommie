@@ -517,10 +517,11 @@ async fn snaps(options: &Options, window: AnyWindowHandle, cx: &mut AsyncApp) ->
     let by_key = options.name == "motion-keyboard";
     let mut passed = true;
     // The flight.
-    let began = qpc();
     if by_key {
         act(window, cx, |window, cx| {
-            crate::ui::primitives::focus_by_id("sidebar.recent.ledger", window, cx);
+            if !crate::ui::primitives::focus_by_id("sidebar.recent.ledger", window, cx) {
+                return Err("Ledger's Recents row took no focus".to_owned());
+            }
             crate::test_driver::press_key("enter", window, cx)
         })??;
     } else {
@@ -535,15 +536,18 @@ async fn snaps(options: &Options, window: AnyWindowHandle, cx: &mut AsyncApp) ->
         json!({ "scenario": options.name, "motion": "flight", "pass": opened && !flying, "state_changed": opened,
                 "moving": flying }),
     );
-    // The toast.
+    // The toast: raised, drawn and at rest before it is closed.
+    let raised = qpc();
     cx.update(|cx| {
         cx.set_global(Notices(vec![Notice::SomethingWentWrong]));
         cx.refresh_windows();
     });
-    until_rest(began, cx, 4000).await?;
+    until_rest(raised, cx, 4000).await?;
     if by_key {
         act(window, cx, |window, cx| {
-            crate::ui::primitives::focus_by_id("toast.close.0", window, cx);
+            if !crate::ui::primitives::focus_by_id("toast.close.0", window, cx) {
+                return Err("the toast's Close took no focus".to_owned());
+            }
             crate::test_driver::press_key("enter", window, cx)
         })??;
     } else {

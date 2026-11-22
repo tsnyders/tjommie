@@ -42,7 +42,8 @@ function Wait-Quiet {
     while ($true) {
         $mean = ((Get-Counter $counter -SampleInterval 1 -MaxSamples 5).CounterSamples.CookedValue | Measure-Object -Average).Average
         if ($mean -le $MaxLoad) { return [math]::Round($mean, 1) }
-        if ((Get-Date) -gt $deadline) { throw "CPU never fell to $MaxLoad% within $QuietTimeout s" }
+        # The checks judge state, not frame times: a busy PC slows them but can't fail them, so they run anyway.
+        if ((Get-Date) -gt $deadline) { Write-Warning ('CPU never fell to {0}% within {1} s; running at {2:N0}%' -f $MaxLoad, $QuietTimeout, $mean); return [math]::Round($mean, 1) }
         Write-Host ('waiting for a quiet machine: CPU {0:N0}% > {1}%' -f $mean, $MaxLoad)
     }
 }
