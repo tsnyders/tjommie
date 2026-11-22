@@ -128,7 +128,7 @@ pub fn header(bot: &Bot, actions: &HeaderActions, window: &mut Window, cx: &mut 
     } else {
         ("pause", format!("Pause {}", bot.name))
     };
-    let pause_action: Rc<dyn Fn(&mut Window, &mut App)> = {
+    let pause_action: Handler = {
         let (problem, id, paused) = (problem.clone(), id.clone(), bot.paused);
         Rc::new(move |_, cx| {
             let call = store::request::<method::BotsPause>(
@@ -141,7 +141,7 @@ pub fn header(bot: &Bot, actions: &HeaderActions, window: &mut Window, cx: &mut 
             run(&problem, call, cx);
         })
     };
-    let settings_action: Rc<dyn Fn(&mut Window, &mut App)> = {
+    let settings_action: Handler = {
         let id = id.clone();
         Rc::new(move |_, cx| cx.navigate(Route::BotSettings(id.clone())))
     };
