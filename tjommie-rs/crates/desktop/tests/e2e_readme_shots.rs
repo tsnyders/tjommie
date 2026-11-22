@@ -683,9 +683,24 @@ fn e2e_readme_shots() {
                 "Print order dates as 3 Nov 2026 everywhere, not 11/3/26.",
             ),
         ] {
-            activate(app, "projects.new_task");
-            app.wait("task_form.title", Predicate::Exists, 10_000)
-                .unwrap();
+            // From the team's screen: a saved task's detail is up after the first, so the team comes back first, and an Enter
+            // that goes unheard (a runner showed one) is made again.
+            let mut opened = false;
+            for _ in 0..4 {
+                if app.snapshot().unwrap().node("projects.detail").is_some() {
+                    activate(app, &team);
+                    sleep(Duration::from_millis(500));
+                }
+                activate(app, "projects.new_task");
+                if app
+                    .wait("task_form.title", Predicate::Exists, 6_000)
+                    .is_ok()
+                {
+                    opened = true;
+                    break;
+                }
+            }
+            assert!(opened, "the New task dialog never opened");
             common::tab_to(app, "task_form.title");
             app.text(title).unwrap();
             common::tab_to(app, "task_form.instructions");
