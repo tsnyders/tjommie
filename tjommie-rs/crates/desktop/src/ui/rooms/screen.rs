@@ -161,7 +161,7 @@ impl Render for RoomScreen {
             cx,
         );
         let context = MessageContext {
-            bots: Rc::new(state.bots.clone()),
+            state: state.clone(),
             conversation_id: room.id.clone().into(),
             open_exchange: exchange::open_id(cx),
             on_open_exchange: {
@@ -397,7 +397,7 @@ impl RoomScreen {
                             .child(label)
                             .into_any_element(),
                         TimelineItem::Message { message, .. } => {
-                            post::post(message, &context.bots, members, context, &now, window, cx)
+                            post::post(message, context.bots(), members, context, &now, window, cx)
                         }
                     });
                 }

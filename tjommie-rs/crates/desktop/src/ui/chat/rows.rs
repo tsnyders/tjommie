@@ -302,7 +302,7 @@ fn exchange_card(
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
-    let bots = &context.bots;
+    let bots = context.bots();
     let selected = context
         .open_exchange
         .as_ref()

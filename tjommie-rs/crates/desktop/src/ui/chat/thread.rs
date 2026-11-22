@@ -227,14 +227,15 @@ impl Thread {
                     Some(Row::Message {
                         index, starts_turn, ..
                     }) => {
-                        let message = store::state(cx)
+                        // The state's pointer, so the row borrows its message (M4 review A8).
+                        let state = store::snapshot(cx);
+                        let message = state
                             .conversations
                             .get(conversation.as_ref())
-                            .and_then(|conversation| conversation.messages.get(*index))
-                            .cloned();
+                            .and_then(|conversation| conversation.messages.get(*index));
                         match message {
                             Some(message) => {
-                                message_view::row(&message, *starts_turn, &context, window, cx)
+                                message_view::row(message, *starts_turn, &context, window, cx)
                             }
                             None => div().into_any_element(),
                         }

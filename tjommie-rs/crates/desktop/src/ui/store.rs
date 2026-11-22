@@ -58,6 +58,12 @@ pub fn snapshot(cx: &App) -> Arc<AppState> {
         .map_or_else(|| Arc::clone(&EMPTY), |store| Arc::clone(&store.state))
 }
 
+/// The state's version: it moves with every change, so a screen can keep what it worked out from the state until it does
+/// (M4 review A8).
+pub fn version(cx: &App) -> u64 {
+    cx.try_global::<Store>().map_or(0, |store| store.version)
+}
+
 /// `update(change)`: `change` edits the state and says whether it changed it; the windows redraw when it did. With
 /// the live connection the change is the connection's, and the copy here follows at once.
 pub fn update(cx: &mut App, change: impl FnOnce(&mut AppState) -> bool) {
@@ -74,7 +80,13 @@ pub fn update(cx: &mut App, change: impl FnOnce(&mut AppState) -> bool) {
             }
             changed
         }
-        _ => change(Arc::make_mut(&mut store.state)),
+        _ => {
+            let changed = change(Arc::make_mut(&mut store.state));
+            if changed {
+                store.version += 1;
+            }
+            changed
+        }
     };
     if changed {
         cx.refresh_windows();

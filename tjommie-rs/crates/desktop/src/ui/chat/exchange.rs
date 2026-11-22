@@ -12,7 +12,7 @@ use gpui::{
 };
 use gpui_kit::base::input::{InputEditorStyle, InputEvent, Textarea, TextareaState};
 use jiff::Zoned;
-use protocol::model::{Bot, Exchange, TEAM_ROOM_ID};
+use protocol::model::{Bot, Exchange, Message, TEAM_ROOM_ID};
 use protocol::wire::{Id, RoomPost, method};
 
 use super::message_view::{self, MessageContext, shown};
@@ -103,6 +103,8 @@ pub struct ExchangeView {
     problem: Option<SharedString>,
     /// What the header was last read for: the exchange's progress and how the hand-off row stands.
     read_for: Option<String>,
+    /// The store version `read_for` was worked out at.
+    read_at: Option<u64>,
     asked: bool,
     scroll: ScrollHandle,
     reply: Entity<TextareaState>,
@@ -148,6 +150,7 @@ impl ExchangeView {
             exchange: None,
             problem: None,
             read_for: None,
+            read_at: None,
             asked: false,
             scroll: ScrollHandle::new(),
             reply,
@@ -234,6 +237,12 @@ impl ExchangeView {
     /// Reads the exchange again when its messages move on, or the hand-off row in the conversation it was opened from
     /// changes: the exchange is answered or fails at the end of the asked agent's turn, after its last message.
     fn read(&mut self, cx: &mut Context<Self>) {
+        // The progress decodes the opener's page: worked out again only when the state moved (M4 review A8).
+        let version = store::version(cx);
+        if self.read_at == Some(version) {
+            return;
+        }
+        self.read_at = Some(version);
         let state = store::state(cx);
         let messages = state
             .conversations
@@ -302,26 +311,22 @@ impl Render for ExchangeView {
         }
         self.read(cx);
 
-        let state = store::state(cx);
-        let bots = std::rc::Rc::new(state.bots.clone());
+        // The state's pointer: the rows borrow their messages (M4 review A8).
+        let state = store::snapshot(cx);
+        let bots = &state.bots;
         let conversation = state.conversations.get(self.id.as_ref());
         let failed = conversation
             .is_some_and(|conversation| conversation.status == ConversationStatus::Failed);
-        let messages: Vec<_> = conversation
+        let all = conversation
             .filter(|conversation| conversation.status == ConversationStatus::Ready)
-            .map(|conversation| {
-                conversation
-                    .messages
-                    .iter()
-                    .filter(|message| shown(message))
-                    .cloned()
-                    .collect()
-            })
+            .map(|conversation| conversation.messages.as_slice())
             .unwrap_or_default();
+        let messages: Vec<&Message> = all.iter().filter(|message| shown(message)).collect();
+        // It counts the files, which are always shown.
         let caption = self
             .exchange
             .as_ref()
-            .and_then(|exchange| exchange_caption(exchange, &messages, &bots));
+            .and_then(|exchange| exchange_caption(exchange, all, bots));
         let from = self.exchange.as_ref().and_then(|exchange| {
             bots.iter()
                 .find(|bot| bot.id == exchange.from_bot_id)
@@ -348,7 +353,7 @@ impl Render for ExchangeView {
         let agents = self.agents(cx);
 
         let context = MessageContext {
-            bots: bots.clone(),
+            state: state.clone(),
             conversation_id: self.id.clone(),
             open_exchange: None,
             on_open_exchange: std::rc::Rc::new(|_, _, _| {}),

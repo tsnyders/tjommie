@@ -2,6 +2,7 @@
 //! who and when, once per turn. A payload that doesn't match its kind shows as a notice with the message's text.
 
 use std::rc::Rc;
+use std::sync::Arc;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
@@ -14,6 +15,7 @@ use protocol::model::{
 
 use super::{approval, bubbles, notices, rows};
 use crate::model::format::clock;
+use crate::model::state::AppState;
 use crate::model::labels::DELETED_BOT;
 use crate::ui::files::card::FileFacts;
 use crate::ui::primitives::avatar::{BotAvatar, Pose};
@@ -22,13 +24,21 @@ use crate::ui::style::{TypeExt as _, hsla, palette, r, theme};
 /// Opens an exchange beside the chat.
 pub type OpenExchange = Rc<dyn Fn(SharedString, &mut Window, &mut App)>;
 
-/// What a message's view needs besides the message: the bots, the chat it's in, and the exchange open beside it.
+/// What a message's view needs besides the message: the state it was drawn from (a pointer to the store's, not a copy:
+/// M4 review A8), the chat it's in, and the exchange open beside it.
 #[derive(Clone)]
 pub struct MessageContext {
-    pub bots: Rc<Vec<Bot>>,
+    pub state: Arc<AppState>,
     pub conversation_id: SharedString,
     pub open_exchange: Option<SharedString>,
     pub on_open_exchange: OpenExchange,
+}
+
+impl MessageContext {
+    /// The agents, as the state has them.
+    pub fn bots(&self) -> &[Bot] {
+        &self.state.bots
+    }
 }
 
 /// A bot reply that ended blank shows nothing; a list drops these before its timeline, so they leave no time label and
@@ -108,7 +118,7 @@ fn meta(message: &Message, context: &MessageContext, cx: &App) -> AnyElement {
             .child(time)
             .into_any_element();
     }
-    let bot = context.bots.iter().find(|bot| bot.id == message.author);
+    let bot = context.bots().iter().find(|bot| bot.id == message.author);
     let avatar = match bot {
         Some(bot) => BotAvatar::new(bot.color, bot.shape, theme.size.avatar20)
             .pose(Pose::of(bot.state))
@@ -152,7 +162,7 @@ fn view(
         MessageData::Activity(activity) => rows::tools(&message.id, &activity.items, window, cx),
         MessageData::Approval(card) => {
             let bot = context
-                .bots
+                .bots()
                 .iter()
                 .find(|bot| bot.id == message.author)
                 .cloned();

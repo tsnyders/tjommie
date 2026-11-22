@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui::{
     App, ImageCacheError, ImageSource, SharedString, StyleRefinement, Styled as _, Window, px,
@@ -497,25 +497,53 @@ fn blocked() -> ImageSource {
     }))
 }
 
-/// The rewritten text of one reply, kept while it is drawn so a frame doesn't parse it again.
+/// While a reply streams, its rewrite runs at most this often (M4 review B-N6): each rewrite reads the whole reply, so one
+/// per streamed delta grows with the square of its length. The newest words wait at most this long; the stream's own
+/// fade shows them in anyway.
+const STREAM_REWRITE: Duration = Duration::from_millis(100);
+
+/// The rewritten text of one reply, kept while it is drawn so a frame doesn't parse it again, and when it was made.
 struct Memo {
     source: SharedString,
     safe: SharedString,
+    at: Option<Instant>,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many rewrites this thread's replies have had (tests run side by side, each on its own thread).
+    static REWRITES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// A bot reply's Markdown, as Aegis draws prose: body type, ink links underlined, code on a raised white slip, inline
-/// code on stone.
-pub fn reply(id: &str, text: &SharedString, window: &mut Window, cx: &mut App) -> TextView {
+/// code on stone. A reply still `streaming` is rewritten at most every `STREAM_REWRITE`; a finished one at once.
+pub fn reply(id: &str, text: &str, streaming: bool, window: &mut Window, cx: &mut App) -> TextView {
     let memo = window.use_keyed_state(SharedString::from(format!("{id}.md")), cx, |_, _| Memo {
         source: SharedString::default(),
         safe: SharedString::default(),
+        at: None,
     });
-    if memo.read(cx).source != *text {
+    let (stale, waited) = {
+        let memo = memo.read(cx);
+        (
+            memo.source.as_ref() != text,
+            memo.at.map(|at| at.elapsed()),
+        )
+    };
+    let due = !streaming || waited.is_none_or(|waited| waited >= STREAM_REWRITE);
+    if stale && due {
         let safe = SharedString::from(sanitize(text));
+        #[cfg(test)]
+        REWRITES.with(|rewrites| rewrites.set(rewrites.get() + 1));
         memo.update(cx, |memo, _| {
-            memo.source = text.clone();
+            memo.source = SharedString::from(text.to_owned());
             memo.safe = safe;
+            memo.at = Some(Instant::now());
         });
+    } else if stale {
+        // The newest words show at the next rewrite, even if no other delta comes first.
+        let left = STREAM_REWRITE.saturating_sub(waited.unwrap_or_default());
+        crate::motion::clock::wake_in(left, window, cx);
     }
     let safe = memo.read(cx).safe.clone();
     document(SharedString::from(id.to_owned()), safe, cx)
@@ -580,6 +608,31 @@ pub fn styled(view: TextView, cx: &App) -> TextView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// M4 review B-N6: a streaming reply is rewritten at most every 100 ms, not on each delta; a finished one at once.
+    #[gpui::test]
+    fn a_streaming_reply_is_rewritten_at_most_every_100_ms(cx: &mut gpui::TestAppContext) {
+        use gpui::IntoElement as _;
+        use std::cell::{Cell, RefCell};
+        use std::rc::Rc;
+        let text = Rc::new(RefCell::new(String::from("Hello")));
+        let streaming = Rc::new(Cell::new(true));
+        let (shown, live) = (text.clone(), streaming.clone());
+        let cx = crate::ui::primitives::test_window(cx, move |window, cx| {
+            reply("test.md", &shown.borrow(), live.get(), window, cx).into_any_element()
+        });
+        let count = || REWRITES.with(Cell::get);
+        let before = count();
+        for n in 0..20 {
+            text.borrow_mut().push_str(&format!(" word{n}"));
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+        }
+        let during = count() - before;
+        assert!(during <= 3, "20 deltas in a few ms: {during} rewrites");
+        streaming.set(false);
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert_eq!(count() - before, during + 1, "finished: rewritten at once");
+    }
 
     /// What a reader sees after the rewrite: text, and links with their text and address.
     #[derive(Debug, Clone, PartialEq)]
