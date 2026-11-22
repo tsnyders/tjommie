@@ -122,10 +122,15 @@ describe("the T8.4 jobs", () => {
     // The desktop app is the e2e identity with the test driver; the daemon is the fixtures build, beside it after packaging.
     expect(build).toContain("$env:TJOMMIE_IDENTITY = 'e2e'");
     expect(build).toContain("cargo build --release --locked -p desktop --features desktop/test-driver");
-    expect(build).toContain("cargo build --release --locked -p daemon --bin tjommie-daemon --features provider-fixtures");
+    // Run 3: the daemon's provider-fixtures feature refuses a release build (a compile_error in its lib.rs), so the fixtures daemon is the dev profile's,
+    // built as ci.yml builds it, and the package takes it from target\debug. The desktop app is the release one.
+    expect(build).toContain("cargo build --locked -p daemon --bin tjommie-daemon --features provider-fixtures");
+    expect(build).not.toMatch(/--release[^\n]*-p daemon|-p daemon[^\n]*--release/);
     expect(build.indexOf("$env:TJOMMIE_IDENTITY = 'e2e'")).toBeLessThan(build.indexOf("-p desktop --features desktop/test-driver"));
     const packageStep = steps("e2e").find((step) => /Package the e2e build/.test(step.name ?? ""))?.run ?? "";
-    expect(packageStep).toContain("Copy-Item tjommie-rs\\target\\release\\tjommie-desktop.exe, tjommie-rs\\target\\release\\tjommie-daemon.exe -Destination $package");
+    expect(packageStep).toContain("Copy-Item tjommie-rs\\target\\release\\tjommie-desktop.exe -Destination $package");
+    expect(packageStep).toContain("Copy-Item tjommie-rs\\target\\debug\\tjommie-daemon.exe -Destination $package");
+    expect(readFileSync(join(repo, "tjommie-rs", "crates", "daemon", "src", "lib.rs"), "utf8")).toMatch(/provider-fixtures feature must not be built without debug assertions/);
     // The package is checked before it is tested, and the tests run with the variable set to its absolute path.
     expect(index("e2e", /check-e2e-package\.ps1/)).toBeGreaterThan(index("e2e", /Package the e2e build/));
     expect(index("e2e", /check-e2e-package\.ps1/)).toBeLessThan(index("e2e", /cargo test/));

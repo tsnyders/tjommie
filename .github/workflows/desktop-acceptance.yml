@@ -405,7 +405,9 @@ jobs:
           $dll = ./tjommie-rs/tools/fetch-pdfium.ps1 -Destination (Join-Path $env:RUNNER_TEMP 'pdfium\pdfium.dll')
           "TJOMMIE_PDFIUM_DLL=$dll" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       # The e2e identity with the test driver (never production). The daemon is built as ci.yml builds it for the e2e tests: with the
-      # provider-fixtures feature, which replays recorded turns in place of a real provider, and under the default identity.
+      # provider-fixtures feature, which replays recorded turns in place of a real provider, and under the default identity. That feature refuses a
+      # RELEASE build (a compile_error in the daemon's lib.rs: a build without debug assertions), so the fixtures daemon is the dev profile's, and
+      # lands in target\debug, while the desktop app is the release one.
       - name: Build the e2e desktop app (with the test driver) and the fixtures daemon
         working-directory: tjommie-rs
         run: |
@@ -413,14 +415,15 @@ jobs:
           cargo build --release --locked -p desktop --features desktop/test-driver
           if ($LASTEXITCODE -ne 0) { throw 'The e2e desktop build failed.' }
           Remove-Item Env:\TJOMMIE_IDENTITY
-          cargo build --release --locked -p daemon --bin tjommie-daemon --features provider-fixtures
+          cargo build --locked -p daemon --bin tjommie-daemon --features provider-fixtures
           if ($LASTEXITCODE -ne 0) { throw 'The fixtures daemon build failed.' }
       # The package: the two files side by side in a folder of their own, by absolute path.
       - name: Package the e2e build
         run: |
           $package = Join-Path $env:RUNNER_TEMP 'e2e-package'
           New-Item -ItemType Directory -Force -Path $package | Out-Null
-          Copy-Item tjommie-rs\target\release\tjommie-desktop.exe, tjommie-rs\target\release\tjommie-daemon.exe -Destination $package
+          Copy-Item tjommie-rs\target\release\tjommie-desktop.exe -Destination $package
+          Copy-Item tjommie-rs\target\debug\tjommie-daemon.exe -Destination $package
       - name: The package has the test driver, no update feed, and the fixtures daemon beside it
         run: ./installer/check-e2e-package.ps1 -Desktop "$env:RUNNER_TEMP\e2e-package\tjommie-desktop.exe" -Daemon "$env:RUNNER_TEMP\e2e-package\tjommie-daemon.exe"
       # --no-fail-fast: one run shows every failing test binary, not only the first one cargo stops at. The tests are compiled here, on the
