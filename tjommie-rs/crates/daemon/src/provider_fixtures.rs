@@ -109,6 +109,19 @@
 //!   whose keys are the tool's own; the browser proxy checks them, not this file. The desktop answers the call, so a run
 //!   that uses this event needs the desktop with its host token. An agent whose browser is off has no `browser` server,
 //!   and the event fails the turn with a message saying so.
+//! * `mcp`: the agent calls one of Tjommie's own tools over its own `tjommie` MCP server, as the Claude CLI would:
+//!   `{ "type": "mcp", "id": "m1", "tool": "message_bot", "arguments": { "bot": "Scout", "message": "Is the build green?" } }`.
+//!   `tool` is one of `request_login`, `list_bots`, `message_bot`, `share_file` and `add_routine` ([`TJOMMIE_TOOLS`]);
+//!   `arguments` is an optional object whose keys are the tool's own, and the tool checks them, not this file. It plays a
+//!   `tool` line worded as a real session's is (`Messaged Scout`, `Shared summary.md`), then makes the call: a JSON-RPC
+//!   `tools/call` to the session's `tjommie` server with the session's bearer token, waiting up to 60 s for the answer.
+//!   Then it plays `tool_done`, with `ok` true when the call came back without `isError` and without a transport error.
+//!   The call runs as the agent, so it needs the daemon's real `/mcp` route (a normal fixtures daemon has it), and an agent
+//!   made through the daemon. `message_bot` needs the sender's **Can message** list to name the other agent, and the
+//!   answer comes back later as a new message to the sender, so the sender's file has a turn waiting for it (put that
+//!   turn's `expect` on the other agent's reply). `share_file` reads a path inside the agent's own folders: a relative
+//!   path is relative to the agent's working folder, and the file must exist when the event plays. A session with no
+//!   `tjommie` server (a unit test builds one without) fails the turn with a message saying so.
 //! * `approval`: the agent asks permission, which puts an approval card in the chat, and **waits** for the person's
 //!   answer (the turn stays open, even forever, until it is answered, the turn is stopped or the agent is closed).
 //!   The matching branch of `then` is then played, and the turn goes on after the approval.
@@ -193,6 +206,7 @@ use crate::project_review::ReviewContext;
 use crate::project_review_runtime::{
     ProjectReviewOptions, ReviewAccountResolver, ReviewAccountSelection,
 };
+use crate::providers::activity_labels::activity_label;
 use crate::providers::codex_rpc::{CodexServer, JsonRpcLines};
 use crate::providers::{
     Approval, ApprovalAnswer, Limit, LimitState, LimitWindow, McpServer, ProviderError,
@@ -226,8 +240,19 @@ const REFUSED: &str = "this daemon is running provider fixtures and starts no pr
 const NO_NETWORK: &str = "Provider fixtures: the network is not used.";
 const NO_BROWSER: &str =
     "Provider fixtures: this agent's browser is off, so the browser event has no tool to call.";
-/// How long a `browser` event waits for the browser proxy's answer.
-const BROWSER_CALL_TIMEOUT: Duration = Duration::from_secs(60);
+const NO_TJOMMIE: &str =
+    "Provider fixtures: this session has no tjommie server, so the mcp event has no tool to call.";
+/// How long a `browser` or `mcp` event waits for the server's answer.
+const MCP_CALL_TIMEOUT: Duration = Duration::from_secs(60);
+/// The tools on the session's `tjommie` MCP server (`Team::tools` in `team/tools.rs`), the ones an `mcp` event may call.
+/// A test in `tests/provider_fixtures_mcp.rs` keeps this list equal to the server's `tools/list`.
+pub const TJOMMIE_TOOLS: [&str; 5] = [
+    "request_login",
+    "list_bots",
+    "message_bot",
+    "share_file",
+    "add_routine",
+];
 
 /// What setup and the account checks see in place of a provider CLI.
 const FIXTURE_EMAIL: &str = "fixtures@example.com";
@@ -340,6 +365,12 @@ enum Event {
         #[serde(default)]
         arguments: Map<String, Value>,
     },
+    Mcp {
+        id: String,
+        tool: String,
+        #[serde(default)]
+        arguments: Map<String, Value>,
+    },
     Approval {
         id: String,
         tool: String,
@@ -430,7 +461,10 @@ impl Event {
                         .collect()
                 }),
             }),
-            Event::Approval { .. } | Event::Error { .. } | Event::Browser { .. } => return None,
+            Event::Approval { .. }
+            | Event::Error { .. }
+            | Event::Browser { .. }
+            | Event::Mcp { .. } => return None,
         })
     }
 }
@@ -476,6 +510,12 @@ fn validate_events(events: &[Event]) -> Result<(), String> {
                 return Err(
                     "browser names a tool that is not one of the native browser tools.".into(),
                 );
+            }
+            Event::Mcp { tool, .. } if !TJOMMIE_TOOLS.contains(&tool.as_str()) => {
+                return Err(format!(
+                    "mcp names a tool that is not one of Tjommie's own tools ({}).",
+                    TJOMMIE_TOOLS.join(", ")
+                ));
             }
             _ => {}
         }
@@ -759,9 +799,9 @@ struct State {
     pending: HashMap<String, oneshot::Sender<ApprovalAnswer>>,
 }
 
-/// The agent's `browser` MCP server, when its browser is on: where a `browser` event sends its call. Its headers hold the
-/// session's bearer token, so nothing here is ever logged or printed.
-struct BrowserServer {
+/// One of the session's own MCP servers: where a `browser` or an `mcp` event sends its call. Its headers hold the session's
+/// bearer token, so nothing here is ever logged or printed.
+struct McpEndpoint {
     url: String,
     headers: BTreeMap<String, String>,
 }
@@ -770,7 +810,10 @@ struct Inner {
     fixtures: Fixtures,
     agent: String,
     resume_id: Option<String>,
-    browser: Option<BrowserServer>,
+    /// The `browser` server, when the agent's browser is on.
+    browser: Option<McpEndpoint>,
+    /// The `tjommie` server, which the runner gives every session.
+    tjommie: Option<McpEndpoint>,
     subscribers: Subscribers,
     state: Mutex<State>,
     closed: AtomicBool,
@@ -782,24 +825,32 @@ struct Inner {
 pub struct FixtureSession(Arc<Inner>);
 
 impl FixtureSession {
-    /// `mcp_servers` are the session's own, as the runner built them. Only its `browser` server matters here.
+    /// `mcp_servers` are the session's own, as the runner built them. Only its `browser` and `tjommie` servers matter here.
     pub fn new(
         fixtures: Fixtures,
         agent: String,
         resume_id: Option<String>,
         mcp_servers: Vec<McpServer>,
     ) -> Self {
-        let browser = mcp_servers.into_iter().find_map(|server| match server {
-            McpServer::Http {
+        let (mut browser, mut tjommie) = (None, None);
+        for server in mcp_servers {
+            if let McpServer::Http {
                 name, url, headers, ..
-            } if name == "browser" => Some(BrowserServer { url, headers }),
-            _ => None,
-        });
+            } = server
+            {
+                match name.as_str() {
+                    "browser" => browser = Some(McpEndpoint { url, headers }),
+                    "tjommie" => tjommie = Some(McpEndpoint { url, headers }),
+                    _ => {}
+                }
+            }
+        }
         FixtureSession(Arc::new(Inner {
             fixtures,
             agent,
             resume_id,
             browser,
+            tjommie,
             subscribers: Subscribers::default(),
             state: Mutex::new(State {
                 started: false,
@@ -928,9 +979,9 @@ async fn play_turns(session: Weak<Inner>, mut turns: mpsc::UnboundedReceiver<Pla
     }
 }
 
-/// One `tools/call` to the agent's browser server, waiting for its answer. True when the call came back without `isError`
-/// and without a transport error. The URL and headers carry the session's token, so nothing here is logged.
-async fn call_browser_tool(server: &BrowserServer, tool: &str, arguments: Value) -> bool {
+/// One `tools/call` to one of the session's MCP servers, waiting for its answer. True when the call came back without
+/// `isError` and without a transport error. The URL and headers carry the session's token, so nothing here is logged.
+async fn call_mcp_tool(server: &McpEndpoint, tool: &str, arguments: Value) -> bool {
     let call = json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -946,7 +997,7 @@ async fn call_browser_tool(server: &BrowserServer, tool: &str, arguments: Value)
     };
     let mut request = client
         .post(&server.url)
-        .timeout(BROWSER_CALL_TIMEOUT)
+        .timeout(MCP_CALL_TIMEOUT)
         .header("content-type", "application/json")
         .body(call.to_string());
     for (name, value) in &server.headers {
@@ -1086,7 +1137,30 @@ impl Inner {
                         name: "Using the browser".into(),
                         summary: tool.clone(),
                     });
-                    let ok = call_browser_tool(server, &tool, Value::Object(arguments)).await;
+                    let ok = call_mcp_tool(server, &tool, Value::Object(arguments)).await;
+                    self.emit(ProviderEvent::ToolDone { id, ok });
+                }
+                Event::Mcp {
+                    id,
+                    tool,
+                    arguments,
+                } => {
+                    let Some(server) = &self.tjommie else {
+                        return TurnResult {
+                            ok: false,
+                            error: Some(NO_TJOMMIE.into()),
+                        };
+                    };
+                    // Worded as a real session's line is: the label is both the name and the summary.
+                    let label = activity_label(&format!("mcp__tjommie__{tool}"), &arguments, None)
+                        .filter(|label| !label.is_empty())
+                        .unwrap_or_else(|| tool.replace('_', " "));
+                    self.emit(ProviderEvent::Tool {
+                        id: id.clone(),
+                        name: label.clone(),
+                        summary: label,
+                    });
+                    let ok = call_mcp_tool(server, &tool, Value::Object(arguments)).await;
                     self.emit(ProviderEvent::ToolDone { id, ok });
                 }
                 other => {
