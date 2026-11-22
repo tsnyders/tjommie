@@ -168,6 +168,73 @@ pub fn make_agent(app: &mut Client, name: &str, browser: bool) {
     app.wait("screen.chat", Predicate::Exists, 30_000).unwrap();
 }
 
+/// Keeps a picture of the app's window as a PNG: the window of the process started from this test's app, drawn by itself
+/// (PrintWindow with PW_RENDERFULLCONTENT, 2), so a window over it never shows in the picture. It is cut to the window's
+/// visible frame (DWMWA_EXTENDED_FRAME_BOUNDS), so the invisible resize border Windows adds to a window's rectangle is not in
+/// it: a 1000 by 700 window is a 1000 by 700 picture at 100% scale, a hosted runner's. A blank picture fails: a 40 by 40
+/// grid of its pixels must hold at least four colours, as any drawn screen does (the sidebar, the page, a card and text).
+/// Nothing but the app's own window is ever drawn, so nothing else on the desktop can get into a picture.
+pub fn picture(out: &Path) {
+    let exe = env!("CARGO_BIN_EXE_tjommie-desktop")
+        .replace('/', "\\")
+        .replace('\'', "''");
+    let out = out.display().to_string().replace('\'', "''");
+    let script = format!(
+        r#"
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Drawing
+Add-Type @'
+using System; using System.Runtime.InteropServices;
+public static class Win {{
+  [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr window, out Rect rect);
+  [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr window, IntPtr dc, uint flags);
+  [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr window, int attribute, out Rect rect, int size);
+  public struct Rect {{ public int Left, Top, Right, Bottom; }}
+}}
+'@
+[Win]::SetProcessDPIAware() | Out-Null
+$app = Get-CimInstance Win32_Process -Filter "Name='tjommie-desktop.exe'" |
+  Where-Object {{ $_.ExecutablePath -eq '{exe}' }} | Sort-Object CreationDate -Descending | Select-Object -First 1
+$window = (Get-Process -Id $app.ProcessId).MainWindowHandle
+$rect = New-Object Win+Rect
+[Win]::GetWindowRect($window, [ref]$rect) | Out-Null
+$frame = New-Object Win+Rect
+if ([Win]::DwmGetWindowAttribute($window, 9, [ref]$frame, 16) -ne 0) {{ $frame = $rect }}
+$bitmap = New-Object System.Drawing.Bitmap ($rect.Right - $rect.Left), ($rect.Bottom - $rect.Top)
+$graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+$dc = $graphics.GetHdc()
+$drawn = [Win]::PrintWindow($window, $dc, 2)
+$graphics.ReleaseHdc($dc)
+if (-not $drawn) {{ throw 'PrintWindow drew nothing' }}
+$cut = New-Object System.Drawing.Rectangle ($frame.Left - $rect.Left), ($frame.Top - $rect.Top), ($frame.Right - $frame.Left), ($frame.Bottom - $frame.Top)
+$shown = $bitmap.Clone($cut, $bitmap.PixelFormat)
+$seen = @{{}}
+$stepY = [Math]::Max(1, [int]($shown.Height / 40))
+$stepX = [Math]::Max(1, [int]($shown.Width / 40))
+for ($y = 0; $y -lt $shown.Height; $y += $stepY) {{
+  for ($x = 0; $x -lt $shown.Width; $x += $stepX) {{ $seen[$shown.GetPixel($x, $y).ToArgb()] = $true }}
+}}
+if ($seen.Count -lt 4) {{ throw "The picture is blank: $($seen.Count) colours" }}
+$shown.Save('{out}', [System.Drawing.Imaging.ImageFormat]::Png)
+"$($shown.Width)x$($shown.Height)"
+"#
+    );
+    let output = desktop_host::spawn::command("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "no picture of the window, or a blank one, for {out}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    println!(
+        "picture {out}: {}",
+        String::from_utf8_lossy(&output.stdout).trim()
+    );
+}
+
 /// The id of the Recents entry named `name`.
 pub fn recent(app: &mut Client, name: &str) -> String {
     let started = Instant::now();

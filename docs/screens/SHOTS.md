@@ -15,7 +15,7 @@ The README uses the pictures listed here, under `docs/screens/`. None of them ex
 
 ### The capture job
 
-A manually started workflow does all the capturing. This section is its specification. The workflow file itself (`.github/workflows/readme-shots.yml`) is a separate piece of work.
+A manually started workflow does all the capturing. This section is its specification, and the workflow file is `.github/workflows/readme-shots.yml`.
 
 - **Trigger:** `workflow_dispatch` only. It never runs on a push, a pull request or a tag. Start it with `gh workflow run readme-shots.yml --ref <branch>`.
 - **Permissions:** `contents: read`. It uses no secrets, and it never pushes, commits or comments.
@@ -26,7 +26,7 @@ A manually started workflow does all the capturing. This section is its specific
   3. Check that neither `claude` nor `codex` is on PATH, and fail if one is. The "tools not installed" picture depends on it.
   4. Build the **normal** daemon (`cargo build -p daemon --bin tjommie-daemon --locked`) and copy it to a folder of its own, for example `target\readme-shots\plain\tjommie-daemon.exe`.
   5. Build the **fixtures** daemon (`cargo build -p daemon --bin tjommie-daemon --features provider-fixtures --locked`). It writes `target\debug\tjommie-daemon.exe`, which is why step 4 copies the normal one away first.
-  6. Run the capture test with `TJOMMIE_IDENTITY=e2e`: `cargo test -p desktop --features test-driver --test e2e_readme_shots --locked`. It calls `app.resize(1000., 700.)` right after each launch and takes one picture per row in the tables below.
+  6. Run the capture test with `TJOMMIE_IDENTITY=e2e`: `cargo test -p desktop --features test-driver --test e2e_readme_shots --locked -- --ignored --nocapture`. The test is ignored in a normal run, because `ci.yml` runs every `e2e_*` test and this one takes pictures instead of checking anything. It calls `app.resize(1000., 700.)` right after each launch and takes one picture per row in the tables below.
   7. Upload `tjommie-rs/target/readme-shots/*.png` with `actions/upload-artifact`, named `readme-shots`, `if-no-files-found: error`, a short retention (7 days).
 - **After the run:** a person downloads the artifact (`gh run download`), checks every picture by eye (rule 6), copies the ones that pass into `docs/screens/`, and commits them in an ordinary commit.
 

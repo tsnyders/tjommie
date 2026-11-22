@@ -1,0 +1,76 @@
+name: README shots
+
+# Takes the pictures the README uses (docs/screens/SHOTS.md) on a GitHub hosted runner and uploads them as an artifact. A
+# runner's account name and machine name are generic, so the sidebar's initial and the host name can't give a person away;
+# that is why this job exists and why the pictures are never taken on a PC. It never pushes, commits or comments. A person
+# downloads the artifact (`gh run download <id> --name readme-shots`), looks at every picture, and commits the good ones
+# under docs/screens/.
+#
+#   gh workflow run readme-shots.yml --ref <branch>
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: readme-shots-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  shots:
+    runs-on: windows-latest
+    # A cold GPUI build (the same as ci.yml's rust job) plus about twenty pictures.
+    timeout-minutes: 90
+    defaults:
+      run:
+        # Inside tjommie-rs so rustup applies rust-toolchain.toml.
+        working-directory: tjommie-rs
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install
+      # The "tools not installed" picture is the first-run screen of a PC with neither Claude Code nor Codex, so a runner that
+      # has one fails here instead of giving a wrong picture.
+      - name: Claude Code and Codex are not installed
+        shell: pwsh
+        run: |
+          foreach ($tool in 'claude', 'codex') {
+            if (Get-Command $tool -ErrorAction SilentlyContinue) { throw "$tool is on PATH; the first-run picture needs a machine without it." }
+          }
+      # The normal daemon, built first and copied out of the way: the fixtures build below writes the same
+      # target\debug\tjommie-daemon.exe.
+      - name: Build the normal daemon and copy it away
+        shell: pwsh
+        run: |
+          cargo build -p daemon --bin tjommie-daemon --locked
+          if ($LASTEXITCODE -ne 0) { throw 'The normal daemon did not build.' }
+          New-Item -ItemType Directory -Force -Path target\readme-shots\plain | Out-Null
+          Copy-Item target\debug\tjommie-daemon.exe target\readme-shots\plain\tjommie-daemon.exe
+      # The fixtures daemon replays recorded conversations in place of a real Claude or Codex (a feature for tests only,
+      # refused for a release build). Every other picture is taken with it.
+      - name: Build the fixtures daemon
+        run: cargo build -p daemon --bin tjommie-daemon --features provider-fixtures --locked
+      # The PDF viewer finds the pinned pdfium.dll through TJOMMIE_PDFIUM_DLL (the same step as ci.yml).
+      - name: Fetch the pinned pdfium.dll
+        run: |
+          $dll = ./tools/fetch-pdfium.ps1 -Destination (Join-Path $env:RUNNER_TEMP 'pdfium\pdfium.dll')
+          "TJOMMIE_PDFIUM_DLL=$dll" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      # The test is ignored in a normal run (ci.yml's e2e step runs every e2e_* test and this one checks nothing), so it is
+      # asked for here. It sets the window to 1000 by 700 and keeps one PNG per row of docs/screens/SHOTS.md in
+      # target\readme-shots. The e2e identity has no update feed and a temporary data root.
+      - name: Take the pictures
+        run: cargo test -p desktop --features test-driver --test e2e_readme_shots --locked -- --ignored --nocapture
+        env:
+          TJOMMIE_IDENTITY: e2e
+          TJOMMIE_SHOTS_PLAIN_DAEMON: ${{ github.workspace }}\tjommie-rs\target\readme-shots\plain\tjommie-daemon.exe
+      # Whatever was taken is kept, also when a picture could not be (the test names it).
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: readme-shots
+          path: tjommie-rs/target/readme-shots/*.png
+          if-no-files-found: error
+          retention-days: 7
