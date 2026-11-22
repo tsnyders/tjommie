@@ -17,7 +17,9 @@ The rules every motion keeps (plan T2.3, T7.2):
 - **Interruption:** springs keep their velocity when retargeted (`motion::spring::Spring::set_target`), so a motion
   caught mid-flight turns and never jumps.
 - **Frames:** the motion clock (`motion::clock`) asks for frames only while something moves, at 30 fps in an inactive
-  window unless something live shows (`Live`), and logs each frame for the motion checks.
+  window unless something live shows (`Live`), and logs each frame for the motion checks. In a window not in front the
+  ambient motions stop (the owner's decision, M7 review M5): the eyes keep still and open and a spinner holds its angle,
+  asking for no frame; the redraw that comes when the window is in front again starts them.
 
 Checks named `scenario:` are the app's own motion checks (T7.2, `tjommie-desktop --scenario <name>` in a test-driver
 build; `tools/perf/run-motion-checks.ps1` runs them under PresentMon). The rest are unit or view tests in
@@ -47,6 +49,7 @@ pickers keep still poses.
 | glance at the composer while you type | `eyes.glanceHold` 1200 | `motion::eyes::glance` (the composer's text changes) | `eyes::typing_makes_the_agent_glance_down_at_the_composer` |
 | needs you: looks up; limited: drowsy; paused: rests | poses | `ui::primitives::avatar::{Pose, Gaze}`, `Eyes::gaze` (drowsy blinks 2.4× and 3× slower; paused never blinks) | `eyes::a_paused_agent_rests_its_eyes`, `avatar::tests` |
 | reduced motion: still poses | | `Eyes::gaze`, `Eyes::next_change` (no frames) | `eyes::reduced_motion_keeps_the_pose_still`, `a_living_avatar_asks_for_frames_only_while_its_eyes_move` |
+| not in front: still, open eyes and no frames (the owner's "stop when not in front") | | `eyes::living` (`reduced` or the window not active) | `eyes::an_inactive_window_asks_no_frame_of_the_eyes`, `connection::spinner_tests::an_inactive_window_holds_the_spinner` |
 
 The glance moves the eyes in one frame and holds them. Its ease on the snappy spring: 0.6.1: deferred by owner decision (2026-11-22).
 

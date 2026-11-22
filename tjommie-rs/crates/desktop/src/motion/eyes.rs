@@ -231,10 +231,12 @@ fn seed(id: &str) -> u64 {
 }
 
 /// Agent `id`'s gaze this frame, asking for the frame in which its eyes next change: the next display frame while they
-/// move (a blink, the scan, a glance), a wake at the next blink, and none under reduced motion or while it rests.
+/// move (a blink, the scan, a glance), a wake at the next blink, and none under reduced motion, while it rests, or while
+/// the window is not in front (the owner's M5 decision, "stop when not in front": the eyes keep still, open, and ask for
+/// nothing; the redraw GPUI makes when the window comes to the front starts them again).
 pub fn living(id: &SharedString, pose: Pose, window: &mut Window, cx: &mut App) -> Gaze {
     let now = clock::now(cx);
-    let reduced = reduced::is_on(cx);
+    let reduced = reduced::is_on(cx) || !window.is_window_active();
     cx.default_global::<Living>();
     let (gaze, next) = cx.update_global::<Living, _>(|living, cx| {
         living.gaze(id, now, pose, reduced, &cx.global::<Theme>().motion)
@@ -443,6 +445,37 @@ mod tests {
             !next_frame(cx),
             "under reduced motion the scan stops: no frames"
         );
+    }
+
+    /// The owner's M5 decision, "stop when not in front": in a window that is not the active one the eyes keep still and
+    /// ask for no frame, not even a timed one (a working agent's scan included); in front again, they move on.
+    #[gpui::test]
+    fn an_inactive_window_asks_no_frame_of_the_eyes(cx: &mut gpui::TestAppContext) {
+        use crate::ui::primitives::avatar::BotAvatar;
+        use gpui::IntoElement as _;
+        use protocol::model::{BotColor, BotShape};
+        let cx = crate::ui::primitives::test_window(cx, |_, _| {
+            BotAvatar::new(BotColor::Teal, BotShape::Blob, 40.)
+                .pose(Pose::Working)
+                .living("bot-3".into())
+                .into_any_element()
+        });
+        let asked = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|_, cx| {
+                crate::motion::clock::frames(cx)
+                    .last()
+                    .is_some_and(|frame| frame.moving)
+            })
+        };
+        // A test window is not in front until it is activated.
+        crate::ui::testing::draw(cx);
+        assert!(
+            !asked(cx),
+            "not in front: a working agent's eyes keep still, and ask for no frame"
+        );
+        cx.update(|window, _| window.activate_window());
+        crate::ui::testing::draw(cx);
+        assert!(asked(cx), "in front: the scan asks for its frames again");
     }
 
     #[test]
