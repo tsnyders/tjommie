@@ -76,7 +76,7 @@ cargo run -p desktop --bin tjommie-desktop
 
 A run from source is the `dev` identity. It keeps its data in `%LOCALAPPDATA%\Tjommie-rs` and uses ports 47200 and 47201, so it runs beside an installed Tjommie without touching its data, its ports or its login entry. It never looks for updates.
 
-The app starts its own daemon. It runs `tjommie-rs\target\debug\tjommie-daemon.exe`, or the exe named by `TJOMMIE_DAEMON_EXE`. If neither exists, the app says to build the daemon. An installed app runs the daemon bundled in its `resources` folder, whatever the environment says.
+The app starts its own daemon. It runs `tjommie-rs\target\debug\tjommie-daemon.exe`, or the exe named by `TJOMMIE_DAEMON_EXE`. If neither exists, the app says to build the daemon. An installed app runs the daemon bundled in its `resources` folder, whatever the environment says. That holds for both apps the installer installs, production and update test. The update test identity run from source has no `resources` folder beside it and follows the source rules above, as do the `dev` and `e2e` identities, which never use a bundled daemon.
 
 To debug the daemon on its own, start it in development mode first and then start the app:
 

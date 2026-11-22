@@ -523,19 +523,13 @@ impl Shared {
     }
 }
 
-/// The exe the daemon runs from, or why there is none: the bundled one in a production build, otherwise
-/// `TJOMMIE_DAEMON_EXE` or the debug build in this exe's target folder.
+/// The exe the daemon runs from, or why there is none: the bundled one in a packaged app (production, and the update test
+/// app the same installer installs), otherwise `TJOMMIE_DAEMON_EXE` or the debug build in this exe's target folder
+/// ([`daemon_process::daemon_exe_for`] has the rule, with its tests).
 fn daemon_exe(identity: &Identity, env: &[(String, String)]) -> Result<PathBuf, String> {
     let exe = std::env::current_exe().map_err(|error| error.to_string())?;
-    let folder = exe.parent().unwrap_or(Path::new("."));
-    if identity.kind == Kind::Production {
-        return Ok(daemon_process::packaged_daemon_path(
-            &folder.join("resources"),
-        ));
-    }
-    // target\debug\tjommie-desktop.exe: the repo is three folders up from the exe's.
-    let repo = folder.ancestors().nth(3).unwrap_or(folder);
-    daemon_process::daemon_command(env, None, repo, Path::exists).map_err(|error| error.to_string())
+    daemon_process::daemon_exe_for(identity.kind, &exe, env, Path::exists)
+        .map_err(|error| error.to_string())
 }
 
 /// Starts the live connection: the runtime, the daemon (or the dev daemon), the connection, its timers, and the feed into
