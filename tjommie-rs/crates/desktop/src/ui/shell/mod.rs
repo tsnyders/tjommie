@@ -41,6 +41,9 @@ pub fn set_rem(zoom: Zoom, cx: &mut App) {
     gpui_kit::component::Theme::global_mut(cx).font_size = px(zoom.rem_px(1.0) * scale);
 }
 
+/// The log's `ui ready` line is written once: the first frame with the connection ready (Phase 3 plan T7.4, cold start).
+static UI_READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 pub struct Shell {
     focus: FocusHandle,
     zoom: Zoom,
@@ -94,6 +97,8 @@ impl Render for Shell {
         crate::test_driver::begin_frame();
         crate::motion::clock::begin_frame(cx);
         let route = route::current(cx);
+        // An avatar flying into a chat header, over everything (motion.html "shared elements").
+        let flight = crate::motion::flight::frame(&route, window, cx);
         let data = cx.try_global::<ShellData>().cloned().unwrap_or_default();
         let narrow = narrow(window);
         let sidebar = if narrow {
@@ -105,10 +110,16 @@ impl Render for Shell {
             Some(words) => connection::screen(&data, words, window, cx),
             None => screen(&route, window, cx),
         };
+        if data.connection == data::Connection::Ready
+            && !UI_READY.swap(true, std::sync::atomic::Ordering::Relaxed)
+        {
+            log::info!("ui ready");
+        }
         let status = connection::status_pill(&data.connection, window, cx);
         // The account notice a chat raised is the app's, as `sign-in-toast.tsx`'s viewport was: it stays through a
         // navigation for its 8 s (M4 review A9).
         let notice = crate::ui::chat::sign_in_toast::view(cx);
+        let toasts = crate::ui::primitives::toast::toasts(window, cx);
         let theme = cx.global::<Theme>();
         let colors = &theme.color.light;
         div()
@@ -132,7 +143,6 @@ impl Render for Shell {
                     }
                 });
             })
-        let toasts = crate::ui::primitives::toast::toasts(window, cx);
             .size_full()
             .relative()
             .flex()
@@ -166,8 +176,12 @@ impl Render for Shell {
                             .children(status),
                     )
                     // An open exchange takes the right panel's place (T4.1); the panel stays drawn, closed, beside it.
-                    .children(crate::ui::chat::exchange::side(cx))
-                    .when_some(self.panel.clone(), |column, panel| column.child(panel)),
+                    // In a narrow window both open as sheets over the main column, as the TypeScript's did under `sm`.
+                    .relative()
+                    .children(crate::ui::chat::exchange::side(cx).map(|side| sheet(side, narrow, theme)))
+                    .when_some(self.panel.clone(), |column, panel| {
+                        column.child(sheet(panel, narrow, theme))
+                    }),
             )
             .child(
                 div()
@@ -188,7 +202,26 @@ impl Render for Shell {
                     .right(r(theme.space.s28))
                     .child(notice)
             }))
+            .children(flight)
             .child(crate::motion::clock::painted())
+    }
+}
+
+/// A side panel beside the main column, or in a narrow window a sheet over it, its right edge at the column's.
+fn sheet(panel: AnyView, narrow: bool, theme: &Theme) -> AnyElement {
+    if narrow {
+        div()
+            .absolute()
+            .top(r(theme.size.titlebar_height))
+            .bottom(r(theme.space.s12))
+            .left_0()
+            .right(r(theme.space.s12))
+            .flex()
+            .justify_end()
+            .child(panel)
+            .into_any_element()
+    } else {
+        panel.into_any_element()
     }
 }
 
@@ -202,7 +235,6 @@ fn screen(route: &Route, window: &mut gpui::Window, cx: &mut App) -> AnyElement 
         Route::BotSettings(id) => crate::ui::bots::settings::screen(id, window, cx),
         Route::Settings(section) => crate::ui::settings::screen(*section, window, cx),
         Route::Account { .. } => crate::ui::settings::screen(route::Section::Accounts, window, cx),
-            .children(flight)
         Route::Rooms => crate::ui::rooms::list::screen(window, cx),
         Route::Room(id) => crate::ui::rooms::screen::screen(id, window, cx),
         Route::Chat(id) => crate::ui::chat::screen(id, window, cx),
@@ -216,7 +248,6 @@ fn caption_buttons(theme: &Theme) -> impl IntoElement {
         div()
             .semantic(id, Role::Button)
             .aria_label(label)
-            .children(flight)
             .w(px(theme.size.caption_button_width))
             .h(px(theme.size.titlebar_height))
             .flex()
@@ -324,33 +355,6 @@ mod tests {
     }
 
     #[gpui::test]
-    fn the_connection_screen_takes_the_main_columns_place(cx: &mut gpui::TestAppContext) {
-        let cx = shell_window(cx, ShellData::default());
-        assert!(
-            cx.debug_bounds("connection.title").is_some(),
-            "connecting: the connection screen"
-        );
-        assert!(cx.debug_bounds("screen.agents").is_none());
-        // The sidebar still works while connecting.
-        assert!(cx.debug_bounds("sidebar.nav.rooms").is_some());
-
-        cx.update(|_, cx| {
-            cx.global_mut::<ShellData>().connection = Connection::Offline {
-                reason: data::OfflineReason::Unreachable,
-            };
-            cx.navigate(Route::Rooms);
-        });
-        cx.update(|window, cx| window.draw(cx).clear(cx));
-        assert!(
-            cx.debug_bounds("screen.rooms").is_some(),
-            "offline: the cached screen stays"
-        );
-        assert!(
-            cx.debug_bounds("shell.status").is_some(),
-            "under the status pill"
-        );
-    }
-}
     fn recents_slide_to_new_places_and_snap_under_reduced_motion(cx: &mut gpui::TestAppContext) {
         use crate::ui::testing::next_frame;
         let room = |id: &str| Recent {
@@ -403,3 +407,30 @@ mod tests {
     }
 
     #[gpui::test]
+    fn the_connection_screen_takes_the_main_columns_place(cx: &mut gpui::TestAppContext) {
+        let cx = shell_window(cx, ShellData::default());
+        assert!(
+            cx.debug_bounds("connection.title").is_some(),
+            "connecting: the connection screen"
+        );
+        assert!(cx.debug_bounds("screen.agents").is_none());
+        // The sidebar still works while connecting.
+        assert!(cx.debug_bounds("sidebar.nav.rooms").is_some());
+
+        cx.update(|_, cx| {
+            cx.global_mut::<ShellData>().connection = Connection::Offline {
+                reason: data::OfflineReason::Unreachable,
+            };
+            cx.navigate(Route::Rooms);
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            cx.debug_bounds("screen.rooms").is_some(),
+            "offline: the cached screen stays"
+        );
+        assert!(
+            cx.debug_bounds("shell.status").is_some(),
+            "under the status pill"
+        );
+    }
+}

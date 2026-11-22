@@ -50,9 +50,22 @@ pub fn run(identity: Identity, root: PathBuf, after_crash: bool, instance: Optio
             shell::set_rem(Zoom::default(), cx);
             cx.bind_keys(crate::keymap::field_tab(cx));
             cx.bind_keys(crate::keymap::bindings());
+            // A motion check (T7.2, test-driver builds) shows invented data in place of the daemon.
+            #[cfg(feature = "test-driver")]
+            let scenario = crate::scenario::options();
+            #[cfg(feature = "test-driver")]
+            let live = scenario.is_none();
+            #[cfg(not(feature = "test-driver"))]
+            let live = true;
             // The daemon and the connection (M5): until it's ready the shell says "Starting Tjommie". The daemon's browser,
             // Logins and worker clients start with it (`hosts`), on the engine the window makes below.
-            crate::live::start(identity, root.clone(), cx);
+            if live {
+                crate::live::start(identity, root.clone(), cx);
+            }
+            #[cfg(feature = "test-driver")]
+            if let Some(options) = &scenario {
+                crate::scenario::install(options, cx);
+            }
             if after_crash {
                 notices::raise(Notice::ClosedUnexpectedly);
             }
@@ -63,8 +76,10 @@ pub fn run(identity: Identity, root: PathBuf, after_crash: bool, instance: Optio
                 if let Some(hosts) = cx.try_global::<crate::hosts::AppHosts>().cloned() {
                     crate::hosts::watch_window(&hosts, window, cx);
                 }
-                // The tray, the toasts, start at sign-in and the updater (M6), for this window.
-                crate::services::start(&identity, window, cx);
+                // The tray, the toasts, start at sign-in and the updater (M6), for this window; none for a motion check.
+                if live {
+                    crate::services::start(&identity, window, cx);
+                }
                 let panel = BrowserPanel::create(window, cx);
                 cx.new(|cx| {
                     let mut shell = Shell::new(window, cx);
@@ -79,6 +94,9 @@ pub fn run(identity: Identity, root: PathBuf, after_crash: bool, instance: Optio
                     #[cfg(feature = "test-driver")]
                     {
                         crate::test_driver::start(window, cx);
+                        if let Some(options) = scenario {
+                            crate::scenario::start(options, window, cx);
+                        }
                     }
                 }
                 Err(error) => {

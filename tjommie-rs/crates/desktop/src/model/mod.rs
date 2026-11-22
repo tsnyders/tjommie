@@ -36,5 +36,5 @@ pub mod suggestions;
 pub mod timeline;
 pub mod usage;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-driver"))]
 pub mod testing;

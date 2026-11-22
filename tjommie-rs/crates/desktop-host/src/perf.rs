@@ -6,6 +6,37 @@
 unsafe extern "system" {
     fn QueryPerformanceCounter(count: *mut i64) -> i32;
     fn QueryPerformanceFrequency(frequency: *mut i64) -> i32;
+    fn GetCurrentThread() -> isize;
+    fn SetThreadPriority(thread: isize, priority: i32) -> i32;
+}
+
+#[link(name = "avrt")]
+unsafe extern "system" {
+    fn AvSetMmThreadCharacteristicsW(task: *const u16, index: *mut u32) -> isize;
+}
+
+/// The heavy-load experiment (Phase 3 plan T7.3): registers this thread with MMCSS as a "Games" task, which the
+/// scheduler favours while the system is busy. The registration lasts for the thread's life.
+pub fn mmcss_games() -> Result<(), String> {
+    let task: Vec<u16> = "Games".encode_utf16().chain(std::iter::once(0)).collect();
+    let mut index = 0u32;
+    // SAFETY: a NUL-terminated wide string that outlives the call, and a u32 to write the task index into.
+    let handle = unsafe { AvSetMmThreadCharacteristicsW(task.as_ptr(), &mut index) };
+    if handle == 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    Ok(())
+}
+
+/// T7.3's second option: this thread at above-normal priority.
+pub fn above_normal() -> Result<(), String> {
+    const THREAD_PRIORITY_ABOVE_NORMAL: i32 = 1;
+    // SAFETY: the pseudo handle of the calling thread, which needs no closing.
+    let done = unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL) };
+    if done == 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    Ok(())
 }
 
 /// The counter now.

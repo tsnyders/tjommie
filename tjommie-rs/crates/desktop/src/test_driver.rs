@@ -864,6 +864,23 @@ fn handle(request: Request, window: &mut Window, cx: &mut App) -> Response {
     }
 }
 
+/// Clicks the element with `id` as the pointer does (`click{id}`): the motion checks' trigger.
+#[cfg(feature = "test-driver")]
+pub(crate) fn click_id(id: &str, window: &mut Window, cx: &mut App) -> Result<(), String> {
+    let position = target(id, window)?;
+    click(position, window, cx);
+    Ok(())
+}
+
+/// Presses `chord` as a person would (`key{chord}`).
+#[cfg(feature = "test-driver")]
+pub(crate) fn press_key(chord: &str, window: &mut Window, cx: &mut App) -> Result<(), String> {
+    let keystroke = Keystroke::parse_with_os(chord, cx.platform_info().os)
+        .map_err(|error| format!("{chord}: {error}"))?;
+    window.dispatch_keystroke(keystroke, cx);
+    Ok(())
+}
+
 fn type_text(text: &str, window: &mut Window, cx: &mut App) {
     for typed in text.chars() {
         let key_char = typed.to_string();

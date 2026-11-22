@@ -54,3 +54,9 @@ debug = "line-tables-only"
 
 [profile.release.package.client]
 debug = "line-tables-only"
+
+# The motion checks' timing build (Phase 3 plan T7.2): release code with the test driver
+# (`cargo build --profile perf -p desktop --features test-driver`), in target/perf, so target/release never holds the
+# driver (tests/pins.rs).
+[profile.perf]
+inherits = "release"
