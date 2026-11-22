@@ -115,6 +115,39 @@ The app starts the daemon without `TJOMMIE_DEV`, `TJOMMIE_ACCOUNTS_DIR` and ever
 
 An app never opens a data folder that belongs to another identity. A `dev`, `e2e` or `updatetest` build refuses the installed app's `%LOCALAPPDATA%\Tjommie` and `%APPDATA%\Tjommie`, however the path is spelled, and exits without opening a window.
 
+### Reading a crash log
+
+A panic on the UI thread that nothing catches is a crash. The app adds an entry to `logs\desktop-crash.log` in its data folder and stops, and Windows starts it again (`--hidden --after-crash`). Panics that were caught, and panics on other threads, are logged too, but a panic from one place is written in full once a minute at most. Each entry has a timestamp, the version, the thread and the panic's message, then what a later reader needs to match it to the release that wrote it:
+
+```
+2026-11-22T13:08:45Z Tjommie 0.6.0 crash in thread 'main': panicked at crates\desktop\src\ui\example.rs:12:5:
+the message
+modules:
+  tjommie-desktop.exe base=0x00007ff78a280000 size=0x1b01000 timestamp=0x6b02e94d pdb=tjommie_desktop.pdb guid=01234567-89AB-CDEF-0123-456789ABCDEF age=1
+  tjommie-daemon.exe (another process) size=0x9c4000 timestamp=0x6b02e931 pdb=tjommie_daemon.pdb guid=FEDCBA98-7654-3210-FEDC-BA9876543210 age=1
+stack: tjommie-desktop.exe+0x471bfb tjommie-desktop.exe+0x3aa073 tjommie-desktop.exe+0x3aac03 0x7ffa1c2d1234
+   0: …a backtrace, with names when the PDB was beside the exe…
+```
+
+- `modules:` names each exe by file name only (never a folder) and gives its build id: the PE header's `timestamp` and `size`, and the name, `guid` and `age` of the PDB that goes with it. The running app also has `base`, where Windows loaded it this time. The daemon is another process with an address space of its own, so its line has no `base`; it is there so that a failure of the daemon can be matched to its PDB.
+- `stack:` is the return addresses of the panicking thread. A frame inside the app is `tjommie-desktop.exe+0x<offset from base>`, and the others (Windows' own libraries) are plain addresses. The first frames are the crash handler's own and the standard library's panic machinery; the code that panicked comes after them.
+
+A release is built with line tables kept, and its PDBs are in `Tjommie-<version>-symbols.zip` on the release. To read an entry's stack by function and line:
+
+1. Download that zip for the version the entry names and extract it into a new empty folder.
+2. Check that the PDB is the one that was built with the exe: the entry's `guid` and `age` for the exe must be the PDB's own. `llvm-pdbutil dump --summary tjommie_desktop.pdb` prints them as `GUID` and `Age`. A PDB from another build, even of the same version, has another GUID and gives wrong names, so do not use one.
+3. Put the PDB beside a copy of the same version's `tjommie-desktop.exe` (the installed app's, or the release payload's). The symboliser finds the PDB next to the exe, and says `no such file or directory` when it can't.
+4. Ask `llvm-symbolizer` (LLVM's, from `winget install LLVM.LLVM` or `scoop install llvm`) for each offset. Every frame is a return address, the instruction after a call, so ask for the offset minus 1:
+
+```powershell
+$stack = (Select-String -Path desktop-crash.log -Pattern '^stack: ' | Select-Object -Last 1).Line.Substring(7)
+$offsets = $stack -split ' ' | Where-Object { $_ -like 'tjommie-desktop.exe+0x*' } |
+  ForEach-Object { '0x{0:x}' -f ([Convert]::ToInt64(($_ -split '\+0x')[1], 16) - 1) }
+llvm-symbolizer --obj=.\tjommie-desktop.exe --relative-address @offsets
+```
+
+It prints the function and the `file:line` of each frame, innermost first. `crash::tests::hook_writes_log` in `crates/desktop-host/src/crash.rs` proves the numbers are right: it crashes a copy of the test binary on purpose and has DbgHelp name the test's own frame from the logged base and offsets alone.
+
 ## Tests
 
 The test commands below are the ones in `.github/workflows/ci.yml`, in its order. CI has two jobs, `check` and `rust`. Run the cargo commands inside `tjommie-rs` and the npm commands in the repository root.
@@ -144,8 +177,11 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo clippy -p daemon --all-targets --features provider-fixtures --locked -- -D warnings
 ./tools/check-guarded.ps1 -SelfTest
 ./tools/check-guarded.ps1
+$env:TJOMMIE_PDFIUM_DLL = ./tools/fetch-pdfium.ps1 -Destination "$env:TEMP\pdfium\pdfium.dll"
 $env:TJOMMIE_CI_HOSTED = '1'; cargo test --workspace --locked --no-fail-fast
 ```
+
+`tools/fetch-pdfium.ps1` downloads the pinned `pdfium.dll` (the PDF viewer's engine) from the `bblanchon/pdfium-binaries` release named in the script. It checks the archive and the DLL by SHA-256 and throws on a mismatch, then prints the DLL's path, which goes in `TJOMMIE_PDFIUM_DLL`. The PDF tests and the e2e app's PDF viewer look for it there, and on CI they fail without it rather than skip. Run from source, the app also finds it at `tjommie-rs\resources\pdfium\pdfium.dll`, which is where the script puts it when it is given no `-Destination`. An installed app carries its own copy in `resources`. The release pins the same build: the hash is in `crates/desktop-host/src/pdf.rs` and in the script, and they change together.
 
 Then CI checks that the dev and e2e desktop builds have no update feed. It builds the tests without running them, once per identity, and reads `target\debug\tjommie-desktop.exe` for the feed's path, `tsnyders/tjommie/releases/latest/download`:
 
@@ -196,6 +232,28 @@ $env:TJOMMIE_IDENTITY = 'e2e'; cargo test -p desktop --features test-driver --te
 The test driver is never in a release build; `tests/pins.rs` checks it. An e2e app puts fake in-memory versions of the tray, notifications and registry in place of the real ones, so a test never adds an icon to your tray, a notification to your desktop or a value to your registry. It never takes your keyboard focus.
 
 **Every e2e test runs the window at 1000 by 700.** `common::make_agent` calls `app.resize(1000., 700.)`, and the keyboard test sets the same size. The size is the same on every machine on purpose: it fits a hosted runner's 1024 by 768 display, and Windows holds a window to its display, so a taller window cannot exist there. Nothing in a test may depend on a taller one. A click on a control below the fold lands outside the window and does nothing, without an error. Use `tab_to`, which sends Tab until the control has focus, because the screen scrolls the focused control into view.
+
+### The README's pictures
+
+The pictures in the README (`docs/screens/`) are taken by one e2e test, `e2e_readme_shots`, which `.github/workflows/readme-shots.yml` runs on a GitHub hosted runner. `docs/screens/SHOTS.md` lists every picture, the invented data it shows, and what to check by eye before one is committed.
+
+**Never take them on your own PC, and never commit a picture made on one.** The sidebar's host button shows the first letter of the Windows account's name, and Settings shows the PC's host name. A runner's are generic. The workflow has `contents: read`, uses no secrets, and runs only when started by hand:
+
+```powershell
+gh workflow run readme-shots.yml --ref <branch>
+gh run download <run id> --name readme-shots --dir <a new empty folder>
+```
+
+The test is marked `#[ignore]`, because `ci.yml` runs every `e2e_*` test and this one takes pictures instead of checking anything. The workflow asks for it with `-- --ignored`. It builds the normal daemon and copies it away, builds the fixtures daemon (the two share `target\debug\tjommie-daemon.exe`), fetches pdfium, and runs the test. One picture, the first-run screen that says Claude Code and Codex are not installed, needs the normal daemon on a machine that has neither, and the test takes it only when `TJOMMIE_SHOTS_PLAIN_DAEMON` names that daemon's exe, so it is skipped on a PC. Every other picture uses recorded conversations, so no provider runs and no account is touched.
+
+You can run the test on a PC to check that a change to it works. The pictures it writes (`tjommie-rs\target\readme-shots`) are not for the README: look at one, then delete them all.
+
+```powershell
+cargo build -p daemon --bin tjommie-daemon --features provider-fixtures --locked
+$env:TJOMMIE_IDENTITY = 'e2e'; cargo test -p desktop --features test-driver --test e2e_readme_shots --locked -- --ignored --nocapture
+```
+
+A picture that can't be taken is reported at the end of the run and does not stop the others. The artifact keeps whatever was taken, and the test fails when any is missing.
 
 ### Rules the code enforces
 
