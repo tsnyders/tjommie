@@ -49,9 +49,11 @@ export const mutations: Mutation[] = [
   { label: "the dry-run artifact is named windows-assets", from: "name: release-dryrun-windows", to: "name: windows-assets" },
   // The APK is built in every run, a dry run too (the owner's decision, 2026-11-22); only where it goes depends on the mode.
   { label: "the android job is skipped in a dry run again", from: "    needs: verify" + nl + "    runs-on: windows-latest" + nl + "    timeout-minutes: 60", to: "    needs: verify" + nl + "    if: ${{ needs.verify.outputs.dry_run == 'false' }}" + nl + "    runs-on: windows-latest" + nl + "    timeout-minutes: 60" },
-  { label: "the dry-run APK is named android-assets", from: "          name: release-dryrun-apk", to: "          name: android-assets" },
+  { label: "the dry-run manifest is named android-assets", from: "          name: release-dryrun-apk-manifest", to: "          name: android-assets" },
+  { label: "the dry run uploads the APK itself", from: "          path: dist-mobile/apk-manifest.json", to: "          path: dist-mobile/Tjommie-Android-*.apk" },
+  { label: "the dry run uploads everything the mobile build wrote", from: "          path: dist-mobile/apk-manifest.json", to: "          path: dist-mobile/*" },
+  { label: "the APK manifest stops checking the recorded signer", from: " -Out dist-mobile/apk-manifest.json -ExpectedSigner $env:ANDROID_CERT_SHA256", to: " -Out dist-mobile/apk-manifest.json" },
   { label: "the android-assets upload loses its gate", from: "        if: ${{ needs.verify.outputs.dry_run == 'false' }}" + nl + "        with:" + nl + "          name: android-assets", to: "        with:" + nl + "          name: android-assets" },
-  { label: "the dry-run APK is kept for 90 days", from: "          retention-days: 3" + nl, to: "          retention-days: 90" + nl },
   { label: "the pdfium gate fails open (the -Release switch needs an exact true)", from: "if ($env:DRY_RUN -ne 'true') { $more['Release'] = $true }" + nl + "          ./installer/assemble-payload.ps1", to: "if ($env:DRY_RUN -eq 'false') { $more['Release'] = $true }" + nl + "          ./installer/assemble-payload.ps1" },
   // pdfium and its licence texts: fetched into a folder of their own, checked, and handed to the assembler.
   { label: "pdfium is fetched into the payload folder", from: "$dir = Join-Path $env:RUNNER_TEMP 'pdfium'", to: "$dir = Join-Path $env:RUNNER_TEMP 'payload'" },

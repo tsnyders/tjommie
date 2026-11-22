@@ -608,7 +608,7 @@ describe("release.yml", () => {
   it("has a mutation script that has not gone stale", () => {
     // LF, as the mutations are written: a Windows checkout may have CRLF.
     const text = readFileSync(join(workflowDir, "release.yml"), "utf8").replaceAll("\r\n", "\n");
-    expect(mutations.length).toBeGreaterThanOrEqual(53);
+    expect(mutations.length).toBeGreaterThanOrEqual(55);
     for (const { label, from } of mutations) expect(text.split(from).length - 1, `"${label}": its text is found once in release.yml`).toBe(1);
   });
 
@@ -677,7 +677,11 @@ describe("release.yml", () => {
       // The APK is built in every dry run (the owner's decision, 2026-11-22), and the publish job never is.
       expect(run.jobs).toEqual(["verify", "windows", "android"]);
       expect(run.jobs).not.toContain("release");
-      expect(uploads(run.steps)).toEqual(["release-dryrun-apk", "release-dryrun-tool-hashes", "release-dryrun-windows"]);
+      expect(uploads(run.steps)).toEqual(["release-dryrun-apk-manifest", "release-dryrun-tool-hashes", "release-dryrun-windows"]);
+      // Whatever a dry run uploads, it is never an .apk (signed with the release key, on a public repository), nor a path that could match one.
+      for (const { step } of run.steps) {
+        if (step.uses?.startsWith("actions/upload-artifact@")) expect(String(step.with?.path), `${step.with?.name} must not carry an APK`).not.toMatch(/\.apk|dist-mobile\/\*|\*\*/i);
+      }
       for (const { job, step } of run.steps) {
         for (const pattern of PUBLISHING) expect(step.run ?? "", `${job}: "${step.name ?? step.uses}" ran in a dry run and matches ${pattern}`).not.toMatch(pattern);
         if (step.uses) expect(ALLOWED_ACTIONS).toContain(step.uses.split("@")[0]);
@@ -688,17 +692,24 @@ describe("release.yml", () => {
       expect(names).toContain("Write the release manifest");
     });
 
-    // The APK is built and checked (signed, signer verified) in every dry run, so the Android build is proved before a release needs it. All a dry
-    // run does with it is upload it under a name of its own: never the name the publish job downloads.
-    it("builds the Android APK in every dry run, and uploads it as release-dryrun-apk and never as android-assets", () => {
+    // The APK is built and checked (signed, signer verified) in every dry run, so the Android build is proved before a release needs it. But the
+    // repository is public, so a dry run NEVER uploads the APK (it is signed with the release key): only a manifest of it, under a name of its own.
+    it("builds the Android APK in every dry run, and uploads only its manifest, never the APK", () => {
       for (const [label, event, ref] of dryRuns) {
         const run = walk(contextFor(event, ref));
         expect(run.jobs, label).toContain("android");
         const apk = run.steps.filter(({ job }) => job === "android").map(({ step }) => step);
-        expect(apk.map((step) => step.name ?? "")).toEqual(expect.arrayContaining(["Build signed release APK", "Verify APK signer"]));
-        expect(uploads(run.steps), label).toContain("release-dryrun-apk");
+        expect(apk.map((step) => step.name ?? "")).toEqual(expect.arrayContaining(["Build signed release APK", "Verify APK signer", "Write the APK manifest (a dry run uploads this and never the APK)"]));
+        expect(uploads(run.steps), label).toContain("release-dryrun-apk-manifest");
+        expect(uploads(run.steps), label).not.toContain("release-dryrun-apk");
         expect(uploads(run.steps), label).not.toContain("android-assets");
       }
+    });
+
+    // The one upload that carries an .apk is the release's, and it runs only for a release.
+    it("has exactly one upload that carries an .apk: android-assets, only for a release", () => {
+      const withApk = everyStep().filter(({ step }) => step.uses?.startsWith("actions/upload-artifact@") && /\.apk/i.test(String(step.with?.path)));
+      expect(withApk.map(({ job, step }) => `${job}: ${step.with?.name} when ${step.if}`)).toEqual(["android: android-assets when ${{ needs.verify.outputs.dry_run == 'false' }}"]);
     });
 
     it("publishes nothing even if the mode output is lost, and then asks for the strict payload", () => {
@@ -956,21 +967,33 @@ describe("release.yml", () => {
       expect(report.run).toContain("apply-native.mjs --check");
     });
 
-    // The owner's decision (2026-11-22): the APK is built in every run. So the job has no `if` at all, and what is conditional is only where the
-    // APK goes: android-assets (which the publish job downloads) for a release, release-dryrun-apk for a dry run, for 3 days.
-    it("the Android build runs in every run, and uploads the APK by mode: android-assets for a release only, release-dryrun-apk for a dry run", () => {
+    // The owner's decision (2026-11-22): the APK is built in every run. So the job has no `if` at all, and what is conditional is only where it goes:
+    // the APK as android-assets (which the publish job downloads) for a release, and for a dry run only its manifest, as release-dryrun-apk-manifest.
+    it("the Android build runs in every run, and uploads by mode: the APK as android-assets for a release only, a manifest for a dry run", () => {
       expect(jobs.android.if, "no condition on the job: a dry run builds the APK too").toBeUndefined();
       expect(needsOf(jobs.android)).toEqual(["verify"]);
       expect(jobs.android.permissions, "no permission of its own").toBeUndefined();
       const release = stepsOf("android").filter((step) => step.with?.name === "android-assets");
-      const dry = stepsOf("android").filter((step) => step.with?.name === "release-dryrun-apk");
+      const dry = stepsOf("android").filter((step) => step.with?.name === "release-dryrun-apk-manifest");
       expect(release).toHaveLength(1);
       expect(dry).toHaveLength(1);
       expect(release[0].if).toBe("${{ needs.verify.outputs.dry_run == 'false' }}");
       expect(dry[0].if).toBe("${{ needs.verify.outputs.dry_run == 'true' }}");
-      expect(dry[0].with).toMatchObject({ path: "dist-mobile/Tjommie-Android-*.apk", "if-no-files-found": "error", "retention-days": 3 });
+      expect(dry[0].with).toMatchObject({ path: "dist-mobile/apk-manifest.json", "if-no-files-found": "error", "retention-days": 14 });
       expect(release[0].with).toMatchObject({ path: "dist-mobile/Tjommie-Android-*.apk", "if-no-files-found": "error" });
       expect(release[0].with?.["retention-days"], "a release's APK keeps the default retention").toBeUndefined();
+    });
+
+    // The manifest step keeps the real signer check: the real keystore signed the APK, and the manifest is written only after apksigner verified
+    // it and found the recorded signer. It needs no secret: the recorded signer is a repository variable.
+    it("writes the APK manifest only in a dry run, after verifying the signer against the recorded one", () => {
+      const step = findStep("android", /write-apk-manifest\.ps1/);
+      expect(step.name).toBe("Write the APK manifest (a dry run uploads this and never the APK)");
+      expect(step.if).toBe("${{ needs.verify.outputs.dry_run == 'true' }}");
+      expect(step.env).toEqual({ ANDROID_CERT_SHA256: "${{ vars.ANDROID_CERT_SHA256 }}" });
+      expect(step.run).toContain('-Apk "dist-mobile/Tjommie-Android-$version.apk" -Out dist-mobile/apk-manifest.json -ExpectedSigner $env:ANDROID_CERT_SHA256');
+      const names = stepsOf("android").map((candidate) => candidate.name ?? candidate.uses ?? "");
+      expect(names.indexOf(step.name ?? "")).toBeGreaterThan(names.indexOf("Verify APK signer"));
     });
 
     // Building the APK in a dry run must not open a way to publish it: the publish job is the only job with a write permission, it is the only
@@ -986,7 +1009,7 @@ describe("release.yml", () => {
       // The only artifact the publish job downloads for the APK is the one a dry run never writes.
       const downloads = stepsOf("release").filter((step) => step.uses?.startsWith("actions/download-artifact@")).map((step) => String(step.with?.name));
       expect(downloads).toContain("android-assets");
-      expect(downloads).not.toContain("release-dryrun-apk");
+      expect(downloads).not.toContain("release-dryrun-apk-manifest");
     });
   });
 
