@@ -4,8 +4,10 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { VaultRecords, type VaultCredentials, type VaultSecret } from "../packages/desktop/src/vault-storage.ts";
 import {
-  DATA_ROOT_POLICY, compareCounts, compareTrees, eventually, pendingNotices, plantPendingNotice, r1UpdateEnv, seedBrowserProfiles, snapshotRoot, startFeed, treeOf, withTimeout,
+  DATA_ROOT_POLICY, type VaultSnapshot, compareCounts, compareTrees, compareVaults, eventually, pendingNotices, plantPendingNotice, r1UpdateEnv, seedBrowserProfiles, seedVault, snapshotRoot, snapshotVault, startFeed,
+  summarizeVault, treeOf, withTimeout,
 } from "./phase3-acceptance.ts";
 
 // The Phase 3 acceptance run's Node half (scripts/phase3-acceptance.ts). Nothing here starts R1, an installer or a daemon: the data-root rules are tried
@@ -127,22 +129,174 @@ describe("the planted notice", () => {
     }
   });
 
-  it("adds exactly three rows, which a baseline taken afterwards holds, and the notice alone may then disappear", () => {
+  it("adds exactly three rows, which a baseline taken afterwards holds, and the notice alone may then disappear", async () => {
     const root = dataRoot();
-    const before = snapshotRoot(root);
+    const before = await snapshotRoot(root);
     plantPendingNotice(join(root, "data", "tjommie.db"));
-    const planted = snapshotRoot(root);
+    const planted = await snapshotRoot(root);
     expect(planted.counts.tables.routines).toBe((before.counts.tables.routines ?? 0) + 1);
     expect(planted.counts.tables.routine_runs).toBe((before.counts.tables.routine_runs ?? 0) + 1);
     expect(planted.counts.tables.routine_failure_notifications).toBe((before.counts.tables.routine_failure_notifications ?? 0) + 1);
     // The new app acknowledges the notice: the daemon deletes the row.
     const db = new DatabaseSync(join(root, "data", "tjommie.db"));
     try { db.prepare("DELETE FROM routine_failure_notifications WHERE run_id = 'acceptance-run'").run(); } finally { db.close(); }
-    const acknowledged = snapshotRoot(root);
+    const acknowledged = await snapshotRoot(root);
     expect(compareCounts("x", planted.counts, acknowledged.counts, ["routine_failure_notifications"])).toEqual([]);
     expect(compareCounts("x", planted.counts, acknowledged.counts)).toHaveLength(1);
     // And the files are still all there, with only the database changed.
     expect(compareTrees(planted.tree, acknowledged.tree).problems).toEqual([]);
+  });
+
+  it("is counted and read through read-only connections, which cannot write to a database a program has open", () => {
+    const root = dataRoot();
+    const dbFile = join(root, "data", "tjommie.db");
+    const before = readFileSync(dbFile);
+    expect(pendingNotices(dbFile)).toBe(0);
+    expect(readFileSync(dbFile).equals(before)).toBe(true);
+    // What `notice` and `snapshot` use is not the connection that plants: a write through a read-only one is refused.
+    const db = new DatabaseSync(dbFile, { readOnly: true });
+    try { expect(() => db.exec("DELETE FROM routine_failure_notifications")).toThrow(/readonly/i); } finally { db.close(); }
+  });
+});
+
+// A Credential Manager that is a Map, so nothing here reaches the PC's own: the seed's writer and the snapshot's reader, as R1's WindowsLoginCredentials is given them.
+const memoryCredentials = (): { secrets: Map<string, VaultSecret>; credentials: Pick<VaultCredentials, "read" | "write"> } => {
+  const secrets = new Map<string, VaultSecret>();
+  return { secrets, credentials: { write: async (reference, secret) => { secrets.set(reference, secret); }, read: async (reference) => secrets.get(reference) ?? null } };
+};
+
+describe("the saved-logins vault", () => {
+  it("is seeded with invented logins through R1's own records and secret writer, which R1's own reader lists and reads back", async () => {
+    const root = dataRoot();
+    const { secrets, credentials } = memoryCredentials();
+    expect(await seedVault(root, credentials)).toEqual({ logins: 2, secretsWritten: 2, secretsRefused: 0 });
+    // R1's VaultRecords parses every stored entry against R1's own schema (strict keys, an HTTPS origin, a datetime), so this is what R1 itself would list.
+    const records = new VaultRecords(join(root, "data", "logins.sqlite"));
+    try {
+      const entries = records.list();
+      expect(entries).toHaveLength(2);
+      expect(entries.every((entry) => entry.revision === 1 && entry.origin.startsWith("https://"))).toBe(true);
+      expect(records.pending()).toEqual([]);
+      for (const entry of entries) expect(secrets.get(records.get(entry.id).reference)?.username).toMatch(/^acceptance-user-/);
+    } finally {
+      records.close();
+    }
+  });
+
+  it("is snapshotted with every login's record and its secret by SHA-256 alone, never the secret", async () => {
+    const root = dataRoot();
+    const { secrets, credentials } = memoryCredentials();
+    await seedVault(root, credentials);
+    const vault = await snapshotVault(root, credentials);
+    expect(vault?.logins).toHaveLength(2);
+    expect(vault?.deletions).toEqual([]);
+    expect(vault?.logins.every((login) => /^[0-9a-f]{64}$/.test(login.secret ?? ""))).toBe(true);
+    const written = JSON.stringify(vault);
+    for (const secret of secrets.values()) { expect(written).not.toContain(secret.password); expect(written).not.toContain(secret.username); }
+    expect(summarizeVault(vault)).toEqual({ logins: 2, secretsReadable: 2, pendingDeletions: 0, userVersion: 0 });
+    // A root with no vault has none to snapshot, and reading one never creates one.
+    expect(await snapshotVault(temp(), credentials)).toBeNull();
+    expect(summarizeVault(null)).toBeNull();
+  });
+
+  it("is read without writing a byte, even where a program has it open", async () => {
+    const root = dataRoot();
+    const { credentials } = memoryCredentials();
+    await seedVault(root, credentials);
+    const file = join(root, "data", "logins.sqlite");
+    const before = readFileSync(file);
+    await snapshotVault(root, credentials);
+    expect(readFileSync(file).equals(before)).toBe(true);
+    // An app that is running holds the vault open in WAL mode, with a login in its -wal file that is not in the database file yet: it is seen, and still no
+    // byte of the database is written by the reader.
+    const running = new VaultRecords(file);
+    try {
+      const now = new Date().toISOString();
+      running.saved({ id: "6f1c2a3e-0b7d-4c55-9a0e-5d3b8e1f2a44", name: "Added while running", origin: "https://live.example.com", botId: "b", revision: 1, createdAt: now, updatedAt: now }, "0f0f0f0f-1111-4222-8333-444455556666");
+      const seen = await snapshotVault(root, credentials);
+      expect(seen?.logins).toHaveLength(3);
+      expect(readFileSync(file).equals(before)).toBe(true);
+    } finally {
+      running.close();
+    }
+  });
+
+  it("does not take a rewrite that only reorders keys or changes spacing for a change", async () => {
+    const root = dataRoot();
+    const { credentials } = memoryCredentials();
+    await seedVault(root, credentials);
+    const first = await snapshotVault(root, credentials);
+    const db = new DatabaseSync(join(root, "data", "logins.sqlite"));
+    try {
+      for (const row of db.prepare("SELECT id, data FROM logins").all() as { id: string; data: string }[]) {
+        const parsed = JSON.parse(row.data) as Record<string, unknown>;
+        db.prepare("UPDATE logins SET data = ? WHERE id = ?").run(JSON.stringify(Object.fromEntries(Object.entries(parsed).reverse()), null, 2), row.id);
+      }
+    } finally { db.close(); }
+    const second = await snapshotVault(root, credentials);
+    expect(compareVaults(first, second)).toEqual([]);
+    // A different value is still a change.
+    const edit = new DatabaseSync(join(root, "data", "logins.sqlite"));
+    try { edit.prepare("UPDATE logins SET data = json_set(data, '$.name', 'Renamed')").run(); } finally { edit.close(); }
+    expect(compareVaults(first, await snapshotVault(root, credentials))).toHaveLength(2);
+  });
+
+  it("is held to its saved logins: one gone, added or changed, a secret lost or different, a deletion queued, user_version moved, the file gone", async () => {
+    const root = dataRoot();
+    const { secrets, credentials } = memoryCredentials();
+    await seedVault(root, credentials);
+    const base = await snapshotVault(root, credentials);
+    if (!base) throw new Error("The seeded vault has no snapshot.");
+    expect(compareVaults(base, base)).toEqual([]);
+    const [first, second] = base.logins;
+    const clone = (change: (vault: VaultSnapshot) => void): VaultSnapshot => { const copy = structuredClone(base); change(copy); return copy; };
+    expect(compareVaults(base, clone((vault) => { vault.logins.shift(); }))).toEqual([`vault: saved login ${first.id} is gone`]);
+    expect(compareVaults(base, clone((vault) => { vault.logins.push({ ...first, id: "new-id", reference: "r" }); }))).toEqual(["vault: saved login new-id is new"]);
+    expect(compareVaults(base, clone((vault) => { vault.logins[0].data = "{}"; }))).toEqual([`vault: saved login ${first.id} changed`]);
+    expect(compareVaults(base, clone((vault) => { vault.logins[1].reference = "elsewhere"; }))).toEqual([`vault: saved login ${second.id} now names another secret`]);
+    expect(compareVaults(base, clone((vault) => { vault.deletions.push("a-reference"); }))).toEqual(["vault: the secrets waiting to be deleted are 1, were 0"]);
+    expect(compareVaults(base, clone((vault) => { vault.userVersion = 1; }))).toEqual(["vault: user_version is 1, expected 0"]);
+    expect(compareVaults(base, null)).toEqual(["vault: data/logins.sqlite is gone"]);
+    // The secret: gone from Credential Manager, or something else there. Neither message carries a secret or its hash.
+    const lost = clone((vault) => { vault.logins[0].secret = null; });
+    expect(compareVaults(base, lost)).toEqual([`vault: the secret of saved login ${first.id} can no longer be read`]);
+    const changed = clone((vault) => { vault.logins[0].secret = "0".repeat(64); });
+    expect(compareVaults(base, changed)).toEqual([`vault: the secret of saved login ${first.id} is not what it was`]);
+    for (const problem of [...compareVaults(base, lost), ...compareVaults(base, changed)]) for (const secret of secrets.values()) expect(problem).not.toContain(secret.password);
+  });
+
+  it("is not held to a secret the runner's Credential Manager would not take: the records are, and the report counts it as not readable", async () => {
+    const root = dataRoot();
+    const refusing: Pick<VaultCredentials, "read" | "write"> = { write: async () => { throw new Error("refused"); }, read: async () => { throw new Error("refused"); } };
+    expect(await seedVault(root, refusing)).toEqual({ logins: 2, secretsWritten: 0, secretsRefused: 2 });
+    const base = await snapshotVault(root, refusing);
+    expect(base?.logins).toHaveLength(2);
+    expect(base?.logins.every((login) => login.secret === null)).toBe(true);
+    expect(summarizeVault(base)).toMatchObject({ logins: 2, secretsReadable: 0 });
+    expect(compareVaults(base, await snapshotVault(root, refusing))).toEqual([]);
+    // The records are still held: a login that went missing is found whether or not its secret could ever be read.
+    const db = new DatabaseSync(join(root, "data", "logins.sqlite"));
+    try { db.prepare("DELETE FROM logins WHERE rowid = 1").run(); } finally { db.close(); }
+    expect(compareVaults(base, await snapshotVault(root, refusing))).toHaveLength(1);
+  });
+
+  it("makes a root that had no vault a problem only if saved logins appear in it", () => {
+    const some: VaultSnapshot = { userVersion: 0, logins: [{ id: "i", reference: "r", data: "{}", secret: null }], deletions: [] };
+    expect(compareVaults(null, null)).toEqual([]);
+    expect(compareVaults(null, { userVersion: 0, logins: [], deletions: [] })).toEqual([]);
+    expect(compareVaults(null, some)).toEqual(["vault: the baseline had no saved logins, and now there are 1"]);
+  });
+
+  it("is part of a root's snapshot, next to its counts and files", async () => {
+    const root = dataRoot();
+    const { credentials } = memoryCredentials();
+    expect((await snapshotRoot(root, credentials)).vault).toBeNull();
+    await seedVault(root, credentials);
+    const baseline = await snapshotRoot(root, credentials);
+    expect(baseline.vault?.logins).toHaveLength(2);
+    expect(Object.keys(baseline.tree)).toContain("data/logins.sqlite");
+    // The vault's file is the only thing that changed in the tree's policy: it is an allowed addition and never a kept-content file.
+    expect(DATA_ROOT_POLICY.contentKept.some((pattern) => pattern.test("data/logins.sqlite"))).toBe(false);
   });
 });
 
@@ -238,7 +392,7 @@ describe("the command line", () => {
     const report = join(temp(), "report.json");
     const same = run(["verify", "--root", root, "--baseline", baseline, "--report", report]);
     expect(same.status, same.output).toBe(0);
-    expect(JSON.parse(readFileSync(report, "utf8")) as { problems: string[] }).toMatchObject({ problems: [], userVersion: { before: 12, after: 12 } });
+    expect(JSON.parse(readFileSync(report, "utf8")) as { problems: string[] }).toMatchObject({ problems: [], userVersion: { before: 12, after: 12 }, vault: { before: null, after: null } });
     // A bot's file is gone and a profile file has changed: both are named, and the run fails.
     rmSync(join(root, "bots", "legacy-bot", "notes.md"));
     writeFileSync(join(root, "data", "native-browser", "acceptance-bot", "Default", "Cookies"), "not the same");

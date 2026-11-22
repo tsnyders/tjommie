@@ -88,6 +88,9 @@ Invoke-Step 'P2 seed the data roots' {
     [void](Add-Sentinels $roamingRoot)
     Assert-Check (Test-Path -LiteralPath (Join-Path $localRoot 'data\tjommie.db')) 'P2: the database is there'
     Assert-Check (Test-Path -LiteralPath (Join-Path $localRoot 'data\native-browser')) 'P2: the Electron browser profiles are there (data\native-browser)'
+    # The saved-logins vault, with invented logins in it (R1's own records writer and Credential Manager writer): what an owner's upgrade carries.
+    Assert-Check (Test-Path -LiteralPath (Join-Path $localRoot 'data\logins.sqlite')) 'P2: the saved-logins vault is there (data\logins.sqlite)'
+    foreach ($line in @($seeded['lines'] | Where-Object { $_ -match 'Seeded the saved-logins vault' })) { Add-Note "P2: $($line.Trim())" $line }
 }
 
 Invoke-Step 'P3 R1 runs and exports the paired PCs and the appearance (T1.6)' {
@@ -103,6 +106,7 @@ Invoke-Step 'P3 R1 runs and exports the paired PCs and the appearance (T1.6)' {
     Assert-Check (Wait-Until { @(Get-RunningFrom $folder).Count -eq 0 } 30) 'P3: R1 is stopped'
     $made = Invoke-Phase3Driver @('snapshot', '--root', $localRoot, '--out', $baseline)
     Assert-Check ($made['exitCode'] -eq 0) 'P3: the baseline of the data root is taken, with R1 stopped' @($made['lines'] | Select-Object -Last 4)
+    foreach ($line in @($made['lines'] | Where-Object { $_ -match 'saved-logins vault' })) { Add-Note "P3: the baseline: $($line.Trim())" $line }
     $state['roamingBefore'] = Get-TreeSnapshot $roamingRoot
 }
 

@@ -114,6 +114,20 @@ describe("the T8.4 jobs", () => {
     for (const name of Object.keys(jobs)) for (const step of steps(name)) if (step.uses) expect(step.uses, `${name}: ${step.uses}`).toMatch(/@[0-9a-f]{40}\b/);
   });
 
+  // T8.4 review n1: the build artifact is a production-identity installer with the real payload on a public repository. Like the release workflow's dry run, it
+  // says in the artifact that it is not to be installed; and it is kept a day, since only this workflow's own jobs use it.
+  it("label the acceptance-build artifact as not for installing, after everything is in it, and keep it one day", () => {
+    const mark = steps("acceptance-build").find((step) => /Mark the build as not for installing/.test(step.name ?? ""));
+    expect(mark?.run).toContain("DO NOT INSTALL ANYTHING IN THIS ARTIFACT ON A REAL PC.");
+    expect(mark?.run).toContain("acceptance-build\\DO-NOT-INSTALL.txt");
+    expect(mark?.run).toContain("Nothing in here is published");
+    const upload = steps("acceptance-build").filter((step) => step.uses?.startsWith("actions/upload-artifact@"));
+    expect(upload).toHaveLength(1);
+    expect(upload[0].with).toMatchObject({ name: "acceptance-build", "retention-days": 1, "if-no-files-found": "error" });
+    expect(index("acceptance-build", /Mark the build as not for installing/)).toBeGreaterThan(index("acceptance-build", /Package R1's update-test build/));
+    expect(index("acceptance-build", /Mark the build as not for installing/)).toBeLessThan(index("acceptance-build", /upload-artifact/));
+  });
+
   // The fixtures lane's override (tests/common): TJOMMIE_E2E_EXE is the ABSOLUTE path of an existing desktop exe, which every e2e test launches; the
   // fixtures daemon sits beside it as tjommie-daemon.exe; the package is the e2e identity with the test driver, never production.
   it("run the e2e set against a packaged e2e build through TJOMMIE_E2E_EXE, as the override's contract asks, and never a production build", () => {
@@ -199,15 +213,42 @@ describe("the update-path script and the installer script agree", () => {
     expect(update).not.toMatch(/DAEMON_EXE/);
     const u7 = update.slice(update.indexOf("Invoke-Step 'U7 "), update.indexOf("Invoke-Step 'U8 "));
     expect(u7).toContain("resources\\daemon\\tjommie-daemon.exe");
-    // Every daemon on the machine by image path (not only those the install's path selects), and the parent of each by its image path.
-    expect(u7).toContain(`-Filter "Name = 'tjommie-daemon.exe'"`);
-    expect(u7).toMatch(/\$_\.ExecutablePath -ine \$long/);
+    // The daemon is found by its exact image path, its parent by its id and image path, and no process is looked up by its image name (a repository rule,
+    // r1-facts.test.ts: that is how a real Tjommie would be reached).
+    expect(u7).toContain("Get-ProcessesOfExe $daemon");
+    expect(u7).not.toMatch(/Win32_Process[^\n]*Name\s*=/i);
     expect(u7).toMatch(/Win32_Process -Filter "ProcessId = \$\(\$_\.ParentProcessId\)"/);
     expect(u7).toMatch(/\$parent\.ExecutablePath -ieq \$newLong/);
     // The harness side: the driver builds the update-test R1's environment without any daemon.
     const driver = readFileSync(join(repo, "scripts", "phase3-acceptance.ts"), "utf8");
     const env = driver.slice(driver.indexOf("export function r1UpdateEnv"), driver.indexOf("export function", driver.indexOf("export function r1UpdateEnv") + 1));
     expect(env).not.toMatch(/TJOMMIE_DAEMON_EXE:/);
+  });
+
+  it("on the saved-logins vault: seeded with invented logins in both scenarios, and held to the baseline by every data-root comparison", () => {
+    const lib = codeOf(join(installer, "accept-phase3-lib.ps1"));
+    expect(lib).toContain("Test-VaultAsBaseline $report.vault $Label");
+    for (const name of ["accept-update-path.ps1", "accept-production-over-r1.ps1"]) {
+      const script = codeOf(join(installer, name));
+      expect(script, name).toContain("data\\logins.sqlite");
+      expect(script, name).toContain("Seeded the saved-logins vault");
+    }
+    // The comparisons that carry it: the update path's U7, and the production takeover and the rollback.
+    expect(update).toContain("Test-DataRootAsBaseline $dataRoot $baseline $report 'U7'");
+    const production = codeOf(join(installer, "accept-production-over-r1.ps1"));
+    expect(production).toContain("'P5'");
+    expect(production).toContain("'P6'");
+  });
+
+  it("on what U7 and U8 can and cannot show: the daemon is the new app's by when it started, and a notification is an inference", () => {
+    // R1's exe has the new exe's name and path, so a daemon is told to be the new app's by starting, under a new-exe process, after R1 had quit (U3).
+    const u3 = update.slice(update.indexOf("Invoke-Step 'U3 "), update.indexOf("Invoke-Step 'U4 "));
+    expect(u3).toContain("$state['handover'] = Get-Date");
+    const u7 = update.slice(update.indexOf("Invoke-Step 'U7 "), update.indexOf("Invoke-Step 'U8 "));
+    expect(u7).toContain("$parent.CreationDate -gt $handover");
+    expect(u7).toContain("$_.CreationDate -gt $handover");
+    const u8 = update.slice(update.indexOf("Invoke-Step 'U8 "), update.indexOf("Invoke-Step 'U9 "));
+    expect(u8).toContain("is an inference from the app''s contract");
   });
 
   it("with the production script on the order of install, seed, export, takeover, start at login, carry-over and rollback", () => {

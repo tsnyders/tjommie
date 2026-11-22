@@ -238,6 +238,41 @@ describe.skipIf(!windows)("the acceptance library's pure helpers", () => {
     expect(run().checks.filter((check) => !check.ok)).toEqual([]);
   });
 
+  // T8.4 review m1: the owner's upgrade carries saved logins, so every data-root comparison also reports the saved-logins vault, and must not be an empty
+  // comparison (the seed puts invented logins in it). What verify found is judged here: nothing at the baseline, a login lost, a secret lost, and a secret
+  // the runner could never read, which is a note and never a pass.
+  it("holds the saved-logins vault to its invented logins, and tells an empty comparison, a lost login, a lost secret and an unchecked secret apart", () => {
+    const root = temp();
+    const judged = (vault: unknown): { ok: boolean; note: boolean; check: string }[] => runBody("accept-lib.ps1", String.raw`
+      . '${join(installer, "accept-phase3-lib.ps1")}'
+      Start-Acceptance 'x' '${join(root, "out")}'
+      $vault = '${JSON.stringify(vault)}' | ConvertFrom-Json
+      Test-VaultAsBaseline $vault 'T' | Out-Null
+      @($script:Checks.ToArray() | ForEach-Object { [ordered]@{ ok = [bool]$_['ok']; note = [bool]$_['note']; check = [string]$_['check'] } }) | ConvertTo-Json -Compress -AsArray
+    `) as { ok: boolean; note: boolean; check: string }[];
+    const side = (logins: number, secretsReadable: number, pendingDeletions = 0): { logins: number; secretsReadable: number; pendingDeletions: number; userVersion: number } => ({ logins, secretsReadable, pendingDeletions, userVersion: 0 });
+    const failed = (checks: { ok: boolean; check: string }[]): string[] => checks.filter((check) => !check.ok).map((check) => check.check);
+    // Intact, with the secrets read back: three checks, all passing, no notes.
+    const intact = judged({ before: side(2, 2), after: side(2, 2) });
+    expect(failed(intact)).toEqual([]);
+    expect(intact.filter((check) => check.note)).toEqual([]);
+    expect(intact.map((check) => check.check).join("\n")).toContain("read back identical");
+    // No vault at the baseline, or one with no logins: the comparison would have been empty, and that fails.
+    expect(failed(judged(null))).toEqual([expect.stringContaining("so it is not compared empty")]);
+    expect(failed(judged({ before: null, after: null }))).toEqual([expect.stringContaining("so it is not compared empty")]);
+    expect(failed(judged({ before: side(0, 0), after: side(0, 0) }))).toEqual([expect.stringContaining("so it is not compared empty")]);
+    // A login lost, one added, a deletion queued: the logins check. A secret that can no longer be read: the secrets check.
+    expect(failed(judged({ before: side(2, 2), after: side(1, 1) }))).toEqual([expect.stringContaining("every saved login is still in the vault"), expect.stringContaining("read back identical")]);
+    expect(failed(judged({ before: side(2, 2), after: side(3, 2) }))).toEqual([expect.stringContaining("every saved login is still in the vault")]);
+    expect(failed(judged({ before: side(2, 2), after: side(2, 2, 1) }))).toEqual([expect.stringContaining("every saved login is still in the vault")]);
+    expect(failed(judged({ before: side(2, 2), after: side(2, 1) }))).toEqual([expect.stringContaining("read back identical")]);
+    // A runner whose Credential Manager gave nothing: the records are compared, and the secrets are a note that says they were not checked, never a pass.
+    const unchecked = judged({ before: side(2, 0), after: side(2, 0) });
+    expect(failed(unchecked)).toEqual([]);
+    expect(unchecked.filter((check) => check.note).map((check) => check.check)).toEqual([expect.stringContaining("SECRETS were not checked")]);
+    expect(unchecked.some((check) => check.check.includes("read back identical"))).toBe(false);
+  });
+
   it("snapshots a tree, finds a file that is gone, changed or added, and adds sentinels of known size", () => {
     const root = temp();
     const result = runBody("accept-lib.ps1", String.raw`

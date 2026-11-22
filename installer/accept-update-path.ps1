@@ -11,8 +11,8 @@
 #   U4  the new app runs, started with --updated, and what is installed is the new payload and nothing of R1's
 #   U5  the uninstall entry points at the new uninstaller (a different file from R1's) and says the new version
 #   U6  the shortcut's AppUserModelID is the one R1's shortcut had
-#   U7  the new app runs the daemon bundled in its install folder, though nothing hands it one (image path and parent checked); the data root:
-#       user_version and row counts unchanged, nothing gone, nothing of the user's changed, additions only where the apps write
+#   U7  the new app runs the daemon bundled in its install folder, though nothing hands it one (image path, and that the new app started it, checked); the
+#       data root: user_version, row counts and every saved login unchanged, nothing gone, nothing of the user's changed, additions only where the apps write
 #   U8  the new app acknowledged the pending notice, which it does only after the OS has taken the toast: a notification posted
 #
 # The data root is TJOMMIE_HOME, a folder under %TEMP%: the test identity never touches %LOCALAPPDATA%\Tjommie. Evidence: installer-acceptance-update-path.json.
@@ -91,12 +91,17 @@ Invoke-Step 'U2 seed a data root, which R1''s own daemon starts on once' {
     $seeded = Invoke-Phase3Driver @('seed', '--root', $dataRoot, '--install', $installDir)
     Assert-Check ($seeded['exitCode'] -eq 0) 'U2: the data root was seeded' @($seeded['lines'] | Select-Object -Last 8)
     Assert-Check (Test-Path -LiteralPath (Join-Path $dataRoot 'data\tjommie.db')) 'U2: the database is there'
+    # The saved-logins vault, with invented logins in it (R1's own records writer and Credential Manager writer): what an owner's update carries.
+    Assert-Check (Test-Path -LiteralPath (Join-Path $dataRoot 'data\logins.sqlite')) 'U2: the saved-logins vault is there (data\logins.sqlite)'
+    foreach ($line in @($seeded['lines'] | Where-Object { $_ -match 'Seeded the saved-logins vault' })) { Add-Note "U2: $($line.Trim())" $line }
 }
 
 Invoke-Step 'U3 R1 finds the update in the local feed, downloads it and quits to install it' {
     $updated = Invoke-Phase3Driver @('r1-update', '--install', $installDir, '--feed', $feedDir, '--root', $dataRoot, '--user-data', $userData, '--baseline', $baseline, '--expect-version', $NewVersion)
     Assert-Check ($updated['exitCode'] -eq 0) 'U3: R1 downloaded the update from the feed and quit for it' @($updated['lines'] | Select-Object -Last 10)
     Assert-Check (Test-Path -LiteralPath $baseline) 'U3: the baseline of the data root was taken just before the restart' $baseline
+    # R1 has quit: the driver returns only after R1's close event. Every process of the exe that starts after this instant is the new app's, never R1's (U7).
+    $state['handover'] = Get-Date
 }
 
 Invoke-Step 'U4 the new app runs, started with --updated, and R1 is gone' {
@@ -154,19 +159,22 @@ Invoke-Step 'U7 the app runs the daemon it was installed with, and the data root
     $running = Wait-Until { @(Get-ProcessesOfExe $daemon).Count -ge 1 } 120
     Assert-Check $running 'U7: a daemon runs from the install folder, resources\daemon\tjommie-daemon.exe, though the app was handed none' $daemon
     if ($running) {
-        $long = Get-LongPath $daemon
-        # By image path, not by what the app says: every tjommie-daemon.exe on the machine is the install folder's own.
-        $everyDaemon = @(Get-CimInstance Win32_Process -Filter "Name = 'tjommie-daemon.exe'")
-        $elsewhere = @($everyDaemon | Where-Object { -not $_.ExecutablePath -or ($_.ExecutablePath -ine $long) } | ForEach-Object { "$($_.ProcessId): $($_.ExecutablePath)" })
-        Assert-Check ($elsewhere.Count -eq 0) 'U7: no daemon runs from anywhere but the install folder (the image path of each is resources\daemon\tjommie-daemon.exe there)' $elsewhere
-        # And it is the new app's: started by the new exe, not a leftover of R1's from the same path.
+        # (Get-ProcessesOfExe compared each process's image path with the installed daemon's, exactly: that is what "runs from the install folder" means here.)
+        # And it is the new app's, not a leftover of R1's: R1's exe has the same name and sits at the same path, so the image alone cannot say which app
+        # a process is. What can: R1 had quit before U3 returned ($state['handover']), so a daemon that started after that instant, under a new-exe
+        # process that started after it, belongs to the new app. (Test-InstalledPayload has shown the bytes on disk are the build's; this shows what runs.)
         $newLong = Get-LongPath $newExe
+        $handover = if ($state.ContainsKey('handover')) { [datetime]$state['handover'] } else { [datetime]::MaxValue }
         $notTheNewApps = @(Get-ProcessesOfExe $daemon | Where-Object {
             $parent = Get-CimInstance Win32_Process -Filter "ProcessId = $($_.ParentProcessId)"
-            -not ($parent -and $parent.ExecutablePath -and ($parent.ExecutablePath -ieq $newLong))
+            $ofTheNewApp = $parent -and $parent.ExecutablePath -and ($parent.ExecutablePath -ieq $newLong) -and ($parent.CreationDate -gt $handover) -and ($_.CreationDate -gt $handover)
+            -not $ofTheNewApp
         } | ForEach-Object { "$($_.ProcessId) (parent $($_.ParentProcessId))" })
-        Assert-Check ($notTheNewApps.Count -eq 0) 'U7: every such daemon was started by the new exe in the install folder' $notTheNewApps
-        Add-Note 'U7: the daemons running, with the image path and parent of each' @($everyDaemon | ForEach-Object { [ordered]@{ id = $_.ProcessId; parent = $_.ParentProcessId; exe = $_.ExecutablePath; started = [string]$_.CreationDate } })
+        Assert-Check ($notTheNewApps.Count -eq 0) 'U7: every such daemon was started, after R1 had quit, by the new exe in the install folder' @{ notTheNewApps = $notTheNewApps; handover = $handover.ToString('o') }
+        # What the new app started, found by parent and never by name (no script here looks a process up by its image name): each with its image path, as evidence
+        # of which daemon it ran.
+        $newAppIds = @(Get-ProcessesOfExe $newExe | Where-Object { $_.CreationDate -gt $handover } | ForEach-Object { $_.ProcessId })
+        Add-Note 'U7: the processes the new app started, with the image path of each' @(Get-CimInstance Win32_Process | Where-Object { $newAppIds -contains $_.ParentProcessId } | ForEach-Object { [ordered]@{ id = $_.ProcessId; parent = $_.ParentProcessId; exe = $_.ExecutablePath; started = [string]$_.CreationDate } })
     } else { Add-AppDiagnostics $installDir $dataRoot 'U7' }
     Start-Sleep -Seconds 5
     Test-DataRootAsBaseline $dataRoot $baseline $report 'U7' @('routine_failure_notifications')
@@ -183,6 +191,9 @@ Invoke-Step 'U8 the new app showed the pending notice, and only then acknowledge
     }
     Assert-Check $gone 'U8: the planted routine-failure notice was acknowledged by the new app, after the OS took the toast' $null
     if (-not $gone) { Add-AppDiagnostics $installDir $dataRoot 'U8' }
+    # What this does and does not see: a runner cannot watch the OS take a toast, so "a notification posted" is inferred from the app's own contract (T6.2: the
+    # notice is acknowledged only after the OS has taken the toast). A daemon that pruned the notice without a toast would pass.
+    Add-Note 'U8: "a notification posted" is an inference from the app''s contract (acknowledge only after the OS took the toast), not something this run observed' $null
 }
 
 Invoke-Step 'U9 keep the evidence, and stop what this run started' {

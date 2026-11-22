@@ -1,10 +1,11 @@
 import { spawnSync } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { dirname, join, relative, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
+import { VaultRecords, WindowsLoginCredentials, type VaultCredentials } from "../packages/desktop/src/vault-storage.ts";
 import { type Counts, assertCi, diffCounts, readCounts, runInstalledDaemon, seedRoot } from "./r1-acceptance.ts";
 
 // The Phase 3 acceptance run on a runner with R1 installed (plan T8.4, .github/workflows/desktop-acceptance.yml). The PowerShell scripts in installer/
@@ -22,9 +23,12 @@ import { type Counts, assertCi, diffCounts, readCounts, runInstalledDaemon, seed
 //                                                                     export file to say what they are
 //
 // Everything that changes the machine refuses to run anywhere but a GitHub-hosted runner (r1-acceptance.ts assertCi). This is never run on a real PC.
+//
+// The saved-logins vault is part of the data root and of every comparison: seed puts invented logins in it (R1's own VaultRecords for the records,
+// R1's own Credential Manager reader/writer for the secrets), snapshot and verify hold its records and secrets to the baseline (see "the saved-logins vault").
 
 export type Tree = Record<string, string>;
-export type Baseline = { counts: Counts; tree: Tree };
+export type Baseline = { counts: Counts; tree: Tree; vault: VaultSnapshot | null };
 
 // ---- the data root ----------------------------------------------------------------------------------------------------------------
 
@@ -84,13 +88,129 @@ export function compareCounts(label: string, expected: Counts, found: Counts, al
   });
 }
 
-export function snapshotRoot(root: string): Baseline {
+export async function snapshotRoot(root: string, credentials?: Pick<VaultCredentials, "read">): Promise<Baseline> {
   const dbFile = join(root, "data", "tjommie.db");
   if (!existsSync(dbFile)) throw new Error(`The database is missing: ${dbFile}`);
-  return { counts: readCounts(dbFile, join(root, "bots")), tree: treeOf(root) };
+  const counts = readCounts(dbFile, join(root, "bots"));
+  const vault = await snapshotVault(root, credentials);
+  return { counts, tree: treeOf(root), vault };
 }
 
-const readBaseline = (file: string): Baseline => JSON.parse(readFileSync(file, "utf8")) as Baseline;
+// A baseline written before the vault was part of it has no `vault`, which reads as "no vault then".
+const readBaseline = (file: string): Baseline => {
+  const parsed = JSON.parse(readFileSync(file, "utf8")) as Omit<Baseline, "vault"> & { vault?: VaultSnapshot | null };
+  return { ...parsed, vault: parsed.vault ?? null };
+};
+
+// ---- the saved-logins vault -------------------------------------------------------------------------------------------------------
+
+// data/logins.sqlite holds each saved login's metadata and the reference of its secret; the secret itself (username and password) is a Credential Manager
+// entry named by that reference, in the namespace of the data root. R1 and the new app share both. A person who upgrades must keep every saved login, and a
+// rollback to R1 must find them, so the baseline holds the records exactly and the secrets by SHA-256 (the baseline is uploaded as evidence; a secret is
+// never written down, not even an invented one).
+//
+// What can be read back is whatever R1's own reader (WindowsLoginCredentials) can read on this runner. ci.yml and r1-acceptance.yml say hosted service logons
+// cannot reliably reach Credential Manager, so a secret the runner would not take is recorded as not readable (`secret: null`) and is not held to anything:
+// the report says how many were, and the PowerShell side notes it instead of passing it as a check.
+export type VaultLogin = { id: string; reference: string; data: string; secret: string | null };
+export type VaultSnapshot = { userVersion: number; logins: VaultLogin[]; deletions: string[] };
+
+// The stored entry as JSON with its keys in a fixed order, so a rewrite that only reorders keys or spacing is not a change.
+const canonicalJson = (text: string): string => {
+  const sorted = (value: unknown): unknown =>
+    Array.isArray(value) ? value.map(sorted)
+      : value !== null && typeof value === "object" ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([key, inner]) => [key, sorted(inner)]))
+        : value;
+  return JSON.stringify(sorted(JSON.parse(text)));
+};
+
+async function secretHash(credentials: Pick<VaultCredentials, "read">, reference: string): Promise<string | null> {
+  try {
+    const secret = await credentials.read(reference);
+    return secret ? createHash("sha256").update(JSON.stringify([secret.username, secret.password])).digest("hex") : null;
+  } catch {
+    return null; // the runner's Credential Manager would not give it up: not readable, which is not the same as gone
+  }
+}
+
+// The vault as it is now, or null when the root has none. Read-only: this runs against whatever app has the file open, and by hand it must never be able to write.
+export async function snapshotVault(root: string, credentials: Pick<VaultCredentials, "read"> = new WindowsLoginCredentials(root)): Promise<VaultSnapshot | null> {
+  const file = join(root, "data", "logins.sqlite");
+  if (!existsSync(file)) return null;
+  const db = new DatabaseSync(file, { readOnly: true });
+  let userVersion: number;
+  let rows: { id: string; data: string; reference: string }[];
+  let deletions: string[];
+  try {
+    db.exec("PRAGMA busy_timeout = 15000");
+    userVersion = (db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
+    rows = db.prepare("SELECT id, data, reference FROM logins ORDER BY id").all() as { id: string; data: string; reference: string }[];
+    deletions = (db.prepare("SELECT reference FROM login_deletions ORDER BY reference").all() as { reference: string }[]).map((row) => row.reference);
+  } finally {
+    db.close();
+  }
+  const logins: VaultLogin[] = [];
+  for (const row of rows) logins.push({ id: row.id, reference: row.reference, data: canonicalJson(row.data), secret: await secretHash(credentials, row.reference) });
+  return { userVersion, logins, deletions };
+}
+
+// What differs between the vault at the baseline and now: a login gone, added or changed, its secret no longer readable (or different) when it was
+// readable at the baseline, a pending secret deletion that was not there, and the vault's user_version. No secret and no hash is ever in a message.
+export function compareVaults(before: VaultSnapshot | null, after: VaultSnapshot | null): string[] {
+  if (before === null) return after && (after.logins.length > 0 || after.deletions.length > 0) ? [`vault: the baseline had no saved logins, and now there are ${after.logins.length}`] : [];
+  if (after === null) return ["vault: data/logins.sqlite is gone"];
+  const problems: string[] = [];
+  if (after.userVersion !== before.userVersion) problems.push(`vault: user_version is ${after.userVersion}, expected ${before.userVersion}`);
+  const now = new Map(after.logins.map((login) => [login.id, login]));
+  for (const login of before.logins) {
+    const found = now.get(login.id);
+    if (!found) { problems.push(`vault: saved login ${login.id} is gone`); continue; }
+    if (found.reference !== login.reference) problems.push(`vault: saved login ${login.id} now names another secret`);
+    if (found.data !== login.data) problems.push(`vault: saved login ${login.id} changed`);
+    if (login.secret !== null && found.secret !== login.secret) problems.push(`vault: the secret of saved login ${login.id} ${found.secret === null ? "can no longer be read" : "is not what it was"}`);
+  }
+  const had = new Set(before.logins.map((login) => login.id));
+  for (const login of after.logins) if (!had.has(login.id)) problems.push(`vault: saved login ${login.id} is new`);
+  if (after.deletions.join("|") !== before.deletions.join("|")) problems.push(`vault: the secrets waiting to be deleted are ${after.deletions.length}, were ${before.deletions.length}`);
+  return problems;
+}
+
+export type VaultSummary = { logins: number; secretsReadable: number; pendingDeletions: number; userVersion: number };
+export const summarizeVault = (vault: VaultSnapshot | null): VaultSummary | null =>
+  vault && { logins: vault.logins.length, secretsReadable: vault.logins.filter((login) => login.secret !== null).length, pendingDeletions: vault.deletions.length, userVersion: vault.userVersion };
+
+// Invented logins, so that the vault is not empty when the new app and the rollback meet it. The records are written by R1's own VaultRecords, the way R1
+// saves a login (an id, a reference, then the entry), and each secret by R1's own Credential Manager writer, in this root's namespace.
+const INVENTED_LOGINS = [
+  { name: "Acceptance mail", origin: "https://mail.example.com", username: "acceptance-user-1" },
+  { name: "Acceptance bank", origin: "https://bank.example.com", username: "acceptance-user-2" },
+];
+
+export type SeededVault = { logins: number; secretsWritten: number; secretsRefused: number };
+
+export async function seedVault(root: string, credentials: Pick<VaultCredentials, "write"> = new WindowsLoginCredentials(root)): Promise<SeededVault> {
+  const botId = (() => {
+    const db = new DatabaseSync(join(root, "data", "tjommie.db"), { readOnly: true });
+    try { return (db.prepare("SELECT id FROM bots ORDER BY rowid LIMIT 1").get() as { id: string } | undefined)?.id; } finally { db.close(); }
+  })();
+  if (!botId) throw new Error("The database has no bot to hang a saved login on.");
+  const records = new VaultRecords(join(root, "data", "logins.sqlite"));
+  let written = 0;
+  try {
+    for (const login of INVENTED_LOGINS) {
+      const reference = randomUUID();
+      const now = new Date().toISOString();
+      records.saved({ id: randomUUID(), name: login.name, origin: login.origin, botId, revision: 1, createdAt: now, updatedAt: now }, reference);
+      try {
+        await credentials.write(reference, { username: login.username, password: randomBytes(18).toString("base64url") });
+        written++;
+      } catch { /* this runner's Credential Manager would not take it: counted below, and the baseline then holds the record alone */ }
+    }
+  } finally {
+    records.close();
+  }
+  return { logins: INVENTED_LOGINS.length, secretsWritten: written, secretsRefused: INVENTED_LOGINS.length - written };
+}
 
 // ---- seeding ----------------------------------------------------------------------------------------------------------------------
 
@@ -127,8 +247,9 @@ export function plantPendingNotice(dbFile: string): void {
   }
 }
 
+// Read-only: `notice` has no runner guard (it only looks), so by hand it must not be able to write to a live database.
 export function pendingNotices(dbFile: string): number {
-  const db = new DatabaseSync(dbFile);
+  const db = new DatabaseSync(dbFile, { readOnly: true });
   try {
     db.exec("PRAGMA busy_timeout = 15000");
     return (db.prepare("SELECT COUNT(*) AS n FROM routine_failure_notifications").get() as { n: number }).n;
@@ -243,7 +364,7 @@ async function r1Update(args: string[]): Promise<void> {
     if (ready.version !== expected) throw new Error(`R1 downloaded ${ready.version ?? "(no version)"}, expected ${expected}.`);
     console.error(`R1 downloaded ${ready.version}.`);
     plantPendingNotice(join(root, "data", "tjommie.db"));
-    writeFileSync(required(args, "baseline"), `${JSON.stringify(snapshotRoot(root), null, 2)}\n`);
+    writeFileSync(required(args, "baseline"), `${JSON.stringify(await snapshotRoot(root), null, 2)}\n`);
     console.error("Baseline written; asking R1 to restart to update.");
     const closed = new Promise<void>((done) => app.once("close", () => done()));
     await page.evaluate(() => (globalThis as unknown as Bridge).tjommie.updates.restart());
@@ -315,23 +436,28 @@ export async function main(argv: string[]): Promise<void> {
       const root = resolve(required(args, "root"));
       const counts = await seedRoot(root, (target) => runInstalledDaemon(install, target));
       const profiles = seedBrowserProfiles(root);
+      const vault = await seedVault(root);
       console.error(`Seeded ${Object.keys(counts.tables).length} tables (user_version ${counts.userVersion}), ${counts.botFiles} bot files and ${profiles.length} browser-profile files.`);
+      console.error(`Seeded the saved-logins vault: ${vault.logins} invented logins; their secrets written to Credential Manager: ${vault.secretsWritten}, refused by this runner: ${vault.secretsRefused}.`);
       return;
     }
     case "snapshot": {
-      const baseline = snapshotRoot(resolve(required(args, "root")));
+      const baseline = await snapshotRoot(resolve(required(args, "root")));
       writeFileSync(required(args, "out"), `${JSON.stringify(baseline, null, 2)}\n`);
       console.error(`Baseline: user_version ${baseline.counts.userVersion}, ${Object.keys(baseline.counts.tables).length} tables, ${Object.values(baseline.counts.tables).reduce((sum, rows) => sum + rows, 0)} rows, ${Object.keys(baseline.tree).length} files.`);
+      const vault = summarizeVault(baseline.vault);
+      console.error(vault ? `The saved-logins vault: ${vault.logins} logins, ${vault.secretsReadable} of their secrets readable, ${vault.pendingDeletions} secrets waiting to be deleted.` : "No saved-logins vault in this root.");
       return;
     }
     case "verify": {
       const root = resolve(required(args, "root"));
       const before = readBaseline(required(args, "baseline"));
-      const now = snapshotRoot(root);
+      const now = await snapshotRoot(root);
       const allow = (option(args, "allow-decrease") ?? "").split(",").filter(Boolean);
       const trees = compareTrees(before.tree, now.tree);
-      const problems = [...compareCounts("data root", before.counts, now.counts, allow), ...trees.problems];
+      const problems = [...compareCounts("data root", before.counts, now.counts, allow), ...trees.problems, ...compareVaults(before.vault, now.vault)];
       const report = {
+        vault: { before: summarizeVault(before.vault), after: summarizeVault(now.vault) },
         userVersion: { before: before.counts.userVersion, after: now.counts.userVersion },
         rows: { before: Object.values(before.counts.tables).reduce((sum, rows) => sum + rows, 0), after: Object.values(now.counts.tables).reduce((sum, rows) => sum + rows, 0) },
         tables: Object.fromEntries(Object.keys({ ...before.counts.tables, ...now.counts.tables }).map((name) => [name, { before: before.counts.tables[name] ?? null, after: now.counts.tables[name] ?? null }])),

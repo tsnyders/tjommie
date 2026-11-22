@@ -98,10 +98,27 @@ function Test-DataRootAsBaseline([string]$Root, [string]$Baseline, [string]$Repo
     if ($AllowDecrease.Count -gt 0) { $arguments += '--allow-decrease'; $arguments += ($AllowDecrease -join ',') }
     $result = Invoke-Phase3Driver $arguments
     $report = if (Test-Path -LiteralPath $ReportPath) { Read-Json $ReportPath } else { $null }
-    Assert-Check ($result['exitCode'] -eq 0) "$Label`: the data root is as the baseline left it (counts, user_version, every file)" @($result['lines'] | Select-Object -Last 12)
+    Assert-Check ($result['exitCode'] -eq 0) "$Label`: the data root is as the baseline left it (counts, user_version, every file, every saved login)" @($result['lines'] | Select-Object -Last 12)
     if ($null -ne $report) {
         Assert-Check ([int]$report.userVersion.after -eq [int]$report.userVersion.before) "$Label`: user_version is unchanged ($($report.userVersion.before))" $report.userVersion
         Add-Note "$Label`: user_version $($report.userVersion.before) -> $($report.userVersion.after); rows $($report.rows.before) -> $($report.rows.after); files $($report.files.before) -> $($report.files.after)" $report
+        Test-VaultAsBaseline $report.vault $Label
+    }
+}
+
+# What verify reported about the saved-logins vault (data\logins.sqlite): the owner's upgrade carries saved logins, so the comparison must not be an empty one.
+# verify itself fails on any difference (a login gone, added or changed, a secret lost or different); this makes the numbers part of the evidence, and
+# says plainly when the secrets could not be checked on this runner.
+function Test-VaultAsBaseline($Vault, [string]$Label) {
+    $before = if ($null -ne $Vault) { $Vault.before } else { $null }
+    $after = if ($null -ne $Vault) { $Vault.after } else { $null }
+    Assert-Check (($null -ne $before) -and ([int]$before.logins -ge 1)) "$Label`: the saved-logins vault held the invented logins at the baseline, so it is not compared empty" $Vault
+    if (($null -eq $before) -or ($null -eq $after)) { return }
+    Assert-Check (([int]$after.logins -eq [int]$before.logins) -and ([int]$after.pendingDeletions -eq [int]$before.pendingDeletions)) "$Label`: every saved login is still in the vault ($($before.logins) of $($before.logins)), none added, none waiting to be deleted that was not" $Vault
+    if ([int]$before.secretsReadable -ge 1) {
+        Assert-Check ([int]$after.secretsReadable -eq [int]$before.secretsReadable) "$Label`: the secrets of all $($before.secretsReadable) saved logins read back identical (the same SHA-256) through R1's own Credential Manager reader" $Vault
+    } else {
+        Add-Note "$Label`: the saved logins' SECRETS were not checked, only their records: this runner's Credential Manager would not take or give them (ci.yml says hosted logons cannot reliably reach it)" $Vault
     }
 }
 

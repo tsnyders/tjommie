@@ -282,12 +282,25 @@ jobs:
           $out = Join-Path $env:RUNNER_TEMP 'acceptance-build\r1-updatetest'
           New-Item -ItemType Directory -Force -Path $out | Out-Null
           Copy-Item -LiteralPath $built -Destination $out
+      # This artifact holds a production-identity installer with the real payload, on a public repository. The release workflow's dry run labels what it
+      # uploads as inspection only; so does this one (review n1): a person who installed it would get an unreleased version that later updates itself from
+      # the real feed. It is kept one day, because the jobs that use it run in this same workflow.
+      - name: Mark the build as not for installing
+        shell: pwsh
+        run: |
+          $text = @(
+            'DO NOT INSTALL ANYTHING IN THIS ARTIFACT ON A REAL PC.',
+            '',
+            "These are the acceptance run's builds of Tjommie $env:PHASE3_VERSION (commit $env:GITHUB_SHA, run $env:GITHUB_RUN_ID): a production-identity installer with the real payload, an update-test installer with its update feed, and R1's update-test build.",
+            'They exist for the jobs of this workflow run, which install them on disposable GitHub-hosted runners. Nothing in here is published. An unreleased production installer put on a PC would later update itself from the real update feed.'
+          )
+          Set-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'acceptance-build\DO-NOT-INSTALL.txt') -Value $text -Encoding utf8
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: acceptance-build
           path: ${{ runner.temp }}/acceptance-build
           if-no-files-found: error
-          retention-days: 3
+          retention-days: 1
 
   update-path:
     name: T8.4 step 1 - R1 updates itself to the Phase 3 app (update-test identity, local feed)
