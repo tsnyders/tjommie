@@ -13,7 +13,7 @@ use gpui::{
     StatefulInteractiveElement as _, Styled as _, StyledImage as _, Window, div, img, px,
 };
 use gpui_kit::component::WindowExt as _;
-use protocol::attachments::AttachmentRef;
+use protocol::attachments::{ATTACHMENT_CHUNK_BYTES, AttachmentRef};
 
 use super::card::{self, FileFacts, FileKey, Paused};
 use super::media::MediaView;
@@ -22,7 +22,7 @@ use super::source::Opened;
 use super::{PreviewKind, preview_kind};
 use crate::guard::{guarded, guarded_async};
 use crate::model::document_ranges::Signal;
-use crate::model::file_thumbnails::{animated, raster_dimensions};
+use crate::model::file_thumbnails::{ThumbnailError, animated, raster_dimensions};
 use crate::model::markdown_document::{MARKDOWN_SECTION_BYTES, markdown_section};
 use crate::semantic::SemanticExt as _;
 use crate::ui::primitives::button::{IconButton, Pill, PillVariant};
@@ -222,7 +222,17 @@ async fn read_image(opened: &Opened) -> Result<(Arc<Image>, f32, f32), String> {
         "image/webp" => ImageFormat::Webp,
         _ => return Err(CORRUPT.into()),
     };
-    let bytes = opened.read_all(IMAGE_BYTES).await?;
+    if info.size > IMAGE_BYTES {
+        return Err("This file is too large to preview. Download is still available.".into());
+    }
+    // The header settles the size from the first chunk as it would from the whole file (`raster_dimensions`): a picture
+    // refused for it is refused before the rest is read (M4 re-review R8).
+    let first = info.size.min(u64::from(ATTACHMENT_CHUNK_BYTES));
+    let mut bytes = opened.read_span(0, first).await?;
+    if let Err(ThumbnailError::Limit(_)) = raster_dimensions(&bytes, &info.content_type) {
+        return Err(CORRUPT.into());
+    }
+    bytes.extend(opened.read_span(first, info.size).await?);
     let size = raster_dimensions(&bytes, &info.content_type).map_err(|_| CORRUPT.to_owned())?;
     if u64::from(size.width) * u64::from(size.height) > IMAGE_PIXELS
         || animated(&bytes, &info.content_type)
@@ -563,5 +573,31 @@ impl Render for MarkdownFile {
                     .overflow_y_scroll()
                     .child(content),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::files::source::testing::{asked, png, reference, serving};
+
+    /// M4 re-review R8: the viewer checks a picture's header once its first chunk is in. A 20-megapixel photo is refused
+    /// there, as it was once all of it had been read; the megabytes after its header aren't asked for.
+    #[gpui::test]
+    fn a_picture_too_large_is_refused_from_its_first_chunk(cx: &mut gpui::TestAppContext) {
+        let (rpc, calls) = serving(cx, png(5472, 3648, 4 * 1024 * 1024), "image/png");
+        let refused = futures::executor::block_on(async {
+            let opened = Opened::open(rpc, reference()).await.unwrap();
+            read_image(&opened).await.err()
+        });
+        assert_eq!(
+            refused.as_deref(),
+            Some("This image is corrupt or unsupported. Download is still available.")
+        );
+        assert_eq!(
+            asked(&calls, "attachments.read"),
+            1,
+            "the rest of the file was read"
+        );
     }
 }

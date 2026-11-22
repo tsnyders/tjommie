@@ -169,7 +169,9 @@ fn le24(bytes: &[u8], at: usize) -> Option<u32> {
 }
 
 /// `rasterDimensions`: the pixel size from the header of PNG, GIF, WebP or JPEG bytes, read before a decoder is asked to
-/// decode untrusted data. Anything else (or a header it can't read) is unsupported.
+/// decode untrusted data. Anything else (or a header it can't read) is unsupported. It reads no further than the header,
+/// so what it says of a file's first bytes it says of the whole file, unless that is unsupported (a JPEG's frame header
+/// can lie further on): a picture too large is refused from its first chunk (M4 re-review R8).
 pub fn raster_dimensions(bytes: &[u8], content_type: &str) -> Result<Dimensions, ThumbnailError> {
     const PNG_SIGNATURE: [u8; 8] = [137, 80, 78, 71, 13, 10, 26, 10];
     if content_type == "image/png"

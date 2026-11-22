@@ -2,14 +2,15 @@
 //! right-click menu has Open, Restart to update (once an update is ready) and Quit.
 //!
 //! The icon lives on a hidden top-level window with its own thread and message loop, so it works while the UI thread is
-//! busy. The window procedure only turns messages into typed `TrayEvent`s on a channel; it never calls into the UI and
-//! never panics (a panic across a window procedure aborts the process).
+//! busy, and the UI thread never waits for it: Explorer can take seconds to take an icon. The window procedure only turns
+//! messages into typed `TrayEvent`s on a channel; it never calls into the UI and never panics (a panic across a window
+//! procedure aborts the process).
 
 use std::ffi::c_void;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::mpsc::{Sender, channel};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
+use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
@@ -147,16 +148,21 @@ struct Shared {
     icon_added: AtomicBool,
     /// The registered `TaskbarCreated` message: Explorer restarted, so the icon has to be added again.
     taskbar_created: AtomicU32,
+    /// The tray's window, once its thread has made it and offered Windows the icon; 0 until then.
+    hwnd: AtomicIsize,
+    /// Asked to go. A window made after the ask had no `WM_STOP` posted to it, so its thread takes it down.
+    stopping: AtomicBool,
 }
 
 pub struct Tray {
-    hwnd: isize,
     shared: Arc<Shared>,
     thread: Option<JoinHandle<()>>,
 }
 
 impl Tray {
-    /// Starts the tray's thread, adds the icon, and sends what the user picks to `events`.
+    /// Starts the tray's thread, which makes its window, adds the icon and sends what the user picks to `events`. It
+    /// returns without waiting for them, as Explorer can take seconds to take an icon (M6 re-review Nit 3): until it has,
+    /// `icon_added` is false. A window that can't be made is logged, and leaves it false.
     pub fn start(config: TrayConfig, events: Sender<TrayEvent>) -> Result<Tray, String> {
         let shared = Arc::new(Shared {
             state: Mutex::new(UpdateState::Idle),
@@ -165,18 +171,15 @@ impl Tray {
             tooltip: config.tooltip,
             icon_added: AtomicBool::new(false),
             taskbar_created: AtomicU32::new(0),
+            hwnd: AtomicIsize::new(0),
+            stopping: AtomicBool::new(false),
         });
-        let (ready_tx, ready_rx) = channel::<Result<isize, String>>();
         let thread_shared = Arc::clone(&shared);
         let thread = std::thread::Builder::new()
             .name("tray".into())
-            .spawn(move || run(&thread_shared, &ready_tx))
+            .spawn(move || run(&thread_shared))
             .map_err(|error| format!("The tray thread could not start: {error}"))?;
-        let hwnd = ready_rx
-            .recv()
-            .map_err(|_| "The tray thread stopped before it was ready.".to_string())??;
         Ok(Tray {
-            hwnd,
             shared,
             thread: Some(thread),
         })
@@ -194,39 +197,41 @@ impl Tray {
         self.shared.icon_added.load(Ordering::SeqCst)
     }
 
-    /// The tray's window, so tests can post it the icon's messages.
+    /// The tray's window, so tests can post it the icon's messages; 0 until its thread has made it.
     pub fn window(&self) -> isize {
-        self.hwnd
+        self.shared.hwnd.load(Ordering::SeqCst)
     }
 
     /// Takes the icon away now, without waiting for the drop: an app that is quitting must not leave its icon in the
     /// notification area until the pointer passes over it. The window goes with it (on its own thread, a moment later).
     pub fn remove(&self) {
-        // SAFETY: a window handle of ours; if it is already gone, the post just fails.
-        unsafe {
-            let _ = PostMessageW(
-                Some(HWND(self.hwnd as *mut c_void)),
-                WM_STOP,
-                WPARAM(0),
-                LPARAM(0),
-            );
-        }
+        stop(&self.shared);
     }
 }
 
 impl Drop for Tray {
     fn drop(&mut self) {
+        stop(&self.shared);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// Asks the tray's window to go: posted to it once it is made, else taken up by its thread when it makes it. One of the
+/// two always sees the other's write, so the ask is never lost.
+fn stop(shared: &Shared) {
+    shared.stopping.store(true, Ordering::SeqCst);
+    let hwnd = shared.hwnd.load(Ordering::SeqCst);
+    if hwnd != 0 {
         // SAFETY: a window handle of ours; if it is already gone, the post just fails.
         unsafe {
             let _ = PostMessageW(
-                Some(HWND(self.hwnd as *mut c_void)),
+                Some(HWND(hwnd as *mut c_void)),
                 WM_STOP,
                 WPARAM(0),
                 LPARAM(0),
             );
-        }
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
         }
     }
 }
@@ -289,7 +294,7 @@ fn remove_icon(hwnd: HWND) {
 
 static CLASS_COUNTER: AtomicU32 = AtomicU32::new(0);
 
-fn run(shared: &Arc<Shared>, ready: &Sender<Result<isize, String>>) {
+fn run(shared: &Arc<Shared>) {
     let class_name = wide(&format!(
         "TjommieTray-{}-{}",
         std::process::id(),
@@ -306,7 +311,7 @@ fn run(shared: &Arc<Shared>, ready: &Sender<Result<isize, String>>) {
             ..Default::default()
         };
         if RegisterClassW(&class) == 0 {
-            let _ = ready.send(Err("The tray window class could not be registered.".into()));
+            log::warn!("No tray icon: the tray window class could not be registered.");
             return;
         }
         // A hidden top-level window, never shown. Not message-only: `SetForegroundWindow` (which makes the context menu
@@ -330,9 +335,7 @@ fn run(shared: &Arc<Shared>, ready: &Sender<Result<isize, String>>) {
             Ok(hwnd) => hwnd,
             Err(error) => {
                 let _ = UnregisterClassW(PCWSTR(class_name.as_ptr()), Some(instance));
-                let _ = ready.send(Err(format!(
-                    "The tray window could not be created: {error}"
-                )));
+                log::warn!("No tray icon: the tray window could not be created: {error}");
                 return;
             }
         };
@@ -341,8 +344,14 @@ fn run(shared: &Arc<Shared>, ready: &Sender<Result<isize, String>>) {
             RegisterWindowMessageW(w!("TaskbarCreated")),
             Ordering::SeqCst,
         );
-        add_icon(hwnd, shared);
-        let _ = ready.send(Ok(hwnd.0 as isize));
+        if !shared.stopping.load(Ordering::SeqCst) {
+            add_icon(hwnd, shared);
+        }
+        shared.hwnd.store(hwnd.0 as isize, Ordering::SeqCst);
+        // Asked to go before the window was known: no `WM_STOP` was posted, so it goes now.
+        if shared.stopping.load(Ordering::SeqCst) {
+            let _ = DestroyWindow(hwnd);
+        }
         let mut message = MSG::default();
         while GetMessageW(&mut message, None, 0, 0).0 > 0 {
             let _ = TranslateMessage(&message);
@@ -463,6 +472,27 @@ mod tests {
             .collect()
     }
 
+    fn config() -> TrayConfig {
+        TrayConfig {
+            tooltip: "Tjommie RS test".into(),
+            icon_png: None,
+        }
+    }
+
+    /// A tray for a test, once its thread has made its window and offered the icon (`start` doesn't wait for them).
+    fn started(events: Sender<TrayEvent>) -> Tray {
+        let tray = Tray::start(config(), events).unwrap();
+        let begun = std::time::Instant::now();
+        while tray.window() == 0 {
+            assert!(
+                begun.elapsed() < Duration::from_secs(5),
+                "the tray's window was never made"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        tray
+    }
+
     // `updater.test.ts` "shows restart in the tray only after an update is ready".
     #[test]
     fn menu_items_follow_update_state() {
@@ -562,14 +592,7 @@ mod tests {
             BOOL(1)
         }
         let (events, _received) = channel();
-        let tray = Tray::start(
-            TrayConfig {
-                tooltip: "Tjommie RS test".into(),
-                icon_png: None,
-            },
-            events,
-        )
-        .unwrap();
+        let tray = started(events);
         let window = HWND(tray.window() as *mut c_void);
         // SAFETY: queries about the window this test owns, and one enumeration into a Vec that outlives it.
         unsafe {
@@ -596,14 +619,7 @@ mod tests {
     fn a_close_from_outside_does_not_take_the_tray_away() {
         use windows::Win32::UI::WindowsAndMessaging::IsWindow;
         let (events, _received) = channel();
-        let tray = Tray::start(
-            TrayConfig {
-                tooltip: "Tjommie RS test".into(),
-                icon_png: None,
-            },
-            events,
-        )
-        .unwrap();
+        let tray = started(events);
         let window = HWND(tray.window() as *mut c_void);
         // SAFETY: posts to, and asks about, the window this test owns.
         unsafe { PostMessageW(Some(window), WM_CLOSE, WPARAM(0), LPARAM(0)) }.unwrap();
@@ -624,25 +640,24 @@ mod tests {
     }
 
     /// Re-review Nit 7: the icon of an app that is quitting is removed when it asks, not whenever the process is torn down.
+    /// M6 re-review Nit 3: `start` doesn't wait for the window, so the ask can come before the window is made; it goes
+    /// once it is.
     #[test]
     fn removing_the_tray_takes_its_icon_and_window_away_at_once() {
         use windows::Win32::UI::WindowsAndMessaging::IsWindow;
         let (events, _received) = channel();
-        let tray = Tray::start(
-            TrayConfig {
-                tooltip: "Tjommie RS test".into(),
-                icon_png: None,
-            },
-            events,
-        )
-        .unwrap();
-        let window = HWND(tray.window() as *mut c_void);
+        let tray = Tray::start(config(), events).unwrap();
         tray.remove();
-        let started = std::time::Instant::now();
-        // SAFETY: a query about a window handle, which is safe to ask of one that is gone.
-        while unsafe { IsWindow(Some(window)).as_bool() } {
+        // The window is made either way, and taken down.
+        let gone = || {
+            let window = tray.window();
+            // SAFETY: a query about a window handle, which is safe to ask of one that is gone.
+            window != 0 && !unsafe { IsWindow(Some(HWND(window as *mut c_void))).as_bool() }
+        };
+        let begun = std::time::Instant::now();
+        while !gone() {
             assert!(
-                started.elapsed() < Duration::from_secs(5),
+                begun.elapsed() < Duration::from_secs(5),
                 "the tray window was still there after remove()"
             );
             std::thread::sleep(Duration::from_millis(20));
@@ -656,14 +671,7 @@ mod tests {
     #[test]
     fn a_left_click_on_the_icon_shows_the_window() {
         let (events, received) = channel();
-        let tray = Tray::start(
-            TrayConfig {
-                tooltip: "Tjommie RS test".into(),
-                icon_png: None,
-            },
-            events,
-        )
-        .unwrap();
+        let tray = started(events);
         // A machine with no desktop shell (a CI runner, a service) can't take the icon; the routing below doesn't need it.
         if std::env::var_os("CI").is_none() {
             assert!(
