@@ -1,8 +1,25 @@
 name: Release
 
+# 0.6.0 and after: a native Windows app (the Rust desktop and daemon, the speech runtime) installed by a hand-written NSIS installer
+# (installer/tjommie.nsi, T8.2), plus the Android APK. It publishes the installer and a latest.yml in electron-builder's format, which R1's
+# electron-updater and the Rust updater both read. There is no Electron packaging and no block map.
+#
+# Two ways in:
+#   - a push of a v* tag publishes, exactly as before: the tag must match package.json and sit on main, and the release job needs both builds.
+#   - anything else is a DRY RUN. It builds everything the release builds, runs every check, and uploads the installer, latest.yml and a
+#     release-manifest.json as workflow ARTIFACTS ONLY (release-dryrun-windows). It never creates a release, never pushes a tag, never touches a
+#     latest.yml on any release, and skips the Android build (its signing secrets are for a real release). Start one with
+#     `gh workflow run release.yml --ref <branch>` (workflow_dispatch), or by pushing a branch named release-dryrun-<anything>.
+#     That artifact is FOR INSPECTION ONLY: it is a production-identity installer on a public repository, so never install one. (It is
+#     not on any update feed, and release-manifest.json says dryRun: true, published: false.)
+#     scripts/release-mode.ts decides which it is, from the event and the ref, and defaults to a dry run; scripts/release-workflow.test.ts
+#     proves no step outside the publish job can create a release.
+
 on:
   push:
     tags: ['v*']
+    branches: ['release-dryrun-*']
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -15,6 +32,9 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      dry_run: ${{ steps.mode.outputs.dry_run }}
+      version: ${{ steps.mode.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -23,7 +43,12 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24'
+      - name: Decide whether this run may publish
+        id: mode
+        shell: bash
+        run: node scripts/release-mode.ts >> "$GITHUB_OUTPUT"
       - name: Check tag and extract release notes
+        if: ${{ steps.mode.outputs.dry_run == 'false' }}
         shell: bash
         run: |
           version="$(node -p "require('./package.json').version")"
@@ -37,7 +62,14 @@ jobs:
           fi
           node packages/mobile/scripts/apply-native.mjs --check "$version"
           node scripts/changelog-section.ts "$version" > notes.md
+      # A dry run reports the Android version map but does not fail on it: a branch whose version has not been bumped yet must still build.
+      - name: Check the Android version map (a dry run only reports it)
+        if: ${{ steps.mode.outputs.dry_run == 'true' }}
+        continue-on-error: true
+        shell: bash
+        run: node packages/mobile/scripts/apply-native.mjs --check "$(node -p "require('./package.json').version")"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ steps.mode.outputs.dry_run == 'false' }}
         with:
           name: release-notes
           path: notes.md
@@ -46,11 +78,21 @@ jobs:
   windows:
     needs: verify
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 120
+    env:
+      DRY_RUN: ${{ needs.verify.outputs.dry_run }}
+      VERSION: ${{ needs.verify.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The installer script and its helpers come from the T8.2 work. Missing, the build cannot go on, and this says so before an hour is spent.
+      - name: The installer's files are here
+        shell: pwsh
+        run: |
+          $needed = 'tjommie.nsi', 'build-installer.ps1', 'identities.json', 'helper-log.ps1', 'scoped-processes.ps1', 'stop-install-processes.ps1', 'unlink-reparse-points.ps1', 'set-shortcut-aumid.ps1'
+          $missing = @($needed | Where-Object { -not (Test-Path -LiteralPath (Join-Path 'installer' $_) -PathType Leaf) })
+          if ($missing.Count -gt 0) { throw "installer/ is missing: $($missing -join ', '). The installer (T8.2) has to be merged before a release can be built." }
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24'
@@ -64,45 +106,176 @@ jobs:
       - name: Build and verify pinned local speech runtime
         shell: pwsh
         run: ./packages/desktop/scripts/build-speech-runtime.ps1
-      # The installer carries the Rust daemon, so build it first. Inside tjommie-rs so rustup applies rust-toolchain.toml.
+      # Inside tjommie-rs so rustup applies rust-toolchain.toml.
       - name: Install the pinned Rust toolchain
         working-directory: tjommie-rs
         run: rustup toolchain install
-      - name: Build the Rust daemon
+      # The production identity is the only one with the update feed and the login item (spec section 3.10). No test-driver feature.
+      - name: Build the production desktop app and the daemon
         working-directory: tjommie-rs
-        run: cargo build --release --locked -p daemon --bin tjommie-daemon
-      - run: npm run package
-      - run: npm run test:packaged
-      - name: Check installer update metadata
+        env:
+          TJOMMIE_IDENTITY: production
+        run: cargo build --release --locked -p daemon -p desktop
+      # The M0 review's N3: a release has the update feed and no test driver. rust-dev.yml checks the opposite for a dev build. And the
+      # provider-fixtures review's F2: the daemon has no provider-fixtures build marker. This is the raw file cargo just wrote, before NSIS
+      # compresses anything into an installer, and the check first shows that its search can find a string it planted.
+      - name: The production binaries have the update feed, no test driver and no provider fixtures
+        shell: pwsh
+        run: ./installer/check-production-binaries.ps1 -Desktop tjommie-rs\target\release\tjommie-desktop.exe -Daemon tjommie-rs\target\release\tjommie-daemon.exe
+      # The crates that ship must be the version being released. A dry run reports a mismatch as a warning (a branch may not be bumped yet).
+      - name: The crates ship the version being released
+        id: crates
         shell: pwsh
         run: |
-          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
-          $name = "Tjommie-Setup-$version.exe"
-          $installer = Join-Path dist-desktop/installer $name
-          $blockmap = "$installer.blockmap"
-          $metadata = 'dist-desktop/installer/latest.yml'
-          foreach ($path in @($installer, $blockmap, $metadata)) {
-            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Missing release asset: $path" }
+          # An array, because a lone string splatted into a native command is split into single characters.
+          $strict = @()
+          if ($env:DRY_RUN -eq 'true') { $strict += '--warn' }
+          $text = (& node scripts/check-release-version.ts @strict 2>&1 | Out-String)
+          Write-Output $text
+          if ($LASTEXITCODE -ne 0) { throw 'The crates do not ship the version being released.' }
+          $status = if ($text -match '::warning::(.+)') { "warning: $($Matches[1].Trim())" } else { 'passed' }
+          "status=$status" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+      # pdfium, for the PDF viewer, comes from the Chat lane's script: the pinned bblanchon release, its archive checked by SHA-256, then the DLL
+      # inside it, and the licence texts that have to ship with it. They are fetched into a folder of their own, because the payload assembler never
+      # writes into a folder that has anything in it. The DLL is then checked once more against installer/tool-hashes.json, the value a release
+      # pins. A dry run on a branch that does not have the script yet goes on without pdfium (the payload manifest lists it as pending); a
+      # release stops here, and the assembler refuses it again.
+      - name: Fetch pdfium and check it against the recorded hash
+        shell: pwsh
+        run: |
+          $more = @{}
+          if ($env:DRY_RUN -ne 'true') { $more['Release'] = $true }
+          $fetch = 'tjommie-rs\tools\fetch-pdfium.ps1'
+          $dir = Join-Path $env:RUNNER_TEMP 'pdfium'
+          if (Test-Path -LiteralPath $fetch -PathType Leaf) {
+            & $fetch -Destination "$dir\pdfium.dll" -Licenses "$dir\licenses"
+            ./installer/check-tool-hashes.ps1 -Tool pdfium -Path "$dir\pdfium.dll" @more
+          } elseif ($env:DRY_RUN -ne 'true') {
+            throw "$fetch is missing: the PDF viewer has to be merged before a release can be built."
+          } else {
+            Write-Output "::warning::$fetch is missing, so this dry run goes on without pdfium. A release will not."
           }
-          $lines = Get-Content -LiteralPath $metadata
-          if ($lines -notcontains "version: $version" -or $lines -notcontains "path: $name") {
-            throw 'latest.yml does not name this installer version.'
-          }
-          $sha512 = [Convert]::ToBase64String([Convert]::FromHexString((Get-FileHash -LiteralPath $installer -Algorithm SHA512).Hash))
-          if (@($lines | Where-Object { $_.Trim() -eq "sha512: $sha512" }).Count -eq 0) {
-            throw 'latest.yml SHA-512 does not match the installer.'
-          }
+      # The third-party notices: the file the About screen shows, installed beside Tjommie.exe. cargo-about lists the Rust crates in the Windows
+      # binaries with their licence texts; it is fetched at the version and SHA-256 recorded in installer/tool-hashes.json (the archive is checked
+      # before it is extracted, the exe after), by a script, so this step runs no download of its own.
+      - name: Fetch cargo-about at the pinned version
+        shell: pwsh
+        run: ./installer/fetch-cargo-about.ps1 -Destination "$env:RUNNER_TEMP\cargo-about"
+      # A licence that installer/about.toml does not accept fails the build (cargo-about exits 1 and writes nothing), so a new licence is read and
+      # added on purpose. scripts/make-third-party-notices.ts then adds pdfium, the speech runtime, the fonts and the icon set, and refuses to
+      # write a shorter file if any of them is missing; a release also needs pdfium's licences in it (--strict).
+      - name: Write the third-party notices
+        shell: pwsh
+        run: |
+          $root = $env:GITHUB_WORKSPACE
+          $crates = "$env:RUNNER_TEMP\crates-licenses.txt"
+          # Run inside tjommie-rs, so the pinned toolchain from rust-toolchain.toml and Cargo.lock are the ones cargo-about reads.
+          Push-Location tjommie-rs
+          & "$env:RUNNER_TEMP\cargo-about\cargo-about.exe" generate --manifest-path Cargo.toml --workspace --locked --fail --config "$root\installer\about.toml" -o $crates "$root\installer\about.hbs"
+          $status = $LASTEXITCODE
+          Pop-Location
+          if ($status -ne 0) { throw "cargo-about failed (exit $status): a licence is not on the accepted list in installer/about.toml, or could not be worked out." }
+          # An array, because a lone string splatted into a native command is split into single characters.
+          $more = @()
+          if ($env:DRY_RUN -ne 'true') { $more += '--strict' }
+          $pdfium = Join-Path $env:RUNNER_TEMP 'pdfium\licenses'
+          if (Test-Path -LiteralPath $pdfium) { $more += '--pdfium-licenses', $pdfium }
+          node scripts/make-third-party-notices.ts --version $env:VERSION --crates $crates --speech .cache\speech-runtime --out "$env:RUNNER_TEMP\third-party-notices.txt" @more
+          if ($LASTEXITCODE -ne 0) { throw 'The third-party notices could not be written.' }
+      # resources\daemon\tjommie-daemon.exe is where the app looks for its daemon, and where R1 kept it. A release needs pdfium.dll, its
+      # licence texts and the notices too, and the assembler refuses a release without them; a dry run records what is missing as pending.
+      - name: Assemble the installer's payload
+        shell: pwsh
+        run: |
+          # A hashtable, because only that binds a switch: a splatted array of '-Release' is passed as a positional value and the switch stays off.
+          # Anything but an exact 'true' is a release, so a missing mode output is the strict case.
+          $more = @{}
+          $more['ThirdPartyNotices'] = "$env:RUNNER_TEMP\third-party-notices.txt"
+          $pdfium = Join-Path $env:RUNNER_TEMP 'pdfium'
+          if (Test-Path -LiteralPath "$pdfium\pdfium.dll") { $more['Pdfium'] = "$pdfium\pdfium.dll"; $more['PdfiumLicenses'] = "$pdfium\licenses" }
+          if ($env:DRY_RUN -ne 'true') { $more['Release'] = $true }
+          ./installer/assemble-payload.ps1 -OutDir "$env:RUNNER_TEMP\payload" -ManifestPath "$env:RUNNER_TEMP\payload-manifest.json" -Desktop tjommie-rs\target\release\tjommie-desktop.exe -Daemon tjommie-rs\target\release\tjommie-daemon.exe -SpeechDir .cache\speech-runtime @more
+      - name: Install NSIS
+        run: choco install nsis --version=3.11 --no-progress -y
+      # NSIS is fetched by version only, and its compiler, stubs and plugins end up in the installer R1 installs, so what Chocolatey put there
+      # is checked against the SHA-256 values recorded in installer/tool-hashes.json. A mismatch fails the build. A release is not built
+      # until the values are recorded; a dry run records what it saw in its artifact. (pdfium.dll gets the same check, with
+      # `-Tool pdfium -Path <the file>`, in the step that fetches it.)
+      - name: The NSIS compiler is the one that was recorded
+        shell: pwsh
+        run: |
+          $more = @{}
+          if ($env:DRY_RUN -ne 'true') { $more['Release'] = $true }
+          New-Item -ItemType Directory -Force -Path dist-desktop | Out-Null
+          ./installer/check-tool-hashes.ps1 -Tool nsis -Path "${env:ProgramFiles(x86)}\NSIS" -Observed dist-desktop\tool-hashes-nsis.json @more
+      - name: Build the installer
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist-desktop\installer | Out-Null
+          ./installer/build-installer.ps1 -Identity production -Version $env:VERSION -PayloadDir "$env:RUNNER_TEMP\payload" -OutFile "dist-desktop\installer\Tjommie-Setup-$env:VERSION.exe"
+      - name: Write latest.yml
+        shell: pwsh
+        run: node scripts/make-latest-yml.ts --installer "dist-desktop/installer/Tjommie-Setup-$env:VERSION.exe" --version $env:VERSION --out dist-desktop/installer/latest.yml
+      # The old "Check installer update metadata" step, widened: the SHA-512 and size, the names, no block map, and the AppId the Rust updater checks.
+      - name: Check the installer against its latest.yml
+        shell: pwsh
+        run: ./installer/check-release-installer.ps1 -Installer "dist-desktop\installer\Tjommie-Setup-$env:VERSION.exe" -LatestYml dist-desktop\installer\latest.yml -Version $env:VERSION
+      - name: Write the release manifest
+        shell: pwsh
+        env:
+          CRATE_VERSIONS: ${{ steps.crates.outputs.status }}
+        run: |
+          $nsis = (& "${env:ProgramFiles(x86)}\NSIS\makensis.exe" /VERSION | Out-String).Trim()
+          # rustc is asked inside tjommie-rs, so it is the pinned toolchain from rust-toolchain.toml that answers.
+          Push-Location tjommie-rs
+          $rustc = (& rustc --version | Out-String).Trim()
+          Pop-Location
+          $root = $env:GITHUB_WORKSPACE
+          ./installer/write-release-manifest.ps1 -Version $env:VERSION -Installer "$root\dist-desktop\installer\Tjommie-Setup-$env:VERSION.exe" -LatestYml "$root\dist-desktop\installer\latest.yml" -PayloadManifest "$env:RUNNER_TEMP\payload-manifest.json" -Desktop "$root\tjommie-rs\target\release\tjommie-desktop.exe" -Daemon "$root\tjommie-rs\target\release\tjommie-daemon.exe" -Out "$root\dist-desktop\release-manifest.json" -DryRun $env:DRY_RUN -Rustc $rustc -Nsis $nsis -VersionCheck $env:CRATE_VERSIONS -ToolHashes "$root\dist-desktop\tool-hashes-nsis.json"
+      # The debug symbols are a release asset of their own and are never in the installer: the PDBs of the desktop app and of the daemon, which
+      # turn a crash's addresses into function names and lines. A release needs both; a dry run packs what exists and warns about the rest.
+      - name: Pack the debug symbols
+        shell: pwsh
+        run: |
+          $more = @{}
+          if ($env:DRY_RUN -ne 'true') { $more['Release'] = $true }
+          ./installer/pack-symbols.ps1 -OutFile "dist-desktop\installer\Tjommie-$env:VERSION-symbols.zip" -Pdb tjommie-rs\target\release\tjommie_desktop.pdb, tjommie-rs\target\release\tjommie_daemon.pdb @more
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ needs.verify.outputs.dry_run == 'false' }}
         with:
           name: windows-assets
           path: |
             dist-desktop/installer/Tjommie-Setup-*.exe
-            dist-desktop/installer/Tjommie-Setup-*.exe.blockmap
             dist-desktop/installer/latest.yml
+            dist-desktop/installer/Tjommie-*-symbols.zip
           if-no-files-found: error
+      # A dry run's artifact has its own name, so nothing downstream can mistake it for the release's.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ needs.verify.outputs.dry_run == 'true' }}
+        with:
+          name: release-dryrun-windows
+          path: |
+            dist-desktop/installer/Tjommie-Setup-*.exe
+            dist-desktop/installer/latest.yml
+            dist-desktop/installer/Tjommie-*-symbols.zip
+            dist-desktop/release-manifest.json
+            dist-desktop/tool-hashes-nsis.json
+          if-no-files-found: error
+          retention-days: 14
+      # What the NSIS check saw, kept even when it failed (the build stops there, before the upload above): a person reviewing a difference,
+      # or recording the values the first time, needs what the runner really has.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ always() && needs.verify.outputs.dry_run == 'true' }}
+        with:
+          name: release-dryrun-tool-hashes
+          path: dist-desktop/tool-hashes-nsis.json
+          if-no-files-found: ignore
+          retention-days: 14
 
+  # The Android APK is signed with the release keystore (repository secrets), so a dry run does not build it.
   android:
     needs: verify
+    if: ${{ needs.verify.outputs.dry_run == 'false' }}
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
@@ -201,8 +374,11 @@ jobs:
           path: dist-mobile/Tjommie-Android-*.apk
           if-no-files-found: error
 
+  # The only job that can create a release: it has the only write permission, and it runs only for a push of a v* tag. The condition is
+  # written out here and checked again inside the step, so no change to one place alone can make a dry run publish.
   release:
-    needs: [windows, android]
+    needs: [verify, windows, android]
+    if: ${{ needs.verify.outputs.dry_run == 'false' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -220,18 +396,81 @@ jobs:
         with:
           name: android-assets
           path: release-assets
-      - name: Publish GitHub release
+      # The owner's decision on F2 (2026-11-15): no 0.5.x release after 0.6.0. GitHub's "latest release" is what both updaters follow (R1's
+      # electron-updater reads releases/latest, the Rust updater releases/latest/download/latest.yml), and neither takes a version that is
+      # not newer than the one installed, so a release that is not newer than the latest would reach nobody, or would strand whoever
+      # updated to the version it replaced. So before anything is created the latest release's tag is read, and this tag's version has to be
+      # strictly greater (semantic versioning: a plain release is newer than a prerelease of the same version, build metadata does not
+      # count). It only reads (`gh release view`), and anything it cannot read or understand refuses. scripts/release-workflow.test.ts
+      # runs this very text against a stand-in `gh`.
+      - name: The release is newer than the latest one
         shell: bash
         env:
           GITHUB_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           tag="$GITHUB_REF_NAME"
+          core='(0|[1-9][0-9]{0,8})'
+          if [[ ! "${tag#v}" =~ ^$core\.$core\.$core$ ]]; then
+            echo "Refusing to publish: the tag $tag is not v<major>.<minor>.<patch>." >&2
+            exit 1
+          fi
+          new=("${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}")
+          errors="$(mktemp)"
+          if latest="$(gh release view --json tagName --jq .tagName 2>"$errors")"; then
+            :
+          elif grep -qi "release not found" "$errors"; then
+            echo "There is no earlier release, so $tag is the first."
+            exit 0
+          else
+            echo "Refusing to publish: the latest release could not be read: $(cat "$errors")" >&2
+            exit 1
+          fi
+          prerelease='(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?'
+          build='(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?'
+          if [[ ! "${latest#v}" =~ ^$core\.$core\.$core$prerelease$build$ ]]; then
+            echo "Refusing to publish: the latest release is tagged \"$latest\", which is not a semantic version, so $tag cannot be compared with it." >&2
+            exit 1
+          fi
+          old=("${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}")
+          pre="${BASH_REMATCH[4]}"
+          verdict=equal
+          for i in 0 1 2; do
+            a=$((10#${new[i]}))
+            b=$((10#${old[i]}))
+            if (( a > b )); then verdict=newer; break; fi
+            if (( a < b )); then verdict=older; break; fi
+          done
+          if [[ "$verdict" == equal && -n "$pre" ]]; then verdict=newer; fi
+          case "$verdict" in
+            newer)
+              echo "$tag is newer than the latest release, $latest."
+              ;;
+            older)
+              echo "Refusing to publish: $tag is older than the latest release, $latest. No release is made after a newer one: the updaters would never offer it." >&2
+              exit 1
+              ;;
+            *)
+              echo "Refusing to publish: $tag is the same version as the latest release, $latest." >&2
+              exit 1
+              ;;
+          esac
+      - name: Publish GitHub release
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" != "push" || "$GITHUB_REF" != refs/tags/v* ]]; then
+            echo "Refusing to publish: this is not a push of a v* tag." >&2
+            exit 1
+          fi
+          tag="$GITHUB_REF_NAME"
           version="${tag#v}"
           gh release create "$tag" \
             "release-assets/Tjommie-Setup-$version.exe" \
-            "release-assets/Tjommie-Setup-$version.exe.blockmap" \
             release-assets/latest.yml \
             "release-assets/Tjommie-Android-$version.apk" \
+            "release-assets/Tjommie-$version-symbols.zip" \
             --title "Tjommie $version" --notes-file release-notes/notes.md \
             --generate-notes --verify-tag

@@ -44,8 +44,9 @@ debug = "line-tables-only"
 [profile.dev.package."*"]
 debug = false
 
-# The desktop crash log's backtraces keep file:line in release (Phase 3 plan T0.4); the PDB ships with the app in M8.
-# The daemon's release build stays R1's.
+# The desktop crash log's backtraces keep file:line in release (Phase 3 plan T0.4). Each binary's PDB is then packed by the release workflow
+# into the separate Tjommie-<version>-symbols.zip asset (installer/pack-symbols.ps1); neither goes into the installer. The daemon gets the
+# same line tables as the desktop crates, so that its PDB exists too: a release is refused without both. Every crate of this workspace has them.
 [profile.release.package.desktop]
 debug = "line-tables-only"
 
@@ -53,4 +54,14 @@ debug = "line-tables-only"
 debug = "line-tables-only"
 
 [profile.release.package.client]
+debug = "line-tables-only"
+
+[profile.release.package.daemon]
+debug = "line-tables-only"
+
+# protocol and transport are linked into both binaries, so their frames appear in both crash backtraces.
+[profile.release.package.protocol]
+debug = "line-tables-only"
+
+[profile.release.package.transport]
 debug = "line-tables-only"
