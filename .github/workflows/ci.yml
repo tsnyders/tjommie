@@ -68,6 +68,9 @@ jobs:
       # whole closure inside guarded(.
       - run: ./tools/check-guarded.ps1 -SelfTest
       - run: ./tools/check-guarded.ps1
+      # The motion checks' frame statistics (Phase 3 plan T7.2): percentiles, the window filters and the 1 % lost-presents
+      # rule, on the script's own samples (no PresentMon). -I: the interpreter ignores the working folder and PYTHON*.
+      - run: python -I tools/perf/frame-stats.py --self-test
       # The pinned pdfium.dll (Phase 3 plan T4.4): the archive and the DLL are each checked by SHA-256. The PDF tests
       # (pdf::range_reads_only) and the e2e app's PDF viewer find it through TJOMMIE_PDFIUM_DLL; on CI the tests fail
       # without it rather than skip.
