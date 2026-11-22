@@ -57,3 +57,19 @@ fn path_prompt_answers_only_with_the_test_driver() {
     let has_hook = exe.windows(needle.len()).any(|bytes| bytes == needle);
     assert_eq!(has_hook, cfg!(feature = "test-driver"));
 }
+
+/// The motion checks' switches are in the app only with the test driver (M7 review m6): a production binary has no
+/// `--trace` to write a file wherever it is told, nor `--force-reduced` to override Windows' motion setting.
+#[test]
+fn motion_switches_only_with_the_test_driver() {
+    let exe = std::fs::read(env!("CARGO_BIN_EXE_tjommie-desktop")).unwrap();
+    for needle in [&b"--trace"[..], &b"--force-reduced"[..]] {
+        let has = exe.windows(needle.len()).any(|bytes| bytes == needle);
+        assert_eq!(
+            has,
+            cfg!(feature = "test-driver"),
+            "{}",
+            String::from_utf8_lossy(needle)
+        );
+    }
+}
