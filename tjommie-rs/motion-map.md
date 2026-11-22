@@ -8,7 +8,9 @@ and the check that proves it. A motion the desktop has no place for says "n/a on
 The rules every motion keeps (plan T2.3, T7.2):
 
 - **Keyboard:** a change a key makes lands at once, with no frames in between (`motion::keyboard::Trigger`). Typing is
-  no command, so the glance at what you type and the send button's pop still move.
+  no command, so the glance at what you type and the send button's pop still move. The `motion-keyboard` check counts
+  the frames the flight and a toast drew after the key, by the frame log's marks (`clock::mark`), and wants none; under
+  `--force-reduced`, `motion-reduced` does the same by the pointer and counts Recents' moving frames.
 - **Reduced motion:** with Windows' Animation effects off (or `--force-reduced`), every motion lands at once: no frames
   in between, the eyes keep their pose, numbers snap (`motion::reduced`, which also drives GPUI's and gpui-kit's own
   flag). The design's reduced-motion fades and cross-fades are snaps here too (the plan's rule wins).

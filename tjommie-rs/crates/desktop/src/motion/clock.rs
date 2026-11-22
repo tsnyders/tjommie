@@ -28,12 +28,20 @@ const LOG: usize = 2048;
 /// The frame interval of an inactive window with nothing live: 30 fps.
 const INACTIVE: Duration = Duration::from_nanos(33_333_333);
 
-/// A frame: when it began and when its paint ended (QPC), and whether something moved in it.
+/// A frame mark: the avatar's flight drew in it (`mark`).
+pub const FLIGHT: u8 = 1;
+/// A frame mark: a toast moved in it.
+pub const TOAST: u8 = 2;
+
+/// A frame: when it began and when its paint ended (QPC), whether something moved in it, and which marked motions drew
+/// in it (`FLIGHT`, `TOAST`): the motion checks count those frames after a key (M7 review m3), as the eyes' blinks make
+/// `moving` no measure of one motion.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Frame {
     pub begin_qpc: i64,
     pub painted_qpc: i64,
     pub moving: bool,
+    pub marks: u8,
 }
 
 pub struct Clock {
@@ -47,6 +55,8 @@ pub struct Clock {
     last_moving: Option<Instant>,
     /// Something asked for another frame during this frame.
     moving: bool,
+    /// The marked motions that drew in this frame.
+    marks: u8,
     /// A throttled frame is on its way: only its own timer clears this, so a redraw in between starts no second
     /// chain (review F2).
     throttled: bool,
@@ -85,6 +95,7 @@ impl Clock {
         self.frame = now;
         self.frame_qpc = qpc();
         self.moving = false;
+        self.marks = 0;
     }
 
     /// Something moves and asks for the next frame.
@@ -132,6 +143,7 @@ impl Default for Clock {
             dt: FIRST,
             last_moving: None,
             moving: false,
+            marks: 0,
             throttled: false,
             wake_at: None,
             log: VecDeque::with_capacity(LOG),
@@ -171,6 +183,11 @@ pub fn init(trace: Option<PathBuf>, cx: &mut App) {
 /// Starts a frame: the root view calls this first in its render.
 pub fn begin_frame(cx: &mut App) {
     cx.default_global::<Clock>().begin();
+}
+
+/// Marks this frame as one `motion` drew in (`FLIGHT`, `TOAST`), for the motion checks.
+pub fn mark(motion: u8, cx: &mut App) {
+    cx.default_global::<Clock>().marks |= motion;
 }
 
 /// The seconds every motion steps by this frame: the time since the last frame that moved (1/100 s to start one).
@@ -249,6 +266,7 @@ fn end_frame(cx: &mut App) {
         begin_qpc: clock.frame_qpc,
         painted_qpc: qpc(),
         moving: clock.moving,
+        marks: clock.marks,
     };
     if clock.log.len() == LOG {
         clock.log.pop_front();
@@ -427,6 +445,23 @@ mod tests {
                 FIRST,
                 "after a frame where nothing moved, a new motion starts"
             );
+        });
+    }
+
+    /// M7 review m3: a frame keeps the motions marked in it, for the motion checks to count; the next starts with none.
+    #[gpui::test]
+    fn a_frame_keeps_the_motions_marked_in_it(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            init(None, cx);
+            begin_frame(cx);
+            mark(FLIGHT, cx);
+            mark(TOAST, cx);
+            end_frame(cx);
+            begin_frame(cx);
+            end_frame(cx);
+            let frames = frames(cx);
+            assert_eq!(frames[frames.len() - 2].marks, FLIGHT | TOAST);
+            assert_eq!(frames[frames.len() - 1].marks, 0);
         });
     }
 

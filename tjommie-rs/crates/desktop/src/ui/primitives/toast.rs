@@ -93,6 +93,7 @@ pub fn toasts(window: &mut Window, cx: &mut App) -> impl IntoElement + use<> {
         .map(|notices| notices.0.clone())
         .unwrap_or_default();
     if step(&notices, cx) {
+        clock::mark(clock::TOAST, cx);
         clock::keep_moving(window, cx);
     }
     let (drops, leaving) = cx
@@ -208,6 +209,20 @@ mod tests {
             out > 2 && out < frames,
             "out is faster than in: {out} < {frames}"
         );
+        assert!(
+            toast_frames(cx) > out,
+            "its frames are marked for the motion checks"
+        );
+    }
+
+    /// The frames a toast moved in, by the frame log's marks.
+    fn toast_frames(cx: &mut gpui::VisualTestContext) -> usize {
+        cx.update(|_, cx| {
+            crate::motion::clock::frames(cx)
+                .iter()
+                .filter(|frame| frame.marks & crate::motion::clock::TOAST != 0)
+                .count()
+        })
     }
 
     #[gpui::test]
@@ -223,6 +238,7 @@ mod tests {
         draw(cx);
         assert!(cx.debug_bounds("toast.0").is_some());
         assert!(!next_frame(cx), "no frames in between");
+        assert_eq!(toast_frames(cx), 0, "none marked");
     }
 
     #[gpui::test]

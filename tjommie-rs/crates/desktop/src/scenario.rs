@@ -555,7 +555,8 @@ async fn scroll(
 }
 
 /// Keyboard actions never animate: opened by a key, the chat shows with no flight; closed by a key, a toast is gone at
-/// once. Under `--force-reduced`, the same by the pointer, and Recents reorder in place.
+/// once. Under `--force-reduced`, the same by the pointer, and Recents reorder in place. Each counts the frames the motion
+/// drew after the action, by the frame log's marks (M7 review m3): a motion that ran one frame fails it.
 async fn snaps(
     options: &Options,
     window: AnyWindowHandle,
@@ -564,6 +565,7 @@ async fn snaps(
     let by_key = options.name == "motion-keyboard";
     let mut passed = true;
     // The flight.
+    let began = qpc();
     if by_key {
         act(window, cx, |window, cx| {
             if !crate::ui::primitives::focus_by_id("sidebar.recent.ledger", window, cx) {
@@ -574,14 +576,15 @@ async fn snaps(
     } else {
         click(window, "sidebar.recent.ledger", cx)?;
     }
-    sleep(cx, 50).await;
-    let flying = cx.update(|cx| crate::motion::flight::is_flying(cx));
+    // Long enough for a flight to have drawn frames, were there one.
+    sleep(cx, 300).await;
+    let flying = cx.update(|cx| marked(began, clock::FLIGHT, cx));
     let opened = cx.update(|cx| route::current(cx)) == Route::Chat("ledger".into());
-    passed &= opened && !flying;
+    passed &= opened && flying == 0;
     record(
         options,
-        json!({ "scenario": options.name, "motion": "flight", "pass": opened && !flying, "state_changed": opened,
-                "moving": flying }),
+        json!({ "scenario": options.name, "motion": "flight", "pass": opened && flying == 0, "state_changed": opened,
+                "moving_frames": flying }),
     );
     // The toast: raised, drawn and at rest before it is closed.
     let raised = qpc();
@@ -590,6 +593,7 @@ async fn snaps(
         cx.refresh_windows();
     });
     until_rest(raised, cx, 4000).await?;
+    let began = qpc();
     if by_key {
         act(window, cx, |window, cx| {
             if !crate::ui::primitives::focus_by_id("toast.close.0", window, cx) {
@@ -600,17 +604,17 @@ async fn snaps(
     } else {
         click(window, "toast.close.0", cx)?;
     }
-    sleep(cx, 50).await;
-    let leaving = cx.update(|cx| crate::ui::primitives::toast::moving(cx));
+    sleep(cx, 300).await;
+    let leaving = cx.update(|cx| marked(began, clock::TOAST, cx));
     let closed = cx.update(|cx| {
         cx.try_global::<Notices>()
             .is_some_and(|notices| notices.0.is_empty())
     });
-    passed &= closed && !leaving;
+    passed &= closed && leaving == 0;
     record(
         options,
-        json!({ "scenario": options.name, "motion": "toast", "pass": closed && !leaving, "state_changed": closed,
-                "moving": leaving }),
+        json!({ "scenario": options.name, "motion": "toast", "pass": closed && leaving == 0, "state_changed": closed,
+                "moving_frames": leaving }),
     );
     // Recents, under reduced motion: nothing moves at all, so the frame log says it.
     if !by_key {
@@ -633,6 +637,14 @@ async fn snaps(
         );
     }
     Ok(passed)
+}
+
+/// The frames since `began` that the motion `mark` drew in (`clock::FLIGHT`, `clock::TOAST`).
+fn marked(began: i64, mark: u8, cx: &App) -> usize {
+    clock::frames(cx)
+        .iter()
+        .filter(|frame| frame.begin_qpc > began && frame.marks & mark != 0)
+        .count()
 }
 
 async fn run(

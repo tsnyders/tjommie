@@ -149,6 +149,7 @@ pub fn frame(route: &Route, window: &mut Window, cx: &mut App) -> Option<AnyElem
                 .child(BotAvatar::new(color, shape, side).pose(pose)),
         )
         .into_any_element();
+    clock::mark(clock::FLIGHT, cx);
     clock::keep_moving(window, cx);
     Some(overlay)
 }

@@ -1368,6 +1368,20 @@ mod shared_avatar {
             cx.debug_bounds("flight.avatar").is_none(),
             "and it stays landed"
         );
+        assert!(
+            flight_frames(cx) > 5,
+            "its frames are marked for the motion checks"
+        );
+    }
+
+    /// The frames the flight drew in, by the frame log's marks.
+    fn flight_frames(cx: &mut VisualTestContext) -> usize {
+        cx.update(|_, cx| {
+            crate::motion::clock::frames(cx)
+                .iter()
+                .filter(|frame| frame.marks & crate::motion::clock::FLIGHT != 0)
+                .count()
+        })
     }
 
     /// Clicks `opener` and follows the flight: it takes off, lives on past its second frame, and lands.
@@ -1430,6 +1444,7 @@ mod shared_avatar {
             cx.debug_bounds("flight.avatar").is_none(),
             "no flight after a key"
         );
+        assert_eq!(flight_frames(cx), 0, "no frame drew one");
     }
 }
 
