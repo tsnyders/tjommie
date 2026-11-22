@@ -409,11 +409,15 @@ fn exchange_card(
                     .child(to_avatar)
                     .child(
                         div()
+                            .semantic(format!("exchange.{id}.answering"), Role::Status)
+                            .aria_label(SharedString::from(text.clone()))
+                            .min_w_0()
                             .flex()
                             .items_center()
                             .gap(r(theme.space.s6))
                             .child(spinner)
-                            .child(text),
+                            // One line, shortened with an ellipsis where it must be: never a letter a line.
+                            .child(div().min_w_0().truncate().child(text)),
                     ),
             )
         })

@@ -6,10 +6,11 @@
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, AnyView, App, AppContext as _, Context, Entity, Focusable as _, Global,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, Role, ScrollHandle,
+    AnyElement, AnyView, App, AppContext as _, Context, Entity, FocusHandle, Focusable as _,
+    Global, InteractiveElement as _, IntoElement, ParentElement as _, Render, Role, ScrollHandle,
     SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, svg,
 };
+use gpui_kit::base::FocusTrapElement as _;
 use gpui_kit::base::input::{InputEditorStyle, InputEvent, Textarea, TextareaState};
 use jiff::Zoned;
 use protocol::model::{Bot, Exchange, Message, TEAM_ROOM_ID};
@@ -48,6 +49,12 @@ pub fn open(exchange_id: SharedString, from: SharedString, window: &mut Window, 
     close(cx);
     BrowserPanel::dismiss(cx);
     let view = cx.new(|cx| ExchangeView::new(exchange_id, from, window, cx));
+    // Over the chat as a sheet, it takes the keyboard, so nobody types into the chat it hides; Escape and its x give the
+    // keyboard back to View thread (`dismiss`).
+    if crate::ui::shell::overlaid(window, cx) {
+        let trap = view.read(cx).trap.clone();
+        trap.focus(window, cx);
+    }
     cx.set_global(Open(Some(view)));
     cx.refresh_windows();
 }
@@ -116,6 +123,8 @@ pub struct ExchangeView {
     posted: bool,
     reply_problem: Option<SharedString>,
     _subscription: Subscription,
+    /// Its focus as a sheet over the chat: Tab stays inside it (gpui-kit's focus trap).
+    trap: FocusHandle,
 }
 
 impl ExchangeView {
@@ -161,6 +170,7 @@ impl ExchangeView {
             posted: false,
             reply_problem: None,
             _subscription: subscription,
+            trap: cx.focus_handle(),
         }
     }
 
@@ -457,16 +467,27 @@ impl Render for ExchangeView {
                 .child(div().min_w_0().truncate().child(format!("@{}", bot.name)))
         });
 
-        div()
+        // Over the chat or room it opened from it says so: a keyboard user knows what is behind it, its Send too.
+        let over = crate::ui::shell::overlaid(window, cx).then(|| {
+            if matches!(crate::ui::shell::route::current(cx), Route::Room(_)) {
+                "Exchange, covers the room"
+            } else {
+                "Exchange, covers the chat"
+            }
+        });
+        let view = div()
             .semantic(format!("exchange.{id}.view"), Role::Complementary)
-            .aria_label("Exchange")
+            .aria_label(over.unwrap_or("Exchange"))
             .map(|view| {
                 if crate::ui::shell::narrow(window) {
                     view.w_full()
                 } else {
-                    view.w(r(460.))
+                    // Its own width, but never past the content area as a sheet over the chat.
+                    view.w(r(460.)).max_w_full()
                 }
             })
+            // Over the chat, nothing behind it is clicked through it.
+            .occlude()
             .h_full()
             .flex_none()
             .flex()
@@ -640,7 +661,13 @@ impl Render for ExchangeView {
                                 .child(problem),
                         )
                     }),
-            )
+            );
+        if over.is_some() {
+            view.focus_trap("exchange.trap", &self.trap)
+                .into_any_element()
+        } else {
+            view.into_any_element()
+        }
     }
 }
 

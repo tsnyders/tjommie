@@ -3,9 +3,9 @@
 //! Everyone, More with Edit room and Delete room; then the posts, the composer, and the members panel beside them.
 
 use gpui::{
-    AnyElement, App, AppContext as _, Context, Entity, Global, InteractiveElement as _,
-    IntoElement, ParentElement as _, Pixels, Render, Role, ScrollHandle, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Window, div, px, svg,
+    AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Global,
+    InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Render, Role, ScrollHandle,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Window, div, px, svg,
 };
 use protocol::model::{Message, MessageStatus, Room};
 use protocol::wire::{Id, method};
@@ -75,6 +75,12 @@ pub struct RoomScreen {
     /// Why Delete room failed.
     problem: Option<SharedString>,
     seen: Vec<MessageStatus>,
+    /// The members were asked for as a sheet over the room (Members panel): as a sheet they never open by themselves.
+    sheet_open: bool,
+    /// The members sheet's focus: Tab stays inside it (gpui-kit's focus trap).
+    members_trap: FocusHandle,
+    /// The keyboard goes into the members sheet when it opens, and back to Members panel when it closes.
+    members_focus: crate::ui::shell::SheetFocus,
 }
 
 impl RoomScreen {
@@ -91,6 +97,9 @@ impl RoomScreen {
             posts: ScrollHandle::new(),
             problem: None,
             seen: Vec::new(),
+            sheet_open: false,
+            members_trap: cx.focus_handle(),
+            members_focus: Default::default(),
         }
     }
 }
@@ -147,15 +156,24 @@ impl Render for RoomScreen {
         // An open exchange takes the members panel's place (`room-screen.tsx`).
         exchange::reconcile(cx);
         let exchanging = exchange::open_id(cx).is_some();
+        // Beside the posts the members show unless hidden (a choice kept while the app runs). As a sheet over the room they
+        // show only when asked for, so a room never opens covered, nor with the keyboard in a sheet nobody opened.
+        let beside = super::members::beside(window, cx);
         let shown = !exchanging
-            && !cx
-                .try_global::<MembersHidden>()
-                .is_some_and(|hidden| hidden.0);
+            && if beside {
+                !cx.try_global::<MembersHidden>()
+                    .is_some_and(|hidden| hidden.0)
+            } else {
+                self.sheet_open
+            };
+        self.members_focus
+            .follow(shown, !beside, &self.members_trap, window, cx);
         let screen = cx.entity();
         let header = self.header(
             room,
             members.len(),
             shown || exchanging,
+            beside,
             &screen,
             window,
             cx,
@@ -172,12 +190,23 @@ impl Render for RoomScreen {
         let body = self.body(room, chat, &members, &context, window, cx);
         let panel = shown.then(|| {
             let editing = room.clone();
+            let closing = screen.clone();
             super::members::panel(
                 room,
                 &members,
                 state.settings.as_ref(),
                 move |window, cx| open_room_form(Some(editing.clone()), window, cx),
-                |_, cx| hide_members(true, cx),
+                move |_, cx| {
+                    if beside {
+                        hide_members(true, cx);
+                    } else {
+                        closing.update(cx, |screen, cx| {
+                            screen.sheet_open = false;
+                            cx.notify();
+                        });
+                    }
+                },
+                (!beside).then(|| self.members_trap.clone()),
                 window,
                 cx,
             )
@@ -188,12 +217,11 @@ impl Render for RoomScreen {
                 .justify_center()
                 .child(problem("room.problem", text, cx))
         });
-        let narrow = crate::ui::shell::narrow(window);
         let panel = panel.map(|panel| {
-            if narrow {
-                div().absolute().inset_0().child(panel).into_any_element()
-            } else {
+            if beside {
                 panel.into_any_element()
+            } else {
+                div().absolute().inset_0().child(panel).into_any_element()
             }
         });
         div()
@@ -221,11 +249,13 @@ impl Render for RoomScreen {
 
 impl RoomScreen {
     /// The header: the chip in the middle; the members panel's button and More at the right.
+    #[allow(clippy::too_many_arguments)]
     fn header(
         &self,
         room: &Room,
         count: usize,
         shown: bool,
+        beside: bool,
         screen: &Entity<RoomScreen>,
         window: &mut Window,
         cx: &mut App,
@@ -317,12 +347,21 @@ impl RoomScreen {
                             } else {
                                 IconVariant::Plain
                             })
-                            .on_press(move |_, cx| {
-                                // With an exchange open, the button closes it and the members come back.
-                                if exchange::open_id(cx).is_some() {
-                                    exchange::close(cx);
-                                } else {
-                                    hide_members(shown, cx);
+                            .on_press({
+                                let screen = screen.clone();
+                                move |_, cx| {
+                                    // With an exchange open, the button closes it and the members come back. As a
+                                    // sheet over the room, the members open and close here, not by the kept choice.
+                                    if exchange::open_id(cx).is_some() {
+                                        exchange::close(cx);
+                                    } else if beside {
+                                        hide_members(shown, cx);
+                                    } else {
+                                        screen.update(cx, |screen, cx| {
+                                            screen.sheet_open = !shown;
+                                            cx.notify();
+                                        });
+                                    }
                                 }
                             }),
                     )

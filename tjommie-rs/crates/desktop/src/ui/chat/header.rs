@@ -259,13 +259,19 @@ pub fn header(bot: &Bot, actions: &HeaderActions, window: &mut Window, cx: &mut 
                         )
                         .children(pill),
                 )
-                .child(
+                .child({
+                    // One line, shortened with an ellipsis where it must be, its whole text the accessible name.
+                    let model = SharedString::from(model_label(bot.provider, &bot.model));
                     div()
+                        .semantic(format!("chat.{id}.model"), Role::Label)
+                        .aria_label(model.clone())
                         .mt(gpui::px(3.))
+                        .min_w_0()
+                        .truncate()
                         .type_style(&theme.typography.desktop.meta)
                         .text_color(hsla(colors.text.tertiary))
-                        .child(SharedString::from(model_label(bot.provider, &bot.model))),
-                ),
+                        .child(model)
+                }),
         )
         .child(pause)
         .child(settings)

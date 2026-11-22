@@ -7,7 +7,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use gpui::TestAppContext;
 use protocol::mentions::find_mentions;
 use protocol::model::{Bot, BotState, Message, MessageKind, MessageStatus, Room, Settings};
-use protocol::wire::{Empty, Event, MessagePage, method};
+use protocol::wire::{Empty, Event, ExchangeView, MessagePage, method};
+use serde_json::json;
 
 use super::composer::{NOBODY, everyone_label, placeholder, with_at};
 use super::list::rooms_summary;
@@ -19,7 +20,7 @@ use crate::model::overview::room_line;
 use crate::model::state::{AppState, apply_event, room_bots};
 use crate::model::testing::FakeRpc;
 use crate::ui::shell::route::{self, Navigate as _, Route};
-use crate::ui::testing::{app, bot, click, draw, ids, node, room, state, text};
+use crate::ui::testing::{app, bot, click, draw, ids, node, room, state, tab_stays_in, text};
 
 fn bots() -> Vec<Bot> {
     vec![
@@ -570,7 +571,7 @@ fn a_gone_room_shows_the_rooms_list(cx: &mut TestAppContext) {
 }
 
 /// A narrow window (360 × 600): the members panel is a sheet over the room, not a column beside it (`members-panel.tsx`
-/// under `sm`); Hide still closes it.
+/// under `sm`), opened by Members panel; Hide still closes it.
 #[gpui::test]
 fn a_narrow_window_shows_the_members_as_a_sheet(cx: &mut TestAppContext) {
     use gpui::{px, size};
@@ -578,6 +579,12 @@ fn a_narrow_window_shows_the_members_as_a_sheet(cx: &mut TestAppContext) {
     let wide = node("room.members").expect("the members panel");
     assert!(wide.bounds.width < 400., "wide: a column beside the posts");
     cx.simulate_resize(size(px(360.), px(600.)));
+    draw(cx);
+    assert!(
+        node("room.members").is_none(),
+        "as a sheet the members wait to be asked for"
+    );
+    click(cx, "room.panel");
     draw(cx);
     let sheet = node("room.members").expect("the members panel");
     let room = node("room").expect("the room");
@@ -587,5 +594,109 @@ fn a_narrow_window_shows_the_members_as_a_sheet(cx: &mut TestAppContext) {
         "narrow: a sheet over the room: {:?} over {:?}",
         sheet.bounds,
         room.bounds
+    );
+}
+
+/// The 640 threshold (the README screenshot run's bug, in a room): the window is wide, but beside the members the posts
+/// would keep a sliver, a letter a line. The members are a sheet over the room instead, which keeps the content area: it
+/// waits to be asked for (Members panel), says so, has the keyboard, keeps Tab inside, and Escape closes it, the keyboard
+/// back on Members panel. At 1000 x 700 the posts have a column of their own, and the members stay beside them.
+#[gpui::test]
+fn at_the_640_threshold_the_members_are_a_sheet_and_at_1000_beside_the_posts(
+    cx: &mut TestAppContext,
+) {
+    use gpui::{px, size};
+    let (cx, _) = app(cx, Route::Room("r1".into()), rooms_state(), rpc(vec![]));
+    cx.simulate_resize(size(px(640.), px(700.)));
+    draw(cx);
+    assert!(
+        node("sidebar.wordmark").is_some(),
+        "640 is not narrow: the full sidebar"
+    );
+    assert!(
+        node("room.members").is_none(),
+        "as a sheet the members wait to be asked for"
+    );
+    cx.update(|window, cx| {
+        assert!(
+            crate::ui::primitives::focus_by_id("room.panel", window, cx),
+            "Members panel"
+        )
+    });
+    cx.simulate_keystrokes("enter");
+    draw(cx);
+    draw(cx);
+    let sheet = node("room.members").expect("the members sheet");
+    let room = node("room").expect("the room");
+    assert!(
+        room.bounds.width >= 300.,
+        "the posts keep the content area: {:?}",
+        room.bounds
+    );
+    assert!(
+        (sheet.bounds.x - room.bounds.x).abs() < 1.
+            && (sheet.bounds.width - room.bounds.width).abs() < 1.,
+        "a sheet over the room: {:?} over {:?}",
+        sheet.bounds,
+        room.bounds
+    );
+    assert_eq!(sheet.text, "Growth members, covers the room");
+    assert!(sheet.focused, "the keyboard went into the sheet");
+    tab_stays_in(cx, 6, |id| id.starts_with("room.members"));
+    cx.simulate_keystrokes("escape");
+    draw(cx);
+    draw(cx);
+    assert!(node("room.members").is_none(), "Escape closed it");
+    assert!(
+        node("room.panel").unwrap().focused,
+        "the keyboard is back on Members panel"
+    );
+    cx.simulate_resize(size(px(1000.), px(700.)));
+    draw(cx);
+    let beside = node("room.members").expect("the members panel");
+    let room = node("room").expect("the room");
+    assert!(
+        beside.bounds.x >= room.bounds.x + room.bounds.width - 0.5 && room.bounds.width >= 320.,
+        "beside the posts, which keep a column of their own: {:?} beside {:?}",
+        beside.bounds,
+        room.bounds
+    );
+    assert_eq!(beside.text, "Growth members");
+}
+
+/// An exchange opened from a room where the content is too narrow for both (1000 x 700) lies over the room as a sheet,
+/// and says what it hides: the room, not a chat.
+#[gpui::test]
+fn at_1000_by_700_an_exchange_from_a_room_says_it_covers_the_room(cx: &mut TestAppContext) {
+    use gpui::{px, size};
+    let handoff = Message {
+        kind: MessageKind::Handoff,
+        data: json!({ "exchangeId": "x1", "fromBotId": "b1", "toBotId": "b2", "messages": 0, "status": "replied" })
+            .as_object()
+            .cloned(),
+        ..post("m1", "b1", "Does the bundled SQLite match?", MessageStatus::Done, 1)
+    };
+    let rpc = rpc(vec![handoff]).on::<method::ExchangesGet>(|_| {
+        Ok(serde_json::from_value::<ExchangeView>(json!({
+            "messages": [],
+            "hasMore": false,
+            "exchange": {
+                "id": "x1", "fromBotId": "b1", "toBotId": "b2", "request": "Does the bundled SQLite match?",
+                "reply": "Yes.", "status": "replied",
+                "createdAt": "2026-11-02T09:01:00.000Z", "repliedAt": "2026-11-02T09:02:00.000Z"
+            }
+        }))
+        .unwrap())
+    });
+    let (cx, _) = app(cx, Route::Room("r1".into()), rooms_state(), rpc);
+    cx.simulate_resize(size(px(1000.), px(700.)));
+    draw(cx);
+    click(cx, "exchange.x1.open");
+    draw(cx);
+    draw(cx);
+    assert_eq!(text("exchange.x1.view"), "Exchange, covers the room");
+    assert!(
+        node("exchange.x1.view").unwrap().focused,
+        "the keyboard went into the sheet"
     );
 }

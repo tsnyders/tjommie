@@ -55,7 +55,11 @@ fn e2e_panel_open_close() {
     app.wait("browser.panel", Predicate::Exists, 10_000)
         .unwrap();
     let snapshot = app.snapshot().unwrap();
-    assert_eq!(snapshot.node("browser.panel").unwrap().text, "About Forge");
+    // At 1000 x 700 the content is too narrow for the panel beside the chat: it lies over it, and says so.
+    assert_eq!(
+        snapshot.node("browser.panel").unwrap().text,
+        "About Forge, covers the chat"
+    );
     assert!(snapshot.node("browser.details.name").is_some());
     app.key("ctrl-b").unwrap();
     wait_gone(&mut app, "browser.panel");

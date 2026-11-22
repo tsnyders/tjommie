@@ -19,6 +19,7 @@ use self::data::ShellData;
 use self::route::Route;
 use crate::guard::guarded;
 use crate::keymap::{Dismiss, ZoomIn, ZoomOut, ZoomReset};
+use crate::model::panel_layout::is_overlay;
 use crate::semantic::SemanticExt as _;
 use crate::theme::Theme;
 use crate::ui::style::{hsla, r, shadows};
@@ -32,6 +33,73 @@ pub const NARROW: f32 = 640.;
 pub fn narrow(window: &Window) -> bool {
     let zoom = f32::from(window.rem_size()) / 16.;
     f32::from(window.viewport_size().width) / zoom.max(0.1) < NARROW
+}
+
+/// The content area's width beside the sidebar (the compact one in a narrow window), in design px: what the main column
+/// and a side panel beside it share.
+pub fn room(window: &Window, cx: &App) -> f32 {
+    let theme = crate::ui::style::theme(cx);
+    let zoom = f32::from(window.rem_size()) / 16.;
+    let viewport = f32::from(window.viewport_size().width) / zoom.max(0.1);
+    let beside = if narrow(window) {
+        theme.space.s56
+    } else {
+        theme.size.sidebar
+    };
+    viewport - beside - theme.space.s12
+}
+
+/// Whether the chat's side panels (the browser panel, an exchange) go over the main column as sheets instead of beside
+/// it: in a narrow window, and wherever the content area is under 1000 design px, too little for the chat to keep its 480
+/// beside one (0.5.x's overlay, `panel_layout::is_overlay`). Beside one, the chat never gets narrower than that, so its
+/// rows never wrap a letter a line (the README screenshot run, 1000 x 700).
+pub fn overlaid(window: &Window, cx: &App) -> bool {
+    narrow(window) || is_overlay(f64::from(room(window, cx)))
+}
+
+/// The keyboard's way into a side panel lying over the content as a sheet, and back out. When the sheet starts covering
+/// the content, the keyboard goes into it (its trap, gpui-kit's focus trap, keeps Tab there), so nobody types into what
+/// it hides; when it closes with the keyboard inside, the keyboard goes back to where it was, the sheet's opener.
+#[derive(Default)]
+pub struct SheetFocus {
+    opener: Option<FocusHandle>,
+    open: bool,
+    covering: bool,
+}
+
+impl SheetFocus {
+    /// Each frame: whether the sheet is `open`, whether it lies `over` the content, and its trap's focus.
+    pub fn follow(
+        &mut self,
+        open: bool,
+        over: bool,
+        trap: &FocusHandle,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let covering = open && over;
+        if covering && !self.covering && !trap.contains_focused(window, cx) {
+            self.opener = window.focused(cx);
+            let trap = trap.clone();
+            window.defer(cx, move |window, cx| {
+                guarded("give the keyboard to a sheet", || trap.focus(window, cx));
+            });
+        }
+        if self.open && !open {
+            let opener = self.opener.take();
+            if let Some(opener) = opener
+                && trap.contains_focused(window, cx)
+            {
+                window.defer(cx, move |window, cx| {
+                    guarded("give the keyboard back to a sheet's opener", || {
+                        opener.focus(window, cx)
+                    });
+                });
+            }
+        }
+        self.open = open;
+        self.covering = covering;
+    }
 }
 
 /// The rem follows the zoom and the text size (Settings, Appearance): gpui-kit's root sets the window's rem from its
@@ -120,6 +188,10 @@ impl Render for Shell {
         // navigation for its 8 s (M4 review A9).
         let notice = crate::ui::chat::sign_in_toast::view(cx);
         let toasts = crate::ui::primitives::toast::toasts(window, cx);
+        // Where the content is too narrow for both, a side panel lies over the main column; the browser panel also while
+        // its browser is expanded to fill the content area.
+        let side_over = overlaid(window, cx);
+        let panel_over = crate::ui::browser::panel::BrowserPanel::over_chat(window, cx);
         let theme = cx.global::<Theme>();
         let colors = &theme.color.light;
         div()
@@ -176,13 +248,14 @@ impl Render for Shell {
                             .children(status),
                     )
                     // An open exchange takes the right panel's place (T4.1); the panel stays drawn, closed, beside it.
-                    // In a narrow window both open as sheets over the main column, as the TypeScript's did under `sm`.
+                    // Where the content is too narrow for both, they open as sheets over the main column (`overlaid`).
                     .relative()
                     .children(
-                        crate::ui::chat::exchange::side(cx).map(|side| sheet(side, narrow, theme)),
+                        crate::ui::chat::exchange::side(cx)
+                            .map(|side| sheet(side, side_over, theme)),
                     )
                     .when_some(self.panel.clone(), |column, panel| {
-                        column.child(sheet(panel, narrow, theme))
+                        column.child(sheet(panel, panel_over, theme))
                     }),
             )
             .child(
@@ -209,9 +282,10 @@ impl Render for Shell {
     }
 }
 
-/// A side panel beside the main column, or in a narrow window a sheet over it, its right edge at the column's.
-fn sheet(panel: AnyView, narrow: bool, theme: &Theme) -> AnyElement {
-    if narrow {
+/// A side panel beside the main column, or `over` it as a sheet, its right edge at the column's: the panel keeps its own
+/// width within the content area, takes the pointer and keeps the keyboard (each panel's own trap, `SheetFocus`).
+fn sheet(panel: AnyView, over: bool, theme: &Theme) -> AnyElement {
+    if over {
         div()
             .absolute()
             .top(r(theme.size.titlebar_height))

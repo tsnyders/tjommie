@@ -385,6 +385,47 @@ mod exchange_view {
         );
     }
 
+    /// The README screenshot run's bug, for an exchange: at 1000 x 700 the chat can't keep its 480 beside it, so the
+    /// exchange lies over the chat as a sheet instead of squeezing it. As a sheet it says so, has the keyboard, keeps Tab
+    /// inside, and Escape closes it, the keyboard back on View thread.
+    #[gpui::test]
+    fn at_1000_by_700_the_exchange_lies_over_the_chat(cx: &mut TestAppContext) {
+        let (cx, _) = app(cx, Route::Chat("b1".into()), team(), exchanges());
+        cx.simulate_resize(gpui::size(px(1000.), px(700.)));
+        draw(cx);
+        keys::tab_to(cx, "exchange.x1.open");
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        draw(cx);
+        let view = node("exchange.x1.view").expect("the exchange is open");
+        let chat = node("screen.chat").expect("the chat");
+        assert!(
+            chat.bounds.width >= 480.,
+            "the chat keeps its width: {:?}",
+            chat.bounds
+        );
+        assert!(
+            view.bounds.x > chat.bounds.x
+                && view.bounds.x + view.bounds.width <= chat.bounds.x + chat.bounds.width + 0.5,
+            "the exchange lies over the chat's right: {:?} over {:?}",
+            view.bounds,
+            chat.bounds
+        );
+        assert_eq!(view.text, "Exchange, covers the chat");
+        assert!(view.focused, "the keyboard went into the sheet");
+        crate::ui::testing::tab_stays_in(cx, 6, |id| {
+            id.starts_with("exchange.x1.") && id != "exchange.x1.open"
+        });
+        keys::tab_to(cx, "exchange.x1.close");
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        assert!(node("exchange.x1.view").is_none(), "Escape closed it");
+        assert!(
+            node("exchange.x1.open").unwrap().focused,
+            "the keyboard is back on View thread"
+        );
+    }
+
     #[gpui::test]
     fn replies_in_everyone_with_both_agents_mentioned(cx: &mut TestAppContext) {
         let (cx, calls) = app(cx, Route::Chat("b1".into()), team(), exchanges());
@@ -1435,5 +1476,166 @@ mod tool_rows {
         });
         draw(cx);
         assert_eq!(settle(cx), 0, "no frames in between");
+    }
+}
+
+/// The README screenshot run (1000 x 700): with the browser panel open, the chat was squeezed until its rows wrapped a
+/// letter a line. Where the content is too narrow for both (under 1000 design px beside the sidebar, 0.5.x's overlay), the
+/// panel lies over the chat as a sheet, a strip of the chat showing, and the chat keeps its width; at the 640 threshold
+/// the panel fits the window. As a sheet it says so, has the keyboard, keeps Tab inside, and Escape closes it, the
+/// keyboard back on its opener.
+mod side_panels {
+    use super::*;
+    use crate::ui::testing::{app_with_panel, tab_stays_in, text};
+    use gpui::{VisualTestContext, size};
+
+    /// Forge's chat: a tool step, "Messaged Scout", and the exchange with Scout, waiting for Scout's answer.
+    fn working() -> AppState {
+        let step = with(
+            MessageKind::Activity,
+            json!({ "items": [{ "id": "t1", "name": "send_message", "summary": "Messaged Scout", "status": "done" }] }),
+            message("m1", "b1", "", 1),
+        );
+        let asked = with(
+            MessageKind::Handoff,
+            json!({ "exchangeId": "x1", "fromBotId": "b1", "toBotId": "b2", "messages": 0, "status": "waiting" }),
+            message("m2", "b1", "Does the bundled SQLite match?", 2),
+        );
+        let mut state = chat(vec![step, asked], false);
+        state.bots.push(bot("b2", "Scout", BotState::Idle));
+        state
+    }
+
+    /// Forge's chat in a window `width` wide and 700 high, the panel opened by Enter on the header's panel button, its
+    /// opener (at once, as after any key).
+    fn open_at(cx: &mut TestAppContext, width: f32) -> &mut VisualTestContext {
+        let (cx, _) = app_with_panel(cx, Route::Chat("b1".into()), working(), FakeRpc::default());
+        cx.simulate_resize(size(px(width), px(700.)));
+        draw(cx);
+        cx.update(|window, cx| {
+            assert!(
+                crate::ui::primitives::focus_by_id("chat.b1.panel", window, cx),
+                "the panel button"
+            )
+        });
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        draw(cx);
+        cx
+    }
+
+    /// The chat header's title and subtitle (the model) are one line each, shortened with an ellipsis where they must be,
+    /// their whole text in the accessible name (the README capture: the subtitle wrapped a letter a line over the thread).
+    fn header_lines_are_one_line_each() {
+        let model = crate::model::labels::model_label(protocol::model::Provider::Claude, "sonnet");
+        for (id, full, line) in [
+            ("chat.b1.name", "Forge", 20.),
+            ("chat.b1.model", model.as_str(), 16.),
+        ] {
+            let node = node(id).unwrap_or_else(|| panic!("{id} is on screen"));
+            assert!(
+                node.bounds.height < 2. * line,
+                "{id} is one line, not a letter a line: {:?}",
+                node.bounds
+            );
+            assert_eq!(
+                node.text, full,
+                "{id}'s whole text, however it is shortened"
+            );
+        }
+    }
+
+    /// The panel over the chat says so, has the keyboard and keeps Tab inside; Escape closes it, the keyboard back on
+    /// its opener.
+    fn holds_the_keyboard_until_escape(cx: &mut VisualTestContext) {
+        assert_eq!(text("browser.panel"), "About Forge, covers the chat");
+        assert!(
+            node("browser.panel").unwrap().focused,
+            "the keyboard went into the sheet"
+        );
+        tab_stays_in(cx, 6, |id| id.starts_with("browser."));
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        draw(cx);
+        assert!(node("browser.panel").is_none(), "Escape closed it");
+        assert!(
+            node("chat.b1.panel").unwrap().focused,
+            "the keyboard is back on its opener"
+        );
+    }
+
+    #[gpui::test]
+    fn at_1000_by_700_the_panel_lies_over_the_chat_and_its_rows_keep_one_line(
+        cx: &mut TestAppContext,
+    ) {
+        let cx = open_at(cx, 1000.);
+        let panel = node("browser.panel").expect("the panel is open");
+        let chat = node("screen.chat").expect("the chat");
+        assert!(
+            chat.bounds.width >= 480.,
+            "the chat keeps its width: {:?}",
+            chat.bounds
+        );
+        assert!(
+            panel.bounds.x >= chat.bounds.x + 48.
+                && panel.bounds.x + panel.bounds.width <= chat.bounds.x + chat.bounds.width + 0.5,
+            "the panel lies over the chat's right, a strip of the chat showing: {:?} over {:?}",
+            panel.bounds,
+            chat.bounds
+        );
+        for row in ["tools.m1.t1", "exchange.x1.answering"] {
+            let bounds = node(row)
+                .unwrap_or_else(|| panic!("{row} is on screen"))
+                .bounds;
+            assert!(
+                bounds.height <= 30.,
+                "{row} is one line, not a letter a line: {bounds:?}"
+            );
+        }
+        assert_eq!(
+            text("exchange.x1.answering"),
+            "Scout is answering",
+            "its whole text, however it is shortened"
+        );
+        header_lines_are_one_line_each();
+        holds_the_keyboard_until_escape(cx);
+    }
+
+    #[gpui::test]
+    fn at_the_640_threshold_the_panel_fits_the_window_over_the_chat(cx: &mut TestAppContext) {
+        let cx = open_at(cx, 640.);
+        assert!(
+            node("sidebar.wordmark").is_some(),
+            "640 is not narrow: the full sidebar"
+        );
+        let panel = node("browser.panel").expect("the panel is open");
+        let chat = node("screen.chat").expect("the chat");
+        assert!(
+            chat.bounds.width >= 300.,
+            "the chat keeps the content area: {:?}",
+            chat.bounds
+        );
+        assert!(
+            panel.bounds.x >= chat.bounds.x - 0.5 && panel.bounds.x + panel.bounds.width <= 640.,
+            "the panel lies over the chat, inside the window: {:?} over {:?}",
+            panel.bounds,
+            chat.bounds
+        );
+        header_lines_are_one_line_each();
+        holds_the_keyboard_until_escape(cx);
+    }
+
+    /// A narrow window (360 x 600): the chat header's title and subtitle keep one line each, however little room they
+    /// have beside the header's buttons.
+    #[gpui::test]
+    fn a_narrow_window_keeps_the_chat_header_to_one_line_each(cx: &mut TestAppContext) {
+        let (cx, _) = app_with_panel(cx, Route::Chat("b1".into()), working(), FakeRpc::default());
+        cx.simulate_resize(size(px(360.), px(600.)));
+        draw(cx);
+        assert!(
+            node("sidebar.compact").is_some(),
+            "narrow: the compact navigation"
+        );
+        header_lines_are_one_line_each();
     }
 }
