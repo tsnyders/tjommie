@@ -16,7 +16,13 @@ name: "Desktop acceptance (Phase 3: the installer, over R1)"
 #                             compared with the T8.1 facts. The data roots must come out byte for byte as they went in.
 #   installer-over-r1 (T8.2)  Install the latest published R1, start it, and run the new installer over it with /S --updated.
 #
-# T8.4 adds the update-feed, production-over-R1-with-the-real-binary and rollback jobs here.
+#   acceptance-build (T8.4)   Build what the next jobs install: the production and update-test installers with the real payload, the update feed
+#                             (the Phase 3 update-test installer and its latest.yml) and R1's own update-test build.
+#   update-path (T8.4 step 1) R1's update-test build updates itself, for real, from a feed on the runner to the Phase 3 update-test app. user_version,
+#                             row counts and files are unchanged, the uninstall entry and AppUserModelID are right, and a notification posts.
+#   production-over-r1 (T8.4 steps 2 and 3)  The published R1 (v0.5.1), seeded, with the Phase 3 installer over it; start at login still starts the
+#                             app; R1's exported paired PCs and appearance are imported; then R1 is installed back over Phase 3 (the rollback).
+#   e2e (T8.4 step 4)         The black-box e2e set against a packaged e2e build. Pending: it needs the tests' TJOMMIE_E2E_EXE override.
 #
 # Nothing here ever runs on the owner's PC: every script in installer/ that installs or uninstalls refuses to run unless
 # RUNNER_ENVIRONMENT is github-hosted (and the jobs below that run an installer also need a fresh runner).
@@ -37,6 +43,12 @@ permissions:
 concurrency:
   group: desktop-acceptance-${{ github.ref }}
   cancel-in-progress: true
+
+env:
+  # The version of the Phase 3 installers these runs build, and the version of R1's update-test build, which is older on purpose: an updater only
+  # takes a version above its own. (The release version is the release workflow's business; these are only for the acceptance.)
+  PHASE3_VERSION: '0.6.0'
+  R1_TEST_VERSION: '0.5.1-test'
 
 jobs:
   facts:
@@ -173,3 +185,233 @@ jobs:
             ${{ runner.temp }}/installer-acceptance/helper-logs
           if-no-files-found: warn
           retention-days: 30
+
+  # ---- T8.4: the real binaries, over the real R1 ------------------------------------------------------------------------------------
+  # The three jobs after this one install what it builds, each on a fresh runner of its own, because each starts from nothing: an update-test
+  # R1 that updates itself (update-path), the published R1 with the Phase 3 installer over it and R1 back over that (production-over-r1), and
+  # the black-box e2e set (e2e, pending). The installers here are not the release's: the payload is the real one (the production-identity
+  # build, pdfium, the speech runtime) with a stand-in notices file, because the release workflow is what proves the real notices.
+  acceptance-build:
+    name: Build what the T8.4 jobs install
+    runs-on: windows-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - name: Build and verify pinned local speech runtime
+        shell: pwsh
+        run: ./packages/desktop/scripts/build-speech-runtime.ps1
+      # Inside tjommie-rs so rustup applies rust-toolchain.toml.
+      - name: Install the pinned Rust toolchain
+        working-directory: tjommie-rs
+        run: rustup toolchain install
+      # The identity is chosen when the app is built (spec section 4). Production first, and its binaries are kept; the update-test build is last, so
+      # that what is left in target\release is the update-test daemon, which is what R1's update-test package carries.
+      - name: Build the production desktop app and daemon
+        working-directory: tjommie-rs
+        env:
+          TJOMMIE_IDENTITY: production
+        run: cargo build --release --locked -p daemon -p desktop
+      - name: Keep the production binaries
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'bin-production'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          Copy-Item tjommie-rs\target\release\tjommie-desktop.exe, tjommie-rs\target\release\tjommie-daemon.exe -Destination $dir
+      - name: Build the update-test desktop app and daemon
+        working-directory: tjommie-rs
+        env:
+          TJOMMIE_IDENTITY: updatetest
+        run: cargo build --release --locked -p daemon -p desktop
+      - name: Fetch pdfium
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'pdfium'
+          ./tjommie-rs/tools/fetch-pdfium.ps1 -Destination "$dir\pdfium.dll" -Licenses "$dir\licenses"
+      - name: Assemble the production and update-test payloads
+        shell: pwsh
+        run: |
+          $pdfium = Join-Path $env:RUNNER_TEMP 'pdfium'
+          $stage = Join-Path $env:RUNNER_TEMP 'acceptance-build'
+          $notices = Join-Path $env:RUNNER_TEMP 'third-party-notices.txt'
+          Set-Content -LiteralPath $notices -Value 'Acceptance build: the release workflow writes the real third-party notices.'
+          ./installer/assemble-payload.ps1 -OutDir "$env:RUNNER_TEMP\payload-production" -ManifestPath "$stage\production\payload-manifest.json" -Desktop "$env:RUNNER_TEMP\bin-production\tjommie-desktop.exe" -Daemon "$env:RUNNER_TEMP\bin-production\tjommie-daemon.exe" -SpeechDir .cache\speech-runtime -Pdfium "$pdfium\pdfium.dll" -PdfiumLicenses "$pdfium\licenses" -ThirdPartyNotices $notices
+          ./installer/assemble-payload.ps1 -OutDir "$env:RUNNER_TEMP\payload-updatetest" -ManifestPath "$stage\payload-manifest-updatetest.json" -Desktop tjommie-rs\target\release\tjommie-desktop.exe -Daemon tjommie-rs\target\release\tjommie-daemon.exe -SpeechDir .cache\speech-runtime -Pdfium "$pdfium\pdfium.dll" -PdfiumLicenses "$pdfium\licenses" -ThirdPartyNotices $notices -ExeName 'Tjommie Update Test.exe'
+      # NSIS is compiled here, never on a developer's PC. The version is pinned.
+      - name: Install NSIS
+        run: choco install nsis --version=3.11 --no-progress -y
+      - name: Build the production and update-test installers, and the update feed
+        shell: pwsh
+        run: |
+          $stage = Join-Path $env:RUNNER_TEMP 'acceptance-build'
+          ./installer/build-installer.ps1 -Identity production -Version $env:PHASE3_VERSION -PayloadDir "$env:RUNNER_TEMP\payload-production" -OutFile "$stage\production\Tjommie-Setup-$env:PHASE3_VERSION.exe"
+          ./installer/build-installer.ps1 -Identity updatetest -Version $env:PHASE3_VERSION -PayloadDir "$env:RUNNER_TEMP\payload-updatetest" -OutFile "$stage\update\Tjommie-Setup-$env:PHASE3_VERSION.exe"
+          node scripts/make-latest-yml.ts --installer "$stage\update\Tjommie-Setup-$env:PHASE3_VERSION.exe" --version $env:PHASE3_VERSION --out "$stage\update\latest.yml"
+          if ($LASTEXITCODE -ne 0) { throw 'The update feed''s latest.yml was not written.' }
+      # R1's update-test build: the Electron app with the isolated update-test identity, built in a folder directly under %TEMP%. That folder is
+      # also where the Phase 3 update-test installer installs by default, so R1 and its update land in the same place. It is older than the update,
+      # because an updater only takes a version above its own.
+      - name: Package R1's update-test build
+        shell: pwsh
+        run: |
+          $testRoot = Join-Path ([IO.Path]::GetTempPath()).TrimEnd('\') 'tjommie-updatetest'
+          New-Item -ItemType Directory -Force -Path $testRoot | Out-Null
+          $env:TJOMMIE_PACKAGE_TEST_ROOT = $testRoot
+          $env:TJOMMIE_PACKAGE_APP_ID = 'com.tsnyders.tjommie.updatetest'
+          $env:TJOMMIE_PACKAGE_PRODUCT = 'Tjommie Update Test'
+          $env:TJOMMIE_PACKAGE_VERSION = $env:R1_TEST_VERSION
+          npm run package
+          if ($LASTEXITCODE -ne 0) { throw 'Packaging the update-test build of R1 failed.' }
+          $built = Join-Path $testRoot "dist-desktop\installer\Tjommie-Setup-$env:R1_TEST_VERSION.exe"
+          if (-not (Test-Path -LiteralPath $built -PathType Leaf)) { throw "The update-test installer is missing: $built" }
+          $out = Join-Path $env:RUNNER_TEMP 'acceptance-build\r1-updatetest'
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          Copy-Item -LiteralPath $built -Destination $out
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: acceptance-build
+          path: ${{ runner.temp }}/acceptance-build
+          if-no-files-found: error
+          retention-days: 3
+
+  update-path:
+    name: T8.4 step 1 - R1 updates itself to the Phase 3 app (update-test identity, local feed)
+    needs: acceptance-build
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Refuse anything that is not a fresh GitHub-hosted runner
+        run: |
+          . ./installer/hosted-runner.ps1
+          Assert-HostedRunner
+          Assert-FreshRunner
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: acceptance-build
+          path: ${{ runner.temp }}/acceptance-build
+      - name: Install R1's update-test build, let it update itself from a local feed, and check the hand-over
+        run: ./installer/accept-update-path.ps1 -InstallersDir "$env:RUNNER_TEMP\acceptance-build" -NewVersion $env:PHASE3_VERSION -R1TestVersion $env:R1_TEST_VERSION
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ always() }}
+        with:
+          name: acceptance-update-path
+          path: ${{ runner.temp }}/installer-acceptance
+          # A run that fails before it wrote anything has nothing to upload; that must not hide why it failed.
+          if-no-files-found: warn
+          retention-days: 30
+
+  production-over-r1:
+    name: T8.4 steps 2 and 3 - the Phase 3 installer over the published R1 (production identity), and the rollback
+    needs: acceptance-build
+    runs-on: windows-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Refuse anything that is not a fresh GitHub-hosted runner
+        run: |
+          . ./installer/hosted-runner.ps1
+          Assert-HostedRunner
+          Assert-FreshRunner
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: acceptance-build
+          path: ${{ runner.temp }}/acceptance-build
+      # The 0.5.x release that carries the paired-PCs and appearance export (T1.6) is the R1 baseline of this job, so the tag is named here unless a
+      # run asks for another one.
+      - name: 1. Install the published R1
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          R1_TAG: ${{ inputs.r1_tag || 'v0.5.1' }}
+        run: ./installer/install-latest-r1.ps1
+      - name: 2. The Phase 3 installer over R1, the carry-over, and R1 back over Phase 3
+        run: ./installer/accept-production-over-r1.ps1 -InstallersDir "$env:RUNNER_TEMP\acceptance-build" -NewVersion $env:PHASE3_VERSION
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ always() }}
+        with:
+          name: acceptance-production-over-r1
+          path: ${{ runner.temp }}/installer-acceptance
+          if-no-files-found: warn
+          retention-days: 30
+
+  # PENDING. The e2e tests find the app through the exe cargo built for them (CARGO_BIN_EXE_tjommie-desktop). The fixtures lane adds a test-only
+  # TJOMMIE_E2E_EXE override, which lets them drive a PACKAGED build instead. Until that is in this branch the job is off (the `if` below); it is
+  # written against the variable so that turning it on is the removal of one line. The packaged build is the e2e identity WITH the test driver, which is
+  # never production: the production build's check for a driver stays in rust-dev.yml and release.yml.
+  e2e:
+    name: T8.4 step 4 - the black-box e2e set against the packaged test identity (pending TJOMMIE_E2E_EXE)
+    needs: acceptance-build
+    if: ${{ false }}
+    runs-on: windows-latest
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - name: Build and verify pinned local speech runtime
+        run: ./packages/desktop/scripts/build-speech-runtime.ps1
+      - name: Install the pinned Rust toolchain
+        working-directory: tjommie-rs
+        run: rustup toolchain install
+      # The e2e identity with the test driver, and the daemon that plays recorded provider turns (no real provider).
+      - name: Build the e2e desktop app (with the test driver) and the fixtures daemon
+        working-directory: tjommie-rs
+        env:
+          TJOMMIE_IDENTITY: e2e
+        run: |
+          cargo build --release --locked -p desktop --features desktop/test-driver
+          cargo build --release --locked -p daemon --features provider-fixtures
+      - name: Fetch pdfium
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'pdfium'
+          ./tjommie-rs/tools/fetch-pdfium.ps1 -Destination "$dir\pdfium.dll" -Licenses "$dir\licenses"
+      # "Packaged": the same payload layout the installer installs, so the tests drive an app in its installed shape.
+      - name: Package the e2e build
+        run: |
+          $pdfium = Join-Path $env:RUNNER_TEMP 'pdfium'
+          $notices = Join-Path $env:RUNNER_TEMP 'third-party-notices.txt'
+          Set-Content -LiteralPath $notices -Value 'Acceptance build.'
+          ./installer/assemble-payload.ps1 -OutDir "$env:RUNNER_TEMP\payload-e2e" -ManifestPath "$env:RUNNER_TEMP\payload-e2e-manifest.json" -Desktop tjommie-rs\target\release\tjommie-desktop.exe -Daemon tjommie-rs\target\release\tjommie-daemon.exe -SpeechDir .cache\speech-runtime -Pdfium "$pdfium\pdfium.dll" -PdfiumLicenses "$pdfium\licenses" -ThirdPartyNotices $notices -ExeName tjommie-desktop.exe
+      - name: Run the e2e tests against the packaged build
+        working-directory: tjommie-rs
+        env:
+          TJOMMIE_IDENTITY: e2e
+          TJOMMIE_E2E_EXE: ${{ runner.temp }}\payload-e2e\tjommie-desktop.exe
+          TJOMMIE_DAEMON_EXE: ${{ runner.temp }}\payload-e2e\resources\daemon\tjommie-daemon.exe
+          TJOMMIE_PDFIUM_DLL: ${{ runner.temp }}\payload-e2e\resources\pdfium.dll
+        run: cargo test --workspace --locked --features desktop/test-driver --test 'e2e_*' --no-fail-fast
