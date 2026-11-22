@@ -568,3 +568,23 @@ fn a_gone_room_shows_the_rooms_list(cx: &mut TestAppContext) {
     assert_eq!(cx.update(|_, cx| route::current(cx)), Route::Rooms);
     assert!(node("screen.rooms").is_some());
 }
+
+/// A narrow window (360 × 600): the members panel is a sheet over the room, not a column beside it (`members-panel.tsx`
+/// under `sm`); Hide still closes it.
+#[gpui::test]
+fn a_narrow_window_shows_the_members_as_a_sheet(cx: &mut TestAppContext) {
+    use gpui::{px, size};
+    let (cx, _) = app(cx, Route::Room("r1".into()), rooms_state(), rpc(vec![]));
+    let wide = node("room.members").expect("the members panel");
+    assert!(wide.bounds.width < 400., "wide: a column beside the posts");
+    cx.simulate_resize(size(px(360.), px(600.)));
+    draw(cx);
+    let sheet = node("room.members").expect("the members panel");
+    let room = node("room").expect("the room");
+    assert!(
+        (sheet.bounds.x - room.bounds.x).abs() < 1. && (sheet.bounds.width - room.bounds.width).abs() < 1.,
+        "narrow: a sheet over the room: {:?} over {:?}",
+        sheet.bounds,
+        room.bounds
+    );
+}

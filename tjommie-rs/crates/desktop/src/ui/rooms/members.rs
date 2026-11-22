@@ -129,7 +129,14 @@ pub fn panel(
     div()
         .semantic("room.members", Role::Complementary)
         .aria_label(format!("{} members", room.name))
-        .w(r(320.))
+        .map(|panel| {
+            // A narrow window has no room beside the posts: the panel is a sheet over them.
+            if crate::ui::shell::narrow(window) {
+                panel.w_full().h_full().bg(hsla(colors.surface.panel))
+            } else {
+                panel.w(r(320.))
+            }
+        })
         .flex_none()
         .flex()
         .flex_col()

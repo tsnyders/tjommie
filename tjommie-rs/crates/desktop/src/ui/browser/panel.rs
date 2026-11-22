@@ -454,12 +454,18 @@ impl BrowserPanel {
         }
     }
 
-    /// The room the panel has: the content area's width in design px, beside the sidebar.
+    /// The room the panel has: the content area's width in design px, beside the sidebar (the compact one in a narrow
+    /// window).
     fn room(window: &Window, cx: &App) -> f64 {
         let theme = theme(cx);
         let zoom = f32::from(window.rem_size()) / 16.;
         let viewport = f32::from(window.viewport_size().width) / zoom.max(0.1);
-        f64::from(viewport - theme.size.sidebar - theme.space.s12)
+        let beside = if crate::ui::shell::narrow(window) {
+            theme.space.s56
+        } else {
+            theme.size.sidebar
+        };
+        f64::from(viewport - beside - theme.space.s12)
     }
 }
 
@@ -519,7 +525,10 @@ impl Render for BrowserPanel {
             Pane::Details
         };
         let room = Self::room(window, cx);
-        let width = if self.view.expanded && pane == Pane::Browser {
+        // A narrow window has no room beside the chat: the panel is a sheet over it, as wide as the chat.
+        let width = if crate::ui::shell::narrow(window) {
+            room
+        } else if self.view.expanded && pane == Pane::Browser {
             room - f64::from(theme(cx).space.s12)
         } else {
             clamp_width(pane_spec(pane).fallback, width_bounds(pane, room))

@@ -24,6 +24,16 @@ use crate::theme::Theme;
 use crate::ui::style::{hsla, r, shadows};
 use crate::zoom::Zoom;
 
+/// Below this width, in design px, the window is narrow (`sm` in the TypeScript): the sidebar becomes the compact
+/// navigation and the side panels (the browser panel, an exchange, a room's members) open as sheets over the content.
+pub const NARROW: f32 = 640.;
+
+/// Whether `window` is narrow: under 640 design px wide at its zoom.
+pub fn narrow(window: &Window) -> bool {
+    let zoom = f32::from(window.rem_size()) / 16.;
+    f32::from(window.viewport_size().width) / zoom.max(0.1) < NARROW
+}
+
 /// The rem follows the zoom and the text size (Settings, Appearance): gpui-kit's root sets the window's rem from its
 /// theme's font size every frame.
 pub fn set_rem(zoom: Zoom, cx: &mut App) {
@@ -85,7 +95,12 @@ impl Render for Shell {
         crate::motion::clock::begin_frame(cx);
         let route = route::current(cx);
         let data = cx.try_global::<ShellData>().cloned().unwrap_or_default();
-        let sidebar = sidebar::sidebar(&route, &data, window, cx);
+        let narrow = narrow(window);
+        let sidebar = if narrow {
+            sidebar::compact(&route, window, cx)
+        } else {
+            sidebar::sidebar(&route, &data, window, cx)
+        };
         let shown = match connection::words(&data.connection, data.host.as_deref(), &data.saved) {
             Some(words) => connection::screen(&data, words, window, cx),
             None => screen(&route, window, cx),
@@ -97,8 +112,6 @@ impl Render for Shell {
         let theme = cx.global::<Theme>();
         let colors = &theme.color.light;
         div()
-        // An avatar flying into a chat header, over everything (motion.html "shared elements").
-        let flight = crate::motion::flight::frame(&route, window, cx);
             .semantic("root", Role::Group)
             .track_focus(&self.focus)
             .on_action(cx.listener(|this, _: &ZoomIn, _, cx| {
@@ -189,6 +202,7 @@ fn screen(route: &Route, window: &mut gpui::Window, cx: &mut App) -> AnyElement 
         Route::BotSettings(id) => crate::ui::bots::settings::screen(id, window, cx),
         Route::Settings(section) => crate::ui::settings::screen(*section, window, cx),
         Route::Account { .. } => crate::ui::settings::screen(route::Section::Accounts, window, cx),
+            .children(flight)
         Route::Rooms => crate::ui::rooms::list::screen(window, cx),
         Route::Room(id) => crate::ui::rooms::screen::screen(id, window, cx),
         Route::Chat(id) => crate::ui::chat::screen(id, window, cx),

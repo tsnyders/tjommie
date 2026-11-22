@@ -455,7 +455,13 @@ impl Render for ExchangeView {
         div()
             .semantic(format!("exchange.{id}.view"), Role::Complementary)
             .aria_label("Exchange")
-            .w(r(460.))
+            .map(|view| {
+                if crate::ui::shell::narrow(window) {
+                    view.w_full()
+                } else {
+                    view.w(r(460.))
+                }
+            })
             .h_full()
             .flex_none()
             .flex()

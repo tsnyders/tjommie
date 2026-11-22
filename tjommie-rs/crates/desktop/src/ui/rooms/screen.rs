@@ -188,9 +188,18 @@ impl Render for RoomScreen {
                 .justify_center()
                 .child(problem("room.problem", text, cx))
         });
+        let narrow = crate::ui::shell::narrow(window);
+        let panel = panel.map(|panel| {
+            if narrow {
+                div().absolute().inset_0().child(panel).into_any_element()
+            } else {
+                panel.into_any_element()
+            }
+        });
         div()
             .flex_1()
             .min_h_0()
+            .relative()
             .flex()
             .child(
                 div()

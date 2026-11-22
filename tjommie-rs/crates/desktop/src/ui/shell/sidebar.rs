@@ -97,13 +97,9 @@ impl RecentsMotion {
     }
 }
 
-pub(super) fn sidebar(
-    route: &Route,
-    data: &ShellData,
-    window: &mut Window,
-    cx: &mut App,
-) -> AnyElement {
-    let sections = [
+/// The five sections, in the order they show: id key, icon, name, where they go.
+fn sections() -> [(&'static str, &'static str, &'static str, Route); 5] {
+    [
         ("agents", "bot", "Agents", Route::Agents),
         ("rooms", "messages-square", "Rooms", Route::Rooms),
         ("projects", "folder-git-2", "Projects", Route::Projects),
@@ -114,7 +110,79 @@ pub(super) fn sidebar(
             "Settings",
             Route::Settings(Section::General),
         ),
-    ];
+    ]
+}
+
+/// The compact navigation of a narrow window (below 640 px, as `rail.tsx` hid itself under `sm`): a 56 px column of the
+/// five sections as icon links, then New agent. Recents and the host button wait for a wider window; Agents lists every
+/// agent and room, and Settings, Devices switches PCs. The links keep their ids, names and keys: Tab and the arrows
+/// reach them as they reach the full sidebar's.
+pub(super) fn compact(route: &Route, window: &mut Window, cx: &mut App) -> AnyElement {
+    let links: Vec<AnyElement> = sections()
+        .into_iter()
+        .map(|(key, icon, label, to)| {
+            let selected = section_selected(&to, route);
+            let link = link_row(
+                format!("sidebar.nav.{key}").into(),
+                label.into(),
+                selected,
+                40.,
+                Rc::new(move |_, cx| cx.navigate(to.clone())),
+                window,
+                cx,
+            );
+            let theme = theme(cx);
+            link.w(r(40.))
+                .px(px(0.))
+                .justify_center()
+                .child(
+                    svg()
+                        .path(format!("icons/i/175/{icon}.svg"))
+                        .size(r(theme.size.icon))
+                        .flex_none()
+                        .text_color(hsla(palette(cx).icon.base)),
+                )
+                .into_any_element()
+        })
+        .collect();
+    let list = window
+        .use_keyed_state("sidebar.sections.list", cx, |_, cx| cx.focus_handle())
+        .read(cx)
+        .clone();
+    let new = crate::ui::primitives::button::IconButton::new("sidebar.new", "plus", "New agent")
+        .variant(crate::ui::primitives::button::IconVariant::Dark)
+        .on_press(|_, cx| cx.navigate(Route::NewBot));
+    let theme = theme(cx);
+    div()
+        .semantic("sidebar.compact", Role::Navigation)
+        .aria_label("Tjommie")
+        .w(r(theme.space.s56))
+        .h_full()
+        .flex_none()
+        .flex()
+        .flex_col()
+        .items_center()
+        .pt(r(theme.size.titlebar_height + theme.space.s8))
+        .pb(r(theme.space.s16))
+        .child(
+            arrows(div(), &list)
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(r(theme.space.s4))
+                .children(links),
+        )
+        .child(div().mt_auto().child(new))
+        .into_any_element()
+}
+
+pub(super) fn sidebar(
+    route: &Route,
+    data: &ShellData,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    let sections = sections();
     let nav: Vec<AnyElement> = sections
         .into_iter()
         .map(|(key, icon, label, to)| {
