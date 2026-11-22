@@ -30,8 +30,7 @@ use crate::model::attachment_transfer::{
 };
 use crate::model::document_ranges::Signal;
 use crate::model::file_thumbnails::{
-    THUMBNAIL_IMAGE_BYTES, THUMBNAIL_PIXELS, ThumbnailError, ThumbnailQueue, animated,
-    raster_dimensions,
+    THUMBNAIL_IMAGE_BYTES, ThumbnailError, ThumbnailQueue, animated, thumbnail_dimensions,
 };
 use crate::model::format::file_size;
 use crate::model::state::Connection;
@@ -241,10 +240,10 @@ async fn read_image(
                 break;
             }
             bytes.extend(chunk);
-            // The header settles the size from the first chunk as it would from the whole file (`raster_dimensions`).
+            // The header settles the size from the first chunk as it would from the whole file (`thumbnail_dimensions`).
             if at == 0
                 && let Err(refused @ ThumbnailError::Limit(_)) =
-                    raster_dimensions(&bytes, &content_type)
+                    thumbnail_dimensions(&bytes, &content_type)
             {
                 return Err(refused);
             }
@@ -255,10 +254,8 @@ async fn read_image(
     opened.close().await;
     let bytes = bytes?;
     // The header first, and the frames: no decoder sees a picture too large to draw small, or an animation.
-    let pixels = raster_dimensions(&bytes, &content_type)?;
-    if u64::from(pixels.width) * u64::from(pixels.height) > THUMBNAIL_PIXELS
-        || animated(&bytes, &content_type)
-    {
+    thumbnail_dimensions(&bytes, &content_type)?;
+    if animated(&bytes, &content_type) {
         return Err(ThumbnailError::Limit(
             "This image is too large for a thumbnail.",
         ));

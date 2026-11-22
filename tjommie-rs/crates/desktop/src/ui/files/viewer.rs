@@ -22,7 +22,7 @@ use super::source::Opened;
 use super::{PreviewKind, preview_kind};
 use crate::guard::{guarded, guarded_async};
 use crate::model::document_ranges::Signal;
-use crate::model::file_thumbnails::{ThumbnailError, animated, raster_dimensions};
+use crate::model::file_thumbnails::{Dimensions, animated, raster_dimensions};
 use crate::model::markdown_document::{MARKDOWN_SECTION_BYTES, markdown_section};
 use crate::semantic::SemanticExt as _;
 use crate::ui::primitives::button::{IconButton, Pill, PillVariant};
@@ -210,6 +210,11 @@ impl FileViewer {
     }
 }
 
+/// Past the viewer's own limit (`IMAGE_PIXELS`), not the thumbnail's: a picture too large to preview.
+fn too_large(size: Dimensions) -> bool {
+    u64::from(size.width) * u64::from(size.height) > IMAGE_PIXELS
+}
+
 /// An image, read whole within the limits, its size and frames checked before GPUI decodes it: an animated GIF or WebP
 /// is never decoded, as each of its frames would be a buffer the size of the picture (M4 review C2).
 async fn read_image(opened: &Opened) -> Result<(Arc<Image>, f32, f32), String> {
@@ -229,14 +234,12 @@ async fn read_image(opened: &Opened) -> Result<(Arc<Image>, f32, f32), String> {
     // refused for it is refused before the rest is read (M4 re-review R8).
     let first = info.size.min(u64::from(ATTACHMENT_CHUNK_BYTES));
     let mut bytes = opened.read_span(0, first).await?;
-    if let Err(ThumbnailError::Limit(_)) = raster_dimensions(&bytes, &info.content_type) {
-        return Err(CORRUPT.into());
+    if raster_dimensions(&bytes, &info.content_type).is_ok_and(too_large) {
+        return Err(TOO_LARGE.into());
     }
     bytes.extend(opened.read_span(first, info.size).await?);
     let size = raster_dimensions(&bytes, &info.content_type).map_err(|_| CORRUPT.to_owned())?;
-    if u64::from(size.width) * u64::from(size.height) > IMAGE_PIXELS
-        || animated(&bytes, &info.content_type)
-    {
+    if too_large(size) || animated(&bytes, &info.content_type) {
         return Err(TOO_LARGE.into());
     }
     Ok((
@@ -581,19 +584,33 @@ mod tests {
     use super::*;
     use crate::ui::files::source::testing::{asked, png, reference, serving};
 
-    /// M4 re-review R8: the viewer checks a picture's header once its first chunk is in. A 20-megapixel photo is refused
-    /// there, as it was once all of it had been read; the megabytes after its header aren't asked for.
+    /// A 20-megapixel photo is within the viewer's own limit (64 megapixels): it is read whole and previewed. The
+    /// thumbnail's 16-megapixel cap is the card's alone; the viewer once called such a photo corrupt.
     #[gpui::test]
-    fn a_picture_too_large_is_refused_from_its_first_chunk(cx: &mut gpui::TestAppContext) {
+    fn a_twenty_megapixel_photo_is_previewed(cx: &mut gpui::TestAppContext) {
         let (rpc, calls) = serving(cx, png(5472, 3648, 4 * 1024 * 1024), "image/png");
+        let read = futures::executor::block_on(async {
+            let opened = Opened::open(rpc, reference()).await.unwrap();
+            read_image(&opened)
+                .await
+                .map(|(_, width, height)| (width, height))
+        });
+        assert_eq!(read, Ok((5472., 3648.)));
+        assert!(asked(&calls, "attachments.read") > 1, "read whole");
+    }
+
+    /// M4 re-review R8: a picture past the viewer's limit is too large to preview (not corrupt), and says so once its
+    /// first chunk is in: the megabytes after its header aren't asked for.
+    #[gpui::test]
+    fn a_picture_past_the_viewers_limit_is_too_large_from_its_first_chunk(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (rpc, calls) = serving(cx, png(10_000, 8_000, 4 * 1024 * 1024), "image/png");
         let refused = futures::executor::block_on(async {
             let opened = Opened::open(rpc, reference()).await.unwrap();
             read_image(&opened).await.err()
         });
-        assert_eq!(
-            refused.as_deref(),
-            Some("This image is corrupt or unsupported. Download is still available.")
-        );
+        assert_eq!(refused.as_deref(), Some(TOO_LARGE));
         assert_eq!(
             asked(&calls, "attachments.read"),
             1,
