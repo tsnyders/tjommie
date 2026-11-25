@@ -5,11 +5,14 @@ use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, App, InteractiveElement as _, IntoElement, ParentElement as _, Role, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Window, div, svg,
+    AnyElement, App, FocusHandle, InteractiveElement as _, IntoElement, ParentElement as _, Role,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Window, div, svg,
 };
+use gpui_kit::base::FocusTrapElement as _;
 use protocol::model::{Bot, Room, Settings};
 
+use crate::guard::guarded;
+use crate::keymap::Dismiss;
 use crate::semantic::SemanticExt as _;
 use crate::ui::agents::cards::state_pill;
 use crate::ui::fields::Link;
@@ -26,16 +29,29 @@ pub fn chain_line(limit: u32) -> String {
     format!("Agents can ask each other up to {limit} {times} per chain.")
 }
 
-/// The panel. `on_edit` opens the room form, `on_hide` closes the panel.
+/// The members panel's width beside the posts.
+const WIDTH: f32 = 320.;
+
+/// Whether the members sit beside the posts: not in a narrow window, nor where the posts would keep less than the
+/// panel's own width beside it (at the 640 threshold, a sliver: a letter a line); then the panel is a sheet over them.
+pub fn beside(window: &Window, cx: &App) -> bool {
+    !crate::ui::shell::narrow(window) && crate::ui::shell::room(window, cx) - WIDTH >= WIDTH
+}
+
+/// The panel. `on_edit` opens the room form, `on_hide` closes the panel. As a sheet over the room (`sheet`, its trap's
+/// focus), it says so, keeps Tab inside it, and Escape closes it.
+#[allow(clippy::too_many_arguments)]
 pub fn panel(
     room: &Room,
     members: &[&Bot],
     settings: Option<&Settings>,
     on_edit: impl Fn(&mut Window, &mut App) + 'static,
     on_hide: impl Fn(&mut Window, &mut App) + 'static,
+    sheet: Option<FocusHandle>,
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
+    let on_hide = Rc::new(on_hide);
     let rows: Vec<AnyElement> = members
         .iter()
         .map(|bot| {
@@ -92,7 +108,12 @@ pub fn panel(
                 .icon("settings")
                 .on_press(|_, cx| cx.navigate(Route::Settings(Section::Bots))),
         )
-        .child(IconButton::new("room.members.hide", "x", "Hide the members").on_press(on_hide));
+        .child(
+            IconButton::new("room.members.hide", "x", "Hide the members").on_press({
+                let hide = on_hide.clone();
+                move |window, cx| hide(window, cx)
+            }),
+        );
     let edit =
         (!room.everyone).then(|| Link::new("room.members.edit", "Edit members").on_press(on_edit));
     let chain = settings.map(|settings| {
@@ -126,10 +147,23 @@ pub fn panel(
     let scroll = scroll_handle("room.members.scroll", window, cx);
     let theme = theme(cx);
     let colors = palette(cx);
-    div()
+    let panel = div()
         .semantic("room.members", Role::Complementary)
-        .aria_label(format!("{} members", room.name))
-        .w(r(320.))
+        // Over the room it says so: a keyboard user knows the posts, and the composer, are behind it.
+        .aria_label(if sheet.is_some() {
+            format!("{} members, covers the room", room.name)
+        } else {
+            format!("{} members", room.name)
+        })
+        .map(|panel| {
+            // Without room beside the posts, the panel is a sheet over them that nothing is clicked through.
+            if sheet.is_some() {
+                panel.w_full().h_full().bg(hsla(colors.surface.panel))
+            } else {
+                panel.w(r(WIDTH))
+            }
+        })
+        .occlude()
         .flex_none()
         .flex()
         .flex_col()
@@ -163,6 +197,15 @@ pub fn panel(
                 )
                 .child(div().flex().flex_col().children(rows))
                 .children(chain),
-        ))
-        .into_any_element()
+        ));
+    match sheet {
+        // Over the room: Tab stays in it, and Escape closes it, the keyboard going back to Members panel.
+        Some(trap) => panel
+            .on_action(move |_: &Dismiss, window, cx| {
+                guarded("close the members sheet by Escape", || on_hide(window, cx));
+            })
+            .focus_trap("room.members.trap", &trap)
+            .into_any_element(),
+        None => panel.into_any_element(),
+    }
 }

@@ -269,7 +269,8 @@ pub(super) fn status_pill(
 }
 
 /// A turning loader, for connections (spinners remain only for tools and connections). It turns on the motion clock,
-/// so it keeps to the inactive window's 30 fps, and stands still under reduced motion.
+/// stands still under reduced motion, and holds its angle while the window is not in front (the owner's M5 decision):
+/// it asks for frames only from a window in front.
 pub(crate) fn spinner(size: f32, window: &mut Window, cx: &mut App) -> AnyElement {
     let loader = svg()
         .path("icons/i/175/loader-circle.svg")
@@ -280,7 +281,9 @@ pub(crate) fn spinner(size: f32, window: &mut Window, cx: &mut App) -> AnyElemen
         return loader.into_any_element();
     }
     let turned = (clock::now(cx) / (theme(cx).motion.duration.spin / 1000.)).fract();
-    clock::keep_moving(window, cx);
+    if window.is_window_active() {
+        clock::keep_moving(window, cx);
+    }
     loader
         .with_transformation(Transformation::rotate(percentage(turned)))
         .into_any_element()
@@ -320,6 +323,29 @@ pub fn failed_load(
                 .on_press(on_retry),
         )
         .into_any_element()
+}
+
+#[cfg(test)]
+mod spinner_tests {
+    /// The owner's M5 decision: a spinner in a window that is not in front holds its angle, asking for no frame; in front
+    /// it turns.
+    #[gpui::test]
+    fn an_inactive_window_holds_the_spinner(cx: &mut gpui::TestAppContext) {
+        let cx =
+            crate::ui::primitives::test_window(cx, |window, cx| super::spinner(14., window, cx));
+        let asked = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|_, cx| {
+                crate::motion::clock::frames(cx)
+                    .last()
+                    .is_some_and(|frame| frame.moving)
+            })
+        };
+        crate::ui::testing::draw(cx);
+        assert!(!asked(cx), "not in front: it holds its angle");
+        cx.update(|window, _| window.activate_window());
+        crate::ui::testing::draw(cx);
+        assert!(asked(cx), "in front: it turns");
+    }
 }
 
 #[cfg(test)]

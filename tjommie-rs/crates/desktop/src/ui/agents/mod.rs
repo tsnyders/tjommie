@@ -57,8 +57,9 @@ pub struct AgentsScreen {
     /// The agents as last seen: when they change, a failed load is tried again, as the TypeScript fetched again on
     /// `[bots, ready]`.
     bots: Vec<Bot>,
-    /// The Needs you count, rolling.
-    needs: Rolling,
+    /// The Needs you count, rolling when it changes: made from the first count seen, so arriving at Agents (its screen
+    /// is made afresh each time) shows the count at once (M7 review m9).
+    needs: Option<Rolling>,
     _search: Subscription,
 }
 
@@ -74,7 +75,6 @@ impl AgentsScreen {
                 cx.notify();
             });
         });
-        let needs = Rolling::new("0", &theme(cx).motion.spring.playful);
         AgentsScreen {
             filter: OverviewFilter::All,
             search,
@@ -82,7 +82,7 @@ impl AgentsScreen {
             problems: HashMap::new(),
             asked: HashMap::new(),
             bots: Vec::new(),
-            needs,
+            needs: None,
             _search: subscription,
         }
     }
@@ -152,9 +152,13 @@ impl Render for AgentsScreen {
             .iter()
             .filter(|bot| bot.state == BotState::Waiting)
             .collect();
-        self.needs
-            .set(waiting.len().to_string(), crate::motion::reduced::is_on(cx));
-        if self.needs.step(crate::motion::clock::dt(cx)) {
+        let count = waiting.len().to_string();
+        let playful = theme(cx).motion.spring.playful.clone();
+        let needs = self
+            .needs
+            .get_or_insert_with(|| Rolling::new(count.clone(), &playful));
+        needs.set(count, crate::motion::reduced::is_on(cx));
+        if needs.step(crate::motion::clock::dt(cx)) {
             crate::motion::clock::keep_moving(window, cx);
         }
         let now = jiff::Zoned::now();
@@ -236,10 +240,9 @@ impl Render for AgentsScreen {
                                 .semantic("agents.needs.count", Role::Status)
                                 .aria_label(format!("{} need you", waiting.len()))
                                 .font_family(crate::assets::MONO_FAMILY)
-                                .child(
-                                    self.needs
-                                        .render(theme.typography.desktop.label.line_height),
-                                ),
+                                .children(self.needs.as_ref().map(|needs| {
+                                    needs.render(theme.typography.desktop.label.line_height)
+                                })),
                         ),
                 )
                 .child(

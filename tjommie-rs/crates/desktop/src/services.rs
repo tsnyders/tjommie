@@ -22,8 +22,8 @@
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::Arc;
 use std::sync::mpsc::channel;
+use std::sync::{Arc, OnceLock};
 
 use client::Client;
 use desktop_host::app_dirs::{AppDirs, DirsEnv};
@@ -182,6 +182,52 @@ impl Http for NoFeed {
     }
 }
 
+/// The updater's HTTP client, made when its first request asks (on the updater's runtime) rather than while the window
+/// opens: making it reads the system's proxy settings (M6 re-review Nit 3). One that can't be made fails each request.
+struct LazyHttp {
+    policy: Policy,
+    client: OnceLock<Option<ReqwestHttp>>,
+}
+
+impl LazyHttp {
+    fn client(&self) -> Result<&ReqwestHttp, String> {
+        self.client
+            .get_or_init(|| {
+                ReqwestHttp::new(self.policy)
+                    .inspect_err(|error| log::warn!("Updates can't be fetched: {error}"))
+                    .ok()
+            })
+            .as_ref()
+            .ok_or_else(|| "The update check could not start.".to_owned())
+    }
+}
+
+impl Http for LazyHttp {
+    fn get_text<'a>(
+        &'a self,
+        url: &'a Url,
+        max_bytes: usize,
+    ) -> BoxFuture<'a, Result<String, String>> {
+        match self.client() {
+            Ok(http) => http.get_text(url, max_bytes),
+            Err(error) => async move { Err(error) }.boxed(),
+        }
+    }
+
+    fn download<'a>(
+        &'a self,
+        url: &'a Url,
+        destination: &'a Path,
+        max_bytes: u64,
+        progress: desktop_host::updater::Progress<'a>,
+    ) -> BoxFuture<'a, Result<(), String>> {
+        match self.client() {
+            Ok(http) => http.download(url, destination, max_bytes, progress),
+            Err(error) => async move { Err(error) }.boxed(),
+        }
+    }
+}
+
 /// An updater over `feed` (none: it checks nothing and says `UpdateState::Unsupported`), started.
 fn build_updater(
     app_id: &str,
@@ -257,13 +303,10 @@ fn updater_for(
         None
     });
     let http: Arc<dyn Http> = match feed.as_ref().map(Policy::for_feed) {
-        Some(Ok(policy)) => match ReqwestHttp::new(policy) {
-            Ok(http) => Arc::new(http),
-            Err(error) => {
-                log::warn!("Updates can't be fetched: {error}");
-                Arc::new(NoFeed)
-            }
-        },
+        Some(Ok(policy)) => Arc::new(LazyHttp {
+            policy,
+            client: OnceLock::new(),
+        }),
         _ => Arc::new(NoFeed),
     };
     build_updater(
@@ -293,7 +336,9 @@ fn disallowed_login_item(identity: &Identity, registry: Arc<dyn Registry>) -> Lo
 /// Starts the tray, the notifications, the start-at-sign-in setting and the updater, for the window just opened. A part
 /// that can't start is logged and the app goes on without it, and without it the others and the quit still work: folders
 /// that were refused leave the setting off, the updater without a feed and the hint unshown, but keep the tray and the
-/// toasts.
+/// toasts. Nothing here waits on Windows, so the window opens at once: the tray's icon, the registry's writes and the
+/// updater's HTTP client come in the background (M6 re-review Nit 3). Until Windows has taken the icon, closing the
+/// window quits, as it does with no tray.
 pub fn start(identity: &Identity, window: &mut Window, cx: &mut App) {
     let Some(hosts) = cx.try_global::<AppHosts>().cloned() else {
         return;
@@ -357,21 +402,36 @@ pub fn start(identity: &Identity, window: &mut Window, cx: &mut App) {
         }
         None => Arc::new(disallowed_login_item(identity, registry.clone())),
     };
-    if let Err(error) = login_item.sync() {
-        log::warn!("Could not set start at sign-in: {error}");
-    }
 
-    // Toasts.
+    // Toasts, under this build's own id: an installed build has its shortcut, a dev or e2e one registers it (below).
     let (clicks, clicked) = channel::<String>();
     #[cfg(any(test, feature = "test-driver"))]
     let backend: Arc<dyn ToastBackend> = match &fakes {
         Some(fakes) => fakes.toasts.clone(),
-        None => real_toasts(identity, &*registry, clicks),
+        None => Arc::new(WinRtToasts::new(identity.app_id, clicks)),
     };
     #[cfg(not(any(test, feature = "test-driver")))]
-    let backend: Arc<dyn ToastBackend> = real_toasts(identity, &*registry, clicks);
+    let backend: Arc<dyn ToastBackend> = Arc::new(WinRtToasts::new(identity.app_id, clicks));
     let notifier = Arc::new(Notifier::new(backend, Arc::new(Up(hosts.hosts.clone()))));
     let notifications = Arc::new(Notifications::new(notifier.clone()));
+
+    // What waits on the registry (start at sign-in, set once on the first packaged run, and the toasts' id) is written
+    // off the UI thread, so the window opens without waiting for it (M6 re-review Nit 3). Each is logged if it fails.
+    let (syncing, toasts_id, this_run) = (
+        login_item.clone(),
+        (!fake).then(|| registry.clone()),
+        *identity,
+    );
+    runtime.spawn_blocking(move || {
+        if let Err(error) = syncing.sync() {
+            log::warn!("Could not set start at sign-in: {error}");
+        }
+        if let Some(registry) = toasts_id
+            && let Err(error) = register_aumid(&*registry, &this_run)
+        {
+            log::warn!("The notification id was not registered: {error}");
+        }
+    });
 
     // The updater, and the quits it asks for.
     let (quit_asked, quit_requests) = unbounded::<()>();
@@ -455,18 +515,6 @@ pub fn start(identity: &Identity, window: &mut Window, cx: &mut App) {
         |link, cx| clicked_toast(&link, cx),
         cx,
     );
-}
-
-/// The real toasts, under this build's own id (a dev or e2e-less build registers it; an installed one has its shortcut).
-fn real_toasts(
-    identity: &Identity,
-    registry: &dyn Registry,
-    clicks: std::sync::mpsc::Sender<String>,
-) -> Arc<dyn ToastBackend> {
-    if let Err(error) = register_aumid(registry, identity) {
-        log::warn!("The notification id was not registered: {error}");
-    }
-    Arc::new(WinRtToasts::new(identity.app_id, clicks))
 }
 
 /// Moves what a std channel's receiver gets onto an async stream: a thread of its own waits, since the tray's and the
@@ -562,8 +610,18 @@ impl Services {
         if self.fakes.is_some() {
             return true;
         }
-        self.tray.as_ref().is_some_and(|tray| tray.icon_added())
+        can_hide(self.tray.as_ref().map(|tray| tray.icon_state()))
     }
+}
+
+/// Whether a closed window may hide rather than quit: its tray icon is there, or still on its way (Explorer can take
+/// seconds to take one, and closing meanwhile must not quit; M7 review m2); not when Windows refused it or there is no
+/// tray. An icon refused after the window hid leaves a second launch to show it.
+fn can_hide(icon: Option<tray::IconState>) -> bool {
+    matches!(
+        icon,
+        Some(tray::IconState::Pending | tray::IconState::Added)
+    )
 }
 
 /// How the daemon's stop reads to the quit (`stopDaemonBeforeQuit`'s "forced" or not). `Ok(None)` is that there was no daemon
@@ -1108,6 +1166,17 @@ pub fn poke(poke: Poke, cx: &mut App) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    /// M7 review m2: a window closed while Windows is still taking the tray icon hides, as it does with the icon there;
+    /// it quits only when Windows refused the icon, or there is no tray.
+    #[test]
+    fn a_window_hides_while_its_tray_icon_is_on_its_way_and_quits_without_one() {
+        use desktop_host::shell::tray::IconState;
+        assert!(super::can_hide(Some(IconState::Pending)));
+        assert!(super::can_hide(Some(IconState::Added)));
+        assert!(!super::can_hide(Some(IconState::Failed)));
+        assert!(!super::can_hide(None));
+    }
+
     use super::*;
     use crate::live::{DaemonOwner, Tokio};
     use desktop_host::daemon_process::DaemonError;

@@ -479,6 +479,16 @@ mod tests {
         assert_eq!(pdfium.open(junk).err(), Some(PdfError::Open));
     }
 
+    /// M4 review L2 and B4: once pdfium is loaded, every PDF opened after it gets the library already loaded, without the
+    /// DLL being hashed again; a pin the file doesn't match shows it, as a hash would refuse it. Another file is still
+    /// checked (below).
+    #[test]
+    fn a_loaded_library_is_not_hashed_again() {
+        let Some(_loaded) = real_pdfium() else { return };
+        let dll = std::env::var_os("TJOMMIE_PDFIUM_DLL").unwrap();
+        assert!(load_library(Path::new(&dll), &"0".repeat(64)).is_ok());
+    }
+
     #[test]
     fn a_dll_that_is_not_the_pinned_build_is_refused_before_it_loads() {
         let folder = tempfile::tempdir().unwrap();

@@ -104,7 +104,7 @@ These need the Chat lane's work (the chat screen, approval cards and file cards)
 | File | Screen and state | Fixture data | Notes |
 |---|---|---|---|
 | `room-dark.png` | The Everyone room: three or four posts from the user and agents, one mentioning an agent by name, the composer under them. | Forge, Scout and Atlas answer a mention each, in short plain text. | Use the mention flow of `e2e_room_mention`. |
-| `exchange-dark.png` | A room with the exchange panel open beside it: who asked whom, and the box that replies in Everyone. | Forge asks Scout a question and Scout answers, through the agents' "Can message" setting. | Needs the Chat lane's exchange view. |
+| `exchange-dark.png` | A room with the exchange panel open over it (at 1000 by 700 the content is too narrow for both, so the exchange lies over the room): who asked whom, and the box that replies in Everyone. | Forge asks Scout a question and Scout answers, through the agents' "Can message" setting. | Needs the Chat lane's exchange view. |
 
 ### Projects
 
@@ -124,7 +124,7 @@ These need the Chat lane's work (the chat screen, approval cards and file cards)
 
 | File | Screen and state | Fixture data | Notes |
 |---|---|---|---|
-| `browser-dark.png` | Forge's chat with the browser panel open beside it: the tab row, the address bar with the loopback address, and the page. | Forge made with the browser on. A `browser` event that navigates to the test's page. | The panel's page is a WebView2 window, and `PrintWindow` may draw it black. If it does, use the panel's snapshot variant (it slides a still picture of the page) and say so here. Check the page area by eye. |
+| `browser-dark.png` | Forge's chat with the browser panel open over it (at 1000 by 700 the panel lies over the chat, a strip of the chat showing): the tab row, the address bar with the loopback address, and the page. | Forge made with the browser on. A `browser` event that navigates to the test's page. | The panel's page is a WebView2 window, and `PrintWindow` may draw it black. If it does, use the panel's snapshot variant (it slides a still picture of the page) and say so here. Check the page area by eye. |
 | `logins-menu-dark.png` | The browser panel with the logins menu open from the key button: "Logins for 127.0.0.1", **Fill a saved login**, **Saved logins**, **Manage logins**, and the note that this PC confirms the exact HTTPS site. | None. The menu lists the same three items whatever the vault holds, so no login is saved and nothing touches Credential Manager. | **Fill a saved login** may carry a hint such as "Take control first", depending on the page and who holds it. Take the picture in the state that reads best, and describe that state in the caption. Never put a login in the vault. |
 
 ### Pairing the Android companion

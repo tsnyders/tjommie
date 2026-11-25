@@ -6,13 +6,14 @@
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, AnyView, App, AppContext as _, Context, Entity, Focusable as _, Global,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, Role, ScrollHandle,
+    AnyElement, AnyView, App, AppContext as _, Context, Entity, FocusHandle, Focusable as _,
+    Global, InteractiveElement as _, IntoElement, ParentElement as _, Render, Role, ScrollHandle,
     SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, svg,
 };
+use gpui_kit::base::FocusTrapElement as _;
 use gpui_kit::base::input::{InputEditorStyle, InputEvent, Textarea, TextareaState};
 use jiff::Zoned;
-use protocol::model::{Bot, Exchange, TEAM_ROOM_ID};
+use protocol::model::{Bot, Exchange, Message, TEAM_ROOM_ID};
 use protocol::wire::{Id, RoomPost, method};
 
 use super::message_view::{self, MessageContext, shown};
@@ -48,6 +49,12 @@ pub fn open(exchange_id: SharedString, from: SharedString, window: &mut Window, 
     close(cx);
     BrowserPanel::dismiss(cx);
     let view = cx.new(|cx| ExchangeView::new(exchange_id, from, window, cx));
+    // Over the chat as a sheet, it takes the keyboard, so nobody types into the chat it hides; Escape and its x give the
+    // keyboard back to View thread (`dismiss`).
+    if crate::ui::shell::overlaid(window, cx) {
+        let trap = view.read(cx).trap.clone();
+        trap.focus(window, cx);
+    }
     cx.set_global(Open(Some(view)));
     cx.refresh_windows();
 }
@@ -103,6 +110,8 @@ pub struct ExchangeView {
     problem: Option<SharedString>,
     /// What the header was last read for: the exchange's progress and how the hand-off row stands.
     read_for: Option<String>,
+    /// The store version `read_for` was worked out at.
+    read_at: Option<u64>,
     asked: bool,
     scroll: ScrollHandle,
     reply: Entity<TextareaState>,
@@ -114,6 +123,8 @@ pub struct ExchangeView {
     posted: bool,
     reply_problem: Option<SharedString>,
     _subscription: Subscription,
+    /// Its focus as a sheet over the chat: Tab stays inside it (gpui-kit's focus trap).
+    trap: FocusHandle,
 }
 
 impl ExchangeView {
@@ -148,6 +159,7 @@ impl ExchangeView {
             exchange: None,
             problem: None,
             read_for: None,
+            read_at: None,
             asked: false,
             scroll: ScrollHandle::new(),
             reply,
@@ -158,6 +170,7 @@ impl ExchangeView {
             posted: false,
             reply_problem: None,
             _subscription: subscription,
+            trap: cx.focus_handle(),
         }
     }
 
@@ -234,6 +247,12 @@ impl ExchangeView {
     /// Reads the exchange again when its messages move on, or the hand-off row in the conversation it was opened from
     /// changes: the exchange is answered or fails at the end of the asked agent's turn, after its last message.
     fn read(&mut self, cx: &mut Context<Self>) {
+        // The progress decodes the opener's page: worked out again only when the state moved (M4 review A8).
+        let version = store::version(cx);
+        if self.read_at == Some(version) {
+            return;
+        }
+        self.read_at = Some(version);
         let state = store::state(cx);
         let messages = state
             .conversations
@@ -302,26 +321,22 @@ impl Render for ExchangeView {
         }
         self.read(cx);
 
-        let state = store::state(cx);
-        let bots = std::rc::Rc::new(state.bots.clone());
+        // The state's pointer: the rows borrow their messages (M4 review A8).
+        let state = store::snapshot(cx);
+        let bots = &state.bots;
         let conversation = state.conversations.get(self.id.as_ref());
         let failed = conversation
             .is_some_and(|conversation| conversation.status == ConversationStatus::Failed);
-        let messages: Vec<_> = conversation
+        let all = conversation
             .filter(|conversation| conversation.status == ConversationStatus::Ready)
-            .map(|conversation| {
-                conversation
-                    .messages
-                    .iter()
-                    .filter(|message| shown(message))
-                    .cloned()
-                    .collect()
-            })
+            .map(|conversation| conversation.messages.as_slice())
             .unwrap_or_default();
+        let messages: Vec<&Message> = all.iter().filter(|message| shown(message)).collect();
+        // It counts the files, which are always shown.
         let caption = self
             .exchange
             .as_ref()
-            .and_then(|exchange| exchange_caption(exchange, &messages, &bots));
+            .and_then(|exchange| exchange_caption(exchange, all, bots));
         let from = self.exchange.as_ref().and_then(|exchange| {
             bots.iter()
                 .find(|bot| bot.id == exchange.from_bot_id)
@@ -348,7 +363,7 @@ impl Render for ExchangeView {
         let agents = self.agents(cx);
 
         let context = MessageContext {
-            bots: bots.clone(),
+            state: state.clone(),
             conversation_id: self.id.clone(),
             open_exchange: None,
             on_open_exchange: std::rc::Rc::new(|_, _, _| {}),
@@ -452,10 +467,27 @@ impl Render for ExchangeView {
                 .child(div().min_w_0().truncate().child(format!("@{}", bot.name)))
         });
 
-        div()
+        // Over the chat or room it opened from it says so: a keyboard user knows what is behind it, its Send too.
+        let over = crate::ui::shell::overlaid(window, cx).then(|| {
+            if matches!(crate::ui::shell::route::current(cx), Route::Room(_)) {
+                "Exchange, covers the room"
+            } else {
+                "Exchange, covers the chat"
+            }
+        });
+        let view = div()
             .semantic(format!("exchange.{id}.view"), Role::Complementary)
-            .aria_label("Exchange")
-            .w(r(460.))
+            .aria_label(over.unwrap_or("Exchange"))
+            .map(|view| {
+                if crate::ui::shell::narrow(window) {
+                    view.w_full()
+                } else {
+                    // Its own width, but never past the content area as a sheet over the chat.
+                    view.w(r(460.)).max_w_full()
+                }
+            })
+            // Over the chat, nothing behind it is clicked through it.
+            .occlude()
             .h_full()
             .flex_none()
             .flex()
@@ -629,7 +661,13 @@ impl Render for ExchangeView {
                                 .child(problem),
                         )
                     }),
-            )
+            );
+        if over.is_some() {
+            view.focus_trap("exchange.trap", &self.trap)
+                .into_any_element()
+        } else {
+            view.into_any_element()
+        }
     }
 }
 

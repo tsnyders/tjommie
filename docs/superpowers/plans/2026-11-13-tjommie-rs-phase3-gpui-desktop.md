@@ -871,6 +871,10 @@ Both decision points and the 5-day budget are **accepted** by owner decision 8 (
 | E2E (test driver + the debug `tjommie-daemon.exe` through `TJOMMIE_DAEMON_EXE`, built with the test-only provider-fixtures feature, on `127.0.0.1:0` with a temp root) | `crates/desktop/tests/e2e_*.rs`, feature `test-driver` | CI and local |
 | Cross-implementation (TypeScript ↔ Rust: device keys, login secrets) | `client`, `desktop-host` tests, through `tjommie-rs/tools/cred-probe.ts` | CI and local, test namespace |
 | Motion and frame time (PresentMon + app log) | `tools/perf/run-motion-checks.ps1` | owner's PC, quiet |
+| Motion statistics (percentiles, window filters, the 1 % lost-presents rule) | `tools/perf/frame-stats.py --self-test` | CI (`python -I`) and local |
+| Motion scenarios (50 pointer loops each; the keyboard and reduced checks count marked frames) | `tjommie-desktop --scenario motion-<name>` in a `perf` (test-driver) build, through `run-motion-checks.ps1` and `run-scenario.ps1` | owner's PC, quiet (`tjommie-rs/owner-perf-run.md`) |
+| Cold start (to the `ui ready` log line and PresentMon's first present) | `tools/perf/cold-start.ps1` | owner's PC, quiet |
+| Heavy-load experiment (T7.3: MMCSS and above-normal against neither, under a fixed synthetic load) | `tools/perf/t73-experiment.ps1` with `load.ps1` | owner's PC, the session's last step |
 | Memory budget | `tools/perf/measure-memory.ps1` | owner's PC, quiet; CI runs S0 and S1 as a smoke (not a gate; runners are noisy) |
 | Installer, update path, rollback | `desktop-acceptance.yml` | GitHub runner only |
 | Owner checks (steps A–C, F, the D-row checklist, the real-Claude smoke) | `phase3-checklist.md`, `smoke-desktop-checklist.md` | owner present |

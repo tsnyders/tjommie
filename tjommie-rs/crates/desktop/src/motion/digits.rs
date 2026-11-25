@@ -8,6 +8,9 @@ use super::spring::Spring;
 use crate::theme;
 use crate::ui::style::r;
 
+/// About how tall a rolling digit is, in pixels, for its column's rest rule (one unit is one digit).
+const DIGIT_PX: f32 = 20.;
+
 pub struct Rolling {
     text: SharedString,
     rest: Spring,
@@ -20,7 +23,7 @@ impl Rolling {
     pub fn new(text: impl Into<SharedString>, tokens: &theme::Spring) -> Self {
         let mut rolling = Rolling {
             text: SharedString::default(),
-            rest: Spring::new(0., tokens),
+            rest: Spring::scaled(0., tokens, DIGIT_PX),
             columns: Vec::new(),
         };
         rolling.set(text, true);
@@ -122,6 +125,21 @@ mod tests {
         assert_eq!(amount.positions()[0], ('4', Some(4.)), "the rest stays");
         assert_eq!(amount.positions()[1], ('.', None));
         assert_eq!(settled(&mut amount)[3], ('8', Some(8.)));
+    }
+
+    #[test]
+    fn a_roll_lands_on_its_digit_without_a_jump() {
+        let mut count = rolling("2");
+        count.set("8", false);
+        let mut last = 2.;
+        while count.step(1. / 60.) {
+            last = count.positions()[0].1.unwrap();
+        }
+        assert!(
+            (8. - last).abs() * DIGIT_PX <= 0.25,
+            "the frame before rest was {last}, a jump of {} px",
+            (8. - last).abs() * DIGIT_PX
+        );
     }
 
     #[test]

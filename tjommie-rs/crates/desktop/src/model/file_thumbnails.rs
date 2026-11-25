@@ -132,9 +132,11 @@ pub struct Dimensions {
     pub height: u32,
 }
 
+/// A header's size as it says it: no limit here, each reader applies its own (`thumbnail_dimensions`, the viewer's).
+/// A side of 0 is no picture at all.
 fn dimensions(width: u32, height: u32) -> Result<Dimensions, ThumbnailError> {
-    if width == 0 || height == 0 || u64::from(width) * u64::from(height) > THUMBNAIL_PIXELS {
-        return Err(ThumbnailError::Limit("Image exceeds thumbnail dimensions."));
+    if width == 0 || height == 0 {
+        return Err(unsupported_raster());
     }
     Ok(Dimensions { width, height })
 }
@@ -169,7 +171,10 @@ fn le24(bytes: &[u8], at: usize) -> Option<u32> {
 }
 
 /// `rasterDimensions`: the pixel size from the header of PNG, GIF, WebP or JPEG bytes, read before a decoder is asked to
-/// decode untrusted data. Anything else (or a header it can't read) is unsupported.
+/// decode untrusted data, whatever the size: the thumbnail and the viewer each apply their own limit. Anything else (or a
+/// header it can't read) is unsupported. It reads no further than the header, so what it says of a file's first bytes it
+/// says of the whole file, unless that is unsupported (a JPEG's frame header can lie further on): a picture too large is
+/// refused from its first chunk (M4 re-review R8).
 pub fn raster_dimensions(bytes: &[u8], content_type: &str) -> Result<Dimensions, ThumbnailError> {
     const PNG_SIGNATURE: [u8; 8] = [137, 80, 78, 71, 13, 10, 26, 10];
     if content_type == "image/png"
@@ -219,6 +224,18 @@ pub fn raster_dimensions(bytes: &[u8], content_type: &str) -> Result<Dimensions,
         return jpeg_dimensions(bytes);
     }
     Err(unsupported_raster())
+}
+
+/// The size of a picture a thumbnail may be drawn from: its header's, within `THUMBNAIL_PIXELS`.
+pub fn thumbnail_dimensions(
+    bytes: &[u8],
+    content_type: &str,
+) -> Result<Dimensions, ThumbnailError> {
+    let size = raster_dimensions(bytes, content_type)?;
+    if u64::from(size.width) * u64::from(size.height) > THUMBNAIL_PIXELS {
+        return Err(ThumbnailError::Limit("Image exceeds thumbnail dimensions."));
+    }
+    Ok(size)
 }
 
 /// Whether a GIF or WebP holds more than one frame. GPUI decodes every frame of one to a buffer the size of the whole
@@ -426,7 +443,7 @@ async fn thumbnail_of<'a, R: Rpc, N: AttachmentNative, F: RangeFetch, G: Thumbna
     match thumbnail_kind(&info.content_type) {
         ThumbnailKind::Image => {
             let bytes = read_whole(source.fetch, url, info.size, signal).await?;
-            let size = raster_dimensions(&bytes, &info.content_type)?;
+            let size = thumbnail_dimensions(&bytes, &info.content_type)?;
             let scale = 1f64
                 .min(f64::from(WIDTH) / f64::from(size.width))
                 .min(f64::from(HEIGHT) / f64::from(size.height));
@@ -1010,6 +1027,29 @@ mod tests {
         assert_eq!(*renderer.decoded.lock().unwrap(), vec![(600_000, 240, 180)]);
         assert_eq!(renderer.closes.load(Ordering::SeqCst), 1);
         assert_eq!(previews.closed(), 1);
+    }
+
+    /// The header says the size, whatever it is; the thumbnail applies its own cap and the viewer its own (the viewer
+    /// once inherited the thumbnail's 16 megapixels and called a 20-megapixel photo corrupt). A header with no width or
+    /// height is unsupported, not too large.
+    #[test]
+    fn the_header_says_the_size_and_each_reader_applies_its_own_limit() {
+        let photo = png(5472, 3648, 24);
+        assert_eq!(
+            raster_dimensions(&photo, "image/png"),
+            Ok(Dimensions {
+                width: 5472,
+                height: 3648
+            })
+        );
+        assert_eq!(
+            thumbnail_dimensions(&photo, "image/png"),
+            Err(ThumbnailError::Limit("Image exceeds thumbnail dimensions."))
+        );
+        assert!(matches!(
+            raster_dimensions(&png(0, 3648, 24), "image/png"),
+            Err(ThumbnailError::Unsupported(_))
+        ));
     }
 
     #[tokio::test]

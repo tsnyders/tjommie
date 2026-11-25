@@ -15,10 +15,11 @@ use desktop_host::perf::{qpc, qpc_frequency};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, AppContext as _, Bounds, Context, DispatchPhase, Entity, FocusHandle, Global,
-    Image, ImageFormat, IntoElement, MouseDownEvent, ParentElement as _, Pixels, Render, Role,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Task, WeakEntity, Window, canvas,
-    div, img, svg,
+    Image, ImageFormat, InteractiveElement as _, IntoElement, MouseDownEvent, ParentElement as _,
+    Pixels, Render, Role, SharedString, StatefulInteractiveElement as _, Styled as _, Task,
+    WeakEntity, Window, canvas, div, img, svg,
 };
+use gpui_kit::base::FocusTrapElement as _;
 use gpui_kit::base::input::{InputEvent, InputState};
 use protocol::model::{Bot, BotState};
 
@@ -31,7 +32,8 @@ use super::{BrowserCommand, BrowserData, BrowserView};
 use crate::guard::{guarded, guarded_async};
 use crate::model::labels::{autonomy_line, model_label, state_label};
 use crate::model::panel_layout::{
-    Pane, PanelView, choose_pane, clamp_width, pane_spec, panel_for, set_expanded, width_bounds,
+    Pane, PanelView, choose_pane, clamp_width, covers_chat, pane_spec, panel_for, set_expanded,
+    width_bounds,
 };
 use crate::motion::clock::{self, Live, LiveGuard};
 use crate::motion::keyboard::Trigger;
@@ -88,6 +90,10 @@ pub struct BrowserPanel {
     /// The control pill's focus, where the keyboard lands when it leaves the page.
     control_focus: Rc<RefCell<Option<FocusHandle>>>,
     scale: f32,
+    /// The panel's focus as a sheet over the chat: Tab stays inside it (gpui-kit's focus trap).
+    trap: FocusHandle,
+    /// The keyboard goes in when the panel starts covering the chat, and back to its opener when it closes.
+    sheet_focus: crate::ui::shell::SheetFocus,
 }
 
 impl BrowserPanel {
@@ -123,6 +129,8 @@ impl BrowserPanel {
                 picture: RemotePicture::default(),
                 control_focus: Rc::default(),
                 scale: window.scale_factor(),
+                trap: cx.focus_handle(),
+                sheet_focus: Default::default(),
             }
         });
         panel.update(cx, |this, cx| {
@@ -208,6 +216,25 @@ impl BrowserPanel {
     /// The panel's visible width in design px.
     pub fn width(&self) -> f32 {
         self.motion.width.value
+    }
+
+    /// Whether the panel goes over the chat as a sheet instead of beside it (0.5.x's `coversChat`): where the content is
+    /// too narrow for both (`shell::overlaid`), and while the browser is expanded to fill the content area.
+    pub fn over_chat(window: &Window, cx: &App) -> bool {
+        match (chat_bot(cx), Self::handle(cx)) {
+            (Some(bot), Some(panel)) => panel.read(cx).covers(&bot, window, cx),
+            _ => crate::ui::shell::overlaid(window, cx),
+        }
+    }
+
+    /// `over_chat` for this panel's view of `bot`'s chat.
+    fn covers(&self, bot: &Bot, window: &Window, cx: &App) -> bool {
+        covers_chat(
+            true,
+            crate::ui::shell::overlaid(window, cx),
+            &panel_for(&self.view, &bot.id),
+            bot.browser,
+        )
     }
 
     /// Opens or closes: at once after a key or under reduced motion, otherwise on the spring in the variant chosen now.
@@ -453,14 +480,6 @@ impl BrowserPanel {
             image.remove_asset(cx);
         }
     }
-
-    /// The room the panel has: the content area's width in design px, beside the sidebar.
-    fn room(window: &Window, cx: &App) -> f64 {
-        let theme = theme(cx);
-        let zoom = f32::from(window.rem_size()) / 16.;
-        let viewport = f32::from(window.viewport_size().width) / zoom.max(0.1);
-        f64::from(viewport - theme.size.sidebar - theme.space.s12)
-    }
 }
 
 enum ImageSlot {
@@ -518,15 +537,24 @@ impl Render for BrowserPanel {
         } else {
             Pane::Details
         };
-        let room = Self::room(window, cx);
-        let width = if self.view.expanded && pane == Pane::Browser {
-            room - f64::from(theme(cx).space.s12)
-        } else {
-            clamp_width(pane_spec(pane).fallback, width_bounds(pane, room))
-        };
+        let room = f64::from(crate::ui::shell::room(window, cx));
+        // A sheet over all of the content area in a narrow window, or with the browser expanded; otherwise the pane's own
+        // width within 0.5.x's bounds (the chat keeps 480 beside it, or a strip of it shows beside an overlay), never
+        // wider than the content area.
+        let width =
+            if crate::ui::shell::narrow(window) || (self.view.expanded && pane == Pane::Browser) {
+                room
+            } else {
+                clamp_width(pane_spec(pane).fallback, width_bounds(pane, room)).min(room)
+            };
         if (self.motion.open_width() - width as f32).abs() > 0.5 {
             self.motion.set_open_width(width as f32);
         }
+        // Over the chat, the panel takes the keyboard as it opens, so nothing is typed into the hidden chat, and gives it
+        // back to its opener when it closes (Escape, Ctrl+B, Hide).
+        let over = bot.as_ref().is_some_and(|bot| self.covers(bot, window, cx));
+        self.sheet_focus
+            .follow(self.motion.is_open(), over, &self.trap, window, cx);
         self.follow(bot.as_ref(), window, cx);
         // A page turned private: no picture of it is kept, nor one being taken (review F6).
         if self.private_page(cx) {
@@ -558,7 +586,7 @@ impl Render for BrowserPanel {
             // Closed: no room taken in the row, and nothing to draw.
             return div().absolute().size_0().into_any_element();
         };
-        self.draw(&bot, pane, window, cx)
+        self.draw(&bot, pane, over, window, cx)
     }
 }
 
@@ -567,6 +595,7 @@ impl BrowserPanel {
         &mut self,
         bot: &Bot,
         pane: Pane,
+        over: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -586,9 +615,16 @@ impl BrowserPanel {
         };
         let gap = theme.space.s12;
         let panel_bounds = self.panel_bounds.clone();
-        div()
+        let panel = div()
             .semantic("browser.panel", Role::Complementary)
-            .aria_label(format!("About {}", bot.name))
+            // Over the chat it says so: a keyboard user knows the chat, and its Send, are behind it.
+            .aria_label(if over {
+                format!("About {}, covers the chat", bot.name)
+            } else {
+                format!("About {}", bot.name)
+            })
+            // Over the chat, nothing behind the panel is clicked through it.
+            .occlude()
             .relative()
             .flex_none()
             .h_full()
@@ -618,8 +654,14 @@ impl BrowserPanel {
                     .opacity(self.motion.content_opacity())
                     .child(head)
                     .child(content),
-            )
-            .into_any_element()
+            );
+        if over {
+            panel
+                .focus_trap("browser.panel.trap", &self.trap)
+                .into_any_element()
+        } else {
+            panel.into_any_element()
+        }
     }
 
     /// The head: the Details | Browser switch, then Expand (in the browser), the bot's settings and Hide.

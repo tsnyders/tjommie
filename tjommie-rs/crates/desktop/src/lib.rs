@@ -10,6 +10,8 @@ pub mod live;
 pub mod model;
 pub mod motion;
 pub mod notices;
+#[cfg(feature = "test-driver")]
+pub mod scenario;
 pub mod semantic;
 pub mod services;
 pub mod speech;

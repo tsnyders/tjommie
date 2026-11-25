@@ -324,3 +324,34 @@ fn create_your_first_agent_opens_new_agent(cx: &mut TestAppContext) {
     click(cx, "setup.create");
     assert_eq!(cx.update(|_, cx| route::current(cx)), Route::NewBot);
 }
+
+/// M7 review m9: the Needs you count rolls when it changes, not each time Agents opens (its screen is made afresh then):
+/// arriving, the count shows at once; a change then rolls.
+#[gpui::test]
+fn the_needs_you_count_shows_on_arrival_and_rolls_when_it_changes(cx: &mut TestAppContext) {
+    use crate::ui::testing::next_frame;
+    let waiting = state(
+        vec![
+            bot("b1", "Forge", BotState::Waiting),
+            bot("b2", "Scout", BotState::Waiting),
+        ],
+        vec![],
+        vec![],
+    );
+    let (cx, _) = app(cx, Route::Agents, waiting, FakeRpc::new());
+    // An inactive window gets its frames at 30 fps by timer instead (gate condition 5).
+    cx.update(|window, _| window.activate_window());
+    draw(cx);
+    assert!(
+        !next_frame(cx),
+        "the count shows at once, with no roll on arrival"
+    );
+    cx.update(|_, cx| {
+        crate::ui::store::update(cx, |state| {
+            state.bots[1].state = BotState::Idle;
+            true
+        })
+    });
+    draw(cx);
+    assert!(next_frame(cx), "a change rolls");
+}

@@ -2,23 +2,28 @@
 //! `rail.tsx` and `host-switcher.tsx`): the wordmark, the five sections, Recents with living avatars and state marks,
 //! View all, and at the foot the host button, which opens the host list, beside the New agent pill.
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, Div, FocusHandle, FontWeight, InteractiveElement as _, IntoElement,
-    ParentElement as _, Role, SharedString, Stateful, StatefulInteractiveElement as _, Styled as _,
-    Window, div, px, svg,
+    ParentElement as _, Pixels, Point, Role, SharedString, Stateful,
+    StatefulInteractiveElement as _, Styled as _, Window, div, px, svg,
 };
 use protocol::model::BotState;
 
 use super::data::{Command, Connection, Recent, RecentKind, SavedHost, ShellData};
 use super::route::{Navigate as _, Route, Section};
 use crate::assets::DISPLAY_FAMILY;
+use crate::motion::flight;
+use crate::motion::flip::{self, Flip};
+use crate::motion::spring::Spring;
+use crate::motion::{clock, reduced};
 use crate::semantic::{Semantic, SemanticExt as _};
 use crate::ui::fields::arrows;
 use crate::ui::primitives::avatar::{BotAvatar, Pose};
-use crate::ui::primitives::button::{Pill, PillVariant, pressable};
+use crate::ui::primitives::button::{Handler, Pill, PillVariant, pressable};
 use crate::ui::primitives::focus_handle;
 use crate::ui::primitives::menu::{Menu, MenuItem};
 use crate::ui::primitives::scroll::{follow_focus, scroll_handle};
@@ -26,14 +31,78 @@ use crate::ui::style::{TypeExt as _, focus_ring, focus_visible, hsla, palette, r
 
 /// This PC's value in the host list; a saved PC's is its id (`THIS_PC`).
 pub(super) const THIS_PC: &str = "this-pc";
+/// A Recents row's height, in design px.
+const RECENT_HEIGHT: f32 = 36.;
 
-pub(super) fn sidebar(
-    route: &Route,
-    data: &ShellData,
-    window: &mut Window,
-    cx: &mut App,
-) -> AnyElement {
-    let sections = [
+/// Recents in motion (motion.html "Lists reorder and reflow"): a row that moves slides from where it was to its new
+/// place (FLIP), and a row that leaves fades and slides 12 px out from where it was while the rows below close its gap
+/// on the same spring. Under reduced motion both happen at once.
+pub(super) struct RecentsMotion {
+    calm: crate::theme::Spring,
+    flip: Rc<RefCell<Flip>>,
+    /// The rows of the last frame, to tell which left.
+    shown: Vec<Recent>,
+    leaving: Vec<Leaving>,
+    /// The window's rem in the last frame: a zoom or text-size change moves every row, which is no reorder (M7 review m10).
+    rem: Option<Pixels>,
+}
+
+/// A row on its way out: what it showed, where it was painted (relative to the list), and how much of it is left (1
+/// whole, 0 gone).
+pub(super) struct Leaving {
+    pub recent: Recent,
+    pub at: Point<f32>,
+    pub left: Spring,
+}
+
+impl RecentsMotion {
+    pub(super) fn new(calm: &crate::theme::Spring) -> Self {
+        RecentsMotion {
+            calm: calm.clone(),
+            flip: Rc::new(RefCell::new(Flip::new(calm))),
+            shown: Vec::new(),
+            leaving: Vec::new(),
+            rem: None,
+        }
+    }
+
+    /// The frame's start: `recents` are the rows now. A row that was shown and is gone starts leaving (at once under
+    /// `snap`); one that comes back stops. Steps every motion by `dt`; whether any still moves.
+    pub(super) fn frame(&mut self, recents: &[Recent], snap: bool, dt: f32) -> bool {
+        let here = |id: &SharedString| recents.iter().any(|recent| recent.id == *id);
+        if !snap {
+            let flip = self.flip.borrow();
+            for gone in self.shown.iter().filter(|shown| !here(&shown.id)) {
+                if let Some(at) = flip.painted(&gone.id) {
+                    let mut left = Spring::scaled(1., &self.calm, RECENT_HEIGHT);
+                    left.set_target(0.);
+                    self.leaving.push(Leaving {
+                        recent: gone.clone(),
+                        at,
+                        left,
+                    });
+                }
+            }
+        }
+        self.leaving
+            .retain(|leaving| !snap && !here(&leaving.recent.id));
+        self.shown = recents.to_vec();
+        let mut moving = false;
+        for leaving in &mut self.leaving {
+            moving |= leaving.left.step(dt);
+        }
+        self.leaving.retain(|leaving| !leaving.left.at_rest());
+        moving | self.flip.borrow_mut().step(dt)
+    }
+
+    pub(super) fn leaving(&self) -> &[Leaving] {
+        &self.leaving
+    }
+}
+
+/// The five sections, in the order they show: id key, icon, name, where they go.
+fn sections() -> [(&'static str, &'static str, &'static str, Route); 5] {
+    [
         ("agents", "bot", "Agents", Route::Agents),
         ("rooms", "messages-square", "Rooms", Route::Rooms),
         ("projects", "folder-git-2", "Projects", Route::Projects),
@@ -44,7 +113,94 @@ pub(super) fn sidebar(
             "Settings",
             Route::Settings(Section::General),
         ),
-    ];
+    ]
+}
+
+/// The compact navigation of a narrow window (below 640 px, as `rail.tsx` hid itself under `sm`): a 56 px column of the
+/// five sections as icon links, then at its foot the host button (its face; Switch PC, M7 review m1) and New agent.
+/// Recents wait for a wider window: Agents lists every agent and room. The links keep their ids, names and keys: Tab and
+/// the arrows reach them as they reach the full sidebar's.
+pub(super) fn compact(
+    route: &Route,
+    data: &ShellData,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    let links: Vec<AnyElement> = sections()
+        .into_iter()
+        .map(|(key, icon, label, to)| {
+            let selected = section_selected(&to, route);
+            let link = link_row(
+                format!("sidebar.nav.{key}").into(),
+                label.into(),
+                selected,
+                40.,
+                Rc::new(move |_, cx| cx.navigate(to.clone())),
+                window,
+                cx,
+            );
+            let theme = theme(cx);
+            link.w(r(40.))
+                .px(px(0.))
+                .justify_center()
+                .child(
+                    svg()
+                        .path(format!("icons/i/175/{icon}.svg"))
+                        .size(r(theme.size.icon))
+                        .flex_none()
+                        .text_color(hsla(palette(cx).icon.base)),
+                )
+                .into_any_element()
+        })
+        .collect();
+    let list = window
+        .use_keyed_state("sidebar.sections.list", cx, |_, cx| cx.focus_handle())
+        .read(cx)
+        .clone();
+    let new = crate::ui::primitives::button::IconButton::new("sidebar.new", "plus", "New agent")
+        .variant(crate::ui::primitives::button::IconVariant::Dark)
+        .on_press(|_, cx| cx.navigate(Route::NewBot));
+    let host = host_menu(data, focus_handle("sidebar.host", window, cx), true);
+    let theme = theme(cx);
+    div()
+        .semantic("sidebar.compact", Role::Navigation)
+        .aria_label("Tjommie")
+        .w(r(theme.space.s56))
+        .h_full()
+        .flex_none()
+        .flex()
+        .flex_col()
+        .items_center()
+        .pt(r(theme.size.titlebar_height + theme.space.s8))
+        .pb(r(theme.space.s16))
+        .child(
+            arrows(div(), &list)
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(r(theme.space.s4))
+                .children(links),
+        )
+        .child(
+            div()
+                .mt_auto()
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(r(theme.space.s8))
+                .child(host)
+                .child(new),
+        )
+        .into_any_element()
+}
+
+pub(super) fn sidebar(
+    route: &Route,
+    data: &ShellData,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    let sections = sections();
     let nav: Vec<AnyElement> = sections
         .into_iter()
         .map(|(key, icon, label, to)| {
@@ -52,13 +208,38 @@ pub(super) fn sidebar(
             nav_row(key, icon, label, selected, to, window, cx)
         })
         .collect();
+    // The rows move to new places and close the gap a leaving row held; a reorder is the app's own move, so only
+    // reduced motion makes it happen at once.
+    let motion = window.use_keyed_state("sidebar.recents.motion", cx, |_, cx| {
+        RecentsMotion::new(&theme(cx).motion.spring.calm)
+    });
+    // A zoom or text-size change (a new rem) puts every row in place at once: it moves them all, and is no reorder.
+    let rem = window.rem_size();
+    let resized = motion.update(cx, |motion, _| {
+        motion.rem.replace(rem).is_some_and(|was| was != rem)
+    });
+    let snap = reduced::is_on(cx) || resized;
+    let dt = clock::dt(cx);
+    if motion.update(cx, |motion, _| motion.frame(&data.recents, snap, dt)) {
+        clock::keep_moving(window, cx);
+    }
+    let flip = motion.read(cx).flip.clone();
     let recents: Vec<AnyElement> = data
         .recents
         .iter()
-        .map(|recent| recent_row(recent, route, window, cx))
+        .map(|recent| {
+            let row = recent_row(recent, route, window, cx);
+            flip::item(flip.clone(), recent.id.clone(), snap, row).into_any_element()
+        })
+        .collect();
+    let leaving: Vec<AnyElement> = motion
+        .read(cx)
+        .leaving()
+        .iter()
+        .map(|leaving| leaving_row(leaving, cx))
         .collect();
     let view_all = view_all(window, cx);
-    let host = host_menu(data, focus_handle("sidebar.host", window, cx));
+    let host = host_menu(data, focus_handle("sidebar.host", window, cx), false);
     // The arrows move between the sections, and between Recents (T5.6); Tab still stops at each.
     let sections_list = window
         .use_keyed_state("sidebar.sections.list", cx, |_, cx| cx.focus_handle())
@@ -125,10 +306,18 @@ pub(super) fn sidebar(
                 .track_scroll(&recents_scroll)
                 .flex()
                 .flex_col()
-                .gap(px(1.))
                 .min_h_0()
                 .overflow_y_scroll()
-                .children(recents),
+                .child(flip::list(
+                    flip,
+                    div()
+                        .relative()
+                        .flex()
+                        .flex_col()
+                        .gap(px(1.))
+                        .children(recents)
+                        .children(leaving),
+                )),
         ))
         .child(view_all)
         .child(
@@ -171,7 +360,7 @@ fn link_row(
     label: SharedString,
     selected: bool,
     height: f32,
-    to: Route,
+    on_press: Handler,
     window: &mut Window,
     cx: &mut App,
 ) -> Semantic<Stateful<Div>> {
@@ -204,7 +393,7 @@ fn link_row(
             }
         })
         .when(ring, |row| row.child(focus_ring(theme.radius.field, cx)));
-    pressable(row, Some(Rc::new(move |_, cx| cx.navigate(to.clone()))))
+    pressable(row, Some(on_press))
 }
 
 fn nav_row(
@@ -221,7 +410,7 @@ fn nav_row(
         label.into(),
         selected,
         40.,
-        to,
+        Rc::new(move |_, cx| cx.navigate(to.clone())),
         window,
         cx,
     );
@@ -277,41 +466,44 @@ fn recent_row(recent: &Recent, route: &Route, window: &mut Window, cx: &mut App)
         Some(said) => format!("{}, {said}", recent.name).into(),
         None => recent.name.clone(),
     };
+    // An agent's avatar flies from its row into the chat header (motion.html "shared elements").
+    let open: Handler = match recent.kind {
+        RecentKind::Bot {
+            color,
+            shape,
+            state,
+        } => {
+            let id = recent.id.clone();
+            Rc::new(move |window, cx| {
+                let look = (color, shape, Pose::of(state));
+                flight::take_off(&id, flight::end("recents", &id), look, window, cx);
+                cx.navigate(to.clone());
+            })
+        }
+        RecentKind::Room { .. } => Rc::new(move |_, cx| cx.navigate(to.clone())),
+    };
     let row = link_row(
         format!("sidebar.recent.{}", recent.id).into(),
         label,
         selected,
-        36.,
-        to,
+        RECENT_HEIGHT,
+        open,
         window,
         cx,
     );
     let theme = theme(cx);
     let colors = palette(cx);
-    let face = match recent.kind {
-        RecentKind::Bot {
-            color,
-            shape,
-            state,
-        } => BotAvatar::new(color, shape, theme.size.avatar20)
-            .pose(Pose::of(state))
-            .into_any_element(),
-        RecentKind::Room { .. } => div()
-            .size(r(theme.size.avatar20))
-            .flex_none()
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(
-                svg()
-                    .path("icons/i/175/messages-square.svg")
-                    .size(r(theme.size.icon_sm))
-                    .text_color(hsla(colors.icon.base)),
-            )
-            .into_any_element(),
-    };
+    let key = flight::end("recents", &recent.id);
+    let hidden = flight::hides(&recent.id, &key, cx);
     row.type_style(&theme.typography.desktop.ui)
-        .child(face)
+        .child(
+            div()
+                .relative()
+                .flex_none()
+                .when(hidden, |slot| slot.opacity(0.))
+                .child(face(recent, true, cx))
+                .child(flight::end_capture(key)),
+        )
         .child(
             div()
                 .flex_1()
@@ -335,6 +527,64 @@ fn recent_row(recent: &Recent, route: &Route, window: &mut Window, cx: &mut App)
                     .into_any_element(),
             })
         })
+        .into_any_element()
+}
+
+/// A Recents row's face: the agent's avatar, living when `living`, or a room's mark.
+fn face(recent: &Recent, living: bool, cx: &App) -> AnyElement {
+    let theme = theme(cx);
+    match recent.kind {
+        RecentKind::Bot {
+            color,
+            shape,
+            state,
+        } => BotAvatar::new(color, shape, theme.size.avatar20)
+            .pose(Pose::of(state))
+            .when(living, |avatar| avatar.living(recent.id.clone()))
+            .into_any_element(),
+        RecentKind::Room { .. } => div()
+            .size(r(theme.size.avatar20))
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                svg()
+                    .path("icons/i/175/messages-square.svg")
+                    .size(r(theme.size.icon_sm))
+                    .text_color(hsla(palette(cx).icon.base)),
+            )
+            .into_any_element(),
+    }
+}
+
+/// A row that left Recents, on its way out from where it was: it fades and slides 12 px out in the first 40% of the
+/// way (motion.html's collapse), while the rows below close its gap. It is no link any more: nothing reaches it.
+fn leaving_row(leaving: &Leaving, cx: &App) -> AnyElement {
+    let theme = theme(cx);
+    let colors = palette(cx);
+    let gone = ((1. - leaving.left.value) / 0.4).clamp(0., 1.);
+    div()
+        .absolute()
+        .left(px(leaving.at.x - 12. * gone))
+        .top(px(leaving.at.y))
+        .w_full()
+        .h(r(RECENT_HEIGHT))
+        .opacity(1. - gone)
+        .flex()
+        .items_center()
+        .gap(r(theme.space.s12))
+        .px(r(theme.space.s12))
+        .type_style(&theme.typography.desktop.ui)
+        .text_color(hsla(colors.text.primary))
+        .child(face(&leaving.recent, false, cx))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .child(leaving.recent.name.clone()),
+        )
         .into_any_element()
 }
 
@@ -446,14 +696,15 @@ pub(super) fn host_button(data: &ShellData) -> HostButton {
     }
 }
 
-/// The host button's menu. The button is a tab stop: Enter or Space opens the menu (T5.6).
-fn host_menu(data: &ShellData, focus: FocusHandle) -> Menu {
+/// The host button's menu. The button is a tab stop: Enter or Space opens the menu (T5.6). `compact`: the rail's, its
+/// face alone.
+fn host_menu(data: &ShellData, focus: FocusHandle, compact: bool) -> Menu {
     let button = host_button(data);
     let via = data.via.clone();
     let current: Option<SharedString> = data.host.clone();
     let on = current.clone().unwrap_or_else(|| THIS_PC.into());
     let menu = Menu::new("sidebar.host.menu", move |open, window, cx| {
-        host_trigger(button, via, open, &focus, window, cx)
+        host_trigger(button, via, open, &focus, compact, window, cx)
     })
     .anchor(gpui::Anchor::BottomLeft)
     .offset(px(8.));
@@ -493,6 +744,7 @@ fn host_trigger(
     via: Option<SharedString>,
     open: bool,
     focus: &FocusHandle,
+    compact: bool,
     window: &Window,
     cx: &App,
 ) -> AnyElement {
@@ -531,33 +783,36 @@ fn host_trigger(
         .gap(r(theme.space.s10))
         .min_w_0()
         .p(r(theme.space.s4))
-        .pr(r(theme.space.s8))
+        .when(!compact, |host| host.pr(r(theme.space.s8)))
         .rounded_full()
         .cursor_pointer()
         .when(open, |host| host.bg(hsla(colors.state.hover)))
         .hover(|style| style.bg(hsla(colors.state.hover)))
         .child(face)
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .min_w_0()
-                .child(
-                    div()
-                        .type_style(&theme.typography.desktop.ui_strong)
-                        .text_color(hsla(colors.text.primary))
-                        .whitespace_nowrap()
-                        .child(button.name),
-                )
-                .when_some(via, |lines, via| {
-                    lines.child(
+        // In the rail the face alone: its name is the button's accessible name.
+        .when(!compact, |host| {
+            host.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .min_w_0()
+                    .child(
                         div()
-                            .type_style(&theme.typography.desktop.meta)
-                            .text_color(hsla(colors.text.tertiary))
-                            .child(via),
+                            .type_style(&theme.typography.desktop.ui_strong)
+                            .text_color(hsla(colors.text.primary))
+                            .whitespace_nowrap()
+                            .child(button.name),
                     )
-                }),
-        )
+                    .when_some(via, |lines, via| {
+                        lines.child(
+                            div()
+                                .type_style(&theme.typography.desktop.meta)
+                                .text_color(hsla(colors.text.tertiary))
+                                .child(via),
+                        )
+                    }),
+            )
+        })
         .into_any_element()
 }
 
@@ -568,6 +823,81 @@ mod tests {
 
     const HOME: &str = "5b0e2c8e-6f1a-4c55-9a43-2f0d7b1e9c11";
     const WORK: &str = "9c4f6b1d-2a7e-4e3b-8d55-0f6a1c2b3d4e";
+
+    fn room(id: &str) -> Recent {
+        Recent {
+            id: id.to_owned().into(),
+            name: id.to_owned().into(),
+            kind: RecentKind::Room { unread: false },
+        }
+    }
+
+    /// The list's prepaint, as the frame lays the rows out.
+    fn lay_out(motion: &RecentsMotion, rows: &[(&str, f32)]) {
+        for (id, y) in rows {
+            motion
+                .flip
+                .borrow_mut()
+                .place(&(*id).to_owned().into(), gpui::point(0., *y), false);
+        }
+    }
+
+    fn calm() -> crate::theme::Spring {
+        crate::theme::Theme::aegis().unwrap().motion.spring.calm
+    }
+
+    #[test]
+    fn a_row_that_leaves_fades_out_from_where_it_was() {
+        let mut motion = RecentsMotion::new(&calm());
+        let (launch, scout) = (room("launch"), room("scout"));
+        motion.frame(&[launch.clone(), scout.clone()], false, 0.016);
+        lay_out(&motion, &[("launch", 0.), ("scout", 37.)]);
+        assert!(
+            motion.frame(std::slice::from_ref(&launch), false, 0.016),
+            "Scout left: something moves"
+        );
+        let leaving = motion.leaving();
+        assert_eq!(leaving.len(), 1);
+        assert_eq!(leaving[0].recent.id, scout.id);
+        assert_eq!(
+            leaving[0].at,
+            gpui::point(0., 37.),
+            "it fades out from where it was painted"
+        );
+        lay_out(&motion, &[("launch", 0.)]);
+        let mut frames = 0;
+        while motion.frame(std::slice::from_ref(&launch), false, 0.016) {
+            lay_out(&motion, &[("launch", 0.)]);
+            frames += 1;
+            assert!(frames < 200, "it ends");
+        }
+        assert!(motion.leaving().is_empty(), "then it is gone");
+        assert!(frames > 5, "over several frames, not at once: {frames}");
+    }
+
+    #[test]
+    fn under_reduced_motion_a_row_leaves_at_once_and_a_returning_row_stops_leaving() {
+        let mut motion = RecentsMotion::new(&calm());
+        let (launch, scout) = (room("launch"), room("scout"));
+        motion.frame(&[launch.clone(), scout.clone()], true, 0.016);
+        lay_out(&motion, &[("launch", 0.), ("scout", 37.)]);
+        assert!(
+            !motion.frame(std::slice::from_ref(&launch), true, 0.016),
+            "reduced: nothing moves"
+        );
+        assert!(motion.leaving().is_empty(), "it is gone at once");
+
+        let mut motion = RecentsMotion::new(&calm());
+        motion.frame(&[launch.clone(), scout.clone()], false, 0.016);
+        lay_out(&motion, &[("launch", 0.), ("scout", 37.)]);
+        motion.frame(std::slice::from_ref(&launch), false, 0.016);
+        assert_eq!(motion.leaving().len(), 1);
+        motion.frame(&[launch.clone(), scout.clone()], false, 0.016);
+        assert!(
+            motion.leaving().is_empty(),
+            "back before it was gone: it is a row again, not a ghost"
+        );
+    }
 
     fn hosts() -> Vec<SavedHost> {
         vec![

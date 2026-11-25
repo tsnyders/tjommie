@@ -385,6 +385,47 @@ mod exchange_view {
         );
     }
 
+    /// The README screenshot run's bug, for an exchange: at 1000 x 700 the chat can't keep its 480 beside it, so the
+    /// exchange lies over the chat as a sheet instead of squeezing it. As a sheet it says so, has the keyboard, keeps Tab
+    /// inside, and Escape closes it, the keyboard back on View thread.
+    #[gpui::test]
+    fn at_1000_by_700_the_exchange_lies_over_the_chat(cx: &mut TestAppContext) {
+        let (cx, _) = app(cx, Route::Chat("b1".into()), team(), exchanges());
+        cx.simulate_resize(gpui::size(px(1000.), px(700.)));
+        draw(cx);
+        keys::tab_to(cx, "exchange.x1.open");
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        draw(cx);
+        let view = node("exchange.x1.view").expect("the exchange is open");
+        let chat = node("screen.chat").expect("the chat");
+        assert!(
+            chat.bounds.width >= 480.,
+            "the chat keeps its width: {:?}",
+            chat.bounds
+        );
+        assert!(
+            view.bounds.x > chat.bounds.x
+                && view.bounds.x + view.bounds.width <= chat.bounds.x + chat.bounds.width + 0.5,
+            "the exchange lies over the chat's right: {:?} over {:?}",
+            view.bounds,
+            chat.bounds
+        );
+        assert_eq!(view.text, "Exchange, covers the chat");
+        assert!(view.focused, "the keyboard went into the sheet");
+        crate::ui::testing::tab_stays_in(cx, 6, |id| {
+            id.starts_with("exchange.x1.") && id != "exchange.x1.open"
+        });
+        keys::tab_to(cx, "exchange.x1.close");
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        assert!(node("exchange.x1.view").is_none(), "Escape closed it");
+        assert!(
+            node("exchange.x1.open").unwrap().focused,
+            "the keyboard is back on View thread"
+        );
+    }
+
     #[gpui::test]
     fn replies_in_everyone_with_both_agents_mentioned(cx: &mut TestAppContext) {
         let (cx, calls) = app(cx, Route::Chat("b1".into()), team(), exchanges());
@@ -1258,5 +1299,448 @@ mod exchange_focus {
             node("browser.panel").is_none(),
             "and opened no panel in its place"
         );
+    }
+}
+
+/// motion.html "shared elements": opened from its Recents row by the pointer, the agent's avatar flies into the chat
+/// header, the two ends hiding their own copies on the way; a key opens the chat with no flight.
+mod shared_avatar {
+    use super::*;
+    use crate::ui::shell::data::{Recent, RecentKind, ShellData};
+    use crate::ui::testing::next_frame;
+    use gpui::VisualTestContext;
+    use protocol::model::{BotColor, BotShape};
+
+    fn forge_recent() -> Recent {
+        Recent {
+            id: "b1".into(),
+            name: "Forge".into(),
+            kind: RecentKind::Bot {
+                color: BotColor::Blue,
+                shape: BotShape::Hexagon,
+                state: BotState::Idle,
+            },
+        }
+    }
+
+    fn agents_with_forge(cx: &mut TestAppContext) -> &mut VisualTestContext {
+        let (cx, _) = app(cx, Route::Agents, chat(turns(2), false), FakeRpc::default());
+        cx.update(|_, cx| cx.global_mut::<ShellData>().recents = vec![forge_recent()]);
+        // An inactive window gets its frames at 30 fps by timer instead (gate condition 5).
+        cx.update(|window, _| window.activate_window());
+        draw(cx);
+        draw(cx);
+        cx
+    }
+
+    #[gpui::test]
+    fn the_avatar_flies_from_its_row_into_the_chat_header(cx: &mut TestAppContext) {
+        let cx = agents_with_forge(cx);
+        click(cx, "sidebar.recent.b1");
+        assert_eq!(
+            cx.update(|_, cx| route::current(cx)),
+            Route::Chat("b1".into())
+        );
+        let first = cx
+            .debug_bounds("flight.avatar")
+            .expect("the avatar takes off");
+        let mut frames = 0;
+        let mut last = first;
+        while let Some(now) = cx.debug_bounds("flight.avatar") {
+            last = now;
+            assert!(next_frame(cx), "it flies frame by frame");
+            frames += 1;
+            assert!(frames < 200, "and lands");
+        }
+        assert!(frames > 5, "over several frames: {frames}");
+        assert!(
+            last.origin.y < first.origin.y || last.origin.x > first.origin.x,
+            "from the sidebar row toward the header: {first:?} -> {last:?}"
+        );
+        assert!(
+            !cx.update(|_, cx| crate::motion::flight::is_flying(cx)),
+            "landed"
+        );
+        for _ in 0..10 {
+            next_frame(cx);
+        }
+        assert!(
+            cx.debug_bounds("flight.avatar").is_none(),
+            "and it stays landed"
+        );
+        assert!(
+            flight_frames(cx) > 5,
+            "its frames are marked for the motion checks"
+        );
+    }
+
+    /// The frames the flight drew in, by the frame log's marks.
+    fn flight_frames(cx: &mut VisualTestContext) -> usize {
+        cx.update(|_, cx| {
+            crate::motion::clock::frames(cx)
+                .iter()
+                .filter(|frame| frame.marks & crate::motion::clock::FLIGHT != 0)
+                .count()
+        })
+    }
+
+    /// Clicks `opener` and follows the flight: it takes off, lives on past its second frame, and lands.
+    fn flies_from(cx: &mut VisualTestContext, opener: &'static str) {
+        click(cx, opener);
+        assert_eq!(
+            cx.update(|_, cx| route::current(cx)),
+            Route::Chat("b1".into())
+        );
+        assert!(
+            cx.debug_bounds("flight.avatar").is_some(),
+            "the avatar takes off"
+        );
+        let mut frames = 0;
+        while cx.debug_bounds("flight.avatar").is_some() {
+            assert!(next_frame(cx), "it flies frame by frame");
+            frames += 1;
+            assert!(frames < 200, "and lands");
+        }
+        assert!(frames > 5, "past its second frame, over several: {frames}");
+        assert!(
+            !cx.update(|_, cx| crate::motion::flight::is_flying(cx)),
+            "landed"
+        );
+    }
+
+    /// M7 review M1: from an Agents card the avatar flies too, though the card's screen is gone from the chat's first frame
+    /// on: the flight keeps the bounds it took off from.
+    #[gpui::test]
+    fn the_avatar_flies_from_its_card_into_the_chat_header(cx: &mut TestAppContext) {
+        let cx = agents_with_forge(cx);
+        flies_from(cx, "agents.card.b1.open");
+    }
+
+    /// A narrow window has no Recents in its rail: an Agents card is where a chat opens from, and the avatar flies from it.
+    #[gpui::test]
+    fn in_a_narrow_window_the_avatar_flies_from_its_card(cx: &mut TestAppContext) {
+        let cx = agents_with_forge(cx);
+        // 768 high, so Forge's card is on screen without scrolling.
+        cx.simulate_resize(gpui::size(px(360.), px(768.)));
+        draw(cx);
+        draw(cx);
+        assert!(node("sidebar.compact").is_some(), "narrow: no Recents");
+        flies_from(cx, "agents.card.b1.open");
+    }
+
+    #[gpui::test]
+    fn a_key_opens_the_chat_with_no_flight(cx: &mut TestAppContext) {
+        let cx = agents_with_forge(cx);
+        assert!(cx.update(|window, cx| {
+            crate::ui::primitives::focus_by_id("sidebar.recent.b1", window, cx)
+        }));
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert_eq!(
+            cx.update(|_, cx| route::current(cx)),
+            Route::Chat("b1".into())
+        );
+        assert!(
+            cx.debug_bounds("flight.avatar").is_none(),
+            "no flight after a key"
+        );
+        assert_eq!(flight_frames(cx), 0, "no frame drew one");
+    }
+}
+
+/// motion.html "Message arrival": a tool step that shows up while it runs ticks in, and its check draws on when it
+/// finishes; an older turn's steps show still, and reduced motion shows everything at once.
+mod tool_rows {
+    use super::*;
+    use crate::ui::testing::next_frame;
+    use gpui::VisualTestContext;
+
+    fn steps(status: &str) -> Message {
+        with(
+            MessageKind::Activity,
+            json!({ "items": [{ "id": "t1", "name": "Read", "summary": "Read the schema", "status": status }] }),
+            message("m1", "b1", "", 1),
+        )
+    }
+
+    fn settle(cx: &mut VisualTestContext) -> usize {
+        let mut frames = 0;
+        while next_frame(cx) {
+            frames += 1;
+            assert!(frames < 120, "it comes to rest");
+        }
+        frames
+    }
+
+    fn open<'a>(cx: &'a mut TestAppContext, status: &str) -> &'a mut VisualTestContext {
+        let (cx, _) = app(
+            cx,
+            Route::Chat("b1".into()),
+            chat(vec![steps(status)], false),
+            FakeRpc::default(),
+        );
+        // An inactive window gets its frames at 30 fps by timer instead (gate condition 5).
+        cx.update(|window, _| window.activate_window());
+        draw(cx);
+        cx
+    }
+
+    #[gpui::test]
+    fn a_running_step_ticks_in_and_its_check_draws_on(cx: &mut TestAppContext) {
+        let cx = open(cx, "running");
+        let first = cx.debug_bounds("tools.m1.t1").expect("the step");
+        // Its spinner turns while it runs, so the frames go on: 40 of them (two thirds of a second) land the rise.
+        for _ in 0..40 {
+            assert!(next_frame(cx), "it moves");
+        }
+        let rest = cx.debug_bounds("tools.m1.t1").expect("the step");
+        assert!(
+            first.origin.y > rest.origin.y,
+            "from below its place: {first:?} -> {rest:?}"
+        );
+        cx.update(|_, cx| {
+            store::update(cx, |state| {
+                if let Some(chat) = state.conversations.get_mut("b1") {
+                    chat.messages = vec![steps("done")];
+                }
+                true
+            })
+        });
+        draw(cx);
+        assert!(settle(cx) > 3, "its check draws on");
+    }
+
+    #[gpui::test]
+    fn an_older_turns_steps_show_still(cx: &mut TestAppContext) {
+        let cx = open(cx, "done");
+        assert_eq!(
+            settle(cx),
+            0,
+            "no frames for a step that was over when drawn"
+        );
+    }
+
+    #[gpui::test]
+    fn under_reduced_motion_a_step_shows_at_once(cx: &mut TestAppContext) {
+        let (cx, _) = app(
+            cx,
+            Route::Agents,
+            chat(vec![steps("running")], false),
+            FakeRpc::default(),
+        );
+        cx.update(|window, cx| {
+            window.activate_window();
+            crate::motion::reduced::set_for_test(true, cx);
+            crate::ui::shell::route::Navigate::navigate(cx, Route::Chat("b1".into()));
+        });
+        draw(cx);
+        assert_eq!(settle(cx), 0, "no frames in between");
+    }
+}
+
+/// The README screenshot run (1000 x 700): with the browser panel open, the chat was squeezed until its rows wrapped a
+/// letter a line. Where the content is too narrow for both (under 1000 design px beside the sidebar, 0.5.x's overlay), the
+/// panel lies over the chat as a sheet, a strip of the chat showing, and the chat keeps its width; at the 640 threshold
+/// the panel fits the window. As a sheet it says so, has the keyboard, keeps Tab inside, and Escape closes it, the
+/// keyboard back on its opener.
+mod side_panels {
+    use super::*;
+    use crate::ui::testing::{app_with_panel, tab_stays_in, text};
+    use gpui::{VisualTestContext, size};
+
+    /// Forge's chat: a tool step, "Messaged Scout", and the exchange with Scout, waiting for Scout's answer.
+    fn working() -> AppState {
+        let step = with(
+            MessageKind::Activity,
+            json!({ "items": [{ "id": "t1", "name": "send_message", "summary": "Messaged Scout", "status": "done" }] }),
+            message("m1", "b1", "", 1),
+        );
+        let asked = with(
+            MessageKind::Handoff,
+            json!({ "exchangeId": "x1", "fromBotId": "b1", "toBotId": "b2", "messages": 0, "status": "waiting" }),
+            message("m2", "b1", "Does the bundled SQLite match?", 2),
+        );
+        let mut state = chat(vec![step, asked], false);
+        state.bots.push(bot("b2", "Scout", BotState::Idle));
+        state
+    }
+
+    /// Forge's chat in a window `width` wide and 700 high, the panel opened by Enter on the header's panel button, its
+    /// opener (at once, as after any key).
+    fn open_at(cx: &mut TestAppContext, width: f32) -> &mut VisualTestContext {
+        let (cx, _) = app_with_panel(cx, Route::Chat("b1".into()), working(), FakeRpc::default());
+        cx.simulate_resize(size(px(width), px(700.)));
+        draw(cx);
+        cx.update(|window, cx| {
+            assert!(
+                crate::ui::primitives::focus_by_id("chat.b1.panel", window, cx),
+                "the panel button"
+            )
+        });
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        draw(cx);
+        cx
+    }
+
+    /// The chat header's title and subtitle (the model) are one line each, shortened with an ellipsis where they must be,
+    /// their whole text in the accessible name (the README capture: the subtitle wrapped a letter a line over the thread).
+    fn header_lines_are_one_line_each() {
+        let model = crate::model::labels::model_label(protocol::model::Provider::Claude, "sonnet");
+        for (id, full, line) in [
+            ("chat.b1.name", "Forge", 20.),
+            ("chat.b1.model", model.as_str(), 16.),
+        ] {
+            let node = node(id).unwrap_or_else(|| panic!("{id} is on screen"));
+            assert!(
+                node.bounds.height < 2. * line,
+                "{id} is one line, not a letter a line: {:?}",
+                node.bounds
+            );
+            assert_eq!(
+                node.text, full,
+                "{id}'s whole text, however it is shortened"
+            );
+        }
+    }
+
+    /// The panel over the chat says so, has the keyboard and keeps Tab inside; Escape closes it, the keyboard back on
+    /// its opener.
+    fn holds_the_keyboard_until_escape(cx: &mut VisualTestContext) {
+        assert_eq!(text("browser.panel"), "About Forge, covers the chat");
+        assert!(
+            node("browser.panel").unwrap().focused,
+            "the keyboard went into the sheet"
+        );
+        tab_stays_in(cx, 6, |id| id.starts_with("browser."));
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        draw(cx);
+        assert!(node("browser.panel").is_none(), "Escape closed it");
+        assert!(
+            node("chat.b1.panel").unwrap().focused,
+            "the keyboard is back on its opener"
+        );
+    }
+
+    #[gpui::test]
+    fn at_1000_by_700_the_panel_lies_over_the_chat_and_its_rows_keep_one_line(
+        cx: &mut TestAppContext,
+    ) {
+        let cx = open_at(cx, 1000.);
+        let panel = node("browser.panel").expect("the panel is open");
+        let chat = node("screen.chat").expect("the chat");
+        assert!(
+            chat.bounds.width >= 480.,
+            "the chat keeps its width: {:?}",
+            chat.bounds
+        );
+        assert!(
+            panel.bounds.x >= chat.bounds.x + 48.
+                && panel.bounds.x + panel.bounds.width <= chat.bounds.x + chat.bounds.width + 0.5,
+            "the panel lies over the chat's right, a strip of the chat showing: {:?} over {:?}",
+            panel.bounds,
+            chat.bounds
+        );
+        for row in ["tools.m1.t1", "exchange.x1.answering"] {
+            let bounds = node(row)
+                .unwrap_or_else(|| panic!("{row} is on screen"))
+                .bounds;
+            assert!(
+                bounds.height <= 30.,
+                "{row} is one line, not a letter a line: {bounds:?}"
+            );
+        }
+        assert_eq!(
+            text("exchange.x1.answering"),
+            "Scout is answering",
+            "its whole text, however it is shortened"
+        );
+        header_lines_are_one_line_each();
+        holds_the_keyboard_until_escape(cx);
+    }
+
+    #[gpui::test]
+    fn at_the_640_threshold_the_panel_fits_the_window_over_the_chat(cx: &mut TestAppContext) {
+        let cx = open_at(cx, 640.);
+        assert!(
+            node("sidebar.wordmark").is_some(),
+            "640 is not narrow: the full sidebar"
+        );
+        let panel = node("browser.panel").expect("the panel is open");
+        let chat = node("screen.chat").expect("the chat");
+        assert!(
+            chat.bounds.width >= 300.,
+            "the chat keeps the content area: {:?}",
+            chat.bounds
+        );
+        assert!(
+            panel.bounds.x >= chat.bounds.x - 0.5 && panel.bounds.x + panel.bounds.width <= 640.,
+            "the panel lies over the chat, inside the window: {:?} over {:?}",
+            panel.bounds,
+            chat.bounds
+        );
+        header_lines_are_one_line_each();
+        holds_the_keyboard_until_escape(cx);
+    }
+
+    /// M7 review M2: at 360 px the chat header keeps the name readable and every button inside the window: Pause and
+    /// Agent settings fold into More, and the state pill sits under the name, clear of the buttons.
+    #[gpui::test]
+    fn a_narrow_window_folds_pause_and_settings_into_more(cx: &mut TestAppContext) {
+        let mut state = working();
+        state.bots[0].state = BotState::Waiting;
+        let (cx, _) = app_with_panel(cx, Route::Chat("b1".into()), state, FakeRpc::default());
+        cx.simulate_resize(size(px(360.), px(600.)));
+        draw(cx);
+        let name = node("chat.b1.name").expect("the name");
+        assert!(
+            name.bounds.width >= 40.,
+            "the name has width: {:?}",
+            name.bounds
+        );
+        let pill = node("chat.b1.state").expect("the state pill");
+        assert!(
+            pill.bounds.y >= name.bounds.y + name.bounds.height - 0.5,
+            "the pill is under the name: {:?} under {:?}",
+            pill.bounds,
+            name.bounds
+        );
+        let more = node("chat.b1.more.open").expect("More");
+        let panel = node("chat.b1.panel").expect("the panel button");
+        assert!(
+            pill.bounds.x + pill.bounds.width <= more.bounds.x,
+            "the pill clears the buttons: {:?} beside {:?}",
+            pill.bounds,
+            more.bounds
+        );
+        assert!(
+            panel.bounds.x + panel.bounds.width <= 360.,
+            "the panel button ends inside the window: {:?}",
+            panel.bounds
+        );
+        assert!(
+            node("chat.b1.pause").is_none() && node("chat.b1.settings").is_none(),
+            "Pause and Agent settings are in More"
+        );
+        click(cx, "chat.b1.more.open");
+        assert!(
+            node("chat.b1.more.pause").is_some() && node("chat.b1.more.settings").is_some(),
+            "More holds them"
+        );
+    }
+
+    /// A narrow window (360 x 600): the chat header's title and subtitle keep one line each, however little room they
+    /// have beside the header's buttons.
+    #[gpui::test]
+    fn a_narrow_window_keeps_the_chat_header_to_one_line_each(cx: &mut TestAppContext) {
+        let (cx, _) = app_with_panel(cx, Route::Chat("b1".into()), working(), FakeRpc::default());
+        cx.simulate_resize(size(px(360.), px(600.)));
+        draw(cx);
+        assert!(
+            node("sidebar.compact").is_some(),
+            "narrow: the compact navigation"
+        );
+        header_lines_are_one_line_each();
     }
 }

@@ -19,10 +19,89 @@ use self::data::ShellData;
 use self::route::Route;
 use crate::guard::guarded;
 use crate::keymap::{Dismiss, ZoomIn, ZoomOut, ZoomReset};
+use crate::model::panel_layout::is_overlay;
 use crate::semantic::SemanticExt as _;
 use crate::theme::Theme;
 use crate::ui::style::{hsla, r, shadows};
 use crate::zoom::Zoom;
+
+/// Below this width, in design px, the window is narrow (`sm` in the TypeScript): the sidebar becomes the compact
+/// navigation and the side panels (the browser panel, an exchange, a room's members) open as sheets over the content.
+pub const NARROW: f32 = 640.;
+
+/// Whether `window` is narrow: under 640 design px wide at its rem, which the zoom and the text size (Settings,
+/// Appearance) both scale (M7 review n7).
+pub fn narrow(window: &Window) -> bool {
+    let zoom = f32::from(window.rem_size()) / 16.;
+    f32::from(window.viewport_size().width) / zoom.max(0.1) < NARROW
+}
+
+/// The content area's width beside the sidebar (the compact one in a narrow window), in design px: what the main column
+/// and a side panel beside it share.
+pub fn room(window: &Window, cx: &App) -> f32 {
+    let theme = crate::ui::style::theme(cx);
+    let zoom = f32::from(window.rem_size()) / 16.;
+    let viewport = f32::from(window.viewport_size().width) / zoom.max(0.1);
+    let beside = if narrow(window) {
+        theme.space.s56
+    } else {
+        theme.size.sidebar
+    };
+    viewport - beside - theme.space.s12
+}
+
+/// Whether the chat's side panels (the browser panel, an exchange) go over the main column as sheets instead of beside
+/// it: in a narrow window, and wherever the content area is under 1000 design px, too little for the chat to keep its 480
+/// beside one (0.5.x's overlay, `panel_layout::is_overlay`). Beside one, the chat never gets narrower than that, so its
+/// rows never wrap a letter a line (the README screenshot run, 1000 x 700).
+pub fn overlaid(window: &Window, cx: &App) -> bool {
+    narrow(window) || is_overlay(f64::from(room(window, cx)))
+}
+
+/// The keyboard's way into a side panel lying over the content as a sheet, and back out. When the sheet starts covering
+/// the content, the keyboard goes into it (its trap, gpui-kit's focus trap, keeps Tab there), so nobody types into what
+/// it hides; when it closes with the keyboard inside, the keyboard goes back to where it was, the sheet's opener.
+#[derive(Default)]
+pub struct SheetFocus {
+    opener: Option<FocusHandle>,
+    open: bool,
+    covering: bool,
+}
+
+impl SheetFocus {
+    /// Each frame: whether the sheet is `open`, whether it lies `over` the content, and its trap's focus.
+    pub fn follow(
+        &mut self,
+        open: bool,
+        over: bool,
+        trap: &FocusHandle,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let covering = open && over;
+        if covering && !self.covering && !trap.contains_focused(window, cx) {
+            self.opener = window.focused(cx);
+            let trap = trap.clone();
+            window.defer(cx, move |window, cx| {
+                guarded("give the keyboard to a sheet", || trap.focus(window, cx));
+            });
+        }
+        if self.open && !open {
+            let opener = self.opener.take();
+            if let Some(opener) = opener
+                && trap.contains_focused(window, cx)
+            {
+                window.defer(cx, move |window, cx| {
+                    guarded("give the keyboard back to a sheet's opener", || {
+                        opener.focus(window, cx)
+                    });
+                });
+            }
+        }
+        self.open = open;
+        self.covering = covering;
+    }
+}
 
 /// The rem follows the zoom and the text size (Settings, Appearance): gpui-kit's root sets the window's rem from its
 /// theme's font size every frame.
@@ -30,6 +109,9 @@ pub fn set_rem(zoom: Zoom, cx: &mut App) {
     let scale = crate::ui::style::appearance(cx).text_scale();
     gpui_kit::component::Theme::global_mut(cx).font_size = px(zoom.rem_px(1.0) * scale);
 }
+
+/// The log's `ui ready` line is written once: the first frame with the connection ready (Phase 3 plan T7.4, cold start).
+static UI_READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 pub struct Shell {
     focus: FocusHandle,
@@ -84,16 +166,33 @@ impl Render for Shell {
         crate::test_driver::begin_frame();
         crate::motion::clock::begin_frame(cx);
         let route = route::current(cx);
+        // An avatar flying into a chat header, over everything (motion.html "shared elements").
+        let flight = crate::motion::flight::frame(&route, window, cx);
         let data = cx.try_global::<ShellData>().cloned().unwrap_or_default();
-        let sidebar = sidebar::sidebar(&route, &data, window, cx);
+        let narrow = narrow(window);
+        let sidebar = if narrow {
+            sidebar::compact(&route, &data, window, cx)
+        } else {
+            sidebar::sidebar(&route, &data, window, cx)
+        };
         let shown = match connection::words(&data.connection, data.host.as_deref(), &data.saved) {
             Some(words) => connection::screen(&data, words, window, cx),
             None => screen(&route, window, cx),
         };
+        if data.connection == data::Connection::Ready
+            && !UI_READY.swap(true, std::sync::atomic::Ordering::Relaxed)
+        {
+            log::info!("ui ready");
+        }
         let status = connection::status_pill(&data.connection, window, cx);
         // The account notice a chat raised is the app's, as `sign-in-toast.tsx`'s viewport was: it stays through a
         // navigation for its 8 s (M4 review A9).
         let notice = crate::ui::chat::sign_in_toast::view(cx);
+        let toasts = crate::ui::primitives::toast::toasts(window, cx);
+        // Where the content is too narrow for both, a side panel lies over the main column; the browser panel also while
+        // its browser is expanded to fill the content area.
+        let side_over = overlaid(window, cx);
+        let panel_over = crate::ui::browser::panel::BrowserPanel::over_chat(window, cx);
         let theme = cx.global::<Theme>();
         let colors = &theme.color.light;
         div()
@@ -150,8 +249,15 @@ impl Render for Shell {
                             .children(status),
                     )
                     // An open exchange takes the right panel's place (T4.1); the panel stays drawn, closed, beside it.
-                    .children(crate::ui::chat::exchange::side(cx))
-                    .when_some(self.panel.clone(), |column, panel| column.child(panel)),
+                    // Where the content is too narrow for both, they open as sheets over the main column (`overlaid`).
+                    .relative()
+                    .children(
+                        crate::ui::chat::exchange::side(cx)
+                            .map(|side| sheet(side, side_over, theme)),
+                    )
+                    .when_some(self.panel.clone(), |column, panel| {
+                        column.child(sheet(panel, panel_over, theme))
+                    }),
             )
             .child(
                 div()
@@ -163,7 +269,7 @@ impl Render for Shell {
                     .window_control_area(WindowControlArea::Drag),
             )
             .child(caption_buttons(theme))
-            .child(crate::ui::primitives::toast::toasts(cx))
+            .child(toasts)
             .children(notice.map(|notice| {
                 // Under the chat header's line, at the main column's right.
                 div()
@@ -172,7 +278,27 @@ impl Render for Shell {
                     .right(r(theme.space.s28))
                     .child(notice)
             }))
+            .children(flight)
             .child(crate::motion::clock::painted())
+    }
+}
+
+/// A side panel beside the main column, or `over` it as a sheet, its right edge at the column's: the panel keeps its own
+/// width within the content area, takes the pointer and keeps the keyboard (each panel's own trap, `SheetFocus`).
+fn sheet(panel: AnyView, over: bool, theme: &Theme) -> AnyElement {
+    if over {
+        div()
+            .absolute()
+            .top(r(theme.size.titlebar_height))
+            .bottom(r(theme.space.s12))
+            .left_0()
+            .right(r(theme.space.s12))
+            .flex()
+            .justify_end()
+            .child(panel)
+            .into_any_element()
+    } else {
+        panel.into_any_element()
     }
 }
 
@@ -303,6 +429,115 @@ mod tests {
             "Forge's chat shows"
         );
         assert!(cx.debug_bounds("screen.agents").is_none());
+    }
+
+    #[gpui::test]
+    fn recents_slide_to_new_places_and_snap_under_reduced_motion(cx: &mut gpui::TestAppContext) {
+        use crate::ui::testing::next_frame;
+        let room = |id: &str| Recent {
+            id: id.to_owned().into(),
+            name: id.to_owned().into(),
+            kind: RecentKind::Room { unread: false },
+        };
+        let cx = shell_window(
+            cx,
+            ShellData {
+                connection: Connection::Ready,
+                recents: vec![room("launch"), room("everyone"), room("design")],
+                ..ShellData::default()
+            },
+        );
+        let draw = |cx: &mut VisualTestContext| cx.update(|window, cx| window.draw(cx).clear(cx));
+        // An inactive window would get its frames at 30 fps by timer instead (gate condition 5).
+        cx.update(|window, cx| {
+            window.activate_window();
+            crate::motion::clock::fixed_step(1. / 60., cx);
+        });
+        cx.run_until_parked();
+        draw(cx);
+        let settle = |cx: &mut VisualTestContext| {
+            for _ in 0..300 {
+                if !next_frame(cx) {
+                    return;
+                }
+            }
+            panic!("still moving after 300 frames");
+        };
+        settle(cx);
+        let before = cx
+            .debug_bounds("sidebar.recent.launch")
+            .expect("Launch's row");
+        cx.update(|_, cx| cx.global_mut::<ShellData>().recents.rotate_left(1));
+        draw(cx);
+        let moved = cx
+            .debug_bounds("sidebar.recent.launch")
+            .expect("Launch's row");
+        assert!(
+            (moved.origin.y - before.origin.y).abs() < gpui::px(1.),
+            "on the first frame Launch is painted where it was: {before:?} -> {moved:?}"
+        );
+        assert!(next_frame(cx), "then the rows slide to their new places");
+        settle(cx);
+        let landed = cx
+            .debug_bounds("sidebar.recent.launch")
+            .expect("Launch's row");
+        assert!(
+            landed.origin.y > before.origin.y,
+            "Launch ends at the bottom"
+        );
+
+        cx.update(|_, cx| crate::motion::reduced::set_for_test(true, cx));
+        cx.update(|_, cx| cx.global_mut::<ShellData>().recents.rotate_left(1));
+        draw(cx);
+        assert!(!next_frame(cx), "reduced: the rows are in place at once");
+    }
+
+    /// M7 review m10: a zoom (or text-size) change moves every Recents row by its new size, which is no reorder: they are in
+    /// place at once, as a key's change always is.
+    #[gpui::test]
+    fn a_zoom_change_puts_recents_in_place_at_once(cx: &mut gpui::TestAppContext) {
+        use crate::ui::testing::next_frame;
+        let room = |id: &str| Recent {
+            id: id.to_owned().into(),
+            name: id.to_owned().into(),
+            kind: RecentKind::Room { unread: false },
+        };
+        let cx = shell_window(
+            cx,
+            ShellData {
+                connection: Connection::Ready,
+                recents: vec![room("launch"), room("everyone"), room("design")],
+                ..ShellData::default()
+            },
+        );
+        cx.update(|window, cx| {
+            window.activate_window();
+            crate::motion::clock::fixed_step(1. / 60., cx);
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        for _ in 0..300 {
+            if !next_frame(cx) {
+                break;
+            }
+        }
+        let before = cx
+            .debug_bounds("sidebar.recent.design")
+            .expect("Design's row");
+        cx.dispatch_action(ZoomIn);
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let after = cx
+            .debug_bounds("sidebar.recent.design")
+            .expect("Design's row");
+        assert!(
+            after.origin.y > before.origin.y,
+            "the bigger rows above moved it down: {before:?} -> {after:?}"
+        );
+        assert!(
+            !next_frame(cx),
+            "in place at once, with no frames in between"
+        );
     }
 
     #[gpui::test]

@@ -398,3 +398,89 @@ fn another_pc_starts_projects_with_nothing_chosen(cx: &mut TestAppContext) {
         );
     }
 }
+
+/// A narrow window (360 × 600, the window's minimum): the sidebar is the compact navigation, the Projects header wraps
+/// with New project on screen, and the navigation still works from the keyboard (`app-shell.tsx` and `page.tsx` under
+/// `sm`).
+#[gpui::test]
+fn a_narrow_window_has_compact_navigation_and_projects_fits(cx: &mut TestAppContext) {
+    use gpui::{px, size};
+    let members = json!([{ "botId": "dev", "roles": ["developer"] }]);
+    let (cx, _) = app(
+        cx,
+        Route::Projects,
+        state(people(), vec![], vec![]),
+        rpc(members, json!([])),
+    );
+    assert!(node("sidebar.wordmark").is_some(), "wide: the full sidebar");
+    cx.simulate_resize(size(px(360.), px(600.)));
+    draw(cx);
+    assert!(
+        node("sidebar.compact").is_some(),
+        "narrow: the compact navigation"
+    );
+    assert!(node("sidebar.wordmark").is_none() && node("sidebar.view_all").is_none());
+    // M7 review m1: switching PCs stays at hand, at the rail's foot.
+    let host = node("sidebar.host").expect("the host button at the rail's foot");
+    assert!(
+        host.bounds.x + host.bounds.width <= 56. && host.bounds.width <= 48.,
+        "a face in the rail: {:?}",
+        host.bounds
+    );
+    let new = node("projects.new").expect("New project");
+    assert!(
+        new.bounds.x >= 0. && new.bounds.x + new.bounds.width <= 360.,
+        "New project is on screen: {:?}",
+        new.bounds
+    );
+    let title = node("screen.projects").expect("the title");
+    assert!(
+        title.bounds.width >= 200.,
+        "the title has a line of its own, not a word per line: {:?}",
+        title.bounds
+    );
+    assert!(
+        new.bounds.y < title.bounds.y,
+        "New project above the title, as `page.tsx` put it"
+    );
+    let rooms = node("sidebar.nav.rooms").expect("the Rooms link");
+    assert!(
+        rooms.bounds.width <= 48.,
+        "an icon link: {:?}",
+        rooms.bounds
+    );
+    // The keys still go: Enter on a focused section opens it.
+    cx.update(|window, cx| {
+        assert!(crate::ui::primitives::focus_by_id(
+            "sidebar.nav.rooms",
+            window,
+            cx
+        ));
+    });
+    cx.simulate_keystrokes("enter");
+    draw(cx);
+    assert_eq!(
+        cx.update(|_, cx| crate::ui::shell::route::current(cx)),
+        Route::Rooms
+    );
+    // The host button's menu opens by Enter, as the full sidebar's does.
+    cx.update(|window, cx| {
+        assert!(crate::ui::primitives::focus_by_id(
+            "sidebar.host",
+            window,
+            cx
+        ));
+    });
+    cx.simulate_keystrokes("enter");
+    draw(cx);
+    assert!(
+        node("host.connect").is_some(),
+        "its menu offers the other PCs"
+    );
+    cx.simulate_keystrokes("escape");
+    draw(cx);
+    // Wide again: the full sidebar comes back.
+    cx.simulate_resize(size(px(1000.), px(700.)));
+    draw(cx);
+    assert!(node("sidebar.wordmark").is_some());
+}

@@ -31,6 +31,11 @@ fn main() -> ExitCode {
     // start in the tray).
     let after_crash = std::env::args_os().any(|arg| arg == "--after-crash");
     desktop::app::run(identity, root, after_crash, instance);
+    // A motion check that failed (T7.2) says so to the script that ran it.
+    #[cfg(feature = "test-driver")]
+    if desktop::scenario::failed() {
+        return ExitCode::from(1);
+    }
     ExitCode::SUCCESS
 }
 

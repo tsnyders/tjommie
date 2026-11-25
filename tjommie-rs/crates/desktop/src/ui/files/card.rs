@@ -30,8 +30,7 @@ use crate::model::attachment_transfer::{
 };
 use crate::model::document_ranges::Signal;
 use crate::model::file_thumbnails::{
-    THUMBNAIL_IMAGE_BYTES, THUMBNAIL_PIXELS, ThumbnailError, ThumbnailQueue, animated,
-    raster_dimensions,
+    THUMBNAIL_IMAGE_BYTES, ThumbnailError, ThumbnailQueue, animated, thumbnail_dimensions,
 };
 use crate::model::format::file_size;
 use crate::model::state::Connection;
@@ -210,7 +209,7 @@ fn connected(cx: &App) -> bool {
 }
 
 /// A file's bytes for its thumbnail: within the byte cap, the transfer closed after; the queue's signal stops it between
-/// chunks.
+/// chunks, and a picture too large to draw small is refused once its first chunk is in (M4 re-review R8).
 async fn read_image(
     reference: AttachmentRef,
     content_type: String,
@@ -241,6 +240,13 @@ async fn read_image(
                 break;
             }
             bytes.extend(chunk);
+            // The header settles the size from the first chunk as it would from the whole file (`thumbnail_dimensions`).
+            if at == 0
+                && let Err(refused @ ThumbnailError::Limit(_)) =
+                    thumbnail_dimensions(&bytes, &content_type)
+            {
+                return Err(refused);
+            }
         }
         Ok(bytes)
     };
@@ -248,10 +254,8 @@ async fn read_image(
     opened.close().await;
     let bytes = bytes?;
     // The header first, and the frames: no decoder sees a picture too large to draw small, or an animation.
-    let pixels = raster_dimensions(&bytes, &content_type)?;
-    if u64::from(pixels.width) * u64::from(pixels.height) > THUMBNAIL_PIXELS
-        || animated(&bytes, &content_type)
-    {
+    thumbnail_dimensions(&bytes, &content_type)?;
+    if animated(&bytes, &content_type) {
         return Err(ThumbnailError::Limit(
             "This image is too large for a thumbnail.",
         ));
@@ -734,6 +738,34 @@ impl RenderOnce for FileCard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::files::source::testing::{asked, png, reference, serving};
+
+    /// M4 re-review R8: a picture's header is checked once its first chunk is in. A 20-megapixel photo is refused there,
+    /// as it was once all of it had been read; the megabytes after its header aren't asked for.
+    #[gpui::test]
+    fn a_picture_too_large_is_refused_from_its_first_chunk(cx: &mut gpui::TestAppContext) {
+        let (rpc, calls) = serving(cx, png(5472, 3648, 4 * 1024 * 1024), "image/png");
+        let read = futures::executor::block_on(read_image(
+            reference(),
+            "image/png".into(),
+            rpc,
+            Signal::new(),
+        ));
+        assert_eq!(
+            read.err(),
+            Some(ThumbnailError::Limit("Image exceeds thumbnail dimensions."))
+        );
+        assert_eq!(
+            asked(&calls, "attachments.read"),
+            1,
+            "the rest of the file was read"
+        );
+        assert_eq!(
+            asked(&calls, "attachments.close"),
+            1,
+            "its transfer stayed open"
+        );
+    }
 
     /// M4 re-review R10: a picture replaced under its key is handed back for GPUI's cache, as one pushed out is.
     #[test]

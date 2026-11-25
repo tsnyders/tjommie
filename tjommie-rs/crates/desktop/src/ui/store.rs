@@ -38,7 +38,7 @@ enum Source {
     #[default]
     None,
     Live(Arc<Live>),
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-driver"))]
     Fake(Arc<crate::model::testing::FakeRpc>),
 }
 
@@ -58,6 +58,12 @@ pub fn snapshot(cx: &App) -> Arc<AppState> {
         .map_or_else(|| Arc::clone(&EMPTY), |store| Arc::clone(&store.state))
 }
 
+/// The state's version: it moves with every change, so a screen can keep what it worked out from the state until it does
+/// (M4 review A8).
+pub fn version(cx: &App) -> u64 {
+    cx.try_global::<Store>().map_or(0, |store| store.version)
+}
+
 /// `update(change)`: `change` edits the state and says whether it changed it; the windows redraw when it did. With
 /// the live connection the change is the connection's, and the copy here follows at once.
 pub fn update(cx: &mut App, change: impl FnOnce(&mut AppState) -> bool) {
@@ -74,7 +80,13 @@ pub fn update(cx: &mut App, change: impl FnOnce(&mut AppState) -> bool) {
             }
             changed
         }
-        _ => change(Arc::make_mut(&mut store.state)),
+        _ => {
+            let changed = change(Arc::make_mut(&mut store.state));
+            if changed {
+                store.version += 1;
+            }
+            changed
+        }
     };
     if changed {
         cx.refresh_windows();
@@ -101,7 +113,7 @@ pub fn request<M: ClientMethod>(
                 Err(error) => futures::future::ready(Err(error)).boxed(),
             }
         }
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-driver"))]
         Some(Source::Fake(rpc)) => {
             use client::Rpc as _;
             let rpc = Arc::clone(rpc);
@@ -148,7 +160,7 @@ impl client::Rpc for StoreRpc {
                     Ok(daemon) => daemon.call::<M>(params).await,
                     Err(_) => Err(not_connected()),
                 },
-                #[cfg(test)]
+                #[cfg(any(test, feature = "test-driver"))]
                 Handle::Fake(rpc) => rpc.call::<M>(params).await,
             }
         }
@@ -211,7 +223,7 @@ impl crate::model::logins::LiveState for StoreLive {
 enum Handle {
     None,
     Live(Arc<Live>),
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-driver"))]
     Fake(Arc<crate::model::testing::FakeRpc>),
 }
 
@@ -219,7 +231,7 @@ fn handle(cx: &App) -> Handle {
     match cx.try_global::<Store>().map(|store| &store.source) {
         None | Some(Source::None) => Handle::None,
         Some(Source::Live(live)) => Handle::Live(Arc::clone(live)),
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-driver"))]
         Some(Source::Fake(rpc)) => Handle::Fake(Arc::clone(rpc)),
     }
 }
@@ -267,7 +279,7 @@ pub fn events(
                 }),
             }
         }
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-driver"))]
         Handle::Fake(_) => {
             cx.default_global::<FakeEvents>()
                 .0
@@ -285,22 +297,22 @@ pub fn events(
 }
 
 /// The view tests' event feeds.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-driver"))]
 #[derive(Default)]
 struct FakeEvents(Vec<FakeFeed>);
 
 /// One fake feed: what it wants, and where it sends.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-driver"))]
 type FakeFeed = (
     Box<dyn Fn(&protocol::Event) -> bool>,
     futures::channel::mpsc::UnboundedSender<()>,
 );
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-driver"))]
 impl Global for FakeEvents {}
 
 /// A view test's daemon event: applied to the fake state, and sent to the feeds that want it.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-driver"))]
 pub fn fake_event(cx: &mut App, event: &protocol::Event) {
     update(cx, |state| crate::model::state::apply_event(state, event));
     if let Some(feeds) = cx.try_global::<FakeEvents>() {
@@ -322,7 +334,7 @@ pub fn load_conversation(cx: &mut App, conversation_id: &str, history: History) 
             let pages = pages(&live, &history);
             cx.background_spawn(async move { live.load_conversation(&id, pages).await })
         }
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-driver"))]
         Handle::Fake(rpc) => {
             // unguarded: the view tests' fake, never in the app
             cx.spawn(async move |cx| fake::load(&rpc, id, history, cx).await)
@@ -339,7 +351,7 @@ pub fn retry_conversation(cx: &mut App, conversation_id: &str, history: History)
             let pages = pages(&live, &history);
             cx.background_spawn(async move { live.retry_conversation(&id, pages).await })
         }
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-driver"))]
         Handle::Fake(rpc) => {
             update(cx, |state| {
                 crate::model::state::forget_conversation(state, &id)
@@ -363,7 +375,7 @@ pub fn load_older(
             let pages = pages(&live, &history);
             cx.background_spawn(async move { live.load_older(&id, pages).await })
         }
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-driver"))]
         Handle::Fake(rpc) => {
             // unguarded: the view tests' fake, never in the app
             cx.spawn(async move |cx| fake::older(&rpc, id, history, cx).await)
@@ -380,7 +392,7 @@ pub fn close_conversation(cx: &mut App, conversation_id: &str) {
             let (version, state) = live.state_and_version();
             mirror(cx, version, state);
         }
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-driver"))]
         Handle::Fake(_) => update(cx, |state| {
             crate::model::state::forget_conversation(state, conversation_id)
         }),
@@ -396,7 +408,7 @@ fn pages(live: &Arc<Live>, history: &History) -> FetchPage {
 }
 
 /// The fake's conversations: what `AppConnection` does with its pages, on the store's own state.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-driver"))]
 mod fake {
     use client::Rpc as _;
     use gpui::AsyncApp;
@@ -510,7 +522,7 @@ pub(crate) fn mirror(cx: &mut App, version: u64, state: Arc<AppState>) {
 }
 
 /// A view test's store: `state` as given, and calls answered by `rpc`. The returned handle reads the calls made.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-driver"))]
 pub fn fake(
     cx: &mut App,
     state: AppState,

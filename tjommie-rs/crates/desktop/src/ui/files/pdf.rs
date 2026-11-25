@@ -2,14 +2,20 @@
 //! pdfium (`desktop_host::pdf`) opens and draws it off the UI thread, on the live runtime's blocking pool, reading the
 //! file through the transfer in 256 KiB blocks, so a 200 MiB PDF is never read whole. A drawn page reaches GPUI as a
 //! BMP; the page it replaces is forgotten.
+//!
+//! pdfium holds one lock across the process while it reads, and every other PDF waits on it (M4 review B4). So its reads
+//! stop the moment the view goes, or an open or a draw runs past `DEADLINE`: the transfer's reads are cancelled, each
+//! fails at once, and pdfium unwinds and lets the lock go.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use desktop_host::pdf::{PDFIUM_SHA256, PdfDocument, PdfError, RangeSource, load_library};
+use futures::future::Either;
 use gpui::{
     AnyElement, Context, Image, ImageFormat, IntoElement, ParentElement as _, Render, Role,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Window, div, img, px,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Task, Window, div, img, px,
 };
 
 use super::source::Opened;
@@ -26,6 +32,12 @@ const UNREADABLE: &str = "This PDF is corrupt, unsupported, or its local reader 
 const UNDRAWN: &str = "The PDF page could not be rendered. Download is still available.";
 // ponytail: no password prompt yet (the TypeScript had one); a locked PDF says so and offers Download.
 const LOCKED: &str = "This PDF is protected by a password. Download is still available.";
+/// How long pdfium may take to open the PDF, and to draw a page, before it is given up. On this PC a healthy PDF opens in
+/// well under a second even at 200 MiB (its header, cross-reference table and trailer: a few 256 KiB chunks) and a page
+/// draws in a few seconds at most (its own objects, and pdfium's work on 8 megapixels); a damaged 200 MiB one, rebuilt by
+/// reading all of it, takes several. Half a minute leaves that room, and a remote PC's slower chunks; a damaged file
+/// rebuilt over a remote link (800 round trips) is given up instead of holding every other PDF back.
+const DEADLINE: Duration = Duration::from_secs(30);
 
 /// The transfer as pdfium reads it: each read waits for its block, on the drawing thread.
 struct Transfer(Arc<Opened>);
@@ -83,6 +95,27 @@ async fn off_thread<T: Send + 'static>(
     }
 }
 
+/// pdfium's `work`, unless `deadline` comes first: then the transfer's reads are cancelled, so pdfium unwinds and lets
+/// its lock go, and the answer is `None` (what the work gives later is dropped).
+async fn within<T>(
+    deadline: Task<()>,
+    transfer: &Opened,
+    work: impl Future<Output = Option<T>>,
+) -> Option<T> {
+    futures::pin_mut!(work);
+    match futures::future::select(work, deadline).await {
+        Either::Left((done, _)) => done,
+        Either::Right(_) => {
+            log::warn!(
+                "pdfium took longer than {} s; the PDF is given up.",
+                DEADLINE.as_secs()
+            );
+            transfer.cancel();
+            None
+        }
+    }
+}
+
 struct Page {
     index: u32,
     zoom: f32,
@@ -95,6 +128,8 @@ struct Page {
 pub struct PdfView {
     id: SharedString,
     tokio: Option<tokio::runtime::Handle>,
+    /// The viewer's transfer, which pdfium reads through.
+    opened: Arc<Opened>,
     document: Option<Arc<Mutex<PdfDocument>>>,
     pages: u32,
     page: u32,
@@ -108,10 +143,11 @@ pub struct PdfView {
 
 impl PdfView {
     pub fn new(id: SharedString, opened: Arc<Opened>, cx: &mut Context<Self>) -> Self {
-        // The page on screen leaves GPUI's image cache with the view (M4 review M2); the document goes with the last
-        // draw that holds it.
+        // The page on screen leaves GPUI's image cache with the view (M4 review M2), and pdfium stops reading for it at
+        // once (M4 review B4); the document goes with the last draw that holds it.
         cx.on_release(|this, cx| {
             guarded("let a PDF page go", || {
+                this.opened.cancel();
                 if let Some(page) = this.shown.take() {
                     page.image.remove_asset(cx);
                 }
@@ -121,10 +157,12 @@ impl PdfView {
         let tokio = cx
             .try_global::<crate::live::Tokio>()
             .map(|tokio| tokio.0.clone());
-        let opening = tokio.clone();
+        let (opening, source, transfer) = (tokio.clone(), opened.clone(), opened.clone());
         cx.spawn(async move |this, cx| {
             guarded_async("open a PDF", async move {
-                let document = off_thread(opening, move || open_document(Transfer(opened))).await;
+                let deadline = cx.background_executor().timer(DEADLINE);
+                let work = off_thread(opening, move || open_document(Transfer(source)));
+                let document = within(deadline, &transfer, work).await;
                 let _ = this.update(cx, |this, cx| {
                     match document {
                         Some(Ok(document)) => {
@@ -147,6 +185,7 @@ impl PdfView {
         PdfView {
             id,
             tokio,
+            opened,
             document: None,
             pages: 0,
             page: 0,
@@ -171,13 +210,15 @@ impl PdfView {
     }
 
     /// Draws the page and zoom asked for, unless it's on screen or on its way. A page asked for while another is
-    /// drawn waits for it, then the newest wish is drawn.
+    /// drawn waits for it, then the newest wish is drawn. Once the view says what went wrong, nothing more is drawn: it
+    /// would only fail again, a frame at a time.
     fn draw(&mut self, cx: &mut Context<Self>) {
         let wanted = (self.page, self.zoom);
         let Some(document) = self.document.clone() else {
             return;
         };
         if self.drawing.is_some()
+            || self.problem.is_some()
             || self
                 .shown
                 .as_ref()
@@ -186,10 +227,11 @@ impl PdfView {
             return;
         }
         self.drawing = Some(wanted);
-        let (tokio, scale) = (self.tokio.clone(), self.scale);
+        let (tokio, scale, transfer) = (self.tokio.clone(), self.scale, self.opened.clone());
         cx.spawn(async move |this, cx| {
             guarded_async("draw a PDF page", async move {
-                let drawn = off_thread(tokio, move || {
+                let deadline = cx.background_executor().timer(DEADLINE);
+                let work = off_thread(tokio, move || {
                     let document = document
                         .lock()
                         .map_err(|_| "the document is gone".to_owned())?;
@@ -206,8 +248,8 @@ impl PdfView {
                     let bmp = bmp(page.width, page.height, &page.bgra)
                         .ok_or_else(|| "the page's pixels don't fit its size".to_owned())?;
                     Ok::<_, String>((bmp, width, height))
-                })
-                .await;
+                });
+                let drawn = within(deadline, &transfer, work).await;
                 let _ = this.update(cx, |this, cx| {
                     this.drawing = None;
                     match drawn {
@@ -368,7 +410,31 @@ impl Render for PdfView {
 
 #[cfg(test)]
 mod tests {
-    use super::bmp;
+    use super::*;
+    use crate::ui::files::source::testing::{asked, reference, serving};
+
+    /// M4 review B4: once the viewer's transfer is closed, pdfium's reads fail at once without asking the daemon, so pdfium
+    /// unwinds and lets go of its process-wide lock rather than reading on (a damaged 200 MiB file over a remote PC is 800
+    /// round trips, with every other PDF waiting).
+    #[gpui::test]
+    fn a_closed_transfer_fails_pdfiums_reads_without_asking_the_daemon(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (rpc, calls) = serving(cx, vec![0; 1024 * 1024], "application/pdf");
+        let opened = futures::executor::block_on(Opened::open(rpc, reference())).unwrap();
+        let source = Transfer(opened.clone());
+        assert_eq!(source.read(0, 1024).map(|bytes| bytes.len()), Ok(1024));
+        futures::executor::block_on(opened.close());
+        assert!(
+            source.read(262_144, 1024).is_err(),
+            "a closed transfer was read"
+        );
+        assert_eq!(
+            asked(&calls, "attachments.read"),
+            1,
+            "the daemon was asked again"
+        );
+    }
 
     #[test]
     fn a_page_becomes_a_top_down_bmp_with_padded_rows() {

@@ -90,6 +90,7 @@ fn window_with(
         cx.bind_keys(crate::keymap::field_tab(cx));
         cx.bind_keys(crate::keymap::bindings());
         cx.set_global(crate::theme::Theme::aegis().unwrap());
+        crate::motion::clock::fixed_step(1. / 60., cx);
     });
     let (_, cx) = cx.add_window_view(|window, cx| {
         let view = cx.new(|cx| {
