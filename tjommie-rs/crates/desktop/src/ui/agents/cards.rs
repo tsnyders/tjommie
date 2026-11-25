@@ -18,6 +18,7 @@ use crate::guard::guarded_async;
 use crate::model::labels::{DELETED_BOT, error_text, short_state};
 use crate::model::overview::{next_routine_line, room_line, talking_with, task_line};
 use crate::model::setup::provider_name;
+use crate::motion::flight;
 use crate::semantic::{Semantic, SemanticExt as _};
 use crate::ui::fields::Link;
 use crate::ui::primitives::avatar::{BotAvatar, Pose};
@@ -116,17 +117,48 @@ pub(crate) fn state_pill(bot: &Bot, cx: &App) -> AnyElement {
 }
 
 /// An avatar dimmed as the TypeScript dims a quiet agent: idle or needing setup 35%, paused or limited 50%.
-fn avatar(bot: &Bot, size: f32) -> AnyElement {
+fn avatar(bot: &Bot, size: f32, cx: &App) -> AnyElement {
     let opacity = match bot.state {
         BotState::Idle | BotState::NeedsSetup => 0.35,
         BotState::Paused | BotState::Limited => 0.5,
         BotState::Working | BotState::Waiting => 1.0,
     };
+    flight_end(
+        bot,
+        "card",
+        BotAvatar::new(bot.color, bot.shape, size)
+            .pose(pose(bot.state))
+            .living(bot.id.clone().into()),
+        opacity,
+        cx,
+    )
+    .into_any_element()
+}
+
+/// An agent's avatar on a card, at `opacity`, as the end its chat's flight takes off from (motion.html "shared
+/// elements"): it records where it is painted and hides while the avatar flies from it.
+fn flight_end(bot: &Bot, place: &str, avatar: BotAvatar, opacity: f32, cx: &App) -> gpui::Div {
+    let key = flight::end(place, &bot.id);
+    let hidden = flight::hides(&bot.id, &key, cx);
     div()
+        .relative()
         .flex_none()
-        .opacity(opacity)
-        .child(BotAvatar::new(bot.color, bot.shape, size).pose(pose(bot.state)))
-        .into_any_element()
+        .opacity(if hidden { 0. } else { opacity })
+        .child(avatar)
+        .child(flight::end_capture(key))
+}
+
+/// Opens `bot`'s chat from its card at `place` (`card` or `need`): after the pointer, its avatar flies there.
+fn open_chat(
+    bot: &Bot,
+    place: &'static str,
+    pose: Pose,
+) -> impl Fn(&mut Window, &mut App) + 'static {
+    let (id, look) = (bot.id.clone(), (bot.color, bot.shape, pose));
+    move |window, cx| {
+        flight::take_off(&id, flight::end(place, &id), look, window, cx);
+        cx.navigate(Route::Chat(id.clone()));
+    }
 }
 
 /// An agent's card (`BotCard`): who it is and what it's doing, its next routine, who it talked with today, and Open
@@ -242,7 +274,7 @@ pub(super) fn bot_card(
                 .flex()
                 .items_start()
                 .justify_between()
-                .child(avatar(bot, theme.size.avatar40))
+                .child(avatar(bot, theme.size.avatar40, cx))
                 .child(state_pill(bot, cx)),
         )
         .child(
@@ -306,21 +338,19 @@ pub(super) fn bot_card(
                 .flex()
                 .items_center()
                 .gap(r(theme.space.s4))
-                .child(
-                    div().mr_auto().child(
-                        Link::new(format!("{card_id}.open"), "Open chat")
-                            .on_press(move |_, cx| cx.navigate(chat.clone())),
-                    ),
-                )
+                .child(div().mr_auto().child(
+                    Link::new(format!("{card_id}.open"), "Open chat").on_press(open_chat(
+                        bot,
+                        "card",
+                        pose(bot.state),
+                    )),
+                ))
                 .when(bot.state == BotState::Waiting, |acts| {
                     acts.child(
                         Pill::new(format!("{card_id}.review"), "Review")
                             .variant(PillVariant::Primary)
                             .small()
-                            .on_press({
-                                let chat = Route::Chat(bot.id.clone());
-                                move |_, cx| cx.navigate(chat.clone())
-                            }),
+                            .on_press(open_chat(bot, "card", pose(bot.state))),
                     )
                 })
                 .child(
@@ -409,8 +439,6 @@ pub(super) fn needs_you(bot: &Bot, messages: &[Message], now: &Zoned, cx: &App) 
     let theme = theme(cx);
     let colors = palette(cx);
     let id = format!("agents.need.{}", bot.id);
-    let chat = Route::Chat(bot.id.clone());
-    let open = chat.clone();
     card(
         id.clone(),
         Role::Article,
@@ -425,7 +453,15 @@ pub(super) fn needs_you(bot: &Bot, messages: &[Message], now: &Zoned, cx: &App) 
             .flex()
             .items_center()
             .gap(r(theme.space.s12))
-            .child(BotAvatar::new(bot.color, bot.shape, theme.size.avatar40).pose(Pose::Waiting))
+            .child(flight_end(
+                bot,
+                "need",
+                BotAvatar::new(bot.color, bot.shape, theme.size.avatar40)
+                    .pose(Pose::Waiting)
+                    .living(bot.id.clone().into()),
+                1.,
+                cx,
+            ))
             .child(
                 div()
                     .min_w_0()
@@ -467,13 +503,13 @@ pub(super) fn needs_you(bot: &Bot, messages: &[Message], now: &Zoned, cx: &App) 
                 Pill::new(format!("{id}.review"), "Review")
                     .variant(PillVariant::Primary)
                     .small()
-                    .on_press(move |_, cx| cx.navigate(chat.clone())),
+                    .on_press(open_chat(bot, "need", Pose::Waiting)),
             )
             .child(
                 div().ml_auto().child(
                     Link::new(format!("{id}.open"), "Open chat")
                         .quiet()
-                        .on_press(move |_, cx| cx.navigate(open.clone())),
+                        .on_press(open_chat(bot, "need", Pose::Waiting)),
                 ),
             ),
     )

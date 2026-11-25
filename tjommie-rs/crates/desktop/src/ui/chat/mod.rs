@@ -140,10 +140,14 @@ impl Render for ChatScreen {
         exchange::reconcile(cx);
         let open_exchange = exchange::open_id(cx);
         let panel_open = open_exchange.is_some() || BrowserPanel::open_now(cx);
-        let state = store::state(cx);
+        let state = store::snapshot(cx);
         let ready = state.connection == Connection::Ready;
-        let bots = Rc::new(state.bots.clone());
-        let Some(bot) = bots.iter().find(|bot| *bot.id == *self.bot_id).cloned() else {
+        let Some(bot) = state
+            .bots
+            .iter()
+            .find(|bot| *bot.id == *self.bot_id)
+            .cloned()
+        else {
             if ready {
                 cx.defer(|cx| {
                     guarded("leave a chat with no agent", || cx.navigate(Route::Agents));
@@ -164,7 +168,7 @@ impl Render for ChatScreen {
 
         let from = self.bot_id.clone();
         let context = MessageContext {
-            bots: bots.clone(),
+            state: state.clone(),
             conversation_id: self.bot_id.clone(),
             open_exchange,
             on_open_exchange: Rc::new(move |id, window, cx| {
@@ -232,7 +236,11 @@ fn empty_chat(bot: &protocol::model::Bot, cx: &App) -> AnyElement {
         .justify_center()
         .gap(r(theme.space.s12))
         .px(r(theme.space.s32))
-        .child(BotAvatar::new(bot.color, bot.shape, theme.size.avatar64).pose(Pose::of(bot.state)))
+        .child(
+            BotAvatar::new(bot.color, bot.shape, theme.size.avatar64)
+                .pose(Pose::of(bot.state))
+                .living(bot.id.clone().into()),
+        )
         .child(
             div()
                 .semantic("chat.empty", Role::Heading)

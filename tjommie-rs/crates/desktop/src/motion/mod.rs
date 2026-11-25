@@ -10,23 +10,29 @@ pub mod eyes;
 pub mod flight;
 pub mod flip;
 pub mod keyboard;
+pub mod keyed;
 pub mod reduced;
 pub mod spring;
 
-use std::path::PathBuf;
-
 use gpui::App;
 
-/// Starts the runtime from the command line: the clock (`--trace <csv>` writes its frame log) and reduced motion
-/// (`--force-reduced`, for tests).
+/// Starts the runtime: the clock and reduced motion. In a test-driver build the motion checks' switches come from the
+/// command line: `--trace <csv>` writes the frame log, `--force-reduced` reduces motion. A production build has neither
+/// (M7 review m6): it writes no trace and follows Windows' setting.
 pub fn init(cx: &mut App) {
-    // args_os: a non-Unicode argument must not panic the start (M2 review F12).
-    let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
-    let trace = args
-        .iter()
-        .position(|arg| arg == "--trace")
-        .and_then(|at| args.get(at + 1))
-        .map(PathBuf::from);
+    #[cfg(feature = "test-driver")]
+    let (trace, force_reduced) = {
+        // args_os: a non-Unicode argument must not panic the start (M2 review F12).
+        let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+        let trace = args
+            .iter()
+            .position(|arg| arg == "--trace")
+            .and_then(|at| args.get(at + 1))
+            .map(std::path::PathBuf::from);
+        (trace, args.iter().any(|arg| arg == "--force-reduced"))
+    };
+    #[cfg(not(feature = "test-driver"))]
+    let (trace, force_reduced) = (None, false);
     clock::init(trace, cx);
-    reduced::init(args.iter().any(|arg| arg == "--force-reduced"), cx);
+    reduced::init(force_reduced, cx);
 }

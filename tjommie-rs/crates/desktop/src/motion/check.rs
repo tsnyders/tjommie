@@ -9,6 +9,8 @@ use crate::ui::style::r;
 
 /// Lucide's check in its 24-unit box, in drawing order: the short stroke first.
 const CHECK: [(f32, f32); 3] = [(4., 12.), (9., 17.), (20., 6.)];
+/// About how many pixels of stroke a check draws, for its spring's rest rule (a 16 to 24 px check).
+const STROKE_PX: f32 = 24.;
 
 /// How much of the check shows, on a spring from 0 to 1.
 pub struct DrawOn {
@@ -19,7 +21,7 @@ impl DrawOn {
     /// Not drawn yet, on `tokens` (the theme's calm spring: no overshoot past whole).
     pub fn new(tokens: &theme::Spring) -> Self {
         DrawOn {
-            progress: Spring::new(0., tokens),
+            progress: Spring::scaled(0., tokens, STROKE_PX),
         }
     }
 
@@ -111,6 +113,23 @@ mod tests {
         assert!(
             (x - 12.).abs() < 0.05 && (y - 14.).abs() < 0.05,
             "half way along: ({x}, {y})"
+        );
+    }
+
+    #[test]
+    fn the_last_of_the_stroke_draws_on_too() {
+        // The rest rule was in whole units: a 0-to-1 check stopped a quarter short and jumped to whole.
+        let calm = crate::theme::Theme::aegis().unwrap().motion.spring.calm;
+        let mut mark = DrawOn::new(&calm);
+        mark.draw(false);
+        let mut last = 0.;
+        while mark.step(1. / 60.) {
+            last = mark.progress();
+        }
+        // At rest within a quarter pixel, after a last frame at under the rest speed (8 px/s).
+        assert!(
+            (1. - last) * STROKE_PX <= 0.25 + 8. / 60.,
+            "the frame before whole showed {last} of the check"
         );
     }
 

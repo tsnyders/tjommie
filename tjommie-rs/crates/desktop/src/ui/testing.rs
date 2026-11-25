@@ -23,6 +23,37 @@ pub fn app(
     state: AppState,
     rpc: FakeRpc,
 ) -> (&mut VisualTestContext, Arc<FakeRpc>) {
+    open(cx, route, state, rpc, false)
+}
+
+/// `app`, with the browser panel beside the main column, closed, as the app has it: the bots it reads, and its keys
+/// (Ctrl+B, Escape).
+pub fn app_with_panel(
+    cx: &mut TestAppContext,
+    route: Route,
+    state: AppState,
+    rpc: FakeRpc,
+) -> (&mut VisualTestContext, Arc<FakeRpc>) {
+    open(cx, route, state, rpc, true)
+}
+
+fn open(
+    cx: &mut TestAppContext,
+    route: Route,
+    state: AppState,
+    rpc: FakeRpc,
+    with_panel: bool,
+) -> (&mut VisualTestContext, Arc<FakeRpc>) {
+    if with_panel {
+        let bots = state.bots.clone();
+        cx.update(|cx| {
+            cx.set_global(crate::ui::browser::BrowserData {
+                bots,
+                ..Default::default()
+            });
+            crate::ui::browser::init(cx);
+        });
+    }
     let calls = cx.update(|cx| {
         gpui_kit::init(cx);
         cx.bind_keys(crate::keymap::field_tab(cx));
@@ -34,14 +65,48 @@ pub fn app(
             ..ShellData::default()
         });
         cx.navigate(route);
+        crate::motion::clock::fixed_step(1. / 60., cx);
         crate::ui::store::fake(cx, state, rpc)
     });
     let (_, cx) = cx.add_window_view(|window, cx| {
-        let shell = cx.new(|cx| Shell::new(window, cx));
+        let panel = with_panel.then(|| crate::ui::browser::panel::BrowserPanel::create(window, cx));
+        let shell = cx.new(|cx| {
+            let mut shell = Shell::new(window, cx);
+            shell.set_panel(panel.map(Into::into), cx);
+            shell
+        });
         gpui_kit::component::Root::new(shell, window, cx)
     });
     draw(cx);
     (cx, calls)
+}
+
+/// Presses Tab `times` times: each time the keyboard is on an element `inside` takes for the sheet's, and it moves between
+/// more than one (a sheet over the content keeps Tab inside it: gpui-kit's focus trap).
+pub fn tab_stays_in(cx: &mut VisualTestContext, times: usize, inside: impl Fn(&str) -> bool) {
+    let mut seen: Vec<String> = Vec::new();
+    for _ in 0..times {
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        let focused: Vec<String> = crate::test_driver::nodes()
+            .into_iter()
+            .filter(|node| node.focused)
+            .map(|node| node.id)
+            .collect();
+        assert!(
+            !focused.is_empty() && focused.iter().all(|id| inside(id)),
+            "Tab stays in the sheet: {focused:?}"
+        );
+        for id in focused {
+            if !seen.contains(&id) {
+                seen.push(id);
+            }
+        }
+    }
+    assert!(
+        seen.len() > 1,
+        "Tab moves between the sheet's controls: {seen:?}"
+    );
 }
 
 /// Runs what's pending, then draws a frame, so the semantic tree is current.

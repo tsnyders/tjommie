@@ -54,12 +54,27 @@ impl RenderOnce for Toggle {
             (colors.surface.raised, colors.line.field)
         };
         // The knob: 14 px at (4, 3.5) when off, 16 px at (19, 2.5) when on, from inside the 1.5 px border, where both
-        // CSS and Taffy measure an absolute child's insets (M2 review F9).
-        let (knob, left, top, color) = if on {
-            (16., 19., 2.5, colors.on.primary)
+        // CSS and Taffy measure an absolute child's insets (M2 review F9). It travels between them on the snappy spring
+        // (motion.html "Press, hover and lift": toggles land with the snappy settle); a key or reduced motion lands it at once.
+        let snappy = theme.motion.spring.snappy.clone();
+        let snap = crate::motion::keyboard::Trigger::of(window).snaps(cx);
+        let travel = crate::motion::keyed::spring(
+            &format!("{}.knob", self.id),
+            if on { 1. } else { 0. },
+            &snappy,
+            15.,
+            snap,
+            window,
+            cx,
+        );
+        let theme = crate::ui::style::theme(cx);
+        let colors = palette(cx);
+        let color = if on {
+            colors.on.primary
         } else {
-            (14., 4., 3.5, colors.text.secondary)
+            colors.text.secondary
         };
+        let (knob, left, top) = (14. + 2. * travel, 4. + 15. * travel, 3.5 - travel);
         let knob_id = self.id.clone();
         let toggle = div()
             .semantic(self.id, Role::Switch)
@@ -103,6 +118,60 @@ mod tests {
 
     /// The knob against overlays.html's `.toggle::after`: its insets are from the padding box, inside the 1.5 px
     /// border, so from the track's outer edge it sits at (5.5, 5) off and (20.5, 4) on, centred (M2 review F9).
+    #[gpui::test]
+    fn the_knob_springs_across_after_a_click_and_lands_at_once_after_a_key(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::ui::testing::{click, draw, next_frame};
+        use std::cell::Cell;
+        let on = Rc::new(Cell::new(false));
+        let shown = on.clone();
+        let cx = crate::ui::primitives::keyboard_window(cx, move |_, _| {
+            let flip = shown.clone();
+            Toggle::new("test.toggle", "Done", shown.get())
+                .on_toggle(move |value, _, _| flip.set(value))
+                .into_any_element()
+        });
+        cx.update(|window, _| window.activate_window());
+        draw(cx);
+        let track = cx.debug_bounds("test.toggle").expect("the track");
+        click(cx, "test.toggle");
+        assert!(on.get());
+        let first = cx
+            .debug_bounds("test.toggle.knob")
+            .expect("the knob")
+            .origin
+            .x
+            - track.origin.x;
+        assert!(first < px(20.5), "it starts from where it was: {first:?}");
+        let mut frames = 0;
+        while next_frame(cx) {
+            frames += 1;
+            assert!(frames < 60, "it lands");
+        }
+        assert!(frames > 3, "over several frames: {frames}");
+        let landed = cx
+            .debug_bounds("test.toggle.knob")
+            .expect("the knob")
+            .origin
+            .x
+            - track.origin.x;
+        assert_eq!(landed, px(20.5), "on: where the design puts it");
+        // By key: Tab to it, Space flips it, and the knob is there at once.
+        cx.simulate_keystrokes("tab");
+        cx.simulate_keystrokes("space");
+        draw(cx);
+        assert!(!on.get());
+        assert!(!next_frame(cx), "no frames in between after a key");
+        let off = cx
+            .debug_bounds("test.toggle.knob")
+            .expect("the knob")
+            .origin
+            .x
+            - track.origin.x;
+        assert_eq!(off, px(5.5));
+    }
+
     #[gpui::test]
     fn the_knob_sits_where_the_design_puts_it(cx: &mut gpui::TestAppContext) {
         let cx = test_window(cx, |_, _| {

@@ -278,6 +278,8 @@ impl Composer {
                 }
                 self.text = text;
                 self.follow_mention(cx);
+                // The agent glances at what you write to it.
+                crate::motion::eyes::glance(&self.bot_id, cx);
                 cx.notify();
             }
             InputEvent::PressEnter {
@@ -701,14 +703,30 @@ impl Render for Composer {
         } else {
             0.
         };
-        if reduced::is_on(cx) {
-            self.lift.snap(lift);
-        } else {
-            self.lift.set_target(lift);
-            if self.lift.step(clock::dt(cx)) {
-                clock::keep_moving(window, cx);
+        // Focus by Tab is a keyboard action: the card is lifted at once (the plan's T2.3 rule), as under reduced motion.
+        if self.lift.target != lift {
+            if crate::motion::keyboard::Trigger::of(window).snaps(cx) {
+                self.lift.snap(lift);
+            } else {
+                self.lift.set_target(lift);
             }
         }
+        if self.lift.step(clock::dt(cx)) {
+            clock::keep_moving(window, cx);
+        }
+
+        // The send button wakes with a snappy pop when there is something to send (motion.html "Composer"). Typing is no
+        // command, so only reduced motion lands it at once.
+        let snappy = theme(cx).motion.spring.snappy.clone();
+        let pop = crate::motion::keyed::spring(
+            &format!("composer.{}.round.pop", self.bot_id),
+            if stop || has_text { 1. } else { 0.86 },
+            &snappy,
+            24.,
+            reduced::is_on(cx),
+            window,
+            cx,
+        );
 
         // The model pill is a Tab stop, as every menu's trigger is: Enter or Space opens its menu.
         let model_focus = focus_handle(&format!("composer.{}.model.open", self.bot_id), window, cx);
@@ -976,6 +994,7 @@ impl Render for Composer {
                 ("arrow-up", "Send".into())
             };
             IconButton::new(format!("composer.{id}.round"), icon, name)
+                .icon_scale(pop)
                 .variant(if stop || has_text {
                     IconVariant::Dark
                 } else {

@@ -386,6 +386,13 @@ fn sweep(app: &mut Client, place: &str) {
 /// Tabs once around an open dialog (Tab stays inside it) and fails on any of its controls (ids starting with one of
 /// `prefixes`) no Tab reached; the page behind it is out of reach, as it should be.
 fn sweep_in(app: &mut Client, place: &str, prefixes: &[&str]) {
+    sweep_where(app, place, |id| {
+        prefixes.iter().any(|prefix| id.starts_with(prefix))
+    });
+}
+
+/// `sweep_in` for the controls `own` says are the place's: a sheet's, whose ids it shares with what it covers.
+fn sweep_where(app: &mut Client, place: &str, own: impl Fn(&str) -> bool) {
     let mut seen: Vec<String> = Vec::new();
     for _ in 0..400 {
         let Some(now) = press(app, "tab") else {
@@ -405,7 +412,7 @@ fn sweep_in(app: &mut Client, place: &str, prefixes: &[&str]) {
         .nodes
         .iter()
         .filter(|node| node.interactive && !seen.contains(&node.id))
-        .filter(|node| prefixes.iter().any(|prefix| node.id.starts_with(prefix)))
+        .filter(|node| own(&node.id))
         // A radio group is one stop, its chosen choice; the arrows move to the others.
         .filter(|node| {
             !(node.role == "RadioButton" && seen.iter().any(|id| group(id) == group(&node.id)))
@@ -546,8 +553,10 @@ fn say(app: &mut Client, bot: &str, text: &str) {
 
 /// An exchange by keys: a request has Harbour ask Lantern (its fixture turn calls `message_bot` on the session's own
 /// `tjommie` server), the chat shows the hand-off row with its View thread link, and Lantern's answer reaches Harbour as a
-/// message of its own that plays Harbour's next turn. Enter on View thread opens the exchange beside the chat, every control
-/// in it is a Tab stop, and Escape closes it and gives the keyboard back to the link.
+/// message of its own that plays Harbour's next turn. Enter on View thread opens the exchange, every control in it is a Tab
+/// stop, and Escape closes it and gives the keyboard back to the link. At the test's 1000 by 700 the content is too narrow
+/// for both (`shell::overlaid`), so the exchange lies over the chat as a sheet that keeps Tab inside it, as a dialog does:
+/// the round reaches its own controls, and none of the chat's behind it (View thread among them).
 fn exchange(app: &mut Client, bot: &str) {
     let before = replies(app);
     say(app, bot, "Please ask Lantern about the tide table");
@@ -571,7 +580,10 @@ fn exchange(app: &mut Client, bot: &str) {
         10_000,
     )
     .unwrap();
-    sweep(app, "Chat, exchange");
+    let own = format!("{}.", open.trim_end_matches(".open"));
+    sweep_where(app, "Chat, exchange", |id| {
+        id.starts_with(&own) && id != open
+    });
     app.key("escape").unwrap();
     wait_gone(app, &view);
     until(

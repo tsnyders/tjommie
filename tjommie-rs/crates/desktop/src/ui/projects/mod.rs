@@ -14,7 +14,7 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, Context, FocusHandle, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, Role, ScrollHandle, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Task, Window, div, svg,
+    Styled as _, Task, Window, div, relative, svg,
 };
 use protocol::projects::{
     AttemptId, ExpectedRevision, Project, ProjectId, ProjectRepository, ProjectState, ProjectTask,
@@ -374,6 +374,7 @@ pub(crate) fn line(
 
 impl Render for ProjectsScreen {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let narrow = crate::ui::shell::narrow(window);
         let ready = Self::ready(cx);
         if ready && !self.was_ready {
             self.reload(cx);
@@ -489,17 +490,22 @@ impl Render for ProjectsScreen {
             .flex()
             .flex_col()
             .gap(r(theme.space.s20))
-            .pt(r(theme.space.s32))
-            .px(r(theme.space.s32))
+            .pt(r(if narrow { theme.space.s16 } else { theme.space.s32 }))
+            .px(r(if narrow { theme.space.s16 } else { theme.space.s32 }))
             .child(
                 div()
                     .flex()
                     .items_end()
                     .gap(r(theme.space.s16))
+                    // Narrow: New project on the first line at the right, the title under it.
+                    .when(narrow, |header| {
+                        header.flex_row_reverse().flex_wrap_reverse()
+                    })
                     .child(
                         div()
                             .flex_1()
                             .min_w_0()
+                            .when(narrow, |title| title.flex_basis(relative(1.)))
                             .child(
                                 div()
                                     .semantic("screen.projects", Role::Heading)
@@ -550,13 +556,15 @@ impl Render for ProjectsScreen {
                     .flex_1()
                     .min_h_0()
                     .flex()
+                    // Narrow: the teams above the team, each as wide as the window allows.
+                    .when(narrow, |body| body.flex_col())
                     .gap(r(theme.space.s16))
                     .child(follow_focus(
                         &teams_scroll,
                         div()
                             .id("projects.teams")
                             .track_scroll(&teams_scroll)
-                            .w(r(240.))
+                            .map(|list| if narrow { list.w_full().max_h(r(200.)) } else { list.w(r(240.)) })
                             .flex_none()
                             .overflow_y_scroll()
                             .pb(r(theme.space.s24))

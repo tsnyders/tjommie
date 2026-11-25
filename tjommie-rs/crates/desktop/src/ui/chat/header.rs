@@ -1,6 +1,9 @@
 //! The chat's header (desktop-chat.html `.chat-head`; `chat-header.tsx`): the agent's avatar, name and state over its
-//! provider, then Pause or Resume, Agent settings, More (Open browser, Open home folder) and the panel button. A
-//! failed action says why under the header.
+//! provider, then Pause or Resume, Agent settings, More (Open browser, Open home folder) and the panel button. In a
+//! narrow window Pause and Agent settings are in More and the state goes under the name, as the TypeScript's phone
+//! header had them (M7 review M2). A failed action says why under the header.
+
+use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
@@ -13,6 +16,7 @@ use protocol::wire::{BotsPause, method};
 
 use crate::guard::guarded_async;
 use crate::model::labels::{error_text, model_label, state_label};
+use crate::motion::flight;
 use crate::semantic::SemanticExt as _;
 use crate::ui::primitives::avatar::{BotAvatar, Pose};
 use crate::ui::primitives::button::{Handler, IconButton, IconVariant};
@@ -109,15 +113,24 @@ pub fn header(bot: &Bot, actions: &HeaderActions, window: &mut Window, cx: &mut 
     let id = bot.id.clone();
     let name = SharedString::from(bot.name.clone());
     let pill = state_pill(bot, cx);
+    let (pill_beside, pill_under) = if crate::ui::shell::narrow(window) {
+        (None, pill)
+    } else {
+        (pill, None)
+    };
+    let landing = flight::end("header", &bot.id);
 
-    let pause = {
+    // At 360 px the header has room for the avatar, the name and two buttons: Pause and Agent settings fold into More,
+    // and the state pill goes under the name (M7 review M2).
+    let narrow = crate::ui::shell::narrow(window);
+    let (pause_icon, pause_label) = if bot.paused {
+        ("play", format!("Resume {}", bot.name))
+    } else {
+        ("pause", format!("Pause {}", bot.name))
+    };
+    let pause_action: Handler = {
         let (problem, id, paused) = (problem.clone(), id.clone(), bot.paused);
-        let (icon, label) = if paused {
-            ("play", format!("Resume {}", bot.name))
-        } else {
-            ("pause", format!("Pause {}", bot.name))
-        };
-        IconButton::new(format!("chat.{id}.pause"), icon, label).on_press(move |_, cx| {
+        Rc::new(move |_, cx| {
             let call = store::request::<method::BotsPause>(
                 cx,
                 BotsPause {
@@ -128,15 +141,24 @@ pub fn header(bot: &Bot, actions: &HeaderActions, window: &mut Window, cx: &mut 
             run(&problem, call, cx);
         })
     };
-    let settings = {
+    let settings_action: Handler = {
         let id = id.clone();
+        Rc::new(move |_, cx| cx.navigate(Route::BotSettings(id.clone())))
+    };
+    let pause = (!narrow).then(|| {
+        let act = pause_action.clone();
+        IconButton::new(format!("chat.{id}.pause"), pause_icon, pause_label.clone())
+            .on_press(move |window, cx| act(window, cx))
+    });
+    let settings = (!narrow).then(|| {
+        let act = settings_action.clone();
         IconButton::new(
             format!("chat.{id}.settings"),
             "sliders-horizontal",
             "Agent settings",
         )
-        .on_press(move |_, cx| cx.navigate(Route::BotSettings(id.clone())))
-    };
+        .on_press(move |window, cx| act(window, cx))
+    });
     let trigger = format!("chat.{id}.more.open");
     let mut more = Menu::new(
         SharedString::from(format!("chat.{id}.more")),
@@ -153,6 +175,26 @@ pub fn header(bot: &Bot, actions: &HeaderActions, window: &mut Window, cx: &mut 
     )
     .anchor(gpui::Anchor::TopRight)
     .offset(gpui::px(6.));
+    if narrow {
+        let act = pause_action.clone();
+        more = more.item(
+            MenuItem::new(
+                format!("chat.{id}.more.pause"),
+                pause_label.clone(),
+                move |window, cx| act(window, cx),
+            )
+            .icon(pause_icon),
+        );
+        let act = settings_action.clone();
+        more = more.item(
+            MenuItem::new(
+                format!("chat.{id}.more.settings"),
+                "Agent settings",
+                move |window, cx| act(window, cx),
+            )
+            .icon("sliders-horizontal"),
+        );
+    }
     if bot.browser {
         let open = actions.on_open_browser.clone();
         more = more.item(
@@ -219,7 +261,21 @@ pub fn header(bot: &Bot, actions: &HeaderActions, window: &mut Window, cx: &mut 
         .gap(r(theme.space.s12))
         .pl(r(theme.space.s24))
         .pr(r(theme.space.s16))
-        .child(BotAvatar::new(bot.color, bot.shape, theme.size.avatar40).pose(Pose::of(bot.state)))
+        // The end a flying avatar lands on (motion.html "shared elements"): hidden while it flies here.
+        .child(
+            div()
+                .relative()
+                .flex_none()
+                .when(flight::hides(&bot.id, &landing, cx), |slot| {
+                    slot.opacity(0.)
+                })
+                .child(
+                    BotAvatar::new(bot.color, bot.shape, theme.size.avatar40)
+                        .pose(Pose::of(bot.state))
+                        .living(bot.id.clone().into()),
+                )
+                .child(flight::end_capture(landing.clone())),
+        )
         .child(
             div()
                 .flex_1()
@@ -241,18 +297,34 @@ pub fn header(bot: &Bot, actions: &HeaderActions, window: &mut Window, cx: &mut 
                                 .text_color(hsla(colors.text.primary))
                                 .child(name),
                         )
-                        .children(pill),
+                        .children(pill_beside),
                 )
-                .child(
+                .child({
+                    // One line, shortened with an ellipsis where it must be, its whole text the accessible name; in a
+                    // narrow window the state pill leads it.
+                    let model = SharedString::from(model_label(bot.provider, &bot.model));
                     div()
                         .mt(gpui::px(3.))
-                        .type_style(&theme.typography.desktop.meta)
-                        .text_color(hsla(colors.text.tertiary))
-                        .child(SharedString::from(model_label(bot.provider, &bot.model))),
-                ),
+                        .min_w_0()
+                        .flex()
+                        .items_center()
+                        .gap(r(theme.space.s6))
+                        .children(pill_under)
+                        .child(
+                            div()
+                                .semantic(format!("chat.{id}.model"), Role::Label)
+                                .aria_label(model.clone())
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .type_style(&theme.typography.desktop.meta)
+                                .text_color(hsla(colors.text.tertiary))
+                                .child(model),
+                        )
+                }),
         )
-        .child(pause)
-        .child(settings)
+        .children(pause)
+        .children(settings)
         .child(more)
         .child(panel)
         .when_some(shown_problem, |header, problem| {

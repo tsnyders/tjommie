@@ -81,7 +81,7 @@ If a routine fails, Tjommie shows a notification.
 
 ### 8. The agent's browser and Logins
 
-Turn on **Browser** in an agent's settings. Then open the panel beside its chat with the panel button, **Ctrl+B**, or **Open browser** in the chat's More menu.
+Turn on **Browser** in an agent's settings. Then open the panel beside its chat with the panel button, **Ctrl+B**, or **Open browser** in the chat's More menu. In a window too narrow for both, the panel opens over the chat instead; **Escape** closes it.
 The browser is built into Tjommie and uses Microsoft Edge WebView2. You and the agent share the same tabs, and each agent keeps its own browser profile.
 Click **Take control** before you type or click, and **Return to agent** to hand the page back. Google may block sign-in in automated browsers, and Tjommie says so in the panel.
 
@@ -91,7 +91,7 @@ Before it fills anything, Tjommie confirms the exact HTTPS site.
 
 | The browser panel | The logins menu |
 |---|---|
-| ![Browser panel beside a chat](docs/screens/browser-dark.png) | ![Logins menu over a page](docs/screens/logins-menu-dark.png) |
+| ![Browser panel open over a chat](docs/screens/browser-dark.png) | ![Logins menu over a page](docs/screens/logins-menu-dark.png) |
 
 ### 9. Pair the Android companion
 

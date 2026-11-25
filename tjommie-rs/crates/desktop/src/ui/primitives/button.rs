@@ -6,9 +6,9 @@ use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    App, Div, InteractiveElement as _, IntoElement, ParentElement as _, RenderOnce, Rgba, Role,
-    SharedString, Stateful, StatefulInteractiveElement as _, Styled as _, Window, div, relative,
-    svg,
+    App, Div, Entity, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _,
+    RenderOnce, Rgba, Role, SharedString, Stateful, StatefulInteractiveElement as _, Styled as _,
+    Transformation, Window, div, relative, svg,
 };
 
 use super::focus_handle;
@@ -149,6 +149,8 @@ impl RenderOnce for Pill {
         } else {
             named
         };
+        let (scale, down) = press_motion(&self.id, window, cx);
+        let theme = crate::ui::style::theme(cx);
         let pill = div()
             .semantic(self.id.clone(), Role::Button)
             .aria_label(name)
@@ -161,7 +163,7 @@ impl RenderOnce for Pill {
             .type_style(&theme.typography.desktop.button)
             .text_color(hsla(text))
             .child(
-                press_fill(self.id.clone(), fill, hover)
+                press_fill(self.id.clone(), fill, hover, scale)
                     .when(self.variant == PillVariant::Raised, |fill| {
                         fill.shadow(shadows(&theme.shadow.light.card))
                     }),
@@ -180,7 +182,7 @@ impl RenderOnce for Pill {
         if self.disabled {
             return base(pill, self.id).opacity(0.38).cursor_default();
         }
-        pressable(base(pill, self.id), self.on_press)
+        pressable(press_listeners(base(pill, self.id), down), self.on_press)
     }
 }
 
@@ -207,6 +209,7 @@ pub struct IconButton {
     busy: bool,
     expanded: Option<bool>,
     on_press: Option<Handler>,
+    icon_scale: f32,
 }
 
 impl IconButton {
@@ -224,7 +227,15 @@ impl IconButton {
             busy: false,
             expanded: None,
             on_press: None,
+            icon_scale: 1.,
         }
+    }
+
+    /// The icon scaled about its centre: an icon button may scale whole, as the send button's pop does (motion.html
+    /// "Press, hover and lift"); GPUI scales the icon, the fill keeps its size.
+    pub fn icon_scale(mut self, scale: f32) -> Self {
+        self.icon_scale = scale;
+        self
     }
 
     pub fn variant(mut self, variant: IconVariant) -> Self {
@@ -295,8 +306,14 @@ impl RenderOnce for IconButton {
                 .path(format!("icons/i/175/{}.svg", self.icon))
                 .size(r(icon_size))
                 .text_color(hsla(icon))
+                .with_transformation(Transformation::scale(gpui::size(
+                    self.icon_scale,
+                    self.icon_scale,
+                )))
                 .into_any_element()
         });
+        let (scale, down) = press_motion(&self.id, window, cx);
+        let theme = crate::ui::style::theme(cx);
         let button = div()
             .semantic(self.id.clone(), Role::Button)
             .aria_label(name)
@@ -305,7 +322,7 @@ impl RenderOnce for IconButton {
             .track_focus(&focus)
             .size(r(size))
             .flex_none()
-            .child(press_fill(self.id.clone(), fill, hover))
+            .child(press_fill(self.id.clone(), fill, hover, scale))
             .child(glyph)
             .children(ring_or_reveal(&focus, theme.radius.pill, window, cx));
         if self.disabled {
@@ -314,7 +331,7 @@ impl RenderOnce for IconButton {
         if self.busy {
             return base(button, self.id).cursor_default();
         }
-        pressable(base(button, self.id), self.on_press)
+        pressable(press_listeners(base(button, self.id), down), self.on_press)
     }
 }
 
@@ -330,18 +347,64 @@ fn base(element: Semantic<Stateful<Div>>, id: SharedString) -> Semantic<Stateful
         .cursor_pointer()
 }
 
-/// The fill behind the label: it takes the hover colour, and on press it shrinks to the press-fill size (0.94).
-fn press_fill(group: SharedString, fill: Rgba, hover: Rgba) -> Stateful<Div> {
-    let inset = relative(0.03);
+/// The fill behind the label: it takes the hover colour, and is drawn at `scale` of the button (the press).
+fn press_fill(group: SharedString, fill: Rgba, hover: Rgba, scale: f32) -> Stateful<Div> {
+    let inset = relative(((1. - scale) / 2.).max(0.));
     div()
         .id("press-fill")
+        .debug_selector(|| format!("{group}.fill"))
         .absolute()
-        .inset_0()
+        .top(inset)
+        .bottom(inset)
+        .left(inset)
+        .right(inset)
         .rounded_full()
         .bg(hsla(fill))
-        .group_hover(group.clone(), |style| style.bg(hsla(hover)))
-        .group_active(group, |style| {
-            style.top(inset).bottom(inset).left(inset).right(inset)
+        .group_hover(group, |style| style.bg(hsla(hover)))
+}
+
+/// The press (motion.html "Press, hover and lift"): the pointer pressing springs the fill in to the press-fill size,
+/// letting go springs it back with the snappy settle, and the words never move. A key's press (Enter, Space) shows none;
+/// reduced motion lands it at once. The fill's scale now, and the pressed state the button's listeners set.
+fn press_motion(id: &SharedString, window: &mut Window, cx: &mut App) -> (f32, Entity<bool>) {
+    let down = window.use_keyed_state(SharedString::from(format!("{id}.down")), cx, |_, _| false);
+    let motion = &theme(cx).motion;
+    let (snappy, pressed) = (motion.spring.snappy.clone(), motion.distance.press_fill);
+    let target = if *down.read(cx) { pressed } else { 1. };
+    let scale = crate::motion::keyed::spring(
+        &format!("{id}.press"),
+        target,
+        &snappy,
+        // A 40 px button: a unit of scale is 40 px of fill.
+        40.,
+        crate::motion::reduced::is_on(cx),
+        window,
+        cx,
+    );
+    (scale, down)
+}
+
+/// The pointer down on the button presses its fill; up, here or anywhere, lets go.
+fn press_listeners(
+    element: Semantic<Stateful<Div>>,
+    down: Entity<bool>,
+) -> Semantic<Stateful<Div>> {
+    let set = |down: &Entity<bool>, pressed: bool, window: &mut Window, cx: &mut App| {
+        down.update(cx, |down, _| *down = pressed);
+        window.refresh();
+    };
+    let (press, release, outside) = (down.clone(), down.clone(), down);
+    element
+        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+            guarded("press a button's fill", || set(&press, true, window, cx));
+        })
+        .on_mouse_up(MouseButton::Left, move |_, window, cx| {
+            guarded("let go of a button", || set(&release, false, window, cx));
+        })
+        .on_mouse_up_out(MouseButton::Left, move |_, window, cx| {
+            guarded("let go of a button outside it", || {
+                set(&outside, false, window, cx)
+            });
         })
 }
 
@@ -375,6 +438,58 @@ mod tests {
 
     use super::Pill;
     use crate::ui::testing::{click, draw, node};
+
+    /// motion.html "Press, hover and lift": the pointer pressing springs the fill in to 94%, letting go springs it back;
+    /// the words stay put. Enter presses with no motion.
+    #[gpui::test]
+    fn a_press_springs_the_fill_in_and_back(cx: &mut gpui::TestAppContext) {
+        use crate::ui::testing::next_frame;
+        use gpui::{Modifiers, MouseButton};
+        let cx = crate::ui::primitives::keyboard_window(cx, |_, _| {
+            div()
+                .child(Pill::new("test.press", "Approve").on_press(|_, _| {}))
+                .into_any_element()
+        });
+        cx.update(|window, _| window.activate_window());
+        draw(cx);
+        let button = cx.debug_bounds("test.press").expect("the pill");
+        let full = cx
+            .debug_bounds("test.press.fill")
+            .expect("its fill")
+            .size
+            .width;
+        cx.simulate_mouse_down(button.center(), MouseButton::Left, Modifiers::none());
+        draw(cx);
+        let mut frames = 0;
+        while next_frame(cx) {
+            frames += 1;
+            assert!(frames < 60, "it lands");
+        }
+        assert!(frames > 2, "pressed over several frames: {frames}");
+        let pressed = cx
+            .debug_bounds("test.press.fill")
+            .expect("its fill")
+            .size
+            .width;
+        assert!(
+            (pressed / full - 0.94).abs() < 0.01,
+            "pressed to 94%: {pressed:?} of {full:?}"
+        );
+        cx.simulate_mouse_up(button.center(), MouseButton::Left, Modifiers::none());
+        draw(cx);
+        assert!(next_frame(cx), "letting go springs it back");
+        while next_frame(cx) {}
+        let back = cx
+            .debug_bounds("test.press.fill")
+            .expect("its fill")
+            .size
+            .width;
+        assert_eq!(back, full);
+        cx.simulate_keystrokes("tab");
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert!(!next_frame(cx), "a key's press shows no motion");
+    }
 
     /// M5 review M2: an unavailable pill is no Tab stop, says so, and does nothing when pressed.
     #[gpui::test]

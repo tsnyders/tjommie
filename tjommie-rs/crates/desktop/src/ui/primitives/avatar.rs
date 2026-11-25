@@ -5,9 +5,11 @@
 //! avatar follows the app zoom.
 
 use gpui::prelude::FluentBuilder as _;
+use std::sync::LazyLock;
+
 use gpui::{
-    App, IntoElement, ParentElement as _, RenderOnce, Rgba, Styled as _, Transformation, Window,
-    div, point, px, size, svg,
+    App, IntoElement, ParentElement as _, RenderOnce, Rgba, SharedString, Styled as _,
+    Transformation, Window, div, point, px, size, svg,
 };
 use protocol::model::{BotColor, BotShape, BotState};
 
@@ -70,6 +72,7 @@ pub struct BotAvatar {
     size: f32,
     pose: Pose,
     gaze: Option<Gaze>,
+    living: Option<SharedString>,
 }
 
 impl BotAvatar {
@@ -81,6 +84,7 @@ impl BotAvatar {
             size,
             pose: Pose::Idle,
             gaze: None,
+            living: None,
         }
     }
 
@@ -89,9 +93,15 @@ impl BotAvatar {
         self
     }
 
-    /// This frame's gaze, for a living avatar; otherwise the pose's still look.
+    /// This frame's gaze, given; otherwise the pose's still look.
     pub fn gaze(mut self, gaze: Gaze) -> Self {
         self.gaze = Some(gaze);
+        self
+    }
+
+    /// Agent `id`'s living eyes (`motion::eyes::living`): it blinks, scans while working and glances while you type.
+    pub fn living(mut self, id: SharedString) -> Self {
+        self.living = Some(id);
         self
     }
 }
@@ -103,7 +113,11 @@ impl RenderOnce for BotAvatar {
         // The eyes' offset is a transformation, in pixels: design px times the zoom's rem.
         let zoom = f32::from(window.rem_size()) / 16.0;
         let eyes = eye_box(self.shape);
-        let gaze = self.gaze.unwrap_or(Gaze::of(self.pose));
+        let gaze = match (self.gaze, &self.living) {
+            (Some(gaze), _) => gaze,
+            (None, Some(id)) => crate::motion::eyes::living(id, self.pose, window, cx),
+            (None, None) => Gaze::of(self.pose),
+        };
         div()
             .relative()
             .flex_none()
@@ -165,8 +179,33 @@ fn shape_name(shape: BotShape) -> &'static str {
     }
 }
 
-/// The eyes' box in the 40-unit avatar: the cropped eyes layer's viewBox.
+const SHAPES: [BotShape; 8] = [
+    BotShape::Circle,
+    BotShape::Blob,
+    BotShape::RoundedSquare,
+    BotShape::Pill,
+    BotShape::Triangle,
+    BotShape::Hexagon,
+    BotShape::Cloud,
+    BotShape::Droplet,
+];
+
+/// The eyes' box in the 40-unit avatar: the cropped eyes layer's viewBox, read once per shape (a living avatar draws
+/// every frame while its agent works).
 fn eye_box(shape: BotShape) -> Option<[f32; 4]> {
+    static BOXES: LazyLock<Vec<(BotShape, Option<[f32; 4]>)>> = LazyLock::new(|| {
+        SHAPES
+            .iter()
+            .map(|&shape| (shape, read_eye_box(shape)))
+            .collect()
+    });
+    BOXES
+        .iter()
+        .find(|(each, _)| *each == shape)
+        .and_then(|(_, found)| *found)
+}
+
+fn read_eye_box(shape: BotShape) -> Option<[f32; 4]> {
     let svg = crate::assets::icon(&format!("icons/bot/{}/eyes-crop.svg", shape_name(shape)))?;
     view_box(std::str::from_utf8(&svg).ok()?)
 }

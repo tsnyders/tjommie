@@ -26,6 +26,8 @@ pub fn you(message: &Message, files: &[String], cx: &App) -> AnyElement {
     let theme = theme(cx);
     let colors = palette(cx);
     let [top_left, top_right, bottom_right, bottom_left] = corners(theme);
+    // One copy of the text a frame, for its name and its words (M4 review A8).
+    let body = SharedString::from(message.body.clone());
     let chips = files.iter().map(|path| {
         let name = SharedString::from(file_name(path).to_owned());
         div()
@@ -67,7 +69,7 @@ pub fn you(message: &Message, files: &[String], cx: &App) -> AnyElement {
         .child(
             div()
                 .semantic(format!("bubble.{}", message.id), Role::Paragraph)
-                .aria_label(SharedString::from(message.body.clone()))
+                .aria_label(body.clone())
                 .bg(hsla(colors.surface.sunk))
                 .rounded_tl(r(top_left))
                 .rounded_tr(r(top_right))
@@ -77,7 +79,7 @@ pub fn you(message: &Message, files: &[String], cx: &App) -> AnyElement {
                 .py(r(theme.space.s8))
                 .type_style(&theme.typography.desktop.body)
                 .text_color(hsla(colors.text.primary))
-                .child(SharedString::from(message.body.clone())),
+                .child(body),
         )
         .into_any_element()
 }
@@ -99,14 +101,14 @@ pub fn bot(message: &Message, window: &mut Window, cx: &mut App) -> AnyElement {
             .child("Thinking")
             .into_any_element();
     }
-    let text = SharedString::from(message.body.clone());
     div()
         .semantic(format!("prose.{}", message.id), Role::Article)
         .w_full()
         .max_w(r(600.))
         .child(markdown::reply(
             &format!("prose.{}.md", message.id),
-            &text,
+            &message.body,
+            streaming,
             window,
             cx,
         ))
