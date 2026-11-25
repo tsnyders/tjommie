@@ -167,6 +167,8 @@ Invoke-Step 'U7 the app runs the daemon it was installed with, and the data root
         # disk are the build's; this shows what runs.)
         $newLong = Get-LongPath $newExe
         $daemons = @(Get-ProcessesOfExe $daemon)
+        # Queried again after the wait: a daemon that exited in between would leave nothing here, and nothing passes the parent check below.
+        Assert-Check ($daemons.Count -ge 1) 'U7: the daemon is still there when its parent is looked at (an empty list would pass the parent check)' @{ found = $daemons.Count }
         $byId = { param($id) Get-CimInstance Win32_Process -Filter "ProcessId = $id" }
         $notTheNewApps = @(Get-DaemonsNotOfPinnedApp $daemons $state['newMain'] $newLong $byId)
         Assert-Check ($notTheNewApps.Count -eq 0) 'U7: every such daemon is a child of the --updated process U4 pinned (its id, image path and start time)' @{ notTheNewApps = $notTheNewApps; pinned = $(if ($state['newMain']) { @{ id = $state['newMain']['pid']; started = $state['newMain']['created'].ToString('o') } } else { $null }) }

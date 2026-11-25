@@ -248,6 +248,10 @@ describe("the update-path script and the installer script agree", () => {
     expect(u4).toContain("$state['newMain'] = @{ pid = [int]$mains[0].ProcessId; created = $mains[0].CreationDate }");
     const u7 = update.slice(update.indexOf("Invoke-Step 'U7 "), update.indexOf("Invoke-Step 'U8 "));
     expect(u7).toContain("Get-DaemonsNotOfPinnedApp $daemons $state['newMain'] $newLong $byId");
+    // The parent check judges a list, and an empty one would pass it: the list, queried again after the wait, is held to at least one daemon first.
+    const counted = u7.indexOf("Assert-Check ($daemons.Count -ge 1) 'U7: the daemon is still there");
+    expect(counted).toBeGreaterThan(u7.indexOf("$daemons = @(Get-ProcessesOfExe $daemon)"));
+    expect(counted).toBeLessThan(u7.indexOf("Get-DaemonsNotOfPinnedApp"));
     for (const part of ["handover", "Get-Date", "CreationDate -gt", "Get-R1QuitTime"]) expect(update, part).not.toContain(part);
     const lib = codeOf(join(installer, "accept-phase3-lib.ps1"));
     expect(lib).toContain("$parent.CreationDate -eq $Pin['created']");
