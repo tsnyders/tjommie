@@ -273,18 +273,32 @@ describe.skipIf(!windows)("the acceptance library's pure helpers", () => {
     expect(unchecked.some((check) => check.check.includes("read back identical"))).toBe(false);
   });
 
-  // Run 6 of T8.4: the instant that tells the new app's processes from R1's is the one the update driver prints from R1's own close handler. It is read as a
-  // local time, because that is how CIM spells a process's CreationDate, and a comparison of two DateTimes ignores their Kind.
-  it("reads when R1 quit from the update driver's line, as a local time, and says nothing when no line has it", () => {
+  // Runs 6 and 7 of T8.4: a clock cannot tell the new app's daemon from R1's (the driver's "close" fires when the installer finishes, after it has started
+  // the app). The daemon is the new app's only if its parent is the very process U4 pinned: that id, still held by the same image started at the same time.
+  it("takes a daemon for the new app's only when its parent is the pinned process: a reused id, another image, a gone parent or no pin all fail", () => {
     const result = runBody("accept-lib.ps1", String.raw`
       . '${join(installer, "accept-phase3-lib.ps1")}'
-      $quit = Get-R1QuitTime @('R1 downloaded 0.6.0.', 'R1 quit at 2026-11-22T19:30:27.123Z; its installer hand-over has started.')
+      $exe = 'C:\app\Tjommie Update Test.exe'
+      $started = [datetime]'2026-11-22T20:04:47.5'
+      $pin = @{ pid = 5708; created = $started }
+      $daemon = [pscustomobject]@{ ProcessId = 2968; ParentProcessId = 5708 }
+      $other = [pscustomobject]@{ ProcessId = 3000; ParentProcessId = 41 }
+      $live = { param($id) if ($id -eq 5708) { [pscustomobject]@{ ExecutablePath = 'c:\APP\tjommie update test.exe'; CreationDate = $started } } }
+      $reused = { param($id) [pscustomobject]@{ ExecutablePath = $exe; CreationDate = $started.AddMilliseconds(1) } }
+      $imposter = { param($id) [pscustomobject]@{ ExecutablePath = 'C:\app\other.exe'; CreationDate = $started } }
+      $gone = { param($id) $null }
       [ordered]@{
-        utc = $quit.ToUniversalTime().ToString('o'); kind = [string]$quit.Kind
-        noTime = ($null -eq (Get-R1QuitTime @('R1 quit; its installer hand-over has started.'))); empty = ($null -eq (Get-R1QuitTime @()))
+        its      = @(Get-DaemonsNotOfPinnedApp @($daemon) $pin $exe $live)
+        mixed    = @(Get-DaemonsNotOfPinnedApp @($daemon, $other) $pin $exe $live)
+        reused   = @(Get-DaemonsNotOfPinnedApp @($daemon) $pin $exe $reused)
+        imposter = @(Get-DaemonsNotOfPinnedApp @($daemon) $pin $exe $imposter)
+        gone     = @(Get-DaemonsNotOfPinnedApp @($daemon) $pin $exe $gone)
+        nopin    = @(Get-DaemonsNotOfPinnedApp @($daemon) $null $exe $live)
+        none     = @(Get-DaemonsNotOfPinnedApp @() $pin $exe $live)
       } | ConvertTo-Json -Compress
-    `) as { utc: string; kind: string; noTime: boolean; empty: boolean };
-    expect(result).toEqual({ utc: "2026-11-22T19:30:27.1230000Z", kind: "Local", noTime: true, empty: true });
+    `) as Record<"its" | "mixed" | "reused" | "imposter" | "gone" | "nopin" | "none", string[]>;
+    const refused = ["2968 (parent 5708)"];
+    expect(result).toEqual({ its: [], mixed: ["3000 (parent 41)"], reused: refused, imposter: refused, gone: refused, nopin: refused, none: [] });
   });
 
   it("snapshots a tree, finds a file that is gone, changed or added, and adds sentinels of known size", () => {

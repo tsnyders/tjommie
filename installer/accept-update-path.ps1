@@ -100,18 +100,17 @@ Invoke-Step 'U3 R1 finds the update in the local feed, downloads it and quits to
     $updated = Invoke-Phase3Driver @('r1-update', '--install', $installDir, '--feed', $feedDir, '--root', $dataRoot, '--user-data', $userData, '--baseline', $baseline, '--expect-version', $NewVersion)
     Assert-Check ($updated['exitCode'] -eq 0) 'U3: R1 downloaded the update from the feed and quit for it' @($updated['lines'] | Select-Object -Last 10)
     Assert-Check (Test-Path -LiteralPath $baseline) 'U3: the baseline of the data root was taken just before the restart' $baseline
-    # When R1's process ended, as the driver saw it in R1's close handler. Every process of the exe that started after it is the new app's, never R1's (U7).
-    # (Not the time this script regains control: by then the installer, which runs while R1 shuts down, had already started the new app. Run 6.)
-    $quit = Get-R1QuitTime @($updated['lines'])
-    Assert-Check ($null -ne $quit) 'U3: the driver said when R1 quit (the instant U7 tells the new app''s processes from R1''s by)' @($updated['lines'] | Select-Object -Last 4)
-    if ($null -ne $quit) { $state['handover'] = $quit }
 }
 
 Invoke-Step 'U4 the new app runs, started with --updated, and R1 is gone' {
     # The installer's hand-over: R1's processes closed, its uninstaller run, the payload copied, the app started with --updated.
     $started = Wait-Until { @(Get-ProcessesOfExe $newExe | Where-Object { [string]$_.CommandLine -match '--updated' -and [string]$_.CommandLine -notmatch '--type=' }).Count -ge 1 } 240
     Assert-Check $started 'U4: the new exe runs from the install folder, started with --updated' @(Get-ProcessesOfExe $newExe | ForEach-Object { [string]$_.CommandLine })
-    $state['newMain'] = @(Get-ProcessesOfExe $newExe | Where-Object { [string]$_.CommandLine -match '--updated' })
+    # Pin the new app's process, by id and start time: the one process of the new exe the installer started with --updated. U7 holds the daemon's parent to it.
+    # (R1's exe has the same name and path, but R1 was never started with --updated and is gone before the installer copies anything over it.)
+    $mains = @(Get-ProcessesOfExe $newExe | Where-Object { [string]$_.CommandLine -match '--updated' -and [string]$_.CommandLine -notmatch '--type=' })
+    Assert-Check ($mains.Count -eq 1) 'U4: exactly one new-app process was started with --updated, and its id and start time are what U7 holds the daemon''s parent to' @($mains | ForEach-Object { [ordered]@{ id = $_.ProcessId; started = $_.CreationDate.ToString('o'); commandLine = $_.CommandLine } })
+    if ($mains.Count -eq 1) { $state['newMain'] = @{ pid = [int]$mains[0].ProcessId; created = $mains[0].CreationDate } }
     # Telling it from R1: the payload has no Electron file, and is exactly the build job's.
     Test-InstalledPayload $installDir $manifest $test.product 'U4'
     # R1 and the new payload have paths in common (the daemon, the speech files), and those are the new ones now: what must be gone is a file of R1's that
@@ -163,21 +162,19 @@ Invoke-Step 'U7 the app runs the daemon it was installed with, and the data root
     Assert-Check $running 'U7: a daemon runs from the install folder, resources\daemon\tjommie-daemon.exe, though the app was handed none' $daemon
     if ($running) {
         # (Get-ProcessesOfExe compared each process's image path with the installed daemon's, exactly: that is what "runs from the install folder" means here.)
-        # And it is the new app's, not a leftover of R1's: R1's exe has the same name and sits at the same path, so the image alone cannot say which app
-        # a process is. What can: R1 had quit before U3 returned ($state['handover']), so a daemon that started after that instant, under a new-exe
-        # process that started after it, belongs to the new app. (Test-InstalledPayload has shown the bytes on disk are the build's; this shows what runs.)
+        # And it is the new app's, not a leftover of R1's: the image path alone cannot say, since R1's exe has the same name and sits at the same path. Its
+        # parent must be the very process U4 pinned (id, image and start time), so a reused id cannot pass. (Test-InstalledPayload has shown the bytes on
+        # disk are the build's; this shows what runs.)
         $newLong = Get-LongPath $newExe
-        $handover = if ($state.ContainsKey('handover')) { [datetime]$state['handover'] } else { [datetime]::MaxValue }
-        $notTheNewApps = @(Get-ProcessesOfExe $daemon | Where-Object {
-            $parent = Get-CimInstance Win32_Process -Filter "ProcessId = $($_.ParentProcessId)"
-            $ofTheNewApp = $parent -and $parent.ExecutablePath -and ($parent.ExecutablePath -ieq $newLong) -and ($parent.CreationDate -gt $handover) -and ($_.CreationDate -gt $handover)
-            -not $ofTheNewApp
-        } | ForEach-Object { "$($_.ProcessId) (parent $($_.ParentProcessId))" })
-        Assert-Check ($notTheNewApps.Count -eq 0) 'U7: every such daemon was started, after R1 had quit, by the new exe in the install folder' @{ notTheNewApps = $notTheNewApps; handover = $handover.ToString('o') }
-        # What the new app started, found by parent and never by name (no script here looks a process up by its image name): each with its image path, as evidence
-        # of which daemon it ran.
-        $newAppIds = @(Get-ProcessesOfExe $newExe | Where-Object { $_.CreationDate -gt $handover } | ForEach-Object { $_.ProcessId })
-        Add-Note 'U7: the processes the new app started, with the image path of each' @(Get-CimInstance Win32_Process | Where-Object { $newAppIds -contains $_.ParentProcessId } | ForEach-Object { [ordered]@{ id = $_.ProcessId; parent = $_.ParentProcessId; exe = $_.ExecutablePath; started = [string]$_.CreationDate } })
+        $daemons = @(Get-ProcessesOfExe $daemon)
+        $byId = { param($id) Get-CimInstance Win32_Process -Filter "ProcessId = $id" }
+        $notTheNewApps = @(Get-DaemonsNotOfPinnedApp $daemons $state['newMain'] $newLong $byId)
+        Assert-Check ($notTheNewApps.Count -eq 0) 'U7: every such daemon is a child of the --updated process U4 pinned (its id, image path and start time)' @{ notTheNewApps = $notTheNewApps; pinned = $(if ($state['newMain']) { @{ id = $state['newMain']['pid']; started = $state['newMain']['created'].ToString('o') } } else { $null }) }
+        # The evidence of who is who, whether it passed or not: each daemon at the installed path and its parent as it is now.
+        Add-Note 'U7: the daemons at the installed path and their parents' @($daemons | ForEach-Object {
+            $parent = & $byId $_.ParentProcessId
+            [ordered]@{ id = $_.ProcessId; started = [string]$_.CreationDate; parent = $_.ParentProcessId; parentExe = $(if ($parent) { $parent.ExecutablePath }); parentStarted = $(if ($parent) { $parent.CreationDate.ToString('o') }); parentCommandLine = $(if ($parent) { $parent.CommandLine }) }
+        })
     } else { Add-AppDiagnostics $installDir $dataRoot 'U7' }
     Start-Sleep -Seconds 5
     Test-DataRootAsBaseline $dataRoot $baseline $report 'U7' @('routine_failure_notifications')

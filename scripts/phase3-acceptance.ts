@@ -374,13 +374,12 @@ async function r1Update(args: string[]): Promise<void> {
     plantPendingNotice(join(root, "data", "tjommie.db"));
     writeFileSync(required(args, "baseline"), `${JSON.stringify(await snapshotRoot(root), null, 2)}\n`);
     console.error("Baseline written; asking R1 to restart to update.");
-    // The instant R1's process ended, taken in the close handler itself: the PowerShell side (U7) tells the new app's processes from R1's by whether they
-    // started after it. (Run 6: the time this script returns is too late, the installer had already started the new app by then.)
-    let quitAt = new Date();
-    const closed = new Promise<void>((done) => app.once("close", () => { quitAt = new Date(); done(); }));
+    // Playwright reports the close on Node's "close" event, which waits for R1's output pipes too, and the updater's installer inherits them: this fires only
+    // when the installer has finished, after it has started the new app. So it says nothing about when R1 quit, and nothing here is timed by it.
+    const closed = new Promise<void>((done) => app.once("close", () => done()));
     await page.evaluate(() => (globalThis as unknown as Bridge).tjommie.updates.restart());
     await withTimeout(closed, 120_000, "R1 did not quit within 120 seconds of Restart to update.");
-    console.error(`R1 quit at ${quitAt.toISOString()}; its installer hand-over has started.`);
+    console.error("R1 quit and the installer it started has let go of its output.");
   } catch (error) {
     killTree(mainPid);
     throw error;

@@ -217,8 +217,8 @@ describe("the update-path script and the installer script agree", () => {
     // r1-facts.test.ts: that is how a real Tjommie would be reached).
     expect(u7).toContain("Get-ProcessesOfExe $daemon");
     expect(u7).not.toMatch(/Win32_Process[^\n]*Name\s*=/i);
-    expect(u7).toMatch(/Win32_Process -Filter "ProcessId = \$\(\$_\.ParentProcessId\)"/);
-    expect(u7).toMatch(/\$parent\.ExecutablePath -ieq \$newLong/);
+    expect(u7).toContain('Win32_Process -Filter "ProcessId = $id"');
+    expect(u7).toContain("$newLong = Get-LongPath $newExe");
     // The harness side: the driver builds the update-test R1's environment without any daemon.
     const driver = readFileSync(join(repo, "scripts", "phase3-acceptance.ts"), "utf8");
     const env = driver.slice(driver.indexOf("export function r1UpdateEnv"), driver.indexOf("export function", driver.indexOf("export function r1UpdateEnv") + 1));
@@ -240,19 +240,18 @@ describe("the update-path script and the installer script agree", () => {
     expect(production).toContain("'P6'");
   });
 
-  it("on what U7 and U8 can and cannot show: the daemon is the new app's by when it started, and a notification is an inference", () => {
-    // R1's exe has the new exe's name and path, so a daemon is told to be the new app's by starting, under a new-exe process, after R1 had quit (U3). The
-    // instant is the one the driver took in R1's own close handler, never the time U3 regains control (run 6: the installer had started the new app by then).
-    const u3 = update.slice(update.indexOf("Invoke-Step 'U3 "), update.indexOf("Invoke-Step 'U4 "));
-    expect(u3).toContain("Get-R1QuitTime @($updated['lines'])");
-    expect(u3).toContain("$state['handover'] = $quit");
-    expect(u3).not.toContain("Get-Date");
-    const driver = readFileSync(join(repo, "scripts", "phase3-acceptance.ts"), "utf8");
-    expect(driver).toContain('app.once("close", () => { quitAt = new Date(); done(); })');
-    expect(driver).toContain("R1 quit at ${quitAt.toISOString()}");
+  it("on what U7 and U8 can and cannot show: the daemon is a child of the process U4 pinned, with no clock involved, and a notification is an inference", () => {
+    // R1's exe has the new exe's name and path. U4 pins the one --updated process by id and start time; U7 holds the daemon's parent to it. Runs 6 and 7: a
+    // time taken from the driver was always late, because Playwright's close waits for the installer that inherits R1's pipes.
+    const u4 = update.slice(update.indexOf("Invoke-Step 'U4 "), update.indexOf("Invoke-Step 'U5 "));
+    expect(u4).toContain("$mains.Count -eq 1");
+    expect(u4).toContain("$state['newMain'] = @{ pid = [int]$mains[0].ProcessId; created = $mains[0].CreationDate }");
     const u7 = update.slice(update.indexOf("Invoke-Step 'U7 "), update.indexOf("Invoke-Step 'U8 "));
-    expect(u7).toContain("$parent.CreationDate -gt $handover");
-    expect(u7).toContain("$_.CreationDate -gt $handover");
+    expect(u7).toContain("Get-DaemonsNotOfPinnedApp $daemons $state['newMain'] $newLong $byId");
+    for (const part of ["handover", "Get-Date", "CreationDate -gt", "Get-R1QuitTime"]) expect(update, part).not.toContain(part);
+    const lib = codeOf(join(installer, "accept-phase3-lib.ps1"));
+    expect(lib).toContain("$parent.CreationDate -eq $Pin['created']");
+    expect(lib).toContain("$parent.ExecutablePath -ieq $ExeLongPath");
     const u8 = update.slice(update.indexOf("Invoke-Step 'U8 "), update.indexOf("Invoke-Step 'U9 "));
     expect(u8).toContain("is an inference from the app''s contract");
   });

@@ -23,16 +23,19 @@ function Invoke-Phase3Driver([string[]]$Arguments) {
     return [ordered]@{ exitCode = $code; lines = $lines; json = $json }
 }
 
-# When R1 quit, from the line the update driver prints in R1's close handler ("R1 quit at 2026-11-22T19:30:27.123Z; ..."): as a local time, which is how
-# CIM spells a process's CreationDate, or $null when no line says. This is the instant before which every process of the exe may be R1's, and after
-# which none is (the installer cannot copy over a running exe, and starts the new app only after the copy).
-function Get-R1QuitTime([string[]]$Lines) {
-    foreach ($line in $Lines) {
-        if ($line -match 'R1 quit at (\d{4}-\d{2}-\d{2}T[\d:.]+Z)') {
-            return ([datetimeoffset]::Parse($Matches[1], [Globalization.CultureInfo]::InvariantCulture)).LocalDateTime
+# The daemons that are NOT the children of the pinned new app, as "<pid> (parent <pid>)". $Pin is what U4 recorded of the one process of the new exe that was
+# started with --updated: @{ pid; created } (or $null: then no daemon is its). A daemon is the app's only if its parent id is the pinned id AND the process that
+# holds that id now is still the pinned one: the same image and the same start time (CIM gives a process's start time exactly, so a reused id cannot pass).
+# No clock of one process is compared with another's, and nothing is said about when R1 quit. $ProcessById looks up a live process by its id.
+function Get-DaemonsNotOfPinnedApp([object[]]$Daemons, $Pin, [string]$ExeLongPath, [scriptblock]$ProcessById) {
+    return @($Daemons | Where-Object {
+        $mine = $false
+        if (($null -ne $Pin) -and ([int]$_.ParentProcessId -eq [int]$Pin['pid'])) {
+            $parent = & $ProcessById ([int]$_.ParentProcessId)
+            $mine = ($null -ne $parent) -and $parent.ExecutablePath -and ($parent.ExecutablePath -ieq $ExeLongPath) -and ($parent.CreationDate -eq $Pin['created'])
         }
-    }
-    return $null
+        -not $mine
+    } | ForEach-Object { "$($_.ProcessId) (parent $($_.ParentProcessId))" })
 }
 
 # The processes whose executable is exactly $Exe, with their command lines (CIM is where Windows keeps them). $Exe is taken to its long form,
