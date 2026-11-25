@@ -528,7 +528,7 @@ impl Shared {
 /// ([`daemon_process::daemon_exe_for`] has the rule, with its tests).
 fn daemon_exe(identity: &Identity, env: &[(String, String)]) -> Result<PathBuf, String> {
     let exe = std::env::current_exe().map_err(|error| error.to_string())?;
-    daemon_process::daemon_exe_for(identity.kind, &exe, env, Path::exists)
+    daemon_process::daemon_exe_for(identity, &exe, env, Path::exists)
         .map_err(|error| error.to_string())
 }
 
@@ -559,6 +559,8 @@ pub fn start(identity: Identity, root: PathBuf, cx: &mut App) {
     } else {
         match daemon_exe(&identity, &env) {
             Ok(exe) => {
+                // The crash log names the daemon's build too, so a failure of it can be matched to its PDB.
+                desktop_host::crash::note_exe(&exe);
                 let (_, idle) = watch::channel(DaemonState::Starting);
                 Daemon::Supervised {
                     launch: Box::new(move || DaemonLaunch::new(exe.clone(), env.clone())),
