@@ -523,19 +523,13 @@ impl Shared {
     }
 }
 
-/// The exe the daemon runs from, or why there is none: the bundled one in a production build, otherwise
-/// `TJOMMIE_DAEMON_EXE` or the debug build in this exe's target folder.
+/// The exe the daemon runs from, or why there is none: the bundled one in a packaged app (production, and the update test
+/// app the same installer installs), otherwise `TJOMMIE_DAEMON_EXE` or the debug build in this exe's target folder
+/// ([`daemon_process::daemon_exe_for`] has the rule, with its tests).
 fn daemon_exe(identity: &Identity, env: &[(String, String)]) -> Result<PathBuf, String> {
     let exe = std::env::current_exe().map_err(|error| error.to_string())?;
-    let folder = exe.parent().unwrap_or(Path::new("."));
-    if identity.kind == Kind::Production {
-        return Ok(daemon_process::packaged_daemon_path(
-            &folder.join("resources"),
-        ));
-    }
-    // target\debug\tjommie-desktop.exe: the repo is three folders up from the exe's.
-    let repo = folder.ancestors().nth(3).unwrap_or(folder);
-    daemon_process::daemon_command(env, None, repo, Path::exists).map_err(|error| error.to_string())
+    daemon_process::daemon_exe_for(identity, &exe, env, Path::exists)
+        .map_err(|error| error.to_string())
 }
 
 /// Starts the live connection: the runtime, the daemon (or the dev daemon), the connection, its timers, and the feed into
@@ -565,6 +559,8 @@ pub fn start(identity: Identity, root: PathBuf, cx: &mut App) {
     } else {
         match daemon_exe(&identity, &env) {
             Ok(exe) => {
+                // The crash log names the daemon's build too, so a failure of it can be matched to its PDB.
+                desktop_host::crash::note_exe(&exe);
                 let (_, idle) = watch::channel(DaemonState::Starting);
                 Daemon::Supervised {
                     launch: Box::new(move || DaemonLaunch::new(exe.clone(), env.clone())),

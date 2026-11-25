@@ -4,18 +4,32 @@
 //! `--hidden --after-crash` once it has run 60 s; the daemon, the app's child, exits with it and restarts with it.
 //! A panic inside `catching` (the UI guard) is logged as caught and unwinds to its caller instead, and a panic on any
 //! other thread is logged and unwinds that thread.
+//!
+//! Each entry also says which build wrote it, so the log can be read again later, on another PC, against the release's PDBs
+//! (`Tjommie-<version>-symbols.zip`): a `modules:` block with each exe's file name, where the running one loaded (`base`),
+//! its size, its PE timestamp and its PDB's name, GUID and age (the build id, from `build_id`); and a `stack:` line with the
+//! return addresses of the panic's thread, written `<exe>+0x<offset from base>` for the frames inside the running exe and
+//! as plain addresses for the rest. The offsets and the build id are all a symboliser needs (`docs/DEVELOPMENT.md`).
 
 use std::backtrace::Backtrace;
 use std::cell::Cell;
+use std::ffi::c_void;
 use std::panic::{AssertUnwindSafe, PanicHookInfo};
 use std::path::Path;
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
+use windows::Win32::System::Diagnostics::Debug::RtlCaptureStackBackTrace;
+use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Recovery::{
     RESTART_NO_PATCH, RESTART_NO_REBOOT, RegisterApplicationRestart,
 };
 use windows::core::w;
+
+use crate::build_id::{self, BuildId};
+
+/// How many return addresses an entry keeps; the deepest frames of a UI thread are the OS's.
+const STACK_FRAMES: usize = 48;
 
 thread_local! {
     /// How many `catching` calls are running on this thread. A panic under one is caught, not a crash.
@@ -34,6 +48,93 @@ type Recent = Vec<(String, Instant, u32)>;
 
 static RECENT: Mutex<Recent> = Mutex::new(Vec::new());
 
+/// One exe an entry names.
+struct Module {
+    /// The file name, never the folder.
+    name: String,
+    /// Where the running exe loaded; `None` for an exe the app runs as another process, whose base only it knows.
+    base: Option<usize>,
+    /// `None` when the file is no PE or can't be read.
+    id: Option<BuildId>,
+}
+
+static MODULES: Mutex<Vec<Module>> = Mutex::new(Vec::new());
+
+/// Names an exe the app runs as another process (the daemon) in every entry, by its build id, so a failure of that process
+/// can be matched to its PDB too. Its load base is unknown here and left out. Reads the file's headers, so call it off a hot
+/// path, once per exe.
+pub fn note_exe(path: &Path) {
+    record(path, None);
+}
+
+fn record(path: &Path, base: Option<usize>) {
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let module = Module {
+        id: build_id::read(path),
+        name,
+        base,
+    };
+    let mut modules = MODULES.lock().unwrap_or_else(PoisonError::into_inner);
+    modules.retain(|known| known.name != module.name);
+    modules.push(module);
+}
+
+/// The running exe, with the address Windows loaded it at.
+fn record_running_exe() {
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    // SAFETY: `None` asks for the module of the file that started this process, which stays loaded for its whole life.
+    let base = unsafe { GetModuleHandleW(None) }
+        .ok()
+        .map(|module| module.0.addr());
+    record(&exe, base);
+}
+
+/// The `modules:` block, one line per exe.
+fn modules_block(modules: &[Module]) -> String {
+    let mut block = String::from("modules:\n");
+    for module in modules {
+        block.push_str(&format!("  {}", module.name));
+        match module.base {
+            Some(base) => block.push_str(&format!(" base=0x{base:016x}")),
+            None => block.push_str(" (another process)"),
+        }
+        match &module.id {
+            Some(id) => block.push_str(&format!(" {}\n", id.describe())),
+            None => block.push_str(" (no build id)\n"),
+        }
+    }
+    block
+}
+
+/// The `stack:` line: the return addresses of this thread, the ones inside a module with a known base as `name+0xoffset`.
+fn stack_line(modules: &[Module]) -> String {
+    let mut frames = [std::ptr::null_mut::<c_void>(); STACK_FRAMES];
+    // SAFETY: `frames` has the `STACK_FRAMES` slots the call may fill, and it returns how many it filled.
+    let count = unsafe { RtlCaptureStackBackTrace(0, &mut frames, None) };
+    let named: Vec<String> = frames
+        .iter()
+        .take(usize::from(count))
+        .map(|frame| {
+            let address = frame.addr();
+            let inside = modules.iter().find_map(|module| {
+                let base = module.base?;
+                let size = usize::try_from(module.id.as_ref()?.size_of_image).ok()?;
+                (address >= base && address - base < size).then(|| (&module.name, address - base))
+            });
+            match inside {
+                Some((name, offset)) => format!("{name}+0x{offset:x}"),
+                None => format!("0x{address:x}"),
+            }
+        })
+        .collect();
+    format!("stack: {}\n", named.join(" "))
+}
+
 /// Runs `f` and catches a panic in it, which the hook logs as caught instead of crashing the app.
 pub fn catching<R>(f: impl FnOnce() -> R) -> std::thread::Result<R> {
     CATCHING.with(|depth| depth.set(depth.get() + 1));
@@ -46,6 +147,7 @@ pub fn catching<R>(f: impl FnOnce() -> R) -> std::thread::Result<R> {
 pub fn install(root: &Path) {
     let file = root.join("logs").join("desktop-crash.log");
     UI_THREAD.with(|ui| ui.set(true));
+    record_running_exe();
     std::panic::set_hook(Box::new(move |info| {
         let kind = if CATCHING.try_with(|depth| depth.get() > 0).unwrap_or(false) {
             "caught panic"
@@ -105,11 +207,14 @@ fn entry(info: &PanicHookInfo<'_>, kind: &str, skipped: u32) -> String {
         0 => String::new(),
         n => format!("({n} more from there since the last entry)\n"),
     };
+    let modules = MODULES.lock().unwrap_or_else(PoisonError::into_inner);
     format!(
-        "{} Tjommie {} {kind} in thread '{}': {info}\n{skipped}{}\n",
+        "{} Tjommie {} {kind} in thread '{}': {info}\n{skipped}{}{}{}\n",
         jiff::Timestamp::now(),
         env!("CARGO_PKG_VERSION"),
         thread.name().unwrap_or("unnamed"),
+        modules_block(&modules),
+        stack_line(&modules),
         Backtrace::force_capture(),
     )
 }
@@ -218,5 +323,129 @@ mod tests {
                 && at("planted background panic") < at("planted crash"),
             "{log}"
         );
+        names_the_build(&log);
+    }
+
+    /// The crash entry's `modules:` block and `stack:` line carry what a later symbolisation needs, and they are right:
+    /// DbgHelp, given only the logged base, the exe and the PDB beside it, names this test's own frame from the logged offsets.
+    fn names_the_build(log: &str) {
+        let exe = std::env::current_exe().unwrap();
+        let exe_name = exe.file_name().unwrap().to_string_lossy().into_owned();
+        // Everything from the crash entry on (the crash is the last entry).
+        let crash = log
+            .split_once(" crash in thread '")
+            .expect("a crash entry")
+            .1;
+        let id = build_id::read(&exe).expect("this test binary has a build id");
+        // The line of the running exe: its base, then the build id exactly as the file's headers give it.
+        let line = crash
+            .lines()
+            .find(|line| line.starts_with(&format!("  {exe_name} base=0x")))
+            .unwrap_or_else(|| panic!("no module line for {exe_name}: {crash}"));
+        let base = usize::from_str_radix(
+            line.split(" base=0x")
+                .nth(1)
+                .unwrap()
+                .split(' ')
+                .next()
+                .unwrap(),
+            16,
+        )
+        .unwrap();
+        assert!(
+            line.ends_with(&id.describe()),
+            "{line} vs {}",
+            id.describe()
+        );
+        // Only file names: no folder of this machine, the PDB's included.
+        let pdb = id.pdb.as_ref().expect("a PDB");
+        assert!(
+            !line.contains(['\\', '/']) && line.contains(&pdb.guid),
+            "{line}"
+        );
+        // Every entry of the log has them, the caught ones too.
+        assert_eq!(log.matches("modules:\n").count(), 3, "{log}");
+        assert_eq!(log.matches("\nstack: ").count(), 3, "{log}");
+
+        let stack = crash
+            .lines()
+            .find_map(|line| line.strip_prefix("stack: "))
+            .expect("a stack line");
+        let offsets: Vec<usize> = stack
+            .split(' ')
+            .filter_map(|frame| frame.strip_prefix(&format!("{exe_name}+0x")))
+            .filter_map(|offset| usize::from_str_radix(offset, 16).ok())
+            .collect();
+        assert!(offsets.len() >= 3, "frames inside the exe: {stack}");
+        assert!(
+            offsets
+                .iter()
+                .all(|offset| *offset < id.size_of_image as usize),
+            "{stack}"
+        );
+        // A return address points after its call, so the call itself is one byte before.
+        let names = symbolise(
+            &exe,
+            base,
+            id.size_of_image,
+            offsets.iter().map(|o| base + o - 1),
+        );
+        assert!(
+            names.iter().any(|name| name.contains("hook_writes_log")),
+            "no frame of this test in {names:?} (from {stack})"
+        );
+    }
+
+    /// The names DbgHelp gives `addresses` in `exe` loaded at `base`, found through the PDB in the exe's folder. A handle
+    /// of its own keeps this away from the one the standard library's backtraces use.
+    fn symbolise(
+        exe: &Path,
+        base: usize,
+        size: u32,
+        addresses: impl Iterator<Item = usize>,
+    ) -> Vec<String> {
+        use std::os::windows::ffi::OsStrExt as _;
+        use windows::Win32::Foundation::HANDLE;
+        use windows::Win32::System::Diagnostics::Debug::{
+            SLMFLAG_NONE, SYMBOL_INFOW, SymCleanup, SymFromAddrW, SymInitializeW, SymLoadModuleExW,
+        };
+        use windows::core::PCWSTR;
+
+        const NAME_CHARS: usize = 512;
+        let wide =
+            |path: &Path| -> Vec<u16> { path.as_os_str().encode_wide().chain(Some(0)).collect() };
+        let process = HANDLE(0x5eed_usize as *mut c_void);
+        let (exe_wide, search) = (wide(exe), wide(exe.parent().unwrap()));
+        let mut names = Vec::new();
+        // SAFETY: the wide strings end in NUL and outlive the calls; the symbol buffer holds a `SYMBOL_INFOW` and
+        // `NAME_CHARS` name characters, 8-byte aligned, as `SizeOfStruct` and `MaxNameLen` say; the session is cleaned up.
+        unsafe {
+            SymInitializeW(process, PCWSTR(search.as_ptr()), false).unwrap();
+            let loaded = SymLoadModuleExW(
+                process,
+                None,
+                PCWSTR(exe_wide.as_ptr()),
+                PCWSTR::null(),
+                base as u64,
+                size,
+                None,
+                Some(SLMFLAG_NONE),
+            );
+            assert_ne!(loaded, 0, "DbgHelp could not load {}", exe.display());
+            for address in addresses {
+                let mut buffer =
+                    vec![0u64; (size_of::<SYMBOL_INFOW>() + NAME_CHARS * 2).div_ceil(8)];
+                let info = buffer.as_mut_ptr().cast::<SYMBOL_INFOW>();
+                (*info).SizeOfStruct = size_of::<SYMBOL_INFOW>() as u32;
+                (*info).MaxNameLen = NAME_CHARS as u32;
+                if SymFromAddrW(process, address as u64, None, info).is_ok() {
+                    let name =
+                        std::slice::from_raw_parts((*info).Name.as_ptr(), (*info).NameLen as usize);
+                    names.push(String::from_utf16_lossy(name));
+                }
+            }
+            SymCleanup(process).unwrap();
+        }
+        names
     }
 }

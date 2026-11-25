@@ -5,6 +5,7 @@
 - The browser panel slides open with the live page moving with it.
 - Paired devices and the panel use the same live view of an agent's browser.
 - If Windows can't keep the Logins window out of screenshots and screen sharing, the window won't take a login.
+- The crash log (`desktop-crash.log`) now says which build wrote each entry, so a report can be matched to that release's debugging symbols.
 - File previews don't have search yet, a password-protected PDF can't be opened in the preview, a Markdown file's images aren't shown beside it, and an animated GIF or WebP image isn't previewed; use Download to open the file in another app.
 - A PDF preview that takes more than half a minute to open or to show a page stops and offers Download instead.
 

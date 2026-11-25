@@ -5,15 +5,11 @@
 #![cfg(feature = "test-driver")]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use std::path::PathBuf;
+mod common;
 
+use common::daemon_exe;
 use desktop::test_driver::{Client, Predicate};
 use desktop_host::{identity, owner_safety};
-
-/// The debug daemon the app starts: beside the app in the same target folder.
-pub fn daemon_exe() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_tjommie-desktop")).with_file_name("tjommie-daemon.exe")
-}
 
 #[test]
 fn e2e_live_connects_to_its_own_daemon() {
@@ -27,7 +23,14 @@ fn e2e_live_connects_to_its_own_daemon() {
         "build the daemon first: cargo build -p daemon --bin tjommie-daemon --locked"
     );
     let root = owner_safety::test_root().unwrap();
-    let mut app = Client::launch(env!("CARGO_BIN_EXE_tjommie-desktop"), root.path()).unwrap();
+    // The daemon is named, not found by its place beside the app: an exe the override launched from another folder has no
+    // target folder around it to look in.
+    let mut app = Client::launch_with(
+        &common::desktop_exe(),
+        root.path(),
+        &[("TJOMMIE_DAEMON_EXE", daemon_exe().to_str().unwrap())],
+    )
+    .unwrap();
 
     // Connected: the route's screen shows, and the connection screen is gone. Watched from launch, the first start never
     // says the service keeps stopping on its way up (M5 re-review finding 5: the connection's first read could beat
@@ -67,7 +70,7 @@ fn e2e_live_without_a_daemon_still_opens_and_says_why() {
     let root = owner_safety::test_root().unwrap();
     let missing = root.path().join("no-daemon-here.exe");
     let mut app = Client::launch_with(
-        env!("CARGO_BIN_EXE_tjommie-desktop"),
+        &common::desktop_exe(),
         root.path(),
         &[("TJOMMIE_DAEMON_EXE", missing.to_str().unwrap())],
     )

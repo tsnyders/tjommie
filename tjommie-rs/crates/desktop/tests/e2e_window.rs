@@ -3,6 +3,8 @@
 #![cfg(feature = "test-driver")]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+mod common;
+
 use std::time::{Duration, Instant};
 
 use desktop::test_driver::{Client, Predicate, UiBounds, current_user_sid};
@@ -24,7 +26,7 @@ fn e2e_window() {
         "build the e2e app: TJOMMIE_IDENTITY=e2e"
     );
     let root = owner_safety::test_root().unwrap();
-    let mut app = Client::launch(env!("CARGO_BIN_EXE_tjommie-desktop"), root.path()).unwrap();
+    let mut app = Client::launch(&common::desktop_exe(), root.path()).unwrap();
 
     // The first frame: the root holds focus, and the wordmark reads "Tjommie" from the semantic tree.
     app.wait("sidebar.wordmark", Predicate::Exists, 30_000)
