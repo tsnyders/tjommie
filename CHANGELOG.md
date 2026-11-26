@@ -3,7 +3,7 @@
 ## Unreleased
 
 - Tjommie is now a native Windows app, written in Rust, and a much smaller download. Your agents, chats, settings and logins carry over.
-- Tjommie has a new look, the Aegis design: a sidebar, a composer card, and agents that blink, narrow their eyes while they work and glance at what you type. These small animations stop while the window is not in front.
+- Tjommie has a new look, the Aegis design: a sidebar, a composer card, and agents that blink, narrow their eyes and look from side to side while they work, and look up while they wait for you. Their eyes keep still while the window is not in front.
 - In a narrow window the sidebar shrinks to icons, and the browser panel and exchanges open over the chat instead of beside it.
 - If Tjommie closes unexpectedly after running for at least a minute, Windows starts it again, and Tjommie tells you.
 - An agent's browser now starts only when it is used, and rests while it is hidden.
@@ -12,10 +12,9 @@
 - If you update from a version before 0.5.1, your paired PCs and appearance settings don't carry over: pair again and choose them again.
 - Dictation now listens on the Windows default microphone; you can't choose another microphone in Tjommie in this version.
 - Screen readers can't read the new app yet. Every control can be reached with the keyboard.
-- The browser panel slides open with the live page moving with it.
+- The browser panel slides open with the live page moving with it; on a busy PC a still picture of the page slides instead.
 - Paired devices and the panel use the same live view of an agent's browser.
 - If Windows can't keep the Logins window out of screenshots and screen sharing, the window won't take a login.
-- The crash log (`desktop-crash.log`) now says which build wrote each entry, so a report can be matched to that release's debugging symbols.
 - File previews don't have search yet, a password-protected PDF can't be opened in the preview, a Markdown file's images aren't shown beside it, and an animated GIF or WebP image isn't previewed; use Download to open the file in another app.
 - A PDF preview that takes more than half a minute to open or to show a page stops and offers Download instead.
 
