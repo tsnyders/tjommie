@@ -1,14 +1,13 @@
 //! T2.1 Credential Manager parity with `account-credentials.ts`, `vault-storage.ts`, `remote-identity.ts` and
 //! `relay-identity.ts` as 0.4.2 shipped them: the target names, blob encoding and entry shape are pinned by
 //! `fixtures/compat/credential-entries.json` (captured from the TypeScript modules), so no Node runs here. Tests that
-//! touch Credential Manager use one random test namespace, refuse the production namespace, clean up by namespace, and
-//! fail if any other `Tjommie/*` target changed or was left behind.
+//! touch Credential Manager use one random test namespace, refuse the production namespace, and list and clean up only
+//! that namespace, so that no entry of the owner's is ever read.
 #![cfg(windows)]
 
 use daemon::spawn;
 use daemon::win::cred::{self, CredentialError, Namespace, validate_api_key};
 use serde_json::Value;
-use std::collections::BTreeMap;
 use std::os::windows::ffi::OsStrExt;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::path::{Path, PathBuf};
@@ -301,46 +300,14 @@ fn credential_manager_entries_have_the_shape_typescript_0_4_2_wrote() {
         production.long(),
         "refusing the production namespace"
     );
-    let mine = |target: &str| {
-        target.starts_with(&format!("Tjommie/{}/", ns.short()))
-            || target.starts_with(&format!("Tjommie/{}/", ns.long()))
-    };
 
-    let before = snapshot();
     let result = catch_unwind(AssertUnwindSafe(|| cases(&ns)));
     let removed = cleanup(&ns);
-    let after = snapshot();
-
-    let outside = |map: &BTreeMap<String, u64>| -> BTreeMap<String, u64> {
-        map.iter()
-            .filter(|(target, _)| !mine(target))
-            .map(|(t, w)| (t.clone(), *w))
-            .collect()
-    };
-    eprintln!(
-        "Credential Manager snapshot: before {} Tjommie/* targets ({} outside the test namespace), after {} ({} outside); \
-         test namespace {} / {}: {} left behind and removed by cleanup",
-        before.len(),
-        outside(&before).len(),
-        after.len(),
-        outside(&after).len(),
-        ns.short(),
-        ns.long(),
-        removed
-    );
     if let Err(panic) = result {
         resume_unwind(panic);
     }
-    assert!(
-        after.keys().all(|target| !mine(target)),
-        "test targets were left behind"
-    );
     assert_eq!(removed, 0, "every case must clean up after itself");
-    assert_eq!(
-        outside(&before),
-        outside(&after),
-        "a Tjommie/* target outside the test namespace changed"
-    );
+    assert_eq!(cleanup(&ns), 0, "test targets were left behind");
 }
 
 /// `fixtures/compat/credential-entries.json`, as a value.
@@ -417,6 +384,10 @@ fn cases(ns: &Namespace) {
     );
     cred::write(&target, blob).unwrap();
     assert_eq!(cred::read(&target).unwrap().as_deref(), Some(blob));
+    assert!(
+        enumerate(ns.short()).contains(&target),
+        "the cleanup's listing sees this namespace"
+    );
     let login = entry(&target).unwrap();
     assert_eq!(login.blob, blob.as_bytes());
     assert_eq!(login.metadata, metadata);
@@ -424,18 +395,17 @@ fn cases(ns: &Namespace) {
     assert_eq!(cred::read(&target).unwrap(), None);
 }
 
-/// Every `Tjommie/*` target and its LastWritten time. Blobs are never looked at.
-fn snapshot() -> BTreeMap<String, u64> {
-    enumerate("Tjommie/*").into_iter().collect()
-}
-
-fn enumerate(filter: &str) -> Vec<(String, u64)> {
+/// The targets under one namespace of this test's own (`Namespace::short` or `long`). The filter is that namespace's
+/// prefix, so Windows returns no other entry: the owner's credentials are never listed.
+fn enumerate(namespace: &str) -> Vec<String> {
+    assert!(matches!(namespace.len(), 24 | 32) && namespace.bytes().all(|b| b.is_ascii_hexdigit()));
+    let filter = format!("Tjommie/{namespace}/*");
     let mut count = 0u32;
     let mut list: *mut *mut CREDENTIALW = std::ptr::null_mut();
     // SAFETY: CredEnumerateW fills `count` and `list`; the list is freed once with CredFree.
     credman::locked(|| unsafe {
-        // Only "no matching targets" is empty; any other failure would make the before/after check pass vacuously.
-        if let Err(error) = CredEnumerateW(&HSTRING::from(filter), None, &mut count, &mut list) {
+        // Only "no matching targets" is empty; any other failure would make the left-behind check pass vacuously.
+        if let Err(error) = CredEnumerateW(&HSTRING::from(&filter), None, &mut count, &mut list) {
             assert_eq!(
                 error.code(),
                 ERROR_NOT_FOUND.to_hresult(),
@@ -445,12 +415,7 @@ fn enumerate(filter: &str) -> Vec<(String, u64)> {
         }
         let found = std::slice::from_raw_parts(list, count as usize)
             .iter()
-            .map(|&c| {
-                let c = &*c;
-                let written = (u64::from(c.LastWritten.dwHighDateTime) << 32)
-                    | u64::from(c.LastWritten.dwLowDateTime);
-                (c.TargetName.to_string().unwrap(), written)
-            })
+            .map(|&c| (*c).TargetName.to_string().unwrap())
             .collect();
         CredFree(list as *const _);
         found
@@ -460,8 +425,8 @@ fn enumerate(filter: &str) -> Vec<(String, u64)> {
 /// Deletes whatever is left in the test namespace (only it) and says how many it removed.
 fn cleanup(ns: &Namespace) -> usize {
     let mut removed = 0;
-    for prefix in [ns.short(), ns.long()] {
-        for (target, _) in enumerate(&format!("Tjommie/{prefix}/*")) {
+    for namespace in [ns.short(), ns.long()] {
+        for target in enumerate(namespace) {
             cred::delete(&target).unwrap();
             removed += 1;
         }

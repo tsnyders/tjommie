@@ -48,6 +48,9 @@ windows = { version = "0.62.2", features = [
 [dev-dependencies]
 # View tests: GPUI's TestAppContext.
 gpui = { workspace = true, features = ["test-support"] }
+# The keyboard e2e lists the credentials of its own temp root's namespaces (never all of them), under the shared lock.
+credman = { path = "../credman" }
+windows = { version = "0.62.2", features = ["Win32_Security_Credentials"] }
 
 [[bin]]
 name = "tjommie-desktop"
