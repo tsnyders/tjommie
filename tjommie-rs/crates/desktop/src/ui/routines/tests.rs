@@ -8,7 +8,9 @@ use protocol::wire::method;
 
 use crate::model::testing::FakeRpc;
 use crate::ui::shell::route::Route;
-use crate::ui::testing::{app, bot, click, dialog_fits, draw, ids, node, state, text};
+use crate::ui::testing::{
+    app, bot, click, dialog_fits, dialog_fits_with_problem, draw, ids, node, state, text,
+};
 
 fn routine(id: &str, bot_id: &str, name: &str, enabled: bool) -> Routine {
     Routine {
@@ -241,17 +243,26 @@ fn at_1000_by_600_the_routine_editors_footer_stays_in_the_window(cx: &mut TestAp
 }
 
 /// The dialog fit (every dialog's check): the routine editor, editing (Delete, Cancel and Save) and new (Cancel and
-/// Save), at 1000 x 600 and at 360 x 600.
+/// Save), and after a failed save of each, why above the actions (release review m2 and m4: at 360 wide it was squeezed
+/// between Delete and Cancel).
 #[gpui::test]
 fn dialog_fits_the_routine_editor(cx: &mut TestAppContext) {
     let rpc = FakeRpc::new().on::<method::RoutinesRuns>(|_| Ok(vec![]));
     let (cx, _) = app(cx, Route::Routines, two_agents(), rpc);
     click(cx, "routines.b1.r1");
-    dialog_fits(cx, &["routine.delete", "routine.cancel", "routine.save"]);
+    let editing = ["routine.delete", "routine.cancel", "routine.save"];
+    dialog_fits(cx, &editing);
+    // The fake has no routines.update: the save fails.
+    click(cx, "routine.save");
+    dialog_fits_with_problem(cx, "routine.problem", &editing);
     click(cx, "routine.cancel");
     click(cx, "routines.b2.add");
     assert_eq!(text("dialog.title"), "New routine");
-    dialog_fits(cx, &["routine.cancel", "routine.save"]);
+    let new = ["routine.cancel", "routine.save"];
+    dialog_fits(cx, &new);
+    // Empty, it says what it is missing.
+    click(cx, "routine.save");
+    dialog_fits_with_problem(cx, "routine.problem", &new);
 }
 
 /// At 1000 x 600 the routine editor's body scrolls between its title and its footer: Tab brings each control it

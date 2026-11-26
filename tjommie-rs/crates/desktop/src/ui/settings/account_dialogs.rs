@@ -302,14 +302,14 @@ pub(super) fn open_add_subscription(
                         Role::Paragraph,
                         note,
                         cx,
-                    )))
-                    .children(
-                        state
-                            .form
-                            .problem
-                            .clone()
-                            .map(|said| problem("account_form.problem", said, cx)),
-                    ),
+                    ))),
+            )
+            .problem(
+                state
+                    .form
+                    .problem
+                    .clone()
+                    .map(|said| problem("account_form.problem", said, cx)),
             )
             .footer(buttons("Add and sign in", false, ready, save, cx))
     });
@@ -476,14 +476,14 @@ pub(super) fn open_add_key(
                     .child(name_field(&state.name, cx))
                     .child(key_field(provider, &state.key, state.shown, show, cx))
                     .child(cap_field(&state.cap, None, cx))
-                    .child(fallback)
-                    .children(
-                        state
-                            .form
-                            .problem
-                            .clone()
-                            .map(|said| problem("account_form.problem", said, cx)),
-                    ),
+                    .child(fallback),
+            )
+            .problem(
+                state
+                    .form
+                    .problem
+                    .clone()
+                    .map(|said| problem("account_form.problem", said, cx)),
             )
             .footer(buttons("Add key", false, ready, save, cx))
     });
@@ -608,18 +608,19 @@ pub(super) fn open_replace_key(
             .title(title("Replace key", cx))
             // unguarded: returns a constant, nothing in it can panic
             .on_ok(|_, _, _| false)
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .child(key_field(provider, &state.key, state.shown, show, cx))
-                    .children(
-                        state
-                            .form
-                            .problem
-                            .clone()
-                            .map(|said| problem("account_form.problem", said, cx)),
-                    ),
+            .child(div().flex().flex_col().child(key_field(
+                provider,
+                &state.key,
+                state.shown,
+                show,
+                cx,
+            )))
+            .problem(
+                state
+                    .form
+                    .problem
+                    .clone()
+                    .map(|said| problem("account_form.problem", said, cx)),
             )
             .footer(buttons("Save key", false, ready, save, cx))
     });
@@ -694,14 +695,14 @@ pub(super) fn open_cap(
                 div()
                     .flex()
                     .flex_col()
-                    .child(cap_field(&state.cap, below, cx))
-                    .children(
-                        state
-                            .form
-                            .problem
-                            .clone()
-                            .map(|said| problem("account_form.problem", said, cx)),
-                    ),
+                    .child(cap_field(&state.cap, below, cx)),
+            )
+            .problem(
+                state
+                    .form
+                    .problem
+                    .clone()
+                    .map(|said| problem("account_form.problem", said, cx)),
             )
             .footer(buttons("Save", false, ready, save, cx))
     });
@@ -764,18 +765,13 @@ pub(super) fn open_rename(
             .title(title("Rename account", cx))
             // unguarded: returns a constant, nothing in it can panic
             .on_ok(|_, _, _| false)
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .child(name_field(&state.name, cx))
-                    .children(
-                        state
-                            .form
-                            .problem
-                            .clone()
-                            .map(|said| problem("account_form.problem", said, cx)),
-                    ),
+            .child(div().flex().flex_col().child(name_field(&state.name, cx)))
+            .problem(
+                state
+                    .form
+                    .problem
+                    .clone()
+                    .map(|said| problem("account_form.problem", said, cx)),
             )
             .footer(buttons("Save", false, ready, save, cx))
     });
@@ -883,23 +879,18 @@ pub(super) fn open_remove(
             .title(title(format!("Remove {name}?"), cx))
             // unguarded: returns a constant, nothing in it can panic
             .on_ok(|_, _, _| false)
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .child(line(
-                        "account_form.note",
-                        Role::Paragraph,
-                        format!("{what} Usage history stays."),
-                        cx,
-                    ))
-                    .children(
-                        state
-                            .form
-                            .problem
-                            .clone()
-                            .map(|said| problem("account_form.problem", said, cx)),
-                    ),
+            .child(div().flex().flex_col().child(line(
+                "account_form.note",
+                Role::Paragraph,
+                format!("{what} Usage history stays."),
+                cx,
+            )))
+            .problem(
+                state
+                    .form
+                    .problem
+                    .clone()
+                    .map(|said| problem("account_form.problem", said, cx)),
             )
             .footer(buttons("Remove", true, !state.form.busy, save, cx))
     });

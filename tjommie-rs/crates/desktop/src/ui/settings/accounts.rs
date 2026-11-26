@@ -1344,7 +1344,9 @@ mod tests {
     use crate::model::state::AppState;
     use crate::model::testing::FakeRpc;
     use crate::ui::shell::route::{AccountAction, Route, Section};
-    use crate::ui::testing::{app, bot, click, dialog_fits, draw, ids, node, state, text};
+    use crate::ui::testing::{
+        app, bot, click, dialog_fits, dialog_fits_with_problem, draw, ids, node, state, text,
+    };
 
     /// `{ ...base, ...patch }`: the patch's keys replace the base's.
     fn with(mut base: Value, patch: Value) -> Value {
@@ -1752,10 +1754,12 @@ mod tests {
         );
     }
 
-    /// The dialog fit (every dialog's check): every account dialog, at 1000 x 600 and at 360 x 600.
+    /// The dialog fit (every dialog's check): every account dialog, and after a failed save of the tallest (Add key) and
+    /// of Remove, why above the actions (release review m2).
     #[gpui::test]
     fn dialog_fits_every_account_dialog(cx: &mut TestAppContext) {
         let (cx, _) = open(cx, settings(), vec![sub(json!({})), key(json!({}))], rpc());
+        let form = ["account_form.cancel", "account_form.save"];
         for (menu, item) in [
             (
                 "settings.accounts.codex.add",
@@ -1775,9 +1779,27 @@ mod tests {
         ] {
             click(cx, menu);
             click(cx, item);
-            dialog_fits(cx, &["account_form.cancel", "account_form.save"]);
+            dialog_fits(cx, &form);
             click(cx, "account_form.cancel");
         }
+        // The fake answers neither accounts.create nor accounts.remove: both saves fail.
+        click(cx, "settings.accounts.codex.add");
+        click(cx, "settings.accounts.codex.add.key");
+        click(cx, "account_form.name");
+        cx.simulate_input("Work key");
+        click(cx, "account_form.key");
+        cx.simulate_input("sample-key-not-real");
+        click(cx, "account_form.cap");
+        cx.simulate_input("25");
+        draw(cx);
+        click(cx, "account_form.save");
+        dialog_fits_with_problem(cx, "account_form.problem", &form);
+        click(cx, "account_form.cancel");
+        click(cx, "settings.accounts.k1.more");
+        click(cx, "settings.accounts.k1.remove");
+        click(cx, "account_form.save");
+        dialog_fits_with_problem(cx, "account_form.problem", &form);
+        click(cx, "account_form.cancel");
         click(cx, "settings.accounts.a1.more");
         click(cx, "settings.accounts.a1.remove");
         assert_eq!(text("dialog.title"), "Can't remove Claude (Personal)");

@@ -21,7 +21,8 @@ use crate::model::state::{AppState, apply_event, room_bots};
 use crate::model::testing::FakeRpc;
 use crate::ui::shell::route::{self, Navigate as _, Route};
 use crate::ui::testing::{
-    app, bot, click, dialog_fits, draw, ids, node, room, state, tab_stays_in, text,
+    app, bot, click, dialog_fits, dialog_fits_with_problem, draw, ids, node, room, state,
+    tab_stays_in, text,
 };
 
 fn bots() -> Vec<Bot> {
@@ -712,6 +713,12 @@ fn dialog_fits_every_room_dialog(cx: &mut TestAppContext) {
     click(cx, "room.menu.edit");
     assert_eq!(text("dialog.title"), "Edit room");
     dialog_fits(cx, &form);
+    // The fake has no rooms.update: the save fails.
+    click(cx, "room_form.name");
+    cx.simulate_input(" 2");
+    draw(cx);
+    click(cx, "room_form.save");
+    dialog_fits_with_problem(cx, "room_form.problem", &form);
     click(cx, "room_form.cancel");
     click(cx, "room.more");
     click(cx, "room.menu.delete");

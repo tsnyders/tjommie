@@ -91,6 +91,7 @@ pub fn open_room_form(room: Option<Room>, window: &mut Window, cx: &mut App) {
     form.update(cx, |form, _| form._enter = Some(enter));
     open_dialog(window, cx, move |dialog, window, cx| {
         let (body, footer) = body(&form, window, cx);
+        let failed = form.read(cx).problem.clone();
         let heading = if form.read(cx).opened.is_some() {
             "Edit room"
         } else {
@@ -104,6 +105,7 @@ pub fn open_room_form(room: Option<Room>, window: &mut Window, cx: &mut App) {
             // unguarded: returns a constant, nothing in it can panic
             .on_ok(|_, _, _| false)
             .child(body)
+            .problem(failed.map(|text| problem("room_form.problem", text, cx)))
             .footer(footer)
     });
     // The name has the focus (`initialFocus`), after the dialog takes it.
@@ -141,7 +143,6 @@ fn body(form: &Entity<RoomForm>, window: &mut Window, cx: &mut App) -> (AnyEleme
     let editing = state.opened.is_some();
     let ready = can_save(state, cx);
     let name = state.name.clone();
-    let failed = state.problem.clone();
     let members = {
         let form = form.clone();
         rows::can_message(
@@ -185,7 +186,6 @@ fn body(form: &Entity<RoomForm>, window: &mut Window, cx: &mut App) -> (AnyEleme
                 .child(TextField::new("room_form.name", "Name", &name)),
         )
         .child(div().mt(r(theme.space.s16)).child(members))
-        .children(failed.map(|text| problem("room_form.problem", text, cx)))
         .into_any_element();
     let footer = div()
         .flex()

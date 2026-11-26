@@ -441,6 +441,9 @@ fn page_dialog(
         })
         .flex()
         .flex_col()
+        // Short of room (a small window, Larger text, the zoom), the bar shrinks: its message scrolls in less, and the
+        // answer, Cancel and OK stay in the panel (release review m1).
+        .min_h_0()
         .gap(r(theme.space.s8))
         .mt(r(theme.space.s10))
         .mx(r(theme.space.s12))

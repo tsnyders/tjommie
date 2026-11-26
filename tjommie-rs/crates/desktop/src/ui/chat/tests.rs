@@ -599,23 +599,42 @@ mod file_card {
         );
     }
 
-    /// The dialog fit (every dialog's check): the viewer's Expand and Download, above the file, stay in the window at
-    /// 1000 x 600 and at 360 x 600, at its size and expanded.
+    /// The dialog fit (every dialog's check): the file shows whole in the viewer's body, however many lines its name takes
+    /// in the title, with Expand and Download pinned under it, at its size and expanded (release review m3).
     #[gpui::test]
     fn dialog_fits_the_viewer(cx: &mut TestAppContext) {
         let (cx, _) = app(
             cx,
             Route::Chat("b1".into()),
-            shared("notes.md", 26, "text/markdown"),
+            shared(
+                "Harbour team quarterly planning review with every appendix and the minutes.md",
+                26,
+                "text/markdown",
+            ),
             serving("# Plan\n\nShip **T4.4** now."),
         );
         draw(cx);
         click(cx, "file.m1.0.preview");
         draw(cx);
-        let actions = ["file.m1.0.viewer.expand", "file.m1.0.viewer.download"];
-        crate::ui::testing::dialog_fits(cx, &actions);
+        let parts = [
+            "file.m1.0.viewer",
+            "file.m1.0.viewer.expand",
+            "file.m1.0.viewer.download",
+        ];
+        crate::ui::testing::dialog_fits(cx, &parts);
+        // Expand and Download are the dialog's actions, pinned under the file (release review m3).
+        let file = node("file.m1.0.viewer").expect("the file");
+        for id in ["file.m1.0.viewer.expand", "file.m1.0.viewer.download"] {
+            let action = node(id).unwrap_or_else(|| panic!("{id} is drawn"));
+            assert!(
+                action.bounds.y >= file.bounds.y + file.bounds.height,
+                "{id} sits under the file: {:?}, {:?}",
+                action.bounds,
+                file.bounds
+            );
+        }
         click(cx, "file.m1.0.viewer.expand");
-        crate::ui::testing::dialog_fits(cx, &actions);
+        crate::ui::testing::dialog_fits(cx, &parts);
     }
 
     #[gpui::test]

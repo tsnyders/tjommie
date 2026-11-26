@@ -10,7 +10,9 @@ use serde_json::{Value, json};
 use super::detail::diff_view;
 use crate::model::testing::FakeRpc;
 use crate::ui::shell::route::Route;
-use crate::ui::testing::{app, bot, click, dialog_fits, draw, ids, node, state, text};
+use crate::ui::testing::{
+    app, bot, click, dialog_fits, dialog_fits_with_problem, draw, ids, node, state, text,
+};
 
 const STAMP: &str = "2026-11-03T00:00:00.000Z";
 
@@ -490,11 +492,17 @@ fn a_narrow_window_has_compact_navigation_and_projects_fits(cx: &mut TestAppCont
 #[gpui::test]
 fn dialog_fits_every_projects_dialog(cx: &mut TestAppContext) {
     let members = json!([{ "botId": "dev", "roles": ["developer"] }]);
+    let refusing = rpc(members, json!([])).on::<method::ProjectsUpdate>(|_| {
+        Err(client::RpcError::Daemon {
+            code: protocol::ErrorCode::Internal,
+            message: "The host is busy.".into(),
+        })
+    });
     let (cx, _) = app(
         cx,
         Route::Projects,
         state(people(), vec![], vec![]),
-        rpc(members, json!([])),
+        refusing,
     );
     let team = ["project_form.cancel", "project_form.save"];
     let task = ["task_form.cancel", "task_form.save"];
@@ -505,6 +513,8 @@ fn dialog_fits_every_projects_dialog(cx: &mut TestAppContext) {
     click(cx, "projects.team.project");
     click(cx, "projects.edit");
     dialog_fits(cx, &team);
+    click(cx, "project_form.save");
+    dialog_fits_with_problem(cx, "project_form.problem", &team);
     click(cx, "project_form.cancel");
     click(cx, "projects.new_task");
     assert_eq!(text("dialog.title"), "New task");

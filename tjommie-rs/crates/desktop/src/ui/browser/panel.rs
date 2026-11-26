@@ -1013,12 +1013,18 @@ impl BrowserPanel {
             .flatten();
         let theme = theme(cx);
         let colors = palette(cx);
+        // While the page asks something (its own dialog, above), the page gives up its minimum so the question and its
+        // answer fit (release review m1).
+        let asking = view
+            .state
+            .as_ref()
+            .is_some_and(|state| state.dialog.is_some());
         div()
             .semantic("browser.viewport", Role::Application)
             .aria_label("Browser viewport")
             .relative()
             .flex_1()
-            .min_h(r(240.))
+            .when(!asking, |frame| frame.min_h(r(240.)))
             .mt(r(theme.space.s10))
             .mx(r(theme.space.s12))
             .mb(r(theme.space.s12))

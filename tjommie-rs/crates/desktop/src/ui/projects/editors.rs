@@ -166,17 +166,15 @@ fn picker(
         .into_any_element()
 }
 
-/// The dialog's footer: a problem, then Cancel and the save button (off until it can save).
+/// The dialog's footer: Cancel and the save button (off until it can save).
 fn footer(
     prefix: &'static str,
     saving: &'static str,
     busy: bool,
     ready: bool,
-    failed: Option<SharedString>,
     on_save: impl Fn(&mut Window, &mut App) + 'static,
     cx: &App,
 ) -> AnyElement {
-    let theme = theme(cx);
     let save = Pill::new(
         format!("{prefix}.save"),
         if busy { "Saving…" } else { saving },
@@ -186,20 +184,13 @@ fn footer(
     .on_press(on_save);
     div()
         .flex()
-        .flex_col()
-        .gap(r(theme.space.s12))
-        .children(failed.map(|text| problem(format!("{prefix}.problem"), text, cx)))
+        .justify_end()
+        .gap(r(theme(cx).space.s8))
         .child(
-            div()
-                .flex()
-                .justify_end()
-                .gap(r(theme.space.s8))
-                .child(
-                    Pill::new(format!("{prefix}.cancel"), "Cancel")
-                        .on_press(|window, cx| window.close_dialog(cx)),
-                )
-                .child(save),
+            Pill::new(format!("{prefix}.cancel"), "Cancel")
+                .on_press(|window, cx| window.close_dialog(cx)),
         )
+        .child(save)
         .into_any_element()
 }
 
@@ -362,6 +353,7 @@ pub(super) fn open_project_editor(
             "New project team"
         };
         let (body, footer) = project_body(&form, &screen, window, cx);
+        let failed = form.read(cx).problem.clone();
         // project-editor.tsx's 600 px, as rems.
         dialog
             .w(window.rem_size() * 37.5)
@@ -370,6 +362,7 @@ pub(super) fn open_project_editor(
             // unguarded: returns a constant, nothing in it can panic
             .on_ok(|_, _, _| false)
             .child(body)
+            .problem(failed.map(|text| problem("project_form.problem", text, cx)))
             .footer(footer)
     });
     window.defer(cx, move |window, cx| {
@@ -391,7 +384,6 @@ fn project_body(
     let editing = state.opened.is_some();
     let ready = state.ready(cx);
     let busy = state.busy;
-    let failed = state.problem.clone();
     let (name, base, target, checks) = (
         state.name.clone(),
         state.base.clone(),
@@ -529,7 +521,6 @@ fn project_body(
         "Save team",
         busy,
         ready,
-        failed,
         move |_, cx| save_project(&saving, &screen, cx),
         cx,
     );
@@ -893,6 +884,7 @@ pub(super) fn open_task_editor(
             "New task"
         };
         let (body, footer) = task_body(&form, &screen, window, cx);
+        let failed = form.read(cx).problem.clone();
         // task-editor.tsx's 520 px, as rems.
         dialog
             .w(window.rem_size() * 32.5)
@@ -900,6 +892,7 @@ pub(super) fn open_task_editor(
             // unguarded: returns a constant, nothing in it can panic
             .on_ok(|_, _, _| false)
             .child(body)
+            .problem(failed.map(|text| problem("task_form.problem", text, cx)))
             .footer(footer)
     });
     window.defer(cx, move |window, cx| {
@@ -925,7 +918,6 @@ fn task_body(
     );
     let ready = state.ready(cx);
     let busy = state.busy;
-    let failed = state.problem.clone();
     let members = state.project.input.members.clone();
     let chosen: Vec<String> = [
         ProjectRole::Developer,
@@ -1002,7 +994,6 @@ fn task_body(
         "Save task",
         busy,
         ready,
-        failed,
         move |_, cx| save_task(&saving, &screen, cx),
         cx,
     );

@@ -508,9 +508,9 @@ fn open_rename(device: Device, devices: Entity<Devices>, window: &mut Window, cx
                     .flex()
                     .flex_col()
                     .child(label("Name", cx))
-                    .child(TextField::new("device_form.name", "Name", &state.name))
-                    .children(failed.map(|said| problem("device_form.problem", said, cx))),
+                    .child(TextField::new("device_form.name", "Name", &state.name)),
             )
+            .problem(failed.map(|said| problem("device_form.problem", said, cx)))
             .footer(
                 div()
                     .flex()
@@ -621,9 +621,9 @@ fn open_revoke(device: Device, devices: Entity<Devices>, window: &mut Window, cx
                         "It is cut off at once and can't connect again unless you pair it again. Your other devices \
                          aren't affected.",
                         cx,
-                    ))
-                    .children(failed.map(|said| problem("settings.devices.revoke_problem", said, cx))),
+                    )),
             )
+            .problem(failed.map(|said| problem("settings.devices.revoke_problem", said, cx)))
             .footer(
                 div()
                     .flex()
@@ -946,9 +946,9 @@ fn open_pair(window: &mut Window, cx: &mut App) {
                          the relay is on.",
                         cx,
                     ))
-                    .child(shown)
-                    .children(failed.map(|said| problem("settings.devices.pair.problem", said, cx))),
+                    .child(shown),
             )
+            .problem(failed.map(|said| problem("settings.devices.pair.problem", said, cx)))
             .footer(div().flex().justify_end().child(close))
     });
 }
@@ -963,7 +963,9 @@ mod tests {
     use super::{countdown, relay_address, relay_line};
     use crate::model::testing::FakeRpc;
     use crate::ui::shell::route::{Route, Section};
-    use crate::ui::testing::{app, click, dialog_fits, draw, node, state, text};
+    use crate::ui::testing::{
+        app, click, dialog_fits, dialog_fits_with_problem, draw, node, state, text,
+    };
 
     fn device(id: &str, name: &str, seen: Option<&str>) -> Device {
         serde_json::from_value(json!({
@@ -1341,27 +1343,59 @@ mod tests {
         assert_eq!(text("settings.devices.d1.revoke"), "Revoke Sample Phone");
     }
 
-    /// The dialog fit (every dialog's check): Rename, Revoke, and Pair a device before its code and with it, at 1000 x
-    /// 600 and at 360 x 600.
+    /// The dialog fit (every dialog's check): Rename, Revoke, and Pair a device before its code and with it, and after a
+    /// failed save of each, why above the actions.
     #[gpui::test]
     fn dialog_fits_every_device_dialog(cx: &mut TestAppContext) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let refused = || client::RpcError::Daemon {
+            code: protocol::ErrorCode::Internal,
+            message: "The host said no.".into(),
+        };
+        // Rename is refused; the first pairing code is too, and the second comes. The fake has no devices.revoke.
+        let tries = AtomicUsize::new(0);
+        let rpc = rpc(vec![device("d1", "Sample Phone", None)], status(&[], true))
+            .on::<method::DevicesRename>(move |_| Err(refused()))
+            .on::<method::PairingCreate>(move |_| {
+                if tries.fetch_add(1, Ordering::SeqCst) == 0 {
+                    Err(refused())
+                } else {
+                    Ok(PairingStart {
+                        id: "pair-1".into(),
+                        code: "SAMPLE-PAIRING-CODE".into(),
+                        uri: "tjommie://pair?code=SAMPLE".into(),
+                        expires: "2099-01-01T00:00:00.000Z".into(),
+                    })
+                }
+            });
         let (cx, _) = app(
             cx,
             Route::Settings(Section::Devices),
             state(vec![], vec![], vec![]),
-            rpc(vec![device("d1", "Sample Phone", None)], status(&[], true)),
+            rpc,
         );
+        let rename = ["device_form.cancel", "device_form.save"];
         click(cx, "settings.devices.d1.rename");
-        dialog_fits(cx, &["device_form.cancel", "device_form.save"]);
-        click(cx, "device_form.cancel");
-        click(cx, "settings.devices.d1.revoke");
-        dialog_fits(cx, &["dialog.cancel", "dialog.confirm"]);
-        click(cx, "dialog.cancel");
-        click(cx, "settings.devices.pair");
-        dialog_fits(cx, &["settings.devices.pair.close"]);
-        click(cx, "settings.devices.pair.show");
+        dialog_fits(cx, &rename);
+        click(cx, "device_form.name");
+        cx.simulate_input(" 2");
         draw(cx);
+        click(cx, "device_form.save");
+        dialog_fits_with_problem(cx, "device_form.problem", &rename);
+        click(cx, "device_form.cancel");
+        let confirm = ["dialog.cancel", "dialog.confirm"];
+        click(cx, "settings.devices.d1.revoke");
+        dialog_fits(cx, &confirm);
+        click(cx, "dialog.confirm");
+        dialog_fits_with_problem(cx, "settings.devices.revoke_problem", &confirm);
+        click(cx, "dialog.cancel");
+        let close = ["settings.devices.pair.close"];
+        click(cx, "settings.devices.pair");
+        dialog_fits(cx, &close);
+        click(cx, "settings.devices.pair.show");
+        dialog_fits_with_problem(cx, "settings.devices.pair.problem", &close);
+        click(cx, "settings.devices.pair.show");
         assert!(node("settings.devices.pair.qr").is_some(), "the code shows");
-        dialog_fits(cx, &["settings.devices.pair.close"]);
+        dialog_fits(cx, &close);
     }
 }

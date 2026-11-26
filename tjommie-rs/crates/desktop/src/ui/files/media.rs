@@ -14,7 +14,7 @@ use futures::future::LocalBoxFuture;
 use gpui::{
     App, AppContext as _, Bounds, Context, EntityId, InteractiveElement as _, IntoElement,
     ParentElement as _, Pixels, Render, Role, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Window, canvas, div,
+    Styled as _, Window, canvas, div, px,
 };
 use gpui_kit::component::WindowExt as _;
 use windows::Win32::Foundation::RECT;
@@ -129,6 +129,20 @@ impl MediaView {
 fn fail(shared: &Shared, view: EntityId, cx: &mut App) {
     *shared.problem.borrow_mut() = Some(FAILED.into());
     cx.notify(view);
+}
+
+/// The player's place: the video's, the preview's room, at most 65% of the window's height in pixels (the TypeScript's
+/// 65vh; as rems, Larger text or the zoom made it taller than the viewer, release review m3); the audio player's, one
+/// line.
+fn place_for(video: bool, window: &Window) -> gpui::Div {
+    let place = div().w_full();
+    if video {
+        place.h_full().max_h(px(
+            (f32::from(window.viewport_size().height) * 0.65).max(120.)
+        ))
+    } else {
+        place.h(r(54.))
+    }
 }
 
 /// After the frame: the player is created where the preview is (the first time), or moved there.
@@ -276,15 +290,9 @@ impl Render for MediaView {
                 .text_color(hsla(colors.danger.text))
                 .child(problem);
         }
-        // The video's place: the preview's width, at most 65% of the window's height; the audio player's, one line.
         let video = self.shared.video;
-        let height = if video {
-            (f32::from(window.viewport_size().height) * 0.65).max(120.)
-        } else {
-            54.
-        };
         let (shared, view) = (self.shared.clone(), cx.entity_id());
-        div()
+        place_for(video, window)
             .semantic(
                 format!("{id}.player"),
                 if video {
@@ -300,8 +308,6 @@ impl Render for MediaView {
             })
             .track_focus(&focus)
             .relative()
-            .w_full()
-            .h(r(height))
             .rounded(r(theme.radius.sm))
             .bg(hsla(colors.surface.sunk))
             .child(
@@ -312,5 +318,34 @@ impl Render for MediaView {
                 .size_full(),
             )
             .children(ring_or_reveal(&focus, theme.radius.sm, window, cx))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::{
+        InteractiveElement as _, IntoElement as _, ParentElement as _, Styled as _, div, px, size,
+    };
+
+    /// The video's place fills the room the viewer gives it and no more, with Larger text and the zoom at 125 % too
+    /// (release review m3: as rems, 65% of a 600 px window made it 609 px tall, past the dialog). A test window has no
+    /// HWND for the player itself, so this lays out its place alone, in a 300 px room.
+    #[gpui::test]
+    fn the_video_fits_its_room_at_larger_text(cx: &mut gpui::TestAppContext) {
+        let cx = crate::ui::primitives::test_window(cx, |window, _| {
+            div()
+                .h(px(300.))
+                .child(super::place_for(true, window).debug_selector(|| "place".into()))
+                .into_any_element()
+        });
+        crate::ui::testing::larger_text_and_zoom(cx, true);
+        cx.simulate_resize(size(px(1000.), px(600.)));
+        crate::ui::testing::draw(cx);
+        let place = cx.debug_bounds("place").expect("the place");
+        assert!(
+            place.size.height > px(0.) && place.size.height <= px(300.),
+            "the video fits its room: {place:?}"
+        );
+        crate::ui::testing::larger_text_and_zoom(cx, false);
     }
 }

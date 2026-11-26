@@ -158,33 +158,88 @@ pub fn click(cx: &mut VisualTestContext, id: &'static str) {
 }
 
 /// The dialog fit, which every dialog's view tests run (the README pictures' routine editor ran its Save off a 1000 x
-/// 700 window): with the dialog open, at 1000 x 600 and at 360 x 600 (the window's smallest), its title and each control
-/// in `footer` (its actions) sit whole inside the window, not clipped by the body that scrolls between them. The window
-/// then goes back to its size.
+/// 700 window): with the dialog open, at 1000 x 600, at 360 x 600 (the window's smallest), and at 1000 x 600 with Larger
+/// text and the zoom at 125 % (a rem of 25 px), its title and each control in `footer` (its actions) sit whole inside the
+/// window, not clipped by the body that scrolls between them. The window then goes back to its size and scale.
 pub fn dialog_fits(cx: &mut VisualTestContext, footer: &[&str]) {
+    fits(cx, None, footer);
+}
+
+/// `dialog_fits` after a failed save: the dialog's `problem` sits whole in the window too, above its actions, so the
+/// person sees why however the body is scrolled (release review m2).
+pub fn dialog_fits_with_problem(cx: &mut VisualTestContext, problem: &str, footer: &[&str]) {
+    fits(cx, Some(problem), footer);
+}
+
+fn fits(cx: &mut VisualTestContext, problem: Option<&str>, footer: &[&str]) {
     let before = cx.update(|window, _| window.viewport_size());
-    for (width, height) in [(1000., 600.), (360., 600.)] {
+    for (width, height, larger) in [
+        (1000., 600., false),
+        (360., 600., false),
+        (1000., 600., true),
+    ] {
+        larger_text_and_zoom(cx, larger);
         cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(height)));
         draw(cx);
-        for id in ["dialog.title"].iter().chain(footer) {
-            let control = node(id).unwrap_or_else(|| panic!("{id} is drawn at {width} x {height}"));
+        let at = if larger {
+            format!("{width} x {height}, Larger text at 125 %")
+        } else {
+            format!("{width} x {height}")
+        };
+        let whole = |id: &str| {
+            let control = node(id).unwrap_or_else(|| panic!("{id} is drawn at {at}"));
             let bounds = control.bounds;
             assert!(
                 bounds.x >= 0.
                     && bounds.y >= 0.
                     && bounds.x + bounds.width <= width
                     && bounds.y + bounds.height <= height,
-                "{id} sits inside the {width} x {height} window: {bounds:?}"
+                "{id} sits inside the window at {at}: {bounds:?}"
             );
             assert_eq!(
                 control.visible,
                 Some(bounds),
-                "{id} is whole at {width} x {height}, not clipped"
+                "{id} is whole at {at}, not clipped"
             );
+            bounds
+        };
+        for id in ["dialog.title"].iter().chain(footer) {
+            whole(id);
+        }
+        if let Some(problem) = problem {
+            let said = whole(problem);
+            for id in footer {
+                let action = whole(id);
+                assert!(
+                    said.y + said.height <= action.y,
+                    "{problem} sits above {id} at {at}: {said:?}, {action:?}"
+                );
+            }
         }
     }
+    larger_text_and_zoom(cx, false);
     cx.simulate_resize(before);
     draw(cx);
+}
+
+/// Settings, Appearance's Larger text with the zoom at 125 % (a rem of 25 px) when `on`, else System text at 100 %:
+/// the largest scale a dialog is checked at.
+pub fn larger_text_and_zoom(cx: &mut VisualTestContext, on: bool) {
+    use desktop_host::device_settings::TextSize;
+    cx.update(|_, cx| {
+        let text = if on {
+            TextSize::Larger
+        } else {
+            TextSize::System
+        };
+        cx.set_global(crate::ui::style::Appearance {
+            text,
+            ..crate::ui::style::appearance(cx)
+        });
+        let zoom = crate::zoom::Zoom::default();
+        let zoom = if on { zoom.zoom_in().zoom_in() } else { zoom };
+        crate::ui::shell::set_rem(zoom, cx);
+    });
 }
 
 /// A connected state with these bots, rooms and routines.

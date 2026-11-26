@@ -41,6 +41,8 @@ pub fn opened(cx: &App) -> u64 {
 pub struct Surface {
     dialog: Dialog,
     body: Vec<AnyElement>,
+    problem: Option<AnyElement>,
+    footer: Option<AnyElement>,
 }
 
 impl Surface {
@@ -58,7 +60,14 @@ impl Surface {
     /// however tall the body, they stay whole in the window and the body scrolls between the title and them (the
     /// README pictures' routine editor ran its Save off a 1000 x 700 window).
     pub fn footer(mut self, footer: impl IntoElement) -> Self {
-        self.dialog = self.dialog.footer(footer);
+        self.footer = Some(footer.into_any_element());
+        self
+    }
+
+    /// Why the dialog's last try failed (`fields::problem`), if it did. Every dialog shows it the same way: above its
+    /// actions, in the pinned footer, so it is in view however the body is scrolled (release review m2).
+    pub fn problem(mut self, problem: Option<AnyElement>) -> Self {
+        self.problem = problem;
         self
     }
 
@@ -103,15 +112,41 @@ impl Surface {
 
     /// gpui-kit's dialog, its body in one scroll area that follows the focus. The body goes in gpui-kit's content slot,
     /// which sits in the dialog's height-capped column (not in its own scroll area), so a body taller than the window
-    /// is bounded here and scrolls here.
-    fn into_dialog(self, scroll: &ScrollHandle) -> Dialog {
-        if self.body.is_empty() {
-            return self.dialog;
+    /// is bounded here and scrolls here. The problem and the actions go in gpui-kit's footer, pinned under it.
+    fn into_dialog(self, scroll: &ScrollHandle, window: &Window, cx: &App) -> Dialog {
+        let Surface {
+            dialog,
+            body,
+            problem,
+            footer,
+        } = self;
+        let dialog = if problem.is_some() || footer.is_some() {
+            // A long reason scrolls in a quarter of the window at most, so it never pushes the actions out.
+            let room = window.viewport_size().height * 0.25;
+            dialog.footer(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(r(theme(cx).space.s12))
+                    .children(problem.map(|problem| {
+                        div()
+                            .id("dialog.problem")
+                            .max_h(room)
+                            .overflow_y_scroll()
+                            .child(problem)
+                    }))
+                    .children(footer),
+            )
+        } else {
+            dialog
+        };
+        if body.is_empty() {
+            return dialog;
         }
         // gpui-kit may call the content builder again; each frame builds a new dialog, so the body is taken once.
-        let body = std::cell::RefCell::new(Some(self.body));
+        let body = std::cell::RefCell::new(Some(body));
         let scroll = scroll.clone();
-        self.dialog.content(move |content, _, _| {
+        dialog.content(move |content, _, _| {
             let children = body.borrow_mut().take().unwrap_or_default();
             content.min_h_0().child(follow_focus(
                 &scroll,
@@ -165,11 +200,13 @@ pub fn open_dialog(
             Surface {
                 dialog: surface,
                 body: Vec::new(),
+                problem: None,
+                footer: None,
             },
             window,
             cx,
         )
-        .into_dialog(&scroll)
+        .into_dialog(&scroll, window, cx)
     });
 }
 

@@ -23,6 +23,7 @@ use url::Url;
 use super::BrowserData;
 use crate::guard::guarded;
 use crate::semantic::SemanticExt as _;
+use crate::ui::fields::problem;
 use crate::ui::primitives::button::{IconButton, Pill, PillVariant};
 use crate::ui::primitives::dialog::{open_dialog, title};
 use crate::ui::primitives::menu::{Menu, MenuItem};
@@ -234,8 +235,11 @@ fn open_saved(
                     })
                     .when(target.is_none(), |body| {
                         body.child("Take control of the current browser page before filling a login.")
-                    })
-                    .when(view.failed, |body| body.child(LOGINS_PROBLEM)),
+                    }),
+            )
+            .problem(
+                view.failed
+                    .then(|| problem("logins.saved.problem", LOGINS_PROBLEM, cx)),
             )
             .footer(
                 div()
