@@ -235,46 +235,46 @@ fn open_saved(
                     .when(target.is_none(), |body| {
                         body.child("Take control of the current browser page before filling a login.")
                     })
-                    .when(view.failed, |body| body.child(LOGINS_PROBLEM))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_wrap()
-                            .gap(r(theme.space.s8))
-                            .when_some(fill, |buttons, (target, entry)| {
-                                buttons.child(
-                                    Pill::new("logins.fill", "Fill on host")
-                                        .variant(PillVariant::Primary)
-                                        .small()
-                                        .on_press(move |window, cx| {
-                                            send(
-                                                VaultHostAction::Fill(VaultFill {
-                                                    bot_id: target.bot_id.clone(),
-                                                    generation: target.generation.clone(),
-                                                    page_id: target.page_id.clone(),
-                                                    control_epoch: target.control_epoch,
-                                                    id: entry.id.clone(),
-                                                    revision: entry.revision,
-                                                }),
-                                                window,
-                                                cx,
-                                            );
-                                            window.close_dialog(cx);
+                    .when(view.failed, |body| body.child(LOGINS_PROBLEM)),
+            )
+            .footer(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap(r(theme.space.s8))
+                    .when_some(fill, |buttons, (target, entry)| {
+                        buttons.child(
+                            Pill::new("logins.fill", "Fill on host")
+                                .variant(PillVariant::Primary)
+                                .small()
+                                .on_press(move |window, cx| {
+                                    send(
+                                        VaultHostAction::Fill(VaultFill {
+                                            bot_id: target.bot_id.clone(),
+                                            generation: target.generation.clone(),
+                                            page_id: target.page_id.clone(),
+                                            control_epoch: target.control_epoch,
+                                            id: entry.id.clone(),
+                                            revision: entry.revision,
                                         }),
-                                )
-                            })
-                            .when(state == Some(VaultState::Locked), |buttons| {
-                                buttons.child(
-                                    Pill::new("logins.unlock", "Unlock on host")
-                                        .small()
-                                        .on_press(|window, cx| send(VaultHostAction::Unlock, window, cx)),
-                                )
-                            })
-                            .child(Pill::new("logins.manage", "Manage logins").small().on_press(|window, cx| {
-                                window.close_dialog(cx);
-                                cx.navigate(Route::Settings(Section::Logins));
-                            })),
-                    ),
+                                        window,
+                                        cx,
+                                    );
+                                    window.close_dialog(cx);
+                                }),
+                        )
+                    })
+                    .when(state == Some(VaultState::Locked), |buttons| {
+                        buttons.child(
+                            Pill::new("logins.unlock", "Unlock on host")
+                                .small()
+                                .on_press(|window, cx| send(VaultHostAction::Unlock, window, cx)),
+                        )
+                    })
+                    .child(Pill::new("logins.manage", "Manage logins").small().on_press(|window, cx| {
+                        window.close_dialog(cx);
+                        cx.navigate(Route::Settings(Section::Logins));
+                    })),
             )
     });
 }

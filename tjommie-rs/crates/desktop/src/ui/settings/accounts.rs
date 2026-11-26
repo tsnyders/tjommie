@@ -1344,7 +1344,7 @@ mod tests {
     use crate::model::state::AppState;
     use crate::model::testing::FakeRpc;
     use crate::ui::shell::route::{AccountAction, Route, Section};
-    use crate::ui::testing::{app, bot, click, draw, ids, node, state, text};
+    use crate::ui::testing::{app, bot, click, dialog_fits, draw, ids, node, state, text};
 
     /// `{ ...base, ...patch }`: the patch's keys replace the base's.
     fn with(mut base: Value, patch: Value) -> Value {
@@ -1750,5 +1750,37 @@ mod tests {
             calls(&calls_made, "accounts.remove"),
             [json!({ "id": "k1" })]
         );
+    }
+
+    /// The dialog fit (every dialog's check): every account dialog, at 1000 x 600 and at 360 x 600.
+    #[gpui::test]
+    fn dialog_fits_every_account_dialog(cx: &mut TestAppContext) {
+        let (cx, _) = open(cx, settings(), vec![sub(json!({})), key(json!({}))], rpc());
+        for (menu, item) in [
+            (
+                "settings.accounts.codex.add",
+                "settings.accounts.codex.add.subscription",
+            ),
+            (
+                "settings.accounts.codex.add",
+                "settings.accounts.codex.add.key",
+            ),
+            (
+                "settings.accounts.k1.more",
+                "settings.accounts.k1.replace_key",
+            ),
+            ("settings.accounts.k1.more", "settings.accounts.k1.edit_cap"),
+            ("settings.accounts.k1.more", "settings.accounts.k1.rename"),
+            ("settings.accounts.k1.more", "settings.accounts.k1.remove"),
+        ] {
+            click(cx, menu);
+            click(cx, item);
+            dialog_fits(cx, &["account_form.cancel", "account_form.save"]);
+            click(cx, "account_form.cancel");
+        }
+        click(cx, "settings.accounts.a1.more");
+        click(cx, "settings.accounts.a1.remove");
+        assert_eq!(text("dialog.title"), "Can't remove Claude (Personal)");
+        dialog_fits(cx, &["account_remove.ok"]);
     }
 }

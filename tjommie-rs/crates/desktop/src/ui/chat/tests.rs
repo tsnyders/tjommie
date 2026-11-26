@@ -599,6 +599,25 @@ mod file_card {
         );
     }
 
+    /// The dialog fit (every dialog's check): the viewer's Expand and Download, above the file, stay in the window at
+    /// 1000 x 600 and at 360 x 600, at its size and expanded.
+    #[gpui::test]
+    fn dialog_fits_the_viewer(cx: &mut TestAppContext) {
+        let (cx, _) = app(
+            cx,
+            Route::Chat("b1".into()),
+            shared("notes.md", 26, "text/markdown"),
+            serving("# Plan\n\nShip **T4.4** now."),
+        );
+        draw(cx);
+        click(cx, "file.m1.0.preview");
+        draw(cx);
+        let actions = ["file.m1.0.viewer.expand", "file.m1.0.viewer.download"];
+        crate::ui::testing::dialog_fits(cx, &actions);
+        click(cx, "file.m1.0.viewer.expand");
+        crate::ui::testing::dialog_fits(cx, &actions);
+    }
+
     #[gpui::test]
     fn offline_the_card_says_why_it_cannot_download(cx: &mut TestAppContext) {
         let mut state = shared("report.pdf", 2_516_582, "application/pdf");

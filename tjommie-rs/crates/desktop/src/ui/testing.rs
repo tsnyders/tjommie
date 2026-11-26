@@ -157,6 +157,36 @@ pub fn click(cx: &mut VisualTestContext, id: &'static str) {
     draw(cx);
 }
 
+/// The dialog fit, which every dialog's view tests run (the README pictures' routine editor ran its Save off a 1000 x
+/// 700 window): with the dialog open, at 1000 x 600 and at 360 x 600 (the window's smallest), its title and each control
+/// in `footer` (its actions) sit whole inside the window, not clipped by the body that scrolls between them. The window
+/// then goes back to its size.
+pub fn dialog_fits(cx: &mut VisualTestContext, footer: &[&str]) {
+    let before = cx.update(|window, _| window.viewport_size());
+    for (width, height) in [(1000., 600.), (360., 600.)] {
+        cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(height)));
+        draw(cx);
+        for id in ["dialog.title"].iter().chain(footer) {
+            let control = node(id).unwrap_or_else(|| panic!("{id} is drawn at {width} x {height}"));
+            let bounds = control.bounds;
+            assert!(
+                bounds.x >= 0.
+                    && bounds.y >= 0.
+                    && bounds.x + bounds.width <= width
+                    && bounds.y + bounds.height <= height,
+                "{id} sits inside the {width} x {height} window: {bounds:?}"
+            );
+            assert_eq!(
+                control.visible,
+                Some(bounds),
+                "{id} is whole at {width} x {height}, not clipped"
+            );
+        }
+    }
+    cx.simulate_resize(before);
+    draw(cx);
+}
+
 /// A connected state with these bots, rooms and routines.
 pub fn state(bots: Vec<Bot>, rooms: Vec<Room>, routines: Vec<Routine>) -> AppState {
     AppState {

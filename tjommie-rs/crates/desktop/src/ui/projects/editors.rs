@@ -28,7 +28,6 @@ use crate::ui::primitives::button::{Pill, PillVariant};
 use crate::ui::primitives::dialog::{open_dialog, title};
 use crate::ui::primitives::focus_handle;
 use crate::ui::primitives::menu::{Menu, MenuItem};
-use crate::ui::primitives::scroll::{follow_focus, scroll_handle};
 use crate::ui::primitives::toggle::Toggle;
 use crate::ui::store;
 use crate::ui::style::{TypeExt as _, focus_ring, focus_visible, hsla, palette, r, theme};
@@ -362,7 +361,7 @@ pub(super) fn open_project_editor(
         } else {
             "New project team"
         };
-        let body = project_body(&form, &screen, window, cx);
+        let (body, footer) = project_body(&form, &screen, window, cx);
         // project-editor.tsx's 600 px, as rems.
         dialog
             .w(window.rem_size() * 37.5)
@@ -371,6 +370,7 @@ pub(super) fn open_project_editor(
             // unguarded: returns a constant, nothing in it can panic
             .on_ok(|_, _, _| false)
             .child(body)
+            .footer(footer)
     });
     window.defer(cx, move |window, cx| {
         guarded("focus the team's name", || {
@@ -379,12 +379,13 @@ pub(super) fn open_project_editor(
     });
 }
 
+/// The team's fields, and its footer.
 fn project_body(
     form: &Entity<ProjectForm>,
     screen: &Entity<ProjectsScreen>,
     window: &mut Window,
     cx: &mut App,
-) -> AnyElement {
+) -> (AnyElement, AnyElement) {
     let bots = store::state(cx).bots.clone();
     let state = form.read(cx);
     let editing = state.opened.is_some();
@@ -532,14 +533,10 @@ fn project_body(
         move |_, cx| save_project(&saving, &screen, cx),
         cx,
     );
-    let scroll = scroll_handle("project_form.scroll", window, cx);
     let theme = theme(cx);
-    // The fields scroll; Cancel and Save stay in view under them.
+    // The fields scroll in the dialog's body; Cancel and Save, its footer, stay in view under them.
     let fields = div()
-        .id("project_form.scroll")
-        .track_scroll(&scroll)
-        .max_h(window.viewport_size().height * 0.6)
-        .overflow_y_scroll()
+        .mt(r(theme.space.s16))
         .flex()
         .flex_col()
         .gap(r(theme.space.s16))
@@ -598,15 +595,9 @@ fn project_body(
                     r#"Example: [{"id":"test","label":"Tests","command":"node","args":["--test"],"timeoutMs":120000}]"#,
                     cx,
                 )),
-        );
-    div()
-        .mt(r(theme.space.s16))
-        .flex()
-        .flex_col()
-        .gap(r(theme.space.s16))
-        .child(follow_focus(&scroll, fields))
-        .child(footer)
-        .into_any_element()
+        )
+        .into_any_element();
+    (fields, footer)
 }
 
 /// Choose a repository folder: this PC's folder picker, then the host registers it, and it is chosen.
@@ -901,7 +892,7 @@ pub(super) fn open_task_editor(
         } else {
             "New task"
         };
-        let body = task_body(&form, &screen, window, cx);
+        let (body, footer) = task_body(&form, &screen, window, cx);
         // task-editor.tsx's 520 px, as rems.
         dialog
             .w(window.rem_size() * 32.5)
@@ -909,6 +900,7 @@ pub(super) fn open_task_editor(
             // unguarded: returns a constant, nothing in it can panic
             .on_ok(|_, _, _| false)
             .child(body)
+            .footer(footer)
     });
     window.defer(cx, move |window, cx| {
         guarded("focus the task's title", || {
@@ -917,12 +909,13 @@ pub(super) fn open_task_editor(
     });
 }
 
+/// The task's fields, and its footer.
 fn task_body(
     form: &Entity<TaskForm>,
     screen: &Entity<ProjectsScreen>,
     window: &mut Window,
     cx: &mut App,
-) -> AnyElement {
+) -> (AnyElement, AnyElement) {
     let bots = store::state(cx).bots.clone();
     let state = form.read(cx);
     let (title_field, instructions, acceptance) = (
@@ -1014,7 +1007,7 @@ fn task_body(
         cx,
     );
     let theme = theme(cx);
-    div()
+    let body = div()
         .mt(r(theme.space.s16))
         .flex()
         .flex_col()
@@ -1040,8 +1033,8 @@ fn task_body(
              allowance. Integration needs a reviewer, tester and accepted checks.",
             cx,
         ))
-        .child(footer)
-        .into_any_element()
+        .into_any_element();
+    (body, footer)
 }
 
 fn save_task(form: &Entity<TaskForm>, screen: &Entity<ProjectsScreen>, cx: &mut App) {

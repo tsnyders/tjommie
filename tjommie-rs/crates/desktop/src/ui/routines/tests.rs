@@ -8,7 +8,7 @@ use protocol::wire::method;
 
 use crate::model::testing::FakeRpc;
 use crate::ui::shell::route::Route;
-use crate::ui::testing::{app, bot, click, draw, ids, node, state, text};
+use crate::ui::testing::{app, bot, click, dialog_fits, draw, ids, node, state, text};
 
 fn routine(id: &str, bot_id: &str, name: &str, enabled: bool) -> Routine {
     Routine {
@@ -199,5 +199,101 @@ fn delete_removes_the_routine(cx: &mut TestAppContext) {
     assert!(
         !cx.update(|window, cx| window.has_active_dialog(cx)),
         "closed"
+    );
+}
+
+/// The README pictures (a release blocker): at 1000 x 600 the routine editor is taller than the window. Its footer (Delete,
+/// Cancel, Save) stays inside the window and unclipped, the body scrolling between the title and the footer, and Save
+/// works where it is.
+#[gpui::test]
+fn at_1000_by_600_the_routine_editors_footer_stays_in_the_window(cx: &mut TestAppContext) {
+    use gpui::{px, size};
+    let rpc = FakeRpc::new()
+        .on::<method::RoutinesRuns>(|_| Ok(vec![]))
+        .on::<method::RoutinesUpdate>(|_| Ok(routine("r1", "b1", "Morning check", true)));
+    let (cx, calls) = app(cx, Route::Routines, two_agents(), rpc);
+    cx.simulate_resize(size(px(1000.), px(600.)));
+    draw(cx);
+    click(cx, "routines.b1.r1");
+    draw(cx);
+    for id in ["routine.delete", "routine.cancel", "routine.save"] {
+        let control = node(id).unwrap_or_else(|| panic!("{id} is drawn"));
+        let bounds = control.bounds;
+        assert!(
+            bounds.y >= 0. && bounds.y + bounds.height <= 600.,
+            "{id} is inside the window: {bounds:?}"
+        );
+        assert_eq!(
+            control.visible,
+            Some(bounds),
+            "{id} is whole, not clipped by the scrolling body"
+        );
+    }
+    click(cx, "routine.save");
+    draw(cx);
+    assert!(
+        calls
+            .calls()
+            .iter()
+            .any(|(name, _)| *name == "routines.update"),
+        "Save works where it is"
+    );
+}
+
+/// The dialog fit (every dialog's check): the routine editor, editing (Delete, Cancel and Save) and new (Cancel and
+/// Save), at 1000 x 600 and at 360 x 600.
+#[gpui::test]
+fn dialog_fits_the_routine_editor(cx: &mut TestAppContext) {
+    let rpc = FakeRpc::new().on::<method::RoutinesRuns>(|_| Ok(vec![]));
+    let (cx, _) = app(cx, Route::Routines, two_agents(), rpc);
+    click(cx, "routines.b1.r1");
+    dialog_fits(cx, &["routine.delete", "routine.cancel", "routine.save"]);
+    click(cx, "routine.cancel");
+    click(cx, "routines.b2.add");
+    assert_eq!(text("dialog.title"), "New routine");
+    dialog_fits(cx, &["routine.cancel", "routine.save"]);
+}
+
+/// At 1000 x 600 the routine editor's body scrolls between its title and its footer: Tab brings each control it
+/// reaches into view, whole, down through the body (Stop after, at its foot) and on to the footer's Save.
+#[gpui::test]
+fn tab_brings_each_routine_editor_control_into_view(cx: &mut TestAppContext) {
+    use gpui::{px, size};
+    let rpc = FakeRpc::new().on::<method::RoutinesRuns>(|_| Ok(vec![]));
+    let (cx, _) = app(cx, Route::Routines, two_agents(), rpc);
+    cx.simulate_resize(size(px(1000.), px(600.)));
+    draw(cx);
+    click(cx, "routines.b1.r1");
+    let mut seen: Vec<String> = Vec::new();
+    for _ in 0..30 {
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        // The scroll that brings the control into view shows on the frame after the focus moves.
+        draw(cx);
+        let Some(focused) = crate::test_driver::nodes()
+            .into_iter()
+            .find(|node| node.focused)
+        else {
+            continue;
+        };
+        assert_eq!(
+            focused.visible,
+            Some(focused.bounds),
+            "{} is in view, whole",
+            focused.id
+        );
+        if !seen.contains(&focused.id) {
+            seen.push(focused.id);
+        }
+    }
+    for id in ["routine.name", "routine.prompt", "routine.save"] {
+        assert!(
+            seen.iter().any(|seen| seen == id),
+            "Tab reached {id}: {seen:?}"
+        );
+    }
+    assert!(
+        seen.iter().any(|seen| seen.starts_with("routine.stop.")),
+        "Tab reached Stop after, at the body's foot: {seen:?}"
     );
 }

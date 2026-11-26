@@ -124,7 +124,7 @@ pub fn open_routine_editor(spec: RoutineEditor, window: &mut Window, cx: &mut Ap
     });
     editor.update(cx, |editor, _| editor._times = Some(subscription));
     open_dialog(window, cx, move |dialog, window, cx| {
-        let body = body(&editor, window, cx);
+        let (body, footer) = body(&editor, window, cx);
         let heading = editor.read(cx).title;
         // routine-editor.tsx's 560 px, as rems.
         dialog
@@ -134,6 +134,7 @@ pub fn open_routine_editor(spec: RoutineEditor, window: &mut Window, cx: &mut Ap
             // unguarded: returns a constant, nothing in it can panic
             .on_ok(|_, _, _| false)
             .child(body)
+            .footer(footer)
     });
     // The name has the focus (`initialFocus`), after the dialog takes it.
     window.defer(cx, move |window, cx| {
@@ -261,7 +262,8 @@ fn act(editor: &Entity<Editor>, delete: bool, cx: &mut App) {
     .detach();
 }
 
-fn body(editor: &Entity<Editor>, window: &mut Window, cx: &mut App) -> AnyElement {
+/// The editor's body, and its footer: Delete, a problem, Cancel and Save, pinned under the body.
+fn body(editor: &Entity<Editor>, window: &mut Window, cx: &mut App) -> (AnyElement, AnyElement) {
     read_runs(editor, cx);
     let days = days(editor, window, cx);
     let times = times(editor, window, cx);
@@ -308,7 +310,7 @@ fn body(editor: &Entity<Editor>, window: &mut Window, cx: &mut App) -> AnyElemen
         IconButton::new("routine.delete", "trash-2", "Delete routine")
             .on_press(move |_, cx| act(&editor, true, cx))
     });
-    div()
+    let body = div()
         .flex()
         .flex_col()
         .child(
@@ -362,29 +364,25 @@ fn body(editor: &Entity<Editor>, window: &mut Window, cx: &mut App) -> AnyElemen
         .child(small("Stop after", cx))
         .child(div().mt(r(theme.space.s4)).child(stop))
         .children(runs)
+        .into_any_element();
+    let footer = div()
+        .pt(r(theme.space.s12))
+        .border_t_1()
+        .border_color(hsla(colors.line.base))
+        .flex()
+        .items_center()
+        .gap(r(theme.space.s12))
+        .children(delete)
         .child(
             div()
-                .mt(r(theme.space.s20))
-                .pt(r(theme.space.s12))
-                .border_t_1()
-                .border_color(hsla(colors.line.base))
-                .flex()
-                .items_center()
-                .gap(r(theme.space.s12))
-                .children(delete)
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .children(failed.map(|text| problem("routine.problem", text, cx))),
-                )
-                .child(
-                    Pill::new("routine.cancel", "Cancel")
-                        .on_press(|window, cx| window.close_dialog(cx)),
-                )
-                .child(save),
+                .flex_1()
+                .min_w_0()
+                .children(failed.map(|text| problem("routine.problem", text, cx))),
         )
-        .into_any_element()
+        .child(Pill::new("routine.cancel", "Cancel").on_press(|window, cx| window.close_dialog(cx)))
+        .child(save)
+        .into_any_element();
+    (body, footer)
 }
 
 fn small(text: &'static str, cx: &App) -> AnyElement {

@@ -20,7 +20,9 @@ use crate::model::overview::room_line;
 use crate::model::state::{AppState, apply_event, room_bots};
 use crate::model::testing::FakeRpc;
 use crate::ui::shell::route::{self, Navigate as _, Route};
-use crate::ui::testing::{app, bot, click, draw, ids, node, room, state, tab_stays_in, text};
+use crate::ui::testing::{
+    app, bot, click, dialog_fits, draw, ids, node, room, state, tab_stays_in, text,
+};
 
 fn bots() -> Vec<Bot> {
     vec![
@@ -699,4 +701,25 @@ fn at_1000_by_700_an_exchange_from_a_room_says_it_covers_the_room(cx: &mut TestA
         node("exchange.x1.view").unwrap().focused,
         "the keyboard went into the sheet"
     );
+}
+
+/// The dialog fit (every dialog's check): Edit room, Delete room and New room, at 1000 x 600 and at 360 x 600.
+#[gpui::test]
+fn dialog_fits_every_room_dialog(cx: &mut TestAppContext) {
+    let (cx, _) = app(cx, Route::Room("r1".into()), rooms_state(), rpc(vec![]));
+    let form = ["room_form.cancel", "room_form.save"];
+    click(cx, "room.more");
+    click(cx, "room.menu.edit");
+    assert_eq!(text("dialog.title"), "Edit room");
+    dialog_fits(cx, &form);
+    click(cx, "room_form.cancel");
+    click(cx, "room.more");
+    click(cx, "room.menu.delete");
+    dialog_fits(cx, &["dialog.cancel", "dialog.confirm"]);
+    click(cx, "dialog.cancel");
+    cx.update(|_, cx| cx.navigate(Route::Rooms));
+    draw(cx);
+    click(cx, "rooms.new");
+    assert_eq!(text("dialog.title"), "New room");
+    dialog_fits(cx, &form);
 }

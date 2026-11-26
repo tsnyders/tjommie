@@ -450,7 +450,14 @@ fn page_dialog(
         .shadow(shadows(&theme.shadow.light.card))
         .type_style(&theme.typography.desktop.small)
         .text_color(hsla(colors.text.primary))
-        .child(div().child(dialog.message.clone()))
+        // A page's message may run to any length: it scrolls here, so the answer under it stays in the panel.
+        .child(
+            div()
+                .id("browser.dialog.message")
+                .max_h(r(160.))
+                .overflow_y_scroll()
+                .child(dialog.message.clone()),
+        )
         .when(is_prompt, |bar| {
             bar.child(
                 div()

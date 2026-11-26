@@ -90,7 +90,7 @@ pub fn open_room_form(room: Option<Room>, window: &mut Window, cx: &mut App) {
     });
     form.update(cx, |form, _| form._enter = Some(enter));
     open_dialog(window, cx, move |dialog, window, cx| {
-        let body = body(&form, window, cx);
+        let (body, footer) = body(&form, window, cx);
         let heading = if form.read(cx).opened.is_some() {
             "Edit room"
         } else {
@@ -104,6 +104,7 @@ pub fn open_room_form(room: Option<Room>, window: &mut Window, cx: &mut App) {
             // unguarded: returns a constant, nothing in it can panic
             .on_ok(|_, _, _| false)
             .child(body)
+            .footer(footer)
     });
     // The name has the focus (`initialFocus`), after the dialog takes it.
     window.defer(cx, move |window, cx| {
@@ -132,7 +133,8 @@ fn can_save(form: &RoomForm, cx: &App) -> bool {
     !form.busy && !name.trim().is_empty() && !chosen.is_empty() && changed
 }
 
-fn body(form: &Entity<RoomForm>, window: &mut Window, cx: &mut App) -> AnyElement {
+/// The room's name and agents, and its footer: Cancel, and Save or Create room.
+fn body(form: &Entity<RoomForm>, window: &mut Window, cx: &mut App) -> (AnyElement, AnyElement) {
     let bots = store::state(cx).bots.clone();
     let state = form.read(cx);
     let ids = chosen(state, &bots);
@@ -171,7 +173,7 @@ fn body(form: &Entity<RoomForm>, window: &mut Window, cx: &mut App) -> AnyElemen
     .variant(PillVariant::Primary)
     .disabled(!ready)
     .on_press(move |_, cx| save(&saving, cx));
-    div()
+    let body = div()
         .flex()
         .flex_col()
         .child(
@@ -184,20 +186,18 @@ fn body(form: &Entity<RoomForm>, window: &mut Window, cx: &mut App) -> AnyElemen
         )
         .child(div().mt(r(theme.space.s16)).child(members))
         .children(failed.map(|text| problem("room_form.problem", text, cx)))
+        .into_any_element();
+    let footer = div()
+        .flex()
+        .justify_end()
+        .gap(r(theme.space.s8))
         .child(
-            div()
-                .mt(r(theme.space.s20))
-                .flex()
-                .justify_end()
-                .gap(r(theme.space.s8))
-                .child(
-                    Pill::new("room_form.cancel", "Cancel")
-                        .on_press(|window, cx| window.close_dialog(cx)),
-                )
-                // Unavailable until it can save (`.off`).
-                .child(save_pill),
+            Pill::new("room_form.cancel", "Cancel").on_press(|window, cx| window.close_dialog(cx)),
         )
-        .into_any_element()
+        // Unavailable until it can save (`.off`).
+        .child(save_pill)
+        .into_any_element();
+    (body, footer)
 }
 
 fn save(form: &Entity<RoomForm>, cx: &mut App) {

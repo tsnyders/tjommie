@@ -37,7 +37,7 @@ pub fn opened(cx: &App) -> u64 {
 /// A dialog as its builder fills it (`open_dialog`): gpui-kit's dialog, with its body kept apart. gpui-kit scrolls a
 /// body taller than the window, but in a scroll area of its own that Tab can't move; this body is one of ours
 /// (`scroll::follow_focus`), so Tab brings each of its controls into view on a small window (M5 re-review). The title
-/// stays above it.
+/// stays above it, and the footer (`Surface::footer`) below it.
 pub struct Surface {
     dialog: Dialog,
     body: Vec<AnyElement>,
@@ -51,6 +51,14 @@ impl Surface {
 
     pub fn title(mut self, title: impl IntoElement) -> Self {
         self.dialog = self.dialog.title(title);
+        self
+    }
+
+    /// The dialog's actions (Cancel and Save, a confirm, Close). gpui-kit pins them under the height-capped body, so
+    /// however tall the body, they stay whole in the window and the body scrolls between the title and them (the
+    /// README pictures' routine editor ran its Save off a 1000 x 700 window).
+    pub fn footer(mut self, footer: impl IntoElement) -> Self {
+        self.dialog = self.dialog.footer(footer);
         self
     }
 
@@ -203,33 +211,27 @@ pub fn open_confirm(
             .title(title(heading.clone(), cx))
             .child(
                 div()
+                    .type_style(&theme(cx).typography.desktop.body)
+                    .text_color(hsla(colors.text.secondary))
+                    .child(body.clone()),
+            )
+            .footer(
+                div()
                     .flex()
-                    .flex_col()
-                    .gap(r(theme(cx).space.s20))
+                    .justify_end()
+                    .gap(r(theme(cx).space.s8))
                     .child(
-                        div()
-                            .type_style(&theme(cx).typography.desktop.body)
-                            .text_color(hsla(colors.text.secondary))
-                            .child(body.clone()),
+                        Pill::new("dialog.cancel", "Cancel")
+                            .variant(PillVariant::Grey)
+                            .on_press(|window, cx| window.close_dialog(cx)),
                     )
                     .child(
-                        div()
-                            .flex()
-                            .justify_end()
-                            .gap(r(theme(cx).space.s8))
-                            .child(
-                                Pill::new("dialog.cancel", "Cancel")
-                                    .variant(PillVariant::Grey)
-                                    .on_press(|window, cx| window.close_dialog(cx)),
-                            )
-                            .child(
-                                Pill::new("dialog.confirm", confirm.clone())
-                                    .variant(variant)
-                                    .on_press(move |window, cx| {
-                                        on_confirm(window, cx);
-                                        window.close_dialog(cx);
-                                    }),
-                            ),
+                        Pill::new("dialog.confirm", confirm.clone())
+                            .variant(variant)
+                            .on_press(move |window, cx| {
+                                on_confirm(window, cx);
+                                window.close_dialog(cx);
+                            }),
                     ),
             )
     });

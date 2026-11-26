@@ -208,7 +208,7 @@ fn cap_field(cap: &Entity<InputState>, below: Option<String>, cx: &App) -> AnyEl
     )
 }
 
-/// Cancel and the form's own button, off until the form can go (`Form`'s buttons).
+/// Cancel and the form's own button, off until the form can go (`Form`'s buttons): the dialog's footer.
 fn buttons(
     submit: &'static str,
     danger: bool,
@@ -227,7 +227,6 @@ fn buttons(
         .on_press(on_submit)
         .into_any_element();
     div()
-        .mt(r(theme.space.s20))
         .flex()
         .justify_end()
         .gap(r(theme.space.s8))
@@ -310,9 +309,9 @@ pub(super) fn open_add_subscription(
                             .problem
                             .clone()
                             .map(|said| problem("account_form.problem", said, cx)),
-                    )
-                    .child(buttons("Add and sign in", false, ready, save, cx)),
+                    ),
             )
+            .footer(buttons("Add and sign in", false, ready, save, cx))
     });
     focus_soon(&name, window, cx);
 }
@@ -484,9 +483,9 @@ pub(super) fn open_add_key(
                             .problem
                             .clone()
                             .map(|said| problem("account_form.problem", said, cx)),
-                    )
-                    .child(buttons("Add key", false, ready, save, cx)),
+                    ),
             )
+            .footer(buttons("Add key", false, ready, save, cx))
     });
     focus_soon(&name, window, cx);
 }
@@ -620,9 +619,9 @@ pub(super) fn open_replace_key(
                             .problem
                             .clone()
                             .map(|said| problem("account_form.problem", said, cx)),
-                    )
-                    .child(buttons("Save key", false, ready, save, cx)),
+                    ),
             )
+            .footer(buttons("Save key", false, ready, save, cx))
     });
     focus_soon(&key, window, cx);
 }
@@ -702,9 +701,9 @@ pub(super) fn open_cap(
                             .problem
                             .clone()
                             .map(|said| problem("account_form.problem", said, cx)),
-                    )
-                    .child(buttons("Save", false, ready, save, cx)),
+                    ),
             )
+            .footer(buttons("Save", false, ready, save, cx))
     });
     focus_soon(&cap, window, cx);
 }
@@ -776,9 +775,9 @@ pub(super) fn open_rename(
                             .problem
                             .clone()
                             .map(|said| problem("account_form.problem", said, cx)),
-                    )
-                    .child(buttons("Save", false, ready, save, cx)),
+                    ),
             )
+            .footer(buttons("Save", false, ready, save, cx))
     });
     focus_soon(&name, window, cx);
 }
@@ -841,14 +840,14 @@ pub(super) fn open_remove(
                                 .items_start()
                                 .gap(r(theme.space.s6))
                                 .children(links),
-                        )
-                        .child(
-                            div().mt(r(theme.space.s12)).flex().justify_end().child(
-                                Pill::new("account_remove.ok", "OK")
-                                    .variant(PillVariant::Primary)
-                                    .on_press(|window, cx| window.close_dialog(cx)),
-                            ),
                         ),
+                )
+                .footer(
+                    div().flex().justify_end().child(
+                        Pill::new("account_remove.ok", "OK")
+                            .variant(PillVariant::Primary)
+                            .on_press(|window, cx| window.close_dialog(cx)),
+                    ),
                 )
         });
         return;
@@ -900,8 +899,8 @@ pub(super) fn open_remove(
                             .problem
                             .clone()
                             .map(|said| problem("account_form.problem", said, cx)),
-                    )
-                    .child(buttons("Remove", true, !state.form.busy, save, cx)),
+                    ),
             )
+            .footer(buttons("Remove", true, !state.form.busy, save, cx))
     });
 }

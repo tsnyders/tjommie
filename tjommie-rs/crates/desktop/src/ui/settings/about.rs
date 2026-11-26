@@ -180,7 +180,7 @@ mod tests {
     use super::APP_VERSION;
     use crate::model::testing::FakeRpc;
     use crate::ui::shell::route::{Route, Section};
-    use crate::ui::testing::{app, click, draw, node, state, text};
+    use crate::ui::testing::{app, click, dialog_fits, draw, node, state, text};
 
     /// diagnostics-section.test.tsx (About's half of "distinguishes the current device version from the selected
     /// host"): this device's version, the host's and its daemon's, and the notices button.
@@ -228,5 +228,20 @@ mod tests {
             text("settings.about.notices.problem"),
             "Notices are unavailable in this app build."
         );
+    }
+
+    /// The dialog fit (every dialog's check): the notices have no actions; their title stays in the window at 1000 x 600
+    /// and at 360 x 600.
+    #[gpui::test]
+    fn dialog_fits_the_notices(cx: &mut TestAppContext) {
+        let (cx, _) = app(
+            cx,
+            Route::Settings(Section::About),
+            state(vec![], vec![], vec![]),
+            FakeRpc::new(),
+        );
+        click(cx, "settings.about.notices");
+        draw(cx);
+        dialog_fits(cx, &[]);
     }
 }
