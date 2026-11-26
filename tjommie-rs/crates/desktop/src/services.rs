@@ -887,7 +887,7 @@ pub fn tell_of_a_restart_in_the_tray(cx: &mut App) {
     // A WinRT call: made once the window that is being built is done.
     cx.defer(move |_| {
         guarded("tell of the restart", || {
-            services.notifier.show_plain(
+            services.notifier.show_opening(
                 "Tjommie closed unexpectedly",
                 "It restarted, and your agents were restarted too. It is waiting in the tray.",
             );

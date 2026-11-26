@@ -135,14 +135,17 @@ pub trait SecretStore: Send + Sync {
         Ok(found)
     }
 
-    /// `write`, then looks for the secret once it has settled, and writes it once more if it is gone: Credential Manager
-    /// can drop a new entry while another process is reading credentials. `false` when it is gone after that too.
+    /// `write`, then reads the secret back once it has settled, and writes it once more if it is not there as written:
+    /// Credential Manager can drop a new entry while another process is reading credentials. `false` when it is still
+    /// not there after that.
     // ponytail: an entry dropped later than SETTLE slips through, and the fill then says the password is missing.
     fn write_kept(&self, reference: &str, secret: &VaultSecret) -> Result<bool, VaultError> {
         for _ in 0..2 {
             self.write(reference, secret)?;
             std::thread::sleep(SETTLE);
-            if self.read_settled(reference)?.is_some() {
+            if self.read_settled(reference)?.is_some_and(|kept| {
+                kept.username() == secret.username() && kept.password() == secret.password()
+            }) {
                 return Ok(true);
             }
         }

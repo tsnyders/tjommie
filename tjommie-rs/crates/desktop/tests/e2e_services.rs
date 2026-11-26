@@ -295,4 +295,9 @@ fn e2e_a_crash_restart_into_the_tray_is_told_by_a_windows_notification() {
         })
     });
     assert!(!visible(&mut app), "the restart stays in the tray");
+    // A click on the notification brings the window up.
+    app.poke(Poke::ClickToast(0)).unwrap();
+    common::eventually("the window to show", Duration::from_secs(15), || {
+        visible(&mut app)
+    });
 }

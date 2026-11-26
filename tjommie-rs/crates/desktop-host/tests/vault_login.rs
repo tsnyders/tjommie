@@ -75,6 +75,8 @@ struct FakeSecrets {
     drop_writes: AtomicUsize,
     /// The next reads that find nothing although the entry is there.
     miss_reads: AtomicUsize,
+    /// The next writes that keep something else than they were given.
+    garble_writes: AtomicUsize,
 }
 
 impl FakeSecrets {
@@ -98,9 +100,14 @@ impl SecretStore for FakeSecrets {
         if take(&self.drop_writes) {
             return Ok(());
         }
+        let password = if take(&self.garble_writes) {
+            format!("{}-not-what-was-written", secret.password())
+        } else {
+            secret.password().to_owned()
+        };
         self.values.lock().unwrap().insert(
             reference.to_owned(),
-            (secret.username().to_owned(), secret.password().to_owned()),
+            (secret.username().to_owned(), password),
         );
         Ok(())
     }
@@ -706,6 +713,28 @@ async fn a_password_that_is_not_kept_fails_the_save_and_records_nothing() {
     );
     assert_eq!(f.secrets.writes.load(Ordering::SeqCst), 2, "one retry only");
     assert!(vault_logins(&f).is_empty(), "nothing is recorded");
+}
+
+#[tokio::test]
+async fn a_password_read_back_differently_fails_the_save_and_records_nothing() {
+    let f = Fixture::new();
+    let vault = f.vault();
+    run(&vault, "local", VaultHostAction::Unlock)
+        .await
+        .expect("unlock");
+    f.secrets.garble_writes.store(2, Ordering::SeqCst);
+    f.window
+        .queue(input("Synthetic account", "https://login.invalid"));
+
+    assert_eq!(
+        run(&vault, "local", entry_action(None)).await,
+        Err(GateError::Vault(
+            "Windows did not keep the password, so the login was not saved. Try again.".to_owned()
+        ))
+    );
+    assert_eq!(f.secrets.writes.load(Ordering::SeqCst), 2, "one retry only");
+    assert!(vault_logins(&f).is_empty(), "nothing is recorded");
+    assert_eq!(f.secrets.count(), 0, "the wrong secret is removed");
 }
 
 #[tokio::test]

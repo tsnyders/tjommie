@@ -9,7 +9,7 @@ use std::sync::{LazyLock, Mutex, PoisonError};
 use std::time::Duration;
 
 use windows::Win32::Foundation::{
-    CloseHandle, HANDLE, HLOCAL, LocalFree, WAIT_ABANDONED, WAIT_OBJECT_0,
+    CloseHandle, HANDLE, HLOCAL, LocalFree, WAIT_ABANDONED, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows::Win32::Security::Authorization::ConvertSidToStringSidW;
 use windows::Win32::Security::{GetTokenInformation, TOKEN_QUERY, TOKEN_USER, TokenUser};
@@ -110,8 +110,15 @@ impl Handle {
         // SAFETY: the handle is open for as long as `self`.
         match unsafe { WaitForSingleObject(self.0, millis) } {
             WAIT_OBJECT_0 | WAIT_ABANDONED => Some(Held(self)),
-            _ => {
+            WAIT_TIMEOUT => {
                 warn("The Credential Manager lock was not free in time.");
+                None
+            }
+            _ => {
+                let error = io::Error::last_os_error();
+                warn(&format!(
+                    "Waiting for the Credential Manager lock failed ({error})."
+                ));
                 None
             }
         }
