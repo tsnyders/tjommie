@@ -263,10 +263,36 @@ fn e2e_hidden_starts_in_the_tray_and_the_tray_shows_the_window() {
         app.services().is_ok_and(|state| state.registry_writes == 0)
     });
     assert!(!visible(&mut app), "a start in the tray showed its window");
+    assert!(
+        app.services().unwrap().toasts.is_empty(),
+        "an ordinary start in the tray says nothing"
+    );
     app.poke(Poke::Tray("show".into())).unwrap();
     common::eventually("the window to show", Duration::from_secs(15), || {
         visible(&mut app)
     });
     app.wait("screen.agents", Predicate::Exists, 60_000)
         .unwrap();
+}
+
+/// Windows restarts a crashed app with `--hidden --after-crash`. No window shows the in-app notice, so Windows says it.
+#[test]
+fn e2e_a_crash_restart_into_the_tray_is_told_by_a_windows_notification() {
+    assert_eq!(identity::CURRENT.name, "e2e");
+    let root = owner_safety::test_root().unwrap();
+    let mut app = common::launch_args(
+        root.path(),
+        &[("default.json", common::QUIET)],
+        &["--hidden", "--after-crash"],
+    );
+    common::eventually("the notification", Duration::from_secs(60), || {
+        app.services().is_ok_and(|state| {
+            state.toasts.iter().any(|(title, body, _)| {
+                title == "Tjommie closed unexpectedly"
+                    && body
+                        == "It restarted, and your agents were restarted too. It is waiting in the tray."
+            })
+        })
+    });
+    assert!(!visible(&mut app), "the restart stays in the tray");
 }

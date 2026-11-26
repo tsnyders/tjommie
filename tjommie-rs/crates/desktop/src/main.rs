@@ -27,8 +27,8 @@ fn main() -> ExitCode {
             None
         }
     };
-    // Windows passes --after-crash when it restarts the app after a crash; it opens the window (only --hidden and --updated
-    // start in the tray).
+    // Windows restarts a crashed app with `--hidden --after-crash`: it comes back in the tray, and Windows says what
+    // happened (`app::run`), as the in-app notice has no window to show it.
     let after_crash = std::env::args_os().any(|arg| arg == "--after-crash");
     desktop::app::run(identity, root, after_crash, instance);
     // A motion check that failed (T7.2) says so to the script that ran it.

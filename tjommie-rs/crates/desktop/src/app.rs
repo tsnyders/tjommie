@@ -79,6 +79,9 @@ pub fn run(identity: Identity, root: PathBuf, after_crash: bool, instance: Optio
                 // The tray, the toasts, start at sign-in and the updater (M6), for this window; none for a motion check.
                 if live {
                     crate::services::start(&identity, window, cx);
+                    if after_crash && starts_in_the_tray() {
+                        crate::services::tell_of_a_restart_in_the_tray(cx);
+                    }
                 }
                 let panel = BrowserPanel::create(window, cx);
                 cx.new(|cx| {

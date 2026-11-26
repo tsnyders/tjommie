@@ -879,6 +879,22 @@ impl Services {
     }
 }
 
+/// Windows restarts a crashed app into the tray, where no window shows the in-app notice, so Windows says it too.
+pub fn tell_of_a_restart_in_the_tray(cx: &mut App) {
+    let Some(services) = services(cx) else {
+        return;
+    };
+    // A WinRT call: made once the window that is being built is done.
+    cx.defer(move |_| {
+        guarded("tell of the restart", || {
+            services.notifier.show_plain(
+                "Tjommie closed unexpectedly",
+                "It restarted, and your agents were restarted too. It is waiting in the tray.",
+            );
+        });
+    });
+}
+
 /// A live `notify` event from the daemon.
 pub fn notify(notice: Notify, cx: &mut App) {
     if let Some(services) = services(cx) {
