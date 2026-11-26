@@ -341,13 +341,13 @@ pub fn show(status: SpeechStatus, cx: &mut App) {
     }
 }
 
-/// This device's dictation choices (Settings, Voice): the language and the input device, `""` for the default.
+/// This device's dictation choices (Settings, Voice): the language. The input device is the Windows default
+/// microphone, which capture records from.
 /// ponytail: kept for the run; the TypeScript saved them on the device (localStorage), and `DeviceSettings` has no voice
 /// fields yet (desktop-host). With one English model the language rarely changes.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct VoiceChoice {
     pub language: String,
-    pub input_device: String,
 }
 
 impl Global for VoiceChoice {}
