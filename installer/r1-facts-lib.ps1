@@ -153,7 +153,11 @@ function Get-InstallLocationKeys([string]$Hive, [string]$ParentKey, [string]$Vie
 # listing, and a file that is not under that root is an error, never a wrong path.
 # Returns objects with File (the FileInfo) and Relative; nothing if the folder holds no file. Throws if the folder is not there.
 function Get-FilesUnder([string]$Folder, [string]$Filter = '*') {
-    $base = (Get-Item -LiteralPath $Folder).FullName.TrimEnd('\')
+    # -Force: a folder with the hidden or system attribute (Windows' all-users Desktop is one on a newer runner image) is not returned by a plain
+    # Get-Item even by its literal path ("Could not find item"), though Test-Path says it is there. If it still cannot be had, the folder's own
+    # full path is the base, and the listing below throws if the folder is really not there.
+    $item = Get-Item -LiteralPath $Folder -Force -ErrorAction SilentlyContinue
+    $base = $(if ($null -ne $item) { $item.FullName } else { [IO.Path]::GetFullPath($Folder) }).TrimEnd('\')
     foreach ($file in @(Get-ChildItem -LiteralPath $base -Recurse -File -Force -Filter $Filter | Sort-Object FullName)) {
         if (-not $file.FullName.StartsWith($base + '\', [StringComparison]::OrdinalIgnoreCase)) { throw "$($file.FullName) is not under $base." }
         [pscustomobject]@{ File = $file; Relative = $file.FullName.Substring($base.Length + 1) }
@@ -216,7 +220,12 @@ function Get-ShortcutFacts([string]$Folder) {
     $wsh = New-Object -ComObject WScript.Shell
     $shell = New-Object -ComObject Shell.Application
     $found = @()
-    foreach ($entry in @(Get-FilesUnder $Folder '*.lnk')) {
+    # A folder that cannot be listed because it is not there for the provider (the all-users Desktop on a runner image that does not have one
+    # that can be read) holds no shortcut. Any other failure, such as an access error, is still an error.
+    $entries = @()
+    try { $entries = @(Get-FilesUnder $Folder '*.lnk') }
+    catch { if ($_.Exception.Message -match 'Could not find item|Cannot find path|does not exist') { return @() } else { throw } }
+    foreach ($entry in $entries) {
         $file = $entry.File
         $link = $wsh.CreateShortcut($file.FullName)
         $item = $shell.NameSpace($file.DirectoryName).ParseName($file.Name)

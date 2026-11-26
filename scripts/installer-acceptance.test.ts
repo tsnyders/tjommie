@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -10,7 +11,7 @@ import { codeOf, installer, powershell, repo, runBody, temp, windows } from "./p
 
 vi.setConfig({ testTimeout: 90_000 });
 
-const acceptance = ["accept-fresh.ps1", "accept-over-r1.ps1"];
+const acceptance = ["accept-fresh.ps1", "accept-over-r1.ps1", "accept-update-path.ps1", "accept-production-over-r1.ps1"];
 
 describe.skipIf(!windows)("the installer acceptance scripts", () => {
   // Each is started with an environment that is not a hosted runner's, and with every argument it needs, so the guard (which
@@ -162,7 +163,7 @@ describe.skipIf(!windows)("the installer scripts, linted", () => {
   };
 
   it("finds no variable that is read and never assigned, and no command that is not defined", () => {
-    const files = ["accept-fresh.ps1", "accept-over-r1.ps1", "accept-lib.ps1", "build-installer.ps1", "build-acceptance-installers.ps1", "build-stub-payload.ps1", "stop-install-processes.ps1", "unlink-reparse-points.ps1", "helper-log.ps1", "scoped-processes.ps1", "set-shortcut-aumid.ps1", "hosted-runner.ps1", "install-latest-r1.ps1"];
+    const files = ["accept-fresh.ps1", "accept-over-r1.ps1", "accept-update-path.ps1", "accept-production-over-r1.ps1", "accept-phase3-lib.ps1", "accept-lib.ps1", "build-installer.ps1", "build-acceptance-installers.ps1", "build-stub-payload.ps1", "stop-install-processes.ps1", "unlink-reparse-points.ps1", "helper-log.ps1", "scoped-processes.ps1", "set-shortcut-aumid.ps1", "hosted-runner.ps1", "install-latest-r1.ps1"];
     const report = lint(installer, files);
     for (const file of files) expect(report[file], file).toEqual([]);
   });
@@ -180,6 +181,126 @@ describe.skipIf(!windows)("the installer scripts, linted", () => {
 
 describe.skipIf(!windows)("the acceptance library's pure helpers", () => {
   // Only the helpers that take a folder: the ones that read production's registry keys are never called in a test.
+  // Run 1 of T8.4: on a newer runner image the all-users Desktop folder is a hidden one, and a plain Get-Item on a hidden folder's literal path fails with
+  // "Could not find item" though Test-Path says it is there. That stopped three jobs that had passed before (the shortcut check reads that folder to
+  // show nothing of ours is in it). A hidden folder is read, and a folder that is not there still holds nothing and still throws where it should.
+  it("reads a hidden folder, finds no shortcut in it, and still refuses a folder that is not there", () => {
+    const root = temp();
+    const hidden = join(root, "Desktop");
+    mkdirSync(hidden);
+    writeFileSync(join(hidden, "note.txt"), "x");
+    const result = runBody("accept-lib.ps1", String.raw`
+      $dir = '${hidden}'
+      (Get-Item -LiteralPath $dir -Force).Attributes = 'Directory, Hidden, System'
+      $plain = $null
+      try { $plain = [bool](Get-Item -LiteralPath $dir -ErrorAction Stop) } catch { $plain = $false }
+      $files = @(Get-FilesUnder $dir | ForEach-Object { $_.Relative })
+      $links = @(Get-ShortcutFacts $dir)
+      $missing = 'none'
+      try { [void](Get-FilesUnder '${join(root, "absent")}') ; $missing = 'no error' } catch { $missing = 'threw' }
+      (Get-Item -LiteralPath $dir -Force).Attributes = 'Directory'
+      [ordered]@{ plainGetItemSeesIt = $plain; files = $files; links = $links.Count; absent = $missing } | ConvertTo-Json -Compress
+    `) as { plainGetItemSeesIt: boolean; files: string[]; links: number; absent: string };
+    // (The first line documents why: a plain Get-Item does not see it. If a future Windows does, the fix is simply not needed, and this still passes.)
+    expect(result.files).toEqual(["note.txt"]);
+    expect(result.links).toBe(0);
+    expect(result.absent).toBe("threw");
+  });
+
+  // Run 2 of T8.4: the check that an install holds exactly the payload compared names, and R1 and the new payload share paths (the daemon, the speech
+  // files), so a daemon of R1's left in place would have passed it. Every installed file is now compared with the build manifest's SHA-256.
+  it("tells a file the build made from one of the same name that was left in place, by its SHA-256", () => {
+    const root = temp();
+    const folder = join(root, "install");
+    mkdirSync(join(folder, "resources", "daemon"), { recursive: true });
+    const content = { "Tjommie.exe": "the app", "resources\\daemon\\tjommie-daemon.exe": "the built daemon", "Uninstall Tjommie.exe": "uninstaller" };
+    writeFileSync(join(folder, "Tjommie.exe"), content["Tjommie.exe"]);
+    writeFileSync(join(folder, "resources", "daemon", "tjommie-daemon.exe"), "R1's daemon, left in place");
+    writeFileSync(join(folder, "Uninstall Tjommie.exe"), content["Uninstall Tjommie.exe"]);
+    const sha = (text: string): string => createHash("sha256").update(text).digest("hex");
+    const manifest = join(root, "payload-manifest.json");
+    writeFileSync(manifest, JSON.stringify({ files: [
+      { path: "Tjommie.exe", bytes: 7, sha256: sha(content["Tjommie.exe"]) },
+      { path: "resources\\daemon\\tjommie-daemon.exe", bytes: 16, sha256: sha(content["resources\\daemon\\tjommie-daemon.exe"]) },
+    ], pending: [] }));
+    const run = (): { checks: { ok: boolean; check: string; detail: unknown }[] } => runBody("accept-lib.ps1", String.raw`
+      . '${join(installer, "accept-phase3-lib.ps1")}'
+      Start-Acceptance 'x' '${join(root, "out")}'
+      Test-InstalledPayload '${folder}' '${manifest}' 'Tjommie' 'T' | Out-Null
+      [ordered]@{ checks = @($script:Checks.ToArray() | ForEach-Object { [ordered]@{ ok = $_['ok']; check = $_['check']; detail = $_['detail'] } }) } | ConvertTo-Json -Depth 6 -Compress
+    `) as { checks: { ok: boolean; check: string; detail: unknown }[] };
+    const wrong = run().checks.filter((check) => !check.ok);
+    // The names are right (so the name check passes) and only the daemon's bytes are not the build's: that alone is what fails.
+    expect(wrong.map((check) => check.check)).toEqual([expect.stringContaining("byte for byte the one the build made")]);
+    expect(wrong[0].detail).toEqual(["resources\\daemon\\tjommie-daemon.exe"]);
+    // With the built daemon in place everything passes.
+    writeFileSync(join(folder, "resources", "daemon", "tjommie-daemon.exe"), content["resources\\daemon\\tjommie-daemon.exe"]);
+    expect(run().checks.filter((check) => !check.ok)).toEqual([]);
+  });
+
+  // T8.4 review m1: the owner's upgrade carries saved logins, so every data-root comparison also reports the saved-logins vault, and must not be an empty
+  // comparison (the seed puts invented logins in it). What verify found is judged here: nothing at the baseline, a login lost, a secret lost, and a secret
+  // the runner could never read, which is a note and never a pass.
+  it("holds the saved-logins vault to its invented logins, and tells an empty comparison, a lost login, a lost secret and an unchecked secret apart", () => {
+    const root = temp();
+    const judged = (vault: unknown): { ok: boolean; note: boolean; check: string }[] => runBody("accept-lib.ps1", String.raw`
+      . '${join(installer, "accept-phase3-lib.ps1")}'
+      Start-Acceptance 'x' '${join(root, "out")}'
+      $vault = '${JSON.stringify(vault)}' | ConvertFrom-Json
+      Test-VaultAsBaseline $vault 'T' | Out-Null
+      @($script:Checks.ToArray() | ForEach-Object { [ordered]@{ ok = [bool]$_['ok']; note = [bool]$_['note']; check = [string]$_['check'] } }) | ConvertTo-Json -Compress -AsArray
+    `) as { ok: boolean; note: boolean; check: string }[];
+    const side = (logins: number, secretsReadable: number, pendingDeletions = 0): { logins: number; secretsReadable: number; pendingDeletions: number; userVersion: number } => ({ logins, secretsReadable, pendingDeletions, userVersion: 0 });
+    const failed = (checks: { ok: boolean; check: string }[]): string[] => checks.filter((check) => !check.ok).map((check) => check.check);
+    // Intact, with the secrets read back: three checks, all passing, no notes.
+    const intact = judged({ before: side(2, 2), after: side(2, 2) });
+    expect(failed(intact)).toEqual([]);
+    expect(intact.filter((check) => check.note)).toEqual([]);
+    expect(intact.map((check) => check.check).join("\n")).toContain("read back identical");
+    // No vault at the baseline, or one with no logins: the comparison would have been empty, and that fails.
+    expect(failed(judged(null))).toEqual([expect.stringContaining("so it is not compared empty")]);
+    expect(failed(judged({ before: null, after: null }))).toEqual([expect.stringContaining("so it is not compared empty")]);
+    expect(failed(judged({ before: side(0, 0), after: side(0, 0) }))).toEqual([expect.stringContaining("so it is not compared empty")]);
+    // A login lost, one added, a deletion queued: the logins check. A secret that can no longer be read: the secrets check.
+    expect(failed(judged({ before: side(2, 2), after: side(1, 1) }))).toEqual([expect.stringContaining("every saved login is still in the vault"), expect.stringContaining("read back identical")]);
+    expect(failed(judged({ before: side(2, 2), after: side(3, 2) }))).toEqual([expect.stringContaining("every saved login is still in the vault")]);
+    expect(failed(judged({ before: side(2, 2), after: side(2, 2, 1) }))).toEqual([expect.stringContaining("every saved login is still in the vault")]);
+    expect(failed(judged({ before: side(2, 2), after: side(2, 1) }))).toEqual([expect.stringContaining("read back identical")]);
+    // A runner whose Credential Manager gave nothing: the records are compared, and the secrets are a note that says they were not checked, never a pass.
+    const unchecked = judged({ before: side(2, 0), after: side(2, 0) });
+    expect(failed(unchecked)).toEqual([]);
+    expect(unchecked.filter((check) => check.note).map((check) => check.check)).toEqual([expect.stringContaining("SECRETS were not checked")]);
+    expect(unchecked.some((check) => check.check.includes("read back identical"))).toBe(false);
+  });
+
+  // Runs 6 and 7 of T8.4: a clock cannot tell the new app's daemon from R1's (the driver's "close" fires when the installer finishes, after it has started
+  // the app). The daemon is the new app's only if its parent is the very process U4 pinned: that id, still held by the same image started at the same time.
+  it("takes a daemon for the new app's only when its parent is the pinned process: a reused id, another image, a gone parent or no pin all fail", () => {
+    const result = runBody("accept-lib.ps1", String.raw`
+      . '${join(installer, "accept-phase3-lib.ps1")}'
+      $exe = 'C:\app\Tjommie Update Test.exe'
+      $started = [datetime]'2026-11-22T20:04:47.5'
+      $pin = @{ pid = 5708; created = $started }
+      $daemon = [pscustomobject]@{ ProcessId = 2968; ParentProcessId = 5708 }
+      $other = [pscustomobject]@{ ProcessId = 3000; ParentProcessId = 41 }
+      $live = { param($id) if ($id -eq 5708) { [pscustomobject]@{ ExecutablePath = 'c:\APP\tjommie update test.exe'; CreationDate = $started } } }
+      $reused = { param($id) [pscustomobject]@{ ExecutablePath = $exe; CreationDate = $started.AddMilliseconds(1) } }
+      $imposter = { param($id) [pscustomobject]@{ ExecutablePath = 'C:\app\other.exe'; CreationDate = $started } }
+      $gone = { param($id) $null }
+      [ordered]@{
+        its      = @(Get-DaemonsNotOfPinnedApp @($daemon) $pin $exe $live)
+        mixed    = @(Get-DaemonsNotOfPinnedApp @($daemon, $other) $pin $exe $live)
+        reused   = @(Get-DaemonsNotOfPinnedApp @($daemon) $pin $exe $reused)
+        imposter = @(Get-DaemonsNotOfPinnedApp @($daemon) $pin $exe $imposter)
+        gone     = @(Get-DaemonsNotOfPinnedApp @($daemon) $pin $exe $gone)
+        nopin    = @(Get-DaemonsNotOfPinnedApp @($daemon) $null $exe $live)
+        none     = @(Get-DaemonsNotOfPinnedApp @() $pin $exe $live)
+      } | ConvertTo-Json -Compress
+    `) as Record<"its" | "mixed" | "reused" | "imposter" | "gone" | "nopin" | "none", string[]>;
+    const refused = ["2968 (parent 5708)"];
+    expect(result).toEqual({ its: [], mixed: ["3000 (parent 41)"], reused: refused, imposter: refused, gone: refused, nopin: refused, none: [] });
+  });
+
   it("snapshots a tree, finds a file that is gone, changed or added, and adds sentinels of known size", () => {
     const root = temp();
     const result = runBody("accept-lib.ps1", String.raw`

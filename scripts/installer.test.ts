@@ -77,6 +77,24 @@ describe.skipIf(!windows)("the hosted-runner guard", () => {
     expect(install).toMatch(/fresh\s*=\s*\$true/);
     expect(install.indexOf("Assert-FreshRunner")).toBeLessThan(install.indexOf("fresh"));
   });
+
+  // T8.4 review m2: the release's own latest.yml only shows two assets of one release agree. For the release the repository recorded (T8.1), the download is also
+  // held to the SHA-512 in installer/r1-install-facts.json, and the result says which of the two checks applied.
+  it("holds the downloaded R1 installer to the SHA-512 the repository recorded for that release, and says which check applied", () => {
+    const install = codeOf(join(installer, "install-latest-r1.ps1"));
+    expect(install).toContain("r1-install-facts.json");
+    expect(install).toContain("$pinnedByRepository = ($tag -eq [string]$pinned.tag)");
+    expect(install).toMatch(/\$pinnedByRepository -and \(\$sha512 -cne \[string\]\$pinned\.installerSha512\)/);
+    expect(install).toMatch(/pinnedByRepository\s*=\s*\$pinnedByRepository/);
+    expect(install).toMatch(/verifiedAgainst\s*=\s*\$verifiedAgainst/);
+    // It is judged after latest.yml's own check, and before anything is installed.
+    expect(install.indexOf("latest.yml SHA-512 does not match")).toBeLessThan(install.indexOf("$pinnedByRepository"));
+    expect(install.indexOf("$pinnedByRepository")).toBeLessThan(install.indexOf("Start-Process"));
+    // What it compares with is a real recorded value for the tag the T8.4 production job pins: a base64 SHA-512 (64 bytes) for v0.5.1.
+    const facts = JSON.parse(readFileSync(join(installer, "r1-install-facts.json"), "utf8")) as { release: { tag: string; installerSha512: string } };
+    expect(facts.release.tag).toBe("v0.5.1");
+    expect(Buffer.from(facts.release.installerSha512, "base64")).toHaveLength(64);
+  });
 });
 
 describe.skipIf(!windows)("the installer's helper that sets a shortcut's AppUserModelID", () => {

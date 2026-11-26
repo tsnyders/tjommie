@@ -6,11 +6,12 @@ name: Release
 #
 # Two ways in:
 #   - a push of a v* tag publishes, exactly as before: the tag must match package.json and sit on main, and the release job needs both builds.
-#   - anything else is a DRY RUN. It builds everything the release builds, runs every check, and uploads the installer, latest.yml and a
-#     release-manifest.json as workflow ARTIFACTS ONLY (release-dryrun-windows). It never creates a release, never pushes a tag, never touches a
-#     latest.yml on any release, and skips the Android build (its signing secrets are for a real release). Start one with
+#   - anything else is a DRY RUN. It builds everything the release builds, the Android APK included, runs every check, and uploads the
+#     installer, latest.yml, the symbols and a release-manifest.json (release-dryrun-windows) and a manifest of the APK (release-dryrun-apk-manifest:
+#     its name, size, SHA-256, signer and version, never the APK, which is signed with the release key) as workflow ARTIFACTS ONLY. It never
+#     creates a release, never pushes a tag and never touches a latest.yml on any release. Start one with
 #     `gh workflow run release.yml --ref <branch>` (workflow_dispatch), or by pushing a branch named release-dryrun-<anything>.
-#     That artifact is FOR INSPECTION ONLY: it is a production-identity installer on a public repository, so never install one. (It is
+#     Those artifacts are FOR INSPECTION ONLY: the installer is a production-identity one on a public repository, so never install one. (It is
 #     not on any update feed, and release-manifest.json says dryRun: true, published: false.)
 #     scripts/release-mode.ts decides which it is, from the event and the ref, and defaults to a dry run; scripts/release-workflow.test.ts
 #     proves no step outside the publish job can create a release.
@@ -272,10 +273,13 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-  # The Android APK is signed with the release keystore (repository secrets), so a dry run does not build it.
+  # The Android APK is built in every run, a dry run too (the owner's decision, 2026-11-22): the APK has never been built under this workflow, and
+  # only a run that builds it can show that it still is. It is signed with the release keystore (repository secrets) and checked against the
+  # recorded signer, as for a release. But the repository is public, so a dry run NEVER uploads the APK: it uploads a small manifest of it
+  # (name, size, SHA-256, verified signer, version). A release is made by the `release` job alone, behind its tag guard, and downloads
+  # `android-assets`, which a dry run never writes.
   android:
     needs: verify
-    if: ${{ needs.verify.outputs.dry_run == 'false' }}
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
@@ -357,6 +361,16 @@ jobs:
           if ($expected -notmatch '^[0-9a-fA-F]{64}$') { throw 'ANDROID_CERT_SHA256 variable is missing or invalid.' }
           if ($actual.ToLowerInvariant() -ne $expected.ToLowerInvariant()) { throw 'APK signer does not match ANDROID_CERT_SHA256.' }
           Write-Output 'APK signature and signing certificate verified.'
+      # A dry run keeps the facts about the APK and not the APK: the repository is public, and a release-signed build of unreleased code is not
+      # left downloadable. This re-checks the signature and the recorded signer, then writes the manifest that the dry run uploads.
+      - name: Write the APK manifest (a dry run uploads this and never the APK)
+        if: ${{ needs.verify.outputs.dry_run == 'true' }}
+        shell: pwsh
+        env:
+          ANDROID_CERT_SHA256: ${{ vars.ANDROID_CERT_SHA256 }}
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          ./installer/write-apk-manifest.ps1 -Apk "dist-mobile/Tjommie-Android-$version.apk" -Out dist-mobile/apk-manifest.json -ExpectedSigner $env:ANDROID_CERT_SHA256
       - name: Remove decoded signing and Firebase files
         if: always()
         shell: pwsh
@@ -369,10 +383,19 @@ jobs:
             if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force -ErrorAction Stop }
           }
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ needs.verify.outputs.dry_run == 'false' }}
         with:
           name: android-assets
           path: dist-mobile/Tjommie-Android-*.apk
           if-no-files-found: error
+      # A dry run uploads the manifest and never an .apk, under a name of its own, so the release job can never download it.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ needs.verify.outputs.dry_run == 'true' }}
+        with:
+          name: release-dryrun-apk-manifest
+          path: dist-mobile/apk-manifest.json
+          if-no-files-found: error
+          retention-days: 14
 
   # The only job that can create a release: it has the only write permission, and it runs only for a push of a v* tag. The condition is
   # written out here and checked again inside the step, so no change to one place alone can make a dry run publish.

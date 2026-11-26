@@ -40,6 +40,16 @@ if ($lines -notcontains "path: $name") { throw "latest.yml does not name $name."
 if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) { throw "$name was not in release $tag." }
 $sha512 = [Convert]::ToBase64String([Convert]::FromHexString((Get-FileHash -LiteralPath $installer -Algorithm SHA512).Hash))
 if (@($lines | Where-Object { $_.Trim() -eq "sha512: $sha512" }).Count -eq 0) { throw 'latest.yml SHA-512 does not match the downloaded installer.' }
+# That is only two assets of one release agreeing with each other: a replaced release, with a latest.yml to match, would pass it. The repository holds the
+# installer's SHA-512 for the release T8.1 recorded (installer/r1-install-facts.json), and for that release the download must be exactly that file. For any
+# other tag (a newer R1, or one asked for by hand) there is nothing recorded to hold it to, and the result says so.
+$pinned = (Get-Content -LiteralPath (Join-Path $PSScriptRoot 'r1-install-facts.json') -Raw | ConvertFrom-Json).release
+$pinnedByRepository = ($tag -eq [string]$pinned.tag)
+if ($pinnedByRepository -and ($sha512 -cne [string]$pinned.installerSha512)) {
+    throw "The installer downloaded for $tag is not the one the repository recorded (installer/r1-install-facts.json): its SHA-512 differs from the recorded one, though latest.yml agrees with it. The release may have been replaced."
+}
+$verifiedAgainst = if ($pinnedByRepository) { "latest.yml of the release, and the SHA-512 recorded in installer/r1-install-facts.json for $tag" } else { "latest.yml of the release only ($tag is not the release installer/r1-install-facts.json recorded, $($pinned.tag), so there is no recorded hash to hold it to)" }
+Write-Output "Installer verified against: $verifiedAgainst."
 
 # A silent NSIS install can return before its last files are written, so the folder counts as installed once its file count
 # stops changing.
@@ -84,6 +94,8 @@ $result = [ordered]@{
     installerPath       = $installer
     installerBytes      = (Get-Item -LiteralPath $installer).Length
     installerSha512     = $sha512
+    pinnedByRepository  = $pinnedByRepository
+    verifiedAgainst     = $verifiedAgainst
     installerExitCode   = $run.ExitCode
     installFolder       = $folder
     latestYml           = ($lines -join "`n")

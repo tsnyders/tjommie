@@ -251,6 +251,28 @@ fn open_section(app: &mut Client, key: &str) {
         .unwrap();
 }
 
+/// Waits until a settings section has read what its controls wait for. Two sections open with a control off while they
+/// read: Diagnostics' Refresh while its checks run, and Logins' Unlock until the host's state is read. A sweep that met
+/// one off, and judged against a snapshot taken after it came on, would call it missed.
+fn settle(app: &mut Client, key: &str) {
+    let (what, settled): (&str, fn(&mut Client) -> bool) = match key {
+        "diagnostics" => ("settings.diagnostics.refresh never enabled", |app| {
+            app.snapshot()
+                .unwrap()
+                .node("settings.diagnostics.refresh")
+                .is_some_and(|node| node.enabled)
+        }),
+        "logins" => ("the Logins state was never read", |app| {
+            app.snapshot()
+                .unwrap()
+                .node("settings.logins.state")
+                .is_some_and(|node| !node.text.starts_with("Checking Logins"))
+        }),
+        _ => return,
+    };
+    until(app, &format!("Settings, {key}"), what, settled);
+}
+
 /// The ids under `prefix` with `suffix`, as the window has them now.
 fn ids_like(app: &mut Client, prefix: &str, suffix: &str) -> Vec<String> {
     app.snapshot()
@@ -891,6 +913,7 @@ fn e2e_keyboard_navigation() {
         activate(&mut app, &format!("settings.nav.{key}"));
         app.wait(&format!("settings.{key}.title"), Predicate::Exists, 10_000)
             .unwrap();
+        settle(&mut app, key);
         sweep(&mut app, &format!("Settings, {key}"));
     }
 

@@ -1,7 +1,8 @@
 # Lays out the installer's payload from what the release workflow built (T8.3): the folder whose contents installer/tjommie.nsi installs.
 # It only copies files; it runs nothing it copies. The layout is what R1's install facts (installer/r1-install-facts.json) and the Rust app expect:
 #
-#   Tjommie.exe                          the desktop binary (tjommie-desktop.exe, built with TJOMMIE_IDENTITY=production), renamed
+#   Tjommie.exe                          the desktop binary (tjommie-desktop.exe, built with TJOMMIE_IDENTITY=production), renamed. The name is
+#                                        -ExeName (default Tjommie.exe): the acceptance run's updatetest identity is "Tjommie Update Test.exe"
 #   third-party-notices.txt              the notices (-ThirdPartyNotices, from scripts/make-third-party-notices.ts), BESIDE Tjommie.exe: the About
 #                                        screen reads current_exe().with_file_name("third-party-notices.txt"), so it has to be at this level
 #   resources\daemon\tjommie-daemon.exe  where desktop-host's packaged_daemon_path looks, and where R1 kept its daemon
@@ -25,6 +26,7 @@ param(
     [string]$Pdfium = '',
     [string]$PdfiumLicenses = '',
     [string]$ThirdPartyNotices = '',
+    [string]$ExeName = 'Tjommie.exe',
     [switch]$Release,
     [string]$ManifestPath = ''
 )
@@ -36,6 +38,7 @@ $speechFiles = @('whisper-cli.exe', 'WHISPER-LICENSE.txt', 'GGML-LICENSE.txt', '
 # Names that mean an Electron app. R1 shipped these; the native app must not.
 $electronNames = @('*.asar', '*.pak', 'electron*', 'chrome_*', 'ffmpeg.dll', 'libEGL.dll', 'libGLESv2.dll', 'd3dcompiler_47.dll', 'vk_swiftshader*', 'snapshot_blob.bin', 'v8_context_snapshot.bin', 'locales')
 
+if ($ExeName -notmatch '^[^\\/:*?"<>|]+\.exe$') { throw "The exe name must be a bare file name ending in .exe, not '$ExeName'." }
 if (-not (Test-Path -LiteralPath $Desktop -PathType Leaf)) { throw "The desktop binary is missing: $Desktop" }
 if (-not (Test-Path -LiteralPath $Daemon -PathType Leaf)) { throw "The daemon binary is missing: $Daemon" }
 if (-not (Test-Path -LiteralPath $SpeechDir -PathType Container)) { throw "The speech bundle folder is missing: $SpeechDir" }
@@ -75,7 +78,7 @@ foreach ($pattern in $electronNames) {
 }
 
 New-Item -ItemType Directory -Force -Path (Join-Path $full 'resources\daemon'), (Join-Path $full 'resources\speech') | Out-Null
-Copy-Item -LiteralPath $Desktop -Destination (Join-Path $full 'Tjommie.exe')
+Copy-Item -LiteralPath $Desktop -Destination (Join-Path $full $ExeName)
 Copy-Item -LiteralPath $Daemon -Destination (Join-Path $full 'resources\daemon\tjommie-daemon.exe')
 foreach ($name in $speechFiles) { Copy-Item -LiteralPath (Join-Path $SpeechDir $name) -Destination (Join-Path $full "resources\speech\$name") }
 $pending = @()
