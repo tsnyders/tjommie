@@ -354,7 +354,8 @@ pub(super) fn section(window: &mut Window, cx: &mut App) -> AnyElement {
         .child(
             SettingsRow::new("Microphone permission")
                 .description(
-                    "Permission is requested only when you start dictation in a conversation.",
+                    "Tjommie reads Windows' microphone privacy settings and never asks for access itself. Windows has to \
+                     let desktop apps use the microphone, in Windows Settings, then Privacy & security, then Microphone.",
                 )
                 .control(value(
                     "settings.voice.permission",
