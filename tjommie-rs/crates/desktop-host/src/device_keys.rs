@@ -59,37 +59,42 @@ pub trait CredentialStore {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct WindowsCredentials;
 
+/// The read itself, for a caller that already holds [`credman::locked`].
+fn read_unlocked(target: &str) -> io::Result<Option<String>> {
+    let mut pointer: *mut CREDENTIALW = ptr::null_mut();
+    // SAFETY: on success CredReadW hands us one allocation, which is copied from and then freed once with CredFree.
+    unsafe {
+        if let Err(error) = CredReadW(
+            &HSTRING::from(target),
+            CRED_TYPE_GENERIC,
+            None,
+            &mut pointer,
+        ) {
+            return if error.code() == ERROR_NOT_FOUND.to_hresult() {
+                Ok(None)
+            } else {
+                Err(error.into())
+            };
+        }
+        let credential = &*pointer;
+        let size = credential.CredentialBlobSize as usize;
+        let value = match size {
+            0 => Ok(String::new()),
+            1..=MAX_BLOB => Ok(String::from_utf8_lossy(slice::from_raw_parts(
+                credential.CredentialBlob,
+                size,
+            ))
+            .into_owned()),
+            _ => Err(io::Error::from(io::ErrorKind::InvalidData)),
+        };
+        CredFree(pointer as *const _);
+        value.map(Some)
+    }
+}
+
 impl CredentialStore for WindowsCredentials {
     fn read(&self, target: &str) -> io::Result<Option<String>> {
-        let mut pointer: *mut CREDENTIALW = ptr::null_mut();
-        // SAFETY: on success CredReadW hands us one allocation, which is copied from and then freed once with CredFree.
-        unsafe {
-            if let Err(error) = CredReadW(
-                &HSTRING::from(target),
-                CRED_TYPE_GENERIC,
-                None,
-                &mut pointer,
-            ) {
-                return if error.code() == ERROR_NOT_FOUND.to_hresult() {
-                    Ok(None)
-                } else {
-                    Err(error.into())
-                };
-            }
-            let credential = &*pointer;
-            let size = credential.CredentialBlobSize as usize;
-            let value = match size {
-                0 => Ok(String::new()),
-                1..=MAX_BLOB => Ok(String::from_utf8_lossy(slice::from_raw_parts(
-                    credential.CredentialBlob,
-                    size,
-                ))
-                .into_owned()),
-                _ => Err(io::Error::from(io::ErrorKind::InvalidData)),
-            };
-            CredFree(pointer as *const _);
-            value.map(Some)
-        }
+        credman::locked(|| read_unlocked(target))
     }
 
     fn write(&self, target: &str, value: &str) -> io::Result<()> {
@@ -109,15 +114,24 @@ impl CredentialStore for WindowsCredentials {
             ..Default::default()
         };
         // SAFETY: every pointer in `credential` outlives the call.
-        unsafe { CredWriteW(&credential, 0) }.map_err(io::Error::from)
+        credman::locked(|| unsafe { CredWriteW(&credential, 0) }).map_err(io::Error::from)
     }
 
     fn delete(&self, target: &str) -> io::Result<()> {
-        // SAFETY: plain call with a null-terminated target.
-        match unsafe { CredDeleteW(&HSTRING::from(target), CRED_TYPE_GENERIC, None) } {
-            Err(error) if error.code() != ERROR_NOT_FOUND.to_hresult() => Err(error.into()),
-            _ => Ok(()),
-        }
+        credman::locked(|| {
+            credman::delete_gone(
+                || delete_unlocked(target),
+                || read_unlocked(target).map(|found| found.is_some()),
+            )
+        })
+    }
+}
+
+fn delete_unlocked(target: &str) -> io::Result<()> {
+    // SAFETY: plain call with a null-terminated target.
+    match unsafe { CredDeleteW(&HSTRING::from(target), CRED_TYPE_GENERIC, None) } {
+        Err(error) if error.code() != ERROR_NOT_FOUND.to_hresult() => Err(error.into()),
+        _ => Ok(()),
     }
 }
 
@@ -296,6 +310,23 @@ mod tests {
 
     fn keys(store: Fake) -> DeviceKeys<Fake> {
         DeviceKeys::with_store(Path::new("C:/isolated/tjommie-test"), store).unwrap()
+    }
+
+    /// The real store's seal, read and delete, each under the shared lock (one nested in another would hang here), in a
+    /// namespace of this test's own. Skipped on hosted runners, which cannot reliably reach Credential Manager.
+    #[test]
+    fn the_real_store_keeps_and_forgets_a_device_key_under_the_lock() {
+        if std::env::var("TJOMMIE_CI_HOSTED").as_deref() == Ok("1") {
+            return;
+        }
+        let root = crate::owner_safety::test_root().unwrap();
+        let keys = DeviceKeys::new(root.path()).unwrap();
+
+        keys.seal(NAME, &[1, 2, 3]).unwrap();
+        let read = keys.read(NAME);
+        keys.delete(NAME).unwrap();
+        assert_eq!(read.unwrap().unwrap().as_slice(), [1, 2, 3]);
+        assert_eq!(keys.read(NAME).unwrap(), None);
     }
 
     #[test]

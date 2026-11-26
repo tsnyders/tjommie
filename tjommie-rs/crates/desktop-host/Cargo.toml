@@ -12,6 +12,8 @@ async-channel = "2.5.0"
 base64 = "0.23.1"
 client = { path = "../client" }
 cpal.workspace = true
+# The one lock around every Credential Manager call, shared with the daemon.
+credman = { path = "../credman" }
 futures = "0.3.34"
 futures-util = "0.3.34"
 getrandom = "0.4.3"

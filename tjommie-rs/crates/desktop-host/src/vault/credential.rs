@@ -43,6 +43,11 @@ pub fn login_target(namespace: &str, reference: &str) -> Option<String> {
 
 /// Reads a generic credential's blob. A missing target is `None`. The copy is wiped on drop.
 pub fn read_blob(target: &str) -> io::Result<Option<Zeroizing<Vec<u8>>>> {
+    credman::locked(|| read_unlocked(target))
+}
+
+/// `read_blob`, for a caller that already holds [`credman::locked`].
+fn read_unlocked(target: &str) -> io::Result<Option<Zeroizing<Vec<u8>>>> {
     let mut pointer: *mut CREDENTIALW = ptr::null_mut();
     // SAFETY: on success CredReadW allocates one credential. Its blob is copied out and wiped in place, then the
     // allocation is freed exactly once with CredFree. The size is checked before the blob's memory is viewed, and an
@@ -96,11 +101,20 @@ pub fn write_blob(target: &str, blob: &[u8]) -> io::Result<()> {
     };
     // SAFETY: every pointer in `credential` (and the HSTRINGs they point into) outlives the call, and CredWriteW
     // only reads through them.
-    unsafe { CredWriteW(&credential, 0) }.map_err(io::Error::from)
+    credman::locked(|| unsafe { CredWriteW(&credential, 0) }).map_err(io::Error::from)
 }
 
-/// Deletes a generic credential. A missing target is not an error.
+/// Deletes a generic credential. A missing target is not an error. One Windows keeps all the same is.
 pub fn delete_blob(target: &str) -> io::Result<()> {
+    credman::locked(|| {
+        credman::delete_gone(
+            || delete_unlocked(target),
+            || read_unlocked(target).map(|found| found.is_some()),
+        )
+    })
+}
+
+fn delete_unlocked(target: &str) -> io::Result<()> {
     let target = HSTRING::from(target);
     // SAFETY: CredDeleteW reads the null-terminated target, which the HSTRING keeps alive for the call.
     match unsafe { CredDeleteW(&target, CRED_TYPE_GENERIC, None) } {

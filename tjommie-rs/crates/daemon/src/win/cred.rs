@@ -39,6 +39,11 @@ impl std::error::Error for CredentialError {}
 
 /// Reads a generic credential's blob as UTF-8. A missing target is `None`.
 pub fn read(target: &str) -> io::Result<Option<String>> {
+    credman::locked(|| read_unlocked(target))
+}
+
+/// `read`, for a caller that already holds [`credman::locked`].
+fn read_unlocked(target: &str) -> io::Result<Option<String>> {
     let mut pointer: *mut CREDENTIALW = ptr::null_mut();
     // SAFETY: on success CredReadW hands us one allocation, which is copied from and then freed once with CredFree.
     unsafe {
@@ -94,11 +99,20 @@ pub fn write_as(target: &str, value: &str, user_name: &str) -> io::Result<()> {
         ..Default::default()
     };
     // SAFETY: every pointer in `credential` outlives the call.
-    unsafe { CredWriteW(&credential, 0) }.map_err(io::Error::from)
+    credman::locked(|| unsafe { CredWriteW(&credential, 0) }).map_err(io::Error::from)
 }
 
-/// Deletes a generic credential. A missing target is not an error.
+/// Deletes a generic credential. A missing target is not an error. One Windows keeps all the same is.
 pub fn delete(target: &str) -> io::Result<()> {
+    credman::locked(|| {
+        credman::delete_gone(
+            || delete_unlocked(target),
+            || read_unlocked(target).map(|found| found.is_some()),
+        )
+    })
+}
+
+fn delete_unlocked(target: &str) -> io::Result<()> {
     // SAFETY: plain call with a null-terminated target.
     match unsafe { CredDeleteW(&HSTRING::from(target), CRED_TYPE_GENERIC, None) } {
         Err(error) if error.code() != ERROR_NOT_FOUND.to_hresult() => Err(error.into()),

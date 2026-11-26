@@ -1516,6 +1516,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "credman"
+version = "0.5.1"
+dependencies = [
+ "log",
+ "windows 0.62.2",
+]
+
+[[package]]
 name = "criterion"
 version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1652,6 +1660,7 @@ version = "0.5.1"
 dependencies = [
  "axum",
  "base64 0.23.1",
+ "credman",
  "ed25519-dalek",
  "futures-util",
  "getrandom 0.4.3",
@@ -1783,6 +1792,7 @@ dependencies = [
  "base64 0.23.1",
  "client",
  "cpal",
+ "credman",
  "daemon",
  "futures",
  "futures-util",

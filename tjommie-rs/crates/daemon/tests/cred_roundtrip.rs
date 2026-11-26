@@ -250,6 +250,30 @@ fn errors_carry_only_the_fixed_typescript_messages() {
 
 // ---- Credential Manager (this PC; skipped on hosted CI like account-credentials.test.ts) ----
 
+/// The daemon's write, read and delete, each under the shared lock (one nested in another would hang here), on one
+/// target in a namespace of this test's own. Nothing is listed.
+#[test]
+fn a_secret_is_written_read_and_deleted_under_the_lock() {
+    if std::env::var("TJOMMIE_CI_HOSTED").as_deref() == Ok("1") {
+        eprintln!(
+            "skipped: hosted Windows service logons cannot reliably reach Credential Manager"
+        );
+        return;
+    }
+    let root = std::env::temp_dir().join(format!("tjommie-rs-cred-test-{}", uuid::Uuid::new_v4()));
+    let target = Namespace::new(&root)
+        .unwrap()
+        .login_target(&uuid::Uuid::new_v4().to_string())
+        .unwrap();
+
+    cred::write(&target, "synthetic").unwrap();
+    let read = cred::read(&target);
+    cred::delete(&target).unwrap();
+    assert_eq!(read.unwrap().as_deref(), Some("synthetic"));
+    assert_eq!(cred::read(&target).unwrap(), None);
+    cred::delete(&target).unwrap();
+}
+
 #[test]
 fn credential_manager_entries_have_the_shape_typescript_0_4_2_wrote() {
     if std::env::var("TJOMMIE_CI_HOSTED").as_deref() == Ok("1") {
@@ -409,7 +433,7 @@ fn enumerate(filter: &str) -> Vec<(String, u64)> {
     let mut count = 0u32;
     let mut list: *mut *mut CREDENTIALW = std::ptr::null_mut();
     // SAFETY: CredEnumerateW fills `count` and `list`; the list is freed once with CredFree.
-    unsafe {
+    credman::locked(|| unsafe {
         // Only "no matching targets" is empty; any other failure would make the before/after check pass vacuously.
         if let Err(error) = CredEnumerateW(&HSTRING::from(filter), None, &mut count, &mut list) {
             assert_eq!(
@@ -430,7 +454,7 @@ fn enumerate(filter: &str) -> Vec<(String, u64)> {
             .collect();
         CredFree(list as *const _);
         found
-    }
+    })
 }
 
 /// Deletes whatever is left in the test namespace (only it) and says how many it removed.
@@ -454,7 +478,7 @@ struct Entry {
 fn entry(target: &str) -> Option<Entry> {
     let mut pointer: *mut CREDENTIALW = std::ptr::null_mut();
     // SAFETY: CredReadW fills `pointer` on success; it is freed with CredFree after copying.
-    unsafe {
+    credman::locked(|| unsafe {
         CredReadW(
             &HSTRING::from(target),
             CRED_TYPE_GENERIC,
@@ -482,5 +506,5 @@ fn entry(target: &str) -> Option<Entry> {
         };
         CredFree(pointer as *const _);
         Some(found)
-    }
+    })
 }

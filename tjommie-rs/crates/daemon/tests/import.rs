@@ -866,7 +866,7 @@ fn rewrites_account_and_login_secrets_under_the_target_namespace() {
         let mut count = 0u32;
         let mut list: *mut *mut CREDENTIALW = std::ptr::null_mut();
         // SAFETY: CredEnumerateW fills `count` and `list`; the list is freed once with CredFree.
-        unsafe {
+        credman::locked(|| unsafe {
             if let Err(error) = CredEnumerateW(&HSTRING::from(filter), None, &mut count, &mut list)
             {
                 assert_eq!(
@@ -887,7 +887,7 @@ fn rewrites_account_and_login_secrets_under_the_target_namespace() {
                 .collect();
             CredFree(list as *const _);
             found
-        }
+        })
     }
 
     let source = source();
