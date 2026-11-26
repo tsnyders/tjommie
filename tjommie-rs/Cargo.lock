@@ -1156,7 +1156,7 @@ checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
 name = "client"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "base64 0.23.1",
  "daemon",
@@ -1517,7 +1517,7 @@ dependencies = [
 
 [[package]]
 name = "credman"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "log",
  "windows 0.62.2",
@@ -1656,7 +1656,7 @@ dependencies = [
 
 [[package]]
 name = "daemon"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -1760,7 +1760,7 @@ dependencies = [
 
 [[package]]
 name = "desktop"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "async-channel",
  "base64 0.23.1",
@@ -1787,7 +1787,7 @@ dependencies = [
 
 [[package]]
 name = "desktop-host"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "async-channel",
  "base64 0.23.1",
@@ -6140,7 +6140,7 @@ dependencies = [
 
 [[package]]
 name = "protocol"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "base64 0.23.1",
  "jiff",
@@ -8192,7 +8192,7 @@ dependencies = [
 
 [[package]]
 name = "transport"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "snow",
  "zeroize",

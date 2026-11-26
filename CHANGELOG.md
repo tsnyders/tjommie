@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.6.0 — 2026-11-26
+
 - Tjommie is now a native Windows app, written in Rust, and a much smaller download. Your agents, chats, settings and logins carry over.
 - Tjommie has a new look, the Aegis design: a sidebar, a composer card, and agents that blink, narrow their eyes and look from side to side while they work, and look up while they wait for you. Their eyes keep still while the window is not in front.
 - In a narrow window the sidebar shrinks to icons, and the browser panel and exchanges open over the chat instead of beside it.
