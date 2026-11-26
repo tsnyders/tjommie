@@ -11,6 +11,7 @@ Rules for working in the repository are in [`AGENTS.md`](../AGENTS.md). Release 
 - Rust. The version is pinned in `tjommie-rs/rust-toolchain.toml`, and rustup installs it the first time you run cargo inside `tjommie-rs`. **Run every cargo command from inside `tjommie-rs`**, so the pin applies.
 - Node 24 or newer. The TypeScript packages and their tests need it, and so do some Rust tests: the interop tests drive the TypeScript client through `tjommie-rs/tools/remote-probe.ts`, and the worker and command-line tests run `node.exe`. Run `npm ci` in the repository root once.
 - The Microsoft Edge WebView2 runtime. The agents' browser runs on it. It is part of Windows 11, and hosted Windows runners have it.
+- Python 3, only for the self-test of the motion measurement script that CI runs (`tjommie-rs/tools/perf/frame-stats.py`).
 - To use real agents: the Claude Code and Codex command-line tools, installed and on PATH. Tests that use recorded conversations (below) need neither.
 
 ## Repository layout
@@ -106,7 +107,7 @@ The app starts the daemon without `TJOMMIE_DEV`, `TJOMMIE_ACCOUNTS_DIR` and ever
 | `TJOMMIE_HOME` | Another data folder. Give the daemon the same value as the app. |
 | `TJOMMIE_PORT`, `TJOMMIE_LAN_PORT` | Another port for the app's connection and for phones. |
 | `TJOMMIE_USER_DATA` | Another folder for what the app writes beside the data folder: the one-time markers (`tray-hint-shown`, `login-item-set`) and the speech model. By default a `dev` run uses `<data folder>\electron` for the markers (the name is historical) and `<data folder>\speech` for the model. The installed app uses `%APPDATA%\Tjommie`. A production app run with its own `TJOMMIE_USER_DATA` (a smoke run beside a real install) never checks for updates and never writes the start-at-sign-in entry. |
-| `TJOMMIE_DAEMON_EXE` | The daemon exe a non-production app runs. |
+| `TJOMMIE_DAEMON_EXE` | The daemon exe an app run from source runs (and the `dev` and `e2e` identities). An installed app, production or update test, ignores it. |
 | `TJOMMIE_UPDATES=off` | Turns the updater off. |
 | `TJOMMIE_UPDATE_FEED` | A local update feed. Only the `updatetest` identity honours it. |
 | `TJOMMIE_PROVIDER_FIXTURES` | A folder of recorded conversations. Only a daemon built with `--features provider-fixtures` accepts it. |
@@ -178,6 +179,7 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo clippy -p daemon --all-targets --features provider-fixtures --locked -- -D warnings
 ./tools/check-guarded.ps1 -SelfTest
 ./tools/check-guarded.ps1
+python -I tools/perf/frame-stats.py --self-test
 $env:TJOMMIE_PDFIUM_DLL = ./tools/fetch-pdfium.ps1 -Destination "$env:TEMP\pdfium\pdfium.dll"
 $env:TJOMMIE_CI_HOSTED = '1'; cargo test --workspace --locked --no-fail-fast
 ```

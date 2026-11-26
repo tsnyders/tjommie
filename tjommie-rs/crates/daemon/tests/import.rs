@@ -844,8 +844,8 @@ fn never_imports_into_the_source_root() {
     assert_eq!(tree_hash(source.path()), before);
 }
 
-/// Credential Manager: one random namespace per root, both refused if they are production's, cleaned up by namespace,
-/// and a failure if any other `Tjommie/*` target changed (the guard from `cred_roundtrip.rs`).
+/// Credential Manager: one random namespace per root, both refused if they are production's, and only those two are
+/// listed and cleaned up, so that no entry of the owner's is ever read (as in `cred_roundtrip.rs`).
 #[cfg(windows)]
 #[test]
 fn rewrites_account_and_login_secrets_under_the_target_namespace() {
@@ -862,12 +862,18 @@ fn rewrites_account_and_login_secrets_under_the_target_namespace() {
         );
         return;
     }
-    fn enumerate(filter: &str) -> BTreeMap<String, u64> {
+    /// The targets and LastWritten times under one namespace of this test's own. The filter is that namespace's prefix,
+    /// so Windows returns no other entry.
+    fn enumerate(namespace: &str) -> BTreeMap<String, u64> {
+        assert!(
+            matches!(namespace.len(), 24 | 32) && namespace.bytes().all(|b| b.is_ascii_hexdigit())
+        );
+        let filter = format!("Tjommie/{namespace}/*");
         let mut count = 0u32;
         let mut list: *mut *mut CREDENTIALW = std::ptr::null_mut();
         // SAFETY: CredEnumerateW fills `count` and `list`; the list is freed once with CredFree.
-        unsafe {
-            if let Err(error) = CredEnumerateW(&HSTRING::from(filter), None, &mut count, &mut list)
+        credman::locked(|| unsafe {
+            if let Err(error) = CredEnumerateW(&HSTRING::from(&filter), None, &mut count, &mut list)
             {
                 assert_eq!(
                     error.code(),
@@ -887,7 +893,7 @@ fn rewrites_account_and_login_secrets_under_the_target_namespace() {
                 .collect();
             CredFree(list as *const _);
             found
-        }
+        })
     }
 
     let source = source();
@@ -908,17 +914,12 @@ fn rewrites_account_and_login_secrets_under_the_target_namespace() {
             "refusing the production namespace"
         );
     }
-    let prefixes = [from.short(), from.long(), to.short(), to.long()]
-        .map(|prefix| format!("Tjommie/{prefix}/"));
-    let mine = |target: &str| prefixes.iter().any(|prefix| target.starts_with(prefix));
-    let outside = |all: &BTreeMap<String, u64>| -> BTreeMap<String, u64> {
-        all.iter()
-            .filter(|(target, _)| !mine(target))
-            .map(|(t, w)| (t.clone(), *w))
-            .collect()
+    let under = |ns: &Namespace| -> BTreeMap<String, u64> {
+        let mut all = enumerate(ns.short());
+        all.extend(enumerate(ns.long()));
+        all
     };
 
-    let before = enumerate("Tjommie/*");
     let result = catch_unwind(AssertUnwindSafe(|| {
         let account = from.account_target("claude-main").unwrap();
         let login = from.login_target(LOGIN).unwrap();
@@ -926,7 +927,8 @@ fn rewrites_account_and_login_secrets_under_the_target_namespace() {
         cred::write(&login, "{\"username\":\"me\",\"password\":\"pw\"}").unwrap();
         cred::write(&from.remote_host_target(), "noise-key").unwrap();
         cred::write(&from.relay_login_target(), "relay-key").unwrap();
-        let source_secrets = enumerate(&format!("Tjommie/{}*", from.short()));
+        let source_secrets = under(&from);
+        assert_eq!(source_secrets.len(), 4, "the listing sees what was written");
 
         // Spelled with 8.3 names where the volume has them: the secrets are still found under the source's namespace.
         let spelled = short_name(source.path()).unwrap_or_else(|| source.path().to_path_buf());
@@ -951,27 +953,21 @@ fn rewrites_account_and_login_secrets_under_the_target_namespace() {
         assert_eq!(copied(&to.remote_host_target()), None);
         assert_eq!(copied(&to.relay_login_target()), None);
         assert_eq!(
-            enumerate(&format!("Tjommie/{}*", from.short())),
+            under(&from),
             source_secrets,
             "the source secrets are untouched"
         );
     }));
-    for prefix in &prefixes {
-        for name in enumerate(&format!("{prefix}*")).keys() {
+    for ns in [&from, &to] {
+        for name in under(ns).keys() {
             cred::delete(name).unwrap();
         }
     }
-    let after = enumerate("Tjommie/*");
     if let Err(panic) = result {
         resume_unwind(panic);
     }
     assert!(
-        after.keys().all(|name| !mine(name)),
+        under(&from).is_empty() && under(&to).is_empty(),
         "test targets were left behind"
-    );
-    assert_eq!(
-        outside(&before),
-        outside(&after),
-        "a Tjommie/* target outside the test namespaces changed"
     );
 }

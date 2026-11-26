@@ -124,8 +124,11 @@ pub fn open_routine_editor(spec: RoutineEditor, window: &mut Window, cx: &mut Ap
     });
     editor.update(cx, |editor, _| editor._times = Some(subscription));
     open_dialog(window, cx, move |dialog, window, cx| {
-        let body = body(&editor, window, cx);
-        let heading = editor.read(cx).title;
+        let (body, footer) = body(&editor, window, cx);
+        let (heading, failed) = {
+            let editor = editor.read(cx);
+            (editor.title, editor.problem.clone())
+        };
         // routine-editor.tsx's 560 px, as rems.
         dialog
             .w(window.rem_size() * 35.0)
@@ -134,6 +137,8 @@ pub fn open_routine_editor(spec: RoutineEditor, window: &mut Window, cx: &mut Ap
             // unguarded: returns a constant, nothing in it can panic
             .on_ok(|_, _, _| false)
             .child(body)
+            .problem(failed.map(|text| problem("routine.problem", text, cx)))
+            .footer(footer)
     });
     // The name has the focus (`initialFocus`), after the dialog takes it.
     window.defer(cx, move |window, cx| {
@@ -261,7 +266,8 @@ fn act(editor: &Entity<Editor>, delete: bool, cx: &mut App) {
     .detach();
 }
 
-fn body(editor: &Entity<Editor>, window: &mut Window, cx: &mut App) -> AnyElement {
+/// The editor's body, and its footer: Delete, then Cancel and Save, pinned under the body.
+fn body(editor: &Entity<Editor>, window: &mut Window, cx: &mut App) -> (AnyElement, AnyElement) {
     read_runs(editor, cx);
     let days = days(editor, window, cx);
     let times = times(editor, window, cx);
@@ -296,7 +302,6 @@ fn body(editor: &Entity<Editor>, window: &mut Window, cx: &mut App) -> AnyElemen
             })
     };
     let runs = state.runs_for.as_ref().map(|_| runs(&state.runs, cx));
-    let failed = state.problem.clone();
     let save = {
         let editor = editor.clone();
         Pill::new("routine.save", "Save")
@@ -308,7 +313,7 @@ fn body(editor: &Entity<Editor>, window: &mut Window, cx: &mut App) -> AnyElemen
         IconButton::new("routine.delete", "trash-2", "Delete routine")
             .on_press(move |_, cx| act(&editor, true, cx))
     });
-    div()
+    let body = div()
         .flex()
         .flex_col()
         .child(
@@ -362,29 +367,20 @@ fn body(editor: &Entity<Editor>, window: &mut Window, cx: &mut App) -> AnyElemen
         .child(small("Stop after", cx))
         .child(div().mt(r(theme.space.s4)).child(stop))
         .children(runs)
-        .child(
-            div()
-                .mt(r(theme.space.s20))
-                .pt(r(theme.space.s12))
-                .border_t_1()
-                .border_color(hsla(colors.line.base))
-                .flex()
-                .items_center()
-                .gap(r(theme.space.s12))
-                .children(delete)
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .children(failed.map(|text| problem("routine.problem", text, cx))),
-                )
-                .child(
-                    Pill::new("routine.cancel", "Cancel")
-                        .on_press(|window, cx| window.close_dialog(cx)),
-                )
-                .child(save),
-        )
-        .into_any_element()
+        .into_any_element();
+    let footer = div()
+        .pt(r(theme.space.s12))
+        .border_t_1()
+        .border_color(hsla(colors.line.base))
+        .flex()
+        .items_center()
+        .gap(r(theme.space.s12))
+        .children(delete)
+        .child(div().flex_1())
+        .child(Pill::new("routine.cancel", "Cancel").on_press(|window, cx| window.close_dialog(cx)))
+        .child(save)
+        .into_any_element();
+    (body, footer)
 }
 
 fn small(text: &'static str, cx: &App) -> AnyElement {

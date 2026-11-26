@@ -8,6 +8,7 @@
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
+use std::time::Duration;
 
 use futures::future::BoxFuture;
 use protocol::vault::{
@@ -25,16 +26,30 @@ use super::gate::{Empty, GateError, Vault, VaultReply};
 use super::storage::{StoredLogin, VaultError, VaultRecords, VaultSecret, validate_vault_secret};
 use super::worker::{VaultIsolation, VaultIsolationLease};
 
-/// The generic failure. The TypeScript's text, which every failure inside an operation becomes.
+/// The generic failure. The TypeScript's text, which a failure inside an operation becomes, except the two below.
 const GENERIC: &str = "Logins could not finish this operation safely. Refresh Logins or check the host. Any private browser stays private until you clear its fields or close it.";
 /// Refused for a closed vault, a refused controller, and an operation a cancel or a lock overtook.
 const CHANGED: &str = "The Logins operation was cancelled or its security boundary changed.";
 /// Refused when a second operation starts while one is in flight.
 const IN_FLIGHT: &str = "Finish the current Logins operation on the host first.";
+/// A fill that finds the login's record but not its secret. The browser is already private by then, and stays so.
+const SECRET_MISSING: &str = "The saved password for this login is missing. Save the login again. The browser stays private until you clear its fields or close it.";
+/// A save whose secret was not there afterwards, although it was written twice.
+const SECRET_NOT_KEPT: &str =
+    "Windows did not keep the password, so the login was not saved. Try again.";
+/// How long a new secret is left before it is looked for. A dropped one was gone within about 20 ms.
+const SETTLE: Duration = Duration::from_millis(50);
+/// The waits before an entry that is not found is believed missing. One hidden by another write was back within 500 ms.
+const READ_RETRIES: [Duration; 3] = [
+    Duration::from_millis(20),
+    Duration::from_millis(80),
+    Duration::from_millis(400),
+];
 /// The most controllers that may disconnect before the vault refuses every remote one (`vault-command-gate.ts`).
 const CLOSED_CONTROLLER_LIMIT: usize = 4096;
 
-/// Why a step of a Logins operation failed. The vault never shows these: each becomes [`GENERIC`]. None carries a secret.
+/// Why a step of a Logins operation failed. The vault shows [`GENERIC`] for each, except the two about a missing secret,
+/// which say what to do. None carries a secret.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoginError {
     /// The operation was cancelled, or its security boundary changed (`changed()`).
@@ -43,6 +58,10 @@ pub enum LoginError {
     Locked,
     /// A browser, store, window or isolation step failed. Its cause is not kept.
     Failed,
+    /// The record is there and its secret is not ([`SECRET_MISSING`]).
+    SecretMissing,
+    /// A new secret did not stay in the store ([`SECRET_NOT_KEPT`]).
+    SecretNotKept,
 }
 
 impl From<VaultError> for LoginError {
@@ -101,6 +120,37 @@ pub trait SecretStore: Send + Sync {
     fn write(&self, reference: &str, secret: &VaultSecret) -> Result<(), VaultError>;
     fn read(&self, reference: &str) -> Result<Option<VaultSecret>, VaultError>;
     fn delete(&self, reference: &str) -> Result<(), VaultError>;
+
+    /// `read`, asking again for a short while before believing there is nothing: Credential Manager can miss an entry
+    /// while another one is being written.
+    fn read_settled(&self, reference: &str) -> Result<Option<VaultSecret>, VaultError> {
+        let mut found = self.read(reference)?;
+        for wait in READ_RETRIES {
+            if found.is_some() {
+                break;
+            }
+            std::thread::sleep(wait);
+            found = self.read(reference)?;
+        }
+        Ok(found)
+    }
+
+    /// `write`, then reads the secret back once it has settled, and writes it once more if it is not there as written:
+    /// Credential Manager can drop a new entry while another process is reading credentials. `false` when it is still
+    /// not there after that.
+    // ponytail: an entry dropped later than SETTLE slips through, and the fill then says the password is missing.
+    fn write_kept(&self, reference: &str, secret: &VaultSecret) -> Result<bool, VaultError> {
+        for _ in 0..2 {
+            self.write(reference, secret)?;
+            std::thread::sleep(SETTLE);
+            if self.read_settled(reference)?.is_some_and(|kept| {
+                kept.username() == secret.username() && kept.password() == secret.password()
+            }) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
 }
 
 impl SecretStore for LoginCredentials {
@@ -267,7 +317,13 @@ impl NativeLoginVault {
     async fn operate(&self, owner: &str, action: VaultHostAction) -> Result<VaultReply, GateError> {
         // The fence clears the operation slot and releases the lease when it drops, even if this future is dropped.
         let fence = Arc::new(self.inner.open(owner)?);
-        perform(&fence, owner, action).await.map_err(|_| generic())
+        perform(&fence, owner, action)
+            .await
+            .map_err(|error| match error {
+                LoginError::SecretMissing => GateError::Vault(SECRET_MISSING.to_owned()),
+                LoginError::SecretNotKept => GateError::Vault(SECRET_NOT_KEPT.to_owned()),
+                LoginError::Changed | LoginError::Locked | LoginError::Failed => generic(),
+            })
     }
 }
 
@@ -496,7 +552,7 @@ impl Fence {
     }
 }
 
-/// The steps of one operation, in the TypeScript's order. Every error becomes the generic failure at the caller.
+/// The steps of one operation, in the TypeScript's order. The caller turns an error into the sentence the person reads.
 async fn perform(
     fence: &Arc<Fence>,
     owner: &str,
@@ -697,7 +753,9 @@ async fn write_login(
     fence.check()?;
     let reference = fence.inner.records().prepare()?;
     *journal = Some(reference.clone());
-    fence.inner.secrets.write(&reference, &secret)?;
+    if !fence.inner.secrets.write_kept(&reference, &secret)? {
+        return Err(LoginError::SecretNotKept);
+    }
     fence.check()?;
     fence.inner.records().saved(
         &entry,
@@ -786,8 +844,8 @@ async fn fill_login(
         epoch: private_epoch,
     });
     fence.check()?;
-    let Some(secret) = fence.inner.secrets.read(&stored.reference)? else {
-        return Err(LoginError::Changed);
+    let Some(secret) = fence.inner.secrets.read_settled(&stored.reference)? else {
+        return Err(LoginError::SecretMissing);
     };
     fence.check()?;
     fence

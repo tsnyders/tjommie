@@ -71,6 +71,12 @@ struct FakeSecrets {
     writes: AtomicUsize,
     deletes: AtomicUsize,
     fail_next_delete: AtomicBool,
+    /// The next writes that report success and keep nothing, as Credential Manager sometimes does.
+    drop_writes: AtomicUsize,
+    /// The next reads that find nothing although the entry is there.
+    miss_reads: AtomicUsize,
+    /// The next writes that keep something else than they were given.
+    garble_writes: AtomicUsize,
 }
 
 impl FakeSecrets {
@@ -79,18 +85,38 @@ impl FakeSecrets {
     }
 }
 
+/// Takes one from a countdown, or says it has run out.
+fn take(countdown: &AtomicUsize) -> bool {
+    countdown
+        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+            left.checked_sub(1)
+        })
+        .is_ok()
+}
+
 impl SecretStore for FakeSecrets {
     fn write(&self, reference: &str, secret: &VaultSecret) -> Result<(), VaultError> {
         self.writes.fetch_add(1, Ordering::SeqCst);
+        if take(&self.drop_writes) {
+            return Ok(());
+        }
+        let password = if take(&self.garble_writes) {
+            format!("{}-not-what-was-written", secret.password())
+        } else {
+            secret.password().to_owned()
+        };
         self.values.lock().unwrap().insert(
             reference.to_owned(),
-            (secret.username().to_owned(), secret.password().to_owned()),
+            (secret.username().to_owned(), password),
         );
         Ok(())
     }
 
     fn read(&self, reference: &str) -> Result<Option<VaultSecret>, VaultError> {
         self.reads.fetch_add(1, Ordering::SeqCst);
+        if take(&self.miss_reads) {
+            return Ok(None);
+        }
         Ok(self
             .values
             .lock()
@@ -478,20 +504,23 @@ impl Fixture {
         .any(|file| fs::read(file).is_ok_and(|bytes| contains(&bytes, needle)))
     }
 
-    /// Unlocks and saves one login through the entry window. Returns it.
+    /// Unlocks and saves one login through the entry window. Returns it. The read count starts again from here: a save
+    /// reads its own secret back, and the cases count the reads that come after.
     async fn save(&self, vault: &NativeLoginVault) -> LoginEntry {
         run(vault, "local", VaultHostAction::Unlock)
             .await
             .expect("unlock");
         self.window
             .queue(input("Synthetic account", "https://login.invalid"));
-        match run(vault, "local", entry_action(None)).await {
+        let entry = match run(vault, "local", entry_action(None)).await {
             Ok(VaultReply::Entry(VaultEntryResult {
                 status: EntryStatus::Saved,
                 entry: Some(entry),
             })) => entry,
             other => panic!("the login did not save: {other:?}"),
-        }
+        };
+        self.secrets.reads.store(0, Ordering::SeqCst);
+        entry
     }
 }
 
@@ -597,6 +626,7 @@ async fn saves_metadata_and_opaque_references_restarts_locked_and_cleans_replace
     assert_eq!(f.secrets.count(), 1, "the replaced secret is gone");
     assert_eq!(f.secrets.deletes.load(Ordering::SeqCst), 1);
 
+    f.secrets.reads.store(0, Ordering::SeqCst);
     let restarted = f.vault();
     assert_eq!(
         run(&restarted, "local", VaultHostAction::Status).await,
@@ -647,6 +677,94 @@ async fn confirms_the_exact_origin_before_reading_and_fills_privately() {
     assert!(!f.browser.is_private());
     assert_eq!(f.acquires(), acquires, "finishing takes no lease");
     assert!(!format!("{:?}", f.browser.calls()).contains(TYPED));
+}
+
+#[tokio::test]
+async fn a_dropped_write_is_written_again_before_the_login_is_saved() {
+    let f = Fixture::new();
+    let vault = f.vault();
+    f.secrets.drop_writes.store(1, Ordering::SeqCst);
+    let entry = f.save(&vault).await;
+
+    assert_eq!(f.secrets.count(), 1, "the saved password is there");
+    assert_eq!(f.secrets.writes.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        run(&vault, "local", fill_action(&entry)).await,
+        filled(FillStatus::Filled, Some(4))
+    );
+}
+
+#[tokio::test]
+async fn a_password_that_is_not_kept_fails_the_save_and_records_nothing() {
+    let f = Fixture::new();
+    let vault = f.vault();
+    run(&vault, "local", VaultHostAction::Unlock)
+        .await
+        .expect("unlock");
+    f.secrets.drop_writes.store(2, Ordering::SeqCst);
+    f.window
+        .queue(input("Synthetic account", "https://login.invalid"));
+
+    assert_eq!(
+        run(&vault, "local", entry_action(None)).await,
+        Err(GateError::Vault(
+            "Windows did not keep the password, so the login was not saved. Try again.".to_owned()
+        ))
+    );
+    assert_eq!(f.secrets.writes.load(Ordering::SeqCst), 2, "one retry only");
+    assert!(vault_logins(&f).is_empty(), "nothing is recorded");
+}
+
+#[tokio::test]
+async fn a_password_read_back_differently_fails_the_save_and_records_nothing() {
+    let f = Fixture::new();
+    let vault = f.vault();
+    run(&vault, "local", VaultHostAction::Unlock)
+        .await
+        .expect("unlock");
+    f.secrets.garble_writes.store(2, Ordering::SeqCst);
+    f.window
+        .queue(input("Synthetic account", "https://login.invalid"));
+
+    assert_eq!(
+        run(&vault, "local", entry_action(None)).await,
+        Err(GateError::Vault(
+            "Windows did not keep the password, so the login was not saved. Try again.".to_owned()
+        ))
+    );
+    assert_eq!(f.secrets.writes.load(Ordering::SeqCst), 2, "one retry only");
+    assert!(vault_logins(&f).is_empty(), "nothing is recorded");
+    assert_eq!(f.secrets.count(), 0, "the wrong secret is removed");
+}
+
+#[tokio::test]
+async fn a_momentary_miss_does_not_fail_the_fill() {
+    let f = Fixture::new();
+    let vault = f.vault();
+    let entry = f.save(&vault).await;
+    f.secrets.miss_reads.store(2, Ordering::SeqCst);
+
+    assert_eq!(
+        run(&vault, "local", fill_action(&entry)).await,
+        filled(FillStatus::Filled, Some(4))
+    );
+}
+
+#[tokio::test]
+async fn a_fill_says_when_the_saved_password_is_missing() {
+    let f = Fixture::new();
+    let vault = f.vault();
+    let entry = f.save(&vault).await;
+    f.secrets.values.lock().unwrap().clear();
+
+    assert_eq!(
+        run(&vault, "local", fill_action(&entry)).await,
+        Err(GateError::Vault(
+            "The saved password for this login is missing. Save the login again. The browser stays private until you clear its fields or close it.".to_owned()
+        ))
+    );
+    assert!(f.browser.filled.lock().unwrap().is_empty());
+    assert!(f.browser.is_private(), "what the message says is true");
 }
 
 #[tokio::test]

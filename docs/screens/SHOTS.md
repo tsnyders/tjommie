@@ -1,6 +1,6 @@
 # Screenshot shot list for the README
 
-The README uses the pictures listed here, under `docs/screens/`. None of them exist yet. This file says what to capture for each one, on what data, and how.
+The README uses the pictures listed here, under `docs/screens/`. This file says what each one shows, on what data, and how to take it again.
 
 ## Rules
 

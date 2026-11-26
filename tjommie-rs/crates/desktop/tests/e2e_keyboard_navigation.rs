@@ -29,6 +29,8 @@ use std::time::{Duration, Instant};
 use common::daemon_exe;
 use desktop::test_driver::{Client, Predicate};
 use desktop_host::{identity, owner_safety};
+use windows::Win32::Security::Credentials::{CREDENTIALW, CredEnumerateW, CredFree};
+use windows::core::HSTRING;
 
 /// The app's own log, once the test has its data root: a failing run carries what the app was doing (review of the host
 /// wiring: an intermittent `tab_to` failure that no reading explained needs the run's own evidence). On a failure its last
@@ -320,24 +322,32 @@ impl Credentials {
         Credentials { namespaces }
     }
 
-    /// This run's targets, as `cmdkey /list` has them now.
+    /// This run's targets. Each filter is the prefix of one of its own namespaces (which also begins the longer form of
+    /// it), so Windows returns no other entry: the owner's credentials are never listed.
     fn targets(&self) -> Vec<String> {
-        let listed = desktop_host::spawn::command("cmdkey")
-            .arg("/list")
-            .output()
-            .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
-            .unwrap_or_default();
-        listed
-            .split_whitespace()
-            .filter_map(|word| word.find("Tjommie/").and_then(|at| word.get(at..)))
-            .filter(|target| {
-                self.namespaces
-                    .iter()
-                    .any(|namespace| target.starts_with(&format!("Tjommie/{namespace}")))
-            })
-            .map(str::to_owned)
+        self.namespaces
+            .iter()
+            .flat_map(|namespace| listed(&format!("Tjommie/{namespace}*")))
             .collect()
     }
+}
+
+/// The target names Windows has for `filter`, a name prefix followed by `*`.
+fn listed(filter: &str) -> Vec<String> {
+    let mut count = 0u32;
+    let mut list: *mut *mut CREDENTIALW = std::ptr::null_mut();
+    // SAFETY: CredEnumerateW fills `count` and `list`; the names are copied before the list is freed once with CredFree.
+    credman::locked(|| unsafe {
+        if CredEnumerateW(&HSTRING::from(filter), None, &mut count, &mut list).is_err() {
+            return Vec::new();
+        }
+        let names = std::slice::from_raw_parts(list, count as usize)
+            .iter()
+            .filter_map(|&credential| (*credential).TargetName.to_string().ok())
+            .collect();
+        CredFree(list as *const _);
+        names
+    })
 }
 
 impl Drop for Credentials {

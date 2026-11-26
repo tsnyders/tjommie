@@ -86,11 +86,52 @@ pub fn open(
             (room - 48.).min(960.)
         };
         let name = viewer_now.name.clone();
+        let actions = actions(&viewer, cx);
         dialog
             .w(px(width.max(320.)))
             .title(title(name, cx))
             .child(viewer.clone())
+            .footer(actions)
     });
+}
+
+/// Expand (or Restore) and Download: the dialog's actions, pinned under the file as every dialog's are (release review
+/// m3).
+fn actions(viewer: &Entity<FileViewer>, cx: &App) -> AnyElement {
+    let this = viewer.read(cx);
+    let id = this.id.clone();
+    let expand = viewer.downgrade();
+    let (key, reference) = (this.key.clone(), this.reference.clone());
+    let file = this.name.to_string();
+    div()
+        .flex()
+        .justify_end()
+        .gap(r(theme(cx).space.s8))
+        .child(
+            Pill::new(
+                format!("{id}.expand"),
+                if this.expanded { "Restore" } else { "Expand" },
+            )
+            .variant(PillVariant::Grey)
+            .small()
+            .on_press(move |_, cx| {
+                let _ = expand.update(cx, |this, cx| {
+                    this.expanded = !this.expanded;
+                    cx.notify();
+                });
+            }),
+        )
+        .child(
+            Pill::new(format!("{id}.download"), "Download")
+                .small()
+                .on_press(move |window, cx| {
+                    // The preview closes first (its transfer with it), then the download starts; its status shows on
+                    // the file's card.
+                    window.close_dialog(cx);
+                    card::download(&key, &reference, &file, cx);
+                }),
+        )
+        .into_any_element()
 }
 
 impl FileViewer {
@@ -271,45 +312,14 @@ impl Render for FileViewer {
         let theme = theme(cx);
         let id = self.id.clone();
         let entity = cx.entity().downgrade();
-        // The dialog's height in the TypeScript, less its padding and title: min(760, window − 48), or window − 32.
+        // The dialog's height in the TypeScript, less its padding, title and actions: min(760, window − 48), or
+        // window − 32. Where that is more than the dialog has (a long name over lines, Larger text, the zoom), the file
+        // shrinks with the dialog's body.
         let room = f32::from(window.viewport_size().height);
         let height = if self.expanded {
-            room - 32. - 112.
+            room - 32. - 120.
         } else {
-            (room - 48.).min(760.) - 112.
-        };
-        let actions = {
-            let expand = entity.clone();
-            let (key, reference) = (self.key.clone(), self.reference.clone());
-            let file = self.name.to_string();
-            div()
-                .flex()
-                .justify_end()
-                .gap(r(theme.space.s8))
-                .child(
-                    Pill::new(
-                        format!("{id}.expand"),
-                        if self.expanded { "Restore" } else { "Expand" },
-                    )
-                    .variant(PillVariant::Grey)
-                    .small()
-                    .on_press(move |_, cx| {
-                        let _ = expand.update(cx, |this, cx| {
-                            this.expanded = !this.expanded;
-                            cx.notify();
-                        });
-                    }),
-                )
-                .child(
-                    Pill::new(format!("{id}.download"), "Download")
-                        .small()
-                        .on_press(move |window, cx| {
-                            // The preview closes first (its transfer with it), then the download starts; its status
-                            // shows on the file's card.
-                            window.close_dialog(cx);
-                            card::download(&key, &reference, &file, cx);
-                        }),
-                )
+            (room - 48.).min(760.) - 120.
         };
         let body: AnyElement = match &self.body {
             Body::Opening => note(
@@ -406,8 +416,6 @@ impl Render for FileViewer {
             .h(px(height.max(160.)))
             .flex()
             .flex_col()
-            .gap(r(theme.space.s12))
-            .child(actions)
             .child(div().flex_1().min_h_0().child(body))
     }
 }

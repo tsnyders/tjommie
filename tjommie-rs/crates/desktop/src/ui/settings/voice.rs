@@ -1,15 +1,14 @@
 //! Voice in Settings (Phase 3 plan T5.5; `settings/voice-section.tsx`, row 14): this device's local dictation — its
 //! engine, availability, microphone permission, language, input device and model — with Refresh voice status and the
 //! model's download, cancel and removal. The status never records audio. Android's on-device branch (native capture,
-//! SDK preparation) is the phone's.
+//! SDK preparation) is the phone's. Capture records from the Windows default microphone (`desktop-host::speech`), so
+//! the input device is shown, not chosen.
 
 use gpui::{
     AnyElement, App, Entity, IntoElement, ParentElement as _, SharedString, Styled as _, Window,
     div, relative,
 };
-use protocol::speech::{
-    SpeechCapture, SpeechEngine, SpeechModelState, SpeechPermission, SpeechStatus,
-};
+use protocol::speech::{SpeechCapture, SpeechEngine, SpeechModelState, SpeechStatus};
 
 use super::diagnostics::value;
 use crate::guard::guarded_async;
@@ -168,15 +167,14 @@ fn model_line(status: Option<&SpeechStatus>) -> String {
     }
 }
 
-/// A picker for the language or the microphone: a pill with the choice that opens a menu of them, named for what it
-/// picks (`what`, M5 review Minor 25).
+/// The dictation language: a pill with the choice that opens a menu of them, named for what it picks (`what`, M5
+/// review Minor 25).
 fn picker(
     id: &'static str,
     what: &'static str,
     label: String,
     choices: Vec<(String, String)>,
     chosen: String,
-    pick: fn(&mut VoiceChoice, String),
 ) -> AnyElement {
     let name = format!("{what}: {label}");
     if choices.is_empty() {
@@ -205,23 +203,12 @@ fn picker(
             |menu, (key, text)| {
                 let picked = key.clone();
                 menu.item(
-                    MenuItem::new(
-                        format!(
-                            "{id}.{}",
-                            if key.is_empty() {
-                                "default"
-                            } else {
-                                key.as_str()
-                            }
-                        ),
-                        text,
-                        move |_, cx| {
-                            let mut choice = speech::choice(cx);
-                            pick(&mut choice, picked.clone());
-                            cx.set_global(choice);
-                            cx.refresh_windows();
-                        },
-                    )
+                    MenuItem::new(format!("{id}.{key}"), text, move |_, cx| {
+                        cx.set_global(VoiceChoice {
+                            language: picked.clone(),
+                        });
+                        cx.refresh_windows();
+                    })
                     .checked(key == chosen),
                 )
             },
@@ -280,19 +267,6 @@ pub(super) fn section(window: &mut Window, cx: &mut App) -> AnyElement {
         .as_ref()
         .and_then(|status| status.problem.as_ref())
         .is_some_and(|problem| problem.code == "runtime_unavailable");
-    let device_label = if choice.input_device.is_empty() {
-        "System default".to_owned()
-    } else {
-        "Previously selected microphone".to_owned()
-    };
-    let mut devices = vec![(String::new(), "System default".to_owned())];
-    if !choice.input_device.is_empty() {
-        devices.push((
-            choice.input_device.clone(),
-            "Previously selected microphone".to_owned(),
-        ));
-    }
-
     let action = |id: &'static str, label: &'static str, enabled: bool, what: Action| {
         let state = state.clone();
         Pill::new(id, label)
@@ -331,28 +305,6 @@ pub(super) fn section(window: &mut Window, cx: &mut App) -> AnyElement {
             Action::Remove,
         ));
     }
-    let microphones = {
-        let (state, granted) = (
-            state.clone(),
-            status
-                .as_ref()
-                .is_some_and(|status| status.permission == SpeechPermission::Granted),
-        );
-        Pill::new("settings.voice.microphones", "Refresh microphones").small().on_press(move |_, cx| {
-            state.update(cx, |voice, cx| {
-                // This app lists no microphone names yet: the system default is used when recording starts.
-                voice.notice = Some(
-                    if granted {
-                        "Microphone names are unavailable. Start dictation with the system default in a conversation."
-                    } else {
-                        "Start dictation in a conversation to grant microphone access, then refresh this list."
-                    }
-                    .into(),
-                );
-                cx.notify();
-            })
-        })
-    };
     let theme = theme(cx);
     let colors = palette(cx);
     let text = |id: &'static str, said: &'static str| {
@@ -390,7 +342,8 @@ pub(super) fn section(window: &mut Window, cx: &mut App) -> AnyElement {
         .child(
             SettingsRow::new("Microphone permission")
                 .description(
-                    "Permission is requested only when you start dictation in a conversation.",
+                    "Tjommie reads Windows' microphone privacy settings and never asks for access itself. Windows has to \
+                     let desktop apps use the microphone, in Windows Settings, then Privacy & security, then Microphone.",
                 )
                 .control(value(
                     "settings.voice.permission",
@@ -410,7 +363,6 @@ pub(super) fn section(window: &mut Window, cx: &mut App) -> AnyElement {
                     language_label,
                     languages,
                     selected,
-                    |choice, picked| choice.language = picked,
                 ))
                 .ruled(),
         );
@@ -418,23 +370,9 @@ pub(super) fn section(window: &mut Window, cx: &mut App) -> AnyElement {
         card = card.child(
             SettingsRow::new("Input device")
                 .description(
-                    "Microphone names appear only after access was granted. This list never requests microphone access.",
+                    "Dictation records from the Windows default microphone. Change it in Windows Settings, under Sound.",
                 )
-                .control(
-                    div()
-                        .flex()
-                        .flex_wrap()
-                        .gap(r(theme.space.s8))
-                        .child(picker(
-                            "settings.voice.device",
-                            "Dictation microphone",
-                            device_label,
-                            devices,
-                            choice.input_device.clone(),
-                            |choice, picked| choice.input_device = picked,
-                        ))
-                        .child(microphones),
-                )
+                .control(value("settings.voice.device", "Windows default", cx))
                 .ruled(),
         );
     }
@@ -631,7 +569,7 @@ mod tests {
     }
 
     /// voice-section.test.tsx: "does not enumerate microphone names or ask permission until access was already
-    /// granted".
+    /// granted". The desktop records from the Windows default microphone, so it shows that and offers no choice.
     #[gpui::test]
     fn never_lists_microphones_or_asks_for_access(cx: &mut TestAppContext) {
         let (cx, _) = app(
@@ -644,10 +582,10 @@ mod tests {
         prompt.permission = protocol::speech::SpeechPermission::Prompt;
         let speech = fake(prompt, false);
         with_speech(cx, Arc::clone(&speech));
-        click(cx, "settings.voice.microphones");
-        assert_eq!(
-            text("settings.voice.notice"),
-            "Start dictation in a conversation to grant microphone access, then refresh this list."
+        assert_eq!(text("settings.voice.device"), "Windows default");
+        assert!(
+            node("settings.voice.microphones").is_none(),
+            "no list of microphones to refresh"
         );
         assert_eq!(*speech.asked.lock().unwrap(), ["status"]);
     }

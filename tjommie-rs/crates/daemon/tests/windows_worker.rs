@@ -65,7 +65,7 @@ fn rejects_an_acceptance_receipt_that_does_not_match_the_exact_protected_configu
 fn user_name(target: &str) -> Option<String> {
     let mut pointer: *mut CREDENTIALW = std::ptr::null_mut();
     // SAFETY: freed once with CredFree after copying the user name.
-    unsafe {
+    credman::locked(|| unsafe {
         CredReadW(
             &HSTRING::from(target),
             CRED_TYPE_GENERIC,
@@ -76,7 +76,7 @@ fn user_name(target: &str) -> Option<String> {
         let name = (*pointer).UserName.to_string().ok();
         CredFree(pointer as *const _);
         name
-    }
+    })
 }
 
 /// Admin, CI-runner only (`TJOMMIE_RS_ADMIN_TESTS=1`): provisions both identities for a disposable root, checks

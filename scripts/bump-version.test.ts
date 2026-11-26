@@ -95,7 +95,7 @@ describe.skipIf(!windows)("the version bump", () => {
       for (const line of lines) expect(line.after, file).toContain(`version = "${TARGET}"`);
     }
     const lockChanges = changed("tjommie-rs/Cargo.lock");
-    expect(lockChanges).toHaveLength(6);
+    expect(lockChanges).toHaveLength(7);
     for (const line of lockChanges) expect(line.after).toBe(`version = "${TARGET}"`);
   });
 
@@ -112,8 +112,8 @@ describe.skipIf(!windows)("the version bump", () => {
     }
     // In the lock, every package that has no source is one of the workspace's own, and is at the new version.
     const entries = text(root, "tjommie-rs/Cargo.lock").replaceAll("\r\n", "\n").split("\n\n").filter((entry) => entry.startsWith("[[package]]"));
-    const own = entries.filter((entry) => !/^source = /m.test(entry) && /^name = "(?:client|daemon|desktop|desktop-host|protocol|transport)"$/m.test(entry));
-    expect(own).toHaveLength(6);
+    const own = entries.filter((entry) => !/^source = /m.test(entry) && /^name = "(?:client|credman|daemon|desktop|desktop-host|protocol|transport)"$/m.test(entry));
+    expect(own).toHaveLength(7);
     for (const entry of own) expect(entry).toContain(`version = "${TARGET}"`);
     // Other crates' versions are not Tjommie's: the lock still holds versions that are not the new one.
     expect(text(root, "tjommie-rs/Cargo.lock").match(/^version = "(?!9\.9\.9")/gm)?.length ?? 0).toBeGreaterThan(100);

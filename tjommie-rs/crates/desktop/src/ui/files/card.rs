@@ -418,6 +418,23 @@ fn set_save(key: &FileKey, saving: Option<Signal>, status: Option<SharedString>,
     cx.refresh_windows();
 }
 
+/// Settings, Files, Clear temporary data: stops every download that hasn't finished, as the download button's Cancel
+/// does (each then says it was cancelled). Saved files stay. (A preview is a dialog, so none is open while that button
+/// can be pressed.)
+pub fn cancel_downloads(cx: &mut App) {
+    for save in cx.default_global::<Files>().saves.values() {
+        if let Some(signal) = &save.saving {
+            signal.abort();
+        }
+    }
+}
+
+/// For a view test elsewhere: a download of `key` in progress, stopped through `signal`.
+#[cfg(test)]
+pub(crate) fn saving_for_test(key: &FileKey, signal: Signal, cx: &mut App) {
+    set_save(key, Some(signal), None, cx);
+}
+
 /// Download, or Cancel while one saves: the card's, and the viewer's. The save dialog suggests the file's name, made
 /// safe for Windows; thumbnails hold back until the download ends.
 pub fn download(key: &FileKey, reference: &AttachmentRef, name: &str, cx: &mut App) {

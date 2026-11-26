@@ -37,10 +37,12 @@ pub fn opened(cx: &App) -> u64 {
 /// A dialog as its builder fills it (`open_dialog`): gpui-kit's dialog, with its body kept apart. gpui-kit scrolls a
 /// body taller than the window, but in a scroll area of its own that Tab can't move; this body is one of ours
 /// (`scroll::follow_focus`), so Tab brings each of its controls into view on a small window (M5 re-review). The title
-/// stays above it.
+/// stays above it, and the footer (`Surface::footer`) below it.
 pub struct Surface {
     dialog: Dialog,
     body: Vec<AnyElement>,
+    problem: Option<AnyElement>,
+    footer: Option<AnyElement>,
 }
 
 impl Surface {
@@ -51,6 +53,21 @@ impl Surface {
 
     pub fn title(mut self, title: impl IntoElement) -> Self {
         self.dialog = self.dialog.title(title);
+        self
+    }
+
+    /// The dialog's actions (Cancel and Save, a confirm, Close). gpui-kit pins them under the height-capped body, so
+    /// however tall the body, they stay whole in the window and the body scrolls between the title and them (the
+    /// README pictures' routine editor ran its Save off a 1000 x 700 window).
+    pub fn footer(mut self, footer: impl IntoElement) -> Self {
+        self.footer = Some(footer.into_any_element());
+        self
+    }
+
+    /// Why the dialog's last try failed (`fields::problem`), if it did. Every dialog shows it the same way: above its
+    /// actions, in the pinned footer, so it is in view however the body is scrolled (release review m2).
+    pub fn problem(mut self, problem: Option<AnyElement>) -> Self {
+        self.problem = problem;
         self
     }
 
@@ -95,15 +112,41 @@ impl Surface {
 
     /// gpui-kit's dialog, its body in one scroll area that follows the focus. The body goes in gpui-kit's content slot,
     /// which sits in the dialog's height-capped column (not in its own scroll area), so a body taller than the window
-    /// is bounded here and scrolls here.
-    fn into_dialog(self, scroll: &ScrollHandle) -> Dialog {
-        if self.body.is_empty() {
-            return self.dialog;
+    /// is bounded here and scrolls here. The problem and the actions go in gpui-kit's footer, pinned under it.
+    fn into_dialog(self, scroll: &ScrollHandle, window: &Window, cx: &App) -> Dialog {
+        let Surface {
+            dialog,
+            body,
+            problem,
+            footer,
+        } = self;
+        let dialog = if problem.is_some() || footer.is_some() {
+            // A long reason scrolls in a quarter of the window at most, so it never pushes the actions out.
+            let room = window.viewport_size().height * 0.25;
+            dialog.footer(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(r(theme(cx).space.s12))
+                    .children(problem.map(|problem| {
+                        div()
+                            .id("dialog.problem")
+                            .max_h(room)
+                            .overflow_y_scroll()
+                            .child(problem)
+                    }))
+                    .children(footer),
+            )
+        } else {
+            dialog
+        };
+        if body.is_empty() {
+            return dialog;
         }
         // gpui-kit may call the content builder again; each frame builds a new dialog, so the body is taken once.
-        let body = std::cell::RefCell::new(Some(self.body));
+        let body = std::cell::RefCell::new(Some(body));
         let scroll = scroll.clone();
-        self.dialog.content(move |content, _, _| {
+        dialog.content(move |content, _, _| {
             let children = body.borrow_mut().take().unwrap_or_default();
             content.min_h_0().child(follow_focus(
                 &scroll,
@@ -157,11 +200,13 @@ pub fn open_dialog(
             Surface {
                 dialog: surface,
                 body: Vec::new(),
+                problem: None,
+                footer: None,
             },
             window,
             cx,
         )
-        .into_dialog(&scroll)
+        .into_dialog(&scroll, window, cx)
     });
 }
 
@@ -203,33 +248,27 @@ pub fn open_confirm(
             .title(title(heading.clone(), cx))
             .child(
                 div()
+                    .type_style(&theme(cx).typography.desktop.body)
+                    .text_color(hsla(colors.text.secondary))
+                    .child(body.clone()),
+            )
+            .footer(
+                div()
                     .flex()
-                    .flex_col()
-                    .gap(r(theme(cx).space.s20))
+                    .justify_end()
+                    .gap(r(theme(cx).space.s8))
                     .child(
-                        div()
-                            .type_style(&theme(cx).typography.desktop.body)
-                            .text_color(hsla(colors.text.secondary))
-                            .child(body.clone()),
+                        Pill::new("dialog.cancel", "Cancel")
+                            .variant(PillVariant::Grey)
+                            .on_press(|window, cx| window.close_dialog(cx)),
                     )
                     .child(
-                        div()
-                            .flex()
-                            .justify_end()
-                            .gap(r(theme(cx).space.s8))
-                            .child(
-                                Pill::new("dialog.cancel", "Cancel")
-                                    .variant(PillVariant::Grey)
-                                    .on_press(|window, cx| window.close_dialog(cx)),
-                            )
-                            .child(
-                                Pill::new("dialog.confirm", confirm.clone())
-                                    .variant(variant)
-                                    .on_press(move |window, cx| {
-                                        on_confirm(window, cx);
-                                        window.close_dialog(cx);
-                                    }),
-                            ),
+                        Pill::new("dialog.confirm", confirm.clone())
+                            .variant(variant)
+                            .on_press(move |window, cx| {
+                                on_confirm(window, cx);
+                                window.close_dialog(cx);
+                            }),
                     ),
             )
     });

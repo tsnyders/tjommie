@@ -74,6 +74,8 @@ struct Host {
 impl Render for Host {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         clock::begin_frame(cx);
+        // The semantic tree is this frame's, as the app's shell keeps it.
+        crate::test_driver::begin_frame();
         div()
             .track_focus(&self.focus)
             .size_full()
@@ -884,4 +886,78 @@ fn words_for_who_is_in_control() {
         chrome::who(&state, "Scout"),
         "Private interaction. Automation and pictures are paused."
     );
+}
+
+/// The dialog fit (every dialog's check): Saved logins, its Manage logins in the window at 1000 x 600 and at 360 x 600.
+#[gpui::test]
+fn dialog_fits_saved_logins(cx: &mut gpui::TestAppContext) {
+    let (panel, _, cx) = panel_window(
+        cx,
+        bot("b1", true),
+        Some(shown(state(BrowserControl::Human))),
+    );
+    open_browser(&panel, cx);
+    click("browser.logins", cx);
+    draw(cx);
+    click("browser.logins.saved", cx);
+    crate::ui::testing::draw(cx);
+    crate::ui::testing::dialog_fits(cx, &["logins.manage"]);
+    // The vault could not be asked: why shows above the actions.
+    cx.update(|_, cx| {
+        cx.global_mut::<BrowserData>().logins.insert(
+            "b1".into(),
+            crate::ui::browser::logins::LoginsView {
+                failed: true,
+                ..Default::default()
+            },
+        )
+    });
+    crate::ui::testing::dialog_fits_with_problem(cx, "logins.saved.problem", &["logins.manage"]);
+}
+
+/// The dialog fit for a page's own dialog: a long message scrolls in its bar, which yields the page's room, so the answer,
+/// Cancel and OK stay whole in a 600 high window, not clipped by the panel, at System text and at Larger text with the
+/// zoom at 125 % (release review m1), on the Google page whose banner takes room too. (Its width is the shell's to set;
+/// this host keeps the panel's own.)
+#[gpui::test]
+fn dialog_fits_a_page_dialog_with_a_long_message(cx: &mut gpui::TestAppContext) {
+    let mut mine = state(BrowserControl::Human);
+    if let Some(tab) = mine.tabs.first_mut() {
+        tab.url = "https://accounts.google.com/signin/rejected".into();
+    }
+    mine.dialog = Some(BrowserDialog {
+        page_id: "p1".into(),
+        kind: "prompt".into(),
+        message: "Leave this page? The changes you made on it are not saved yet. ".repeat(40),
+        default_value: String::new(),
+    });
+    let (panel, _, cx) = panel_window(cx, bot("b1", true), Some(shown(mine)));
+    open_browser(&panel, cx);
+    cx.simulate_resize(gpui::size(gpui::px(1000.), gpui::px(600.)));
+    for larger in [false, true] {
+        crate::ui::testing::larger_text_and_zoom(cx, larger);
+        crate::ui::testing::draw(cx);
+        assert!(
+            crate::ui::testing::node("browser.google").is_some(),
+            "the banner shows"
+        );
+        for id in [
+            "browser.dialog.answer",
+            "browser.dialog.cancel",
+            "browser.dialog.ok",
+        ] {
+            let control = crate::ui::testing::node(id).unwrap_or_else(|| panic!("{id} is drawn"));
+            let bounds = control.bounds;
+            assert!(
+                bounds.y >= 0. && bounds.y + bounds.height <= 600.,
+                "{id} sits inside the window (Larger text at 125 %: {larger}): {bounds:?}"
+            );
+            assert_eq!(
+                control.visible,
+                Some(bounds),
+                "{id} is whole, not clipped (Larger text at 125 %: {larger})"
+            );
+        }
+    }
+    crate::ui::testing::larger_text_and_zoom(cx, false);
 }

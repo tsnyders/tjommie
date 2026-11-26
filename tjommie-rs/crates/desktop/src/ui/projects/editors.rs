@@ -28,7 +28,6 @@ use crate::ui::primitives::button::{Pill, PillVariant};
 use crate::ui::primitives::dialog::{open_dialog, title};
 use crate::ui::primitives::focus_handle;
 use crate::ui::primitives::menu::{Menu, MenuItem};
-use crate::ui::primitives::scroll::{follow_focus, scroll_handle};
 use crate::ui::primitives::toggle::Toggle;
 use crate::ui::store;
 use crate::ui::style::{TypeExt as _, focus_ring, focus_visible, hsla, palette, r, theme};
@@ -167,17 +166,15 @@ fn picker(
         .into_any_element()
 }
 
-/// The dialog's footer: a problem, then Cancel and the save button (off until it can save).
+/// The dialog's footer: Cancel and the save button (off until it can save).
 fn footer(
     prefix: &'static str,
     saving: &'static str,
     busy: bool,
     ready: bool,
-    failed: Option<SharedString>,
     on_save: impl Fn(&mut Window, &mut App) + 'static,
     cx: &App,
 ) -> AnyElement {
-    let theme = theme(cx);
     let save = Pill::new(
         format!("{prefix}.save"),
         if busy { "Saving…" } else { saving },
@@ -187,20 +184,13 @@ fn footer(
     .on_press(on_save);
     div()
         .flex()
-        .flex_col()
-        .gap(r(theme.space.s12))
-        .children(failed.map(|text| problem(format!("{prefix}.problem"), text, cx)))
+        .justify_end()
+        .gap(r(theme(cx).space.s8))
         .child(
-            div()
-                .flex()
-                .justify_end()
-                .gap(r(theme.space.s8))
-                .child(
-                    Pill::new(format!("{prefix}.cancel"), "Cancel")
-                        .on_press(|window, cx| window.close_dialog(cx)),
-                )
-                .child(save),
+            Pill::new(format!("{prefix}.cancel"), "Cancel")
+                .on_press(|window, cx| window.close_dialog(cx)),
         )
+        .child(save)
         .into_any_element()
 }
 
@@ -362,7 +352,8 @@ pub(super) fn open_project_editor(
         } else {
             "New project team"
         };
-        let body = project_body(&form, &screen, window, cx);
+        let (body, footer) = project_body(&form, &screen, window, cx);
+        let failed = form.read(cx).problem.clone();
         // project-editor.tsx's 600 px, as rems.
         dialog
             .w(window.rem_size() * 37.5)
@@ -371,6 +362,8 @@ pub(super) fn open_project_editor(
             // unguarded: returns a constant, nothing in it can panic
             .on_ok(|_, _, _| false)
             .child(body)
+            .problem(failed.map(|text| problem("project_form.problem", text, cx)))
+            .footer(footer)
     });
     window.defer(cx, move |window, cx| {
         guarded("focus the team's name", || {
@@ -379,18 +372,18 @@ pub(super) fn open_project_editor(
     });
 }
 
+/// The team's fields, and its footer.
 fn project_body(
     form: &Entity<ProjectForm>,
     screen: &Entity<ProjectsScreen>,
     window: &mut Window,
     cx: &mut App,
-) -> AnyElement {
+) -> (AnyElement, AnyElement) {
     let bots = store::state(cx).bots.clone();
     let state = form.read(cx);
     let editing = state.opened.is_some();
     let ready = state.ready(cx);
     let busy = state.busy;
-    let failed = state.problem.clone();
     let (name, base, target, checks) = (
         state.name.clone(),
         state.base.clone(),
@@ -528,18 +521,13 @@ fn project_body(
         "Save team",
         busy,
         ready,
-        failed,
         move |_, cx| save_project(&saving, &screen, cx),
         cx,
     );
-    let scroll = scroll_handle("project_form.scroll", window, cx);
     let theme = theme(cx);
-    // The fields scroll; Cancel and Save stay in view under them.
+    // The fields scroll in the dialog's body; Cancel and Save, its footer, stay in view under them.
     let fields = div()
-        .id("project_form.scroll")
-        .track_scroll(&scroll)
-        .max_h(window.viewport_size().height * 0.6)
-        .overflow_y_scroll()
+        .mt(r(theme.space.s16))
         .flex()
         .flex_col()
         .gap(r(theme.space.s16))
@@ -598,15 +586,9 @@ fn project_body(
                     r#"Example: [{"id":"test","label":"Tests","command":"node","args":["--test"],"timeoutMs":120000}]"#,
                     cx,
                 )),
-        );
-    div()
-        .mt(r(theme.space.s16))
-        .flex()
-        .flex_col()
-        .gap(r(theme.space.s16))
-        .child(follow_focus(&scroll, fields))
-        .child(footer)
-        .into_any_element()
+        )
+        .into_any_element();
+    (fields, footer)
 }
 
 /// Choose a repository folder: this PC's folder picker, then the host registers it, and it is chosen.
@@ -901,7 +883,8 @@ pub(super) fn open_task_editor(
         } else {
             "New task"
         };
-        let body = task_body(&form, &screen, window, cx);
+        let (body, footer) = task_body(&form, &screen, window, cx);
+        let failed = form.read(cx).problem.clone();
         // task-editor.tsx's 520 px, as rems.
         dialog
             .w(window.rem_size() * 32.5)
@@ -909,6 +892,8 @@ pub(super) fn open_task_editor(
             // unguarded: returns a constant, nothing in it can panic
             .on_ok(|_, _, _| false)
             .child(body)
+            .problem(failed.map(|text| problem("task_form.problem", text, cx)))
+            .footer(footer)
     });
     window.defer(cx, move |window, cx| {
         guarded("focus the task's title", || {
@@ -917,12 +902,13 @@ pub(super) fn open_task_editor(
     });
 }
 
+/// The task's fields, and its footer.
 fn task_body(
     form: &Entity<TaskForm>,
     screen: &Entity<ProjectsScreen>,
     window: &mut Window,
     cx: &mut App,
-) -> AnyElement {
+) -> (AnyElement, AnyElement) {
     let bots = store::state(cx).bots.clone();
     let state = form.read(cx);
     let (title_field, instructions, acceptance) = (
@@ -932,7 +918,6 @@ fn task_body(
     );
     let ready = state.ready(cx);
     let busy = state.busy;
-    let failed = state.problem.clone();
     let members = state.project.input.members.clone();
     let chosen: Vec<String> = [
         ProjectRole::Developer,
@@ -1009,12 +994,11 @@ fn task_body(
         "Save task",
         busy,
         ready,
-        failed,
         move |_, cx| save_task(&saving, &screen, cx),
         cx,
     );
     let theme = theme(cx);
-    div()
+    let body = div()
         .mt(r(theme.space.s16))
         .flex()
         .flex_col()
@@ -1040,8 +1024,8 @@ fn task_body(
              allowance. Integration needs a reviewer, tester and accepted checks.",
             cx,
         ))
-        .child(footer)
-        .into_any_element()
+        .into_any_element();
+    (body, footer)
 }
 
 fn save_task(form: &Entity<TaskForm>, screen: &Entity<ProjectsScreen>, cx: &mut App) {

@@ -277,6 +277,15 @@ impl Notifier {
         })
     }
 
+    /// A toast that informs and, clicked, brings the window up: its route names no page, so the app only shows itself.
+    pub fn show_opening(&self, title: &str, body: &str) -> bool {
+        self.show(&Toast {
+            title: title.into(),
+            body: body.into(),
+            route: Some("/".into()),
+        })
+    }
+
     fn show(&self, toast: &Toast) -> bool {
         match self.backend.show(toast) {
             Ok(()) => true,

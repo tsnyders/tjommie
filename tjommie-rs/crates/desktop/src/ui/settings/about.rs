@@ -126,11 +126,16 @@ fn read_notices() -> Result<String, ()> {
 
 /// The third-party notices, in the app (`ThirdPartyNotices`): loading, unavailable, or their text.
 fn open_notices(window: &mut Window, cx: &mut App) {
+    show_notices(read_notices, window, cx);
+}
+
+/// `open_notices`, with the notices read by `read` (a view test hands in its own text).
+fn show_notices(read: fn() -> Result<String, ()>, window: &mut Window, cx: &mut App) {
     let notices: Entity<Notices> = cx.new(|_| None);
     let reading = notices.downgrade();
     cx.spawn(async move |cx| {
         guarded_async("read the third-party notices", async move {
-            let read = cx.background_spawn(async { read_notices() }).await;
+            let read = cx.background_spawn(async move { read() }).await;
             let _ = cx.update(|cx| {
                 reading.update(cx, |notices, cx| {
                     *notices = Some(read);
@@ -154,8 +159,6 @@ fn open_notices(window: &mut Window, cx: &mut App) {
                 .semantic("settings.about.notices.text", Role::Code)
                 .aria_label("Third-party license texts")
                 .mt(r(theme.space.s12))
-                .max_h(window.viewport_size().height * 0.65)
-                .overflow_y_scroll()
                 .type_style(&theme.typography.desktop.meta)
                 .font_family(crate::assets::MONO_FAMILY)
                 .text_color(hsla(palette(cx).text.secondary))
@@ -180,7 +183,7 @@ mod tests {
     use super::APP_VERSION;
     use crate::model::testing::FakeRpc;
     use crate::ui::shell::route::{Route, Section};
-    use crate::ui::testing::{app, click, draw, node, state, text};
+    use crate::ui::testing::{app, click, dialog_fits, draw, node, state, text};
 
     /// diagnostics-section.test.tsx (About's half of "distinguishes the current device version from the selected
     /// host"): this device's version, the host's and its daemon's, and the notices button.
@@ -227,6 +230,56 @@ mod tests {
         assert_eq!(
             text("settings.about.notices.problem"),
             "Notices are unavailable in this app build."
+        );
+    }
+
+    /// The dialog fit (every dialog's check): the notices have no actions; their title stays in the window at 1000 x 600
+    /// and at 360 x 600.
+    #[gpui::test]
+    fn dialog_fits_the_notices(cx: &mut TestAppContext) {
+        let (cx, _) = app(
+            cx,
+            Route::Settings(Section::About),
+            state(vec![], vec![], vec![]),
+            FakeRpc::new(),
+        );
+        click(cx, "settings.about.notices");
+        draw(cx);
+        dialog_fits(cx, &[]);
+    }
+
+    /// The notices scroll in the dialog's body, not in a second scroll area of their own (release review nit): their
+    /// text runs on past what the body shows, and the title stays in the window at every size.
+    #[gpui::test]
+    fn the_notices_scroll_in_the_dialogs_body(cx: &mut TestAppContext) {
+        let (cx, _) = app(
+            cx,
+            Route::Settings(Section::About),
+            state(vec![], vec![], vec![]),
+            FakeRpc::new(),
+        );
+        cx.update(|window, cx| {
+            super::show_notices(
+                || {
+                    Ok(
+                        "Sample License\n\nPermission is granted to use this sample.\n\n"
+                            .repeat(300),
+                    )
+                },
+                window,
+                cx,
+            )
+        });
+        draw(cx);
+        dialog_fits(cx, &[]);
+        cx.simulate_resize(gpui::size(gpui::px(1000.), gpui::px(600.)));
+        draw(cx);
+        let text = node("settings.about.notices.text").expect("the notices show");
+        let shown = text.visible.expect("their start shows");
+        assert!(
+            text.bounds.height > shown.height,
+            "the dialog's body scrolls them: {shown:?} of {:?}",
+            text.bounds
         );
     }
 }

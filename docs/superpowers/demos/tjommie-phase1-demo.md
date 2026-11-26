@@ -26,7 +26,7 @@ Branch: `phase1-completion-20261021`. The eight commits through `p1de-fix-b-ui` 
 
 Final machine-readable evidence: [installed-automated-results.json](installed-automated-results.json). All nine automated checks passed against the installed payload; the harness verified current source inputs and every installed payload file against the package manifest before launch.
 
-[Installed chat screenshot](../../screenshots/phase1-installed-main-chat.png) shows the stopped commands, successful follow-ups and completed routine.
+Installed chat screenshot (screenshot removed) showed the stopped commands, successful follow-ups and completed routine.
 
 ## Validation
 

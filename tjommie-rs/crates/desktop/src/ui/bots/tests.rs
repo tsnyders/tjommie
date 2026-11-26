@@ -8,7 +8,7 @@ use protocol::wire::{Empty, Notes, method};
 
 use crate::model::testing::FakeRpc;
 use crate::ui::shell::route::{self, Route};
-use crate::ui::testing::{app, bot, click, draw, ids, node, state, text};
+use crate::ui::testing::{app, bot, click, dialog_fits, draw, ids, node, state, text};
 
 fn made(id: &str, name: &str) -> Bot {
     bot(id, name, BotState::Idle)
@@ -288,4 +288,28 @@ fn tab_leaves_the_instructions_and_shift_tab_comes_back(cx: &mut TestAppContext)
         node("bot_form.instructions").unwrap().focused,
         "Shift+Tab came back"
     );
+}
+
+/// The dialog fit (every dialog's check): Delete agent, and the Full auto warning, at 1000 x 600 and at 360 x 600.
+#[gpui::test]
+fn dialog_fits_every_agent_confirmation(cx: &mut TestAppContext) {
+    let rpc = FakeRpc::new().on::<method::BotsNotes>(|_| {
+        Ok(Notes {
+            text: String::new(),
+        })
+    });
+    let (cx, _) = app(
+        cx,
+        Route::BotSettings("b1".into()),
+        state(vec![made("b1", "Forge")], vec![], vec![]),
+        rpc,
+    );
+    let confirm = ["dialog.cancel", "dialog.confirm"];
+    click(cx, "bot_settings.delete");
+    assert_eq!(text("dialog.title"), "Delete Forge?");
+    dialog_fits(cx, &confirm);
+    click(cx, "dialog.cancel");
+    click(cx, "bot_form.autonomy.levels.full");
+    assert_eq!(text("dialog.title"), "Let Forge work without asking?");
+    dialog_fits(cx, &confirm);
 }
