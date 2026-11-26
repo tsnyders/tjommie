@@ -349,8 +349,8 @@ describe.skipIf(!windows)("the helpers, under the engines the installer runs the
     const run = powershell(driver, [], { ...process.env });
     expect(run.status, `${run.stdout}${run.stderr}`).toBe(0);
     const result = JSON.parse(run.stdout) as { code: number; output: string; endedBeforeTheHelper: string[]; setupMs: number; helperMs: number; appAlive: boolean; daemonAlive: boolean; excludedAlive: boolean; decoyAlive: boolean; childrenAlive: number; childCount: number; orphansAlive: number; orphanCount: number; launcherId: number; launcherGone: boolean; orphanIds: number[]; appId: number; excludedId: number };
-    // Logged before any check, so a run that fails for any reason, this file's own timeout included, shows them (vitest shows a test's console output
-    // when it fails): they say whether the helper or the setup around it was slow, which PR #41's CI could not.
+    // Logged before any check, so a check that fails shows them (vitest shows a test's console output when it fails; a driver that never returns logs
+    // nothing): they say whether the helper or the setup around it was slow, which PR #41's CI could not.
     const times = `${label}: setup ${result.setupMs} ms, helper ${result.helperMs} ms`;
     console.log(times);
     expect(result.endedBeforeTheHelper, `stand-ins that had already ended before the helper ran (${times})`).toEqual([]);

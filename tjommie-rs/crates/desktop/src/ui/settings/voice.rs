@@ -167,15 +167,14 @@ fn model_line(status: Option<&SpeechStatus>) -> String {
     }
 }
 
-/// A picker for the language or the microphone: a pill with the choice that opens a menu of them, named for what it
-/// picks (`what`, M5 review Minor 25).
+/// The dictation language: a pill with the choice that opens a menu of them, named for what it picks (`what`, M5
+/// review Minor 25).
 fn picker(
     id: &'static str,
     what: &'static str,
     label: String,
     choices: Vec<(String, String)>,
     chosen: String,
-    pick: fn(&mut VoiceChoice, String),
 ) -> AnyElement {
     let name = format!("{what}: {label}");
     if choices.is_empty() {
@@ -204,23 +203,12 @@ fn picker(
             |menu, (key, text)| {
                 let picked = key.clone();
                 menu.item(
-                    MenuItem::new(
-                        format!(
-                            "{id}.{}",
-                            if key.is_empty() {
-                                "default"
-                            } else {
-                                key.as_str()
-                            }
-                        ),
-                        text,
-                        move |_, cx| {
-                            let mut choice = speech::choice(cx);
-                            pick(&mut choice, picked.clone());
-                            cx.set_global(choice);
-                            cx.refresh_windows();
-                        },
-                    )
+                    MenuItem::new(format!("{id}.{key}"), text, move |_, cx| {
+                        cx.set_global(VoiceChoice {
+                            language: picked.clone(),
+                        });
+                        cx.refresh_windows();
+                    })
                     .checked(key == chosen),
                 )
             },
@@ -375,7 +363,6 @@ pub(super) fn section(window: &mut Window, cx: &mut App) -> AnyElement {
                     language_label,
                     languages,
                     selected,
-                    |choice, picked| choice.language = picked,
                 ))
                 .ruled(),
         );

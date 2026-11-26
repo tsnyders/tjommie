@@ -7,7 +7,6 @@ use gpui::{
 };
 use protocol::attachments::{ATTACHMENT_CHUNK_BYTES, MAX_ATTACHMENT_BYTES};
 
-use crate::guard::guarded;
 use crate::semantic::SemanticExt as _;
 use crate::ui::files::card;
 use crate::ui::primitives::button::Pill;
@@ -40,12 +39,10 @@ pub(super) fn section(window: &mut Window, cx: &mut App) -> AnyElement {
         .on_press({
             let cleared = cleared.clone();
             move |_, cx| {
-                guarded("clear temporary file data", || {
-                    card::cancel_downloads(cx);
-                    cleared.update(cx, |cleared, cx| {
-                        *cleared = true;
-                        cx.notify();
-                    });
+                card::cancel_downloads(cx);
+                cleared.update(cx, |cleared, cx| {
+                    *cleared = true;
+                    cx.notify();
                 });
             }
         });
