@@ -1,0 +1,1055 @@
+//! The e2e test driver (feature `test-driver`, never in a release build). The app serves `\\.\pipe\tjommie-ui-<pid>`
+//! with one JSON request per line and one JSON response per line: `click{id}`, `type{id,text}`, `key{chord}`,
+//! `snapshot` and `wait{id,predicate,timeout_ms}`. The snapshot is the semantic tree: each element registered with
+//! `semantic()`, with its AccessKit role and text as Windows UI Automation sees them. Only the current user may open
+//! the pipe. The app creates it as the name's first instance and the client checks that the app it launched serves it,
+//! so a process that takes the name first can't stand in for the app (review F10).
+
+use std::cell::RefCell;
+use std::fs::File;
+use std::io::{self, BufRead as _, BufReader, Write as _};
+use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _};
+use std::path::{Path, PathBuf};
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
+
+use futures::StreamExt as _;
+use futures::channel::mpsc::{UnboundedSender, unbounded};
+use gpui::{
+    A11ySubtreeBuilder, AnyElement, AnyWindowHandle, App, Bounds, Element, ElementId, FocusHandle,
+    GlobalElementId, InspectorElementId, InteractiveElement, Interactivity, IntoElement, Keystroke,
+    LayoutId, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement,
+    Pixels, PlatformInput, Point, SharedString, StatefulInteractiveElement, StyleRefinement,
+    Styled, Window, point, px,
+};
+use serde::{Deserialize, Serialize};
+use windows::Win32::Foundation::{ERROR_PIPE_CONNECTED, HANDLE, HLOCAL, LocalFree};
+use windows::Win32::Security::Authorization::{
+    ConvertSecurityDescriptorToStringSecurityDescriptorW, ConvertSidToStringSidW,
+    ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo, SDDL_REVISION_1,
+    SE_KERNEL_OBJECT,
+};
+use windows::Win32::Security::{
+    DACL_SECURITY_INFORMATION, GetTokenInformation, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES,
+    TOKEN_QUERY, TOKEN_USER, TokenUser,
+};
+use windows::Win32::Storage::FileSystem::{FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX};
+use windows::Win32::System::Pipes::{
+    ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, GetNamedPipeServerProcessId,
+    PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT,
+};
+use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+use windows::core::{HSTRING, PWSTR};
+
+use crate::guard::{guarded, guarded_async};
+
+// Review F4: the driver lets another process click and type in the app, so it never builds into the owner's app.
+const _: () = assert!(
+    !matches!(
+        desktop_host::identity::CURRENT.name.as_bytes(),
+        b"production"
+    ),
+    "the test driver never builds into the production identity"
+);
+
+const PIPE_PREFIX: &str = r"\\.\pipe\tjommie-ui-";
+
+pub fn pipe_name(pid: u32) -> String {
+    format!("{PIPE_PREFIX}{pid}")
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum Request {
+    Click {
+        id: String,
+    },
+    Type {
+        id: String,
+        text: String,
+    },
+    Key {
+        chord: String,
+    },
+    /// Types `text` into whatever has the focus, with no click: the keyboard-only way in.
+    Text {
+        text: String,
+    },
+    Snapshot,
+    Wait {
+        id: String,
+        predicate: Predicate,
+        timeout_ms: u64,
+    },
+    /// Answers the app's next file or folder prompt with `path`, in place of the system's picker, which keys can't
+    /// drive (M5 review M8). Its tag is the needle `tests/pins.rs` and CI look for: a release build has no such hook.
+    #[serde(rename = "tjommie-test-path-answer")]
+    AnswerPathPrompt {
+        path: String,
+    },
+    /// Sets the window's size, in logical pixels, so a test runs at the same size on every machine.
+    Resize {
+        width: f32,
+        height: f32,
+    },
+    /// What the desktop services have done (the toasts the fake notifier took, what start at sign-in wrote) and whether
+    /// the window is shown: an e2e build keeps them in memory, so a test never touches the owner's tray, desktop or registry.
+    Services,
+    /// Presses a tray item, brings in a notice, switches the fake notifier or clicks a toast (`services::Poke`).
+    Poke {
+        poke: crate::services::Poke,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Predicate {
+    Exists,
+    Focused,
+    Selected,
+    Text(String),
+}
+
+impl Predicate {
+    pub fn holds(&self, node: &UiNode) -> bool {
+        match self {
+            Predicate::Exists => true,
+            Predicate::Focused => node.focused,
+            Predicate::Selected => node.selected,
+            Predicate::Text(text) => node.text == *text,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Response {
+    pub ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<UiSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub services: Option<crate::services::ServicesSnapshot>,
+}
+
+impl Response {
+    pub fn done() -> Response {
+        Response {
+            ok: true,
+            ..Response::default()
+        }
+    }
+
+    pub fn failed(error: impl Into<String>) -> Response {
+        Response {
+            ok: false,
+            snapshot: None,
+            error: Some(error.into()),
+            services: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct UiSnapshot {
+    pub nodes: Vec<UiNode>,
+    /// The window's content area, so a test can tell what shows (T5.6: keyboard focus never sits below the fold).
+    #[serde(default)]
+    pub viewport: Option<UiBounds>,
+}
+
+impl UiSnapshot {
+    pub fn node(&self, id: &str) -> Option<&UiNode> {
+        self.nodes.iter().find(|node| node.id == id)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UiNode {
+    pub id: String,
+    /// The AccessKit role, e.g. "Heading".
+    pub role: String,
+    /// The accessible label, else the value.
+    pub text: String,
+    pub enabled: bool,
+    pub focused: bool,
+    /// The selected row of a set, such as the sidebar's section or Recents row on show.
+    pub selected: bool,
+    /// A switch that is on, a pressed toggle button, a checked radio (AccessKit's toggled state).
+    #[serde(default)]
+    pub toggled: bool,
+    /// A menu's trigger or a combo box: whether its list is open (AccessKit's expanded state); `None` where the idea
+    /// doesn't apply (M4 review C-N3).
+    #[serde(default)]
+    pub expanded: Option<bool>,
+    /// A control, by its role: the keyboard must reach it (T5.6, `e2e_keyboard_navigation`).
+    #[serde(default)]
+    pub interactive: bool,
+    /// In window coordinates, logical px.
+    pub bounds: UiBounds,
+    /// The part of `bounds` its scroll areas and clips let show (GPUI's content mask as it was drawn), where a click
+    /// lands; `None` when none of it shows (M4 review M5).
+    #[serde(default)]
+    pub visible: Option<UiBounds>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct UiBounds {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+}
+
+/// An e2e test's handle on a running app: launched on a root, driven through its pipe, killed on drop.
+pub struct Client {
+    app: std::process::Child,
+    reader: BufReader<File>,
+    writer: File,
+}
+
+impl Client {
+    /// Starts `exe` with `root` as TJOMMIE_HOME and connects to its pipe.
+    pub fn launch(exe: &str, root: &Path) -> io::Result<Client> {
+        Self::launch_with(exe, root, &[])
+    }
+
+    /// `launch`, with more variables for the app, such as a test's TJOMMIE_DAEMON_EXE.
+    pub fn launch_with(exe: &str, root: &Path, vars: &[(&str, &str)]) -> io::Result<Client> {
+        Self::launch_args(exe, root, vars, &[])
+    }
+
+    /// `launch_with`, and command-line arguments for the app (`--hidden`, which starts it in the tray).
+    pub fn launch_args(
+        exe: &str,
+        root: &Path,
+        vars: &[(&str, &str)],
+        args: &[&str],
+    ) -> io::Result<Client> {
+        let mut app = desktop_host::spawn::command(exe)
+            .args(args)
+            .env("TJOMMIE_HOME", root)
+            .envs(vars.iter().copied())
+            .spawn()?;
+        let name = pipe_name(app.id());
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            match std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&name)
+            {
+                Ok(pipe) => {
+                    let mut server = 0;
+                    // SAFETY: `pipe` is an open pipe handle and `server` outlives the call.
+                    unsafe {
+                        GetNamedPipeServerProcessId(HANDLE(pipe.as_raw_handle()), &mut server)
+                    }?;
+                    if server != app.id() {
+                        let _ = app.kill();
+                        return Err(io::Error::other(format!(
+                            "{name} is served by process {server}, not the app"
+                        )));
+                    }
+                    let writer = pipe.try_clone()?;
+                    return Ok(Client {
+                        app,
+                        reader: BufReader::new(pipe),
+                        writer,
+                    });
+                }
+                Err(error) => {
+                    if let Some(status) = app.try_wait()? {
+                        return Err(io::Error::other(format!(
+                            "the app exited before its pipe opened: {status}"
+                        )));
+                    }
+                    if Instant::now() > deadline {
+                        let _ = app.kill();
+                        return Err(io::Error::other(format!("{name} never opened: {error}")));
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+            }
+        }
+    }
+
+    /// The app's process id: a test that stops the app's daemon finds it by its parent.
+    pub fn pid(&self) -> u32 {
+        self.app.id()
+    }
+
+    /// Whether the app has exited by now.
+    pub fn has_exited(&mut self) -> io::Result<bool> {
+        Ok(self.app.try_wait()?.is_some())
+    }
+
+    pub fn request(&mut self, request: &Request) -> io::Result<Response> {
+        let mut line = serde_json::to_string(request)?;
+        line.push('\n');
+        self.writer.write_all(line.as_bytes())?;
+        line.clear();
+        self.reader.read_line(&mut line)?;
+        Ok(serde_json::from_str(&line)?)
+    }
+
+    fn expect_ok(&mut self, request: &Request) -> io::Result<Response> {
+        let response = self.request(request)?;
+        if response.ok {
+            Ok(response)
+        } else {
+            Err(io::Error::other(response.error.unwrap_or_default()))
+        }
+    }
+
+    pub fn snapshot(&mut self) -> io::Result<UiSnapshot> {
+        Ok(self
+            .expect_ok(&Request::Snapshot)?
+            .snapshot
+            .unwrap_or_default())
+    }
+
+    pub fn key(&mut self, chord: &str) -> io::Result<()> {
+        self.expect_ok(&Request::Key {
+            chord: chord.to_owned(),
+        })
+        .map(drop)
+    }
+
+    /// What the services have done and whether the window is shown (`Services`).
+    pub fn services(&mut self) -> io::Result<crate::services::ServicesSnapshot> {
+        Ok(self
+            .expect_ok(&Request::Services)?
+            .services
+            .unwrap_or_default())
+    }
+
+    /// Presses a tray item, brings in a notice, and so on (`Poke`).
+    pub fn poke(&mut self, poke: crate::services::Poke) -> io::Result<()> {
+        self.expect_ok(&Request::Poke { poke }).map(drop)
+    }
+
+    /// Sets the window's size in logical pixels (`Resize`).
+    pub fn resize(&mut self, width: f32, height: f32) -> io::Result<()> {
+        self.expect_ok(&Request::Resize { width, height }).map(drop)
+    }
+
+    /// The app's next file or folder prompt answers `path` (`AnswerPathPrompt`).
+    pub fn answer_path_prompt(&mut self, path: &Path) -> io::Result<()> {
+        self.expect_ok(&Request::AnswerPathPrompt {
+            path: path.to_string_lossy().into_owned(),
+        })
+        .map(drop)
+    }
+
+    /// Types into the focused element (`Text`), as the keyboard does.
+    pub fn text(&mut self, text: &str) -> io::Result<()> {
+        self.expect_ok(&Request::Text {
+            text: text.to_owned(),
+        })
+        .map(drop)
+    }
+
+    pub fn click(&mut self, id: &str) -> io::Result<()> {
+        self.expect_ok(&Request::Click { id: id.to_owned() })
+            .map(drop)
+    }
+
+    /// Waits for `predicate` on `id`. A wait that fails says what the app's connection screen says, so a timeout in CI
+    /// reads as its reason (the daemon refused to start, say) rather than a bare timeout.
+    pub fn wait(&mut self, id: &str, predicate: Predicate, timeout_ms: u64) -> io::Result<()> {
+        let waited = self
+            .expect_ok(&Request::Wait {
+                id: id.to_owned(),
+                predicate,
+                timeout_ms,
+            })
+            .map(drop);
+        waited.map_err(|error| {
+            let said: Vec<String> = self
+                .snapshot()
+                .map(|snapshot| snapshot.nodes)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|node| node.id.starts_with("connection.") && !node.text.is_empty())
+                .map(|node| format!("{}: {}", node.id, node.text))
+                .collect();
+            if said.is_empty() {
+                error
+            } else {
+                io::Error::other(format!("{error}; the app says {}", said.join(" | ")))
+            }
+        })
+    }
+
+    /// The pipe's access list as Windows reports it, in SDDL.
+    pub fn pipe_dacl(&self) -> io::Result<String> {
+        let mut descriptor = PSECURITY_DESCRIPTOR::default();
+        let mut text = PWSTR::null();
+        // SAFETY: the handle is our open pipe; both outputs are freed with LocalFree once copied.
+        unsafe {
+            GetSecurityInfo(
+                HANDLE(self.writer.as_raw_handle()),
+                SE_KERNEL_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                None,
+                None,
+                None,
+                None,
+                Some(&mut descriptor),
+            )
+            .ok()?;
+            let converted = ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                descriptor,
+                SDDL_REVISION_1,
+                DACL_SECURITY_INFORMATION,
+                &mut text,
+                None,
+            );
+            let sddl = converted.and_then(|()| text.to_string().map_err(Into::into));
+            let _ = LocalFree(Some(HLOCAL(text.0.cast())));
+            let _ = LocalFree(Some(HLOCAL(descriptor.0)));
+            Ok(sddl?)
+        }
+    }
+}
+
+impl Drop for Client {
+    fn drop(&mut self) {
+        let _ = self.app.kill();
+        let _ = self.app.wait();
+    }
+}
+
+/// The current user's SID, e.g. `S-1-5-21-…`.
+pub fn current_user_sid() -> io::Result<String> {
+    let mut token = HANDLE::default();
+    // SAFETY: the token handle is closed below; the buffer is u64-aligned for TOKEN_USER and sized by the first call;
+    // the SID string is freed with LocalFree once copied.
+    unsafe {
+        OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token)?;
+        let mut size = 0u32;
+        let _ = GetTokenInformation(token, TokenUser, None, 0, &mut size);
+        let mut buffer = vec![0u64; (size as usize).div_ceil(8)];
+        let read = GetTokenInformation(
+            token,
+            TokenUser,
+            Some(buffer.as_mut_ptr().cast()),
+            size,
+            &mut size,
+        );
+        let _ = windows::Win32::Foundation::CloseHandle(token);
+        read?;
+        let user = &*buffer.as_ptr().cast::<TOKEN_USER>();
+        let mut text = PWSTR::null();
+        ConvertSidToStringSidW(user.User.Sid, &mut text)?;
+        let sid = text.to_string();
+        let _ = LocalFree(Some(HLOCAL(text.0.cast())));
+        sid.map_err(io::Error::other)
+    }
+}
+
+// The app side: the observed elements, the pipe, and the answers on the UI thread.
+
+type Ask = (Request, mpsc::Sender<Response>);
+
+thread_local! {
+    /// The semantic elements painted in the current frame, on the UI thread.
+    static NODES: RefCell<Vec<UiNode>> = const { RefCell::new(Vec::new()) };
+}
+
+/// The root view calls this as it renders a frame; the frame's elements then register as they prepaint.
+pub fn begin_frame() {
+    NODES.with(|nodes| nodes.borrow_mut().clear());
+}
+
+/// The semantic elements of the last frame drawn on this thread: what `snapshot` answers, for view tests.
+pub fn nodes() -> Vec<UiNode> {
+    NODES.with(|nodes| nodes.borrow().clone())
+}
+
+/// An element registered with `semantic()`, observed for the snapshot. Everything else, its accessibility included,
+/// it forwards to the element unchanged.
+pub struct Observed<E> {
+    inner: E,
+    id: SharedString,
+    focus: Option<FocusHandle>,
+    disabled: bool,
+}
+
+impl<E> Observed<E> {
+    pub fn new(inner: E, id: SharedString) -> Self {
+        Observed {
+            inner,
+            id,
+            focus: None,
+            disabled: false,
+        }
+    }
+
+    /// The snapshot reports the element disabled (`SemanticDisabled`), as gpui's accessibility tree can't yet.
+    pub fn with_disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
+    }
+
+    /// The snapshot reads `focus` as this element's, without the element tracking it (`SemanticFocus`).
+    pub fn with_focus(mut self, focus: &FocusHandle) -> Self {
+        self.focus = Some(focus.clone());
+        self
+    }
+}
+
+impl<E: Element> IntoElement for Observed<E> {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl<E: Element> Element for Observed<E> {
+    type RequestLayoutState = E::RequestLayoutState;
+    type PrepaintState = E::PrepaintState;
+
+    fn id(&self) -> Option<ElementId> {
+        self.inner.id()
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        self.inner.source_location()
+    }
+
+    fn request_layout(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, Self::RequestLayoutState) {
+        self.inner.request_layout(id, inspector_id, window, cx)
+    }
+
+    fn prepaint(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector_id: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        request_layout: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self::PrepaintState {
+        // The element's own accessibility facts: the same ones Windows UI Automation reads.
+        let role = self.inner.a11y_role();
+        let mut node = gpui::accesskit::Node::new(role.unwrap_or(gpui::Role::Unknown));
+        self.inner.write_a11y_info(&mut node);
+        let observed = UiNode {
+            id: self.id.to_string(),
+            role: role.map(|role| format!("{role:?}")).unwrap_or_default(),
+            text: node.label().or(node.value()).unwrap_or_default().to_owned(),
+            enabled: !node.is_disabled() && !self.disabled,
+            selected: node.is_selected().unwrap_or(false),
+            toggled: matches!(node.toggled(), Some(gpui::Toggled::True)),
+            expanded: node.is_expanded(),
+            interactive: matches!(
+                role,
+                Some(
+                    gpui::Role::Button
+                        | gpui::Role::Link
+                        | gpui::Role::TextInput
+                        | gpui::Role::ComboBox
+                        | gpui::Role::Switch
+                        | gpui::Role::RadioButton
+                        | gpui::Role::Tab
+                        | gpui::Role::MenuItem
+                        | gpui::Role::MenuItemRadio
+                )
+            ),
+            focused: self
+                .focus
+                .as_ref()
+                .is_some_and(|focus| focus.is_focused(window)),
+            bounds: ui_bounds(bounds),
+            // What a hit test sees: the bounds within the mask the element is drawn under.
+            visible: {
+                let shown = bounds.intersect(&window.content_mask().bounds);
+                (shown.size.width > Pixels::ZERO && shown.size.height > Pixels::ZERO)
+                    .then(|| ui_bounds(shown))
+            },
+        };
+        NODES.with(|nodes| nodes.borrow_mut().push(observed));
+        self.inner
+            .prepaint(id, inspector_id, bounds, request_layout, window, cx)
+    }
+
+    fn paint(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector_id: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        request_layout: &mut Self::RequestLayoutState,
+        prepaint: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.inner.paint(
+            id,
+            inspector_id,
+            bounds,
+            request_layout,
+            prepaint,
+            window,
+            cx,
+        );
+    }
+
+    fn a11y_role(&self) -> Option<gpui::Role> {
+        self.inner.a11y_role()
+    }
+
+    fn write_a11y_info(&self, node: &mut gpui::accesskit::Node) {
+        self.inner.write_a11y_info(node);
+    }
+
+    fn a11y_synthetic_children(
+        &mut self,
+        prepaint: &mut Self::PrepaintState,
+        builder: &mut A11ySubtreeBuilder,
+    ) {
+        self.inner.a11y_synthetic_children(prepaint, builder);
+    }
+}
+
+impl<E: InteractiveElement> InteractiveElement for Observed<E> {
+    fn interactivity(&mut self) -> &mut Interactivity {
+        self.inner.interactivity()
+    }
+
+    fn track_focus(mut self, focus: &FocusHandle) -> Self {
+        self.focus = Some(focus.clone());
+        self.inner = self.inner.track_focus(focus);
+        self
+    }
+}
+
+impl<E: StatefulInteractiveElement> StatefulInteractiveElement for Observed<E> {}
+
+impl<E: Styled> Styled for Observed<E> {
+    fn style(&mut self) -> &mut StyleRefinement {
+        self.inner.style()
+    }
+}
+
+impl<E: ParentElement> ParentElement for Observed<E> {
+    fn extend(&mut self, elements: impl IntoIterator<Item = AnyElement>) {
+        self.inner.extend(elements);
+    }
+}
+
+/// Serves the pipe for `window`: a thread of its own talks to the pipe, the UI thread answers each request.
+pub fn start(window: AnyWindowHandle, cx: &mut App) {
+    let (asks, mut inbox) = unbounded::<Ask>();
+    std::thread::spawn(move || {
+        if let Err(error) = serve(&asks) {
+            log::error!("The test driver stopped: {error}");
+        }
+    });
+    cx.spawn(async move |cx| {
+        guarded_async("serve the test driver", async move {
+            while let Some((request, reply)) = inbox.next().await {
+                let response = match request {
+                    // A poke is the app's own side (a tray click, a notice) and runs at App level, as it does in
+                    // production: inside the window's update, a nested update of that same window fails silently, and the
+                    // facts the services refresh from it would never be refreshed.
+                    Request::Poke { poke } => cx
+                        .update(|cx| guarded("poke the app", || poked(poke, cx)))
+                        .unwrap_or_else(|| Response::failed("poking panicked")),
+                    request => {
+                        let answered = cx.update(|cx| {
+                            guarded("answer the test driver", || {
+                                window.update(cx, |_, window, cx| handle(request, window, cx))
+                            })
+                        });
+                        match answered {
+                            Some(Ok(response)) => response,
+                            Some(Err(error)) => Response::failed(format!("{error:#}")),
+                            None => Response::failed("answering panicked"),
+                        }
+                    }
+                };
+                let _ = reply.send(response);
+            }
+        })
+        .await
+    })
+    .detach();
+}
+
+/// The pipe, open to the current user only, and remote clients refused.
+fn create_pipe() -> io::Result<File> {
+    let sddl = format!("D:P(A;;GA;;;{})", current_user_sid()?);
+    let mut descriptor = PSECURITY_DESCRIPTOR::default();
+    // SAFETY: the descriptor lives until the pipe exists and is freed with LocalFree; the handle becomes the File's.
+    unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            &HSTRING::from(sddl),
+            SDDL_REVISION_1,
+            &mut descriptor,
+            None,
+        )?;
+        let attributes = SECURITY_ATTRIBUTES {
+            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: descriptor.0,
+            bInheritHandle: false.into(),
+        };
+        let pipe = CreateNamedPipeW(
+            &HSTRING::from(pipe_name(std::process::id())),
+            PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
+            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+            1,
+            64 * 1024,
+            64 * 1024,
+            0,
+            Some(&attributes),
+        );
+        let created = if pipe.is_invalid() {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(File::from_raw_handle(pipe.0))
+        };
+        let _ = LocalFree(Some(HLOCAL(descriptor.0)));
+        created
+    }
+}
+
+fn serve(asks: &UnboundedSender<Ask>) -> io::Result<()> {
+    let pipe = create_pipe()?;
+    loop {
+        // SAFETY: `pipe` owns the handle for the life of this loop.
+        let connected = unsafe { ConnectNamedPipe(HANDLE(pipe.as_raw_handle()), None) };
+        if let Err(error) = connected
+            && error.code() != ERROR_PIPE_CONNECTED.to_hresult()
+        {
+            return Err(error.into());
+        }
+        let mut reader = BufReader::new(&pipe);
+        let mut line = String::new();
+        while reader.read_line(&mut line).is_ok_and(|read| read > 0) {
+            let response = match serde_json::from_str::<Request>(&line) {
+                Ok(request) => answer(request, asks),
+                Err(error) => Response::failed(format!("not a request: {error}")),
+            };
+            line.clear();
+            let mut out = serde_json::to_string(&response)?;
+            out.push('\n');
+            (&pipe).write_all(out.as_bytes())?;
+        }
+        // SAFETY: as above.
+        let _ = unsafe { DisconnectNamedPipe(HANDLE(pipe.as_raw_handle())) };
+    }
+}
+
+/// `wait` polls snapshots here, off the UI thread; everything else is answered by the UI thread.
+fn answer(request: Request, asks: &UnboundedSender<Ask>) -> Response {
+    let Request::Wait {
+        id,
+        predicate,
+        timeout_ms,
+    } = request
+    else {
+        return ask(request, asks);
+    };
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    loop {
+        let snapshot = ask(Request::Snapshot, asks).snapshot.unwrap_or_default();
+        if snapshot.node(&id).is_some_and(|node| predicate.holds(node)) {
+            return Response::done();
+        }
+        if Instant::now() >= deadline {
+            return Response::failed(format!("{id} was not {predicate:?} within {timeout_ms} ms"));
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+fn ask(request: Request, asks: &UnboundedSender<Ask>) -> Response {
+    let (reply, answered) = mpsc::channel();
+    if asks.unbounded_send((request, reply)).is_err() {
+        return Response::failed("the app is closing");
+    }
+    answered
+        .recv_timeout(Duration::from_secs(10))
+        .unwrap_or_else(|_| Response::failed("the app did not answer"))
+}
+
+thread_local! {
+    /// The test's answer for the app's next path prompt (`AnswerPathPrompt`).
+    static PATH_ANSWER: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+}
+
+/// The test's answer for this path prompt, if it gave one; it answers one prompt only.
+pub fn take_path_answer() -> Option<PathBuf> {
+    PATH_ANSWER.with(|answer| answer.borrow_mut().take())
+}
+
+/// Applies a poke to the services and says how it went.
+fn poked(poke: crate::services::Poke, cx: &mut App) -> Response {
+    match crate::services::poke(poke, cx) {
+        Ok(()) => Response::done(),
+        Err(error) => Response::failed(error),
+    }
+}
+
+fn handle(request: Request, window: &mut Window, cx: &mut App) -> Response {
+    match request {
+        Request::Resize { width, height } => {
+            window.resize(gpui::size(gpui::px(width), gpui::px(height)));
+            Response::done()
+        }
+        Request::Services => Response {
+            ok: true,
+            services: Some(crate::services::snapshot(window, cx)),
+            ..Response::default()
+        },
+        // Served at App level before it gets here (`start`); this is the same answer.
+        Request::Poke { poke } => poked(poke, cx),
+        Request::AnswerPathPrompt { path } => {
+            PATH_ANSWER.with(|answer| *answer.borrow_mut() = Some(PathBuf::from(path)));
+            Response::done()
+        }
+        Request::Snapshot => {
+            let size = window.viewport_size();
+            Response {
+                ok: true,
+                snapshot: Some(UiSnapshot {
+                    nodes: NODES.with(|nodes| nodes.borrow().clone()),
+                    viewport: Some(UiBounds {
+                        x: 0.,
+                        y: 0.,
+                        width: f32::from(size.width),
+                        height: f32::from(size.height),
+                    }),
+                }),
+                error: None,
+                services: None,
+            }
+        }
+        Request::Click { id } => match target(&id, window) {
+            Ok(position) => {
+                click(position, window, cx);
+                Response::done()
+            }
+            Err(error) => Response::failed(error),
+        },
+        Request::Type { id, text } => match target(&id, window) {
+            Ok(position) => {
+                click(position, window, cx);
+                type_text(&text, window, cx);
+                Response::done()
+            }
+            Err(error) => Response::failed(error),
+        },
+        Request::Text { text } => {
+            type_text(&text, window, cx);
+            Response::done()
+        }
+        Request::Key { chord } => match Keystroke::parse_with_os(&chord, cx.platform_info().os) {
+            Ok(keystroke) => {
+                window.dispatch_keystroke(keystroke, cx);
+                Response::done()
+            }
+            Err(error) => Response::failed(format!("{chord}: {error}")),
+        },
+        Request::Wait { .. } => Response::failed("wait is answered off the UI thread"),
+    }
+}
+
+/// Clicks the element with `id` as the pointer does (`click{id}`): the motion checks' trigger.
+#[cfg(feature = "test-driver")]
+pub(crate) fn click_id(id: &str, window: &mut Window, cx: &mut App) -> Result<(), String> {
+    let position = target(id, window)?;
+    click(position, window, cx);
+    Ok(())
+}
+
+/// Presses `chord` as a person would (`key{chord}`).
+#[cfg(feature = "test-driver")]
+pub(crate) fn press_key(chord: &str, window: &mut Window, cx: &mut App) -> Result<(), String> {
+    let keystroke = Keystroke::parse_with_os(chord, cx.platform_info().os)
+        .map_err(|error| format!("{chord}: {error}"))?;
+    window.dispatch_keystroke(keystroke, cx);
+    Ok(())
+}
+
+fn type_text(text: &str, window: &mut Window, cx: &mut App) {
+    for typed in text.chars() {
+        let key_char = typed.to_string();
+        let keystroke = Keystroke {
+            modifiers: Modifiers::default(),
+            key: key_char.to_lowercase(),
+            key_char: Some(key_char),
+        };
+        window.dispatch_keystroke(keystroke, cx);
+    }
+}
+
+/// Where a click on `id` lands: the middle of the part of it inside the window. A node wholly outside the window
+/// (scrolled away, or past a small window's edge) is refused, rather than clicked into nothing.
+fn target(id: &str, window: &Window) -> Result<Point<Pixels>, String> {
+    let size = window.viewport_size();
+    let viewport = UiBounds {
+        x: 0.,
+        y: 0.,
+        width: f32::from(size.width),
+        height: f32::from(size.height),
+    };
+    aim(id, viewport).map(|(x, y)| point(px(x), px(y)))
+}
+
+/// Where a click on `id` lands, in the last frame drawn: the middle of the part of it that shows (inside its scroll
+/// areas and clips, M4 review M5) and inside the window as that frame drew it (the shell's root fills it; right after a
+/// resize the live size, `viewport`, has changed and the bounds are still the last frame's). Each refusal says why.
+fn aim(id: &str, viewport: UiBounds) -> Result<(f32, f32), String> {
+    let (node, root) = NODES.with(|nodes| {
+        let nodes = nodes.borrow();
+        let find = |id: &str| {
+            nodes
+                .iter()
+                .find(|node| node.id == id)
+                .map(|node| (node.bounds, node.visible))
+        };
+        (find(id), find("root"))
+    });
+    let (bounds, visible) = node.ok_or_else(|| format!("{id} is not on screen"))?;
+    if bounds.width <= 0. || bounds.height <= 0. {
+        return Err(format!("{id} has no size: {bounds:?}"));
+    }
+    let visible = visible.ok_or_else(|| format!("{id} is scrolled out of view: {bounds:?}"))?;
+    let frame = root.map_or(viewport, |(root, _)| root);
+    visible_center(visible, frame)
+        .ok_or_else(|| format!("{id} is outside the window: {bounds:?} in {frame:?}"))
+}
+
+/// The middle of the part of `bounds` inside `frame`, if any of it is.
+fn visible_center(bounds: UiBounds, frame: UiBounds) -> Option<(f32, f32)> {
+    let left = bounds.x.max(frame.x);
+    let top = bounds.y.max(frame.y);
+    let right = (bounds.x + bounds.width).min(frame.x + frame.width);
+    let bottom = (bounds.y + bounds.height).min(frame.y + frame.height);
+    (right > left && bottom > top).then(|| ((left + right) / 2., (top + bottom) / 2.))
+}
+
+/// A frame's bounds as the snapshot gives them.
+fn ui_bounds(bounds: Bounds<Pixels>) -> UiBounds {
+    UiBounds {
+        x: f32::from(bounds.origin.x),
+        y: f32::from(bounds.origin.y),
+        width: f32::from(bounds.size.width),
+        height: f32::from(bounds.size.height),
+    }
+}
+
+fn click(position: Point<Pixels>, window: &mut Window, cx: &mut App) {
+    let modifiers = Modifiers::default();
+    let button = MouseButton::Left;
+    window.dispatch_event(
+        PlatformInput::MouseMove(MouseMoveEvent {
+            position,
+            pressed_button: None,
+            modifiers,
+        }),
+        cx,
+    );
+    window.dispatch_event(
+        PlatformInput::MouseDown(MouseDownEvent {
+            button,
+            position,
+            modifiers,
+            click_count: 1,
+            first_mouse: false,
+        }),
+        cx,
+    );
+    window.dispatch_event(
+        PlatformInput::MouseUp(MouseUpEvent {
+            button,
+            position,
+            modifiers,
+            click_count: 1,
+        }),
+        cx,
+    );
+}
+
+#[cfg(test)]
+mod click_tests {
+    use super::{NODES, UiBounds, UiNode, aim, visible_center};
+
+    fn at(x: f32, y: f32, width: f32, height: f32) -> UiBounds {
+        UiBounds {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    fn node(id: &str, bounds: UiBounds, visible: Option<UiBounds>) -> UiNode {
+        UiNode {
+            id: id.into(),
+            role: "Button".into(),
+            text: String::new(),
+            enabled: true,
+            focused: false,
+            selected: false,
+            toggled: false,
+            expanded: None,
+            interactive: true,
+            bounds,
+            visible,
+        }
+    }
+
+    #[test]
+    fn a_click_lands_on_the_part_inside_the_window() {
+        let window = at(0., 0., 100., 100.);
+        assert_eq!(
+            visible_center(at(10., 10., 20., 20.), window),
+            Some((20., 20.))
+        );
+        // Its middle is past the bottom edge; its top half isn't.
+        assert_eq!(
+            visible_center(at(10., 90., 20., 40.), window),
+            Some((20., 95.))
+        );
+        assert_eq!(visible_center(at(10., 120., 20., 20.), window), None);
+        assert_eq!(visible_center(at(-30., 10., 20., 20.), window), None);
+    }
+
+    /// M4 review M5: a node scrolled out of its scroll area, though inside the window, is refused, and one half shown is
+    /// clicked on its shown half; each refusal names why.
+    #[test]
+    fn a_click_lands_only_on_what_its_scroll_area_shows() {
+        let window = at(0., 0., 1000., 700.);
+        NODES.with(|nodes| {
+            *nodes.borrow_mut() = vec![
+                node("root", window, Some(window)),
+                node("hidden", at(10., 300., 80., 40.), None),
+                node(
+                    "half",
+                    at(10., 380., 80., 40.),
+                    Some(at(10., 380., 80., 20.)),
+                ),
+                node("flat", at(10., 10., 80., 0.), None),
+            ];
+        });
+        assert!(
+            aim("hidden", window)
+                .unwrap_err()
+                .contains("scrolled out of view")
+        );
+        assert_eq!(aim("half", window), Ok((50., 390.)));
+        assert!(aim("flat", window).unwrap_err().contains("has no size"));
+        assert!(aim("gone", window).unwrap_err().contains("not on screen"));
+    }
+}

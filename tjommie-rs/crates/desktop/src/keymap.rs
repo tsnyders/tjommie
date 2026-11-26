@@ -1,0 +1,370 @@
+//! The keymap (Phase 3 plan T2.4; gate condition 2): the one list of the app's key bindings, bound at start. The
+//! app-wide ones (`app_wide()`) work wherever the focus is in the app's window. A context binding works inside an
+//! element with that `key_context` (`COMPOSER`, `MENTIONS`, `APPROVAL`, `BUTTON`, `LIST`). Any binding added later goes in
+//! `bindings()`.
+//!
+//! A text field is gpui-kit's input, whose own `Input` context binds Enter, the arrows, Tab and Escape. GPUI ranks the
+//! deepest matching context first, so the composer's and the mention list's keys are bound at the field itself
+//! (`Composer > Input`, `Mentions > Input`): they match at its depth and, bound after gpui-kit's, win there. The
+//! field keeps Shift+Enter, its own new line.
+//!
+//! Escape and the overlays, for the Browser UI lane's T3.7 (M2 review F4): GPUI doesn't rank a deeper context's binding
+//! above a context-free one, so a context-free Escape bound after gpui-kit's would take the key from an open sheet or
+//! dialog, and gpui-kit's sheet passes Escape on (`cx.propagate()`) after closing. So `Dismiss` is bound only
+//! `OUTSIDE_OVERLAYS`: while a dialog, a sheet or an open menu has the focus, Escape closes that overlay and nothing
+//! else. T3.7 handles `Dismiss` (closing the browser panel) wherever it likes, the shell's root or `App::on_action`;
+//! it needs no overlay checks of its own. `keymap::tests::escape_in_an_overlay_closes_the_overlay_alone` holds this.
+//!
+//! A Logins window (`LOGINS`, `ui::vault_entry`) is a window of its own, but GPUI's bindings and `App::on_action` are
+//! app-wide, so the main window's keys would reach the browser panel from it (T3.7 review F1). In it, `Dismiss` and
+//! `TogglePanel` stand aside, and Escape is `CancelLogins`: it cancels that window, from its body or a field (gpui-kit's
+//! text field passes Escape on). `ui::vault_entry::tests::escape_and_ctrl_b_in_a_logins_window_stay_there` holds this.
+//!
+//! The shortcut forwarding source, for the Browser lane's T3.5 (gate condition 2). While a bot's page in WebView2 has
+//! the keyboard, its keys go to the page, except the app-wide chords with Ctrl or Alt, and Escape:
+//! - T3.5's `AcceleratorKeyPressed` handler turns the event into a `gpui::Keystroke`: the virtual key as GPUI names
+//!   it on the current keyboard layout ("b", "=", "escape"), and the modifiers from the event.
+//! - When `is_forwarded(&keystroke)` is true, it marks the event handled and dispatches the keystroke to the window
+//!   (`Window::dispatch_keystroke`), so the keymap resolves it as if the app had the keyboard. Every other key goes
+//!   to the page.
+//! - `page_forwarded()` lists the set. Both come from `app_wide()`, so an app-wide chord can't be left out.
+//! - Tab and Shift+Tab are not shortcuts: WebView2's `MoveFocusRequested` hands the focus back (T3.5).
+
+use gpui::{KeyBinding, Keystroke, actions};
+
+actions!(
+    desktop,
+    [
+        /// One zoom step in (T0.5).
+        ZoomIn,
+        /// One zoom step out.
+        ZoomOut,
+        /// Back to 100%.
+        ZoomReset,
+        /// Opens or closes the browser panel (T3.7).
+        TogglePanel,
+        /// Closes the browser panel when no overlay is open; an overlay takes Escape first (T3.7).
+        Dismiss,
+        /// Cancels the Logins window it is typed in (Escape; T3.7 review F1).
+        CancelLogins,
+        /// Approves in the focused approval card (T4.2).
+        Approve,
+        /// Sends the composer's message (T4.3).
+        Send,
+        /// The mention list's row above (T4.3, T5.2).
+        MentionUp,
+        /// The row below.
+        MentionDown,
+        /// Picks the highlighted row.
+        MentionPick,
+        /// Closes the list, keeping what was typed.
+        MentionClose,
+        /// Presses the focused button (Enter or Space): a binding, so the button's context beats a dialog's own
+        /// Enter (review F1).
+        Press,
+        /// The item before in a group: a radio group, a segmented control, a list, Recents, a tab row (T5.6).
+        Prev,
+        /// The item after.
+        Next,
+    ]
+);
+
+/// A composer, around its text field: Enter in the field sends.
+pub const COMPOSER: &str = "Composer";
+/// A composer's mention list while it is open (`room-composer.tsx:119-135`), around the field.
+pub const MENTIONS: &str = "Mentions";
+/// The text field inside a composer (gpui-kit's input context).
+const IN_COMPOSER: &str = "Composer > Input";
+/// The text field while its mention list is open.
+const IN_MENTIONS: &str = "Mentions > Input";
+/// A focused approval card.
+pub const APPROVAL: &str = "Approval";
+/// A focused button: a pill, an icon button, a toggle, a sidebar row (`ui::primitives::button::pressable`).
+pub const BUTTON: &str = "Button";
+/// A group whose items the arrow keys move between (T5.6): up and left go back, down and right go on.
+pub const LIST: &str = "List";
+/// A Logins window: the main window's panel keys stand aside in it, and its Escape cancels it.
+pub const LOGINS: &str = "Logins";
+/// Not inside an open overlay: gpui-kit's dialog, sheet and menu (popover content) contexts, or a Logins window.
+pub const OUTSIDE_OVERLAYS: &str = "!Sheet && !Dialog && !PopoverContent && !Logins";
+
+/// Every binding. App-wide first.
+pub fn bindings() -> Vec<KeyBinding> {
+    let mut bindings = app_wide();
+    bindings.extend([
+        KeyBinding::new("ctrl-enter", Approve, Some(APPROVAL)),
+        KeyBinding::new("enter", Send, Some(COMPOSER)),
+        KeyBinding::new("up", MentionUp, Some(MENTIONS)),
+        KeyBinding::new("down", MentionDown, Some(MENTIONS)),
+        KeyBinding::new("tab", MentionPick, Some(MENTIONS)),
+        KeyBinding::new("enter", MentionPick, Some(MENTIONS)),
+        KeyBinding::new("escape", MentionClose, Some(MENTIONS)),
+        // In a text field the field's own bindings (gpui-kit's `Input`: Enter, the arrows, Tab and Escape) sit deeper
+        // than a Composer or Mentions element around it, and GPUI ranks the deeper binding first. These rank at the
+        // field's depth; bound after gpui-kit's, they come first there (same depth: the later binding). Mentions'
+        // Enter is after Composer's, so it picks while the list is open. The field keeps Shift+Enter, its new line.
+        KeyBinding::new("enter", Send, Some(IN_COMPOSER)),
+        KeyBinding::new("up", MentionUp, Some(IN_MENTIONS)),
+        KeyBinding::new("down", MentionDown, Some(IN_MENTIONS)),
+        KeyBinding::new("tab", MentionPick, Some(IN_MENTIONS)),
+        KeyBinding::new("enter", MentionPick, Some(IN_MENTIONS)),
+        KeyBinding::new("escape", MentionClose, Some(IN_MENTIONS)),
+        KeyBinding::new("escape", CancelLogins, Some(LOGINS)),
+        KeyBinding::new("enter", Press, Some(BUTTON)),
+        KeyBinding::new("space", Press, Some(BUTTON)),
+        KeyBinding::new("up", Prev, Some(LIST)),
+        KeyBinding::new("left", Prev, Some(LIST)),
+        KeyBinding::new("down", Next, Some(LIST)),
+        KeyBinding::new("right", Next, Some(LIST)),
+    ]);
+    bindings
+}
+
+/// Tab and Shift+Tab leave a text field (T5.6). gpui-kit's multi-line field takes them for indenting, which traps the
+/// keyboard in it; these run gpui-kit's own focus moves (`root::Tab`, `root::TabPrev`, which keep the focus inside an
+/// open dialog) at the field's depth. Bind them after `gpui_kit::init` and before `bindings()`: at the same depth the
+/// later binding wins, so they beat the indent, and an open mention list's Tab (`Mentions > Input`) beats them.
+pub fn field_tab(cx: &gpui::App) -> Vec<KeyBinding> {
+    [("tab", "root::Tab"), ("shift-tab", "root::TabPrev")]
+        .into_iter()
+        .filter_map(|(keys, name)| {
+            let action = cx.build_action(name, None).ok()?;
+            let field = gpui::KeyBindingContextPredicate::parse("Input").ok()?;
+            KeyBinding::load(keys, action, Some(std::rc::Rc::new(field)), false, None, cx).ok()
+        })
+        .collect()
+}
+
+/// The bindings that work wherever the focus is in the app's window (`Dismiss` stands aside inside an open overlay, and
+/// both panel keys in a Logins window).
+pub fn app_wide() -> Vec<KeyBinding> {
+    vec![
+        KeyBinding::new("ctrl-=", ZoomIn, None),
+        KeyBinding::new("ctrl-+", ZoomIn, None),
+        KeyBinding::new("ctrl--", ZoomOut, None),
+        KeyBinding::new("ctrl-0", ZoomReset, None),
+        KeyBinding::new("ctrl-b", TogglePanel, Some("!Logins")),
+        KeyBinding::new("escape", Dismiss, Some(OUTSIDE_OVERLAYS)),
+    ]
+}
+
+/// The app-wide bindings the page gives back: those with Ctrl or Alt, and Escape.
+fn forwarded() -> impl Iterator<Item = KeyBinding> {
+    app_wide().into_iter().filter(|binding| {
+        binding.keystrokes().iter().all(|keystroke| {
+            let keystroke = keystroke.inner();
+            keystroke.modifiers.control || keystroke.modifiers.alt || keystroke.key == "escape"
+        })
+    })
+}
+
+/// The chords a bot's page gives back to the app (gate condition 2).
+pub fn page_forwarded() -> Vec<Keystroke> {
+    forwarded()
+        .flat_map(|binding| {
+            binding
+                .keystrokes()
+                .iter()
+                .map(|keystroke| keystroke.inner().clone())
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// Whether the page gives `typed` back to the app, matched as the keymap matches it.
+pub fn is_forwarded(typed: &Keystroke) -> bool {
+    forwarded().any(|binding| binding.match_keystrokes(std::slice::from_ref(typed)) == Some(false))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use gpui::{InteractiveElement as _, IntoElement as _, ParentElement as _, Styled as _, div};
+
+    use super::*;
+    use crate::guard::guarded;
+    use crate::ui::primitives::test_window;
+
+    fn typed(chord: &'static str) -> Keystroke {
+        Keystroke::parse(chord).unwrap()
+    }
+
+    #[test]
+    fn forwarded_set_equals_app_chords() {
+        let app_chords = ["ctrl-=", "ctrl-+", "ctrl--", "ctrl-0", "ctrl-b", "escape"];
+        for chord in app_chords {
+            assert!(
+                is_forwarded(&typed(chord)),
+                "{chord} reaches the app from the page"
+            );
+        }
+        assert_eq!(
+            page_forwarded().len(),
+            app_chords.len(),
+            "a new app-wide chord with Ctrl or Alt is forwarded too: add it here"
+        );
+        for binding in app_wide() {
+            for keystroke in binding.keystrokes() {
+                let modifiers = &keystroke.inner().modifiers;
+                if modifiers.control || modifiers.alt {
+                    assert!(is_forwarded(keystroke.inner()), "{:?}", keystroke.inner());
+                }
+            }
+        }
+        // The page keeps its own keys and the context ones: typing, copying, a composer's Enter, the mention list.
+        for chord in [
+            "a",
+            "ctrl-c",
+            "enter",
+            "shift-enter",
+            "up",
+            "down",
+            "tab",
+            "ctrl-enter",
+        ] {
+            assert!(!is_forwarded(&typed(chord)), "{chord} stays with the page");
+        }
+    }
+
+    #[gpui::test]
+    fn a_context_binding_wins_inside_its_element(cx: &mut gpui::TestAppContext) {
+        let (closed, dismissed) = (Rc::new(Cell::new(false)), Rc::new(Cell::new(false)));
+        let (on_close, on_dismiss) = (closed.clone(), dismissed.clone());
+        // The test window binds the app's keymap.
+        let focus = cx.update(|cx| cx.focus_handle());
+        let list = focus.clone();
+        let cx = test_window(cx, move |_, _| {
+            let (on_close, on_dismiss) = (on_close.clone(), on_dismiss.clone());
+            // The list is open around a text field, which has gpui-kit's own Escape (`Input` context).
+            div()
+                .size_full()
+                .on_action(move |_: &Dismiss, _, _| {
+                    guarded("test dismiss", || on_dismiss.set(true));
+                })
+                .child(
+                    div()
+                        .key_context(MENTIONS)
+                        .size_full()
+                        .on_action(move |_: &MentionClose, _, _| {
+                            guarded("test close the list", || on_close.set(true));
+                        })
+                        .child(div().key_context("Input").track_focus(&list).size_full()),
+                )
+                .into_any_element()
+        });
+        cx.update(|window, cx| focus.focus(window, cx));
+        cx.simulate_keystrokes("escape");
+        assert!(closed.get(), "the mention list closed");
+        assert!(!dismissed.get(), "and the panel stayed");
+    }
+
+    #[gpui::test]
+    fn escape_in_an_overlay_closes_the_overlay_alone(cx: &mut gpui::TestAppContext) {
+        use crate::ui::primitives::sheet::open_sheet;
+        use gpui_kit::component::WindowExt as _;
+
+        let dismissed = Rc::new(Cell::new(false));
+        let on_dismiss = dismissed.clone();
+        // The shell's root holds the focus when nothing else has it (GPUI limit 17); so does this one.
+        let root = cx.update(|cx| cx.focus_handle());
+        let held = root.clone();
+        let cx = test_window(cx, move |_, _| {
+            div().track_focus(&held).size_full().into_any_element()
+        });
+        // Wherever T3.7 handles Dismiss, an app-level handler hears it from any focus: the sheet sits in gpui-kit's
+        // root layer, beside the shell, not inside it.
+        cx.update(|_, cx| {
+            cx.on_action(move |_: &Dismiss, _: &mut gpui::App| {
+                guarded("test dismiss", || on_dismiss.set(true));
+            });
+        });
+        cx.update(|window, cx| open_sheet(window, cx, |sheet, _, _| sheet.child("Logins")));
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(cx.update(|window, cx| window.has_active_sheet(cx)));
+
+        cx.simulate_keystrokes("escape");
+        assert!(
+            !cx.update(|window, cx| window.has_active_sheet(cx)),
+            "the sheet closed"
+        );
+        assert!(!dismissed.get(), "and the browser panel stays (review F4)");
+
+        // A dialog the same way: its own Escape closes it, and only it.
+        cx.update(|window, cx| {
+            crate::ui::primitives::dialog::open_dialog(window, cx, |dialog, _, _| {
+                dialog.title("Remove Forge?")
+            })
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.simulate_keystrokes("escape");
+        assert!(
+            !cx.update(|window, cx| window.has_active_dialog(cx)),
+            "the dialog closed"
+        );
+        assert!(!dismissed.get(), "and the browser panel stays");
+
+        // With no overlay open, Escape is Dismiss's.
+        cx.update(|window, cx| {
+            root.focus(window, cx);
+            window.draw(cx).clear(cx);
+        });
+        cx.simulate_keystrokes("escape");
+        assert!(dismissed.get(), "Escape closes the browser panel");
+    }
+
+    /// Ctrl+Shift+= as GPUI's Windows backend reports it on a US layout: the shifted key "+" with Shift folded into it
+    /// (gpui-pre-windows `get_keystroke_key` clears `shift` once it has the shifted key), so the `ctrl-+` alias is
+    /// reachable; on a layout with its own + key, Ctrl++ arrives the same way (M2 review F11).
+    #[gpui::test]
+    fn ctrl_plus_zooms_in_as_windows_reports_it(cx: &mut gpui::TestAppContext) {
+        let zoomed = Rc::new(Cell::new(0));
+        let on_zoom = zoomed.clone();
+        let root = cx.update(|cx| cx.focus_handle());
+        let held = root.clone();
+        let cx = test_window(cx, move |_, _| {
+            let on_zoom = on_zoom.clone();
+            div()
+                .track_focus(&held)
+                .size_full()
+                .on_action(move |_: &ZoomIn, _, _| {
+                    guarded("test zoom in", || on_zoom.set(on_zoom.get() + 1));
+                })
+                .into_any_element()
+        });
+        cx.update(|window, cx| root.focus(window, cx));
+        let from_windows = |key: &str, shift: bool| Keystroke {
+            modifiers: gpui::Modifiers {
+                control: true,
+                shift,
+                ..gpui::Modifiers::default()
+            },
+            key: key.into(),
+            key_char: None,
+        };
+        // Ctrl+Shift+= on a US layout (and Ctrl++ elsewhere), then Ctrl+=: both reach ZoomIn, from the app and the page.
+        for key in ["+", "="] {
+            assert!(is_forwarded(&from_windows(key, false)), "{key}");
+            assert!(
+                cx.update(|window, cx| window.dispatch_keystroke(from_windows(key, false), cx)),
+                "{key} was handled"
+            );
+        }
+        assert_eq!(zoomed.get(), 2);
+        // Windows never reports that chord as "=" with Shift held; it would match neither binding.
+        assert!(!is_forwarded(&from_windows("=", true)));
+    }
+
+    /// M5 review Minor 28: both of a text field's Tab bindings load. `field_tab` builds them from gpui-kit's action
+    /// names, so a rename there would drop one silently, and Tab would trap the keyboard in every multi-line field.
+    #[gpui::test]
+    fn field_tab_loads_both_bindings(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            assert_eq!(field_tab(cx).len(), 2, "Tab and Shift+Tab");
+        });
+    }
+}

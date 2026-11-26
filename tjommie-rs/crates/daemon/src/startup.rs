@@ -16,19 +16,21 @@ use serde_json::Value;
 use tokio::task::JoinHandle;
 
 use crate::account_handlers::{Accounts, AccountsOptions};
-use crate::account_quota::HttpsFetch;
+use crate::account_quota::{HttpsFetch, UsageFetch};
 use crate::bots::StoredBot;
-use crate::cli::{InstalledWorkers, SystemCli, WorkerInstall, WorkerPurpose};
+use crate::cli::{CliHost, InstalledWorkers, SystemCli, WorkerInstall, WorkerPurpose};
 use crate::context::{self, Context, Db, Late, LateBotView};
 use crate::m4::{M4, M4Deps};
-use crate::m5::{self, LateTasks, M5, M5Deps};
+use crate::m5::{self, LateTasks, M5, M5Deps, ReviewOptionsHook};
 use crate::m6::{self, M6, M6Deps};
 use crate::protect::{FolderProtection, ListAccounts};
 use crate::queue::WorkItem;
 use crate::relay_client::default_connector;
 use crate::remote::{Remote, RemoteOptions};
 use crate::remote_host::{Dispatch, RemoteHostOptions};
-use crate::runner::{Core, Runner, RunnerDeps, RunnerHooks, TurnResult, cli_session_factory};
+use crate::runner::{
+    Core, Runner, RunnerDeps, RunnerHooks, SessionFactory, TurnResult, cli_session_factory,
+};
 use crate::server::{
     Broadcaster, Handlers, RequestContext, Routes, RpcError, Server, ServerOptions,
 };
@@ -319,8 +321,75 @@ pub async fn start(launch: &Launch, auth: &Auth) -> Result<Daemon, StartupError>
     start_in(launch, auth, paths::data_root()).await
 }
 
-/// [`start`] on a given data root, which is how a test runs a whole daemon on a temporary one.
+/// The provider fixtures a daemon plays (src/provider_fixtures.rs), which a build without the `provider-fixtures`
+/// feature has none of: there `Option<Fixtures>` is always `None`, and `start_with` and `assemble` keep one signature.
+#[cfg(feature = "provider-fixtures")]
+use crate::provider_fixtures::{FixtureBoundary, Fixtures};
+#[cfg(not(feature = "provider-fixtures"))]
+enum Fixtures {}
+
+/// `accept-worker` starts the real Claude and Codex to prove the worker accounts, so it must not run while
+/// `TJOMMIE_PROVIDER_FIXTURES` is set, empty included: a run that is meant to start no provider must never be what starts
+/// one. Any build refuses, whether or not it has the `provider-fixtures` feature, and never says what the variable held.
+/// `win::acceptance::accept_worker_in` calls this, so the library function is covered, not only `main.rs`.
+pub fn refuse_accept_worker_with_fixtures(
+    value: Option<std::ffi::OsString>,
+) -> Result<(), StartupError> {
+    match value {
+        Some(_) => Err(plain(
+            "TJOMMIE_PROVIDER_FIXTURES is set, and accept-worker starts the real Claude and Codex. Unset it first.",
+        )),
+        None => Ok(()),
+    }
+}
+
+/// A daemon without the `provider-fixtures` feature can't play fixtures. If `TJOMMIE_PROVIDER_FIXTURES` is set anyway,
+/// starting would run the real Claude and Codex, with real accounts and paid turns, in a run that was meant to replay
+/// recorded conversations. So it refuses, and never says what the variable held. Set means set: an empty value is
+/// refused too, as a build with the feature refuses it, so every build answers the same way (exit code 1, no echo).
+#[cfg(not(feature = "provider-fixtures"))]
+fn refuse_unbuilt_fixtures(value: Option<std::ffi::OsString>) -> Result<(), StartupError> {
+    match value {
+        Some(_) => Err(plain(
+            "TJOMMIE_PROVIDER_FIXTURES is set, but this daemon was built without the provider-fixtures feature, so it would use the real Claude and Codex. Unset it, or build the daemon with --features provider-fixtures (tests only).",
+        )),
+        None => Ok(()),
+    }
+}
+
+/// [`start`] on a given data root, which is how a test runs a whole daemon on a temporary one. A build with the
+/// `provider-fixtures` feature plays recorded conversations when `TJOMMIE_PROVIDER_FIXTURES` names a folder, and refuses
+/// to start when it names anything else; a build without it refuses to start when the variable is set at all. Both
+/// refuse before touching anything.
 pub async fn start_in(launch: &Launch, auth: &Auth, root: PathBuf) -> Result<Daemon, StartupError> {
+    #[cfg(feature = "provider-fixtures")]
+    let fixtures = Fixtures::from_env(|key| std::env::var_os(key)).map_err(plain)?;
+    #[cfg(not(feature = "provider-fixtures"))]
+    let fixtures = {
+        refuse_unbuilt_fixtures(std::env::var_os("TJOMMIE_PROVIDER_FIXTURES"))?;
+        None
+    };
+    start_with(launch, auth, root, fixtures).await
+}
+
+/// [`start_in`] with the fixtures given, not read from the environment: how a test plays fixtures in process.
+#[cfg(feature = "provider-fixtures")]
+pub async fn start_in_with_fixtures(
+    launch: &Launch,
+    auth: &Auth,
+    root: PathBuf,
+    fixtures: Option<Fixtures>,
+) -> Result<Daemon, StartupError> {
+    start_with(launch, auth, root, fixtures).await
+}
+
+async fn start_with(
+    launch: &Launch,
+    auth: &Auth,
+    root: PathBuf,
+    fixtures: Option<Fixtures>,
+) -> Result<Daemon, StartupError> {
+    let fixtures_on = fixtures.is_some();
     if let Auth::Production {
         token,
         desktop_host_token,
@@ -357,7 +426,7 @@ pub async fn start_in(launch: &Launch, auth: &Auth, root: PathBuf) -> Result<Dae
             )),
             _ => StartupError::Unexpected(error),
         })?;
-    let parts = match assemble(launch, auth, &root, &server) {
+    let parts = match assemble(launch, auth, &root, &server, fixtures) {
         Ok(parts) => parts,
         Err(error) => {
             server.close().await;
@@ -382,14 +451,22 @@ pub async fn start_in(launch: &Launch, auth: &Auth, root: PathBuf) -> Result<Dae
     } = parts;
     // The folder protection pass, then `runner.start()` and `scheduler.start()`, run before the server answers, as in
     // `daemon.ts:646-648`.
-    let activated = protected
-        .and_then(|()| {
-            runner
-                .start()
-                .and_then(|()| m4.start_scheduler())
-                .map_err(rpc)
-        })
-        .and_then(|()| server.activate_with(token, handlers, routes).map_err(rpc));
+    let started = protected.and_then(|()| {
+        runner
+            .start()
+            .and_then(|()| m4.start_scheduler())
+            .map_err(rpc)
+    });
+    // Fixtures: the accounts are checked before the server answers, and after the runner is up, since each check tells the
+    // runner (`setup_changed`). Until a check stores its report, the setup cache is empty, so a client that connected earlier
+    // would hear a `setup.changed` without the provider, and a message sent then would find the account not ready. The
+    // fixtures host answers every probe from memory, so this is quick. (A real daemon checks in the background after it
+    // answers, below.)
+    if fixtures_on && started.is_ok() && accounts.runtime.check_all().await.is_err() {
+        eprintln!("The fixture accounts could not be checked.");
+    }
+    let activated =
+        started.and_then(|()| server.activate_with(token, handlers, routes).map_err(rpc));
     let daemon = Daemon {
         server,
         root,
@@ -406,7 +483,7 @@ pub async fn start_in(launch: &Launch, auth: &Auth, root: PathBuf) -> Result<Dae
         daemon.close().await;
         return Err(error);
     }
-    if !launch.skip_account_check {
+    if !fixtures_on && !launch.skip_account_check {
         let checking = daemon.accounts.runtime.check_all();
         tokio::spawn(async move {
             if checking.await.is_err() {
@@ -508,6 +585,82 @@ pub(crate) fn install_workers(
     Ok((provider, review, installed))
 }
 
+/// How the daemon runs provider CLIs: what setup, the runner, the reviews and the checks launch through.
+struct Providers {
+    cli: Arc<dyn CliHost>,
+    /// How usage reads reach the provider's service.
+    fetch: Arc<dyn UsageFetch>,
+    /// Makes the session for a bot's turns.
+    sessions: SessionFactory,
+    /// The boundary the desktop's `/worker-host` serves: the real provider boundary when worker isolation is set up, the
+    /// lease-only `FixtureBoundary` in fixtures mode, none otherwise.
+    host_boundary: Option<Arc<dyn crate::worker_boundary_host::WorkerBoundary>>,
+    review_worker: Option<Arc<WorkerBoundary>>,
+    workers: Option<InstalledWorkers>,
+    /// How the review runtime's options are adjusted: only fixtures do, to refuse reviews.
+    review_options: Option<ReviewOptionsHook>,
+}
+
+/// The real providers: launched inside the Windows worker when it is set up, else directly.
+fn real_providers(root: &Path, exe_dir: &Path) -> Result<Providers, StartupError> {
+    let install = Arc::new(WorkerInstall::default());
+    let native: Arc<dyn WorkerNative> = Arc::new(WindowsNative);
+    let (provider_worker, review_worker, workers) =
+        install_workers(root, exe_dir, &install, &native)?;
+    let cli: Arc<dyn CliHost> =
+        Arc::new(SystemCli::with_worker(Arc::new(provider_worker.clone())).reporting_to(install));
+    let host_boundary: Arc<dyn crate::worker_boundary_host::WorkerBoundary> =
+        Arc::new(provider_worker);
+    Ok(Providers {
+        sessions: cli_session_factory(cli.clone()),
+        cli,
+        fetch: Arc::new(HttpsFetch::new().map_err(plain)?),
+        host_boundary: Some(host_boundary),
+        review_worker: Some(review_worker),
+        workers,
+        review_options: None,
+    })
+}
+
+/// Whether fixtures are on and whether project reviews carry the fixtures' review hook must agree: with fixtures on, a
+/// missing hook leaves the real review path (an API-key account's key and the Claude CLI) open; a hook without fixtures
+/// means the daemon is not what it was told to be. Startup reads the hook off the very `M5Deps` it installs, so a
+/// refactor that drops it stops the daemon from starting instead of quietly leaving reviews live.
+#[cfg(feature = "provider-fixtures")]
+pub fn check_review_wiring(fixtures_on: bool, review_hook: bool) -> Result<(), StartupError> {
+    match (fixtures_on, review_hook) {
+        (true, false) => Err(plain(
+            "Provider fixtures are on, but project reviews are not set to be refused, so a review could start the real Claude. The daemon did not start.",
+        )),
+        (false, true) => Err(plain(
+            "Project reviews are set up for provider fixtures, but fixtures are not on. The daemon did not start.",
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// Recorded conversations and no process: the fixtures host launches nothing, no Windows worker boundary is installed (a
+/// review worker would otherwise be a way to launch), `/worker-host` gets the lease-only `FixtureBoundary`, and usage
+/// reads never reach the network.
+#[cfg(feature = "provider-fixtures")]
+fn fixture_providers(fixtures: &Fixtures) -> Providers {
+    eprintln!(
+        "Tjommie daemon: provider fixtures ON ({}): no real provider will be started.",
+        fixtures.dir().display()
+    );
+    let host_boundary: Arc<dyn crate::worker_boundary_host::WorkerBoundary> =
+        Arc::new(FixtureBoundary::default());
+    Providers {
+        cli: fixtures.host(),
+        fetch: fixtures.usage_fetch(),
+        sessions: fixtures.session_factory(),
+        host_boundary: Some(host_boundary),
+        review_worker: None,
+        workers: None,
+        review_options: Some(fixtures.review_options_hook()),
+    }
+}
+
 /// `initializeDaemon` as far as the port has come, up to activating the server: open the data root and database, bring
 /// up the accounts and the runner (recovering what a restart cut off), the phone connection and M6. M4 (the team,
 /// routines and `/mcp`) and M5 (projects and tasks) add their handlers and runner hooks where marked.
@@ -516,7 +669,12 @@ fn assemble(
     auth: &Auth,
     root: &Path,
     server: &Server,
+    fixtures: Option<Fixtures>,
 ) -> Result<Parts, StartupError> {
+    // Fixtures replace every provider, so nothing runs that the Codex data ACL pass protects: skip the pass, which would
+    // read and change the real `~/.codex/.sandbox`. (A desktop run strips the `TJOMMIE_SKIP_*` hooks.)
+    let fixtures_on = fixtures.is_some();
+    let skip_folder_protection = launch.skip_folder_protection || fixtures_on;
     let mut paths = paths::data_paths(root)?;
     if let Some(accounts) = &launch.accounts_dir {
         paths.accounts = accounts.clone();
@@ -529,7 +687,7 @@ fn assemble(
     }
     // The only synchronous ACL pass (`daemon.ts:127-128`): it finishes before SQLite opens. A test hook skips it.
     let protected = ProtectedPaths::new(&paths.root);
-    let first = if launch.skip_folder_protection {
+    let first = if skip_folder_protection {
         Protection::Ready
     } else {
         FolderProtection::first_pass(&protected)
@@ -542,14 +700,23 @@ fn assemble(
     let exe = std::env::current_exe()?;
     let exe_dir = exe.parent().map(Path::to_path_buf).unwrap_or_default();
 
-    // How CLIs launch: inside the Windows worker when it is set up, else directly.
-    let install = Arc::new(WorkerInstall::default());
-    let native: Arc<dyn WorkerNative> = Arc::new(WindowsNative);
-    let (provider_worker, review_worker, workers) =
-        install_workers(&paths.root, &exe_dir, &install, &native)?;
-    let cli =
-        Arc::new(SystemCli::with_worker(Arc::new(provider_worker.clone())).reporting_to(install));
-    let setup = Setup::new(cli.clone(), Arc::new(HttpsFetch::new().map_err(plain)?));
+    // How provider CLIs run: the real ones, or recorded conversations and no process at all (fixtures).
+    let Providers {
+        cli,
+        fetch,
+        sessions,
+        host_boundary,
+        review_worker,
+        workers,
+        review_options,
+    } = match fixtures {
+        #[cfg(feature = "provider-fixtures")]
+        Some(fixtures) => fixture_providers(&fixtures),
+        #[cfg(not(feature = "provider-fixtures"))]
+        Some(never) => match never {},
+        None => real_providers(&paths.root, &exe_dir)?,
+    };
+    let setup = Setup::new(cli.clone(), fetch);
 
     // 1. One account per provider, then the accounts runtime.
     setup
@@ -579,7 +746,7 @@ fn assemble(
             })
             .collect())
     });
-    let protection = if launch.skip_folder_protection {
+    let protection = if skip_folder_protection {
         FolderProtection::with_pass(
             protected,
             db.clone(),
@@ -709,7 +876,7 @@ fn assemble(
                 broadcast.send(event);
                 Ok(())
             }),
-            cli_session_factory(cli.clone()),
+            sessions,
             setup.clone(),
         )
     };
@@ -796,7 +963,7 @@ fn assemble(
                     let tokens = m4.tokens.clone();
                     Arc::new(move |token| tokens.bot_for(token))
                 },
-                worker: Some(Arc::new(provider_worker)),
+                worker: host_boundary,
             },
         )
         .map_err(rpc)?,
@@ -812,24 +979,23 @@ fn assemble(
         .map_err(rpc)?;
 
     // 5c. Projects, tasks and reviews (M5). The runner's task hooks reach the service through `late_tasks`.
-    let m5 = Arc::new(
-        m5::install(
-            &mut handlers,
-            M5Deps {
-                db: db.clone(),
-                root: paths.root.clone(),
-                events: events.clone(),
-                switching: context.late.switching.clone(),
-                deleting: context.late.deleting.clone(),
-                runner: runner.clone(),
-                accounts: accounts.runtime.clone(),
-                host: cli,
-                review_worker: Some(review_worker),
-                late: late_tasks,
-            },
-        )
-        .map_err(rpc)?,
-    );
+    let m5_deps = M5Deps {
+        db: db.clone(),
+        root: paths.root.clone(),
+        events: events.clone(),
+        switching: context.late.switching.clone(),
+        deleting: context.late.deleting.clone(),
+        runner: runner.clone(),
+        accounts: accounts.runtime.clone(),
+        host: cli,
+        review_worker,
+        late: late_tasks,
+        review_options,
+    };
+    // Read off the very value that is installed, so a hook dropped on the way here is caught, not assumed.
+    #[cfg(feature = "provider-fixtures")]
+    check_review_wiring(fixtures_on, m5_deps.review_options.is_some())?;
+    let m5 = Arc::new(m5::install(&mut handlers, m5_deps).map_err(rpc)?);
     let _ = context.late.m5.set(m5.clone());
 
     // 6. What a restart cut off is settled before anything listens (`runner.start()` then runs the queue).

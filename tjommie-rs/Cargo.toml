@@ -3,11 +3,37 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.5.1"
+version = "0.6.0"
 edition = "2024"
 rust-version = "1.97"
 license = "Apache-2.0"
 publish = false
+
+# The desktop pins (Phase 3 plan, "Pins and upgrades"), declared once. Upgrade only for a named reason (a bug we
+# hit, a security fix, a needed API), and gpui-kit with its matching gpui-pre in one PR; tests/pins.rs checks them.
+[workspace.dependencies]
+# GPUI itself: the exact Zed snapshot gpui-kit v0.9.1 is built against (crates.io `gpui-pre`).
+gpui = { package = "gpui-pre", version = "=0.3.12" }
+# gpui-component ships inside gpui-kit since 0.9; pinned to the v0.9.1 tag commit.
+gpui-kit = { git = "https://github.com/longbridge/gpui-kit", rev = "39ab849a93b5f15507b969164d49891db8d5b470" }
+webview2-com = "=0.39.1"
+# A self-signed certificate for the HTTPS loopback fixtures of the browser tests, made in the test (no key is committed).
+rcgen = { version = "=0.14.10", default-features = false, features = ["crypto", "ring"] }
+# desktop-host (Services lane, M6): microphone capture (WASAPI) and the updater's version comparison.
+cpal = "=0.18.2"
+semver = "=1.0.28"
+
+# No panics at UI boundaries (Phase 3 plan T0.4): the desktop crates (client, desktop-host, desktop) opt in with
+# `[lints] workspace = true`; the daemon doesn't. clippy.toml allows the first four in tests.
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+indexing_slicing = "deny"
+panic = "deny"
+unreachable = "deny"
+todo = "deny"
+unimplemented = "deny"
+string_slice = "deny"
 
 # Keep debug builds small. The build PC runs several worktrees at once, and
 # full debug info filled the disk (about 8 GB per worktree). Line tables keep
@@ -17,3 +43,34 @@ debug = "line-tables-only"
 
 [profile.dev.package."*"]
 debug = false
+
+# The desktop crash log's backtraces keep file:line in release (Phase 3 plan T0.4). Each binary's PDB is then packed by the release workflow
+# into the separate Tjommie-<version>-symbols.zip asset (installer/pack-symbols.ps1); neither goes into the installer. The daemon gets the
+# same line tables as the desktop crates, so that its PDB exists too: a release is refused without both. Every crate of this workspace has them.
+[profile.release.package.desktop]
+debug = "line-tables-only"
+
+[profile.release.package.desktop-host]
+debug = "line-tables-only"
+
+[profile.release.package.client]
+debug = "line-tables-only"
+
+[profile.release.package.daemon]
+debug = "line-tables-only"
+
+# protocol and transport are linked into both binaries, so their frames appear in both crash backtraces.
+[profile.release.package.protocol]
+debug = "line-tables-only"
+
+[profile.release.package.transport]
+debug = "line-tables-only"
+
+[profile.release.package.credman]
+debug = "line-tables-only"
+
+# The motion checks' timing build (Phase 3 plan T7.2): release code with the test driver
+# (`cargo build --profile perf -p desktop --features test-driver`), in target/perf, so target/release never holds the
+# driver (tests/pins.rs).
+[profile.perf]
+inherits = "release"

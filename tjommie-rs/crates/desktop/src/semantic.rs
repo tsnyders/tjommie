@@ -1,0 +1,75 @@
+//! The app's semantic tree (Phase 3 plan T0.5). One call gives an element its GPUI id, its UI Automation identity
+//! (AutomationId) and its accessible role, so Windows UI Automation and the test driver read the same semantics. With
+//! the `test-driver` feature the element is also observed for the driver's snapshot; without it, the call returns the
+//! plain element.
+//!
+//! Call it first on a `div()`, then build on as usual: `div().semantic("sidebar.wordmark", Role::Heading).aria_label(…)`.
+//! Give a focusable element its focus handle after it (`.track_focus(&handle)`) so the snapshot sees its focus.
+
+use gpui::{
+    Element, InteractiveElement, Role, SharedString, Stateful, StatefulInteractiveElement as _,
+};
+
+#[cfg(any(test, feature = "test-driver"))]
+pub type Semantic<E> = crate::test_driver::Observed<E>;
+#[cfg(not(any(test, feature = "test-driver")))]
+pub type Semantic<E> = E;
+
+pub trait SemanticExt: InteractiveElement + Element {
+    fn semantic(self, id: impl Into<SharedString>, role: Role) -> Semantic<Stateful<Self>>;
+}
+
+/// For an element that wraps a focusable child it doesn't own (a text field around gpui-kit's input): the snapshot
+/// reads the child's focus as the element's. Without the test driver it does nothing.
+pub trait SemanticFocus: Sized {
+    fn semantic_focus(self, focus: &gpui::FocusHandle) -> Self;
+}
+
+#[cfg(any(test, feature = "test-driver"))]
+impl<E> SemanticFocus for crate::test_driver::Observed<E> {
+    fn semantic_focus(self, focus: &gpui::FocusHandle) -> Self {
+        self.with_focus(focus)
+    }
+}
+
+#[cfg(not(any(test, feature = "test-driver")))]
+impl<E> SemanticFocus for E {
+    fn semantic_focus(self, _focus: &gpui::FocusHandle) -> Self {
+        self
+    }
+}
+
+/// A control that can't be used now: the snapshot reports it disabled. gpui's accessibility tree has no disabled state
+/// yet, so the control also says ", unavailable" in its name for Windows. Without the test driver it does nothing.
+pub trait SemanticDisabled: Sized {
+    fn semantic_disabled(self, disabled: bool) -> Self;
+}
+
+#[cfg(any(test, feature = "test-driver"))]
+impl<E> SemanticDisabled for crate::test_driver::Observed<E> {
+    fn semantic_disabled(self, disabled: bool) -> Self {
+        self.with_disabled(disabled)
+    }
+}
+
+#[cfg(not(any(test, feature = "test-driver")))]
+impl<E> SemanticDisabled for E {
+    fn semantic_disabled(self, _disabled: bool) -> Self {
+        self
+    }
+}
+
+impl<E: InteractiveElement + Element> SemanticExt for E {
+    fn semantic(self, id: impl Into<SharedString>, role: Role) -> Semantic<Stateful<E>> {
+        let id: SharedString = id.into();
+        // View tests find the element by its id (`VisualTestContext::debug_bounds`); outside test builds, a no-op.
+        let element = self
+            .debug_selector(|| id.to_string())
+            .id(id.clone())
+            .accessibility_id(id.clone())
+            .role(role);
+        #[cfg(any(test, feature = "test-driver"))]
+        let element = crate::test_driver::Observed::new(element, id);
+        element
+    }
+}

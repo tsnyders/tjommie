@@ -1201,6 +1201,23 @@ pub fn explained(failure: Failure, mark: u64) -> String {
 
 /// Runs the check for the install at `root` with the real Windows layer and CLIs. Returns what to tell the owner.
 pub async fn accept_worker(root: &Path) -> Result<String, String> {
+    accept_worker_in(root, |name| std::env::var_os(name)).await
+}
+
+/// [`accept_worker`] with the environment lookup given, which is how a test runs it without touching the process
+/// environment. This starts the real Claude and Codex, so while `TJOMMIE_PROVIDER_FIXTURES` is set (empty included) it
+/// refuses, before it reads or starts anything. The refusal is here, in the function that does the work, so no caller can
+/// get past it; `main.rs` asks first as well, to refuse before it prints anything.
+pub async fn accept_worker_in(
+    root: &Path,
+    env: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> Result<String, String> {
+    crate::startup::refuse_accept_worker_with_fixtures(env("TJOMMIE_PROVIDER_FIXTURES")).map_err(
+        |error| match error {
+            StartupError::Plain(message) => message,
+            StartupError::Unexpected(error) => error.to_string(),
+        },
+    )?;
     let exe = std::env::current_exe().map_err(|error| error.to_string())?;
     let daemon_dir = exe.parent().map(Path::to_path_buf).unwrap_or_default();
     accept_with(root, &daemon_dir, Arc::new(WindowsNative), Seams::default()).await

@@ -5,3 +5,8 @@ disallowed-methods = [
   { path = "tokio::process::Command::new", reason = "use spawn::command() so the child gets CREATE_NO_WINDOW", allow-invalid = true },
   { path = "std::os::windows::process::CommandExt::creation_flags", reason = "use NoWindowCommand::creation_flags, which keeps CREATE_NO_WINDOW", allow-invalid = true },
 ]
+# The desktop crates deny these (Cargo.toml [workspace.lints.clippy]); tests may still use them.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-indexing-slicing-in-tests = true

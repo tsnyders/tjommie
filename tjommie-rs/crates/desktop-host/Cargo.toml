@@ -1,0 +1,85 @@
+[package]
+name = "desktop-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+async-channel = "2.5.0"
+# Screenshots: the browser hands the image over as base64.
+base64 = "0.23.1"
+client = { path = "../client" }
+cpal.workspace = true
+# The one lock around every Credential Manager call, shared with the daemon.
+credman = { path = "../credman" }
+futures = "0.3.34"
+futures-util = "0.3.34"
+getrandom = "0.4.3"
+jiff = "0.2.41"
+log = { version = "0.4.35", features = ["std"] }
+# PDF pages (T4.4, `pdf`): pdfium.dll loaded at run time, pinned by SHA-256 and checked before it is loaded.
+pdfium-render = { version = "0.9.5", default-features = false, features = ["pdfium_latest", "thread_safe"] }
+protocol = { version = "0.6.0", path = "../protocol" }
+# The tools' search patterns (`browser_find`, `browser_network_requests`).
+regex = "1.13.1"
+reqwest = { version = "0.12.28", default-features = false, features = ["native-tls"] }
+# The login vault's records (`data/logins.sqlite`): the same bundled SQLite the daemon uses.
+rusqlite = { version = "0.41.1", features = ["bundled"] }
+semver.workspace = true
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sha2 = "0.10.9"
+# owner_safety::test_root: a disposable folder under %TEMP% for tests.
+tempfile = "3.27.0"
+# FIFO async mutex (a bot's command queue) and the bridge's runtime; the engine itself needs only `sync`.
+tokio = { version = "1.54.1", features = ["rt", "rt-multi-thread", "macros", "net", "sync", "time", "fs", "io-util", "process"] }
+url = "2.5.8"
+uuid = { version = "1.26.0", features = ["v4"] }
+webview2-com.workspace = true
+windows = { version = "0.62.2", features = [
+  "Data_Xml_Dom",
+  "Foundation",
+  "UI_Notifications",
+  "Win32_Foundation",
+  "Win32_Graphics_Dxgi",
+  "Win32_Graphics_Gdi",
+  "Win32_Security",
+  "Win32_Security_Credentials",
+  "Win32_Storage_FileSystem",
+  "Win32_System_Com",
+  "Win32_System_Com_StructuredStorage",
+  # The crash log's stack (`RtlCaptureStackBackTrace`).
+  "Win32_System_Diagnostics_Debug",
+  "Win32_System_LibraryLoader",
+  "Win32_System_ProcessStatus",
+  "Win32_System_Recovery",
+  "Win32_System_Registry",
+  "Win32_System_Threading",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_Shell",
+  "Win32_UI_WindowsAndMessaging",
+] }
+# Secrets of the login vault are wiped from memory after they are written or filled.
+zeroize = { version = "1.8", features = ["serde"] }
+
+[dev-dependencies]
+client = { path = "../client" }
+# The real broker and server the bridge is tested against (the daemon's own, in-process, on loopback).
+daemon = { path = "../daemon" }
+protocol = { path = "../protocol" }
+# The TLS fixture servers' certificate, generated per test run.
+rcgen.workspace = true
+# A TLS fixture server that asks for a client certificate (F2).
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rustls-pemfile = "2"
+tempfile = "3.27.0"
+tokio = { version = "1.54.1", features = ["sync", "rt", "rt-multi-thread", "time", "macros", "net", "io-util", "test-util"] }
+tokio-tungstenite = "0.29"
+# Counts this process's threads (the timer test), and asks for a file's 8.3 name (the upload test): the same `windows` crate, two
+# more modules.
+windows = { version = "0.62.2", features = ["Win32_System_Diagnostics_ToolHelp", "Win32_Storage_FileSystem", "Win32_Foundation", "Win32_System_Threading"] }
+
+[lints]
+workspace = true

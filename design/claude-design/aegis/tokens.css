@@ -195,6 +195,7 @@
   --primary: #191A1C;
   --on-primary: #F2F2EF;
   --focus: #191A1C;
+  --danger-text: #B02F29;
   --shadow-glass: 0 24px 60px #3C3C3A2E;
   --shadow-lift: 0 24px 60px #78787440;
   --shadow-raised: 0 10px 28px -6px #3C3C3A24, 0 2px 6px #3C3C3A0F;
@@ -245,6 +246,7 @@
   --primary: #EEEEEB;
   --on-primary: #141412;
   --focus: #EEEEEB;
+  --danger-text: #DC6F6B;
   --shadow-glass: 0 24px 60px #0000007A;
   --shadow-lift: 0 24px 60px #00000066;
   --shadow-raised: 0 12px 32px -6px #00000080, 0 2px 6px #00000052;

@@ -1,0 +1,728 @@
+{
+  "color": {
+    "light": {
+      "surface": {
+        "background": "#E6E6E3",
+        "paper": "#F2F2EF",
+        "card": "#FFFFFF",
+        "raisedClear": "#FFFFFF00",
+        "frame": "#E6E6E3",
+        "panel": "#F2F2EF",
+        "raised": "#FFFFFF",
+        "sunk": "#E6E6E3"
+      },
+      "ink": {
+        "base": "#191A1C",
+        "mid": "#4A4C50",
+        "muted": "#6B6D70",
+        "hover": "#2E3033"
+      },
+      "line": {
+        "base": "#D6D6D1",
+        "soft": "#C4C4BF",
+        "field": "#838588"
+      },
+      "accent": {
+        "base": "#B57A1F",
+        "text": "#895709",
+        "tint": "#F5E8D2",
+        "marker": "#AC711F"
+      },
+      "text": {
+        "tertiary": "#5F6164",
+        "primary": "#191A1C",
+        "secondary": "#4A4C50"
+      },
+      "on": {
+        "ink": "#F2F2EF",
+        "accent": "#FFFFFF",
+        "primary": "#F2F2EF"
+      },
+      "state": {
+        "hover": "#191A1C0D",
+        "sunkHover": "#DCDCD8",
+        "panelHover": "#E9E9E5",
+        "pressed": "#191A1C17",
+        "focus": "#191A1C"
+      },
+      "overlay": {
+        "scrim": "#191A1C61",
+        "highlight": "#FFFFFFCC"
+      },
+      "avatar": {
+        "eye": "#FFFFFF",
+        "sweep": "#FFFFFF"
+      },
+      "brand": {
+        "markStart": "#5A5C60",
+        "markEnd": "#191A1C",
+        "markEye": "#F2F2EF"
+      },
+      "icon": {
+        "base": "#4A4C50",
+        "muted": "#6B6D70"
+      },
+      "action": {
+        "primary": "#191A1C"
+      },
+      "danger": {
+        "text": "#B02F29"
+      }
+    },
+    "dark": {
+      "surface": {
+        "background": "#141412",
+        "paper": "#1D1C1A",
+        "card": "#272724",
+        "raisedClear": "#27272400",
+        "frame": "#141412",
+        "panel": "#1D1C1A",
+        "raised": "#272724",
+        "sunk": "#141412"
+      },
+      "ink": {
+        "base": "#EEEEEB",
+        "mid": "#C1C1BD",
+        "muted": "#9F9E9A",
+        "hover": "#D1D1CD"
+      },
+      "line": {
+        "base": "#363533",
+        "soft": "#4A4945",
+        "field": "#757571"
+      },
+      "accent": {
+        "base": "#DDA351",
+        "text": "#DDA351",
+        "tint": "#3B2C17",
+        "marker": "#DDA351"
+      },
+      "text": {
+        "tertiary": "#9F9E9A",
+        "primary": "#EEEEEB",
+        "secondary": "#C1C1BD"
+      },
+      "on": {
+        "ink": "#141412",
+        "accent": "#141412",
+        "primary": "#141412"
+      },
+      "state": {
+        "hover": "#EEEEEB0F",
+        "sunkHover": "#1E1E1C",
+        "panelHover": "#262523",
+        "pressed": "#EEEEEB1A",
+        "focus": "#EEEEEB"
+      },
+      "overlay": {
+        "scrim": "#0000008C",
+        "highlight": "#FFFFFF14"
+      },
+      "avatar": {
+        "eye": "#FFFFFF",
+        "sweep": "#FFFFFF"
+      },
+      "brand": {
+        "markStart": "#F5F5F3",
+        "markEnd": "#ABABA7",
+        "markEye": "#141412"
+      },
+      "icon": {
+        "base": "#C1C1BD",
+        "muted": "#9F9E9A"
+      },
+      "action": {
+        "primary": "#EEEEEB"
+      },
+      "danger": {
+        "text": "#DC6F6B"
+      }
+    },
+    "bot": {
+      "brown": "#875F3F",
+      "red": "#D03D37",
+      "orange": "#CE6225",
+      "amber": "#E2A72E",
+      "green": "#2E944E",
+      "teal": "#159187",
+      "blue": "#3C75E5",
+      "purple": "#8252D7",
+      "pink": "#D54888",
+      "gray": "#81807E"
+    }
+  },
+  "font": {
+    "text": [
+      "Archivo",
+      "Segoe UI",
+      "system-ui",
+      "sans-serif"
+    ],
+    "display": [
+      "Archivo",
+      "Segoe UI",
+      "system-ui",
+      "sans-serif"
+    ],
+    "mono": [
+      "JetBrains Mono",
+      "Consolas",
+      "monospace"
+    ]
+  },
+  "type": {
+    "desktop": {
+      "displayL": {
+        "font": "display",
+        "weight": 800,
+        "size": 34,
+        "lineHeight": 34,
+        "letterSpacingEm": -0.02,
+        "widthPercent": 125
+      },
+      "displayM": {
+        "font": "display",
+        "weight": 800,
+        "size": 24,
+        "lineHeight": 24,
+        "letterSpacingEm": -0.02,
+        "widthPercent": 125
+      },
+      "displayS": {
+        "font": "display",
+        "weight": 800,
+        "size": 18,
+        "lineHeight": 20,
+        "letterSpacingEm": -0.02,
+        "widthPercent": 125
+      },
+      "wordmark": {
+        "font": "display",
+        "weight": 800,
+        "size": 28,
+        "lineHeight": 28,
+        "letterSpacingEm": -0.02,
+        "widthPercent": 125
+      },
+      "body": {
+        "font": "text",
+        "weight": 400,
+        "size": 14.5,
+        "lineHeight": 22,
+        "letterSpacingEm": 0,
+        "widthPercent": 100
+      },
+      "bodyStrong": {
+        "font": "text",
+        "weight": 600,
+        "size": 14.5,
+        "lineHeight": 22,
+        "letterSpacingEm": 0,
+        "widthPercent": 100
+      },
+      "ui": {
+        "font": "text",
+        "weight": 400,
+        "size": 14,
+        "lineHeight": 20,
+        "letterSpacingEm": 0,
+        "widthPercent": 100
+      },
+      "uiStrong": {
+        "font": "text",
+        "weight": 600,
+        "size": 14,
+        "lineHeight": 20,
+        "letterSpacingEm": 0,
+        "widthPercent": 100
+      },
+      "nav": {
+        "font": "text",
+        "weight": 500,
+        "size": 15,
+        "lineHeight": 20,
+        "letterSpacingEm": 0,
+        "widthPercent": 100
+      },
+      "button": {
+        "font": "text",
+        "weight": 500,
+        "size": 14,
+        "lineHeight": 20,
+        "letterSpacingEm": 0,
+        "widthPercent": 100
+      },
+      "small": {
+        "font": "text",
+        "weight": 400,
+        "size": 13,
+        "lineHeight": 18,
+        "letterSpacingEm": 0,
+        "widthPercent": 100
+      },
+      "label": {
+        "font": "mono",
+        "weight": 500,
+        "size": 12,
+        "lineHeight": 16,
+        "letterSpacingEm": 0,
+        "widthPercent": 100
+      },
+      "meta": {
+        "font": "mono",
+        "weight": 400,
+        "size": 12,
+        "lineHeight": 16,
+        "letterSpacingEm": 0,
+        "widthPercent": 100
+      },
+      "code": {
+        "font": "mono",
+        "weight": 400,
+        "size": 13,
+        "lineHeight": 20,
+        "letterSpacingEm": 0,
+        "widthPercent": 100
+      },
+      "figure": {
+        "font": "mono",
+        "weight": 400,
+        "size": 28,
+        "lineHeight": 28,
+        "letterSpacingEm": -0.01,
+        "widthPercent": 100
+      }
+    },
+    "phone": {
+      "displayL": {
+        "font": "display",
+        "weight": 800,
+        "size": 30,
+        "lineHeight": 30,
+        "letterSpacingEm": -0.02,
+        "widthPercent": 125
+      },
+      "displayM": {
+        "font": "display",
+        "weight": 800,
+        "size": 22,
+        "lineHeight": 22,
+        "letterSpacingEm": -0.02,
+        "widthPercent": 125
+      },
+      "displayS": {
+        "font": "display",
+        "weight": 800,
+        "size": 18,
+        "lineHeight": 20,
+        "letterSpacingEm": -0.02,
+        "widthPercent": 125
+      },
+      "wordmark": {
+        "font": "display",
+        "weight": 800,
+        "size": 30,
+        "lineHeight": 30,
+        "letterSpacingEm": -0.02,
+        "widthPercent": 125
+      },
+      "body": {
+        "font": "text",
+        "weight": 400,
+        "size": 16,
+        "lineHeight": 24,
+        "letterSpacingEm": 0,
+        "widthPercent": 100
+      },
+      "bodyStrong": {
+        "font": "text",
+        "weight": 600,
+        "size": 16,
+        "lineHeight": 24,
+        "letterSpacingEm": 0,
+        "widthPercent": 100
+      },
+      "ui": {
+        "font": "text",
+        "weight": 400,
+        "size": 15,
+        "lineHeight": 22,
+        "letterSpacingEm": 0,
+        "widthPercent": 100
+      },
+      "uiStrong": {
+        "font": "text",
+        "weight": 600,
+        "size": 15,
+        "lineHeight": 22,
+        "letterSpacingEm": 0,
+        "widthPercent": 100
+      },
+      "nav": {
+        "font": "text",
+        "weight": 400,
+        "size": 17,
+        "lineHeight": 24,
+        "letterSpacingEm": 0,
+        "widthPercent": 100
+      },
+      "button": {
+        "font": "text",
+        "weight": 500,
+        "size": 16,
+        "lineHeight": 22,
+        "letterSpacingEm": 0,
+        "widthPercent": 100
+      },
+      "small": {
+        "font": "text",
+        "weight": 400,
+        "size": 14,
+        "lineHeight": 20,
+        "letterSpacingEm": 0,
+        "widthPercent": 100
+      },
+      "label": {
+        "font": "mono",
+        "weight": 500,
+        "size": 12,
+        "lineHeight": 16,
+        "letterSpacingEm": 0,
+        "widthPercent": 100
+      },
+      "meta": {
+        "font": "mono",
+        "weight": 400,
+        "size": 12,
+        "lineHeight": 16,
+        "letterSpacingEm": 0,
+        "widthPercent": 100
+      },
+      "code": {
+        "font": "mono",
+        "weight": 400,
+        "size": 12,
+        "lineHeight": 18,
+        "letterSpacingEm": 0,
+        "widthPercent": 100
+      },
+      "figure": {
+        "font": "mono",
+        "weight": 400,
+        "size": 26,
+        "lineHeight": 26,
+        "letterSpacingEm": -0.01,
+        "widthPercent": 100
+      }
+    }
+  },
+  "space": {
+    "s0": 0,
+    "s2": 2,
+    "s4": 4,
+    "s6": 6,
+    "s8": 8,
+    "s10": 10,
+    "s12": 12,
+    "s14": 14,
+    "s16": 16,
+    "s20": 20,
+    "s24": 24,
+    "s28": 28,
+    "s32": 32,
+    "s40": 40,
+    "s48": 48,
+    "s56": 56,
+    "s64": 64
+  },
+  "radius": {
+    "xs": 6,
+    "sm": 8,
+    "field": 12,
+    "md": 16,
+    "slot": 20,
+    "card": 24,
+    "panel": 28,
+    "hero": 32,
+    "pill": 999
+  },
+  "size": {
+    "titlebarHeight": 32,
+    "captionButtonWidth": 46,
+    "sidebar": 272,
+    "iconButton": 36,
+    "iconButtonMin": 28,
+    "touchMin": 48,
+    "controlDesktop": 40,
+    "controlPhone": 48,
+    "avatar20": 20,
+    "avatar28": 28,
+    "avatar40": 40,
+    "avatar64": 64,
+    "badge28": 14,
+    "badge40": 18,
+    "badge64": 24,
+    "icon": 20,
+    "iconSm": 16,
+    "focusRing": 2,
+    "focusOffset": 2
+  },
+  "shadow": {
+    "light": {
+      "glass": [
+        {
+          "x": 0,
+          "y": 24,
+          "blur": 60,
+          "spread": 0,
+          "color": "#3C3C3A2E"
+        }
+      ],
+      "lift": [
+        {
+          "x": 0,
+          "y": 24,
+          "blur": 60,
+          "spread": 0,
+          "color": "#78787440"
+        }
+      ],
+      "raised": [
+        {
+          "x": 0,
+          "y": 10,
+          "blur": 28,
+          "spread": -6,
+          "color": "#3C3C3A24"
+        },
+        {
+          "x": 0,
+          "y": 2,
+          "blur": 6,
+          "spread": 0,
+          "color": "#3C3C3A0F"
+        }
+      ],
+      "card": [
+        {
+          "x": 0,
+          "y": 1,
+          "blur": 2,
+          "spread": 0,
+          "color": "#3C3C3A0F"
+        },
+        {
+          "x": 0,
+          "y": 6,
+          "blur": 18,
+          "spread": -8,
+          "color": "#3C3C3A1F"
+        }
+      ],
+      "cardLift": [
+        {
+          "x": 0,
+          "y": 2,
+          "blur": 4,
+          "spread": 0,
+          "color": "#3C3C3A12"
+        },
+        {
+          "x": 0,
+          "y": 16,
+          "blur": 34,
+          "spread": -10,
+          "color": "#3C3C3A38"
+        }
+      ],
+      "raisedFocus": [
+        {
+          "x": 0,
+          "y": 16,
+          "blur": 40,
+          "spread": -8,
+          "color": "#3C3C3A30"
+        },
+        {
+          "x": 0,
+          "y": 2,
+          "blur": 6,
+          "spread": 0,
+          "color": "#3C3C3A12"
+        }
+      ]
+    },
+    "dark": {
+      "glass": [
+        {
+          "x": 0,
+          "y": 24,
+          "blur": 60,
+          "spread": 0,
+          "color": "#0000007A"
+        }
+      ],
+      "lift": [
+        {
+          "x": 0,
+          "y": 24,
+          "blur": 60,
+          "spread": 0,
+          "color": "#00000066"
+        }
+      ],
+      "raised": [
+        {
+          "x": 0,
+          "y": 12,
+          "blur": 32,
+          "spread": -6,
+          "color": "#00000080"
+        },
+        {
+          "x": 0,
+          "y": 2,
+          "blur": 6,
+          "spread": 0,
+          "color": "#00000052"
+        }
+      ],
+      "card": [
+        {
+          "x": 0,
+          "y": 1,
+          "blur": 2,
+          "spread": 0,
+          "color": "#00000052"
+        },
+        {
+          "x": 0,
+          "y": 8,
+          "blur": 20,
+          "spread": -8,
+          "color": "#00000066"
+        }
+      ],
+      "cardLift": [
+        {
+          "x": 0,
+          "y": 2,
+          "blur": 4,
+          "spread": 0,
+          "color": "#0000005C"
+        },
+        {
+          "x": 0,
+          "y": 18,
+          "blur": 36,
+          "spread": -10,
+          "color": "#0000008F"
+        }
+      ],
+      "raisedFocus": [
+        {
+          "x": 0,
+          "y": 18,
+          "blur": 44,
+          "spread": -8,
+          "color": "#00000099"
+        },
+        {
+          "x": 0,
+          "y": 2,
+          "blur": 6,
+          "spread": 0,
+          "color": "#0000005C"
+        }
+      ]
+    }
+  },
+  "motion": {
+    "duration": {
+      "instant": 0,
+      "press": 140,
+      "release": 240,
+      "hover": 200,
+      "fade": 160,
+      "quick": 200,
+      "base": 280,
+      "settle": 360,
+      "slow": 420,
+      "entrance": 460,
+      "spin": 900,
+      "pulse": 1600
+    },
+    "easing": {
+      "out": [
+        0.23,
+        1,
+        0.32,
+        1
+      ],
+      "move": [
+        0.45,
+        0,
+        0.15,
+        1
+      ],
+      "pulse": [
+        0.37,
+        0,
+        0.63,
+        1
+      ],
+      "linear": [
+        0,
+        0,
+        1,
+        1
+      ]
+    },
+    "travel": {
+      "minMs": 280,
+      "maxMs": 450,
+      "msPerPx": 0.45
+    },
+    "stagger": {
+      "tight": 40,
+      "step": 70,
+      "loose": 90
+    },
+    "spring": {
+      "calm": {
+        "stiffness": 260,
+        "dampingRatio": 1
+      },
+      "snappy": {
+        "stiffness": 520,
+        "dampingRatio": 0.8
+      },
+      "playful": {
+        "stiffness": 380,
+        "dampingRatio": 0.7
+      }
+    },
+    "distance": {
+      "pressScale": 0.94,
+      "pressFill": 0.94,
+      "lift": 2,
+      "rise": 8,
+      "enter": 6,
+      "recedeScale": 0.97,
+      "recedeX": 24
+    },
+    "flick": 0.4,
+    "eyes": {
+      "blinkMin": 2600,
+      "blinkMax": 6400,
+      "blinkClose": 70,
+      "blinkOpen": 110,
+      "scan": 1800,
+      "glanceHold": 1200
+    },
+    "sweep": {
+      "duration": 1700,
+      "every": 4600
+    }
+  }
+}

@@ -752,6 +752,7 @@ Implement each card in `design/claude-design/aegis/components/motion.html` with 
 - It accepts electron-updater's arguments (`--updated`, `--force-run`) and relaunches `Tjommie.exe --updated`.
 - **Over an existing install:** it closes running `Tjommie.exe` processes in the install folder only, runs the existing uninstaller silently in keep-data mode (as electron-builder's upgrade does; the facts from T8.1 say how), then copies the new files.
 - **Its uninstaller** deletes only the install folder's own files and its own registry keys and shortcuts. It **refuses** to run if `InstallLocation` is not under `%LOCALAPPDATA%\Programs\` or doesn't end with the product name. This guards against a repeat of the test uninstaller that once deleted the owner's install.
+- **Start at login on uninstall: the value is left, as R1 leaves it (owner decision pending, 2026-11-15).** Removing it would leave start-at-login off after an uninstall and a reinstall: the `login-item-set` marker, which says the default was already made, survives in `%APPDATA%\Tjommie` (a data root, never touched), so the reinstalled app would not write the value again. R1's dangling value keeps working. `REMOVE_RUN_VALUE_ON_UNINSTALL` in `installer/tjommie.nsi` is the one commented-out line the owner flips; the acceptance builds a variant with it on, so that code stays tested.
 - **Payload:**
   - `Tjommie.exe` (the `desktop` binary, production identity);
   - `resources\tjommie-daemon.exe`;
@@ -792,12 +793,21 @@ Implement each card in `design/claude-design/aegis/components/motion.html` with 
   - It runs beside the installed app, on `Tjommie-rs` and ports 47200/47201, with a script modelled on `smoke-claude.ps1`.
   - It uses the same red flags in `logs/desktop.log` and `desktop-crash.log`.
 - The owner runs the T3.5 checks by hand: steps A, B (including Shift+Tab and Tab past the end) and C. Plus step F: the live panel by eye.
+- **Before the Phase 3 installer runs over the owner's R1** (T8.2 review, F1 and F5):
+  - **Close the dev (`Tjommie RS`) and update-test apps first.** The installer runs R1's own uninstaller, and that stops programs on its own. With PowerShell usable it stops every process whose path *starts with* the install folder's path, with no trailing separator, so one running from `...\Programs\tjommie-rs` or `...\Programs\tjommie-updatetest` too. Otherwise it stops every `Tjommie.exe` of the user, by image name. The installer's own closing is by path with a trailing separator and leaves them alone, but it cannot change R1's code. The over-R1 acceptance records on a runner which of these happened (notes starting "O3:" in `installer-acceptance-over-r1.json`).
+  - **If `HKCU\Software\89b4e4b4-ac49-585f-800a-537f559f4641\InstallLocation` is anything but `%LOCALAPPDATA%\Programs\tjommie`,** the installer stops with exit 7 and changes nothing ("is recorded as installed in ..."). Do not edit the value to get past it without knowing why it differs: R1's uninstaller deletes the folder that value names. This is the mechanism of the 2026-10-25 incident.
+  - **The acceptance scripts never run on this PC.** `installer/accept-*.ps1` refuse unless they find the hosted runner's user, temp folder and run id, and a result file made on that run.
 
 ### T8.6 Release (AGENTS.md)
 1. Bump all `package.json` versions and the workspace version to **0.6.0** (owner decision 7; R1 is 0.5.0).
 2. Add `["0.6.0", <next>]` to `packages/mobile/scripts/apply-native.mjs`.
 3. Rename `## Unreleased` to `## 0.6.0 — <date>` and add a fresh empty `## Unreleased`.
 4. Ops merges to `main` and pushes `v0.6.0`. GitHub Actions builds and publishes. Never package locally.
+5. **No 0.5.x release after 0.6.0 ships** (owner decision, 2026-11-15; this closes the T8.3 review's F2).
+   - **Why:** GitHub's "latest release" is what both updaters follow. R1's electron-updater reads `releases/latest`, and the Rust updater reads `releases/latest/download/latest.yml`. Neither takes a version that is not newer than the one installed.
+   - **What would go wrong:** a 0.5.x tagged after 0.6.0 would become the latest release. 0.6.0 would then no longer be offered, and R1 users who took that 0.5.x would be told they are up to date.
+   - **So:** every 0.5.x release, including the T1.6 export patch, comes before 0.6.0. Rollback is reinstalling an existing 0.5.x asset (§"Rollback"), never a new release.
+   - **How it is enforced:** the release workflow's publish job reads the latest release's tag before `gh release create`, and refuses unless this tag's version is strictly greater (semantic versioning), with a message that says why. It is tested against every case in `scripts/release-workflow.test.ts` and has mutations in the committed runner. A release made with `--latest=false` is not needed, and is not used.
 - **CHANGELOG lines added here** (if not already added by their tasks):
   - the new look (T5);
   - the crash restart (T0.4);
@@ -809,12 +819,13 @@ Implement each card in `design/claude-design/aegis/components/motion.html` with 
 ---
 
 ## Rollback
-- **Rollback is reinstalling R1** (0.5.x) from GitHub Releases over 0.6.0. To keep that possible:
+- **Rollback is reinstalling R1** (0.5.x) from GitHub Releases over 0.6.0. That is an existing 0.5.x asset: no new 0.5.x release is made after 0.6.0 (T8.6, item 5). To keep that possible:
   - no migration 13 or later;
   - secrets stay byte-compatible (the same Credential Manager targets: device keys, logins, accounts);
   - the Electron browser profiles in `data/native-browser/` are kept through 0.6.x;
   - the speech model stays at `%APPDATA%\Tjommie\speech`;
   - `desktop-ui.json` is new and ignored by R1.
+- **If the Phase 3 uninstaller refuses (exit 5), rollback stops with it.** It removes the app only when `HKCU\Software\<GUID>\InstallLocation` is exactly `%LOCALAPPDATA%\Programs\tjommie` and is the folder it runs for. That is stricter than the plan's first wording ("under `%LOCALAPPDATA%\Programs\` or ends with the product name"), and the built rule is the right one. If a cleaner, a hand edit or another uninstaller removed or changed the value, Apps & features and R1's rollback both stop there (R1's installer runs the Phase 3 uninstaller with `--updated`, tries five times and quits with code 2). **Recovery:** run the Phase 3 installer again, which rewrites the value, and then uninstall or roll back.
 - **One release after 0.6.0:** `native-browser/` may be pruned, after the owner says so.
 
 ## Fallback path (gate condition 7)
@@ -860,6 +871,10 @@ Both decision points and the 5-day budget are **accepted** by owner decision 8 (
 | E2E (test driver + the debug `tjommie-daemon.exe` through `TJOMMIE_DAEMON_EXE`, built with the test-only provider-fixtures feature, on `127.0.0.1:0` with a temp root) | `crates/desktop/tests/e2e_*.rs`, feature `test-driver` | CI and local |
 | Cross-implementation (TypeScript ↔ Rust: device keys, login secrets) | `client`, `desktop-host` tests, through `tjommie-rs/tools/cred-probe.ts` | CI and local, test namespace |
 | Motion and frame time (PresentMon + app log) | `tools/perf/run-motion-checks.ps1` | owner's PC, quiet |
+| Motion statistics (percentiles, window filters, the 1 % lost-presents rule) | `tools/perf/frame-stats.py --self-test` | CI (`python -I`) and local |
+| Motion scenarios (50 pointer loops each; the keyboard and reduced checks count marked frames) | `tjommie-desktop --scenario motion-<name>` in a `perf` (test-driver) build, through `run-motion-checks.ps1` and `run-scenario.ps1` | owner's PC, quiet (`tjommie-rs/owner-perf-run.md`) |
+| Cold start (to the `ui ready` log line and PresentMon's first present) | `tools/perf/cold-start.ps1` | owner's PC, quiet |
+| Heavy-load experiment (T7.3: MMCSS and above-normal against neither, under a fixed synthetic load) | `tools/perf/t73-experiment.ps1` with `load.ps1` | owner's PC, the session's last step |
 | Memory budget | `tools/perf/measure-memory.ps1` | owner's PC, quiet; CI runs S0 and S1 as a smoke (not a gate; runners are noisy) |
 | Installer, update path, rollback | `desktop-acceptance.yml` | GitHub runner only |
 | Owner checks (steps A–C, F, the D-row checklist, the real-Claude smoke) | `phase3-checklist.md`, `smoke-desktop-checklist.md` | owner present |
@@ -1005,7 +1020,7 @@ Both decision points and the 5-day budget are **accepted** by owner decision 8 (
 - **0.5.x with the export** was published at least 7 days before 0.6.0 (decision 3).
 
 ## Tracked follow-ups (after 0.6.0)
-- **Screen-reader support** (decision 4). Owner-accepted for the first GPUI release only. Track it as an issue: "Desktop: screen reader support (UI Automation)". Revisit at every GPUI pin upgrade, and do it upstream if GPUI gains an accessibility layer, or with a UI Automation provider fed from the `test_id` semantic tree. Spec §9 lists it.
+- **Screen-reader support** (decision 4). **Owner decision, 2026-11-15: it comes after 0.6.0**, once the machine has RAM and storage to spare for it, and it is not scheduled before then. Until then every element keeps getting its `.semantic()` id and role, so the later work is about exposing what is already labelled. Owner-accepted for the first GPUI release only. Track it as an issue: "Desktop: screen reader support (UI Automation)". Revisit at every GPUI pin upgrade, and do it upstream if GPUI gains an accessibility layer, or with a UI Automation provider fed from the `test_id` semantic tree. Spec §9 lists it.
 - **Prune `data/native-browser/`** one release after 0.6.0, after the owner says so (§"Rollback").
 
 ## Risks

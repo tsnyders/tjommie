@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { userInfo } from "node:os";
 import { join, relative, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
@@ -20,10 +21,30 @@ import { packagedDaemonPath, startDaemonProcess, type DaemonLaunch } from "../pa
 export type Counts = { userVersion: number; tables: Record<string, number>; botFiles: number };
 
 // `act` and self-hosted runners also set GITHUB_ACTIONS=true, and either can be a PC with a real Tjommie on it.
-// RUNNER_ENVIRONMENT is "github-hosted" only on GitHub's own disposable runners.
-export function assertCi(env: NodeJS.ProcessEnv = process.env): void {
-  if (env.GITHUB_ACTIONS !== "true" || env.RUNNER_ENVIRONMENT !== "github-hosted") {
-    throw new Error("The R1 acceptance run changes a data root and an install, so it runs only on a GitHub-hosted runner.");
+// RUNNER_ENVIRONMENT is "github-hosted" only on GitHub's own disposable runners. Two environment variables are also the easiest thing in the world to
+// set by hand, so this needs what a real hosted runner is, as installer/hosted-runner.ps1 (Get-HostedRunnerProblems) does: the user runneradmin, a
+// RUNNER_TEMP under D:\a\_temp, and a run id and attempt. A real PC fails at least the user name and the temp folder, whatever its environment says.
+const underHostedTemp = (path: string | undefined): boolean => {
+  if (!path) return false;
+  const full = resolve(path).replaceAll("/", "\\").replace(/\\+$/, "").toLowerCase();
+  return full === "d:\\a\\_temp" || full.startsWith("d:\\a\\_temp\\");
+};
+
+export function hostedRunnerProblems(env: NodeJS.ProcessEnv, user: string): string[] {
+  const problems: string[] = [];
+  if (env.GITHUB_ACTIONS !== "true") problems.push("GITHUB_ACTIONS is not true");
+  if (env.RUNNER_ENVIRONMENT !== "github-hosted") problems.push("RUNNER_ENVIRONMENT is not github-hosted");
+  if (user !== "runneradmin") problems.push("the user is not runneradmin");
+  if (!underHostedTemp(env.RUNNER_TEMP)) problems.push("RUNNER_TEMP is not under D:\\a\\_temp");
+  if (!/^\d+$/.test(env.GITHUB_RUN_ID ?? "")) problems.push("GITHUB_RUN_ID is not a run id");
+  if (!/^\d+$/.test(env.GITHUB_RUN_ATTEMPT ?? "")) problems.push("GITHUB_RUN_ATTEMPT is not an attempt number");
+  return problems;
+}
+
+export function assertCi(env: NodeJS.ProcessEnv = process.env, user: string = userInfo().username): void {
+  const problems = hostedRunnerProblems(env, user);
+  if (problems.length > 0) {
+    throw new Error(`The R1 acceptance run changes a data root and an install, so it runs only on a GitHub-hosted runner. Refusing to run here: ${problems.join("; ")}.`);
   }
 }
 
@@ -51,8 +72,9 @@ export function diffFiles(expected: string[], found: string[]): string[] {
 
 const quoted = (name: string): string => `"${name.replaceAll('"', '""')}"`;
 
+// Read-only: counting must never write to a database, which matters on the commands with no runner guard (snapshot, verify) if one is run by hand.
 export function readCounts(dbFile: string, botsDir?: string): Counts {
-  const db = new DatabaseSync(dbFile);
+  const db = new DatabaseSync(dbFile, { readOnly: true });
   try {
     const { user_version } = db.prepare("PRAGMA user_version").get() as { user_version: number };
     const names = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all() as { name: string }[];
@@ -65,7 +87,7 @@ export function readCounts(dbFile: string, botsDir?: string): Counts {
 }
 
 function integrity(dbFile: string): string {
-  const db = new DatabaseSync(dbFile);
+  const db = new DatabaseSync(dbFile, { readOnly: true });
   try {
     return (db.prepare("PRAGMA integrity_check").all() as { integrity_check: string }[]).map((row) => row.integrity_check).join("; ");
   } finally {

@@ -30,6 +30,7 @@ fn run(args: &[String]) -> Result<(), StartupError> {
         return provision(&args[1..]);
     }
     if args.first().is_some_and(|arg| arg == "accept-worker") {
+        startup::refuse_accept_worker_with_fixtures(std::env::var_os("TJOMMIE_PROVIDER_FIXTURES"))?;
         return accept_worker(&args[1..]);
     }
     let launch = startup::parse_launch(args, |key| std::env::var(key).ok())?;

@@ -187,13 +187,24 @@ it("runs an install's bundled Rust daemon, else 0.4.2's bundled Node daemon insi
 
 it("changes a machine only on a GitHub-hosted runner, not under act or on a self-hosted one", async () => {
   const refused = "only on a GitHub-hosted runner";
-  expect(() => assertCi({})).toThrow(refused);
-  expect(() => assertCi({ GITHUB_ACTIONS: "false", RUNNER_ENVIRONMENT: "github-hosted" })).toThrow(refused);
+  // Everything a real hosted runner is (installer/hosted-runner.ps1 asks for the same six things): the user, the temp folder, a run id and an attempt too.
+  const hosted = { GITHUB_ACTIONS: "true", RUNNER_ENVIRONMENT: "github-hosted", RUNNER_TEMP: "D:\\a\\_temp", GITHUB_RUN_ID: "45046045531", GITHUB_RUN_ATTEMPT: "1" };
+  expect(() => assertCi(hosted, "runneradmin")).not.toThrow();
+  expect(() => assertCi({ ...hosted, RUNNER_TEMP: "d:/a/_temp/sub" }, "runneradmin")).not.toThrow();
+  expect(() => assertCi({}, "runneradmin")).toThrow(refused);
+  expect(() => assertCi({ GITHUB_ACTIONS: "false", RUNNER_ENVIRONMENT: "github-hosted" }, "runneradmin")).toThrow(refused);
   // `act` and self-hosted runners set GITHUB_ACTIONS too, and either can be a PC with a real Tjommie on it.
-  expect(() => assertCi({ GITHUB_ACTIONS: "true" })).toThrow(refused);
-  expect(() => assertCi({ GITHUB_ACTIONS: "true", RUNNER_ENVIRONMENT: "self-hosted" })).toThrow(refused);
-  expect(() => assertCi({ RUNNER_ENVIRONMENT: "github-hosted" })).toThrow(refused);
-  expect(() => assertCi({ GITHUB_ACTIONS: "true", RUNNER_ENVIRONMENT: "github-hosted" })).not.toThrow();
+  expect(() => assertCi({ GITHUB_ACTIONS: "true" }, "runneradmin")).toThrow(refused);
+  expect(() => assertCi({ ...hosted, RUNNER_ENVIRONMENT: "self-hosted" }, "runneradmin")).toThrow(refused);
+  expect(() => assertCi({ RUNNER_ENVIRONMENT: "github-hosted" }, "runneradmin")).toThrow(refused);
+  // The two variables alone are not enough: each of the other four conditions refuses on its own, and the message says which one failed.
+  expect(() => assertCi({ GITHUB_ACTIONS: "true", RUNNER_ENVIRONMENT: "github-hosted" }, "runneradmin")).toThrow(refused);
+  expect(() => assertCi(hosted, "someone-else")).toThrow("the user is not runneradmin");
+  expect(() => assertCi({ ...hosted, RUNNER_TEMP: "E:\\work\\temp" }, "runneradmin")).toThrow("RUNNER_TEMP is not under D:\\a\\_temp");
+  expect(() => assertCi({ ...hosted, RUNNER_TEMP: "D:\\a\\_temporary" }, "runneradmin")).toThrow("RUNNER_TEMP is not under D:\\a\\_temp");
+  expect(() => assertCi({ ...hosted, RUNNER_TEMP: undefined }, "runneradmin")).toThrow("RUNNER_TEMP is not under D:\\a\\_temp");
+  expect(() => assertCi({ ...hosted, GITHUB_RUN_ID: "abc" }, "runneradmin")).toThrow("GITHUB_RUN_ID is not a run id");
+  expect(() => assertCi({ ...hosted, GITHUB_RUN_ATTEMPT: "" }, "runneradmin")).toThrow("GITHUB_RUN_ATTEMPT is not an attempt number");
   // Every stage that changes the machine checks it first. Cleared here so a real runner running this test still refuses.
   vi.stubEnv("GITHUB_ACTIONS", "");
   vi.stubEnv("RUNNER_ENVIRONMENT", "");
